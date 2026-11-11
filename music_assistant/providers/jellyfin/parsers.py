@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from logging import Logger
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from aiojellyfin import ImageType as JellyImageType
 from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
@@ -30,6 +31,7 @@ from .const import (
     ITEM_KEY_ALBUM_ARTIST,
     ITEM_KEY_ALBUM_ARTISTS,
     ITEM_KEY_ALBUM_ID,
+    ITEM_KEY_ALBUM_NORMALIZATION_GAIN,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CAN_DOWNLOAD,
     ITEM_KEY_CONTAINER,
@@ -52,6 +54,7 @@ from .const import (
     ITEM_KEY_PROVIDER_IDS,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_SORT_NAME,
+    ITEM_KEY_TRACK_NORMALIZATION_GAIN,
     ITEM_KEY_USER_DATA,
     MEDIA_IMAGE_TYPES,
     USER_DATA_KEY_IS_FAVORITE,
@@ -140,7 +143,7 @@ def parse_album(
         album.artists.append(_unknown_artist_mapping(instance_id))
 
     user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
-    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    album.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return album
 
 
@@ -176,7 +179,7 @@ def parse_artist(
         artist.sort_name = jellyfin_artist[ITEM_KEY_SORT_NAME]
     artist.metadata.images = _get_artwork(instance_id, connection, jellyfin_artist)
     user_data = jellyfin_artist.get(ITEM_KEY_USER_DATA, {})
-    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    artist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return artist
 
 
@@ -197,11 +200,19 @@ def audio_format(track: JellyTrack) -> AudioFormat:
     return AudioFormat(
         content_type=(ContentType.try_parse(container) if container else ContentType.UNKNOWN),
         codec_type=(ContentType.try_parse(codec) if codec else ContentType.UNKNOWN),
-        channels=audio_stream.get(ITEM_KEY_MEDIA_CHANNELS, 2),
+        channels=audio_stream.get(ITEM_KEY_MEDIA_CHANNELS) or 2,
         sample_rate=audio_stream.get("SampleRate", 44100),
         bit_rate=audio_stream.get("BitRate"),
         bit_depth=audio_stream.get("BitDepth", 16),
     )
+
+
+def parse_loudness(jellyfin_track: JellyTrack) -> tuple[float, float | None] | None:
+    """Return track and optional album loudness in LUFS from Jellyfin's ReplayGain fields."""
+    track_loudness = _gain_to_loudness(jellyfin_track.get(ITEM_KEY_TRACK_NORMALIZATION_GAIN))
+    if track_loudness is None:
+        return None
+    return track_loudness, _gain_to_loudness(jellyfin_track.get(ITEM_KEY_ALBUM_NORMALIZATION_GAIN))
 
 
 def parse_track(
@@ -222,7 +233,7 @@ def parse_track(
                 provider_instance=instance_id,
                 available=available,
                 audio_format=audio_format(jellyfin_track),
-                url=client.audio_url(jellyfin_track[ITEM_KEY_ID]),
+                url=f"{client.base_url}/web/#/details?id={jellyfin_track[ITEM_KEY_ID]}",
             )
         },
     )
@@ -273,7 +284,7 @@ def parse_track(
                 exc_info=error if logger.isEnabledFor(logging.DEBUG) else None,
             )
     user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
-    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return track
 
 
@@ -298,9 +309,27 @@ def parse_playlist(
         playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]
     playlist.metadata.images = _get_artwork(instance_id, client, jellyfin_playlist)
     user_data = jellyfin_playlist.get(ITEM_KEY_USER_DATA, {})
-    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    playlist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     playlist.is_editable = False
     return playlist
+
+
+def set_api_key(url: str, api_key: str | None) -> str:
+    """
+    Return the URL with its Jellyfin auth query param replaced, or removed when api_key is None.
+
+    :param url: Jellyfin media URL, with or without an auth query param.
+    :param api_key: Access token to authenticate the URL with.
+    """
+    parsed = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in ("api_key", "apikey")
+    ]
+    if api_key is not None:
+        query.append(("apiKey", api_key))
+    return urlunsplit(parsed._replace(query=urlencode(query)))
 
 
 def _unknown_artist_mapping(instance_id: str) -> ItemMapping:
@@ -321,7 +350,10 @@ def _get_artwork(
         images.append(
             MediaItemImage(
                 type=ImageType.FANART,
-                path=client.artwork(media_item[ITEM_KEY_ID], JellyImageType.Backdrop, index=i),
+                path=set_api_key(
+                    client.artwork(media_item[ITEM_KEY_ID], JellyImageType.Backdrop, index=i),
+                    None,
+                ),
                 provider=instance_id,
                 remotely_accessible=False,
             )
@@ -333,10 +365,20 @@ def _get_artwork(
             images.append(
                 MediaItemImage(
                     type=image_type,
-                    path=client.artwork(media_item[ITEM_KEY_ID], jelly_image_type),
+                    path=set_api_key(
+                        client.artwork(media_item[ITEM_KEY_ID], jelly_image_type), None
+                    ),
                     provider=instance_id,
                     remotely_accessible=False,
                 )
             )
 
     return images
+
+
+def _gain_to_loudness(value: object) -> float | None:
+    """Convert a Jellyfin normalization gain in dB to loudness in LUFS."""
+    if not isinstance(value, (int, float)):
+        return None
+    # Jellyfin's gain targets the ReplayGain 2.0 reference level of -18 LUFS
+    return -18.0 - float(value)

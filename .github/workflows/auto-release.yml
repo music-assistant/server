@@ -1,12 +1,13 @@
 name: Auto Release
 
 # Automatically creates releases with proper version increments.
-# - Nightly: runs at 05:00 Europe/Amsterdam with 2+ commits
+# - Nightly: runs at 04:00 Europe/Amsterdam with 2+ commits, an hour after the
+#   frontend and models nightlies so their version bumps are included
 # - Beta, RC, stable: manually triggered
 
 on:
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 4 * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
@@ -42,6 +43,16 @@ jobs:
       branch: ${{ steps.branch.outputs.branch }}
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
+      # The dispatch ref picks the release tooling (github.workflow_sha), so keep it on dev.
+      - name: Require dispatch from dev
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/dev" ]; then
+            echo "::error::Run this workflow from the dev branch, not $DISPATCH_REF. The channel still decides which branch gets released."
+            exit 1
+          fi
+
       - name: Check out release workflow
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

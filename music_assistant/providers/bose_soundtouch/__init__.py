@@ -4,8 +4,8 @@ Provider for Bose SoundTouch speakers.
 Following the Bose SoundTouch end of life, this provider keeps the speakers usable
 within Music Assistant: it detects them on the network, exposes native control
 (power, volume, transport, source and multiroom grouping) and maps the physical
-preset buttons to Music Assistant content. Audio playback is delegated to a linked
-playback protocol (such as DLNA) via the standard protocol linking mechanism.
+preset buttons to Music Assistant content. Audio is played natively over the
+speaker's own UPnP AVTransport endpoint.
 """
 
 from __future__ import annotations

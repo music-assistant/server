@@ -35,6 +35,10 @@ The `Player` class is the actual object provided by a Player Provider. It:
 - Is used internally by providers and the controller
 - May contain provider-specific implementation details
 
+The remembered MA source is cleared after five seconds of continuous idle.
+Returning to playing or paused before that timeout cancels the reset, preserving
+the selected queue through transient device stops during playback transitions.
+
 ### PlayerState (API Model)
 
 The `PlayerState` is a dataclass representing the final state of the player. It:
@@ -94,6 +98,20 @@ Mixin class containing all protocol linking logic:
 Contains standalone helper functions and decorators:
 - `handle_player_command` decorator for command validation
 - `AnnounceData` type definition
+
+## Locking
+
+Player commands are serialized per player with `get_player_lock`. A command that cannot get the lock within 30 seconds runs without it, so a player stays responsive when the previous holder hangs on a dead provider call. A strict acquisition (`strict=True`) never does that: it keeps waiting, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError`. The queue play actions and the next-track handover take the lock strictly, since two of them running at once on one queue corrupt it. The timeouts live in [constants.py](constants.py).
+
+### Lock Ordering
+
+A group player always locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**.
+
+A command that locks a member and only then reaches the group — a power off detaching the player from its group is the typical one — has to acquire the group's lock up front. Taking them the other way round deadlocks against any concurrent command on that group. Nested acquisitions within the same task are re-entrant, so locking the group up front costs nothing further down the call chain.
+
+`get_group_and_player_lock` does exactly that: it takes the lock of the group holding the player (following the same redirect as `cmd_set_members`) and then the player's own. A power off, an announcement and the queue play actions all use it, since each detaches the player from its group or joins it back. The re-entrancy is per task, so a group command that fans out to its members in separate tasks (a group announcement) has those tasks take the member's lock only.
+
+A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect is what puts the command under the group's lock rather than the leader's.
 
 ## Player Types
 
@@ -161,7 +179,7 @@ Protocol players are matched to the same physical device using identifiers in or
 1. **MAC_ADDRESS** - Most reliable, unique to the network interface
 2. **SERIAL_NUMBER** - Unique device serial number
 3. **UUID** - Universally unique identifier
-4. **CAST_UUID / AIRPLAY_ID** - Protocol-specific stable identifiers
+4. **CAST_UUID / AIRPLAY_ID** - Protocol-specific stable identifiers (a differing AIRPLAY_ID rules out a match, as several AirPlay receivers can share one host, IP and MAC)
 5. **IP_ADDRESS** - Last resort only when strong identifiers are unavailable or unreliable
 6. **player_id** - Fallback device key for players without usable identifiers (e.g., Sendspin)
 

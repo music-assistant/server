@@ -15,7 +15,7 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_L
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_AUTO_DISCOVER, CONF_ROKU_APP_ID
+from .constants import CONF_AUTO_DISCOVER, CONF_ROKU_APP_ID, DEFAULT_ROKU_APP_IDS
 from .player import MediaAssistantPlayer
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ class MediaAssistantprovider(PlayerProvider):
             ConfigEntry(
                 key=CONF_ROKU_APP_ID,
                 type=ConfigEntryType.STRING,
-                default_value="782875",
+                default_value=DEFAULT_ROKU_APP_IDS,
                 required=False,
                 advanced=True,
             ),
@@ -80,7 +80,8 @@ class MediaAssistantprovider(PlayerProvider):
         if self.roku_players is None:
             return  # type: ignore[unreachable]
         async with TaskManager(self.mass) as tg:
-            for roku_player in self.roku_players.values():
+            # each disconnect removes its player from roku_players
+            for roku_player in list(self.roku_players.values()):
                 tg.create_task(self._device_disconnect(roku_player))
 
     async def on_upnp_service_discovered(

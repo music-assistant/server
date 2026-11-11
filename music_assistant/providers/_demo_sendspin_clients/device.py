@@ -17,7 +17,7 @@ from aiosendspin.models.types import AudioCodec, Roles
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.keys import Identity, generate_psk, psk_id_for
 from aiosendspin.noise.pairing import PairingError
-from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
+from aiosendspin.noise.pairing_token import PSKPairingToken, encode_psk_token
 from aiosendspin.noise.trust_store import FileClientPairingStore, PairingPsk
 
 from .constants import DEVICE_MANUFACTURER, RECONNECT_INTERVAL, STATIC_PIN
@@ -142,17 +142,14 @@ class FakeSendspinDevice:
         await store.store_pairing_config(
             replace(
                 config,
-                pairing_psk_enabled=self.scenario.pairing_psk,
-                static_pin_enabled=self.scenario.static_pin,
-                dynamic_pin_enabled=self.scenario.dynamic_pin,
+                static_pairing_code_enabled=self.scenario.static_pin,
+                dynamic_pairing_code_enabled=self.scenario.dynamic_pin,
                 unpaired_access_enabled=self.scenario.unpaired_access,
-                dynamic_pin_min_length=self.scenario.min_pin_length,
             )
         )
         if self.scenario.static_pin:
-            await store.set_static_pin(STATIC_PIN)
-        if self.scenario.pairing_psk:
-            self.pairing_token = await _ensure_pairing_token(store, self.client_id)
+            await store.set_static_pairing_code(STATIC_PIN)
+        self.pairing_token = await _ensure_pairing_token(store, self.client_id)
 
         roles = [Roles.PLAYER]
         if self.scenario.source_role:
@@ -208,9 +205,13 @@ class FakeSendspinDevice:
         """Wire the operator channels the scenario's pairing methods need."""
         return PairingSupport(
             gesture_prompt=self._on_gesture_prompt,
-            pin_display=(self._on_pin_display if self.scenario.pin_channel.has_display else None),
-            pin_speaker=(self._on_pin_speaker if self.scenario.pin_channel.has_speaker else None),
-            offer_static_pin=self.scenario.static_pin,
+            pairing_code_display=(
+                self._on_pin_display if self.scenario.pin_channel.has_display else None
+            ),
+            pairing_code_speaker=(
+                self._on_pin_speaker if self.scenario.pin_channel.has_speaker else None
+            ),
+            offer_static_pairing_code=self.scenario.static_pin,
             secret_locations=self.scenario.secret_locations,
         )
 
@@ -243,17 +244,22 @@ class FakeSendspinDevice:
         if waiting:
             LOGGER.info("%s is waiting for its pairing button", self.scenario.name)
 
-    async def _on_pin_display(self, pin: str | None) -> None:
+    async def _on_pin_display(self, pairing_code: str | None, *, grouped: str | None) -> None:
         """Show (or clear) the derived dynamic PIN on the device's display."""
-        self.dynamic_pin = pin
-        if pin is not None:
-            LOGGER.info("%s displays PIN %s", self.scenario.name, pin)
+        # a real display shows the grouped form; keep it for the operator hint too
+        self.dynamic_pin = grouped or pairing_code
+        if pairing_code is not None:
+            LOGGER.info("%s displays PIN %s", self.scenario.name, self.dynamic_pin)
 
-    async def _on_pin_speaker(self, pin: str | None, *, languages: tuple[str, ...]) -> None:
+    async def _on_pin_speaker(
+        self, pairing_code: str | None, *, languages: tuple[str, ...]
+    ) -> None:
         """Speak (or stop speaking) the derived dynamic PIN."""
-        self.dynamic_pin = pin
-        if pin is not None:
-            LOGGER.info("%s speaks PIN %s (languages: %s)", self.scenario.name, pin, languages)
+        self.dynamic_pin = pairing_code
+        if pairing_code is not None:
+            LOGGER.info(
+                "%s speaks PIN %s (languages: %s)", self.scenario.name, pairing_code, languages
+            )
 
     def _log_task_result(self, task: asyncio.Task[None]) -> None:
         """Log a connect loop that ended on an unexpected error rather than a cancellation."""
@@ -280,15 +286,10 @@ def _scenario_identity(scenario_id: str) -> Identity:
 
 
 async def _ensure_pairing_token(store: FileClientPairingStore, client_id: str) -> str:
-    """
-    Return the device's pairing token, minting the Pairing PSK behind it once.
-
-    Setup offers the token only to a device with no PIN method of its own, but every
-    device mints one, since real speakers advertise it alongside their PIN.
-    """
+    """Return the device's pairing token, minting the Pairing PSK behind it once."""
     pairing_psk = await store.pairing_psk()
     if pairing_psk is None:
         psk = generate_psk()
         pairing_psk = PairingPsk(psk_id=psk_id_for(psk), psk=psk)
         await store.set_pairing_psk(pairing_psk)
-    return encode_token(PSKPairingToken(client_id=client_id, pairing_psk=pairing_psk.psk))
+    return encode_psk_token(PSKPairingToken(client_id=client_id, pairing_psk=pairing_psk.psk))

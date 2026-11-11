@@ -4,6 +4,10 @@
     "description": "Configuration of the core music (library) management module"
   },
   "config_entries": {
+    "keep_remasters_apart": {
+      "label": "Keep remastered versions apart",
+      "description": "When enabled, a track or album named as a remaster (for example \"Remastered 2009\" in its title) is kept as a separate item in your library instead of being merged with the original, or with a remaster from another year. Tracks and albums that were already merged stay merged."
+    },
     "reset_db": {
       "label": "Reset library database",
       "description": "This will issue a full reset of the library database and trigger a full sync. Only use this option as a last resort if you are seeing issues with the library database."
@@ -30,5 +34,8 @@
     "import_playlist_matching": "Import playlist {0}",
     "import_radios": "Import {0} radio stations",
     "reconcile_duplicate_tracks": "Reconcile duplicate tracks"
+  },
+  "errors": {
+    "album_not_available_on_music_services": "This album is not available on any of your music services"
   }
 }

@@ -39,7 +39,6 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import (
     ContentType,
-    EventType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -60,7 +59,6 @@ from music_assistant.models.plugin import PluginProvider, SourceControlValue
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import SourceControl
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import (
         BrowseFolder,
         ItemMapping,
@@ -68,6 +66,7 @@ if TYPE_CHECKING:
         RecommendationFolder,
         Track,
     )
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -84,12 +83,12 @@ SUPPORTED_FEATURES = {
     # MANDATORY
     # this constant should contain a set of provider-level features
     # that your provider supports or an empty set if none.
-    # see the ProviderFeature enum for all available features
-    # at time of writing the only plugin-specific feature is the
-    # 'AUDIO_SOURCE' feature which indicates that this provider can
-    # provide a (single) audio source to Music Assistant, such as a live stream.
-    # we add this feature here to demonstrate the concept.
-    ProviderFeature.AUDIO_SOURCE
+    # see the ProviderFeature enum for all available features.
+    # this demo declares two of the plugin-specific features to demonstrate the concept:
+    # 'AUDIO_SOURCE' means the provider exposes a (live) audio source to Music Assistant
+    # and 'SCROBBLE' means it receives a report of every media item that is played.
+    ProviderFeature.AUDIO_SOURCE,
+    ProviderFeature.SCROBBLE,
 }
 
 
@@ -149,15 +148,6 @@ class MyDemoPluginprovider(PluginProvider):
         # it will be called after the provider has been fully loaded into Music Assistant.
         # you can use this for instance to trigger custom (non-mdns) discovery of plugins
         # or any other logic that needs to run after the provider is fully loaded.
-
-        # as reference we will subscribe here to an event on the MA eventbus
-        # this is just an example and you can remove this if not needed.
-        async def handle_event(event: MassEvent) -> None:
-            if event.event == EventType.MEDIA_ITEM_PLAYED:
-                # example implementation of handling a media item played event
-                self.logger.info("Media item played event received: %s", event.data)
-
-        self.mass.subscribe(handle_event, EventType.MEDIA_ITEM_PLAYED)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -316,6 +306,20 @@ class MyDemoPluginprovider(PluginProvider):
         # display with MA (e.g. Spotify Connect mirroring the Spotify app slider).
         # Fired only on the direct queue owner — group volume changes fire once
         # at the group level, not per child.
+
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """React to a playback progress report of a media item."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.SCROBBLE is declared.
+        # Fired throughout the playback of a media item and whenever its playback state
+        # changes (pause, end, skip); the report says whether the item is still playing and
+        # whether it was played to completion, and names the playing user and player so you
+        # can filter on those. It can fire before loaded_in_mass ran, so ignore reports
+        # until everything the plugin needs is set up.
+        # Scrobblers typically forward the report to a ScrobblerHelper subclass
+        # (music_assistant.helpers.scrobbler), which handles now-playing updates, duplicate
+        # suppression and the shared user/player filter options.
+        self.logger.info("Media item played report received: %s", report)
 
     async def on_source_selected(
         self, source_id: str, player_id: str, owner_player_id: str, stream_session_id: str

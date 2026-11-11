@@ -213,16 +213,24 @@ class RadioArtworkMixin:
 
     def get_radio_stream_station_image(self, streamdetails: StreamDetails) -> str | None:
         """
-        Get station image URL from queue current item.
+        Get the station image URL of the queue item that owns the given streamdetails.
 
         :param streamdetails: StreamDetails for the radio stream.
         """
         if streamdetails.queue_id and (
             queue := self.mass.player_queues.get(streamdetails.queue_id)
         ):
-            if queue.current_item and queue.current_item.media_item:
-                if station_image := queue.current_item.media_item.image:
-                    return self.get_image_url(station_image)
+            current_item = queue.current_item
+            # the first in-band metadata of a freshly started station can arrive while the
+            # queue still reports the previous item as current, so only take the image
+            # from an item that actually holds these streamdetails
+            if (
+                current_item
+                and current_item.streamdetails is streamdetails
+                and current_item.media_item
+                and (station_image := current_item.media_item.image)
+            ):
+                return self.get_image_url(station_image)
         return None
 
     @staticmethod
@@ -556,8 +564,18 @@ class RadioArtworkMixin:
         if not metadata.images:
             return None
         for img in metadata.images:
-            if img.type == ImageType.THUMB:
+            if img.type != ImageType.THUMB:
+                continue
+            if img.remotely_accessible:
                 return MediaItemMetadata(images=UniqueList([img]))
+            # a local file reaches the stream only through the image proxy
+            proxied = MediaItemImage(
+                type=ImageType.THUMB,
+                path=self.get_image_url(img, prefer_proxy=True),
+                provider="library",
+                remotely_accessible=True,
+            )
+            return MediaItemMetadata(images=UniqueList([proxied]))
         return None
 
     async def _get_library_track_metadata(
@@ -648,11 +666,9 @@ class RadioArtworkMixin:
 
         :param track: Track to get image for.
         """
-        # Try track image
-        if track.metadata and track.metadata.images:
-            for img in track.metadata.images:
-                if img.type == ImageType.THUMB:
-                    return self.get_image_url(img, prefer_proxy=True)
+        # Try track image (which prefers the image of its album)
+        if image := track.image:
+            return self.get_image_url(image, prefer_proxy=True)
 
         # Try album image
         if track.album:

@@ -14,6 +14,7 @@ from music_assistant.constants import (
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
 from music_assistant.controllers.streams import StreamsController
+from music_assistant.models.player import DeviceInfo
 from music_assistant.providers.chromecast.constants import CAST_PLAYER_CONFIG_ENTRIES
 from music_assistant.providers.sonos.player import SonosPlayer
 from music_assistant.providers.sonos_s1.player import SonosPlayer as SonosS1Player
@@ -23,6 +24,8 @@ def _controller(output_codec: str, prefer_wav_for_live_sources: bool) -> Streams
     """Return a streams controller with one configured HTTP player."""
     controller = StreamsController.__new__(StreamsController)
     controller._base_url = "http://mass:8097"
+    controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
     controller.mass = mass = MagicMock()
     player = MagicMock()
     values = {
@@ -96,6 +99,7 @@ async def test_sonos_prefers_wav_for_live_sources_by_default(
 ) -> None:
     """Sonos players default to the known-compatible low-latency WAV path."""
     player = player_class.__new__(player_class)
+    player._attr_device_info = DeviceInfo(model="Era 300", manufacturer="Sonos")
 
     entries = await player.get_config_entries()
     entry = next(entry for entry in entries if entry.key == CONF_PREFER_WAV_FOR_LIVE_SOURCES)

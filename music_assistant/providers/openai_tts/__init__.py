@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from aiohttp import ClientSession
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -50,19 +50,30 @@ CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"
 CONF_MODEL = "model"
 CONF_VOICES = "voices"
+CONF_RESPONSE_FORMAT = "response_format"
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "tts-1"
 # the voices the tts-1 model supports, used when the backend does not advertise its own
 DEFAULT_VOICES = ("alloy", "echo", "fable", "nova", "onyx", "shimmer")
-# the one response format all compatible backends implement
-RESPONSE_FORMAT = "mp3"
+# the response formats we can play back, mapped to their content type. Raw pcm is left
+# out on purpose: it carries no header and its sample rate differs per backend.
+RESPONSE_FORMATS: dict[str, ContentType] = {
+    "mp3": ContentType.MP3,
+    "opus": ContentType.OGG,
+    "aac": ContentType.AAC,
+    "flac": ContentType.FLAC,
+    "wav": ContentType.WAV,
+}
+# the one response format all compatible backends implement, except gemini (wav only)
+DEFAULT_RESPONSE_FORMAT = "mp3"
 # rendered clips older than this are removed from the on-disk cache
 CACHE_MAX_AGE = 24 * 3600
 # the shared http session has no default timeout: discovery runs during provider load so
 # it must give up quickly, while rendering can legitimately be slow on a cpu-bound backend
 VOICES_TIMEOUT = ClientTimeout(total=10)
-SPEECH_TIMEOUT = ClientTimeout(total=120)
+SPEECH_TIMEOUT_SECONDS = 120
+SPEECH_TIMEOUT = ClientTimeout(total=SPEECH_TIMEOUT_SECONDS)
 
 # clip file names are sha256 hexdigests; anything else in the cache directory is not ours
 FILE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -78,7 +89,7 @@ async def setup(
 
 
 async def fetch_backend_voices(
-    http_session: ClientSession, base_url: str, api_key: str = ""
+    http_session: ClientSession, base_url: str, api_key: str = "", model: str = ""
 ) -> list[str]:
     """
     Return the voices the backend advertises, empty when it does not advertise any.
@@ -89,17 +100,20 @@ async def fetch_backend_voices(
     :param http_session: The HTTP session to request with.
     :param base_url: The API endpoint, without trailing slash.
     :param api_key: The API key to authenticate with, empty for backends without auth.
+    :param model: The speech model to list the voices of, empty to not specify one.
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    # some servers (mlx-audio) only list voices per model and reject a request without one
+    params = {"model": model} if model else {}
     try:
         async with http_session.get(
-            f"{base_url}/audio/voices", headers=headers, timeout=VOICES_TIMEOUT
+            f"{base_url}/audio/voices", headers=headers, params=params, timeout=VOICES_TIMEOUT
         ) as response:
             response.raise_for_status()
             data = await response.json()
     except Exception:
         return []
-    items = data.get("voices") if isinstance(data, dict) else data
+    items = data.get("voices", data.get("data")) if isinstance(data, dict) else data
     if not isinstance(items, list):
         return []
     # per item, so one unexpected entry does not discard the voices around it
@@ -115,6 +129,46 @@ async def fetch_backend_voices(
         if isinstance(name, str) and name:
             voices.append(name)
     return voices
+
+
+def normalize_base_url(url: str) -> str:
+    """
+    Return the API endpoint for the given url as entered by the user.
+
+    Accepts a bare server address (the /v1 path is added) or the url of one of the
+    audio endpoints themselves, and returns the base url without trailing slash.
+
+    :param url: The API endpoint as entered by the user.
+    """
+    url = url.strip().rstrip("/")
+    if "://" not in url:
+        url = f"http://{url}"
+    for suffix in ("/audio/speech", "/audio/voices", "/audio"):
+        if url.endswith(suffix):
+            url = url.removesuffix(suffix)
+            break
+    if "/" not in url.split("://", 1)[1]:
+        url = f"{url}/v1"
+    return url
+
+
+def parse_voices(value: ConfigValueType) -> list[str]:
+    """
+    Return the voice names held by a (multi value) config value, without duplicates.
+
+    :param value: The config value holding the voices, a list or a single string.
+    """
+    values = value if isinstance(value, list) else [value]
+    # a single value can hold a comma separated list of its own, e.g. when the whole
+    # list was pasted into one field
+    names = [
+        name
+        for item in values
+        if isinstance(item, str)
+        for part in item.split(",")
+        if (name := part.strip())
+    ]
+    return list(dict.fromkeys(names))
 
 
 class OpenAITTSProvider(PluginProvider):
@@ -157,9 +211,9 @@ class OpenAITTSProvider(PluginProvider):
         """
         Return the (options) config entries for this provider instance.
 
-        The connection details (endpoint, api key and model) are collected by the setup
-        flow (see setup_flow.py); the only option here overrides the list of voices that
-        is exposed as TTS engines.
+        The connection details (endpoint, api key, model and response format) are
+        collected by the setup flow (see setup_flow.py); the only option here overrides
+        the list of voices that is exposed as TTS engines.
         """
         return (
             ConfigEntry(
@@ -201,7 +255,7 @@ class OpenAITTSProvider(PluginProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=file_id,
-            audio_format=AudioFormat(content_type=ContentType.MP3),
+            audio_format=AudioFormat(content_type=RESPONSE_FORMATS[self._response_format]),
             media_type=MediaType.SOUND_EFFECT,
             stream_type=StreamType.HTTP,
             path=f"{self.mass.streams.base_url}{self._route_path}?id={file_id}",
@@ -216,6 +270,12 @@ class OpenAITTSProvider(PluginProvider):
     def _base_url(self) -> str:
         """Return the configured API endpoint, without trailing slash."""
         return str(self.get_setup_value(CONF_BASE_URL, DEFAULT_BASE_URL)).rstrip("/")
+
+    @property
+    def _response_format(self) -> str:
+        """Return the configured response format, the default when it is unset or unknown."""
+        value = str(self.get_setup_value(CONF_RESPONSE_FORMAT, DEFAULT_RESPONSE_FORMAT))
+        return value if value in RESPONSE_FORMATS else DEFAULT_RESPONSE_FORMAT
 
     async def _handle_speech_request(self, request: web.Request) -> web.FileResponse | web.Response:
         """Serve a rendered speech clip by its file id."""
@@ -237,10 +297,11 @@ class OpenAITTSProvider(PluginProvider):
         :param voice: The voice to render with.
         """
         model = str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL))
+        response_format = self._response_format
         # the endpoint is part of the identity: repointing an instance must not reuse clips
-        digest = f"{self._base_url}\0{model}\0{voice}\0{message}"
+        digest = f"{self._base_url}\0{model}\0{voice}\0{response_format}\0{message}"
         file_id = hashlib.sha256(digest.encode()).hexdigest()
-        file_path = os.path.join(self._cache_dir, f"{file_id}.{RESPONSE_FORMAT}")
+        file_path = os.path.join(self._cache_dir, f"{file_id}.{response_format}")
         async with self._render_lock:
             if await aiopath.isfile(file_path):
                 # a reused clip is played right away, so keep it out of reach of the reaper
@@ -277,7 +338,7 @@ class OpenAITTSProvider(PluginProvider):
             "model": str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL)),
             "voice": voice,
             "input": message,
-            "response_format": RESPONSE_FORMAT,
+            "response_format": self._response_format,
         }
         async with self.mass.http_session.post(
             f"{self._base_url}/audio/speech",
@@ -323,7 +384,7 @@ class OpenAITTSProvider(PluginProvider):
                     Path(entry.name).stem: entry.path
                     for entry in entries
                     if entry.is_file(follow_symlinks=False)
-                    and entry.name.endswith(f".{RESPONSE_FORMAT}")
+                    and Path(entry.name).suffix.removeprefix(".") in RESPONSE_FORMATS
                     and FILE_ID_PATTERN.match(Path(entry.name).stem)
                 }
 
@@ -334,28 +395,25 @@ class OpenAITTSProvider(PluginProvider):
             return {}
 
     async def _resolve_voices(self) -> list[str]:
-        """Return the voices to expose, from the config override, the backend or the defaults."""
-        if voices := self._voice_override():
+        """
+        Return the voices to expose.
+
+        Taken from the config override, the voices entered during setup, the backend or
+        the defaults, in that order.
+        """
+        if voices := parse_voices(self.get_config_value(CONF_VOICES)):
             self.logger.debug("Using %s voice(s) from the config override", len(voices))
             return voices
+        # without setup voices this falls back to the (empty) config override read above
+        if voices := parse_voices(self.get_setup_value(CONF_VOICES)):
+            self.logger.debug("Using %s voice(s) entered during setup", len(voices))
+            return voices
         api_key = str(self.get_setup_value(CONF_API_KEY) or "")
-        if voices := await fetch_backend_voices(self.mass.http_session, self._base_url, api_key):
+        model = str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL))
+        if voices := await fetch_backend_voices(
+            self.mass.http_session, self._base_url, api_key, model
+        ):
             self.logger.debug("Discovered %s voice(s) on the backend", len(voices))
             return voices
         self.logger.debug("Falling back to the default voices")
         return list(DEFAULT_VOICES)
-
-    def _voice_override(self) -> list[str]:
-        """Return the configured voices, empty when the override is unset."""
-        configured = self.get_config_value(CONF_VOICES)
-        values = configured if isinstance(configured, list) else [configured]
-        # a single value can hold a comma separated list of its own, e.g. when the whole
-        # list was pasted into one field
-        names = [
-            name
-            for value in values
-            if isinstance(value, str)
-            for part in value.split(",")
-            if (name := part.strip())
-        ]
-        return list(dict.fromkeys(names))

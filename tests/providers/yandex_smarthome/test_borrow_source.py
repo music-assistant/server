@@ -46,6 +46,7 @@ def _make_mass(instances: dict[str, str] | None = None) -> mock.MagicMock:
     owner.domain = "yandex_music"
     owner.type = ProviderType.MUSIC
     owner.config.get_value = lambda key: {"x_token": "test-x-ym"}.get(key)
+    owner.get_setup_value = lambda key, default=None: {"x_token": "test-x-ym"}.get(key, default)
     mass.get_provider.return_value = owner
     mass.webserver.base_url = "http://ma.local:8095"
     return mass

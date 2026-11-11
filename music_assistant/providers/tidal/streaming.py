@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from contextlib import suppress
-from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -26,6 +26,20 @@ if TYPE_CHECKING:
 # a live route, even when the old ffmpeg process has been dead for
 # minutes before the new one starts fetching.
 _DASH_ROUTE_IDLE_BUFFER: int = 300
+
+# manifestMimeType values Tidal's playbackinfopostpaywall endpoint returns.
+_MANIFEST_DASH = "application/dash+xml"
+_MANIFEST_BTS = "application/vnd.tidal.bts"
+
+# ReplayGain 2.0 reference level; Tidal's replay gain values are relative to it.
+_REPLAYGAIN_REFERENCE_LUFS = -18.0
+
+
+def _loudness_from_gain(value: float | None) -> float | None:
+    """Convert a ReplayGain value to absolute loudness in LUFS."""
+    if value is None:
+        return None
+    return _REPLAYGAIN_REFERENCE_LUFS - value
 
 
 class TidalStreamingManager:
@@ -66,7 +80,7 @@ class TidalStreamingManager:
 
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
-        if "dash+xml" in manifest_type and "manifest" in stream_data:
+        if manifest_type == _MANIFEST_DASH and "manifest" in stream_data:
             # Tidal returns a DASH manifest (MPD) as a base64 data: URI.
             # ffmpeg re-fetches the MPD during playback to read the
             # segment timeline, but a data: URI can only be read
@@ -99,7 +113,7 @@ class TidalStreamingManager:
                 _schedule_cleanup()
                 return web.Response(
                     body=manifest_bytes,
-                    content_type="application/dash+xml",
+                    content_type=_MANIFEST_DASH,
                     headers={"Cache-Control": "no-cache"},
                 )
 
@@ -115,17 +129,15 @@ class TidalStreamingManager:
             _schedule_cleanup()
 
             url = f"{self.mass.streams.base_url}{route_path}"
+            bts_codec = None
         else:
-            urls = stream_data.get("urls", [])
-            if not urls:
-                raise MediaNotFoundError("No stream URL found")
-            url = urls[0]
+            url, bts_codec = self._get_direct_url(stream_data)
 
         # 5. Determine format
         audio_quality = stream_data.get("audioQuality")
         if audio_quality in ("HIRES_LOSSLESS", "HI_RES_LOSSLESS", "LOSSLESS"):
             content_type = ContentType.FLAC
-        elif codec := stream_data.get("codec"):
+        elif codec := (bts_codec or stream_data.get("codec")):
             content_type = ContentType.try_parse(codec)
         else:
             content_type = ContentType.MP4
@@ -137,20 +149,25 @@ class TidalStreamingManager:
             channels=2,
         )
 
-        # Never block or fail playback on DB issues.
-        self.mass.create_task(
-            self._async_update_provider_mapping_audio_format(
-                provider_track_id=track.item_id,
-                resolved_audio_format=resolved_audio_format,
-            )
-        )
-
         self.provider.play_reporting.register_stream(
             item_id=track.item_id,
             quality=stream_data.get("audioQuality", "LOSSLESS"),
             asset_presentation=stream_data.get("assetPresentation", "FULL"),
             audio_mode=stream_data.get("audioMode", "STEREO"),
         )
+
+        loudness = _loudness_from_gain(stream_data.get("trackReplayGain"))
+        loudness_album = _loudness_from_gain(stream_data.get("albumReplayGain"))
+
+        if loudness is not None:
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item_id=track.item_id,
+                    provider_instance_id_or_domain=self.provider.instance_id,
+                    loudness=loudness,
+                    loudness_album=loudness_album,
+                )
+            )
 
         return StreamDetails(
             item_id=track.item_id,
@@ -161,68 +178,50 @@ class TidalStreamingManager:
             path=url,
             can_seek=True,
             allow_seek=True,
+            loudness=loudness,
+            loudness_album=loudness_album,
         )
 
     async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
         """Fetch the (unofficial) playback info for a track."""
-        async with self.api.throttler.bypass():
-            return await self.api.get(
-                f"tracks/{track_id}/playbackinfopostpaywall",
-                params={
-                    "playbackmode": "STREAM",
-                    "assetpresentation": "FULL",
-                    "audioquality": quality,
-                },
-            )
-
-    async def _async_update_provider_mapping_audio_format(
-        self,
-        provider_track_id: str,
-        resolved_audio_format: AudioFormat,
-    ) -> None:
-        """Persist resolved audio format on the provider mapping (best-effort)."""
-        try:
-            lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
-                provider_track_id, self.provider.instance_id
-            )
-            if not lib_track:
-                return
-
-            cur_mapping = next(
-                (
-                    m
-                    for m in lib_track.provider_mappings
-                    if m.provider_instance == self.provider.instance_id
-                    and m.item_id == provider_track_id
-                ),
-                None,
-            )
-            if not cur_mapping or cur_mapping.audio_format == resolved_audio_format:
-                return
-
-            await self.mass.music.tracks.update_provider_mapping(
-                item_id=lib_track.item_id,
-                provider_instance_id=self.provider.instance_id,
-                provider_item_id=provider_track_id,
-                audio_format=resolved_audio_format,
-            )
-        except (MediaNotFoundError, OperationalError, AssertionError) as err:
-            self.provider.logger.debug(
-                "Failed to persist audio_format on provider mapping for Tidal track %s "
-                "(provider_instance=%s): %s",
-                provider_track_id,
-                self.provider.instance_id,
-                err,
-            )
-        except Exception:
-            self.provider.logger.exception(
-                "Unexpected error while persisting audio_format on provider mapping for "
-                "Tidal track %s (provider_instance=%s)",
-                provider_track_id,
-                self.provider.instance_id,
-            )
+        stream_data = await self.api.get(
+            f"tracks/{track_id}/playbackinfopostpaywall",
+            params={
+                "playbackmode": "STREAM",
+                "assetpresentation": "FULL",
+                "audioquality": quality,
+                # MA has no surround pipeline, so never ask for the Atmos asset.
+                "immersiveaudio": "false",
+            },
+        )
+        self.provider.logger.debug(
+            "Playback info for track %s: audioQuality=%s, audioMode=%s, manifestMimeType=%s",
+            track_id,
+            stream_data.get("audioQuality"),
+            stream_data.get("audioMode"),
+            stream_data.get("manifestMimeType"),
+        )
+        return stream_data
 
     def _remove_dash_route(self, route_path: str) -> None:
         """Remove a DASH manifest route from the stream server."""
         with suppress(RuntimeError):
             self.mass.streams.unregister_dynamic_route(route_path, method="GET")
+
+    def _get_direct_url(self, stream_data: dict[str, Any]) -> tuple[str, str | None]:
+        """
+        Return the direct stream URL and codec (if known) from non-DASH playback info.
+
+        :param stream_data: The playbackinfopostpaywall response.
+        """
+        codec: str | None = None
+        if stream_data.get("manifestMimeType") == _MANIFEST_BTS and "manifest" in stream_data:
+            # BTS manifests are base64-encoded JSON holding the plain file URL(s).
+            manifest = json.loads(base64.b64decode(stream_data["manifest"]))
+            urls = manifest.get("urls", [])
+            codec = manifest.get("codecs")
+        else:
+            urls = stream_data.get("urls", [])
+        if not urls:
+            raise MediaNotFoundError("No stream URL found")
+        return urls[0], codec

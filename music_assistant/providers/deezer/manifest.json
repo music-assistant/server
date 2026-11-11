@@ -4,11 +4,12 @@
   "stage": "stable",
   "name": "Deezer",
   "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio.",
-  "codeowners": ["@arctixdev", "@micha91", "@jdaberkow"],
+  "codeowners": ["@jdaberkow"],
+  "tier": "community",
   "credits": [
     "[deezer-python-gql](https://github.com/music-assistant/deezer-python-gql)"
   ],
   "documentation": "https://music-assistant.io/music-providers/deezer/",
-  "requirements": ["deezer-python-gql==0.17.1", "pycryptodome==3.23.0"],
+  "requirements": ["deezer-python-gql==0.22.2", "pycryptodome==3.24.0"],
   "multi_instance": true
 }

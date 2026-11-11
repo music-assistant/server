@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -66,6 +66,23 @@ HTTP_PROXY_SEND_TIMEOUT = 10
 # Both budgets sit inside the 30 seconds a client waits before it abandons a proxied request,
 # so neither works on (or answers) a request nobody is listening for any more.
 HTTP_PROXY_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+# Lowercased request headers a remote peer may not set on the local request: hop-by-hop
+# headers, the target host, and the body length aiohttp derives itself.
+HTTP_PROXY_DROPPED_HEADERS: Final = frozenset(
+    {
+        "host",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",  # codespell:ignore te
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    }
+)
 
 DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
@@ -334,7 +351,6 @@ class WebRTCGateway:
             self.logger.debug("WebSocket connection established, id=%s", id(self._signaling_ws))
             self.logger.debug("Sending registration")
             await self._register()
-            self._current_reconnect_delay = self._reconnect_delay
             self.logger.debug("Registration sent, waiting for confirmation...")
 
             # Run message loop and get close code
@@ -372,7 +388,8 @@ class WebRTCGateway:
         """Process messages from the signaling WebSocket."""
         close_code: int | None = None
         self.logger.debug("Entering message loop")
-        async for msg in ws:
+        while True:
+            msg = await ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     await self._handle_signaling_message(json.loads(msg.data))
@@ -389,6 +406,9 @@ class WebRTCGateway:
                     msg.data,
                     msg.extra,
                 )
+                break
+            elif msg.type == aiohttp.WSMsgType.CLOSING:
+                # Our own close() is in progress
                 break
             elif msg.type == aiohttp.WSMsgType.CLOSED:
                 self.logger.warning("Signaling server closed connection")
@@ -421,6 +441,7 @@ class WebRTCGateway:
             pass
         elif msg_type == "registered":
             self._is_connected = True
+            self._current_reconnect_delay = self._reconnect_delay
             self.logger.info("Registered with signaling server")
         elif msg_type == "error":
             error_msg = message.get("error") or message.get("message", "Unknown error")
@@ -574,13 +595,23 @@ class WebRTCGateway:
 
         async with self._http_proxy_semaphore:
             try:
+                # a Connection header may nominate more hop-by-hop headers to drop
+                dropped = HTTP_PROXY_DROPPED_HEADERS | {
+                    token.strip().lower()
+                    for name, value in headers.items()
+                    if name.lower() == "connection"
+                    for token in str(value).split(",")
+                }
+                forwarded_headers = {
+                    name: value for name, value in headers.items() if name.lower() not in dropped
+                }
                 # Use shared HTTP session for this request
                 # this dial never leaves the host: TLS verification would fail on the bind
                 # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
                     method,
                     local_http_url,
-                    headers=headers,
+                    headers=forwarded_headers,
                     ssl=False,
                     allow_redirects=False,
                     timeout=HTTP_PROXY_FETCH_TIMEOUT,
@@ -604,14 +635,14 @@ class WebRTCGateway:
                     b"Gateway Timeout",
                     send_lock,
                 )
-            except Exception as err:
+            except Exception:
                 self.logger.exception("Error handling HTTP proxy request")
                 await self._send_http_proxy_response(
                     channel,
                     request_id,
                     500,
                     {"Content-Type": "text/plain"},
-                    str(err).encode(),
+                    b"Internal server error",
                     send_lock,
                 )
 

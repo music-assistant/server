@@ -15,7 +15,6 @@ CONF_ENABLE_TEXT_SEARCH = "enable_text_search"
 CONF_ENABLE_DISCOVER_ROW = "enable_discover_row"
 CONF_DISCOVER_PRESET = "discover_preset"
 CONF_DISCOVER_DIVERSITY = "discover_diversity"
-EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
 
 # Engine for the SIMILAR_TRACKS hook; CLAP option offered only when its index is enabled.
 CONF_SIMILAR_TRACKS_ENGINE = "similar_tracks_engine"
@@ -36,6 +35,7 @@ ACTION_REBUILD_18DIM = "rebuild_18dim_index"
 ACTION_REBUILD_CLAP = "rebuild_clap_index"
 
 PERIODIC_REFRESH_TASK_ID = "sonic_similarity_periodic_refresh"
+REBUILD_TASK_ID = "sonic_similarity_rebuild_indexes"
 PERIODIC_REFRESH_INTERVAL_HOURS = 1
 
 SUPPORTED_FEATURES = {

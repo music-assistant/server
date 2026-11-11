@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
 
+from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import (
@@ -25,7 +26,7 @@ class MusicBrainzAPIClient:
     """Thin HTTP client for the MusicBrainz API."""
 
     domain = "musicbrainz"
-    throttler = ThrottlerManager(rate_limit=10, period=10)
+    throttler = ThrottlerManager(rate_limit=30, period=10)
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize the API client."""
@@ -34,7 +35,7 @@ class MusicBrainzAPIClient:
 
     @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries
-    async def get_data(self, endpoint: str, **kwargs: str) -> Any:
+    async def get_data(self, /, endpoint: str, **kwargs: str) -> Any:
         """
         Fetch data from the MusicBrainz API.
 
@@ -43,12 +44,27 @@ class MusicBrainzAPIClient:
         :param endpoint: API endpoint path (e.g. ``artist/123?inc=aliases``).
         :param kwargs: Additional query parameters forwarded as URL params.
         """
+        return await self._request(endpoint, **kwargs)
+
+    @use_cache(86400 * 7)  # Cache for 7 days
+    @throttle_with_retries
+    async def get_browse_data(self, /, endpoint: str, **kwargs: str) -> Any:
+        """
+        Fetch a listing from the MusicBrainz API that grows as the catalog does.
+
+        Results are cached for 7 days, so a discography picks up new releases within a week.
+
+        :param endpoint: API endpoint path (e.g. ``release-group``).
+        :param kwargs: Additional query parameters forwarded as URL params.
+        """
+        return await self._request(endpoint, **kwargs)
+
+    async def _request(self, endpoint: str, **params: str) -> Any:
+        """Perform one request against the MusicBrainz API and return its JSON body."""
         url = f"{MB_BASE_URL}/{endpoint}"
-        headers = {
-            "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
-        }
-        kwargs["fmt"] = "json"
-        async with self.mass.http_session.get(url, headers=headers, params=kwargs) as response:
+        headers = {"User-Agent": MASS_USER_AGENT}
+        params["fmt"] = "json"
+        async with self.mass.http_session.get(url, headers=headers, params=params) as response:
             # handle rate limiter
             if response.status == 429:
                 backoff_time = parse_retry_after(response.headers.get("Retry-After"))

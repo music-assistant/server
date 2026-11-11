@@ -2,12 +2,13 @@
 
 import asyncio
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from zeroconf import ServiceStateChange
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.sonos.player import SonosPlayer
 from music_assistant.providers.sonos.provider import SonosPlayerProvider
 
 PLAYER_ID = "sonos_player"
@@ -93,6 +94,25 @@ async def test_disabled_discovery_logs_again_after_reenable(
 
 
 @pytest.mark.asyncio
+async def test_a_player_set_up_in_the_meantime_is_not_set_up_again(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test a delayed setup of a player that is registered by then is skipped quietly."""
+    provider, mass = _make_provider(enabled=True)
+    mass.players.get_player.return_value = MagicMock(spec=SonosPlayer)
+    get_discovery_info = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info", get_discovery_info
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=provider.logger.name):
+        await provider._setup_player(PLAYER_ID, SERVICE_NAME, _make_discovery_info())
+
+    get_discovery_info.assert_not_awaited()
+    assert "in discovery as it is already set up" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_unload_cancels_a_pending_player_setup(timer_mass: MusicAssistant) -> None:
     """Test a discovered player that is still waiting to be set up is dropped on unload."""
     provider = _bind_discovering_provider(timer_mass)
@@ -169,3 +189,20 @@ async def test_unload_sweeps_every_discovered_player(timer_mass: MusicAssistant)
 
     assert timer_mass._tracked_timers == {}
     assert provider._pending_setup_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawn_announcement_is_handed_to_the_player() -> None:
+    """Test a removed Sonos announcement lets the player decide whether it went to sleep."""
+    provider, mass = _make_provider()
+    player = MagicMock(spec=SonosPlayer)
+    goodbye = object()
+    player.on_mdns_goodbye = MagicMock(return_value=goodbye)
+    mass.players.get_player.return_value = player
+
+    await provider.on_mdns_service_state_change(
+        "RINCON_C438750D189C01400@Move 2._sonos._tcp.local.", ServiceStateChange.Removed, None
+    )
+
+    mass.players.get_player.assert_called_once_with("RINCON_C438750D189C01400")
+    mass.create_task.assert_called_once_with(goodbye)

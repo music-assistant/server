@@ -1,12 +1,26 @@
 """Test Bandcamp converters."""
 
+from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
-from bandcamp_async_api.models import BCAlbum, BCArtist, BCTrack, FeedTrack
+from bandcamp_async_api.models import (
+    BCAlbum,
+    BCArtist,
+    BCTrack,
+    CollectionItem,
+    FeedTrack,
+    FollowingItem,
+)
 from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import MediaItem
+from music_assistant_models.media_items import Track as MATrack
 
-from music_assistant.providers.bandcamp.converters import BandcampConverters, DiscographyItem
+from music_assistant.providers.bandcamp.converters import (
+    BandcampConverters,
+    DiscographyItem,
+    collection_album_id,
+)
 
 
 @pytest.fixture
@@ -114,6 +128,148 @@ def test_artist_from_search(converters: BandcampConverters) -> None:
     assert result.provider == "bandcamp_test"
 
 
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [
+        pytest.param(CollectionItem("album", 456, 123), "123-456", id="album"),
+        pytest.param(
+            CollectionItem("package", 900, 123, tralbum_type="a", tralbum_id=456),
+            "123-456",
+            id="package",
+        ),
+        pytest.param(CollectionItem("package", 901, 123), None, id="package_without_album"),
+        pytest.param(
+            CollectionItem("package", 902, 123, tralbum_type="t", tralbum_id=789),
+            None,
+            id="package_of_a_track",
+        ),
+        pytest.param(CollectionItem("track", 789, 123), None, id="track"),
+        pytest.param(CollectionItem("band", 123, 123), None, id="band"),
+    ],
+)
+def test_collection_album_id(item: CollectionItem, expected: str | None) -> None:
+    """Only an album and a package with a digital album give an album ID."""
+    assert collection_album_id(item) == expected
+
+
+def test_album_from_collection(converters: BandcampConverters) -> None:
+    """A collection entry gives the album its ID, and the title, band, URL and cover."""
+    item = CollectionItem(
+        item_type="package",
+        item_id=4197129855,
+        band_id=1772311897,
+        tralbum_type="a",
+        tralbum_id=3846833501,
+        band_name="The Wow! Scenario",
+        item_title="Stand in the Star. A Verse and a Chorus",
+        item_url="https://jamesacaster.bandcamp.com/album/stand-in-the-star",
+        art_url="https://f4.bcbits.com/img/a1234567890_10.jpg",
+    )
+
+    result = converters.album_from_collection(item, "1772311897-3846833501")
+
+    assert (result.item_id, result.name) == (
+        "1772311897-3846833501",
+        "Stand in the Star. A Verse and a Chorus",
+    )
+    # band_name is the artist credit on the page of James Acaster, as measured on Bandcamp
+    assert [(artist.item_id, artist.name) for artist in result.artists] == [
+        ("1772311897:the-wow-scenario", "The Wow! Scenario")
+    ]
+    assert [mapping.url for mapping in result.provider_mappings] == [item.item_url]
+    assert [image.path for image in result.metadata.images or []] == [item.art_url]
+
+
+@pytest.mark.parametrize(
+    ("album_id", "featured_track", "expected_id", "expected_album", "duration"),
+    [
+        pytest.param(None, 789, "123-0-789", None, 193, id="single"),
+        pytest.param(456, 789, "123-456-789", ("123-456", "Album"), 193, id="album_track"),
+        pytest.param(None, None, "123-0-789", None, 0, id="no_featured_track"),
+    ],
+)
+def test_track_from_collection(
+    converters: BandcampConverters,
+    album_id: int | None,
+    featured_track: int | None,
+    expected_id: str,
+    expected_album: tuple[str, str] | None,
+    duration: int,
+) -> None:
+    """A track entry gives the track ID of the track page, its album and its duration."""
+    item = CollectionItem(
+        item_type="track",
+        item_id=789,
+        band_id=123,
+        tralbum_id=789,
+        band_name="Test Band",
+        item_title="Track",
+        album_id=album_id,
+        album_title="Album" if album_id else None,
+        featured_track=featured_track,
+        featured_track_duration=193.5,
+    )
+
+    result = converters.track_from_collection(item)
+
+    assert (result.item_id, result.duration) == (expected_id, duration)
+    album = (result.album.item_id, result.album.name) if result.album else None
+    assert album == expected_album
+
+
+@pytest.mark.parametrize(
+    ("num_streamable_tracks", "available"),
+    [
+        pytest.param(0, False, id="no_stream"),
+        pytest.param(1, True, id="streams"),
+        pytest.param(None, True, id="no_count"),
+    ],
+)
+def test_track_from_collection_follows_the_stream_count(
+    converters: BandcampConverters, num_streamable_tracks: int | None, available: bool
+) -> None:
+    """A track entry that Bandcamp does not stream is unavailable, and one without a count is."""
+    item = CollectionItem(
+        item_type="track",
+        item_id=789,
+        band_id=123,
+        item_title="Track",
+        num_streamable_tracks=num_streamable_tracks,
+    )
+
+    result = converters.track_from_collection(item)
+
+    assert [mapping.available for mapping in result.provider_mappings] == [available]
+
+
+def test_artist_from_following(converters: BandcampConverters) -> None:
+    """A following entry gives the same ID, name, URL and URI as the band request."""
+    item = FollowingItem(
+        band_id=1772311897,
+        name="James Acaster",
+        url="https://jamesacaster.bandcamp.com",
+        image_url="https://f4.bcbits.com/img/46508512_0.jpg",
+        location="London, UK",
+    )
+    band = BCArtist(
+        id=1772311897,
+        name="James Acaster",
+        url="https://jamesacaster.bandcamp.com",
+        image_url="https://f4.bcbits.com/img/00046508512_0.png",
+    )
+
+    result = converters.artist_from_following(item)
+    expected = converters.artist_from_api(band)
+
+    assert (result.item_id, result.name, result.uri) == (
+        expected.item_id,
+        expected.name,
+        expected.uri,
+    )
+    assert result.provider_mappings == expected.provider_mappings
+    assert [image.path for image in result.metadata.images or []] == [item.image_url]
+
+
 def test_track_from_api(converters: BandcampConverters) -> None:
     """Test converting API Track to MA Track."""
     # Create mock API models
@@ -147,6 +303,31 @@ def test_track_from_api(converters: BandcampConverters) -> None:
     artist = next(iter(result.artists))
     assert artist.item_id == "123"
     assert artist.name == "Test Artist"
+
+
+@pytest.mark.parametrize(
+    ("streaming_url", "available"),
+    [
+        pytest.param({"mp3-128": "https://example.com/track.mp3"}, True, id="stream"),
+        pytest.param({}, False, id="empty"),
+        pytest.param(None, False, id="hidden"),
+    ],
+)
+def test_track_from_api_availability(
+    converters: BandcampConverters, streaming_url: dict[str, str] | None, available: bool
+) -> None:
+    """A track without a streaming URL is unavailable, so the core does not try to play it."""
+    track = BCTrack(
+        id=789,
+        title="Track",
+        artist=BCArtist(id=123, name="Test Band"),
+        streaming_url=streaming_url,
+    )
+
+    result = converters.track_from_api(track=track, album_id=456)
+
+    assert result.available is available
+    assert [mapping.available for mapping in result.provider_mappings] == [available]
 
 
 def test_track_from_api_label_release_uses_synthetic_artist_id(
@@ -584,3 +765,99 @@ def test_synthetic_artist_basics(converters: BandcampConverters) -> None:
     mapping = next(iter(artist.provider_mappings))
     assert mapping.item_id == "441379041:mortaja"
     assert mapping.url == "https://audiophob.bandcamp.com"
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        pytest.param(326.895, 326, id="float"),
+        pytest.param(300, 300, id="int"),
+        pytest.param(None, 0, id="no_audio"),
+    ],
+)
+def test_track_from_api_duration(
+    converters: BandcampConverters, duration: float | None, expected: int
+) -> None:
+    """The duration is whole seconds, and a track with no audio still loads from the cache."""
+    api_track = BCTrack(
+        id=789,
+        title="Test Track",
+        artist=BCArtist(id=123, name="Test Artist"),
+        duration=duration,
+    )
+
+    result = converters.track_from_api(api_track)
+
+    assert result.duration == expected
+    assert MATrack.from_dict(result.to_dict()).duration == expected
+
+
+def _search_album(image_url: str | None) -> Mock:
+    """Create a mock search album with the given image URL."""
+    item = Mock()
+    item.artist_id = 123
+    item.id = 456
+    item.name = "Test Album"
+    item.artist_name = "Test Artist"
+    item.image_url = image_url
+    item.url = "https://test.bandcamp.com/album/test-album"
+    item.artist_url = "https://test.bandcamp.com"
+    return item
+
+
+def _artist(image_url: str | None) -> Mock:
+    """Create a mock search or API artist with the given image URL."""
+    item = Mock()
+    item.id = 123
+    item.name = "Test Artist"
+    item.url = "https://test.bandcamp.com"
+    item.image_url = image_url
+    item.tags = []
+    item.bio = None
+    return item
+
+
+def _api_album(art_url: str | None) -> Mock:
+    """Create a mock API album with the given cover URL."""
+    album = Mock()
+    album.id = 456
+    album.title = "Test Album"
+    album.artist = _artist(None)
+    album.url = "https://test.bandcamp.com/album/test-album"
+    album.art_url = art_url
+    album.release_date = None
+    album.about = None
+    album.tralbum_artist = None
+    return album
+
+
+@pytest.mark.parametrize(
+    "convert",
+    [
+        pytest.param(lambda c: c.album_from_search(_search_album(None)), id="album_from_search"),
+        pytest.param(lambda c: c.artist_from_search(_artist(None)), id="artist_from_search"),
+        pytest.param(lambda c: c.artist_from_api(_artist(None)), id="artist_from_api"),
+        pytest.param(lambda c: c.album_from_api(_api_album(None)), id="album_from_api"),
+        pytest.param(
+            lambda c: c.artist_from_following(FollowingItem(band_id=123, name="Test Artist")),
+            id="artist_from_following",
+        ),
+        pytest.param(
+            lambda c: c.album_from_collection(CollectionItem("album", 456, 123), "123-456"),
+            id="album_from_collection",
+        ),
+        pytest.param(
+            lambda c: c.track_from_collection(CollectionItem("track", 789, 123)),
+            id="track_from_collection",
+        ),
+    ],
+)
+def test_converters_add_no_image_without_a_path(
+    converters: BandcampConverters, convert: Callable[[BandcampConverters], MediaItem]
+) -> None:
+    """An item without an image gets no image, not one with the path None."""
+    result = convert(converters)
+
+    assert not result.metadata.images
+    for artist in getattr(result, "artists", []):
+        assert artist.image is None

@@ -5,7 +5,8 @@
   "documentation": "https://music-assistant.io/music-providers/local-files/",
   "type": "music",
   "requirements": ["python-google-drive-api==0.1.0"],
-  "codeowners": ["@ozgav"],
+  "codeowners": ["@OzGav"],
+  "tier": "community",
   "multi_instance": true,
   "stage": "beta"
 }

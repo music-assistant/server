@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#202026"/>
+      <stop offset="1" stop-color="#0d0e11"/>
+    </linearGradient>
+    <linearGradient id="disc" x2="0" y2="1">
+      <stop stop-color="#ff1954"/>
+      <stop offset="1" stop-color="#e92342"/>
+    </linearGradient>
+    <linearGradient id="note" gradientUnits="userSpaceOnUse" x1="345" y1="370" x2="720" y2="630">
+      <stop stop-color="#fff"/>
+      <stop offset=".5" stop-color="#fff5f7"/>
+      <stop offset="1" stop-color="#f5b7c5"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#background)" d="M0 0h1024v1024H0z"/>
+  <circle fill="url(#disc)" cx="616" cy="833" r="514"/>
+  <path fill="url(#note)" fill-rule="evenodd" d="M568 144 682 140C718 138 747 166 747 202S721 265 687 266L630 267 687 478C704 541 718 598 718 636 718 754 622 849 504 849S291 753 291 636 387 423 504 423C517 423 529 424 541 426L494 240C483 206 496 174 524 156 537 148 550 144 568 144ZM504 548C455 548 416 587 416 636S455 724 504 724 592 685 592 636 553 548 504 548Z"/>
+</svg>

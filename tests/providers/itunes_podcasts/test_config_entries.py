@@ -5,10 +5,12 @@ from unittest.mock import Mock
 import pytest
 
 from music_assistant.providers.itunes_podcasts import (
-    CONF_LOCALE,
-    DEFAULT_LOCALE,
     SUPPORTED_FEATURES,
     ITunesPodcastsProvider,
+)
+from music_assistant.providers.itunes_podcasts.constants import (
+    CONF_LOCALE,
+    DEFAULT_LOCALE,
 )
 
 

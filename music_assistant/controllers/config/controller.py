@@ -31,8 +31,6 @@ from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import (
     migrate,
     migrate_connected_player_plugins,
-    migrate_hass_engine_selection,
-    migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
 )
 from music_assistant.controllers.config.players import PlayerConfigMixin
@@ -88,12 +86,6 @@ class ConfigController(
         # runs here, after encryption is initialized, so string values are encrypted
         # at rest (the migrate() pass in _load() runs before encryption is available).
         setup_data_migrated = migrate_provider_setup_data(self._data, self.encrypt_string)
-        # one-off: fold a stored NFS subfolder into its export path. Same phase and reason as
-        # above, and after it so a legacy install's keys have landed in setup_data by now.
-        # TODO: remove after 2.10 release
-        nfs_subfolder_migrated = migrate_nfs_subfolder_into_export_path(
-            self._data, self.encrypt_string, self.decrypt_string
-        )
         # one-off: move the connected-player plugins to the player-bound model (collapse
         # spotify_connect/airplay_receiver instances, enforce the mandatory player on
         # ariacast_receiver/yandex_ynison). Runs after the setup-data move above so a
@@ -102,12 +94,7 @@ class ConfigController(
         connected_plugins_migrated = migrate_connected_player_plugins(
             self._data, self.decrypt_string, self.mass.storage_path
         )
-        if setup_data_migrated or nfs_subfolder_migrated or connected_plugins_migrated:
-            self.save(immediate=True)
-        # one-off: hand the Home Assistant plugin's former single TTS/AI entity choice over to
-        # the providers that select their own engine now. Runs here for the same reason: the
-        # ai_radio selection lands in its encrypted setup_data.
-        if migrate_hass_engine_selection(self._data, self.encrypt_string):
+        if setup_data_migrated or connected_plugins_migrated:
             self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(
@@ -146,7 +133,7 @@ class ConfigController(
         if self._save_written != self._save_requested:
             # the latest change never made it to disk: its save is either still waiting
             # out the debounce delay or was cancelled on stop, so write it here
-            await self._async_save()
+            await self.async_save()
         LOGGER.debug("Stopped.")
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -218,10 +205,30 @@ class ConfigController(
 
         self._save_requested += 1
         if immediate:
-            self.mass.create_task(self._async_save)
+            self.mass.create_task(self.async_save())
         else:
             # schedule the save for later
             self._timer_handle = self.mass.loop.call_later(DEFAULT_SAVE_DELAY, self._start_save)
+
+    async def async_save(self) -> None:
+        """Write the pending changes to disk, returning once they are stored."""
+        # this write covers whatever a scheduled save was still waiting to write
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
+        async with self._save_lock:
+            # remember which change we are about to write: anything requested after this
+            # point is not part of it, and must leave the settings marked as unsaved
+            requested = self._save_requested
+            if requested and self._save_written == requested:
+                # a save that ran while this one waited for the lock already wrote
+                # this generation; data assigned directly (load, migrate) has no
+                # generation and is always written
+                return
+            json_data = await async_json_dumps(self._data, indent=True)
+            await asyncio.to_thread(self._save_to_disk, json_data)
+            self._save_written = requested
+        LOGGER.debug("Saved data to persistent storage")
 
     def encrypt_string(self, str_value: str) -> str:
         """Encrypt a (password)string with Fernet."""
@@ -301,7 +308,7 @@ class ConfigController(
                     self._data = await async_json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
                     if await migrate(self._data):
-                        await self._async_save()
+                        await self.async_save()
                     return
             except FileNotFoundError:
                 pass
@@ -312,18 +319,7 @@ class ConfigController(
     def _start_save(self) -> None:
         """Start the save task, called by the save timer."""
         self._timer_handle = None
-        self.mass.create_task(self._async_save)
-
-    async def _async_save(self) -> None:
-        """Save persistent data to disk."""
-        async with self._save_lock:
-            # remember which change we are about to write: anything requested after this
-            # point is not part of it, and must leave the settings marked as unsaved
-            requested = self._save_requested
-            json_data = await async_json_dumps(self._data, indent=True)
-            await asyncio.to_thread(self._save_to_disk, json_data)
-            self._save_written = requested
-        LOGGER.debug("Saved data to persistent storage")
+        self.mass.create_task(self.async_save())
 
     def _save_to_disk(self, json_data: str) -> None:
         """Atomically write the settings file to disk, rotating the previous one to backup."""

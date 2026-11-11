@@ -165,7 +165,6 @@ async def test_missing_album_link_is_backfilled() -> None:
     """An earlier import that stored a track without its album is repaired."""
     sync_details = TrackSyncDetails(
         item_id=1,
-        favorite=False,
         date_added=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
         provider_mappings=set(),
         has_album=False,

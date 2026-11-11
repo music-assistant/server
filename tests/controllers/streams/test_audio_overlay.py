@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat, ItemMapping
 
-from music_assistant.controllers.streams.audio import StreamsAudio, overlay_active
+from music_assistant.controllers.streams.audio import (
+    StreamsAudio,
+    overlay_active,
+    overlay_mixed_in,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -37,6 +41,13 @@ def _make_queue(
     return queue
 
 
+def _make_queue_item(media_type: MediaType) -> MagicMock:
+    """Build a QueueItem double carrying just the media type."""
+    queue_item = MagicMock()
+    queue_item.media_type = media_type
+    return queue_item
+
+
 def _make_source_mapping() -> ItemMapping:
     return ItemMapping(
         media_type=MediaType.SOUND_EFFECT,
@@ -59,6 +70,25 @@ def test_overlay_active() -> None:
     assert overlay_active(_make_queue(enabled=True, source=_make_source_mapping()))
     assert not overlay_active(_make_queue(enabled=True, source=None))
     assert not overlay_active(_make_queue(enabled=False, source=_make_source_mapping()))
+
+
+# --- overlay_mixed_in ---
+
+
+def test_overlay_mixed_in() -> None:
+    """The flow stream always carries an active overlay, a per-item stream only for radio."""
+    active = _make_queue(enabled=True, source=_make_source_mapping())
+    radio = _make_queue_item(MediaType.RADIO)
+    track = _make_queue_item(MediaType.TRACK)
+    live_source = _make_queue_item(MediaType.AUDIO_SOURCE)
+    assert overlay_mixed_in(active, track, flow_mode=True)
+    assert overlay_mixed_in(active, radio, flow_mode=True)
+    assert overlay_mixed_in(active, radio, flow_mode=False)
+    assert not overlay_mixed_in(active, track, flow_mode=False)
+    assert not overlay_mixed_in(active, live_source, flow_mode=False)
+    inactive = _make_queue(enabled=False, source=_make_source_mapping())
+    assert not overlay_mixed_in(inactive, track, flow_mode=True)
+    assert not overlay_mixed_in(inactive, radio, flow_mode=False)
 
 
 # --- get_overlay_mixed_stream ---
@@ -118,7 +148,7 @@ async def test_mixes_when_source_resolves(monkeypatch: pytest.MonkeyPatch) -> No
     """A resolvable overlay source is handed to the ffmpeg mixer with the queue's volume."""
     provider = MagicMock()
     provider.get_stream_details = AsyncMock(
-        return_value=MagicMock(stream_type=StreamType.HTTP, path=_OVERLAY_URL)
+        return_value=MagicMock(stream_type=StreamType.HTTP, path=_OVERLAY_URL, verify_ssl=False)
     )
     audio = _make_streams_audio(provider=provider)
     queue = _make_queue(source=_make_source_mapping(), volume=55)
@@ -140,3 +170,4 @@ async def test_mixes_when_source_resolves(monkeypatch: pytest.MonkeyPatch) -> No
     assert mixer_kwargs["overlay_input"] == _OVERLAY_URL
     assert mixer_kwargs["overlay_volume"] == 55
     assert mixer_kwargs["pcm_format"] is _PCM_FORMAT
+    assert mixer_kwargs["verify_ssl"] is False

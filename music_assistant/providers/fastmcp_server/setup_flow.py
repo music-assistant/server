@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.models.setup_flow import SetupFlowError
 
@@ -15,22 +15,18 @@ from .constants import (
     CONF_TRUST_FORWARDED_PROTO,
     DEFAULT_MOUNT_PATH,
 )
-from .tags import CONFIG_TO_TAG
+from .policy_config import build_policy_resolver
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from music_assistant_models.config_entries import ConfigValueType
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
 
     from music_assistant.models.setup_flow import SetupSession
 
 
 async def run_setup(session: SetupSession) -> None:
-    """
-    Open the Connect Wizard and finish after it generates a client configuration.
-
-    :param session: The setup session driving the flow.
-    """
+    """Open the Connect Wizard and finish after it generates a client configuration."""
     values = _effective_values(session)
     mount_path = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
     unmount: Callable[[], None] | None = None
@@ -42,9 +38,11 @@ async def run_setup(session: SetupSession) -> None:
         unmount = await mount_connect_wizard(
             session.mass,
             mount_path,
-            enabled_tags_provider=lambda: [
-                str(tag) for key, tag in CONFIG_TO_TAG.items() if values.get(key)
-            ],
+            default_profile_provider=lambda: (
+                build_policy_resolver(cast("ProviderConfig", _ValuesConfig(values)))
+                .resolve(None)
+                .profile.value
+            ),
             extra_origins_csv=str(values.get(CONF_EXTRA_ALLOWED_ORIGINS) or ""),
             trust_forwarded_proto=bool(values.get(CONF_TRUST_FORWARDED_PROTO)),
         )
@@ -69,3 +67,14 @@ def _effective_values(session: SetupSession) -> dict[str, ConfigValueType]:
     values = {entry.key: entry.default_value for entry in entries}
     values.update(session.context.values)
     return values
+
+
+class _ValuesConfig:
+    """Minimal ProviderConfig-compatible view over setup-flow values."""
+
+    def __init__(self, values: dict[str, ConfigValueType]) -> None:
+        self._values = values
+
+    def get_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+        """Return one setup value or its caller-supplied default."""
+        return self._values.get(key, default)

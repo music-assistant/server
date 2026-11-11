@@ -16,8 +16,10 @@ import asyncio
 import builtins
 import time
 from abc import ABC
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
@@ -33,6 +35,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
     ProviderFeature,
+    SleepTimerMode,
 )
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
@@ -53,6 +56,8 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    ATTR_POWER_ON_IN_PROGRESS,
+    ATTR_REACHABLE,
     CONF_ENTRY_PLAYER_ICON,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
@@ -66,6 +71,7 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
+    FOREIGN_PROTOCOL_FEATURES,
     PLAYER_CONTROL_PROTOCOL,
     PROTOCOL_FEATURES,
     PROTOCOL_PRIORITY,
@@ -150,6 +156,29 @@ MEDIA_IDENTITY_KEYS = frozenset(
 _CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha"})
 
 
+class AnnouncementFeature(Enum):
+    """
+    Server-side hints about how a player behaves during an announcement.
+
+    Read by the players controller to route and time an announcement. Not part of
+    PlayerFeature and never sent to clients.
+    """
+
+    SUPPORTS_VOLUME = "supports_volume"
+    """The native announcement route applies a requested volume level."""
+
+    APPLIES_VOLUME = "applies_volume"
+    """The player mixes the clip into running audio and sets/restores the level itself."""
+
+    COORDINATES_START = "coordinates_start"
+    """
+    The player lines up its start with the other members of a group announcement.
+
+    A player reporting this is expected to also report SUPPORTS_VOLUME, so a group
+    announcement that fans out to its members is never diverted to the builtin path.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class LinkedOutputProtocol:
     """
@@ -189,8 +218,8 @@ def _reconcile_position_anchor(
     progression extrapolates to (nearly) the same corrected position as the previous
     anchor and therefore keeps the previous anchor, so steady playback yields no
     state change at all. The anchor is only adopted when the corrected position
-    jumped more than POSITION_JUMP_THRESHOLD (seek/buffer correction) or when
-    force_adopt is set.
+    jumped more than POSITION_JUMP_THRESHOLD (seek/buffer correction), when the
+    playing state changed or when force_adopt is set.
 
     :param prev_position: Position of the previous anchor.
     :param prev_timestamp: Timestamp of the previous anchor.
@@ -219,7 +248,7 @@ def _reconcile_position_anchor(
     prev_corrected = prev_position + (now - prev_timestamp) if prev_playing else prev_position
     new_corrected = new_position + (now - new_timestamp) if new_playing else new_position
     jumped = abs(prev_corrected - new_corrected) > POSITION_JUMP_THRESHOLD
-    if force_adopt or jumped:
+    if force_adopt or jumped or prev_playing != new_playing:
         return new_position, new_timestamp, jumped
     return prev_position, prev_timestamp, False
 
@@ -332,6 +361,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "setup_reason": state.setup_reason,
         "has_setup_flow": state.has_setup_flow,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
+        "sleep_timer_mode": state.sleep_timer_mode,
         "supported_features": frozenset(state.supported_features),
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
         "options": tuple((o.key, o.value, o.read_only) for o in state.options),
@@ -428,11 +458,10 @@ class Player(ABC):
     # apart from a real pause - time is then the only signal left. Leave at None for
     # devices that report a source they no longer play as stopped by themselves.
     _attr_external_pause_idle_timeout: int | None = None
-    # Set this on players that play upcoming tracks from their own cached copy of the
-    # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
-    # for a queue item away from the playhead is then refused, so the player re-reads
-    # the queue instead of silently playing a stale cached track.
-    _attr_strict_queue_item_requests: bool = False
+    # Set this on players whose device names the service it plays itself, so a source
+    # on its own source list counts as a takeover of the remembered MA queue. Leave at
+    # False for devices that also list the transport our own stream arrives on.
+    _attr_trusts_reported_source: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -621,9 +650,31 @@ class Player(ABC):
 
         A device that is reachable but still needs setup - an unpaired AirPlay
         receiver, for example - can not accept a stream, so it must never be
-        picked as an output protocol or command target.
+        picked as an output protocol or command target. Neither can a disabled player.
+
+        Use this, not state.available, for a device that must be reachable right now:
+        the state also reports a player that is switched off at its power control as
+        available (see offline_by_power_control).
         """
-        return self.available and not self.needs_setup
+        return self.enabled and self.available and not self.needs_setup
+
+    @property
+    @final
+    def offline_by_power_control(self) -> bool:
+        """
+        Return if the device is offline because it is switched off at its external power control.
+
+        Also True while Music Assistant powers it on through that control and waits for it
+        to come online. Such a player is reported to clients as available and powered off,
+        so it can be powered on (or played to) from there, while the device itself is not
+        reachable.
+        """
+        if self.available or self.type in (PlayerType.GROUP, PlayerType.PROTOCOL):
+            return False
+        control = self.mass.players.get_player_control(self.power_control)
+        if control is None or not control.supports_power:
+            return False
+        return not control.power_state or ATTR_POWER_ON_IN_PROGRESS in self.extra_data
 
     @property
     @final
@@ -704,6 +755,17 @@ class Player(ABC):
         the player_id if the player is currently playing a MA queue.
         """
         return self._attr_active_source
+
+    @property
+    def trusts_reported_source(self) -> bool:
+        """
+        Return whether a source this player lists for itself counts as a takeover.
+
+        Most devices do not report their active source accurately, so only the sources
+        in EXTERNAL_SOURCES are trusted. A provider that does report accurately can opt
+        in, so a service Music Assistant has no name of its own for is recognised too.
+        """
+        return self._attr_trusts_reported_source
 
     @property
     def group_members(self) -> list[str]:
@@ -825,6 +887,11 @@ class Player(ABC):
         resolved, non-None list.
         """
         return self._attr_supported_sample_rates
+
+    @asynccontextmanager
+    async def prepare_play_media(self) -> AsyncIterator[None]:
+        """Scope provider preparation across auto-power and the ensuing playback."""
+        yield
 
     async def power(self, powered: bool) -> None:
         """
@@ -976,6 +1043,18 @@ class Player(ABC):
         """
         return  # Optional callback - no-op by default
 
+    async def on_group_content_takeover(self) -> object | None:
+        """Prepare a protocol group before a new content owner joins it."""
+        return None
+
+    async def on_group_content_takeover_finished(self, token: object) -> None:
+        """Finish a protocol-group content takeover transaction."""
+        return
+
+    async def on_group_content_takeover_aborted(self, token: object) -> None:
+        """Abort a protocol-group content takeover without publishing old content."""
+        return
+
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """
         Handle enqueuing of the next (queue) item on the player.
@@ -999,16 +1078,17 @@ class Player(ABC):
         )
 
     @property
-    def applies_announcement_volume(self) -> bool:
+    def announcement_features(self) -> set[AnnouncementFeature]:
         """
-        Return True if the player applies the announcement volume itself.
+        Return the announcement-behaviour hints for this player.
 
-        A player that mixes an announcement into audio it is already playing knows when
-        the clip becomes audible, so it applies and restores the level at that moment -
-        through the volume control that owns its output. The players controller then
-        leaves the volume alone instead of raising it before the announcement starts.
+        SUPPORTS_VOLUME is reported by default: an announcement played through the
+        builtin path always applies the level via the device volume, and most native
+        routes honour it too. A provider whose native announcement ignores the level
+        drops it, so the controller uses the builtin path once a level is requested.
+        APPLIES_VOLUME and COORDINATES_START are opt-in (see AnnouncementFeature).
         """
-        return False
+        return {AnnouncementFeature.SUPPORTS_VOLUME}
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
@@ -1339,6 +1419,15 @@ class Player(ABC):
         # optional callback
         # default implementation will simply trigger an update for the state of the player
         self.mass.players.trigger_player_update(self.player_id)
+
+    def on_queue_position_served(self, queue_index: int, queue_item_id: str) -> None:  # noqa: B027
+        """
+        Handle callback when a stream request addressed by queue position was served.
+
+        :param queue_index: The queue position the player fetched.
+        :param queue_item_id: The queue item whose audio went out for that position.
+        """
+        # optional callback, for a player that fetches its queue items by position
 
     def on_sync_parent_updated(
         self, sync_parent: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -1714,18 +1803,6 @@ class Player(ABC):
 
     @property
     @final
-    def strict_queue_item_requests(self) -> bool:
-        """
-        Return whether queue item stream requests must match the queue's playhead.
-
-        When set, a stream request for a queue item the queue no longer places at or
-        around the playhead is refused, so the player re-reads the queue instead of
-        playing a track out of a stale cached copy of it.
-        """
-        return self._attr_strict_queue_item_requests
-
-    @property
-    @final
     def state(self) -> PlayerState:
         """Return the current (and FINAL) PlayerState of the player."""
         return self._state
@@ -1971,6 +2048,42 @@ class Player(ABC):
             )
         self.__attr_active_output_protocol = protocol_id
         self.update_state()
+
+    @cached_property
+    @final
+    def foreign_protocol_player(self) -> Player | None:
+        """Return the linked protocol player whose app to show and control on this player."""
+        if (
+            (foreign_player := self.linked_foreign_player())
+            and self.__attr_active_output_protocol in (None, "native")
+            and self.playback_state != PlaybackState.PLAYING
+            # a paused player keeps its place, until an app actually plays over it
+            and (
+                self.playback_state != PlaybackState.PAUSED
+                or foreign_player.playback_state == PlaybackState.PLAYING
+            )
+            and not self.__final_synced_to
+            and not self.__final_active_group
+            and self.mass.players.get_audio_source_session(self.player_id) is None
+        ):
+            return foreign_player
+        return None
+
+    @final
+    def linked_foreign_player(self) -> Player | None:
+        """Return the linked protocol player that plays an app Music Assistant did not start."""
+        for linked in self.__attr_linked_protocols:
+            protocol_player = self.mass.players.get_player(linked.output_protocol_id)
+            if (
+                protocol_player is not None
+                and protocol_player.available
+                and protocol_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                # Music Assistant's own playback through a protocol reports no source, and
+                # following a group is no source of its own
+                and any(x.id == protocol_player.active_source for x in protocol_player.source_list)
+            ):
+                return protocol_player
+        return None
 
     @final
     def set_linked_output_protocols(self, protocols: list[LinkedOutputProtocol]) -> None:
@@ -2299,6 +2412,98 @@ class Player(ABC):
             return PLAYER_CONTROL_NONE
         return control
 
+    # The id of the (last) active mass source.
+    # This is to keep track of the last active MA source for the player,
+    # so we can restore it when needed (e.g. after switching to a plugin source).
+    __active_mass_source: str | None = None
+
+    @final
+    def set_active_mass_source(self, value: str | None) -> None:
+        """
+        Set the id of the (last) active mass source.
+
+        This is to keep track of the last active MA source for the player,
+        so we can restore it when needed (e.g. after switching to a plugin source).
+        """
+        self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
+        self.__active_mass_source = value
+        self.update_state()
+
+    __sleep_timer_expires_at: float | None = None
+
+    @final
+    def set_sleep_timer_expires_at(self, value: float | None) -> None:
+        """
+        Set the unix (utc) timestamp at which the active sleep timer stops playback.
+
+        :param value: The expiry timestamp, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_expires_at = value
+
+    @property
+    @final
+    def sleep_timer_expires_at(self) -> float | None:
+        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
+        return self.__sleep_timer_expires_at
+
+    __sleep_timer_mode: SleepTimerMode | None = None
+
+    @final
+    def set_sleep_timer_mode(self, value: SleepTimerMode | None) -> None:
+        """
+        Set the point at which the active sleep timer stops playback.
+
+        :param value: The sleep timer mode, or None to clear the sleep timer.
+        """
+        self.__sleep_timer_mode = value
+
+    @property
+    @final
+    def sleep_timer_mode(self) -> SleepTimerMode | None:
+        """Return the point at which the active sleep timer stops playback."""
+        return self.__sleep_timer_mode
+
+    __stop_called: bool = False
+
+    @final
+    def mark_stop_called(self) -> None:
+        """Mark that the STOP command was called on the player."""
+        self.__stop_called = True
+
+    @property
+    @final
+    def stop_called(self) -> bool:
+        """
+        Return True if the STOP command was called on the player.
+
+        This is used to differentiate between a user-initiated stop
+        and a natural end of playback (e.g. end of track/queue).
+        mainly for debugging/logging purposes by the streams controller.
+        """
+        return self.__stop_called
+
+    def __hash__(self) -> int:
+        """Return a hash of the Player."""
+        return hash(self.player_id)
+
+    def __str__(self) -> str:
+        """Return a string representation of the Player."""
+        return f"Player {self.name} ({self.player_id})"
+
+    def __repr__(self) -> str:
+        """Return a string representation of the Player."""
+        return f"<Player name={self.name} id={self.player_id} available={self.available}>"
+
+    def __eq__(self, other: object) -> bool:
+        """Check equality of two Player objects."""
+        if not isinstance(other, Player):
+            return False
+        return self.player_id == other.player_id
+
+    def __ne__(self, other: object) -> bool:
+        """Check inequality of two Player objects."""
+        return not self.__eq__(other)
+
     def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
         """
         Update a single setup_data value for this player (e.g. a rotated pairing credential).
@@ -2553,6 +2758,7 @@ class Player(ABC):
             "active_output_protocol": self.__attr_active_output_protocol,
             "active_mass_source": self.__active_mass_source,
             "sleep_timer_expires_at": self.__sleep_timer_expires_at,
+            "sleep_timer_mode": self.__sleep_timer_mode,
         }
 
     @final
@@ -2608,7 +2814,11 @@ class Player(ABC):
             player_id=self.player_id,
             provider=self.provider_id,
             type=self.type,
-            available=self.enabled and self.available and not self.needs_setup,
+            # the client view: it includes a player switched off at its power control, so
+            # internal code that needs a reachable device checks available_for_playback
+            available=self.enabled
+            and (self.available or self.offline_by_power_control)
+            and not self.needs_setup,
             device_info=self.device_info,
             supported_features=self.__final_supported_features,
             playback_state=playback_state,
@@ -2647,6 +2857,7 @@ class Player(ABC):
             setup_reason=self.setup_reason,
             has_setup_flow=self.has_setup_flow,
             sleep_timer_expires_at=self.sleep_timer_expires_at,
+            sleep_timer_mode=self.sleep_timer_mode,
         )
         media_position_jumped = self.__reconcile_current_media_anchor(
             prev_state, prev_playing, new_playing
@@ -2658,6 +2869,7 @@ class Player(ABC):
             and self._state.playback_state != PlaybackState.IDLE
         ):
             self.__stop_called = False
+            self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         elif (
             prev_state.playback_state != PlaybackState.IDLE
             and self._state.playback_state == PlaybackState.IDLE
@@ -2671,6 +2883,9 @@ class Player(ABC):
                 5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
         new_fingerprint = _state_fingerprint(self._state)
+        # not part of the state: whether the device can be reached, which its availability
+        # does not tell for a player that is switched off at its power control
+        new_fingerprint[ATTR_REACHABLE] = self.available
         self.__state_fingerprint = new_fingerprint
         changed_values: dict[str, tuple[Any, Any]] = {}
         for key in prev_fingerprint.keys() | new_fingerprint.keys():
@@ -2718,6 +2933,7 @@ class Player(ABC):
             self.__final_active_group
             or self.__final_synced_to
             or (self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id)
+            or self.foreign_protocol_player
         )
         position, timestamp, jumped = _reconcile_position_anchor(
             prev_media.elapsed_time,
@@ -2730,7 +2946,8 @@ class Player(ABC):
         )
         if not mirrors_parent:
             # steady playback resolves to the previous anchor, so nothing changed;
-            # a jump (or a previous anchor that was still incomplete) adopts the new one
+            # a jump, a playing-state change (or a previous anchor that was still
+            # incomplete) adopts the new one
             new_media.elapsed_time = int(position) if position is not None else None
             new_media.elapsed_time_last_updated = timestamp
         return jumped
@@ -2760,6 +2977,10 @@ class Player(ABC):
             playback_state = protocol_player.state.playback_state
             elapsed_time = protocol_player.state.elapsed_time
             elapsed_time_last_updated = protocol_player.state.elapsed_time_last_updated
+        elif foreign_player := self.foreign_protocol_player:
+            playback_state = foreign_player.playback_state
+            elapsed_time = foreign_player.elapsed_time
+            elapsed_time_last_updated = foreign_player.elapsed_time_last_updated
         # If we're synced to another player, mirror the leader's state so that
         # synced clients report the same playback info as their leader.
         elif (parent_id := self.__final_synced_to) and (
@@ -2793,6 +3014,11 @@ class Player(ABC):
             elapsed_time_last_updated = (
                 session.stream_metadata.elapsed_time_last_updated or time.time()
             )
+
+        if self.offline_by_power_control:
+            # a device that is switched off plays nothing, while one cut off mid-song may
+            # still report the state it had
+            playback_state = PlaybackState.IDLE
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 
@@ -2935,6 +3161,8 @@ class Player(ABC):
         # a live external source reports what it plays itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
             return self.__audio_source_media(session)
+        if foreign_player := self.foreign_protocol_player:
+            return foreign_player.current_media
         # if MA queue is active, return those details
         active_source = self.__final_active_source
         active_queue: PlayerQueue | None = None
@@ -2957,7 +3185,9 @@ class Player(ABC):
                 elapsed_time, elapsed_time_last_updated = _resolve_position(
                     stream_metadata.elapsed_time,
                     stream_metadata.elapsed_time_last_updated,
-                    active_queue.elapsed_time,
+                    # a duration is the song's, and how long the stream has played is no
+                    # position in that song
+                    None if stream_metadata.duration else active_queue.elapsed_time,
                     active_queue.elapsed_time_last_updated,
                 )
                 return PlayerMedia(
@@ -2995,8 +3225,10 @@ class Player(ABC):
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
                     title=f"{media_item.name} ({version})" if version else media_item.name,
-                    artist=getattr(media_item, "artist_str", None),
-                    album=album.name if album else podcast.name if podcast else description,
+                    # a podcast episode has no artists, the podcast name takes the artist line
+                    artist=getattr(media_item, "artist_str", None)
+                    or (podcast.name if podcast else None),
+                    album=album.name if album else None if podcast else description,
                     album_artist=getattr(album, "artist_str", None),
                     image_url=image_url,
                     palette=self._resolved_palette(image_url),
@@ -3142,15 +3374,37 @@ class Player(ABC):
                     repeat_mode=session.repeat_mode,
                 )
             )
-        # standing entries for the audio sources plugins bound to this player, so they
-        # are selectable from the source menu without a session being active first;
+        # an app on a linked protocol player, with what that player offers for it; the same
+        # service among the player's own sources is another way to play it
+        if foreign_player := self.foreign_protocol_player:
+            app_source = next(
+                x for x in foreign_player.source_list if x.id == foreign_player.active_source
+            )
+            sources = UniqueList(x for x in sources if x.id != app_source.id)
+            sources.append(app_source)
+        # standing entries for the audio sources plugins bound to this player or report
+        # as inputs of its own device, so they are selectable from the source menu
+        # without a session being active first;
         # an already listed uri is skipped: the live session entry above carries the
         # live shuffle/repeat state and must win
         present_ids = {x.id for x in sources}
+        # a device's own inputs may be reported on one of its linked protocol players
+        device_player_ids = [
+            self.player_id,
+            *(linked.output_protocol_id for linked in self.linked_output_protocols),
+        ]
         for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
             if not isinstance(prov, PluginProvider):
                 continue
-            for source in prov.get_player_audio_sources(self.player_id) or ():
+            standing_sources = [
+                *(prov.get_player_audio_sources(self.player_id) or ()),
+                *(
+                    source
+                    for device_player_id in device_player_ids
+                    for source in prov.get_player_input_sources(device_player_id)
+                ),
+            ]
+            for source in standing_sources:
                 if not (uri := source.uri) or uri in present_ids:
                     continue
                 present_ids.add(uri)
@@ -3254,6 +3508,8 @@ class Player(ABC):
                 for feature in protocol_player.supported_features:
                     if feature in ACTIVE_PROTOCOL_FEATURES:
                         base_features.add(feature)
+        if foreign_player := self.foreign_protocol_player:
+            base_features |= foreign_player.supported_features & FOREIGN_PROTOCOL_FEATURES
         # Append (allowed features) from all linked protocols
         for linked in self.__attr_linked_protocols:
             if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
@@ -3264,14 +3520,17 @@ class Player(ABC):
             base_features.add(PlayerFeature.POWER)
         else:
             base_features.discard(PlayerFeature.POWER)
-        if self.volume_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_SET)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_SET)
-        if self.mute_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_MUTE)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_MUTE)
+        # Group providers derive volume and mute capabilities from their members;
+        # the group itself intentionally has no native control to resolve here.
+        if self.type != PlayerType.GROUP:
+            if self.volume_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_SET)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_SET)
+            if self.mute_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_MUTE)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_MUTE)
         if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
             base_features.add(PlayerFeature.SELECT_SOURCE)
         if self.grouping_locked:
@@ -3309,9 +3568,11 @@ class Player(ABC):
                 # that would otherwise reintroduce it.
                 return False
             # Don't include (playing) players that have group members (they are group leaders)
+            # Use the normalized members: a solo player that reports itself as its only
+            # member (e.g. a detached Sendspin client) is not a group leader.
             if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                and player.group_members
+                and player.state.group_members
             ):
                 return False
             return True
@@ -3399,13 +3660,14 @@ class Player(ABC):
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
             return session.active_source
 
+        # an app on a linked protocol player plays past this player, which plays nothing itself
+        if foreign_player := self.foreign_protocol_player:
+            return foreign_player.active_source
+
         # always prefer active MA source but add a guard to detect if player is really playing
-        # something different, such as a line-in or TV input, we use an explicit list here
-        # because many players do not accurately report the active_source
-        # this way, for the obvious cases, we can detect a source "takeover"
-        if self.__active_mass_source and (
-            not self.active_source or self.active_source.lower() not in EXTERNAL_SOURCES
-        ):
+        # something different, such as a line-in or TV input. Many players do not accurately
+        # report the active_source, so only the obvious cases count as a source "takeover"
+        if self.__active_mass_source and not self.__reports_source_takeover():
             return self.__active_mass_source
 
         # active source as reported by the player itself
@@ -3512,80 +3774,16 @@ class Player(ABC):
                         result.add(player)
         return result
 
-    # The id of the (last) active mass source.
-    # This is to keep track of the last active MA source for the player,
-    # so we can restore it when needed (e.g. after switching to a plugin source).
-    __active_mass_source: str | None = None
-
     @final
-    def set_active_mass_source(self, value: str | None) -> None:
-        """
-        Set the id of the (last) active mass source.
-
-        This is to keep track of the last active MA source for the player,
-        so we can restore it when needed (e.g. after switching to a plugin source).
-        """
-        self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
-        self.__active_mass_source = value
-        self.update_state()
-
-    __sleep_timer_expires_at: float | None = None
-
-    @final
-    def set_sleep_timer_expires_at(self, value: float | None) -> None:
-        """
-        Set the unix (utc) timestamp at which the active sleep timer stops playback.
-
-        :param value: The expiry timestamp, or None to clear the sleep timer.
-        """
-        self.__sleep_timer_expires_at = value
-
-    @property
-    @final
-    def sleep_timer_expires_at(self) -> float | None:
-        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
-        return self.__sleep_timer_expires_at
-
-    __stop_called: bool = False
-
-    @final
-    def mark_stop_called(self) -> None:
-        """Mark that the STOP command was called on the player."""
-        self.__stop_called = True
-
-    @property
-    @final
-    def stop_called(self) -> bool:
-        """
-        Return True if the STOP command was called on the player.
-
-        This is used to differentiate between a user-initiated stop
-        and a natural end of playback (e.g. end of track/queue).
-        mainly for debugging/logging purposes by the streams controller.
-        """
-        return self.__stop_called
-
-    def __hash__(self) -> int:
-        """Return a hash of the Player."""
-        return hash(self.player_id)
-
-    def __str__(self) -> str:
-        """Return a string representation of the Player."""
-        return f"Player {self.name} ({self.player_id})"
-
-    def __repr__(self) -> str:
-        """Return a string representation of the Player."""
-        return f"<Player name={self.name} id={self.player_id} available={self.available}>"
-
-    def __eq__(self, other: object) -> bool:
-        """Check equality of two Player objects."""
-        if not isinstance(other, Player):
+    def __reports_source_takeover(self) -> bool:
+        """Return whether the source the player reports for itself took it over."""
+        if (reported_source := self.active_source) is None:
             return False
-        return self.player_id == other.player_id
-
-    def __ne__(self, other: object) -> bool:
-        """Check inequality of two Player objects."""
-        return not self.__eq__(other)
+        if reported_source.lower() in EXTERNAL_SOURCES:
+            return True
+        return self.trusts_reported_source and any(
+            x.id == reported_source for x in self.source_list
+        )
 
     @final
     def __external_source_active(self) -> bool:

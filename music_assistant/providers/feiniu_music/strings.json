@@ -1,0 +1,11 @@
+{
+  "config_entries": {
+    "url": {"label": "Music web address", "description": "The complete address of the official FeiNiu Music web application. To change the server or music account, remove this provider and add it again. You can update the password for the current account."},
+    "username": {"label": "Music username", "description": "A music account with access to your library. The username cannot be changed after saving this provider."},
+    "password": {"label": "Music password", "description": "The password for the music account. Leave blank when reconfiguring to keep the saved password. Saved passwords are never displayed."}
+  },
+  "manifest": {"description": "Experimental, read-only access to your personal library from the native FeiNiu Music service."},
+  "errors": {
+    "identity_change_not_supported": "To change the server or music account, remove this provider and add it again. You can update the password for the current account."
+  }
+}

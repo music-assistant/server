@@ -271,18 +271,24 @@ If the last member is removed, the group is dissolved (leader stopped, sync_lead
 
 ## Feature Inheritance
 
-The SyncGroupPlayer has limited base features but inherits additional capabilities from the sync leader:
+The SyncGroupPlayer has limited base features but inherits additional capabilities from the sync leader and the members:
 
 ### Base Features
 - `PLAY_MEDIA` - Always supported
-- `POWER` - Always supported (powered state is the canonical "is this group active" signal)
+- `POWER` - Only when the user assigns the Fake power control (the group forms on play and dissolves on stop, so an explicit power toggle is opt-in)
 
 ### Features from Sync Leader (when active)
 - `ENQUEUE` - Queue next track
 - `GAPLESS_PLAYBACK` - Seamless track transitions
+- `MULTI_DEVICE_DSP` - DSP processing
+
+These commands are only ever forwarded to the sync leader, so a member cannot add them.
+
+### Features from Members
 - `VOLUME_SET` - Volume control
 - `VOLUME_MUTE` - Mute control
-- `MULTI_DEVICE_DSP` - DSP processing
+
+Volume and mute are fanned out to every capable member of the live session, so they are advertised when the leader **or** any available session member supports them. While dormant (no sync leader) all of the features above are derived from the available configured members instead.
 
 ### Dynamic Feature
 - `SET_MEMBERS` - Only if group is configured as dynamic

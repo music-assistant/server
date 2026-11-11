@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import AsyncGenerator, Mapping
+from typing import Any
 from unittest.mock import Mock, patch
 
-from music_assistant_models.enums import MediaType
+import pytest
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import MediaType, ProviderSharing, ProviderType
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.mass import MusicAssistant
-
-if TYPE_CHECKING:
-    import pytest
+from tests.common import set_music_source_access
 
 GET_CURRENT_USER = "music_assistant.controllers.music.controller.get_current_user"
+
+
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
 
 
 async def _add_playlog_track(
@@ -27,7 +35,7 @@ async def _add_playlog_track(
 ) -> None:
     """Insert a single track row into the playlog."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": provider,
@@ -63,6 +71,11 @@ async def _add_provider_mapping(
             "in_library": True,
         },
     )
+
+
+def _loaded_music_provider(instance_id: str) -> Mock:
+    """Create a stand-in for a loaded, available music provider instance."""
+    return Mock(instance_id=instance_id, type=ProviderType.MUSIC, available=True)
 
 
 async def test_recently_played_filters_by_played_after_timestamp(mass: MusicAssistant) -> None:
@@ -184,26 +197,35 @@ async def test_recently_played_explicit_empty_providers_returns_no_items(
     assert result == []
 
 
-async def test_recently_played_combines_explicit_and_user_provider_filter(
+async def test_recently_played_combines_explicit_and_user_music_sources(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A user's provider_filter narrows an explicit filter that would otherwise pass."""
-    # get_active_provider_instances already applies the user's provider_filter internally, so a
-    # user restricted to local_1 never sees spotify_1 in the "active" provider set.
-    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["local_1"])
+    """A user's music sources narrow an explicit filter that would otherwise pass."""
+    # get_active_provider_instances derives the "active" provider set from the loaded music
+    # sources the user may see, so seed both as loaded and let the access records narrow them.
+    for instance_id in ("spotify_1", "local_1"):
+        monkeypatch.setitem(mass._providers, instance_id, _loaded_music_provider(instance_id))
+    set_music_source_access(
+        mass,
+        {
+            "local_1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "spotify_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    user_a = User(user_id="user-a", username="user-a", role=UserRole.USER)
     await _add_provider_mapping(mass, item_id=1, provider_instance="spotify_1")
     await _add_provider_mapping(mass, item_id=1, provider_instance="local_1")
     await _add_playlog_track(mass, "1", timestamp=2000, provider="library")
 
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=["local_1"])):
+    with patch(GET_CURRENT_USER, return_value=user_a):
         result = await mass.music.recently_played(
             limit=0, media_types=[MediaType.TRACK], providers=["local_1"]
         )
     assert {item.item_id for item in result} == {"1"}
 
-    # requesting a provider the user isn't permitted to use must not leak the item back
-    # in, even though the item does have a (permission-restricted) mapping to it.
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=["local_1"])):
+    # requesting a music source the user may not use must not leak the item back
+    # in, even though the item does have a (restricted) mapping to it.
+    with patch(GET_CURRENT_USER, return_value=user_a):
         result = await mass.music.recently_played(
             limit=0, media_types=[MediaType.TRACK], providers=["spotify_1"]
         )
@@ -229,3 +251,111 @@ async def test_recently_played_provider_filter_applied_before_limit(
     )
 
     assert {item.item_id for item in result} == {f"local-{i}" for i in range(5)}
+
+
+async def test_recently_played_merges_plays_of_one_library_item(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plays logged under a library id and under a provider id it maps to are one entry."""
+    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["ytmusic_1"])
+    await _add_provider_mapping(mass, item_id=1, provider_instance="ytmusic_1")
+    # item 1 was played from the library, then from a provider listing (logged under the
+    # provider id); the merge must happen before LIMIT so item 2 still makes the cut, and
+    # the entry keeps the id of its newest play
+    await _add_playlog_track(mass, "2", timestamp=1000)
+    await _add_playlog_track(mass, "1", timestamp=2000)
+    await _add_playlog_track(mass, "ytmusic_1-1", timestamp=3000, provider="ytmusic_1")
+
+    result = await mass.music.recently_played(
+        limit=2, media_types=[MediaType.TRACK], userid="user-a"
+    )
+
+    assert [(item.provider, item.item_id) for item in result] == [
+        ("ytmusic_1", "ytmusic_1-1"),
+        ("library", "2"),
+    ]
+
+
+async def test_recently_played_keeps_provider_items_outside_the_library(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider play with no library mapping is returned under its own provider id."""
+    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["ytmusic_1"])
+    await _add_provider_mapping(mass, item_id=1, provider_instance="ytmusic_1")
+    await _add_playlog_track(mass, "1", timestamp=1000)
+    await _add_playlog_track(mass, "ytmusic_1-9", timestamp=2000, provider="ytmusic_1")
+
+    result = await mass.music.recently_played(
+        limit=0, media_types=[MediaType.TRACK], userid="user-a"
+    )
+
+    assert [(item.provider, item.item_id) for item in result] == [
+        ("ytmusic_1", "ytmusic_1-9"),
+        ("library", "1"),
+    ]
+
+
+async def test_recently_played_merges_plays_past_the_limit_in_rows(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Merging keeps reading rows until the limit is met, well past limit rows."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["ytmusic_1", "ytmusic_2"]
+    )
+    # every item was played three times (from the library and from two providers), so
+    # 25 items need 75 rows
+    for item_id in range(1, 31):
+        timestamp = 1000 * item_id
+        await _add_playlog_track(mass, str(item_id), timestamp=timestamp)
+        for offset, provider_instance in enumerate(("ytmusic_1", "ytmusic_2"), start=1):
+            await _add_provider_mapping(mass, item_id=item_id, provider_instance=provider_instance)
+            await _add_playlog_track(
+                mass,
+                f"{provider_instance}-{item_id}",
+                timestamp=timestamp + offset,
+                provider=provider_instance,
+            )
+
+    result = await mass.music.recently_played(
+        limit=25, media_types=[MediaType.TRACK], userid="user-a"
+    )
+
+    assert [(item.provider, item.item_id) for item in result] == [
+        ("ytmusic_2", f"ytmusic_2-{item_id}") for item_id in range(30, 5, -1)
+    ]
+
+
+async def test_recently_played_stops_reading_once_the_limit_is_met(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows are read in one pass that is closed once limit distinct items are found."""
+    for item_id in range(1, 101):
+        await _add_playlog_track(mass, str(item_id), timestamp=1000 * item_id)
+    iter_rows = mass.music.database.iter_rows_from_query
+    queries: list[str] = []
+    rows_read = 0
+    closed = False
+
+    async def _counting_iter_rows(
+        query: str, params: dict[str, Any] | None = None
+    ) -> AsyncGenerator[Mapping[str, Any]]:
+        nonlocal rows_read, closed
+        queries.append(query)
+        try:
+            async for row in iter_rows(query, params):
+                rows_read += 1
+                yield row
+        finally:
+            closed = True
+
+    monkeypatch.setattr(mass.music.database, "iter_rows_from_query", _counting_iter_rows)
+
+    result = await mass.music.recently_played(
+        limit=5, media_types=[MediaType.TRACK], userid="user-a"
+    )
+
+    assert [item.item_id for item in result] == ["100", "99", "98", "97", "96"]
+    assert len(queries) == 1
+    assert "OFFSET" not in queries[0]
+    assert rows_read == 5
+    assert closed

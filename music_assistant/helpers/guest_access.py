@@ -33,13 +33,20 @@ async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_
     :param username: Unique username for the guest account.
     :param display_name: Human readable display name for the guest account.
     :return: The (existing or newly created) guest User.
-    :raises InvalidDataError: If the username belongs to a non-guest account.
+    :raises InvalidDataError: If the username belongs to a non-guest or a disabled account.
     """
     auth = mass.webserver.auth
-    if user := await auth.get_user_by_username(username):
+    if user := await auth.get_user_by_username(username, include_disabled=True):
         # never hand out guest access on a higher privileged account
         if user.role != UserRole.GUEST:
             raise InvalidDataError(f"User {username} exists but is not a guest account")
+        if not user.enabled:
+            name = user.display_name or user.username
+            raise InvalidDataError(
+                f"Guest access is unavailable because the {name} account is disabled.",
+                translation_key="guest_account_disabled",
+                translation_args=[name],
+            )
         return user
     return await auth.create_user(
         username=username,
@@ -82,13 +89,15 @@ def build_join_url(mass: MusicAssistant, code: str) -> str:
     """
     Build the URL guests open to join with the given join code.
 
-    When remote access is enabled, returns a URL that works from anywhere via
-    WebRTC. Otherwise, returns a local URL that only works on the same network.
+    Prefers the configured external URL, then remote access (via WebRTC), which both work
+    from anywhere. Otherwise, returns a local URL that only works on the same network.
 
     :param mass: MusicAssistant instance.
     :param code: The join code to embed in the URL.
     :return: The guest join URL.
     """
+    if external_url := mass.webserver.external_url:
+        return f"{external_url}/?join={code}"
     remote_access = mass.webserver.remote_access
     if remote_access.is_enabled and remote_access.remote_id:
         return f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"
@@ -145,14 +154,15 @@ async def revoke_guest_access(mass: MusicAssistant, username: str) -> tuple[int,
     Revoke all join codes and auth tokens for the guest user with the given username.
 
     Active WebSocket connections of the guest user are disconnected so guests
-    are immediately logged out and can not reconnect.
+    are immediately logged out and can not reconnect. This includes a disabled
+    guest account, so enabling it again does not restore its access.
 
     :param mass: MusicAssistant instance.
     :param username: Username of the guest account to revoke access for.
     :return: Tuple of (number of join codes revoked, number of tokens revoked).
     """
     auth = mass.webserver.auth
-    if not (user := await auth.get_user_by_username(username)):
+    if not (user := await auth.get_user_by_username(username, include_disabled=True)):
         return (0, 0)
     codes_revoked = await auth.revoke_join_codes(user)
     tokens_revoked = await auth.revoke_tokens_for_user(user)

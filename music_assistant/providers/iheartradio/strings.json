@@ -1,0 +1,48 @@
+{
+  "config_entries": {
+    "country": {
+      "label": "Country",
+      "description": "iHeartRadio serves a different catalogue in every country. Pick the one you want to listen to.",
+      "options": {
+        "au": "Australia",
+        "ca": "Canada",
+        "mx": "Mexico",
+        "nz": "New Zealand",
+        "us": "United States"
+      }
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "Optional. Sign in to sync the stations, artists and podcasts you follow. Leave empty to listen as a guest."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Optional. The password of your iHeartRadio account."
+    }
+  },
+  "media": {
+    "folder": {
+      "live_radio": {
+        "name": "Live Radio"
+      },
+      "by_market": {
+        "name": "By City"
+      },
+      "by_genre": {
+        "name": "By Genre"
+      },
+      "podcasts": {
+        "name": "[%key:common::media::folder::podcasts::name%]"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Set up iHeartRadio",
+      "description": "Pick the country whose stations you want to listen to. Signing in is optional."
+    }
+  },
+  "manifest": {
+    "description": "Listen to thousands of live radio stations and podcasts, or start a personalised station around any artist."
+  }
+}

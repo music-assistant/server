@@ -1,5 +1,6 @@
 """Tests for the LRCLIB metadata provider."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -58,3 +59,34 @@ async def test_get_data_propagates_transient_error(provider: LrclibProvider) -> 
 
     with pytest.raises(MusicAssistantError):
         await provider._get_data(track_name="Song", artist_name="Artist")
+
+
+async def test_get_data_rate_limited_honours_retry_after(provider: LrclibProvider) -> None:
+    """A 429 arms the shared cooldown for the Retry-After duration."""
+    response = MagicMock()
+    response.status = 429
+    response.headers = {"Retry-After": "120"}
+    provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
+        return_value=_response_cm(response=response)
+    )
+
+    with pytest.raises(MusicAssistantError):
+        await provider._get_data(track_name="Song", artist_name="Artist")
+    assert provider.throttler.cooldown_remaining == pytest.approx(120, abs=1)
+
+
+@pytest.mark.parametrize(
+    ("exc", "cause"),
+    [(ClientError("network down"), "network down"), (TimeoutError(), "TimeoutError")],
+)
+async def test_get_data_failure_logs_cause(
+    provider: LrclibProvider, caplog: pytest.LogCaptureFixture, exc: Exception, cause: str
+) -> None:
+    """The retry log names the underlying error instead of a bare 'request failed'."""
+    provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
+        return_value=_response_cm(exc=exc)
+    )
+
+    with caplog.at_level(logging.INFO), pytest.raises(MusicAssistantError):
+        await provider._get_data(track_name="Song", artist_name="Artist")
+    assert f"LRCLIB request failed: {cause}" in caplog.text

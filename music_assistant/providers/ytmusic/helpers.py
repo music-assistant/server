@@ -14,14 +14,14 @@ from time import time
 from typing import Any, Literal
 
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
-from ytmusicapi.exceptions import YTMusicError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
 # subset of ytmusicapi's accepted search filters that we use
-YTMSearchFilter = Literal["artists", "albums", "songs", "playlists", "podcasts"]
+YTMSearchFilter = Literal["artists", "albums", "songs", "videos", "playlists", "podcasts"]
 
 
 async def get_artist(
@@ -48,6 +48,30 @@ async def get_artist(
     return await _run_ytmusic(_get_artist)
 
 
+async def get_artist_albums(
+    channel_id: str,
+    params: str,
+    headers: dict[str, str],
+    language: str = "en",
+    user: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Async wrapper around the ytmusicapi get_artist_albums function.
+
+    :param channel_id: The browseId of an artist section (albums/singles/shows).
+    :param params: The params value from that same section, paired with channel_id.
+    :param headers: Auth headers for the YTMusic client.
+    :param language: Response language.
+    :param user: Optional YTMusic brand-account user id.
+    """
+
+    def _get_artist_albums() -> list[dict[str, Any]]:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        return ytm.get_artist_albums(channelId=channel_id, params=params, limit=None)
+
+    return await _run_ytmusic(_get_artist_albums)
+
+
 async def get_album(
     headers: dict[str, str], prov_album_id: str, language: str = "en", user: str | None = None
 ) -> dict[str, Any]:
@@ -57,15 +81,19 @@ async def get_album(
         if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
+
+            # sigma67/ytmusicapi#1022 - uploaded album audioPlaylistId currently not resolvable
+            album.pop("audioPlaylistId", None)
         else:
-            ytm = ytmusicapi.YTMusic(language=language)
+            ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_album(browseId=prov_album_id)
 
-        if "audioPlaylistId" in album:
+        playlist_id = album.get("audioPlaylistId")
+        if playlist_id:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
             try:
-                album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
+                album_playlist = ytm.get_playlist(playlistId=playlist_id, limit=None)
             except YTMusicError:
                 return album
 
@@ -143,7 +171,11 @@ async def get_podcast(
 
     def _get_podcast() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
-        podcast_obj = ytm.get_podcast(playlistId=prov_podcast_id)
+        try:
+            podcast_obj = ytm.get_podcast(playlistId=prov_podcast_id)
+        except YTMusicServerError as err:
+            _raise_if_rejected_id(err, f"Podcast {prov_podcast_id} not found on YouTube Music")
+            raise
         if "podcastId" not in podcast_obj:
             podcast_obj["podcastId"] = prov_podcast_id
         return podcast_obj
@@ -152,18 +184,54 @@ async def get_podcast(
 
 
 async def get_podcast_episode(
-    prov_episode_id: str, headers: dict[str, str], language: str = "en"
+    prov_episode_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> dict[str, Any]:
     """Async wrapper around the podcast episode function."""
 
     def _get_podcast_episode() -> dict[str, Any]:
-        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         episode = ytm.get_episode(videoId=prov_episode_id)
         if "videoId" not in episode:
             episode["videoId"] = prov_episode_id
         return episode
 
     return await _run_ytmusic(_get_podcast_episode)
+
+
+async def get_playback_tracking(
+    video_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
+) -> dict[str, Any] | None:
+    """Async wrapper around the ytmusicapi get_song function, returning its playback tracking."""
+
+    def _get_playback_tracking() -> dict[str, Any] | None:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        tracking: dict[str, Any] | None = ytm.get_song(videoId=video_id).get("playbackTracking")
+        return tracking
+
+    return await _run_ytmusic(_get_playback_tracking)
+
+
+async def get_episode_start_seconds(
+    video_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
+) -> int:
+    """Return the second YouTube resumes the given episode from, 0 if it has no resume point."""
+
+    def _get_episode_start_seconds() -> int:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        # get_song drops this part of the player response, so the request is made directly
+        response = ytm._send_request(
+            "player",
+            {
+                "video_id": video_id,
+                "playbackContext": {
+                    "contentPlaybackContext": {"signatureTimestamp": int(time() // 86400) - 1}
+                },
+            },
+        )
+        start_config = response.get("playerConfig", {}).get("playbackStartConfig", {})
+        return int(start_config.get("startSeconds") or 0)
+
+    return await _run_ytmusic(_get_episode_start_seconds)
 
 
 async def get_library_artists(
@@ -307,6 +375,18 @@ async def add_remove_playlist_tracks(
     return await _run_ytmusic(_add_playlist_tracks)
 
 
+async def rate_track(
+    headers: dict[str, str], prov_track_id: str, rating: LikeStatus, user: str | None = None
+) -> None:
+    """Async wrapper around the ytmusicapi rate_song function."""
+
+    def _rate_track() -> None:
+        ytm = ytmusicapi.YTMusic(auth=headers, user=user)
+        ytm.rate_song(videoId=prov_track_id, rating=rating)
+
+    await _run_ytmusic(_rate_track)
+
+
 async def get_song_radio_tracks(
     headers: dict[str, str], prov_item_id: str, limit: int = 25, user: str | None = None
 ) -> dict[str, Any]:
@@ -334,21 +414,18 @@ async def get_song_radio_tracks(
 
 async def search(
     query: str,
-    headers: dict[str, str],
     ytm_filter: YTMSearchFilter | None = None,
     limit: int = 20,
-    user: str | None = None,
 ) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi search function."""
 
     def _search() -> list[dict[str, Any]]:
-        # Always search in English: ytmusicapi (1.12.2) matches the result shelf title,
+        # Always search in English: ytmusicapi (1.12.3) matches the result shelf title,
         # which YouTube returns translated, against the English filter name, so a filtered
-        # search silently returns nothing in most other languages. English is what this
-        # provider expects anyway, as it compares result fields such as the album type
-        # against English literals. Revisit once ytmusicapi compares against the
-        # translated title.
-        ytm = ytmusicapi.YTMusic(auth=headers, language="en", user=user)
+        # search silently returns nothing in most other languages. Revisit once ytmusicapi
+        # compares against the translated title.
+        # Unauthenticated on purpose: an account search lands in the user's YouTube search history.
+        ytm = ytmusicapi.YTMusic(language="en")
         results = ytm.search(query=query, filter=ytm_filter, limit=limit)
         # Sync result properties with uniformal objects
         for result in results:
@@ -456,3 +533,10 @@ def _raise_if_signed_out(err: Exception) -> None:
         "Your YouTube Music session is no longer valid. "
         "Please reconfigure this provider with a fresh cookie."
     ) from err
+
+
+def _raise_if_rejected_id(err: YTMusicServerError, message: str) -> None:
+    """Raise MediaNotFoundError if YouTube rejected the requested id."""
+    # ytmusicapi only exposes the HTTP status through the error message
+    if str(err).startswith(("Server returned HTTP 400", "Server returned HTTP 404")):
+        raise MediaNotFoundError(message) from err

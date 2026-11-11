@@ -175,7 +175,7 @@ async def test_replace_next_dynamic_keeps_current_track_playing(e2e_mass: MusicA
 
 @pytest.mark.asyncio
 async def test_shuffle_and_repeat_locked_while_dynamic(e2e_mass: MusicAssistant) -> None:
-    """Shuffle and repeat toggles are rejected while the queue is in dynamic mode."""
+    """A genuine shuffle/repeat change is rejected while dynamic, but a redundant set is a no-op."""
     queue_id = demo_players(e2e_mass)[0].player_id
     await _play_finite_album(e2e_mass, queue_id)
     await _add_dynamic_playlist(e2e_mass, queue_id)
@@ -183,7 +183,17 @@ async def test_shuffle_and_repeat_locked_while_dynamic(e2e_mass: MusicAssistant)
     assert queue is not None
     assert queue.is_dynamic is True
 
+    # a genuine change to a locked setting is refused
     with pytest.raises(InvalidCommand):
         await e2e_mass.player_queues.set_shuffle(queue_id, False)
     with pytest.raises(InvalidCommand):
         await e2e_mass.player_queues.set_repeat(queue_id, RepeatMode.ALL)
+
+    # asking for the state the queue is already in must not fail: an external caller (an HA
+    # automation, a voice assistant) does not know the toggle is locked, and a dynamic queue
+    # is always shuffle-on, so `shuffle_set: true` is a request the queue already satisfies
+    assert queue.shuffle_enabled is True
+    await e2e_mass.player_queues.set_shuffle(queue_id, True)
+    await e2e_mass.player_queues.set_repeat(queue_id, queue.repeat_mode)
+    assert queue.shuffle_enabled is True
+    assert queue.is_dynamic is True

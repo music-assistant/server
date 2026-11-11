@@ -1,11 +1,4 @@
-"""
-Trimmed response dataclasses used in tool replies.
-
-Tools that need to return a Music Assistant entity use these light-weight shapes
-to keep payloads small for LLM context windows. Resources, by contrast, return
-the full ``music_assistant_models`` types directly because clients usually
-expect a complete object when they fetch a URI.
-"""
+"""Bounded response dataclasses retained by resources and native MA commands."""
 
 from __future__ import annotations
 
@@ -14,74 +7,8 @@ from typing import Any
 
 
 @dataclass
-class TrackBrief:
-    """A track summary for tool responses."""
-
-    uri: str
-    name: str
-    artists: list[str] = field(default_factory=list)
-    album: str | None = None
-    duration: int | None = None
-    disc_number: int | None = None
-    track_number: int | None = None
-
-
-@dataclass
-class AlbumTracksResult:
-    """An album summary plus its track listing in disc/track order."""
-
-    album: AlbumBrief
-    tracks: list[TrackBrief] = field(default_factory=list)
-
-
-@dataclass
-class ArtistAlbumsResult:
-    """An artist summary plus their album discography."""
-
-    artist: ArtistBrief
-    albums: list[AlbumBrief] = field(default_factory=list)
-
-
-@dataclass
-class AlbumBrief:
-    """An album summary for tool responses."""
-
-    uri: str
-    name: str
-    artist: str | None = None
-    year: int | None = None
-
-
-@dataclass
-class ArtistBrief:
-    """An artist summary for tool responses."""
-
-    uri: str
-    name: str
-
-
-@dataclass
-class PlaylistBrief:
-    """A playlist summary for tool responses."""
-
-    uri: str
-    name: str
-    track_count: int | None = None
-    owner: str | None = None
-
-
-@dataclass
-class RadioBrief:
-    """A radio summary for tool responses."""
-
-    uri: str
-    name: str
-    description: str | None = None
-
-
-@dataclass
 class PlayerBrief:
-    """A player summary for tool responses."""
+    """Compact player state exposed by player resources."""
 
     player_id: str
     name: str
@@ -102,7 +29,7 @@ class PlayerBrief:
 
 @dataclass
 class QueueItemBrief:
-    """A queue item summary."""
+    """Compact queue item exposed by queue resources."""
 
     item_id: str
     name: str
@@ -113,14 +40,7 @@ class QueueItemBrief:
 
 @dataclass
 class QueueBrief:
-    """
-    A queue summary for tool responses.
-
-    ``item_count`` is ``None`` when the upstream queue object exposes neither
-    a canonical total nor an items-count field — better to say "unknown"
-    than to silently return the truncated lookahead length, which would
-    under-report a non-empty queue as ``0``.
-    """
+    """Compact queue snapshot exposed by queue resources."""
 
     queue_id: str
     current_index: int | None
@@ -136,13 +56,7 @@ class QueueBrief:
 
 @dataclass
 class RemoveFromQueueResult:
-    """
-    Per-item outcome of a ``remove_item`` call.
-
-    Every requested ``item_id`` lands in exactly one bucket, so the caller
-    always learns the fate of the full batch — including rows deleted before
-    a later id turned out to be stale.
-    """
+    """Per-item outcome for the provider's safe queue removal command."""
 
     removed: list[str] = field(default_factory=list)
     skipped_played: list[str] = field(default_factory=list)
@@ -150,71 +64,9 @@ class RemoveFromQueueResult:
     not_found: list[str] = field(default_factory=list)
 
 
-@dataclass
-class AddToQueueResult:
-    """Confirmation of a successful ``add_to_queue`` call."""
-
-    item_id: str
-    uri: str
-    name: str
-    option: str
-    index: int | None = None
-
-
-@dataclass
-class RecommendationFolderBrief:
-    """One curated recommendation row (e.g. "Mood: Focus"), without its items."""
-
-    name: str
-    provider: str
-    item_id: str
-
-
-@dataclass
-class RecommendationItemBrief:
-    """One item inside a recommendation row."""
-
-    uri: str
-    name: str
-    media_type: str | None = None
-
-
-# ---- Debug namespace response dataclasses (spec 0005) ----
-
-
-@dataclass(frozen=True, kw_only=True)
-class PlayerInspect:
-    """Raw mirror of a Player dataclass with state.* surfaced separately."""
-
-    player_id: str
-    raw: dict[str, Any]
-    state: dict[str, Any]
-    truncated: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class QueueInspect:
-    """Raw mirror of a PlayerQueue with current_item resolved."""
-
-    queue_id: str
-    raw: dict[str, Any]
-    current_item: dict[str, Any] | None
-    truncated: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class ProviderInspect:
-    """Raw mirror of a runtime Provider object + its manifest."""
-
-    instance_id: str
-    raw: dict[str, Any]
-    manifest: dict[str, Any]
-    truncated: bool
-
-
 @dataclass(frozen=True, kw_only=True)
 class LogLine:
-    """One parsed record from musicassistant.log (continuation lines joined into message)."""
+    """One parsed, redacted Music Assistant log record."""
 
     timestamp: str | None
     level: str | None
@@ -224,7 +76,7 @@ class LogLine:
 
 @dataclass(frozen=True, kw_only=True)
 class LogTailResult:
-    """Result of debug_tail_log."""
+    """Bounded page of parsed Music Assistant log records."""
 
     log_path: str
     lines: list[LogLine]
@@ -245,7 +97,7 @@ class ComponentCount:
 
 @dataclass(frozen=True, kw_only=True)
 class LogStatsResult:
-    """Result of debug_log_stats."""
+    """Bounded aggregate statistics for Music Assistant logs."""
 
     log_path: str
     window_seconds: int | None
@@ -260,7 +112,7 @@ class LogStatsResult:
 
 @dataclass(frozen=True, kw_only=True)
 class EventRecord:
-    """One MA event captured into the ring buffer."""
+    """One event retained by the optional in-memory event buffer."""
 
     timestamp: str
     event_type: str
@@ -270,7 +122,7 @@ class EventRecord:
 
 @dataclass(frozen=True, kw_only=True)
 class EventSnapshot:
-    """Result of debug_recent_events."""
+    """Bounded snapshot of retained Music Assistant events."""
 
     events: list[EventRecord]
     buffer_capacity: int
@@ -279,7 +131,7 @@ class EventSnapshot:
 
 @dataclass(frozen=True, kw_only=True)
 class EventBufferStats:
-    """Result of debug_event_buffer_stats."""
+    """Counters for the optional in-memory event buffer."""
 
     capacity: int
     current_size: int
@@ -291,7 +143,7 @@ class EventBufferStats:
 
 @dataclass(frozen=True, kw_only=True)
 class ProviderSummary:
-    """One row of debug_list_providers."""
+    """Compact provider row used by health diagnostics."""
 
     instance_id: str
     domain: str
@@ -302,34 +154,8 @@ class ProviderSummary:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ProviderList:
-    """Result of debug_list_providers."""
-
-    providers: list[ProviderSummary]
-
-
-@dataclass(frozen=True, kw_only=True)
-class ConfigValueDump:
-    """One value from a provider ConfigEntry dump (SECURE_STRING already masked upstream)."""
-
-    key: str
-    type: str
-    value: Any
-
-
-@dataclass(frozen=True, kw_only=True)
-class ProviderConfigDump:
-    """Result of debug_inspect_provider_config."""
-
-    instance_id: str
-    domain: str
-    values: list[ConfigValueDump]
-    truncated: bool
-
-
-@dataclass(frozen=True, kw_only=True)
 class RouteEntry:
-    """One row of debug_list_webserver_routes."""
+    """One registered Music Assistant HTTP route."""
 
     method: str
     path: str
@@ -338,31 +164,21 @@ class RouteEntry:
 
 @dataclass(frozen=True, kw_only=True)
 class RouteList:
-    """Result of debug_list_webserver_routes."""
+    """Registered Music Assistant HTTP routes."""
 
     routes: list[RouteEntry]
 
 
 @dataclass(frozen=True, kw_only=True)
 class PackageVersions:
-    """Result of debug_list_package_versions."""
+    """Versions of the bounded diagnostics package allowlist."""
 
     packages: dict[str, str]
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReloadResult:
-    """Result of debug_reload_provider."""
-
-    instance_id: str
-    duration_ms: float
-    new_available: bool
-    last_error: str | None
-
-
-@dataclass(frozen=True, kw_only=True)
 class HealthSummary:
-    """Result of debug_health_summary — the LLM agent's triage entry point."""
+    """Provider, queue, event, log, and dynamic-catalog health rollup."""
 
     providers_loaded: int
     providers_disabled: int
@@ -374,142 +190,9 @@ class HealthSummary:
     events_per_min_by_type: dict[str, float] | None
     log_errors_last_5min: int | None
     disabled_capabilities: list[str]
-
-
-# ---- Config namespace response dataclasses (spec 0006) ----
-
-
-@dataclass(frozen=True, kw_only=True)
-class ConfigTarget:
-    """One configurable target (provider, core controller, or player)."""
-
-    target_type: str
-    target_id: str
-    domain: str
-    name: str
-    enabled: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class ConfigTargetList:
-    """Result of config_list_targets."""
-
-    providers: list[ConfigTarget]
-    core: list[ConfigTarget]
-    players: list[ConfigTarget]
-
-
-@dataclass(frozen=True, kw_only=True)
-class CoreConfigDump:
-    """Result of config_get_core."""
-
-    domain: str
-    values: list[ConfigValueDump]
-    truncated: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class PlayerConfigDump:
-    """Result of config_get_player."""
-
-    player_id: str
-    provider: str
-    values: list[ConfigValueDump]
-    truncated: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class ConfigEntryDump:
-    """One editable ConfigEntry definition + current value."""
-
-    key: str
-    type: str
-    label: str | None
-    default_value: Any
-    required: bool
-    description: str | None
-    options: list[Any] | None
-    range: tuple[int, int] | None
-    advanced: bool
-    hidden: bool
-    requires_reload: bool
-    depends_on: str | None
-    action: str | None
-    current_value: Any
-
-
-@dataclass(frozen=True, kw_only=True)
-class ConfigEntryList:
-    """Result of config_get_entries."""
-
-    target_type: str
-    target_id: str
-    entries: list[ConfigEntryDump]
-    truncated: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class DSPConfigDump:
-    """Result of config_get_dsp — mirrors music_assistant_models.dsp.DSPConfig."""
-
-    player_id: str
-    enabled: bool
-    input_gain: float
-    output_gain: float
-    filters: list[dict[str, Any]]
-
-
-@dataclass(frozen=True, kw_only=True)
-class ValueChange:
-    """One key's before/after in a config diff (secrets masked both sides)."""
-
-    key: str
-    before: Any
-    after: Any
-    secret: bool
-
-
-@dataclass(frozen=True, kw_only=True)
-class DiffResult:
-    """A dry-run config diff."""
-
-    target_type: str
-    target_id: str
-    changes: list[ValueChange]
-
-
-@dataclass(frozen=True, kw_only=True)
-class SetValueResult:
-    """Result of config_set_*_value."""
-
-    target_type: str
-    target_id: str
-    key: str
-    applied: bool
-    requires_reload: bool
-    audit_log_id: str
-    diff: DiffResult | None
-
-
-@dataclass(frozen=True, kw_only=True)
-class SaveResult:
-    """Result of config_save_* (bulk)."""
-
-    target_type: str
-    target_id: str
-    applied: bool
-    changes: list[ValueChange]
-    requires_reload: bool
-    audit_log_id: str
-    diff: DiffResult | None
-
-
-@dataclass(frozen=True, kw_only=True)
-class ActionResult:
-    """Result of config_trigger_provider_action."""
-
-    instance_id: str
-    action_key: str
-    new_entries: list[ConfigEntryDump]
-    extra_data: dict[str, Any]
-    audit_log_id: str
+    dynamic_catalog: dict[str, Any] | None = None
+    policy_schema_version: int = 2
+    policy_profile: str = "Safe queries"
+    token_resolution_failures: int = 0
+    event_buffer_active: bool = False
+    performance: dict[str, int | float] = field(default_factory=dict)

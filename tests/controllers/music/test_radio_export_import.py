@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ImageType,
@@ -46,6 +47,7 @@ FAKE_DOMAIN = "beatstream"
 FAKE_INSTANCE = "beatstream--instance"
 BUILTIN_STREAM_URL = "http://stream.example.com/jazz"
 BUILTIN_IMAGE_URL = "http://img.example.com/jazz.jpg"
+GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
 
 
 class FakeRadioProvider(MusicProvider):
@@ -177,10 +179,13 @@ async def test_export_import_round_trip_restores_stations(radio_mass: MusicAssis
         )
     )
     # favourite both through the library, the way a user does
-    await mass.music.radio.set_favorite(jazz_item.item_id, True)
-    await mass.music.radio.set_favorite(owned_item.item_id, True)
+    user = await mass.webserver.auth.create_user(username="radio-fan", role=UserRole.USER)
+    await mass.music.radio.set_favorite(jazz_item.item_id, True, [user.user_id])
+    await mass.music.radio.set_favorite(owned_item.item_id, True, [user.user_id])
 
-    m3u_data = await mass.music.radio.export_radios()
+    # an export carries the favorites of the user that asks for it
+    with patch(GET_CURRENT_USER, return_value=user):
+        m3u_data = await mass.music.radio.export_radios()
     # the name must travel in an #EXTINF line even though a station has no duration
     assert "#EXTINF:-1,Jazz FM" in m3u_data
     assert f"#EXTIMG:thumb||{BUILTIN_IMAGE_URL}||builtin||true" in m3u_data
@@ -194,7 +199,8 @@ async def test_export_import_round_trip_restores_stations(radio_mass: MusicAssis
     await _wait_for_task_status(mass.tasks, task.id, TaskStatus.SUCCESS)
     assert mass.tasks.get_task(task.id).failure_messages == []
 
-    library = {item.name: item for item in await mass.music.radio.library_items(summary=False)}
+    with patch(GET_CURRENT_USER, return_value=user):
+        library = {item.name: item for item in await mass.music.radio.library_items(summary=False)}
     assert set(library) == {"Jazz FM", "Provider Owned Radio"}
 
     jazz = library["Jazz FM"]

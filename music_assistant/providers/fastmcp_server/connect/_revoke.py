@@ -25,6 +25,14 @@ import logging
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from music_assistant.controllers.webserver.auth import TOKEN_LIST_LIMIT
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user as _ma_get_current_user,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    set_current_user as _ma_set_current_user,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -33,36 +41,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-
-# Sanctioned contextvar helpers live in an MA-internal module. In a real MA
-# install the import succeeds (it's the same module MA's own tests use —
-# tests/test_webserver_auth.py:19-22). In this repo's minimal dev venv the
-# transitive ``music_assistant.controllers.webserver`` package can't be
-# loaded (frontend / torch are not installed), so fall back to
-# no-op shims for collect-time imports. Tests mock the API methods that
-# would actually read ``current_user``, so a no-op context manager is safe
-# there. Production always hits the real branch.
-try:
-    from music_assistant.controllers.webserver.helpers.auth_middleware import (
-        get_current_user as _ma_get_current_user,
-    )
-    from music_assistant.controllers.webserver.helpers.auth_middleware import (
-        set_current_user as _ma_set_current_user,
-    )
-except ImportError:
-    # Narrow on purpose: only swallow ``ImportError`` (which covers
-    # ``ModuleNotFoundError``) — the case is the minimal dev venv missing
-    # a transitive MA dep. Anything else (e.g. ``AttributeError`` from a
-    # renamed symbol) must propagate so MA-side breakage surfaces loudly
-    # instead of silently disabling token revocation.
-    # Signatures must match the real MA helpers exactly — mypy on CI sees
-    # both branches with the full MA install and rejects any drift.
-
-    def _ma_get_current_user() -> User | None:
-        return None
-
-    def _ma_set_current_user(user: User | None) -> None:  # noqa: ARG001
-        return None
 
 
 @contextmanager
@@ -113,24 +91,30 @@ async def revoke_token_by_id(mass: MusicAssistant, user: User, token_id: str) ->
     return True
 
 
-async def list_user_tokens(mass: MusicAssistant, user: User) -> list[AuthToken]:
+async def list_user_tokens(mass: MusicAssistant, user: User) -> list[AuthToken] | None:
     """
     List ``user``'s auth tokens via the sanctioned ``auth.get_user_tokens`` API.
 
     Returns typed ``AuthToken`` dataclasses — no raw ``sqlite3.Row``
-    objects leak across the boundary. Best-effort: an error returns ``[]``.
-
-    Note: MA core caps the query at 100 rows. A user with > 100 active
-    tokens will see some priors miss our dedup pass — acceptable for the
-    typical case (handful of tokens).
+    objects leak across the boundary. MA returns only the newest
+    ``TOKEN_LIST_LIMIT`` tokens, so a full page is reported as incomplete.
 
     :param mass: MusicAssistant instance.
     :param user: User whose tokens to list (sets the auth context).
+    :return: All of the user's tokens, or ``None`` when the lookup failed or
+        may have been truncated.
     """
-    tokens: list[AuthToken] = []
     with _as_user(user):
         try:
-            tokens = await mass.webserver.auth.get_user_tokens()
+            tokens = list(await mass.webserver.auth.get_user_tokens())
         except Exception:
             LOGGER.exception("Connect Wizard: get_user_tokens failed (user=%s)", user.user_id)
+            return None
+    if len(tokens) >= TOKEN_LIST_LIMIT:
+        LOGGER.warning(
+            "Connect Wizard: user %s has at least %d tokens; skipping token rotation",
+            user.user_id,
+            TOKEN_LIST_LIMIT,
+        )
+        return None
     return tokens

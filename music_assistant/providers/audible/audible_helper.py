@@ -44,7 +44,8 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.helpers.datetime import utc
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
+from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.mass import MusicAssistant
 
@@ -429,7 +430,7 @@ class AudibleHelper:
             content_license = playback_info.get("content_license", {})
             if not content_license:
                 self.logger.error(f"No content_license in playback_info for ASIN {asin}")
-                raise ValueError(f"Missing content_license for ASIN {asin}")
+                raise ValueError(f"Missing content_license for ASIN {asin}")  # noqa: TRY301 - converted to ValueError below
 
             content_metadata = content_license.get("content_metadata", {})
             content_reference = content_metadata.get("content_reference", {})
@@ -438,7 +439,7 @@ class AudibleHelper:
             stream_url = content_license.get("license_response")
             if not stream_url:
                 self.logger.error(f"No license_response (stream URL) for ASIN {asin}")
-                raise ValueError(f"Missing stream URL for ASIN {asin}")
+                raise ValueError(f"Missing stream URL for ASIN {asin}")  # noqa: TRY301 - converted to ValueError below
 
             acr = content_license.get("acr", "")
             if acr:
@@ -1003,7 +1004,7 @@ class AudibleHelper:
         # Set genres
         podcast.metadata.genres = {
             genre.replace("_", " ") for genre in (podcast_data.get("platinum_keywords") or [])
-        }
+        } or {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         # Add images
         image_path = podcast_data.get("product_images", {}).get("500")
@@ -1085,6 +1086,10 @@ class AudibleHelper:
                 or episode_data.get("extended_product_description", "")
             )
         )
+
+        if publication_datetime := episode_data.get("publication_datetime"):
+            with suppress(TypeError, ValueError):
+                episode.metadata.release_date = from_iso_string(publication_datetime)
 
         # Add images
         image_path = episode_data.get("product_images", {}).get("500")

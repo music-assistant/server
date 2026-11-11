@@ -93,7 +93,7 @@ check_native_lib() {
 # test run: the provider just refuses to load. Check here so that shows up during setup
 # instead of at first use.
 echo "Checking OS-level dependencies..."
-command -v ffmpeg &>/dev/null || warn_missing "ffmpeg not found in PATH (6.1 minimum, 7.x recommended)." ffmpeg ffmpeg
+command -v ffmpeg &>/dev/null || warn_missing "ffmpeg not found in PATH (7.0 minimum)." ffmpeg ffmpeg
 check_native_lib chromaprint chromaprint libchromaprint1
 
 if [[ "$missing_prereqs" -eq 1 ]]; then

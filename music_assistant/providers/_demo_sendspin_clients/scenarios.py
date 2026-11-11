@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from aiosendspin.noise.pin import DEFAULT_MIN_PIN_DIGITS
-
 
 class PinChannel(StrEnum):
     """Out-channel a device uses to convey a derived dynamic PIN to the operator."""
@@ -37,14 +35,11 @@ class Scenario:
     :param name: Friendly name the device reports to the server.
     :param product_name: Model name shown on the player's device info.
     :param description: What this device is meant to demonstrate, shown in the settings.
-    :param pairing_psk: Offer the token method, as every real speaker does. Setup only
-        surfaces it for a device with no PIN method of its own.
-    :param static_pin: Offer the fixed PIN. Always gesture-gated by the spec.
-    :param dynamic_pin: Offer a per-attempt derived PIN.
+    :param static_pin: Offer the fixed PIN. Always gesture-gated by the spec. A device that
+        also offers the dynamic PIN advertises only the dynamic one.
+    :param dynamic_pin: Offer a per-attempt derived six-digit PIN.
     :param unpaired_access: Admit a server without pairing. The device is then approved on
         connect and needs no setup at all, unless it also has an audio input.
-    :param min_pin_length: Shortest dynamic PIN the device accepts. The server negotiates
-        ``max(this, its own minimum)``, and anything under 6 digits is gesture-gated.
     :param pin_channel: How the derived dynamic PIN reaches the operator.
     :param secret_locations: Where the operator finds a static secret ("device", "leaflet"
         or "operator"), which picks the instruction text shown during setup.
@@ -55,24 +50,17 @@ class Scenario:
     name: str
     product_name: str
     description: str
-    pairing_psk: bool = False
     static_pin: bool = False
     dynamic_pin: bool = False
     unpaired_access: bool = False
-    min_pin_length: int = DEFAULT_MIN_PIN_DIGITS
     pin_channel: PinChannel = PinChannel.NONE
     secret_locations: tuple[str, ...] = ()
     source_role: bool = False
 
     @property
-    def offers_pairing(self) -> bool:
-        """Whether the device offers any pairing method at all."""
-        return self.pairing_psk or self.static_pin or self.dynamic_pin
-
-    @property
     def gesture_gated(self) -> bool:
-        """Whether a first pairing needs the device's pairing button pressed."""
-        return self.static_pin or (self.dynamic_pin and self.min_pin_length < 6)
+        """Whether a pairing needs the device's pairing button pressed."""
+        return self.static_pin and not self.dynamic_pin
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -80,7 +68,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         scenario_id="open",
         name="Demo Open Speaker",
         product_name="Open Speaker",
-        description="Guest access only. No pairing method offered, so setup is a single consent step.",
+        description="Guest access, with only the pairing token offered as the secure alternative.",
         unpaired_access=True,
     ),
     Scenario(
@@ -91,7 +79,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         unpaired_access=True,
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
-        pairing_psk=True,
     ),
     Scenario(
         scenario_id="dynamic_pin",
@@ -100,7 +87,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         description="Dynamic PIN only, shown on a display. Six digits, no button press needed.",
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
-        pairing_psk=True,
     ),
     Scenario(
         scenario_id="dynamic_pin_spoken",
@@ -109,27 +95,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         description="Dynamic PIN only, spoken out loud instead of displayed (a device with no screen).",
         dynamic_pin=True,
         pin_channel=PinChannel.SPEAKER,
-        pairing_psk=True,
-    ),
-    Scenario(
-        scenario_id="dynamic_pin_long",
-        name="Demo Long PIN Speaker",
-        product_name="Long PIN Speaker",
-        description="Dynamic PIN of eight digits, which the entry field renders as two groups of four.",
-        dynamic_pin=True,
-        pin_channel=PinChannel.DISPLAY,
-        min_pin_length=8,
-        pairing_psk=True,
-    ),
-    Scenario(
-        scenario_id="dynamic_pin_short",
-        name="Demo Short PIN Speaker",
-        product_name="Short PIN Speaker",
-        description="Four-digit dynamic PIN. Short PINs are gesture-gated, so press the button first.",
-        dynamic_pin=True,
-        pin_channel=PinChannel.DISPLAY,
-        min_pin_length=4,
-        pairing_psk=True,
     ),
     Scenario(
         scenario_id="static_pin",
@@ -138,18 +103,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         description="Fixed eight-digit PIN printed on the device. Always needs the button pressed first.",
         static_pin=True,
         secret_locations=("device",),
-        pairing_psk=True,
-    ),
-    Scenario(
-        scenario_id="both_pins",
-        name="Demo Dual PIN Speaker",
-        product_name="Dual PIN Speaker",
-        description="Static and dynamic PIN both offered, so setup first asks which one to use.",
-        static_pin=True,
-        dynamic_pin=True,
-        pin_channel=PinChannel.DISPLAY,
-        secret_locations=("leaflet",),
-        pairing_psk=True,
     ),
     Scenario(
         scenario_id="token",
@@ -159,7 +112,6 @@ SCENARIOS: tuple[Scenario, ...] = (
             "No PIN support, so setup falls back to the pairing token printed on the "
             "device. Copy the token below into setup."
         ),
-        pairing_psk=True,
         secret_locations=("device",),
     ),
     Scenario(
@@ -170,14 +122,13 @@ SCENARIOS: tuple[Scenario, ...] = (
             "No PIN support either, with its token handed out by whoever administers "
             "the device rather than printed on it."
         ),
-        pairing_psk=True,
         secret_locations=("operator",),
     ),
     Scenario(
         scenario_id="locked",
         name="Demo Locked Speaker",
         product_name="Locked Speaker",
-        description="Nothing on offer: no guest access and no pairing method. Setup can only abort.",
+        description="No guest access, no PIN, and no hint where its pairing token is.",
     ),
     Scenario(
         scenario_id="everything",
@@ -185,7 +136,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         product_name="Everything Speaker",
         description="Guest access plus every pairing method, with the PIN on both out-channels.",
         unpaired_access=True,
-        pairing_psk=True,
         static_pin=True,
         dynamic_pin=True,
         pin_channel=PinChannel.BOTH,
@@ -200,7 +150,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         dynamic_pin=True,
         pin_channel=PinChannel.DISPLAY,
         source_role=True,
-        pairing_psk=True,
     ),
 )
 

@@ -18,6 +18,8 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
+
 from .constants import AUDIOBOOK_COLLECTIONS
 from .helpers import clean_text, extract_year, get_image_url
 
@@ -377,6 +379,7 @@ def doc_to_podcast(
     # Add metadata
     if description := clean_text(doc.get("description")):
         podcast.metadata.description = description
+    podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
     # Add thumbnail
     add_item_image(podcast, identifier, instance_id)

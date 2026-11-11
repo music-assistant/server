@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from contextlib import aclosing, suppress
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import CrossfadeMode
 
@@ -14,6 +16,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     SmartFade,
     SmartFadeNotApplicable,
     StandardCrossFade,
+    VoiceOverFade,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import detect_effective_audio_end
 from music_assistant.controllers.streams.smart_fades.vocal import (
@@ -30,6 +33,9 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.controller import StreamsController
+
+# marks the end of the mix stream on the pump queue (a chunk is always bytes)
+_MIX_DONE = object()
 
 
 class SmartFadesMixer:
@@ -62,10 +68,21 @@ class SmartFadesMixer:
         :param fade_out_streamdetails: Stream details for the outgoing track.
         :param pcm_format: Audio format of both input buffers (and mix output).
         :param standard_crossfade_duration: Duration in seconds for standard crossfade.
-        :param mode: Smart fades mode (SMART_CROSSFADE or STANDARD_CROSSFADE).
+        :param mode: Smart fades mode (SMART_CROSSFADE, STANDARD_CROSSFADE or VOICE_OVER).
         :param fade_out_data: PCM buffer of the outgoing track's tail.
         :param fade_in_bytes_len: Expected length in bytes of the fade-in input.
         """
+        if mode == CrossfadeMode.VOICE_OVER:
+            # a declared transition: played as declared, never planned or degraded
+            voice_over = VoiceOverFade(logger=self.logger)
+            voice_over.build(len(fade_out_data), fade_in_bytes_len, pcm_format)
+            self.logger.debug(
+                "Built voice over: tail=%.2fs fade_in=%.2fs overlap=%.2fs",
+                len(fade_out_data) / pcm_format.pcm_sample_size,
+                fade_in_bytes_len / pcm_format.pcm_sample_size,
+                voice_over.timing_info.crossfade_duration,
+            )
+            return voice_over
         # degradation chain: smart-crossfade → standard; richer modes prepend their builder
         smart_fade: SmartFade | None = None
         fade_out_analysis: AudioAnalysisData | None = None
@@ -94,9 +111,48 @@ class SmartFadesMixer:
         fade_out_part: bytes,
         pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes]:
-        """Run the already-built SmartFade and yield mixed PCM audio chunks."""
-        async for chunk in smart_fade.apply(fade_out_part, fade_in_part, pcm_format):
-            yield chunk
+        """
+        Run the already-built SmartFade and yield mixed PCM audio chunks.
+
+        Closing the returned generator promptly tears down the underlying fade,
+        including its ffmpeg process, wherever consumption stopped.
+        """
+        # The fade runs in a pump task feeding a one-slot queue so this generator only
+        # ever awaits the queue: closing it reliably cancels the pump, and the
+        # cancellation unwinds the fade's ffmpeg from its deepest await. Closing the
+        # nested fade generators directly would instead abandon the process mid-read
+        # whenever the chain is parked in anext, leaking ffmpeg.
+        queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=1)
+        pump_error: list[Exception] = []
+
+        async def _pump() -> None:
+            try:
+                async with aclosing(
+                    smart_fade.apply(fade_out_part, fade_in_part, pcm_format)
+                ) as mixed:
+                    async for chunk in mixed:
+                        await queue.put(chunk)
+            except asyncio.CancelledError:
+                # teardown: the consumer is gone, so don't hand it a completion marker
+                raise
+            except Exception as err:
+                pump_error.append(err)
+            await queue.put(_MIX_DONE)
+
+        pump_task = asyncio.create_task(_pump())
+        try:
+            while True:
+                item = await queue.get()
+                if item is _MIX_DONE:
+                    break
+                yield cast("bytes", item)
+            if pump_error:
+                raise pump_error[0]
+        finally:
+            if not pump_task.done():
+                pump_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await pump_task
 
     async def _build_standard_crossfade(
         self,

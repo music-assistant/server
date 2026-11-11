@@ -24,7 +24,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import PLAYER_ID_PREFIX
 from .grouping import NativeGroupCoordinator
-from .helpers import is_official_manufacturer
+from .helpers import is_official_device
 from .linkplay_player import LinkPlayPlayer
 from .player import WiimPlayer
 
@@ -255,7 +255,7 @@ class WiimProvider(PlayerProvider):
             )
             return
 
-        if is_official_manufacturer(upnp_device.manufacturer):
+        if is_official_device(upnp_device.manufacturer, upnp_device.model_name):
             await self.try_add_player(player_id, ip_address, name, matched_location, mac_address)
         else:
             await self.try_add_linkplay_player(

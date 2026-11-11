@@ -44,6 +44,19 @@ EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.MULTI_DEVICE_DSP,
 }
+# the subset above that is fanned out to every member rather than sent to the sync leader
+VOLUME_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
+    PlayerFeature.VOLUME_SET,
+    PlayerFeature.VOLUME_MUTE,
+}
+
+# Transport features the group forwards to its sync leader, for a source the
+# leader plays itself (e.g. a device-native input or streaming service).
+FEATURES_FROM_LEADER: Final[set[PlayerFeature]] = {
+    PlayerFeature.PAUSE,
+    PlayerFeature.SEEK,
+    PlayerFeature.NEXT_PREVIOUS,
+}
 
 
 # Provider domains whose live sync session can survive removal of the current

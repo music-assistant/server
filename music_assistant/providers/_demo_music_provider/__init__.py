@@ -213,7 +213,7 @@ class MyDemoMusicprovider(MusicProvider):
         # OPTIONAL - the default (derived from the LIBRARY_* features) is usually correct.
         return super().supported_media_types
 
-    async def search(  # type: ignore[empty-body]
+    async def search(
         self,
         search_query: str,
         media_types: list[MediaType],
@@ -232,6 +232,7 @@ class MyDemoMusicprovider(MusicProvider):
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
         # For radio, a simple search of the available channel names is acceptable
+        return SearchResults()
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
@@ -552,6 +553,19 @@ class MyDemoMusicprovider(MusicProvider):
         # stream generator for the audio stream. This is only called when the
         # stream_type is set to CUSTOM in the get_stream_details method.
         yield  # type: ignore[misc]
+
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """
+        Handle callback when the first audio of given streamdetails reaches a player.
+
+        Called once per playback, so unlike get_stream_details never for a preload.
+        A playback that triggers this callback is followed by at least one on_streamed.
+        """
+        # This is an OPTIONAL callback that is called when an item starts playing.
+        # You can use this e.g. to report the start of playback to the music service.
 
     async def on_streamed(
         self,

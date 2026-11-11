@@ -8,9 +8,8 @@ Two contracts are pinned here:
    origins module would silently break wizard mount with an opaque
    ``RuntimeError`` if there were no test to catch it.
 
-2. ``provider.http_bridge`` continues to re-export the historical
-   underscore-prefixed names so existing call sites and any external tests
-   keep working without churn.
+2. ``provider.http_bridge`` consumes those public names without historical
+   compatibility aliases.
 """
 # mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, misc, attr-defined"
 
@@ -20,9 +19,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from music_assistant.providers.fastmcp_server.origins import (
-    _is_origin_allowed,
-    _normalize_origin,
-    _port_from_base_url,
     compute_origin_allowlist,
     is_origin_allowed_for_request,
 )
@@ -34,21 +30,20 @@ def test_public_names_exist() -> None:
     assert callable(is_origin_allowed_for_request)
 
 
-def test_http_bridge_re_exports_legacy_names() -> None:
-    """
-    Historical names on ``provider.http_bridge`` keep working for back-compat.
-
-    The attribute-defined ignores below are deliberate: the re-exports use
-    underscore-prefixed aliases so mypy treats them as private. This test
-    is *exactly* the contract that asserts those aliases stay reachable.
-    """
+def test_http_bridge_has_no_legacy_origin_reexports() -> None:
+    """The bridge uses only the canonical public origin helpers."""
     from music_assistant.providers.fastmcp_server import http_bridge  # noqa: PLC0415
 
-    assert http_bridge._compute_origin_allowlist is compute_origin_allowlist
-    assert http_bridge._is_origin_allowed_for_request is is_origin_allowed_for_request
-    assert http_bridge._normalize_origin is _normalize_origin
-    assert http_bridge._port_from_base_url is _port_from_base_url
-    assert http_bridge._is_origin_allowed is _is_origin_allowed
+    assert http_bridge.compute_origin_allowlist is compute_origin_allowlist
+    assert http_bridge.is_origin_allowed_for_request is is_origin_allowed_for_request
+    for legacy in (
+        "_compute_origin_allowlist",
+        "_is_origin_allowed_for_request",
+        "_normalize_origin",
+        "_port_from_base_url",
+        "_is_origin_allowed",
+    ):
+        assert not hasattr(http_bridge, legacy)
 
 
 def test_compute_origin_allowlist_includes_loopback() -> None:

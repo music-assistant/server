@@ -1,10 +1,4 @@
-"""
-Tests for ``provider.prompts.register_prompts``.
-
-The prompts module shipped without tests; a refactor that dropped a prompt
-or broke the ``CONF_RES_PROMPTS`` gate would land unobserved. This file
-pins both the gate and the three registered prompts' names + tool references.
-"""
+"""Tests for discovery-first canned MCP prompts."""
 # mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc, union-attr"
 
 from __future__ import annotations
@@ -18,86 +12,75 @@ from fastmcp import Client, FastMCP
 from music_assistant.providers.fastmcp_server.prompts import register_prompts
 
 _EXPECTED_NAMES = {"find_and_play", "curate_party_playlist", "now_playing_summary"}
+_META_CHAIN = ("search_tools", "get_tool_schema", "call_tool")
 
 
 def _config(*, prompts_enabled: bool) -> MagicMock:
-    """Build a minimal ``ProviderConfig`` stub gating on ``CONF_RES_PROMPTS``."""
-    cfg = MagicMock()
-    cfg._values = {"res_prompts": prompts_enabled}
-    cfg.get_value = MagicMock(side_effect=lambda key, default=None: cfg._values.get(key, default))
-    return cfg
+    config = MagicMock()
+    config.get_value.side_effect = lambda key, default=None: (
+        prompts_enabled if key == "res_prompts" else default
+    )
+    return config
 
 
 @pytest.fixture
 def mcp_with_prompts() -> FastMCP:
-    """Build a FastMCP root with all three prompts registered (gate ON)."""
-    mcp: FastMCP = FastMCP(name="t")
+    """Build a root with the enabled prompt set."""
+    mcp = FastMCP(name="t")
     register_prompts(mcp, _config(prompts_enabled=True))
     return mcp
 
 
-async def test_gate_off_registers_no_prompts() -> None:
-    """``CONF_RES_PROMPTS=False`` skips registration entirely."""
-    mcp: FastMCP = FastMCP(name="t")
-    register_prompts(mcp, _config(prompts_enabled=False))
-
-    async with Client(mcp) as client:
-        prompts = await client.list_prompts()
-    assert prompts == [], f"expected no prompts when gate is off, got {prompts!r}"
-
-
-async def test_gate_on_registers_exactly_three_named_prompts(mcp_with_prompts: FastMCP) -> None:
-    """The three prompt names are exposed verbatim — clients address them by name."""
-    async with Client(mcp_with_prompts) as client:
-        prompts = await client.list_prompts()
-    names = {p.name for p in prompts}
-    assert names == _EXPECTED_NAMES, (
-        f"prompt set drifted from {_EXPECTED_NAMES}; got {names}. "
-        f"Adding or removing a prompt is a public-contract change."
+def _text(result: Any) -> str:
+    return " ".join(
+        message.content.text for message in result.messages if hasattr(message.content, "text")
     )
 
 
-async def test_find_and_play_references_expected_tools(mcp_with_prompts: FastMCP) -> None:
-    """``find_and_play`` orients the LLM toward the right tool chain."""
+async def test_gate_off_registers_no_prompts() -> None:
+    """The provider setting can disable all canned prompts."""
+    mcp = FastMCP(name="t")
+    register_prompts(mcp, _config(prompts_enabled=False))
+    async with Client(mcp) as client:
+        assert await client.list_prompts() == []
+
+
+async def test_gate_on_registers_exact_prompt_set(mcp_with_prompts: FastMCP) -> None:
+    """The retained prompt names stay stable for clients."""
     async with Client(mcp_with_prompts) as client:
-        result = await client.get_prompt("find_and_play", {"query": "test", "target_player": "p1"})
-    text = " ".join(m.content.text for m in result.messages if hasattr(m.content, "text"))
-    for tool_name in (
-        "library_search_tracks",
-        "playback_play_media",
-        "queue_get_active_queue",
-        "players_list_players",
-    ):
-        assert tool_name in text, f"missing tool ref {tool_name!r} in find_and_play"
+        assert {prompt.name for prompt in await client.list_prompts()} == _EXPECTED_NAMES
 
 
-async def test_curate_party_playlist_references_playlist_tools(
+@pytest.mark.parametrize(
+    ("name", "arguments", "native_fragment"),
+    [
+        ("find_and_play", {"query": "test", "target_player": "p1"}, "player_queues/play_media"),
+        (
+            "curate_party_playlist",
+            {"theme": "indie", "length_minutes": "30"},
+            "music/playlists/create_playlist",
+        ),
+        ("now_playing_summary", {"player_id": "p1"}, "player_queues/get_active_queue"),
+    ],
+)
+async def test_prompts_use_meta_discovery_chain(
     mcp_with_prompts: FastMCP,
+    name: str,
+    arguments: dict[str, str],
+    native_fragment: str,
 ) -> None:
-    """``curate_party_playlist`` references the create + add-tracks chain."""
+    """Every workflow teaches the only executable MCP surface and a native target hint."""
     async with Client(mcp_with_prompts) as client:
-        result = await client.get_prompt(
-            "curate_party_playlist", {"theme": "indie", "length_minutes": "30"}
-        )
-    text = " ".join(m.content.text for m in result.messages if hasattr(m.content, "text"))
-    for tool_name in (
-        "library_search_tracks",
-        "playlists_create_playlist",
-        "playlists_add_tracks",
-    ):
-        assert tool_name in text, f"missing tool ref {tool_name!r} in curate_party_playlist"
+        text = _text(await client.get_prompt(name, arguments))
+    assert all(meta_tool in text for meta_tool in _META_CHAIN)
+    assert "ma_api:*" in text
+    assert native_fragment in text
 
 
 async def test_now_playing_summary_branches_on_player_id(mcp_with_prompts: FastMCP) -> None:
-    """``now_playing_summary`` switches its tool plan based on whether a player_id is given."""
+    """The prompt scopes its plan differently with and without a player id."""
     async with Client(mcp_with_prompts) as client:
-        with_id = await client.get_prompt("now_playing_summary", {"player_id": "p1"})
-        without_id = await client.get_prompt("now_playing_summary", {})
-
-    def _text(result: Any) -> str:
-        return " ".join(m.content.text for m in result.messages if hasattr(m.content, "text"))
-
-    assert "queue_get_active_queue" in _text(with_id)
-    assert "p1" in _text(with_id)
-    # Without an id we expect the broader list-then-fan-out plan.
-    assert "players_list_players" in _text(without_id)
+        with_id = _text(await client.get_prompt("now_playing_summary", {"player_id": "p1"}))
+        without_id = _text(await client.get_prompt("now_playing_summary", {}))
+    assert "player_id 'p1'" in with_id
+    assert "players/all" in without_id

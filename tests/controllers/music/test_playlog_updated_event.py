@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.playlog_update import PlaylogUpdate
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
@@ -66,7 +67,7 @@ async def test_mark_played_signals_playlog_updated(mass: MusicAssistant) -> None
     assert track.uri is not None
     events = _collect_events(mass)
 
-    await mass.music.mark_item_played(track, fully_played=True, userid=user.user_id)
+    await mass.music.mark_item_played(track, fully_played=True, queue_id="q1", userid=user.user_id)
 
     updates = await _updates(events)
     assert len(updates) == 1
@@ -171,6 +172,8 @@ async def test_mark_unplayed_signals_playlog_updated(mass: MusicAssistant) -> No
 
 async def test_mark_played_without_user_applies_to_all_users(mass: MusicAssistant) -> None:
     """Without a determinable user the playlog changes for everyone, so userid is None."""
+    user_a = await mass.webserver.auth.create_user("playlogshared_a")
+    user_b = await mass.webserver.auth.create_user("playlogshared_b")
     track = Track(
         item_id="track-003",
         provider="test_prov",
@@ -185,6 +188,11 @@ async def test_mark_played_without_user_applies_to_all_users(mass: MusicAssistan
     updates = await _updates(events)
     assert len(updates) == 1
     assert updates[0].userid is None
+    rows = await mass.music.database.get_rows(
+        DB_TABLE_MEDIA_PROGRESS,
+        {"item_id": track.item_id, "provider": track.provider},
+    )
+    assert {user_a.user_id, user_b.user_id} <= {row["userid"] for row in rows}
 
 
 async def test_credited_artist_signals_playlog_updated(mass: MusicAssistant) -> None:
@@ -207,7 +215,7 @@ async def test_credited_artist_signals_playlog_updated(mass: MusicAssistant) -> 
     track = await mass.music.tracks.get_library_item(added.item_id)
     events = _collect_events(mass)
 
-    await mass.music.mark_item_played(track, fully_played=True, userid=user.user_id)
+    await mass.music.mark_item_played(track, fully_played=True, queue_id="q1", userid=user.user_id)
 
     updates = await _updates(events)
     assert [update.uri for update in updates] == [track.uri, artist.uri]
@@ -234,7 +242,9 @@ async def test_credited_podcast_signals_playlog_updated(mass: MusicAssistant) ->
     )
     events = _collect_events(mass)
 
-    await mass.music.mark_item_played(episode, fully_played=True, userid=user.user_id)
+    await mass.music.mark_item_played(
+        episode, fully_played=True, queue_id="q1", userid=user.user_id
+    )
 
     updates = await _updates(events)
     assert [update.uri for update in updates] == [episode.uri, podcast.uri]

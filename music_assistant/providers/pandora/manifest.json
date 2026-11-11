@@ -5,7 +5,8 @@
   "documentation": "https://music-assistant.io/music-providers/pandora/",
   "type": "music",
   "requirements": [],
-  "codeowners": ["@ozgav"],
+  "codeowners": ["@chrisuthe"],
+  "tier": "community",
   "multi_instance": true,
   "stage": "beta"
 }

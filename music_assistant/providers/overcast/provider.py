@@ -31,7 +31,12 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpisode
+from music_assistant_models.media_items import (
+    AudioFormat,
+    MediaItemTranscriptCue,
+    Podcast,
+    PodcastEpisode,
+)
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
@@ -42,8 +47,10 @@ from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
+    find_episode_transcripts,
     get_cached_podcast,
     get_episode_positions,
+    get_episode_transcript,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -221,6 +228,20 @@ class OvercastProvider(MusicProvider):
                 return mass_episode
         raise MediaNotFoundError("Did not find episode.")
 
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """Get the transcript for a podcast episode."""
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
+        podcast = await self._cache_get_podcast(podcast_id)
+        return await get_episode_transcript(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            transcripts=find_episode_transcripts(
+                parsed_feed=podcast, guid_or_stream_url=guid_or_stream_url
+            ),
+        )
+
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
@@ -260,12 +281,17 @@ class OvercastProvider(MusicProvider):
 
     async def _login(self) -> None:
         """Authenticate with Overcast and persist the session cookie."""
-        email = str(self.get_setup_value(CONF_USERNAME))
-        password = str(self.get_setup_value(CONF_PASSWORD))
+        email = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
+        if not email or not password:
+            # an app linked account has no credentials to sign in with a second time
+            raise LoginFailed(
+                "The Overcast session has expired, set the provider up again to renew it"
+            )
         try:
             async with self.http_session.post(
                 LOGIN_URL,
-                data={"email": email, "password": password},
+                data={"email": str(email), "password": str(password)},
                 allow_redirects=False,
             ) as response:
                 status = response.status
@@ -416,6 +442,7 @@ class OvercastProvider(MusicProvider):
                 fully_played=state.played,
                 seconds_played=state.progress_s or 0,
                 user_initiated=False,
+                provider_instance_id=self.instance_id,
             )
             if newest_applied is None or state.user_updated_at > newest_applied:
                 newest_applied = state.user_updated_at

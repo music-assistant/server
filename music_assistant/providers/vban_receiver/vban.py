@@ -33,7 +33,7 @@ class AsyncVBANClientMod(AsyncVBANClient):  # type: ignore[misc]
 
     async def listen(
         self,
-        address: str = "0.0.0.0",
+        address: str = "0.0.0.0",  # noqa: S104 - user-configurable bind address
         port: int = 6980,
         loop: asyncio.AbstractEventLoop | None = None,
         controller: VBANReceiverProvider | None = None,

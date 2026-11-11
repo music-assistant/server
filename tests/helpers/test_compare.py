@@ -140,6 +140,30 @@ def _tracklist(
     ]
 
 
+_RECORDING_ID = (ExternalID.MB_RECORDING, "12345678-1234-1234-1234-123456789abc")
+_RELEASE_TRACK_ID = (ExternalID.MB_TRACK, "87654321-4321-4321-4321-cba987654321")
+
+
+def _recording(
+    item_id: str,
+    provider: str,
+    *,
+    version: str = "",
+    album_version: str = "",
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> media_items.Track:
+    """Build a provider copy of one recording, whose id a remaster shares with the original."""
+    track = _provider_track(
+        item_id,
+        provider,
+        version=version,
+        external_ids={_RECORDING_ID} | (external_ids or set()),
+    )
+    assert isinstance(track.album, media_items.Album)
+    track.album.version = album_version
+    return track
+
+
 def test_compare_version() -> None:
     """Test the version compare helper."""
     assert compare.compare_version("Remaster", "remaster") is True
@@ -464,6 +488,55 @@ def test_compare_album_evidence_barcode_never_matches_unrelated_titles() -> None
 
     assert compare.compare_album_evidence(album_a, album_b) == compare.AlbumMatchEvidence.NO_MATCH
     assert compare.compare_album(album_a, album_b) is False
+
+
+def test_compare_album_evidence_barcode_needs_one_shared_album_artist() -> None:
+    """A shared barcode matches albums whose providers list different album artists."""
+    barcode = {(ExternalID.BARCODE, "4260306180745")}
+
+    def _artists(
+        provider: str, *names: str
+    ) -> media_items.UniqueList[media_items.Artist | media_items.ItemMapping]:
+        return media_items.UniqueList(
+            [
+                media_items.Artist(
+                    item_id=name,
+                    provider=provider,
+                    name=name,
+                    provider_mappings={
+                        media_items.ProviderMapping(
+                            item_id=name, provider_domain="test", provider_instance=provider
+                        )
+                    },
+                )
+                for name in names
+            ]
+        )
+
+    name = "Sibelius: Symphonies 1 - 7"
+    qobuz = _album(provider="test1", name=name, year=2015, external_ids=barcode)
+    qobuz.artists = _artists("test1", "Simon Rattle")
+    tidal = _album(item_id="2", provider="test2", name=name, year=2015, external_ids=barcode)
+    tidal.artists = _artists("test2", "Berlin Philharmonic Orchestra", "Simon Rattle")
+    spotify = _album(item_id="3", provider="test3", name=name, year=2015, external_ids=barcode)
+    spotify.artists = _artists(
+        "test3", "Jean Sibelius", "Berlin Philharmonic Orchestra", "Simon Rattle"
+    )
+
+    for base_item, compare_item in ((qobuz, tidal), (qobuz, spotify), (tidal, spotify)):
+        assert (
+            compare.compare_album_evidence(base_item, compare_item)
+            == compare.AlbumMatchEvidence.MATCH
+        )
+
+    # without the barcode the strict album artist rule still applies
+    tidal.external_ids = set()
+    assert compare.compare_album_evidence(qobuz, tidal) == compare.AlbumMatchEvidence.NO_MATCH
+
+    # the barcode never matches albums without a single shared album artist
+    tidal.external_ids = barcode
+    tidal.artists = _artists("test2", "Herbert von Karajan")
+    assert compare.compare_album_evidence(qobuz, tidal) == compare.AlbumMatchEvidence.NO_MATCH
 
 
 def test_compare_album_evidence_name_hyphen_spacing_drift_matches() -> None:
@@ -963,6 +1036,19 @@ def test_compare_album_track_fingerprint_invalid_isrc_falls_back_to_title_durati
         compare.compare_album_track_fingerprint(base_tracks, conflicting_compare_tracks)
         == compare.AlbumMatchEvidence.NO_MATCH
     )
+
+
+def test_compare_track_ignores_placeholder_isrc() -> None:
+    """Unrelated tracks sharing a placeholder ISRC are not matched on it."""
+    base_track = _track("1", name="Owner of a Lonely Heart", isrc="000000000000")
+    compare_track = _track("2", name="Since You Been Gone", isrc="000000000000")
+
+    assert compare.compare_track(base_track, compare_track) is False
+
+    base_track = _track("1", name="Owner of a Lonely Heart", isrc="USRC17607839")
+    compare_track = _track("2", name="Since You Been Gone", isrc="USRC17607839")
+
+    assert compare.compare_track(base_track, compare_track) is True
 
 
 def test_compare_album_track_fingerprint_title_duration_fallback() -> None:
@@ -2015,13 +2101,19 @@ def test_compare_radio() -> None:
     """Test the radio compare helper."""
 
     def _radio(
-        item_id: str, provider: str, name: str, *, is_dynamic: bool = False
+        item_id: str,
+        provider: str,
+        name: str,
+        *,
+        is_dynamic: bool = False,
+        is_endless: bool = True,
     ) -> media_items.Radio:
         return media_items.Radio(
             item_id=item_id,
             provider=provider,
             name=name,
             is_dynamic=is_dynamic,
+            is_endless=is_endless,
             provider_mappings={
                 media_items.ProviderMapping(
                     item_id=item_id, provider_domain=provider, provider_instance=provider
@@ -2041,3 +2133,158 @@ def test_compare_radio() -> None:
     # ... but it is still recognised as itself
     same = _radio("c", "pandora", "Chill Vibes", is_dynamic=True)
     assert compare.compare_radio(station, same) is True
+
+    show = _radio("d", "ai_radio", "Chill Vibes", is_endless=False)
+    # a finite tracklisted station is provider-owned too: never name-matched to a stream
+    assert compare.compare_radio(show, live_a) is False
+    assert compare.compare_radio(live_a, show) is False
+    same_show = _radio("d", "ai_radio", "Chill Vibes", is_endless=False)
+    assert compare.compare_radio(show, same_show) is True
+
+
+def test_compare_track_merges_a_remaster_by_its_recording_id() -> None:
+    """By default the recording id a remaster shares with the original merges the two."""
+    original = _recording("original", "provider_a")
+    remaster = _recording("remaster", "provider_b", version="2009 Remaster")
+
+    assert compare.compare_track(original, remaster) is True
+    assert compare.compare_track_evidence(original, remaster) == compare.TrackMatchConfidence.LIKELY
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+@pytest.mark.parametrize(
+    ("base_version", "compare_version", "kept_apart"),
+    [
+        ("", "2009 Remaster", True),
+        ("Remastered 2009", "2019 Remaster", True),
+        ("Remastered 2009", "2009 Remaster", False),
+        # a remaster without a year may be either one
+        ("Remastered", "2009 Remaster", False),
+        # only a remaster is kept apart
+        ("", "Mono", False),
+    ],
+)
+def test_compare_track_keeps_remasters_apart_despite_the_recording_id(
+    base_version: str, compare_version: str, kept_apart: bool
+) -> None:
+    """With remasters kept apart, the version is compared before the shared recording id."""
+    base = _recording("base", "provider_a", version=base_version)
+    candidate = _recording("candidate", "provider_b", version=compare_version)
+
+    assert compare.compare_track(base, candidate) is not kept_apart
+    assert compare.compare_track(candidate, base) is not kept_apart
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_compare_track_takes_the_album_version_of_an_untagged_track() -> None:
+    """A provider may only mark the album as remastered, which then counts for its tracks."""
+    original = _recording("original", "provider_a")
+    remaster = _recording("remaster", "provider_b", album_version="2009 Remaster")
+    # a library track carries its album as a mapping, version included
+    mapped_remaster = _recording("mapped", "provider_c")
+    mapped_remaster.album = media_items.ItemMapping(
+        item_id="album",
+        provider="provider_c",
+        name="Album",
+        media_type=MediaType.ALBUM,
+        version="2009 Remaster",
+    )
+    # the track's own version comes first
+    tagged_remaster = _recording("tagged", "provider_d", version="Remastered 2009")
+
+    assert compare.compare_track(original, remaster) is False
+    assert compare.compare_track(mapped_remaster, original) is False
+    assert compare.compare_track(tagged_remaster, remaster) is True
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_an_equal_release_track_id_still_matches_a_remaster() -> None:
+    """The same track of the same release matches, whatever a provider says about its version."""
+    base = _recording("base", "provider_a", external_ids={_RELEASE_TRACK_ID})
+    candidate = _recording(
+        "candidate", "provider_b", version="2009 Remaster", external_ids={_RELEASE_TRACK_ID}
+    )
+
+    assert compare.compare_track(base, candidate) is True
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.EXACT
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_a_loose_track_compare_still_takes_a_remaster_for_its_recording() -> None:
+    """Only a strict compare keeps a remaster apart; a loose one may still corroborate it."""
+    original = _recording("original", "provider_a")
+    remaster = _recording("remaster", "provider_b", version="2009 Remaster")
+
+    assert compare.compare_track(original, remaster, strict=False) is True
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_a_strict_track_compare_can_still_match_a_remaster() -> None:
+    """A caller that asks for it still gets a remaster matched to the original."""
+    original = _recording("original", "provider_a")
+    remaster = _recording("remaster", "provider_b", version="2009 Remaster")
+
+    assert compare.compare_track(original, remaster, match_remasters=True) is True
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_compare_track_evidence_keeps_remasters_apart() -> None:
+    """A remaster is no match for the original, while the same remaster on another album is."""
+    original = _recording("original", "provider_a")
+    remaster = _recording("remaster", "provider_b", version="2009 Remaster")
+    album_remaster = _recording("album", "provider_c", album_version="Remastered")
+
+    assert (
+        compare.compare_track_evidence(original, remaster) == compare.TrackMatchConfidence.NO_MATCH
+    )
+    assert (
+        compare.compare_track_evidence(album_remaster, remaster)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_compare_track_evidence_no_longer_forgives_a_missing_remaster() -> None:
+    """Matching album years do not stand in for a remaster version one provider left out."""
+    base = _provider_track("base", "provider_a")
+    remaster = _provider_track("remaster", "provider_b", version="2022 Remaster")
+    assert isinstance(base.album, media_items.Album)
+    assert isinstance(remaster.album, media_items.Album)
+    base.album.year = remaster.album.year = 2022
+
+    assert compare.compare_track_evidence(base, remaster) == compare.TrackMatchConfidence.NO_MATCH
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+@pytest.mark.parametrize(
+    ("base_version", "compare_version", "expected"),
+    [
+        ("", "Remaster", compare.AlbumMatchEvidence.NO_MATCH),
+        ("Deluxe Edition", "Deluxe Edition 2009 Remaster", compare.AlbumMatchEvidence.NO_MATCH),
+        # both are remasters and the year may still turn out the same
+        ("Remaster", "2009 Remaster", compare.AlbumMatchEvidence.INSUFFICIENT),
+    ],
+)
+def test_compare_album_evidence_keeps_remasters_apart(
+    base_version: str, compare_version: str, expected: compare.AlbumMatchEvidence
+) -> None:
+    """A remastered album is no match for an edition that is not remastered."""
+    base_item = _album(version=base_version)
+    compare_item = _album(item_id="2", provider="test2", version=compare_version)
+
+    assert compare.compare_album_evidence(base_item, compare_item) == expected
+
+
+@pytest.mark.usefixtures("keep_remasters_apart")
+def test_a_matching_tracklist_does_not_merge_a_remastered_album() -> None:
+    """A remastered album keeps the tracklist of the original, which must not merge the two."""
+    base_item = _album(version="")
+    compare_item = _album(item_id="2", provider="test2", version="Remaster")
+    tracks = _tracklist(10)
+
+    assert (
+        compare.compare_album_evidence(
+            base_item, compare_item, base_tracks=tracks, compare_tracks=tracks
+        )
+        == compare.AlbumMatchEvidence.NO_MATCH
+    )

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -66,7 +66,7 @@ class VBANReceiverProvider(PluginProvider):
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         # Setup values fall back to legacy option values for existing instances.
         self._bind_port: int = cast("int", self.get_setup_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT)
-        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")
+        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")  # noqa: S104 - user-configurable bind address
         self._sender_host: str = cast("str", self.get_setup_value(CONF_SENDER_HOST) or "127.0.0.1")
         self._vban_stream_name: str = cast(
             "str", self.get_setup_value(CONF_VBAN_STREAM_NAME) or "Network AUX"
@@ -128,8 +128,6 @@ class VBANReceiverProvider(PluginProvider):
             can_next_previous=False,
             exclusive=True,
             allow_external_trigger=False,
-            # MA opens the UDP listener on demand; get_audio_stream raises if
-            # the configured sender never sends
             can_initiate=True,
         )
 
@@ -328,15 +326,6 @@ class VBANReceiverProvider(PluginProvider):
                         )
                     yield packet.body.data
                 except TimeoutError:
-                    # cold-start: fail fast if the configured sender never sends
-                    if not _stream_acquired:
-                        raise AudioError(
-                            f"VBAN sender {self._sender_host!r} did not send any packets "
-                            f"on stream {self._vban_stream_name!r}",
-                            translation_key="no_packets",
-                            translation_owner=self.translation_owner,
-                            translation_args=[self._sender_host, self._vban_stream_name],
-                        ) from None
                     continue
                 except asyncio.QueueShutDown:
                     self.logger.error(

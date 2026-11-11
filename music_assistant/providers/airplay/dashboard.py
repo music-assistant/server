@@ -69,8 +69,7 @@ class AirPlayDashboards:
         if self._unloaded:
             return
         self.mass.create_task(
-            self._async_reconcile,
-            player_id,
+            self._async_reconcile(player_id),
             task_id=f"airplay_dashboard_reconcile_{player_id}",
             abort_existing=True,
         )

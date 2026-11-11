@@ -9,7 +9,7 @@ filling them now.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -153,3 +153,20 @@ async def test_the_claim_is_made_before_the_buffer_is_filled(
     await _audio("sess-1").get_audio_buffer(queue_item, reason="streaming")
 
     assert seen == ["sess-1"]
+
+
+async def test_a_filled_buffer_reports_its_queue_item_as_fully_buffered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The completion signal of a new buffer names the queue item it was attached for."""
+    queue_item = _queue_item(stamped_with=None)
+    get_buffer = AsyncMock(return_value=MagicMock(spec=AudioBuffer))
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+    audio = _audio("sess-1")
+    mass = cast("MagicMock", audio.mass)
+
+    await audio.get_audio_buffer(queue_item, reason="streaming")
+    assert get_buffer.await_args is not None
+    get_buffer.await_args.kwargs["on_complete"]()
+
+    mass.player_queues.track_fully_buffered.assert_called_once_with(QUEUE_ID, "queue-item-1")

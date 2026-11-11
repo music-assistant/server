@@ -220,7 +220,7 @@ def get_package_license(info: dict[str, Any]) -> tuple[str, bool]:
     license_classifiers = []
     for classifier in info.get("classifiers") or []:
         # the license itself is the last segment, e.g. "License :: OSI Approved :: MIT License",
-        # except for "License :: OSI Approved", which names no license at all
+        # but "License :: OSI Approved" on its own names no license at all
         parts = [part.strip() for part in classifier.split("::")]
         if parts[0] == "License" and len(parts) > 1 and parts[-1] != "OSI Approved":
             license_classifiers.append(parts[-1])
@@ -299,11 +299,12 @@ def get_pypi_metadata(package_name: str) -> dict[str, Any] | None:
 
     :param package_name: The name of the package to check.
     """
-    url = f"https://pypi.org/pypi/{package_name}/json"
-
     try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            return json.loads(response.read())
+        with urllib.request.urlopen(
+            f"https://pypi.org/pypi/{package_name}/json", timeout=10
+        ) as response:
+            metadata: dict[str, Any] = json.loads(response.read())
+            return metadata
     except urllib.error.HTTPError as err:
         if err.code == 404:
             print(f"❌ Package '{package_name}' not found on PyPI")
@@ -590,7 +591,7 @@ def _evaluate_spdx_expression(license_str: str) -> bool | None:
         result = _evaluate_spdx_tokens(remaining)
         if remaining:
             # anything left over means we did not understand the string as a whole
-            raise _SpdxSyntaxError
+            raise _SpdxSyntaxError  # noqa: TRY301 - handled by except below
     except _SpdxSyntaxError:
         result = None
 
@@ -736,7 +737,7 @@ def _is_spdx_operator(token: str) -> bool:
 
     :param token: The token to inspect.
     """
-    return token == ")" or token.upper() in ("AND", "OR", "WITH")
+    return token == ")" or token.upper() in ("AND", "OR", "WITH")  # noqa: S105 - SPDX token
 
 
 def _is_copyleft(license_upper: str) -> bool:
@@ -759,10 +760,10 @@ def _max_group_depth(tokens: list[str]) -> int:
     depth = 0
     deepest = 0
     for token in tokens:
-        if token == "(":
+        if token == "(":  # noqa: S105 - SPDX token
             depth += 1
             deepest = max(deepest, depth)
-        elif token == ")":
+        elif token == ")":  # noqa: S105 - SPDX token
             depth = max(0, depth - 1)
     return deepest
 

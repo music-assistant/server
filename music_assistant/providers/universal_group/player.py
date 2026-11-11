@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -18,7 +19,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
 from propcache import under_cached_property as cached_property
 
@@ -123,7 +124,7 @@ class UniversalGroupPlayer(Player):
         # mute are advertised whether or not the group currently has a live session.
         for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
+            if member_player and member_player.available_for_playback:
                 for feature in EXTRA_FEATURES_FROM_MEMBERS:
                     if feature in member_player.state.supported_features:
                         features.add(feature)
@@ -282,7 +283,13 @@ class UniversalGroupPlayer(Player):
                 self, only_powered=True, active_only=True
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, False)
+                    with suppress(PlayerUnavailableError):
+                        async with self.mass.players.get_group_and_player_lock(member.player_id):
+                            # once the member no longer reports this group, its power off does
+                            # not release the group again; the internal handler needs no access
+                            # to the member
+                            member.refresh_state()
+                            await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:
             # reset the original group members when powered off
@@ -506,7 +513,8 @@ class UniversalGroupPlayer(Player):
                 # member is part of a syncgroup — release it first
                 await member.ungroup()
             if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                await self.mass.players.cmd_power(member.player_id, True)
+                with suppress(PlayerUnavailableError):
+                    await self.mass.players.cmd_power(member.player_id, True)
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""

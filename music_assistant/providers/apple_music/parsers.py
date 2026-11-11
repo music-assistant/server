@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -14,6 +16,7 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     Playlist,
     ProviderMapping,
+    Radio,
     Track,
     UniqueList,
 )
@@ -184,6 +187,14 @@ def parse_album(
         album.artists = album_artists
     if release_date := attributes.get("releaseDate"):
         album.year = int(release_date.split("-")[0])
+        # Apple sends the full date (YYYY-MM-DD) when it is known; for pre-added
+        # albums this is the expected release date in the future, so clients can
+        # surface upcoming releases instead of only the (misleading) year.
+        if len(release_date) == 10:
+            with suppress(ValueError):
+                album.metadata.release_date = datetime.strptime(release_date, "%Y-%m-%d").replace(
+                    tzinfo=UTC
+                )
     if genres := attributes.get("genreNames"):
         album.metadata.genres = set(genres)
     if image := parse_artwork_image(provider, MediaType.ALBUM, album_id, attributes):
@@ -208,7 +219,7 @@ def parse_album(
     inferred_type = infer_album_type(album.name, "")
     if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
         album.album_type = inferred_type
-    album.favorite = is_favourite or False
+    album.favorite = is_favourite
     return album
 
 
@@ -295,7 +306,11 @@ def parse_track(
         track.metadata.explicit = content_rating == "explicit"
     if isrc := attributes.get("isrc"):
         track.external_ids.add((ExternalID.ISRC, isrc))
-    track.favorite = is_favourite or False
+    # dateAdded lives on the library object only, never on the catalog copy read above.
+    with suppress(TypeError, ValueError):
+        if added := raw_attributes.get("dateAdded"):
+            track.date_added = datetime.fromisoformat(added).replace(microsecond=0)
+    track.favorite = is_favourite
     return track
 
 
@@ -337,23 +352,23 @@ def parse_playlist(
         playlist.metadata.add_image(image)
     if description := attributes.get("description"):
         playlist.metadata.description = description.get("standard")
-    playlist.favorite = is_favourite or False
+    playlist.favorite = is_favourite
     return playlist
 
 
-def parse_station_as_playlist(
+def parse_station(
     provider: AppleMusicProvider,
     station_obj: dict[str, Any],
-) -> Playlist:
-    """Parse a station object into a dynamic Playlist."""
+) -> Radio:
+    """Parse a station object into a Radio: a live stream, or dynamic for track based stations."""
     station_id = station_obj["id"]
     attributes = station_obj.get("attributes", {})
     name = attributes.get("name", station_id)
-    playlist = Playlist(
+    radio = Radio(
         item_id=station_id,
         provider=provider.instance_id,
         name=name,
-        is_dynamic=True,
+        is_dynamic=not attributes.get("isLive", False),
         provider_mappings={
             ProviderMapping(
                 item_id=station_id,
@@ -362,9 +377,9 @@ def parse_station_as_playlist(
             )
         },
     )
-    if image := parse_artwork_image(provider, MediaType.PLAYLIST, station_id, attributes):
-        playlist.metadata.add_image(image)
-    return playlist
+    if image := parse_artwork_image(provider, MediaType.RADIO, station_id, attributes):
+        radio.metadata.add_image(image)
+    return radio
 
 
 def _parse_album_artists(

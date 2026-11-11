@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Final
 
 from music_assistant_models.enums import VolumeNormalizationMode
 
+from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+    DB_TABLE_SETTINGS,
+)
+from music_assistant.helpers.ffmpeg import get_ffmpeg_readrate_catchup_args
 from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
 
 # What the volume normalization preference falls back to.
@@ -55,32 +61,85 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
     BufferSize.MAXIMUM: 1200,
 }
 
+# DSD retains high-rate F32 PCM. Bound each buffer's payload as well as its duration;
+# current and next-track buffers can coexist on the hosts eligible for each preset.
+DSD_BUFFER_MAX_BYTES: Final[dict[str, int]] = {
+    BufferSize.MINIMAL: 64 * 1024 * 1024,
+    BufferSize.BALANCED: 128 * 1024 * 1024,
+    BufferSize.MAXIMUM: 256 * 1024 * 1024,
+}
+
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
+
+# Seconds an HLS radio input may read ahead of playback, so a slow playlist reload and
+# segment fetch at each boundary does not starve the player. Must stay below RADIO_BUFFER_SIZE.
+HLS_RADIO_INPUT_BURST: Final[int] = 5
+
+# Generic artwork some radio platforms send in the ICY 'StreamUrl' field when a track has
+# no cover of its own; treated as no image so the artwork lookup and station image apply.
+ICY_PLACEHOLDER_IMAGE_URLS: Final[frozenset[str]] = frozenset(
+    {"https://broadcaster.live365.com/static/assets/img/blankart.jpg"}
+)
+
 
 # Ceiling on how fast stream output is handed to a player, once it has had its opening
 # burst. Music Assistant serves audio for listening, not for collecting: barely above
 # playback speed the player's buffer still grows, while pulling a whole catalogue takes
-# about as long as listening to it would. A gentle feed also keeps a realtime source's
-# banked head start resident for its end-of-track crossfade, and spares players with a
-# small input buffer (Chromecast is the known case).
+# about as long as listening to it would.
 # Do not remove this pacing to "fix" slow buffering. See the usage policy.
-#
-# gapless_burst: players that must hold a whole opening chunk before they play gapless
-# (MusicCast is the known case). low_latency: live AudioSource streams, where whatever
-# the burst hands over sits in the player's buffer as listening delay.
-PacingProfile = Literal["default", "gapless_burst", "low_latency"]
+class PacingProfile(StrEnum):
+    """Pace at which a stream's output is handed to a player."""
+
+    # a track handed over on its own. The opening chunk is what a gapless player holds
+    # before it starts, and the head start rides out a hiccup later in the track
+    DEFAULT = "default"
+    # the flow stream, and sources that hand their audio over just-in-time. Those are
+    # radio and a Spotify music provider track on its Soloist backend, not Spotify
+    # Connect, which is an AUDIO_SOURCE and takes LOW_LATENCY. Such a source delivers
+    # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
+    # A pace close to playback speed leaves most of that on the server. The burst is
+    # the least a player holds at a session start, before a slow source earned it a lead.
+    # A player that fetches each track only once the previous download completes (Sonos)
+    # holds at a boundary just that burst plus what the pace banked over the track it played,
+    # and grouped speakers need a few seconds there at the first boundaries after a start.
+    NEAR_REALTIME = "near_realtime"
+    # live AudioSource streams, where whatever the burst hands over sits in the
+    # player's buffer as listening delay
+    LOW_LATENCY = "low_latency"
+
+
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
-    "default": ("1.02", "3"),
-    "gapless_burst": ("1.2", "60"),
-    "low_latency": ("1.02", "0.5"),
+    PacingProfile.DEFAULT: ("1.1", "60"),
+    PacingProfile.NEAR_REALTIME: ("1.02", "3"),
+    PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 
+# Pace at which output that fell behind its schedule (a stall of the server or of the player's
+# reads) makes up the lag; it never runs past the burst plus the pace. ffmpeg's own
+# 1.05x the pace takes over a minute to refill a few seconds, so stalls in a row run a player dry.
+_CATCHUP: Final[dict[PacingProfile, str]] = {PacingProfile.NEAR_REALTIME: "2"}
 
-def output_pacing_args(profile: PacingProfile = "default") -> list[str]:
+
+# A realtime source that allows a single stream (Spotify's soloist backend) delivers audio
+# at playback pace and holds that slot until the item ends, so the next item's session only
+# starts once this one is over. A session that begins on such an item with little left to
+# play reaches that boundary with almost nothing buffered, and the player can drop out in
+# the ~1.5 s the restart leaves silent: a Sonos Era 100 dies with 25 s left, survives with
+# 45 s, and a banked 5 s lead played nine 30 s tracks in a row cleanly. So bank this many
+# seconds before serving the first item of a session when it has less than
+# REALTIME_COLD_START_MAX_REMAINING seconds left.
+REALTIME_COLD_START_BANK: Final[int] = 5
+REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
+
+
+def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[str]:
     """Return the ffmpeg pacing arguments for a stream handed to a player."""
     readrate, burst = _PACING[profile]
-    return ["-readrate", readrate, "-readrate_initial_burst", burst]
+    args = ["-readrate", readrate, "-readrate_initial_burst", burst]
+    if catchup := _CATCHUP.get(profile):
+        args += get_ffmpeg_readrate_catchup_args(catchup)
+    return args
 
 
 # Time to keep the flow stream response open after the last audio byte of a queue.
@@ -89,6 +148,11 @@ def output_pacing_args(profile: PacingProfile = "default") -> list[str]:
 # Holding the (idle) connection open gives them time to play it out first. Kept below
 # the webserver shutdown timeout so a lead-out never stalls a restart of the server.
 FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
+
+# Write size for ICY-framed flow streams. Writes are sized independently of the
+# metadata interval, so the player buffer grows with the encoder's output instead
+# of in interval-sized steps (1.5s of FLAC per step at a 256000 byte interval).
+ICY_WRITE_SIZE: Final[int] = 16384
 
 
 # Configuration keys
@@ -129,9 +193,22 @@ def _get_default_buffer_size() -> str:
 CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
+CONF_STREAM_SOURCE_MODE: Final[str] = "stream_source_mode"
+CONF_UPGRADE_BELOW_QUALITY: Final[str] = "upgrade_below_quality"
+
+# Shortest declared tail overlap (voice over) worth mixing; below this the boundary
+# is a plain cut.
+MIN_VOICE_OVER_DURATION: Final[float] = 1.0
+# Seconds over which the music under a voice over ramps back to full level once the
+# voice has ended.
+VOICE_OVER_RAMP: Final[float] = 0.4
 
 # Maximum wait for a provider source-stream slot before a speculative attempt gives up.
 STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
+
+# Seconds an AudioBuffer may go unread before it releases its audio. The queue's pause timeout
+# is capped below this, as a paused player could not continue on a released buffer.
+BUFFER_INACTIVITY_TIMEOUT: Final[int] = 300
 
 # Total capacity budget when an actual playback start retries/reselects provider mappings.
 STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
@@ -144,12 +221,20 @@ STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
 # Beyond this, the stream is re-fetched at the seek position.
 SEEK_WAIT_THRESHOLD: Final[int] = 20
 
+# Seconds of already-played audio a seekable buffer keeps within its window, so a skip
+# back is served without refetching.
+PLAYED_AUDIO_RETENTION: Final[int] = 60
+
 # Streams webserver default port
 DEFAULT_PORT: Final[int] = 8097
 
 # Cache constants for resolved radio URLs
 CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
+# A provider that found no match for a library track is not searched for it again until
+# its cache entry expires.
+CACHE_CATEGORY_NO_TRACK_MATCH: Final[int] = 101
+NO_TRACK_MATCH_EXPIRATION: Final[int] = 24 * 3600
 
 # StreamDetails.data key providers set to opt into the in-band title handoff.
 STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
@@ -157,3 +242,10 @@ STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
 # stream title after an opted-in provider takes ownership of stream_metadata
 # (StreamDetails.stream_title is a derived view whose setter would overwrite it).
 STREAMDETAILS_INBAND_TITLE_KEY: Final[str] = "inband_stream_title"
+
+# The analysis tables live in their own SQLite file, on a connection of their own.
+AA_DB_FILENAME: Final[str] = "audio_analysis.db"
+AA_DB_SCHEMA_VERSION: Final[int] = 1
+AA_TABLE_ANALYSIS: Final[str] = DB_TABLE_AUDIO_ANALYSIS
+AA_TABLE_FAILURES: Final[str] = DB_TABLE_AUDIO_ANALYSIS_FAILURES
+AA_TABLE_SETTINGS: Final[str] = DB_TABLE_SETTINGS

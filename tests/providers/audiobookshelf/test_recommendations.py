@@ -33,6 +33,9 @@ def _stub_backend(provider: Audiobookshelf) -> AsyncMock:
     provider.mass.music.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
         return_value=Mock()
     )
+    provider.mass.music.audiobooks.library_items = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
     return view_mock
 
 
@@ -89,7 +92,7 @@ async def test_get_recommendations_row_identity(provider: Audiobookshelf) -> Non
     assert shelf_row.icon == "mdi-plus-box-multiple-outline"
     assert shelf_row.translation_key == "recently_added"
     assert shelf_row.provider == provider.instance_id
-    assert browse_row.name == "Libraries"
+    assert browse_row.name == "Library"
     assert browse_row.icon == "mdi-bookshelf"
     assert browse_row.translation_key == "library"
     assert browse_row.provider == provider.instance_id

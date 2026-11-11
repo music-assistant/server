@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -28,3 +29,25 @@ def provider() -> DeezerProvider:
     provider.gql_client = Mock()  # replaced with per-test stubs
     provider.browse_manager = DeezerBrowseManager(provider)
     return provider
+
+
+@pytest.fixture
+def gw_user_data() -> dict[str, Any]:
+    """Return GW user data for an account with a streaming subscription."""
+    return {
+        "error": [],
+        "results": {
+            "checkForm": "csrf-token",
+            "COUNTRY": "DE",
+            "OFFER_ID": 1,
+            "USER": {
+                "USER_ID": "123",
+                "OPTIONS": {
+                    "license_token": "license",
+                    "expiration_timestamp": 4102444800,
+                    "web_sound_quality": {"high": True, "lossless": True},
+                    "mobile_sound_quality": {"high": True, "lossless": True},
+                },
+            },
+        },
+    }

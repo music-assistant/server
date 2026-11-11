@@ -104,7 +104,7 @@ def test_build_suggestions_includes_one_correct_answer() -> None:
             SuggestionCandidate("Air - Sexy Boy", "library://track/4"),
         ],
         4,
-        rng=random.Random(1),
+        rng=random.Random(1),  # noqa: S311 - test data
     )
 
     assert len(suggestions) == 4
@@ -129,7 +129,7 @@ def test_build_suggestions_filters_duplicate_uri_and_label() -> None:
             SuggestionCandidate("Phoenix - Lisztomania", "library://track/4"),
         ],
         3,
-        rng=random.Random(1),
+        rng=random.Random(1),  # noqa: S311 - test data
     )
 
     assert {item.label for item in suggestions} == {
@@ -170,7 +170,7 @@ def test_build_suggestions_filters_close_title_versions() -> None:
             ),
         ],
         3,
-        rng=random.Random(1),
+        rng=random.Random(1),  # noqa: S311 - test data
     )
 
     assert {item.label for item in suggestions} == {
@@ -190,7 +190,7 @@ def test_build_suggestions_filters_close_distractors() -> None:
             SuggestionCandidate("Phoenix - Lisztomania", "library://track/4"),
         ],
         3,
-        rng=random.Random(1),
+        rng=random.Random(1),  # noqa: S311 - test data
     )
 
     assert {item.label for item in suggestions} == {
@@ -235,7 +235,7 @@ def test_build_suggestions_use_opaque_ids() -> None:
                 SuggestionCandidate("Air - Sexy Boy", "library://track/4"),
             ],
             4,
-            rng=random.Random(1),
+            rng=random.Random(1),  # noqa: S311 - test data
         )
 
     # every id comes from the opaque token source, never derived from the answer

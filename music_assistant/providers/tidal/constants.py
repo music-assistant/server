@@ -31,9 +31,11 @@ AUTH_SCOPE = "r_usr w_usr w_sub"
 PLAYLISTS = "playlists"
 PAGES_MIX = "pages/mix"
 
+DOMAIN = "tidal"
+
 # Config keys
-CONF_AUTH_TOKEN = "auth_token"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_AUTH_TOKEN = "auth_token"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
 CONF_QUALITY = "quality"
@@ -42,5 +44,13 @@ CONF_QUALITY = "quality"
 CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 1
 CACHE_CATEGORY_ISRC_MAP: Final[int] = 2
 
+# Max items fetched for one page module (feed modules embed only the first page)
+MAX_PAGE_MODULE_ITEMS: Final[int] = 50
+
 # Virtual playlist IDs
 FAVORITE_TRACKS_PLAYLIST_ID: Final[str] = "favorite_tracks"
+
+# Tidal mediaTags value marking a hi-res (24 bit) release, and the bit depths it implies
+MEDIA_TAG_HIRES_LOSSLESS: Final[str] = "HIRES_LOSSLESS"
+BIT_DEPTH_HIRES: Final[int] = 24
+BIT_DEPTH_LOSSLESS: Final[int] = 16

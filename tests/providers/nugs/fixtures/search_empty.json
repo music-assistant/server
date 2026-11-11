@@ -1,0 +1,10 @@
+{
+  "methodName": "catalog.search",
+  "responseAvailabilityCode": 0,
+  "responseAvailabilityCodeStr": "AVAILABLE",
+  "Response": {
+    "catalogSearchTypeContainers": [],
+    "searchError": 0,
+    "searchErrorStr": "VALID"
+  }
+}

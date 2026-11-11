@@ -24,6 +24,7 @@ from music_assistant.providers.emby.const import (
     AUDIO_STREAM_CHANNELS,
     AUDIO_STREAM_CODEC,
     AUDIO_STREAM_SAMPLE_RATE,
+    ITEM_KEY_ALBUM_ARTISTS,
     ITEM_KEY_ALBUM_ID,
     ITEM_KEY_ALBUM_NAME,
     ITEM_KEY_ARTIST_ITEMS,
@@ -36,6 +37,7 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_NAME,
     ITEM_KEY_PARENT_INDEX_NUMBER,
     ITEM_KEY_PRIMARY_IMAGE_ITEM_ID,
+    ITEM_KEY_PRIMARY_IMAGE_TAG,
     ITEM_KEY_PRODUCTION_YEAR,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_TYPE,
@@ -120,8 +122,8 @@ def parse_track(
     )
 
     # Extract images
-    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{track_id}/Images/Primary"
+    if primary_tag := item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary"):
+        image_url = f"{provider._base_url}Items/{track_id}/Images/Primary?tag={primary_tag}"
         if track.metadata.images is None:
             track.metadata.images = UniqueList[MediaItemImage]()
         track.metadata.images.append(
@@ -134,7 +136,7 @@ def parse_track(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     if last_played_date := user_data.get(USER_DATA_KEY_LAST_PLAYED_DATE):
         track.last_played = int(datetime.fromisoformat(last_played_date).timestamp())
@@ -168,8 +170,8 @@ def parse_artist(
     )
 
     # Extract images
-    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{artist_id}/Images/Primary"
+    if primary_tag := item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary"):
+        image_url = f"{provider._base_url}Items/{artist_id}/Images/Primary?tag={primary_tag}"
         if artist.metadata.images is None:
             artist.metadata.images = UniqueList[MediaItemImage]()
         artist.metadata.images.append(
@@ -182,7 +184,7 @@ def parse_artist(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    artist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     if genres := item.get(ITEM_KEY_GENRES):
         artist.metadata.genres = set(genres)
@@ -202,7 +204,8 @@ def parse_album(
 
     # Extract artist info
     artists = UniqueList[Artist | ItemMapping]()
-    if artist_items := item.get(ITEM_KEY_ARTIST_ITEMS):
+    # ArtistItems on an album also holds featured track artists
+    if artist_items := item.get(ITEM_KEY_ALBUM_ARTISTS) or item.get(ITEM_KEY_ARTIST_ITEMS):
         for artist_item in artist_items:
             artist_id = str(artist_item.get(ITEM_KEY_ID))
             artist_name = str(artist_item.get(ITEM_KEY_NAME))
@@ -239,8 +242,16 @@ def parse_album(
 
     # Extract images
     image_item_id = item.get(ITEM_KEY_PRIMARY_IMAGE_ITEM_ID)
-    if image_item_id or "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{image_item_id or album_id}/Images/Primary"
+    primary_tag = item.get(ITEM_KEY_PRIMARY_IMAGE_TAG)
+    if not primary_tag:
+        # the fallback tag is the album's own, so it only validates against the album's id
+        primary_tag = item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary")
+        image_item_id = None
+    if primary_tag:
+        image_url = (
+            f"{provider._base_url}Items/{image_item_id or album_id}/Images/Primary"
+            f"?tag={primary_tag}"
+        )
         if album.metadata.images is None:
             album.metadata.images = UniqueList[MediaItemImage]()
         album.metadata.images.append(
@@ -253,7 +264,7 @@ def parse_album(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    album.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     if genres := item.get(ITEM_KEY_GENRES):
         album.metadata.genres = set(genres)
@@ -283,8 +294,8 @@ def parse_playlist(
         },
     )
     # Extract images
-    if "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
-        image_url = f"{provider._base_url}Items/{playlist_id}/Images/Primary"
+    if primary_tag := item.get(ITEM_KEY_IMAGE_TAGS, {}).get("Primary"):
+        image_url = f"{provider._base_url}Items/{playlist_id}/Images/Primary?tag={primary_tag}"
         if playlist.metadata.images is None:
             playlist.metadata.images = UniqueList[MediaItemImage]()
         playlist.metadata.images.append(
@@ -297,7 +308,7 @@ def parse_playlist(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    playlist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     return playlist
 

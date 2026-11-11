@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import cast
+from functools import partial
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, PlaybackState
 from pyheos import PlayState as HeosPlayState
 from pyheos import const as heos_const
 
@@ -188,6 +190,105 @@ async def test_player_unload_cancels_playback_transition() -> None:
 
     mass.cancel_timer.assert_any_call(f"heos_playback_transition_{player.player_id}")
     assert player._ma_playback_starting is False
+
+
+async def _start_ma_playback(player: HeosPlayer) -> dict[str, Callable[[], None]]:
+    """Start MA playback on a playing player and return its pending timers by task id."""
+    mass = cast("MagicMock", player.mass)
+    device = cast("MagicMock", player._device)
+    timers: dict[str, Callable[[], None]] = {}
+
+    def call_later(
+        _delay: float, target: Callable[..., None], *args: Any, task_id: str, **kwargs: Any
+    ) -> None:
+        timers[task_id] = partial(target, *args, **kwargs)
+
+    mass.call_later.side_effect = call_later
+    mass.cancel_timer.side_effect = lambda task_id: timers.pop(task_id, None)
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/stream/next")
+    device.play_url = AsyncMock()
+    player.get_config_value = MagicMock(return_value=5)  # type: ignore[method-assign]
+    player.set_dynamic_attributes()
+    player.update_state()
+    assert player.state.playback_state == PlaybackState.PLAYING
+
+    await player.play_media(
+        PlayerMedia(uri="library://track/2", media_type=MediaType.TRACK, title="Next")
+    )
+    return timers
+
+
+async def _set_device_state(player: HeosPlayer, state: HeosPlayState) -> None:
+    """Feed a HEOS state change event into the player."""
+    cast("MagicMock", player._device).state = state
+    await player._player_event_received(heos_const.EVENT_PLAYER_STATE_CHANGED)
+
+
+async def test_transient_stop_while_restarting_ma_playback_keeps_playing() -> None:
+    """
+    Keep reporting playing while HEOS restarts on a new MA stream.
+
+    HEOS reports stop for several seconds when switching to the next track's stream.
+    Publishing that as idle drops the group's queue and can dissolve a sync group.
+
+    See https://github.com/music-assistant/support/issues/6373
+    """
+    player = _make_player(_url_stream_now_playing())
+    timers = await _start_ma_playback(player)
+    transition_timer = f"heos_playback_transition_{player.player_id}"
+
+    await _set_device_state(player, HeosPlayState.STOP)
+    assert player.state.playback_state == PlaybackState.PLAYING
+
+    # transition timeout passes while the device still restarts
+    timers.pop(transition_timer)()
+    assert player.state.playback_state == PlaybackState.PLAYING
+    assert transition_timer in timers
+
+    await _set_device_state(player, HeosPlayState.PLAY)
+    timers.pop(transition_timer)()
+    assert player.state.playback_state == PlaybackState.PLAYING
+    assert player._ma_playback_starting is False
+
+
+async def test_queue_cleanup_waits_for_device_to_play_during_restart() -> None:
+    """Schedule the HEOS queue cleanup only once the device plays the new stream."""
+    player = _make_player(_url_stream_now_playing())
+    timers = await _start_ma_playback(player)
+    cleanup_timer = f"heos_queue_cleanup_timer_{player.player_id}"
+
+    await _set_device_state(player, HeosPlayState.STOP)
+    await player._player_event_received(heos_const.EVENT_PLAYER_QUEUE_CHANGED)
+    assert cleanup_timer not in timers
+
+    await _set_device_state(player, HeosPlayState.PLAY)
+    assert cleanup_timer in timers
+
+
+async def test_ma_playback_that_never_starts_becomes_idle() -> None:
+    """Report idle once HEOS keeps reporting stop past the playback transition."""
+    player = _make_player(_url_stream_now_playing())
+    timers = await _start_ma_playback(player)
+    transition_timer = f"heos_playback_transition_{player.player_id}"
+
+    await _set_device_state(player, HeosPlayState.STOP)
+    timers.pop(transition_timer)()
+    timers.pop(transition_timer)()
+
+    assert player.state.playback_state == PlaybackState.IDLE
+    assert player._ma_playback_starting is False
+
+
+async def test_stop_during_ma_playback_transition_reports_idle() -> None:
+    """A stop requested during the playback transition is reported right away."""
+    player = _make_player(_url_stream_now_playing())
+    await _start_ma_playback(player)
+    cast("MagicMock", player._device).stop = AsyncMock()
+
+    await player.stop()
+    await _set_device_state(player, HeosPlayState.STOP)
+
+    assert player.state.playback_state == PlaybackState.IDLE
 
 
 def test_media_position_and_duration_reported_in_seconds() -> None:

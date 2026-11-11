@@ -66,7 +66,7 @@ async def run_setup(session: SetupSession) -> None:
     )
     locale = str(values[CONF_LOCALE])
 
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         # a fresh authorize URL (+ PKCE verifier + device serial) per attempt, since the
         # pasted redirect carries a single-use authorization code
@@ -92,7 +92,7 @@ async def run_setup(session: SetupSession) -> None:
         try:
             auth = await audible_custom_login(code_verifier, post_login_url, serial, locale)
             if not (auth.adp_token and auth.device_private_key):
-                raise LoginFailed(
+                raise LoginFailed(  # noqa: TRY301 - shown as form error
                     "Registration succeeded but signing keys were not obtained. Please try again."
                 )
         except LoginFailed as err:
@@ -113,7 +113,7 @@ async def run_setup(session: SetupSession) -> None:
             # the just-written token file is unusable if the load failed; drop it
             evict_cached_authenticator(auth_file_path)
             await remove_file(auth_file_path)
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
             continue
         # the new registration replaces the previous one; retire the old device
         # registration and its token file

@@ -37,7 +37,6 @@
       "narrators": { "name": "Narrators" },
       "series_plural": { "name": "Series" },
       "series_singular": { "name": "Series" },
-      "series_entry": { "name": "{} (Series)" },
       "collections": { "name": "Collections" },
       "audiobooks_library": { "name": "{} (Audiobooks library)" },
       "podcasts_library": { "name": "{} (Podcasts library)" }
@@ -50,13 +49,16 @@
       "recent_series": { "name": "Recent series" },
       "newest_authors": { "name": "Newest authors" },
       "newest_episodes": { "name": "Newest episodes" },
-      "discover": { "name": "Discover" }
+      "discover": { "name": "Discover" },
+      "library": { "name": "Library" },
+      "libraries": { "name": "Libraries" }
     }
   },
   "manifest": {
     "description": "Stream audiobooks and podcasts from your personal Audiobookshelf server."
   },
   "errors": {
-    "login_failed": "Login to the Audiobookshelf server at {0} failed."
+    "login_failed": "Login to the Audiobookshelf server at {0} failed.",
+    "unsupported_server_version": "The Audiobookshelf server at {0} runs a version older than {1}, which is not supported. Please update it to the latest Audiobookshelf release."
   }
 }

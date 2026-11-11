@@ -1,0 +1,55 @@
+{
+  "items": [
+    {
+      "hasVideoOnDemand": false,
+      "audioFormatTypes": [
+        "mp3",
+        "lossless",
+        "hd"
+      ],
+      "videoFormatTypes": [
+        "liveHdVideo"
+      ],
+      "groups": [],
+      "catalogIds": [
+        "nugs"
+      ],
+      "id": "32612",
+      "status": "available",
+      "type": "show",
+      "title": "5-11-2023 Red Rocks Amphitheatre Morrison, CO",
+      "performanceDate": "2023-05-11T00:00:00",
+      "albumTitle": null,
+      "albumAbbreviation": null,
+      "albumReleaseDate": null,
+      "coverImage": null,
+      "image": {
+        "url": "https://assets-01.nugscdn.net/livedownloads/images/shows/bstr230511_02.jpg",
+        "width": 290,
+        "height": 160,
+        "caption": ""
+      },
+      "venue": {
+        "id": "42",
+        "title": "Red Rocks Amphitheatre Morrison, CO",
+        "name": "Red Rocks Amphitheatre",
+        "city": "Morrison",
+        "state": "CO",
+        "country": ""
+      },
+      "artist": {
+        "id": "1125",
+        "name": "Billy Strings",
+        "abbreviation": "bstr",
+        "avatarImage": {
+          "id": null,
+          "url": "https://catalog.nugs.net/api/v1/artists/1125/images/avatar/e7367b2849fd4393928c962269d9aa37"
+        }
+      },
+      "isInSubscriptionCatalog": true
+    }
+  ],
+  "offset": 0,
+  "limit": 3,
+  "total": 1
+}

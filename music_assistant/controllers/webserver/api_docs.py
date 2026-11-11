@@ -119,7 +119,7 @@ def _generate_type_alias_description(type_alias: Any, alias_name: str) -> str:
     return f"Type alias for {alias_name.lower()} types. Can be {types_str}."
 
 
-def _get_type_schema(  # noqa: PLR0911, PLR0915
+def _get_type_schema(  # noqa: C901, PLR0911, PLR0912, PLR0915
     type_hint: Any, definitions: dict[str, Any]
 ) -> dict[str, Any]:
     """Convert a Python type hint to an OpenAPI schema."""
@@ -475,7 +475,7 @@ def _parse_docstring(  # noqa: PLR0915
             continue
 
         # Detect bullet-style params even without explicit section header
-        # Format: "- param_name: description"
+        # in the format "- param_name: description"
         if stripped.startswith("- ") and ":" in stripped:
             # This is likely a bullet-style parameter
             current_section = "params"
@@ -761,7 +761,8 @@ def generate_openapi_spec(
                             }
                         },
                     },
-                    "400": {"description": "Setup already completed or invalid request"},
+                    "400": {"description": "Invalid request"},
+                    "409": {"description": "Setup already completed"},
                 },
             }
         },
@@ -972,7 +973,6 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
 
     # Check for List/list/UniqueList/tuple with type parameter BEFORE checking for union types
     # This is important because list[A | B] contains " | " but should be handled as a list first
-    # codespell:ignore
     if type_str.startswith(("list[", "List[", "UniqueList[", "tuple[", "Tuple[")):
         inner_type = _extract_generic_inner_type(type_str)
         if inner_type:
@@ -992,7 +992,6 @@ def _python_type_to_json_type(type_str: str, _depth: int = 0) -> str:
     # Check for dict/Dict with type parameters BEFORE checking for union types
     # This is important because dict[str, A | B] contains " | "
     # but should be handled as a dict first
-    # codespell:ignore
     if type_str.startswith(("dict[", "Dict[")):
         inner_type = _extract_generic_inner_type(type_str)
         if inner_type:
@@ -1114,7 +1113,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
         ],
         "return_type": str,  # Return type
         "authenticated": bool,  # Whether authentication is required
-        "required_scope": str | None,  # Required scope (if any)
+        "required_scope": str | None,  # Required scope, any-of scopes joined with " or "
     }
     """
     commands_data = []
@@ -1169,7 +1168,8 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                     "description": (
                         "Optional user_id or username of the user to execute this "
                         "command on behalf of. Requires the users.impersonate scope "
-                        "when targeting another user."
+                        "when targeting another user, who must hold the command's "
+                        "required scope as well."
                     ),
                 }
             )
@@ -1183,7 +1183,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                 "parameters": parameters,
                 "return_type": return_type_str,
                 "authenticated": handler.authenticated,
-                "required_scope": str(handler.required_scope) if handler.required_scope else None,
+                "required_scope": handler.required_scope_label,
             }
         )
 

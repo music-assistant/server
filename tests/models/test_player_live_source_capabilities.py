@@ -4,8 +4,9 @@ Tests for the external sources published in a player's source list.
 While a source has taken a player over there is no queue to read its ordering from,
 so the source entry itself has to carry what the source can do and what it reports
 being in — otherwise a client has nothing to drive its shuffle/repeat controls off.
-Sources a plugin has bound to the player get a standing entry even without a live
-session, so they are selectable straight from the source menu.
+Sources a plugin has bound to the player, and the inputs of the player's own device,
+get a standing entry even without a live session, so they are selectable straight
+from the source menu.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from music_assistant_models.enums import PlayerType, RepeatMode
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
+from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.models.plugin import PluginProvider
 from tests.common import MockPlayer, MockProvider
 
@@ -81,6 +83,24 @@ class _BoundSourcePlugin(PluginProvider):
     def get_player_audio_sources(self, player_id: str) -> list[AudioSource]:
         """Return the bound source for its own player only."""
         return [self._source] if player_id == self._bound_player_id else []
+
+
+class _InputSourcePlugin(PluginProvider):
+    """Plugin stub that reports one AudioSource as an input of one player's device."""
+
+    def __init__(self, source: AudioSource, player_id: str) -> None:
+        self._source = source
+        self._device_player_id = player_id
+
+    def get_player_input_sources(self, player_id: str) -> list[AudioSource]:
+        """Return the input for the device's own player only."""
+        return [self._source] if player_id == self._device_player_id else []
+
+
+def _input_plugin(mock_mass: MagicMock, source: AudioSource, player_id: str) -> None:
+    """Expose the given source as an input of the given player via a plugin provider."""
+    plugin = _InputSourcePlugin(source, player_id)
+    mock_mass.get_providers_supporting_feature = MagicMock(return_value=[plugin])
 
 
 def _bound_plugin(mock_mass: MagicMock, source: AudioSource, player_id: str = PLAYER_ID) -> None:
@@ -267,5 +287,34 @@ def test_protocol_player_gets_no_standing_entry(
     """Protocol players keep their bare source list, without bound-source entries."""
     player = MockPlayer(provider, PLAYER_ID, "Player", player_type=PlayerType.PROTOCOL)
     _bound_plugin(mock_mass, _audio_source(can_initiate=True))
+
+    assert _live_source(player) is None
+
+
+def test_device_input_gets_a_standing_entry(mock_mass: MagicMock, provider: MockProvider) -> None:
+    """An input of the player's own device is selectable without a session being active."""
+    player = MockPlayer(provider, PLAYER_ID, "Player")
+    _input_plugin(mock_mass, _audio_source(can_initiate=True), PLAYER_ID)
+
+    assert _live_source(player) is not None
+
+
+def test_input_reported_on_a_linked_protocol_lands_on_the_visible_player(
+    mock_mass: MagicMock, provider: MockProvider
+) -> None:
+    """An input the plugin reports for a protocol player is listed on the player it belongs to."""
+    player = MockPlayer(provider, PLAYER_ID, "Player")
+    player.set_linked_output_protocols([LinkedOutputProtocol("sendspin_x", "sendspin")])
+    _input_plugin(mock_mass, _audio_source(can_initiate=True), "sendspin_x")
+
+    assert _live_source(player) is not None
+
+
+def test_input_of_another_device_is_not_listed(
+    mock_mass: MagicMock, provider: MockProvider
+) -> None:
+    """Another device's input stays out of this player's source menu."""
+    player = MockPlayer(provider, PLAYER_ID, "Player")
+    _input_plugin(mock_mass, _audio_source(can_initiate=True), "other_player")
 
     assert _live_source(player) is None

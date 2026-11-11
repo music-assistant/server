@@ -17,12 +17,13 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
-from zeroconf.asyncio import AsyncZeroconf
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
 from tests.common import (
+    adopt_bound_sendspin_port,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
     use_ephemeral_server_ports,
@@ -121,6 +122,12 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=NonCallableMagicMock(),
         ),
+        # the Sendspin server runs its own zeroconf instance
+        patch("aiosendspin.server.server.AsyncZeroconf", return_value=_create_mock_zeroconf()),
+        patch(
+            "aiosendspin.server.server.AsyncServiceBrowser",
+            return_value=MagicMock(spec=AsyncServiceBrowser),
+        ),
         patch(
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
@@ -129,6 +136,15 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
         patch(
             "music_assistant.controllers.discovery.controller.async_upnp_search",
             new=AsyncMock(),
+        ),
+        # hermetic: MusicBrainz knows none of the fake library items
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_data",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "music_assistant.providers.musicbrainz.api_client.MusicBrainzAPIClient.get_browse_data",
+            new=AsyncMock(return_value=None),
         ),
         # hermetic: no auto-loaded device providers and no host-audio bridging
         suppress_auto_loaded_providers(),
@@ -144,6 +160,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             )
             await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)
             await wait_for_boot_to_settle(mass_instance)
+            adopt_bound_sendspin_port(mass_instance)
             yield mass_instance
         finally:
             # also stop after a failed boot, or the half-started server's open database

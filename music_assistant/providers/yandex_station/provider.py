@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientSession, CookieJar
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import (
+    InvalidDataError,
+    PlayerUnavailableError,
+)
 from ya_passport_auth import PassportClient, SecretStr
 from ya_passport_auth.ma import (
     BORROW_SOURCE_OWN,
@@ -22,6 +28,7 @@ from ya_passport_auth.ma import (
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    CONF_ALICE_TEXT_COMMANDS,
     CONF_INTERCEPT_FEATURE_ENABLED,
     CONF_MUSIC_TOKEN,
     CONF_REFRESH_TOKEN,
@@ -36,16 +43,20 @@ from .quasar import YandexQuasar
 from .session import YandexSession
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from ya_passport_auth import Credentials
+    from ya_passport_auth.ma import ResolvedCredentials
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
 
 _LOGGER = logging.getLogger(__name__)
+_BORROW_SOURCE_LOAD_TIMEOUT = 10
 
 
 class YandexStationProvider(PlayerProvider):
@@ -70,6 +81,20 @@ class YandexStationProvider(PlayerProvider):
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._cascade = self._build_cascade()
         self._borrow_source = self._build_borrow_source()
+        self._unregister_api_commands: list[Callable[[], None]] = []
+
+    @property
+    def linked_music_instance(self) -> str | None:
+        """Instance id of the loaded Yandex Music provider this one shares its account with."""
+        if self._borrow_source is None:
+            return None
+        instance_id = self._borrow_source.instance_id
+        # Look up the exact instance: for an unavailable one the core falls back to
+        # another instance of the domain, which may be a different account.
+        linked = self.mass.get_provider(instance_id, return_unavailable=True)
+        if linked is None or linked.instance_id != instance_id or not linked.available:
+            return None
+        return instance_id
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -83,6 +108,14 @@ class YandexStationProvider(PlayerProvider):
             # When OFF, no per-player intercept setting takes effect.
             ConfigEntry(
                 key=CONF_INTERCEPT_FEATURE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+            # yandex_station/command can drive anything linked to the Yandex
+            # account (smart home, purchases), so it is opt-in.
+            ConfigEntry(
+                key=CONF_ALICE_TEXT_COMMANDS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 required=False,
@@ -283,9 +316,59 @@ class YandexStationProvider(PlayerProvider):
         except Exception:
             _LOGGER.exception("Error processing mDNS discovery for %s", name)
 
+    async def loaded_in_mass(self) -> None:
+        """Register the provider's API commands once it is loaded."""
+        await super().loaded_in_mass()
+        commands: list[tuple[str, Callable[[str, str], Coroutine[Any, Any, None]]]] = [
+            ("yandex_station/say", self.say)
+        ]
+        if self.config.get_value(CONF_ALICE_TEXT_COMMANDS):
+            commands.append(("yandex_station/command", self.command))
+        for command, handler in commands:
+            self._unregister_api_commands.append(
+                self.mass.register_api_command(
+                    command, handler, required_scope=Scope.PLAYERS_CONTROL
+                )
+            )
+
     async def unload(self, is_removed: bool = False) -> None:
         """Clean up on provider unload."""
+        for unregister in self._unregister_api_commands:
+            unregister()
+        self._unregister_api_commands.clear()
         await self._cleanup_session()
+
+    async def say(self, player_id: str, text: str) -> None:
+        """
+        Make a Station say a phrase in Alice's voice.
+
+        :param player_id: The Yandex Station player to speak on.
+        :param text: The phrase to say.
+        """
+        await self._get_station(player_id, text).say(text)
+
+    async def command(self, player_id: str, text: str) -> None:
+        """
+        Hand a text request to Alice on a Station as if the user had spoken it.
+
+        :param player_id: The Yandex Station player that handles the request.
+        :param text: The request, e.g. "включи свет на кухне".
+        """
+        await self._get_station(player_id, text).send_command(text)
+
+    def _get_station(self, player_id: str, text: str) -> YandexStationPlayer:
+        """Return the addressed Station for an API command, validating its arguments."""
+        if not text.strip():
+            msg = "Text must not be empty"
+            raise InvalidDataError(msg)
+        # The core decides whether the calling user may use the player; it
+        # raises InsufficientPermissions under the same rules as its own commands.
+        self.mass.players.get_player_state(player_id)
+        player = self.mass.players.get_player(player_id)
+        if not isinstance(player, YandexStationPlayer):
+            msg = f"{player_id} is not a Yandex Station player"
+            raise PlayerUnavailableError(msg)
+        return player
 
     # ── Credential cascade ────────────────────────────────────────────
 
@@ -388,7 +471,9 @@ class YandexStationProvider(PlayerProvider):
             # ``create_clientsession`` helper: the helper's connector +
             # ``_default_headers`` override broke Yandex Passport's session
             # refresh redirect chain (HTTP 400) on production stations.
-            self._http_session = ClientSession(cookie_jar=CookieJar(quote_cookie=False))
+            self._http_session = ClientSession(  # ma-allow: MA001 Passport needs an isolated CookieJar(quote_cookie=False)
+                cookie_jar=CookieJar(quote_cookie=False)
+            )
             self._passport_client = PassportClient(session=self._http_session)
 
             self._session = YandexSession(
@@ -440,22 +525,43 @@ class YandexStationProvider(PlayerProvider):
         if self._http_session is not None:
             await self._cleanup_session()
 
-        music_token = await self._borrow_source.resolve_music_token()
-        _, x_token = self._borrow_source.read_tokens()
+        creds = await self._resolve_borrowed_tokens()
 
-        self._http_session = ClientSession(cookie_jar=CookieJar(quote_cookie=False))
+        self._http_session = ClientSession(  # ma-allow: MA001 Passport needs an isolated CookieJar(quote_cookie=False)
+            cookie_jar=CookieJar(quote_cookie=False)
+        )
         self._passport_client = PassportClient(session=self._http_session)
         self._session = YandexSession(
             self._http_session,
             self._passport_client,
-            x_token=x_token,
-            music_token=music_token,
+            x_token=creds.x_token,
+            music_token=creds.music_token,
             refresh_token=None,
         )
         if await self._refresh_session_cookies():
             return True
         await self._cleanup_session()
         return False
+
+    async def _resolve_borrowed_tokens(self) -> ResolvedCredentials:
+        """
+        Return the linked Yandex Music instance's credentials.
+
+        :raises ResourceTemporarilyUnavailable: The linked instance is not loaded
+            yet (MA retries the provider load) or Passport is unavailable.
+        :raises LoginFailed: The linked instance holds no usable credentials.
+        """
+        assert self._borrow_source is not None
+        source = self._borrow_source
+        if self.mass.get_provider(source.instance_id, return_unavailable=True) is None:
+            # Startup ordering: give Yandex Music one chance to finish loading.
+            # The event is domain-wide, so the selected instance is re-checked
+            # once by the read below; if it is still missing, the transient
+            # error is left to MA's provider-load retry instead of polling.
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(_BORROW_SOURCE_LOAD_TIMEOUT):
+                    await self.mass.get_provider_ready_event("yandex_music").wait()
+        return await source.resolve_credentials()
 
     async def _silent_reauth_borrowed(self) -> bool:
         """
@@ -469,11 +575,10 @@ class YandexStationProvider(PlayerProvider):
         assert self._borrow_source is not None
         if self._session is None:
             return False
-        music_token = await self._borrow_source.resolve_music_token()
-        _, x_token = self._borrow_source.read_tokens()
-        if x_token is not None:
-            self._session.x_token = x_token
-        self._session.music_token = music_token
+        creds = await self._borrow_source.resolve_credentials()
+        if creds.x_token is not None:
+            self._session.x_token = creds.x_token
+        self._session.music_token = creds.music_token
         return await self._refresh_session_cookies()
 
     async def _fast_path(self) -> bool:
