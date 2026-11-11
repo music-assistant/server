@@ -37,7 +37,8 @@ def _make_player(
     api: Any, *, cls: type[SendspinBasePlayer] = SendspinBasePlayer, dismissed: bool = False
 ) -> SendspinBasePlayer:
     player = cls.__new__(cls)
-    player._player_id = "client-1"
+    player._protocol_id = "client-1"
+    player._player = None
     player._provider = cast(
         "SendspinProvider",
         SimpleNamespace(
