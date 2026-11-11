@@ -5004,10 +5004,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Power on a player that is switched off at its external power control.
 
         Returns right away for a player that is not switched off. Otherwise it returns once
-        the device is online and one of its protocols attached again, while the player stays
-        available to clients in the meantime. Takes no lock: waiting for the device takes
-        far longer than other commands wait for a player lock, so it must run before any
-        lock is taken.
+        the device is online and the protocols that brought it back finished attaching,
+        while the player stays available to clients in the meantime. Takes no lock: waiting
+        for the device takes far longer than other commands wait for a player lock, so it
+        must run before any lock is taken.
 
         :param player_id: The player to power on.
         :raises InsufficientPermissions: When the current user has no access to the player.
@@ -5041,7 +5041,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             try:
                 async with asyncio.timeout(OFFLINE_POWER_ON_TIMEOUT):
                     while True:
-                        if player.available_for_playback:
+                        # a protocol that is still attaching may not be played to yet
+                        if player.available_for_playback and self._attaching.keys().isdisjoint(
+                            player.protocols
+                        ):
                             # a device can come online before its control reports on, while
                             # what follows (e.g. an announcement) reads the power state
                             if (control := self._controls.get(control_id)) is not None:
