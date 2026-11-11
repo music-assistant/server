@@ -470,11 +470,6 @@ class TestFailedAttach:
         assert player.initialized.is_set()
         assert retried.player is player
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="cutover core defect: a setup that fails after a detach leaves its new player",
-    )
     async def test_failed_setup_after_a_detach_raises_its_own_error(
         self, scenario: Scenario
     ) -> None:
