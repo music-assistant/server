@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from typing import TYPE_CHECKING
 
 import pytest
 from music_assistant_models.enums import (
     EventType,
-    PlayerFeature,
+    IdentifierType,
     PlayerType,
     ProviderFeature,
-    ProviderType,
 )
 from music_assistant_models.errors import (
     PlayerCommandFailed,
@@ -21,139 +18,50 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
-from music_assistant.constants import CONF_PLAYER_DSP, CONF_PLAYER_QUEUES, CONF_PLAYERS
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.constants import (
+    CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYER_QUEUES,
+    CONF_PLAYERS,
+)
 from music_assistant.providers import sync_group, universal_group
+from tests.scenarios.harness import Event
 
 if TYPE_CHECKING:
-    from music_assistant_models.event import MassEvent
+    from tests.scenarios.harness import FakePlayerProvider, FakeProtocol, Scenario
 
-    from music_assistant.mass import MusicAssistant
-
-PLAYER_ID = "test_player_1"
-GROUP_ID = "test_group_1"
-PROVIDER = "test_provider"
+KITCHEN = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C2"}
+DEN = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C3"}
 
 
-class _TestProvider:
-    """A PlayerProvider stand-in that knows nothing about removing players."""
-
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize the test provider."""
-        self.mass = mass
-        self.domain = self.instance_id = PROVIDER
-        self.name = "Test Provider"
-        self.available = True
-        self.logger = logging.getLogger("test.test_provider")
-        self.manifest = MagicMock()
-        self.manifest.domain = self.domain
-        self.manifest.name = self.name
-        self.type = self.manifest.type = ProviderType.PLAYER
-        self.discovery_requests = 0
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Unload the provider (nothing to clean up)."""
-
-    def schedule_discovery(self) -> None:
-        """Record a request to look for devices."""
-        self.discovery_requests += 1
-
-
-class _TestPlayer(Player):
-    """A player without a removal hook of its own."""
-
-    def __init__(
-        self, provider: _TestProvider, player_type: PlayerType, player_id: str = PLAYER_ID
-    ) -> None:
-        """Initialize the test player."""
-        super().__init__(provider, player_id)  # type: ignore[arg-type]
-        self._attr_name = "Test Player"
-        self._attr_type = player_type
-        self._attr_available = True
-        self._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA}
-        self._attr_device_info = DeviceInfo(model="Test Model", manufacturer="Test")
-        self._cache.clear()
-        self.update_state(signal_event=False)
-        self.unloaded = False
-
-    async def stop(self) -> None:
-        """Stop playback - required abstract method."""
-
-    async def on_unload(self) -> None:
-        """Record that the player was unloaded."""
-        await super().on_unload()
-        self.unloaded = True
-
-
-class _HookedPlayer(_TestPlayer):
-    """A player whose provider has something of its own to clean up on removal."""
-
-    def __init__(self, provider: _TestProvider, player_type: PlayerType) -> None:
-        """Initialize the test player."""
-        super().__init__(provider, player_type)
-        # what the hook found when it was called, once per call
-        self.hook_calls: list[dict[str, bool]] = []
-        self.hook_error: Exception | None = None
-
-    async def on_remove(self) -> None:
-        """Record the state of the removal at the time the hook runs."""
-        self.hook_calls.append(
-            {
-                "unloaded": self.unloaded,
-                "registered": self.mass.players.get_player(PLAYER_ID) is not None,
-                "config": self.mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is not None,
-            }
-        )
-        if self.hook_error:
-            raise self.hook_error
-
-
-async def _register[PlayerT: _TestPlayer](
-    mass: MusicAssistant,
-    player_class: type[PlayerT],
-    player_type: PlayerType = PlayerType.PLAYER,
-) -> PlayerT:
-    """Put a player in the registry with its config, its DSP and queue settings and a queue."""
-    player = player_class(_TestProvider(mass), player_type)
-    mass.config.create_default_player_config(PLAYER_ID, PROVIDER, player_type, player.name)
-    mass.config.set(f"{CONF_PLAYER_DSP}/{PLAYER_ID}", {"enabled": True})
-    mass.config.set(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}", {"queue_id": PLAYER_ID, "values": {}})
-    mass.players._players[PLAYER_ID] = player
-    await mass.player_queues.on_player_register(player)
-    return player
-
-
-def _assert_removed(mass: MusicAssistant) -> None:
-    """Assert that the player and everything stored for it is gone."""
-    assert mass.players.get_player(PLAYER_ID) is None
-    assert mass.player_queues.get(PLAYER_ID) is None
-    for tree in (CONF_PLAYERS, CONF_PLAYER_DSP, CONF_PLAYER_QUEUES):
-        assert mass.config.get(f"{tree}/{PLAYER_ID}") is None
-
-
-async def test_a_player_without_a_removal_hook_is_removable(mass: MusicAssistant) -> None:
+async def test_a_player_without_a_removal_hook_of_its_provider_is_removable(
+    scenario: Scenario,
+) -> None:
     """A player is removed by the controller, whatever its provider knows about removal."""
-    player = await _register(mass, _TestPlayer)
-    removed: list[MassEvent] = []
-    unsubscribe = mass.subscribe(removed.append, EventType.PLAYER_REMOVED)
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    hooks = _record_hooks(scenario, speaker, player_id)
+    scenario.clear_events()
 
-    await mass.players.remove(PLAYER_ID)
-    await asyncio.sleep(0)
-    unsubscribe()
+    await scenario.remove(player_id)
 
-    assert player.unloaded
-    _assert_removed(mass)
-    assert [event.object_id for event in removed] == [PLAYER_ID]
+    assert hooks[0] == "on_detach"
+    _assert_removed(scenario, player_id, speaker)
+    assert scenario.events(EventType.PLAYER_REMOVED) == [Event(EventType.PLAYER_REMOVED, player_id)]
 
 
-async def test_the_removal_hook_is_called_once_the_player_is_gone(mass: MusicAssistant) -> None:
-    """The hook of the player object runs after the player was unloaded and its config deleted."""
-    player = await _register(mass, _HookedPlayer)
+async def test_the_removal_hook_is_called_once_the_player_is_gone(scenario: Scenario) -> None:
+    """The hook of the protocol runs after it was detached and the configs were deleted."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    hooks = _record_hooks(scenario, speaker, player_id)
 
-    await mass.players.remove(PLAYER_ID)
+    await scenario.remove(player_id)
 
-    assert player.hook_calls == [{"unloaded": True, "registered": False, "config": False}]
-    _assert_removed(mass)
+    assert hooks == ["on_detach", {"attached": False, "registered": False, "config": False}]
+    _assert_removed(scenario, player_id, speaker)
 
 
 @pytest.mark.parametrize(
@@ -165,64 +73,40 @@ async def test_the_removal_hook_is_called_once_the_player_is_gone(mass: MusicAss
     ],
 )
 async def test_the_provider_looks_again_for_the_device_of_a_removed_player(
-    mass: MusicAssistant, player_type: PlayerType, loaded: bool, expected_requests: int
+    scenario: Scenario, player_type: PlayerType, loaded: bool, expected_requests: int
 ) -> None:
     """The loaded provider of a removed player looks for devices again; a removed group is gone."""
-    player = await _register(mass, _TestPlayer, player_type)
-    provider = cast("_TestProvider", player.provider)
-    if loaded:
-        mass._providers[PROVIDER] = provider  # type: ignore[assignment]
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, type=player_type)
+    player_id = await _attach_with_settings(scenario, speaker)
+    discovery_requests = _count_discovery_requests(sonos)
+    if not loaded:
+        await scenario.mass.unload_provider(sonos.instance_id)
+        await scenario.settle()
 
-    try:
-        await mass.players.remove(PLAYER_ID)
-    finally:
-        mass._providers.pop(PROVIDER, None)
+    await scenario.remove(player_id)
 
-    assert provider.discovery_requests == expected_requests
-    _assert_removed(mass)
-
-
-class _GroupPlayer(_TestPlayer):
-    """A dynamic group that records in which state a member leaves it."""
-
-    def __init__(self, provider: _TestProvider) -> None:
-        """Initialize the test group."""
-        super().__init__(provider, PlayerType.GROUP, GROUP_ID)
-        # whether each member that left was still a registered player at that time
-        self.left_while_registered: dict[str, bool] = {}
-        self.leave_error: Exception | None = None
-
-    async def set_members(
-        self,
-        player_ids_to_add: list[str] | None = None,
-        player_ids_to_remove: list[str] | None = None,
-    ) -> None:
-        """Record the members that are taken out of the group."""
-        for member_id in player_ids_to_remove or []:
-            self.left_while_registered[member_id] = (
-                self.mass.players.get_player(member_id) is not None
-            )
-        if self.leave_error:
-            raise self.leave_error
+    assert discovery_requests == [None] * expected_requests
+    _assert_removed(scenario, player_id, speaker)
 
 
-async def test_a_member_of_an_active_group_leaves_it_before_it_is_unregistered(
-    mass: MusicAssistant,
+async def test_a_member_of_an_active_group_leaves_it_before_it_is_detached(
+    scenario: Scenario,
 ) -> None:
     """A removed player is taken out of its active group while the group can still reach it."""
-    player = await _register(mass, _HookedPlayer)
-    group = _GroupPlayer(_TestProvider(mass))
-    mass.players._players[GROUP_ID] = group
-    player.state.active_group = GROUP_ID
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    group, group_id = await _active_group_of(scenario, sonos, speaker)
+    left_while_attached = _record_leaving_members(scenario, group)
+    hooks = _record_hooks(scenario, speaker, player_id)
 
-    try:
-        await mass.players.remove(PLAYER_ID)
-    finally:
-        mass.players._players.pop(GROUP_ID)
+    await scenario.remove(player_id)
 
-    assert group.left_while_registered == {PLAYER_ID: True}
-    assert len(player.hook_calls) == 1
-    _assert_removed(mass)
+    assert left_while_attached == {player_id: True}
+    assert len([hook for hook in hooks if isinstance(hook, dict)]) == 1
+    _assert_removed(scenario, player_id, speaker)
+    assert scenario.player(group_id) is not None
 
 
 @pytest.mark.parametrize(
@@ -234,101 +118,106 @@ async def test_a_member_of_an_active_group_leaves_it_before_it_is_unregistered(
     ],
 )
 async def test_a_group_that_can_not_let_the_member_go_does_not_keep_the_player(
-    mass: MusicAssistant, leave_error: Exception
+    scenario: Scenario, leave_error: Exception
 ) -> None:
     """A member its active group refuses to release, or can not reach, is removed all the same."""
-    player = await _register(mass, _HookedPlayer)
-    group = _GroupPlayer(_TestProvider(mass))
-    group.leave_error = leave_error
-    mass.players._players[GROUP_ID] = group
-    player.state.active_group = GROUP_ID
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    group, _group_id = await _active_group_of(scenario, sonos, speaker)
+    _record_leaving_members(scenario, group, leave_error)
+    hooks = _record_hooks(scenario, speaker, player_id)
 
-    try:
-        await mass.players.remove(PLAYER_ID)
-    finally:
-        mass.players._players.pop(GROUP_ID)
+    await scenario.remove(player_id)
 
-    assert len(player.hook_calls) == 1
-    _assert_removed(mass)
+    assert len([hook for hook in hooks if isinstance(hook, dict)]) == 1
+    _assert_removed(scenario, player_id, speaker)
 
 
 async def test_a_failing_removal_hook_does_not_keep_the_player(
-    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+    scenario: Scenario, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A provider that fails to clean up its own leaves the player removed all the same."""
-    player = await _register(mass, _HookedPlayer)
-    player.hook_error = RuntimeError("device unreachable")
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    hooks = _record_hooks(scenario, speaker, player_id, RuntimeError("device unreachable"))
+    scenario.expect_log("Error removing protocol RINCON_KITCHEN")
 
     with caplog.at_level(logging.ERROR):
-        await mass.players.remove(PLAYER_ID)
+        await scenario.remove(player_id)
 
-    assert len(player.hook_calls) == 1
-    _assert_removed(mass)
-    assert "Error removing player Test Player" in caplog.text
+    assert len([hook for hook in hooks if isinstance(hook, dict)]) == 1
+    _assert_removed(scenario, player_id, speaker)
+    assert "Error removing protocol RINCON_KITCHEN" in caplog.text
 
 
-async def test_the_removal_hook_is_not_called_when_a_player_is_only_unregistered(
-    mass: MusicAssistant,
+async def test_the_removal_hook_is_not_called_when_its_provider_removes_the_protocol(
+    scenario: Scenario,
 ) -> None:
-    """A provider that takes its own player away for good gets no removal hook."""
-    player = await _register(mass, _HookedPlayer)
+    """A provider that forgets its own device gets no removal hook; the player goes with it."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    hooks = _record_hooks(scenario, speaker, player_id)
 
-    await mass.players.unregister(PLAYER_ID, permanent=True)
+    await scenario.mass.players.remove_protocol("RINCON_KITCHEN")
+    await scenario.settle()
 
-    assert player.hook_calls == []
-    _assert_removed(mass)
+    assert hooks == ["on_detach"]
+    _assert_removed(scenario, player_id, speaker)
 
 
-async def test_removing_the_config_of_a_registered_player_removes_the_player(
-    mass: MusicAssistant,
+async def test_removing_the_config_of_an_attached_player_removes_the_player(
+    scenario: Scenario,
 ) -> None:
-    """Removing a player's config is removing the player, also while it is registered."""
-    player = await _register(mass, _HookedPlayer)
+    """Removing a player's config is removing the player, also while it is attached."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    hooks = _record_hooks(scenario, speaker, player_id)
 
-    await mass.config.remove_player_config(PLAYER_ID)
+    await scenario.mass.config.remove_player_config(player_id)
+    await scenario.settle()
 
-    assert len(player.hook_calls) == 1
-    _assert_removed(mass)
-
-
-async def test_a_group_player_is_removed_like_any_other_player(mass: MusicAssistant) -> None:
-    """The group command removes a group through the same path, hook included."""
-    player = await _register(mass, _HookedPlayer, PlayerType.GROUP)
-
-    await mass.players.remove_group_player(PLAYER_ID)
-
-    assert len(player.hook_calls) == 1
-    _assert_removed(mass)
+    assert len([hook for hook in hooks if isinstance(hook, dict)]) == 1
+    _assert_removed(scenario, player_id, speaker)
 
 
 @pytest.mark.parametrize("command", ["players/remove", "players/remove_group_player"])
-async def test_a_sync_group_is_removed_by_the_controller(
-    mass: MusicAssistant, command: str
+async def test_a_group_player_is_removed_like_any_other_player(
+    scenario: Scenario, command: str
 ) -> None:
-    """A group the user created goes with either command; its provider has no part in it."""
-    group = await mass.players.create_group_player("sync_group", "Group", [], dynamic=True)
-    group_id = group.player_id
-    assert mass.config.get(f"{CONF_PLAYERS}/{group_id}") is not None
+    """A group goes with either command through the same path, hook included."""
+    sonos = await scenario.add_provider("sonos")
+    group = sonos.protocol("group_1", "Group", role="virtual", type=PlayerType.GROUP)
+    group_id = await _attach_with_settings(scenario, group)
+    hooks = _record_hooks(scenario, group, group_id)
 
     if command == "players/remove":
-        await mass.players.remove(group_id)
+        await scenario.mass.players.remove(group_id)
     else:
-        await mass.players.remove_group_player(group_id)
+        await scenario.mass.players.remove_group_player(group_id)
+    await scenario.settle()
 
-    assert mass.players.get_player(group_id) is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{group_id}") is None
+    assert len([hook for hook in hooks if isinstance(hook, dict)]) == 1
+    _assert_removed(scenario, group_id, group)
 
 
-async def test_the_group_command_only_removes_group_players(mass: MusicAssistant) -> None:
+async def test_the_group_command_only_removes_group_players(scenario: Scenario) -> None:
     """The group command refuses a player that is no group and leaves it alone."""
-    player = await _register(mass, _HookedPlayer)
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    player_id = await _attach_with_settings(scenario, speaker)
+    hooks = _record_hooks(scenario, speaker, player_id)
 
     with pytest.raises(UnsupportedFeaturedException, match="is not a group player"):
-        await mass.players.remove_group_player(PLAYER_ID)
+        await scenario.mass.players.remove_group_player(player_id)
 
-    assert player.hook_calls == []
-    assert mass.players.get_player(PLAYER_ID) is player
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is not None
+    assert hooks == []
+    assert scenario.player_of(speaker) == player_id
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{player_id}") is not None
+    assert scenario.mass.config.get_protocol_record("RINCON_KITCHEN") is not None
 
 
 @pytest.mark.parametrize("module", [sync_group, universal_group])
@@ -337,3 +226,146 @@ def test_the_group_providers_still_offer_the_removal_of_groups(module: object) -
     features: set[ProviderFeature] = module.SUPPORTED_FEATURES  # type: ignore[attr-defined]
 
     assert ProviderFeature.REMOVE_GROUP_PLAYER in features
+
+
+async def _attach_with_settings(scenario: Scenario, protocol: FakeProtocol) -> str:
+    """
+    Attach a new device and give its player DSP and queue settings; return the player id.
+
+    :param scenario: The scenario.
+    :param protocol: The protocol of the device.
+    """
+    await scenario.attach(protocol)
+    player_id = scenario.single_player(protocol).player_id
+    scenario.mass.config.set(f"{CONF_PLAYER_DSP}/{player_id}", {"enabled": True})
+    scenario.mass.config.set(
+        f"{CONF_PLAYER_QUEUES}/{player_id}", {"queue_id": player_id, "values": {}}
+    )
+    assert scenario.queue(player_id) is not None
+    return player_id
+
+
+async def _active_group_of(
+    scenario: Scenario, provider: FakePlayerProvider, member_protocol: FakeProtocol
+) -> tuple[FakeProtocol, str]:
+    """
+    Attach a powered group that holds a player; return its protocol and its player id.
+
+    :param scenario: The scenario.
+    :param provider: The provider of the group.
+    :param member_protocol: The protocol of the player the group holds.
+    """
+    member_id = scenario.player_of(member_protocol)
+    assert member_id is not None
+    group = provider.protocol(
+        "group_1", "Group", role="virtual", identifiers=DEN, type=PlayerType.GROUP
+    )
+    await scenario.attach(group)
+    group_id = scenario.single_player(group).player_id
+    await scenario.report(group, powered=True, group_members=[group_id, member_id])
+    await scenario.report(member_protocol)
+    member = scenario.player(member_id)
+    assert member is not None
+    assert member.active_group == group_id
+    return group, group_id
+
+
+def _record_leaving_members(
+    scenario: Scenario, group: FakeProtocol, leave_error: Exception | None = None
+) -> dict[str, bool]:
+    """
+    Record whether each member taken out of a group still had its protocol attached then.
+
+    :param scenario: The scenario.
+    :param group: The protocol of the group.
+    :param leave_error: What the group raises when a member is taken out.
+    """
+    left_while_attached: dict[str, bool] = {}
+    set_members = group.set_members
+
+    async def _set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        for member_id in player_ids_to_remove or []:
+            member = scenario.mass.players.get_player(member_id)
+            left_while_attached[member_id] = member is not None and bool(member.protocols)
+        if leave_error:
+            raise leave_error
+        await set_members(player_ids_to_add, player_ids_to_remove)
+
+    group.set_members = _set_members  # type: ignore[method-assign]
+    return left_while_attached
+
+
+def _record_hooks(
+    scenario: Scenario,
+    protocol: FakeProtocol,
+    player_id: str,
+    remove_error: Exception | None = None,
+) -> list[str | dict[str, bool]]:
+    """
+    Record the detach and removal hooks of a protocol, and what the removal found then.
+
+    :param scenario: The scenario.
+    :param protocol: The protocol object.
+    :param player_id: Id of its player.
+    :param remove_error: What the removal hook raises.
+    """
+    calls: list[str | dict[str, bool]] = []
+    on_detach = protocol.on_detach
+    on_remove = protocol.on_remove
+
+    async def _on_detach() -> None:
+        calls.append("on_detach")
+        await on_detach()
+
+    async def _on_remove() -> None:
+        config = scenario.mass.config
+        calls.append(
+            {
+                "attached": protocol.player is not None,
+                "registered": scenario.mass.players.get_player(player_id) is not None,
+                "config": config.get(f"{CONF_PLAYERS}/{player_id}") is not None
+                or config.get_protocol_record(protocol.protocol_id) is not None,
+            }
+        )
+        if remove_error:
+            raise remove_error
+        await on_remove()
+
+    protocol.on_detach = _on_detach  # type: ignore[method-assign]
+    protocol.on_remove = _on_remove  # type: ignore[method-assign]
+    return calls
+
+
+def _count_discovery_requests(provider: FakePlayerProvider) -> list[None]:
+    """
+    Record the requests of the players controller to a provider to look for devices again.
+
+    :param provider: The provider.
+    """
+    requests: list[None] = []
+
+    def _schedule_discovery() -> None:
+        requests.append(None)
+
+    provider.schedule_discovery = _schedule_discovery  # type: ignore[method-assign]
+    return requests
+
+
+def _assert_removed(scenario: Scenario, player_id: str, protocol: FakeProtocol) -> None:
+    """
+    Assert that the player and everything stored for it and its protocol is gone.
+
+    :param scenario: The scenario.
+    :param player_id: Id of the removed player.
+    :param protocol: Its protocol.
+    """
+    assert scenario.mass.players.get_player(player_id) is None
+    assert scenario.mass.players.get_protocol(protocol.protocol_id) is None
+    assert protocol.player is None
+    assert scenario.queue(player_id) is None
+    for tree in (CONF_PLAYERS, CONF_PLAYER_DSP, CONF_PLAYER_QUEUES):
+        assert scenario.mass.config.get(f"{tree}/{player_id}") is None
+    assert scenario.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{protocol.protocol_id}") is None
