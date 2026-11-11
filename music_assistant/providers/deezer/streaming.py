@@ -12,7 +12,7 @@ import json
 import uuid
 from asyncio import IncompleteReadError
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import datetime
 from math import ceil
 from typing import TYPE_CHECKING, NoReturn
 
@@ -52,7 +52,7 @@ from .helpers import (
     fetch_all_bookmarks,
     parse_flac_streaminfo,
 )
-from .parsers import parse_date
+from .parsers import parse_bookmark_time
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import ItemMapping
@@ -93,11 +93,7 @@ class DeezerStreamingManager:
         bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
         if item_id in bookmarks:
             is_played, position_ms, bookmarked_at = bookmarks[item_id]
-            timestamp = parse_date(bookmarked_at)
-            if timestamp is not None and timestamp.tzinfo is None:
-                # the core compares against an aware timestamp; Deezer's times are UTC
-                timestamp = timestamp.replace(tzinfo=UTC)
-            return (is_played, position_ms, timestamp)
+            return (is_played, position_ms, parse_bookmark_time(bookmarked_at))
         return (False, 0, None)
 
     # -- Playback callbacks --
