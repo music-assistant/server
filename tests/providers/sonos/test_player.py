@@ -178,15 +178,29 @@ async def test_on_unload_disconnects_without_reconnecting(timer_mass: MusicAssis
     await _connect_player(player, client)
     listener = player._listen_task
     assert listener is not None
+    upnp: Any = player.upnp
+    upnp.unfollow.reset_mock()
 
     await player.on_unload()
 
     assert player.connected is False
     client.disconnect.assert_awaited_once()
+    upnp.unfollow.assert_awaited_once()
     # let the aborted listener run its cleanup
     with pytest.raises(asyncio.CancelledError):
         await listener
     assert timer_mass._tracked_timers == {}
+
+
+@pytest.mark.asyncio
+async def test_on_unload_of_an_offline_speaker_ends_no_subscription() -> None:
+    """Test an unload does not wait for an unsubscribe a disconnected speaker cannot answer."""
+    player, _ = _make_player()
+
+    await player.on_unload()
+
+    upnp: Any = player.upnp
+    upnp.unfollow.assert_not_awaited()
 
 
 @pytest.mark.asyncio

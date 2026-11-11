@@ -348,7 +348,10 @@ class SonosPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
-        await self.upnp.unfollow()
+        # an offline or sleeping speaker would hold up the unload until the request times out;
+        # its subscription runs out on the speaker itself
+        if self.connected:
+            await self.upnp.unfollow()
         for task_id in (
             f"sonos_reconnect_{self.player_id}",
             f"restore_airplay_group_{self.player_id}",
