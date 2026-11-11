@@ -2854,7 +2854,6 @@
   "provider.universal_group.errors.cannot_remove_group_from_itself": "Cannot remove {0} from itself as a member.",
   "provider.universal_group.errors.group_not_dynamic": "Group {0} does not allow dynamically adding or removing members.",
   "provider.universal_group.manifest.description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (but not in sync).",
-  "provider.universal_player.manifest.description": "Provides support for players that have no native (vendor-specific) provider in Music Assistant but support one or more generic streaming protocols such as AirPlay, Chromecast, or DLNA. Automatically created for protocol-only devices.",
   "provider.vban_receiver.config_entries.audio_channels.description": "The number of audio channels",
   "provider.vban_receiver.config_entries.audio_channels.label": "Channels",
   "provider.vban_receiver.config_entries.audio_format.description": "The VBAN PCM audio format to expect from the remote VBAN sender. This MUST match what the remote VBAN sender has set otherwise audio streaming will not work.",
