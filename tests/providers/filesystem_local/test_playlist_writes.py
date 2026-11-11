@@ -240,6 +240,17 @@ async def test_move_playlist_track_counts_entries_that_do_not_exist(base: Path) 
     assert _paths(playlist) == ["c.mp3", "a.mp3", "gone.mp3"]
 
 
+async def test_move_playlist_track_in_a_file_with_a_byte_order_mark(base: Path) -> None:
+    """A leading byte order mark does not shift the positions."""
+    playlist = _write_playlist(base, "party.m3u8", ["a.mp3", "b.mp3", "c.mp3"])
+    playlist.write_bytes(b"\xef\xbb\xbf" + playlist.read_bytes())
+    provider = _make_provider(base)
+
+    await provider.move_playlist_track("party.m3u8", 2, 1)
+
+    assert _paths(playlist) == ["b.mp3", "a.mp3", "c.mp3"]
+
+
 async def test_move_playlist_track_out_of_range_leaves_the_file_alone(base: Path) -> None:
     """A position outside the playlist is refused and nothing is written."""
     playlist = _write_playlist(base, "party.m3u", ["a.mp3", "b.mp3"])

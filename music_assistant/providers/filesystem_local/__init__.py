@@ -4513,12 +4513,15 @@ class LocalFileSystemProvider(MusicProvider):
             raise MediaNotFoundError(msg)
         self._check_playlist_path(prov_playlist_id)
         ext = prov_playlist_id.rsplit(".", 1)[1].lower()
-        # get playlist file contents
-        playlist_filename = self.get_absolute_path(prov_playlist_id)
-        async with aiofiles.open(
-            playlist_filename, encoding="utf-8", opener=self._open_file
-        ) as _file:
-            playlist_data = await _file.read()
+        # same charset detection as get_playlist_tracks, so positions match the listed tracks;
+        # decoded strictly since the file gets rewritten
+        playlist_data_raw = await self._read_file(prov_playlist_id)
+        encoding = await detect_charset(playlist_data_raw)
+        try:
+            playlist_data = playlist_data_raw.decode(encoding)
+        except UnicodeDecodeError as err:
+            msg = f"Playlist {prov_playlist_id} can not be read as {encoding}"
+            raise InvalidDataError(msg) from err
         if ext in ("m3u", "m3u8"):
             return parse_m3u(playlist_data)
         return parse_pls(playlist_data)
