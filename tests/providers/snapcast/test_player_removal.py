@@ -31,7 +31,7 @@ def _removed_player(delete_result: tuple[bool, str | None]) -> tuple[SnapCastPla
     provider._snapserver.delete_client = AsyncMock(return_value=delete_result)
     player = SnapCastPlayer.__new__(SnapCastPlayer)
     player._provider = provider
-    player._player_id = PLAYER_ID
+    player._protocol_id = PLAYER_ID
     return player, provider._snapserver.delete_client
 
 
