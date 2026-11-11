@@ -353,10 +353,11 @@ class MediaAssistantPlayer(Player):
                         # position frozen at the end of the stream as IDLE, so Music
                         # Assistant can finish the queue, and a real stall shows as one.
                         # Only time spent playing counts: a pause near the end isn't one.
+                        # A duration of 0 is a stream of unknown length, which has no end.
                         duration = (
                             int(media_state["duration"].split(" ", 1)[0]) / 1000
                             if "duration" in media_state
-                            else None
+                            else 0
                         )
                         if (
                             position != prev_position
@@ -367,7 +368,7 @@ class MediaAssistantPlayer(Player):
                             self._stream_end_logged = False
                         elif (
                             self._attr_playback_state == PlaybackState.PLAYING
-                            and duration is not None
+                            and duration > 0
                             and position >= duration - 1.5
                             and now - self._position_last_moved >= 10
                         ):

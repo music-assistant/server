@@ -140,6 +140,20 @@ async def test_pause_at_the_end_is_not_the_stream_ending() -> None:
     assert player._attr_playback_state == PlaybackState.PLAYING
 
 
+async def test_stream_of_unknown_length_never_ends() -> None:
+    """A duration of 0 ms is an unknown length, so a frozen position there isn't an end."""
+    player = _make_player()
+    await player.play_media(_media("first"))
+    frozen: dict[str, Any] = {"@state": "play", "position": "0 ms", "duration": "0 ms"}
+    player.roku._get_media_state.return_value = frozen  # type: ignore[attr-defined]
+    await player.poll()
+
+    player._position_last_moved = time.time() - 11
+    await player.poll()
+
+    assert player._attr_playback_state == PlaybackState.PLAYING
+
+
 async def test_position_frozen_mid_track_is_still_playing() -> None:
     """Only a position at the end of the stream counts as the stream having ended."""
     player = _make_player()
