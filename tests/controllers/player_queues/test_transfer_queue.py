@@ -556,7 +556,7 @@ async def test_transfer_queue_holds_both_queues_playback_locks() -> None:
         cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
     )
 
-    fake.mass.players.get_playback_locks.assert_called_once_with("src", "tgt", strict=True)
+    fake.mass.players.get_playback_locks.assert_called_once_with("src", "tgt")
 
 
 async def test_a_play_action_on_the_target_waits_for_the_whole_transfer() -> None:

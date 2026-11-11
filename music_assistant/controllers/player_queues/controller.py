@@ -1328,7 +1328,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # both queues change here, while a play action on either (play_index, resume, stop) runs
         # under its queue's playback lock: hold both, so neither runs in the middle of the other
         async with self.mass.players.get_playback_locks(
-            source_queue_id, target_queue_id, strict=True
+            source_queue_id, target_queue_id
         ) as release_lock:
             if not (source_queue := self.get(source_queue_id)):
                 raise PlayerUnavailableError(f"Queue {source_queue_id} is not available")

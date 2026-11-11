@@ -119,11 +119,11 @@ async def test_playback_locks_hold_every_player_until_the_end(mock_mass: MagicMo
 
 
 @pytest.mark.parametrize("busy", ["a", "c"])
-async def test_strict_playback_locks_fail_on_a_player_that_stays_busy(
+async def test_playback_locks_fail_on_a_player_that_stays_busy(
     mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch, busy: str
 ) -> None:
     """
-    A strict acquisition never runs beside the holder of one of the locks; it fails instead.
+    The acquisition never runs beside the holder of one of the locks; it fails instead.
 
     :param busy: The player whose lock another task holds: the member, locked last, or the
         leader, locked in the middle.
@@ -143,7 +143,7 @@ async def test_strict_playback_locks_fail_on_a_player_that_stays_busy(
     await asyncio.sleep(0)
     try:
         with pytest.raises(ResourceBusyError):
-            async with controller.get_playback_locks("a", "b", strict=True):
+            async with controller.get_playback_locks("a", "b"):
                 pytest.fail("the body ran while another task held a lock")
     finally:
         release.set()
@@ -213,7 +213,7 @@ async def test_playback_locks_follow_a_player_grouped_while_they_wait(
             await release.wait()
 
     async def _transfer() -> None:
-        async with controller.get_playback_locks("b", strict=True):
+        async with controller.get_playback_locks("b"):
             assert controller._player_command_locks["playback_g"].locked()
             assert controller._player_command_locks["playback_b"].locked()
 
@@ -257,7 +257,7 @@ async def test_playback_locks_run_two_transfers_across_an_ungroup_in_turn(
             await release.wait()
 
     async def _transfer(name: str) -> None:
-        async with controller.get_playback_locks("a", "c", strict=True):
+        async with controller.get_playback_locks("a", "c"):
             done.append(name)
 
     holder = asyncio.create_task(_ungroup())
@@ -303,7 +303,7 @@ async def test_playback_locks_run_two_transfers_across_a_regroup_in_turn(
             await release.wait()
 
     async def _transfer(name: str) -> None:
-        async with controller.get_playback_locks("a", "c", strict=True):
+        async with controller.get_playback_locks("a", "c"):
             done.append(name)
 
     holder = asyncio.create_task(_hold_the_leader())
@@ -335,13 +335,13 @@ async def test_playback_locks_skip_the_turn_for_a_task_holding_a_playback_lock(
     in_turn = asyncio.Event()
 
     async def _transfer_waiting_for_the_leader() -> None:
-        async with controller.get_playback_locks("c", strict=True):
+        async with controller.get_playback_locks("c"):
             pass
 
     async def _group_change_on_the_leader() -> None:
         async with controller.get_player_lock("c", PlayerLockPurpose.PLAYBACK):
             await in_turn.wait()
-            async with controller.get_playback_locks("c", "b", strict=True):
+            async with controller.get_playback_locks("c", "b"):
                 assert controller._player_command_locks["playback_b"].locked()
 
     group_change = asyncio.create_task(_group_change_on_the_leader())
@@ -374,7 +374,7 @@ async def test_playback_locks_give_up_on_a_turn_that_stays_taken(
     await asyncio.sleep(0)
     try:
         with pytest.raises(ResourceBusyError):
-            async with controller.get_playback_locks("b", "z", strict=True):
+            async with controller.get_playback_locks("b", "z"):
                 pytest.fail("the body ran while another command held the turn")
     finally:
         release.set()

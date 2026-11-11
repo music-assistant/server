@@ -322,7 +322,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     @contextlib.asynccontextmanager
     async def get_playback_locks(
-        self, *player_ids: str, strict: bool = False
+        self, *player_ids: str
     ) -> AsyncIterator[Callable[[str], Awaitable[None]]]:
         """
         Acquire the playback locks of several players, each preceded by that of its group.
@@ -333,10 +333,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         the other waits for, whatever the players' grouping when each looked. A command
         that already holds a playback lock (a transfer called from a group change on the
         leader) does not wait for the turn, since the command holding the turn may be
-        waiting for that lock; such a nested call needs strict locks around it, as a lock
-        a non-strict wait gave up on is not held. The players are locked in one fixed
-        order, every group first, as a single command over a group and its member takes
-        them. A player grouped or released while its lock is awaited has the locks taken
+        waiting for that lock. The locks are strict (see get_player_lock): the body never
+        runs without them, as the command corrupts both players' state when it overlaps
+        with a holder. The players are locked in one fixed order, every group first, as a
+        single command over a group and its member takes them. A player grouped or released while its lock is awaited has the locks taken
         again for its new owner, so the body starts under the locks of the players'
         current owners.
         The body receives a callable that hands back the locks taken for one of the players
@@ -344,9 +344,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         rest; a lock another of the players was given too stays held for it.
 
         :param player_ids: The players to lock.
-        :param strict: Never run without the locks, see get_player_lock.
-        :raises ResourceBusyError: When a strict acquisition timed out, or the turn stayed
-            taken past the strict timeout.
+        :raises ResourceBusyError: When a lock or the turn stayed taken past the strict
+            timeout.
         """
         task = asyncio.current_task()
         in_turn = task is not None and any(
@@ -374,7 +373,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     for lock_id in ordered:
                         stacks[lock_id] = contextlib.AsyncExitStack()
                         await stacks[lock_id].enter_async_context(
-                            self.get_player_lock(lock_id, PlayerLockPurpose.PLAYBACK, strict=strict)
+                            self.get_player_lock(lock_id, PlayerLockPurpose.PLAYBACK, strict=True)
                         )
                 except BaseException:
                     for stack in reversed(stacks.values()):
@@ -4528,7 +4527,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # is still the old one's member: the transfer alone would release the new leader on
         # return, and a transfer between the two could then take it and wait for the old
         # one, which the caller holds, while the regroup here waits for the new one
-        async with self.get_playback_locks(leader.player_id, new_leader_id, strict=True):
+        async with self.get_playback_locks(leader.player_id, new_leader_id):
             # Move the queue to the new leader. transfer_queue frees the new leader from
             # the old leader's group and stops the old leader; the playback position
             # survives because stop() stores it in resume_pos.
