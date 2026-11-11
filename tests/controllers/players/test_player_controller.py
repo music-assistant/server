@@ -107,6 +107,8 @@ def _attach(
         provider,
         _proto(player_id),
         name,
+        # a group is a virtual player
+        role=ProtocolRole.VIRTUAL if player_type == PlayerType.GROUP else ProtocolRole.NATIVE,
         player_id=player_id,
         player_type=player_type,
         protocol_class=protocol_class,
