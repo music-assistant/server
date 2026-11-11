@@ -7,7 +7,7 @@
   "codeowners": ["@music-assistant"],
   "tier": "core",
   "depends_on": "sendspin",
-  "requirements": ["hue-entertainment==0.5.0"],
+  "requirements": ["hue-entertainment==0.6.0"],
   "documentation": "https://music-assistant.io/plugins/hue-entertainment/",
   "multi_instance": true,
   "builtin": false,
