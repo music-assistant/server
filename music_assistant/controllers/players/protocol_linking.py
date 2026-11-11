@@ -409,10 +409,10 @@ class ProtocolLinkingMixin:
 
     def _schedule_held_protocols(self) -> None:
         """
-        Look at the held protocols again, now that a protocol got attached to a player.
+        Look at the held protocols again, now that a protocol was attached to a player or left one.
 
-        That can be the protocol one of them rides on, or the one that created the
-        player of the device one of them belongs to.
+        An attached protocol can be the one a held protocol rides on, or the one that
+        created the player of its device; one that left can free the place it waits for.
         """
         for protocol in list(self._protocols.values()):
             if protocol.player is not None:

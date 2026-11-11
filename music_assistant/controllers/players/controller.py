@@ -2952,6 +2952,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if player is not None and player.protocols.get(protocol_id) is protocol:
             was_playback_path = player.resolve_output_protocol() is protocol
             player.remove_protocol(protocol_id)
+            self._schedule_held_protocols()
             if was_playback_path and player.initialized.is_set():
                 # the audio of the player went with this protocol: let the plugin owning
                 # a live source release its session, and the queue go idle
