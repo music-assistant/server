@@ -3,7 +3,8 @@ Identifier matching: decides whether two sides stand for the same physical devic
 
 The matcher is a pure function over what each side reports about its device. It knows
 nothing about players, providers or config, and every veto and precedence rule lives in
-the one table below.
+the one table below. One side can be made up of several parts: what each protocol of a
+player reported about the device.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from music_assistant_models.enums import IdentifierType
 
@@ -20,6 +21,9 @@ from music_assistant.helpers.util import (
     is_valid_mac_address,
     normalize_mac_for_matching,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 type Identifier = tuple[IdentifierType, str]
 
@@ -52,19 +56,58 @@ def identifiers_match(a: DeviceIdentity, b: DeviceIdentity) -> bool:
     :param a: What one side reports about its device.
     :param b: What the other side reports about its device.
     """
-    values_a = _comparable_values(a)
-    values_b = _comparable_values(b)
-    share_domain = not a.domains.isdisjoint(b.domains)
-    for identifier_type, rule in _RULES.items():
-        vetoes = rule.veto == _Veto.ANY_DOMAIN or (rule.veto == _Veto.SAME_DOMAIN and share_domain)
-        if vetoes and _differ(values_a[identifier_type], values_b[identifier_type]):
-            return False
-    for identifier_type, rule in _RULES.items():
-        if rule.identifies and values_a[identifier_type] & values_b[identifier_type]:
-            return True
-    if not values_a[IdentifierType.IP_ADDRESS] & values_b[IdentifierType.IP_ADDRESS]:
+    return matches_device(a, (b,))
+
+
+def matches_device(candidate: DeviceIdentity, parts: Iterable[DeviceIdentity]) -> bool:
+    """
+    Return whether an identity stands for the device that several identities describe together.
+
+    The rules of identifiers_match apply to the parts as one merged identity, so a
+    strong identifier one part holds rules the candidate out whichever part shares
+    another identifier with it. A domain veto only counts the values that parts of
+    the candidate's own domains reported.
+
+    :param candidate: What one protocol reports about its device.
+    :param parts: What each protocol of a player reported about the device of that player.
+    """
+    parts = tuple(parts)
+    values = _comparable_values(candidate)
+    merged, same_domain = _merged_values(candidate, parts)
+    if _vetoed(values, merged, same_domain):
         return False
-    return not (a.native and b.native and _has_hardware_mac(a) and _has_hardware_mac(b))
+    for identifier_type, rule in _RULES.items():
+        if rule.identifies and values[identifier_type] & merged[identifier_type]:
+            return True
+    if not values[IdentifierType.IP_ADDRESS] & merged[IdentifierType.IP_ADDRESS]:
+        return False
+    return not (
+        candidate.native
+        and has_hardware_mac(candidate)
+        and any(part.native for part in parts)
+        and any(has_hardware_mac(part) for part in parts)
+    )
+
+
+def vetoes_device(candidate: DeviceIdentity, parts: Iterable[DeviceIdentity]) -> bool:
+    """
+    Return whether a differing strong identifier rules out that an identity is a device.
+
+    :param candidate: What one protocol reports about its device.
+    :param parts: What each protocol of a player reported about the device of that player.
+    """
+    merged, same_domain = _merged_values(candidate, tuple(parts))
+    return _vetoed(_comparable_values(candidate), merged, same_domain)
+
+
+def has_hardware_mac(identity: DeviceIdentity) -> bool:
+    """Return whether an identity holds a usable, globally unique MAC address."""
+    return any(
+        identifier_type == IdentifierType.MAC_ADDRESS
+        and is_valid_mac_address(value)
+        and not is_locally_administered_mac(value)
+        for identifier_type, value in identity.identifiers
+    )
 
 
 class _Veto(Enum):
@@ -119,16 +162,40 @@ def _comparable_values(identity: DeviceIdentity) -> defaultdict[IdentifierType, 
     return values
 
 
+def _merged_values(
+    candidate: DeviceIdentity, parts: tuple[DeviceIdentity, ...]
+) -> tuple[defaultdict[IdentifierType, set[str]], defaultdict[IdentifierType, set[str]]]:
+    """
+    Return the values several identities hold together, per identifier type.
+
+    Returns all of them, and the ones of the parts that share a domain with the candidate.
+    """
+    merged: defaultdict[IdentifierType, set[str]] = defaultdict(set)
+    same_domain: defaultdict[IdentifierType, set[str]] = defaultdict(set)
+    for part in parts:
+        shares_domain = not candidate.domains.isdisjoint(part.domains)
+        for identifier_type, part_values in _comparable_values(part).items():
+            merged[identifier_type] |= part_values
+            if shares_domain:
+                same_domain[identifier_type] |= part_values
+    return merged, same_domain
+
+
+def _vetoed(
+    values: defaultdict[IdentifierType, set[str]],
+    merged: defaultdict[IdentifierType, set[str]],
+    same_domain: defaultdict[IdentifierType, set[str]],
+) -> bool:
+    """Return whether a differing value of an identifier type with a veto rules a match out."""
+    for identifier_type, rule in _RULES.items():
+        if rule.veto == _Veto.NEVER:
+            continue
+        against = merged if rule.veto == _Veto.ANY_DOMAIN else same_domain
+        if _differ(values[identifier_type], against[identifier_type]):
+            return True
+    return False
+
+
 def _differ(values_a: set[str], values_b: set[str]) -> bool:
     """Return whether both sides hold values of one identifier type and share none."""
     return bool(values_a) and bool(values_b) and values_a.isdisjoint(values_b)
-
-
-def _has_hardware_mac(identity: DeviceIdentity) -> bool:
-    """Return whether an identity holds a usable, globally unique MAC address."""
-    return any(
-        identifier_type == IdentifierType.MAC_ADDRESS
-        and is_valid_mac_address(value)
-        and not is_locally_administered_mac(value)
-        for identifier_type, value in identity.identifiers
-    )
