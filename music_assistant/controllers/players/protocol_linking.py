@@ -318,7 +318,8 @@ class ProtocolLinkingMixin:
         Return what is known about the device of a player, per protocol that reported it.
 
         An attached protocol reports its identifiers itself; for one that is away the
-        identifiers it last reported were stored.
+        identifiers it last reported were stored, without its address: that is handed out
+        again to another device while this one is away.
 
         :param player_id: Id of the player.
         :param exclude_protocol_id: Id of a protocol of the player to leave out.
@@ -342,6 +343,7 @@ class ProtocolLinkingMixin:
             identifiers = {
                 (IdentifierType(identifier_type), str(value))
                 for identifier_type, value in values.get(CONF_PROTOCOL_IDENTIFIERS) or ()
+                if identifier_type != IdentifierType.IP_ADDRESS
             }
             for mac_address in (values.get(CONF_CACHED_ARP_MAC), values.get(CONF_REPORTED_MAC)):
                 if mac_address:
@@ -365,6 +367,7 @@ class ProtocolLinkingMixin:
                         identifiers=frozenset(
                             (IdentifierType(identifier_type), str(value))
                             for identifier_type, value in stored_identifiers.items()
+                            if identifier_type != IdentifierType.IP_ADDRESS
                         ),
                         domains=frozenset(domains),
                         native=False,

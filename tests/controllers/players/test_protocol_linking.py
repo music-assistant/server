@@ -591,9 +591,14 @@ async def test_identity_of_a_player_keeps_what_its_protocols_that_are_away_repor
         "dlna",
         "airplay",
     }
+    # without its address, which another device can have while this one is away
+    stored_identifiers = {
+        (IdentifierType.MAC_ADDRESS, KITCHEN[IdentifierType.MAC_ADDRESS]),
+        (IdentifierType.UUID, "dlna-udn"),
+    }
     assert (
         DeviceIdentity(
-            identifiers=frozenset({*KITCHEN.items(), (IdentifierType.UUID, "dlna-udn")}),
+            identifiers=frozenset(stored_identifiers),
             domains=frozenset({"dlna"}),
             native=False,
         )

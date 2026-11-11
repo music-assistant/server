@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 from unittest.mock import patch
 
@@ -188,6 +189,50 @@ async def test_protocol_that_returns_finds_its_place_also_when_a_bridge_waits_fo
     assert scenario.player_of(client) == player_id
     assert scenario.player_of(bridge) is None
     assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+
+@pytest.mark.parametrize(
+    ("away_domain", "domain", "role", "own_identifiers"),
+    [
+        ("chromecast", "airplay", "audio", {IdentifierType.AIRPLAY_ID: "001132AABBCC"}),
+        ("chromecast", "sonos", "native", {IdentifierType.UUID: "RINCON_B"}),
+        ("squeezelite", "squeezelite", "audio", {}),
+    ],
+    ids=["audio", "native", "same_provider"],
+)
+async def test_new_device_at_the_address_of_a_device_that_is_away_is_a_player_of_its_own(
+    scenario: Scenario,
+    away_domain: str,
+    domain: str,
+    role: Any,
+    own_identifiers: dict[IdentifierType, str],
+) -> None:
+    """An address that is handed out again ties a new device to nothing that is away."""
+    away_provider = await scenario.add_provider(away_domain)
+    provider = away_provider if domain == away_domain else await scenario.add_provider(domain)
+    away = away_provider.protocol("away_a", "Player A", role="audio", identifiers=KITCHEN)
+    await scenario.attach(away)
+    player_id = scenario.single_player(away).player_id
+    await scenario.configure_player(player_id, name="Player A custom")
+    await scenario.detach(away)
+
+    newcomer = provider.protocol(
+        "new_b",
+        "Player B",
+        role=role,
+        identifiers={
+            IdentifierType.MAC_ADDRESS: "00:11:32:AA:BB:CC",
+            IdentifierType.IP_ADDRESS: KITCHEN[IdentifierType.IP_ADDRESS],
+            **own_identifiers,
+        },
+    )
+    await scenario.attach(newcomer)
+    await scenario.idle()
+
+    assert scenario.player_of(newcomer) not in (None, player_id)
+    assert _edge(scenario, "away_a") == player_id
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{player_id}/name") == "Player A custom"
+    assert len(scenario.visible_players()) == 2
 
 
 async def test_protocol_returns_to_the_player_it_is_stored_for(scenario: Scenario) -> None:
@@ -467,6 +512,30 @@ async def test_device_returns_to_the_player_that_was_kept_for_it(scenario: Scena
     assert state is not None
     assert (state.name, state.available, state.provider) == ("Kitchen radio", True, "sonos")
     assert scenario.mass.config.get(f"{CONF_PLAYERS}/up0a1b2c3d/provider") == sonos.instance_id
+
+
+async def test_new_device_at_the_address_a_kept_player_stored_is_a_player_of_its_own(
+    scenario: Scenario,
+) -> None:
+    """The address a player from before the split stored ties a new device to nothing."""
+    sonos = await scenario.add_provider("sonos")
+    kept = deepcopy(KEPT_WRAPPER)
+    kept["values"]["device_identifiers"]["ip_address"] = KITCHEN[IdentifierType.IP_ADDRESS]
+    await scenario.seed_pre_split_config({"up0a1b2c3d": kept})
+    await scenario.idle()
+
+    newcomer = scenario.provider(sonos.instance_id).protocol(
+        "RINCON_B",
+        "Player B",
+        identifiers={
+            IdentifierType.MAC_ADDRESS: "00:11:32:AA:BB:CC",
+            IdentifierType.IP_ADDRESS: KITCHEN[IdentifierType.IP_ADDRESS],
+        },
+    )
+    await scenario.attach(newcomer)
+    await scenario.idle()
+
+    assert scenario.player_of(newcomer) not in (None, "up0a1b2c3d")
 
 
 async def test_player_that_was_kept_without_protocols_can_be_listed_renamed_and_removed(
