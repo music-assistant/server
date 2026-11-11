@@ -461,7 +461,12 @@ async def configure_demo_players(ws: PerfWsClient, params: SuiteParams) -> list[
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         players = (await ws.command("players/all")).result or []
-        demo_ids = sorted(p["player_id"] for p in players if p["player_id"].startswith("demo_"))
+        # a demo device is a new player, with an id of its own
+        demo_ids = sorted(
+            p["player_id"]
+            for p in players
+            if p["provider"].split("--", maxsplit=1)[0] == "_demo_player_provider"
+        )
         if len(demo_ids) >= params.players:
             return demo_ids
         await asyncio.sleep(0.5)
