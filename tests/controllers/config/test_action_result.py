@@ -14,7 +14,7 @@ from music_assistant_models.config_entries import ConfigActionResult
 
 from music_assistant.constants import CONF_PROTOCOL_KEY_SPLITTER
 
-from .helpers import build_bare_config_controller
+from .helpers import build_action_player, build_bare_config_controller
 
 
 async def test_provider_action_result_is_returned_with_the_provider_owner() -> None:
@@ -85,13 +85,8 @@ async def test_core_action_result_keeps_a_preset_owner() -> None:
 
 async def test_player_action_result_is_returned_without_rerender() -> None:
     """A player action result is passed through and skips the full-entries re-render."""
-    mock_mass = MagicMock()
-    player = MagicMock()
-    player.translation_owner = "provider.some_player_provider"
     action_result = ConfigActionResult(translation_key="some_action.result")
-    player.handle_config_action = AsyncMock(return_value=action_result)
-    mock_mass.players.get_player.return_value = player
-    controller = build_bare_config_controller(mock_mass)
+    controller, _, _ = build_action_player(own_result=action_result)
 
     with patch.object(controller, "get_player_config_entries", AsyncMock()) as mock_rerender:
         result = await controller.invoke_player_config_action("player_1", "some_action")
@@ -103,15 +98,10 @@ async def test_player_action_result_is_returned_without_rerender() -> None:
 
 async def test_player_action_result_keeps_a_preset_owner() -> None:
     """A player result that already declares its owner keeps it."""
-    mock_mass = MagicMock()
-    player = MagicMock()
-    player.translation_owner = "provider.some_player_provider"
     action_result = ConfigActionResult(
         translation_key="some_action.result", translation_owner="common"
     )
-    player.handle_config_action = AsyncMock(return_value=action_result)
-    mock_mass.players.get_player.return_value = player
-    controller = build_bare_config_controller(mock_mass)
+    controller, _, _ = build_action_player(own_result=action_result)
 
     with patch.object(controller, "get_player_config_entries", AsyncMock()):
         await controller.invoke_player_config_action("player_1", "some_action")
@@ -119,21 +109,10 @@ async def test_player_action_result_keeps_a_preset_owner() -> None:
     assert action_result.translation_owner == "common"
 
 
-async def test_protocol_action_result_is_returned_without_rerendering_the_parent() -> None:
-    """A protocol-routed result is passed through, owned by the protocol player's provider."""
-    mock_mass = MagicMock()
-    parent = MagicMock()
-    parent.translation_owner = "provider.host_provider"
-    parent.handle_config_action = AsyncMock()
-    protocol_player = MagicMock()
-    protocol_player.translation_owner = "provider.protocol_provider"
+async def test_protocol_action_result_is_returned_without_rerendering_the_player() -> None:
+    """A protocol-routed result is passed through, owned by the provider of the protocol."""
     action_result = ConfigActionResult(translation_key="some_action.result")
-    protocol_player.handle_config_action = AsyncMock(return_value=action_result)
-    mock_mass.players.get_player.side_effect = lambda player_id, *_args: {
-        "player_1": parent,
-        "protocol_1": protocol_player,
-    }[player_id]
-    controller = build_bare_config_controller(mock_mass)
+    controller, own, audio = build_action_player(audio_result=action_result)
     action = f"protocol_1{CONF_PROTOCOL_KEY_SPLITTER}some_action"
 
     with patch.object(controller, "get_player_config_entries", AsyncMock()) as mock_rerender:
@@ -141,6 +120,6 @@ async def test_protocol_action_result_is_returned_without_rerendering_the_parent
 
     assert result is action_result
     assert action_result.translation_owner == "provider.protocol_provider"
-    protocol_player.handle_config_action.assert_awaited_once_with("some_action")
-    parent.handle_config_action.assert_not_awaited()
+    audio.handle_config_action.assert_awaited_once_with("some_action")  # type: ignore[attr-defined]
+    own.handle_config_action.assert_not_awaited()  # type: ignore[attr-defined]
     mock_rerender.assert_not_awaited()
