@@ -50,7 +50,8 @@ class _FakeProvider:
 
 def _player(*, legacy_wire: bool = True) -> SendspinBasePlayer:
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
-    player._player_id = "client-1"
+    player._protocol_id = "client-1"
+    player._player = None
     player.api = cast(
         "SendspinClient",
         SimpleNamespace(
