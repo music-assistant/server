@@ -28,7 +28,7 @@ def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock
     provider = SendspinProvider(mass, manifest, config)
     server_api = MagicMock(start_server=start_server, close=AsyncMock())
     provider.server_api = server_api
-    provider._remove_orphan_virtual_player_configs = MagicMock()  # type: ignore[method-assign]
+    provider._remove_orphan_virtual_player_configs = AsyncMock()  # type: ignore[method-assign]
     return provider, mass, server_api
 
 
