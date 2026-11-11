@@ -189,31 +189,13 @@ async def test_idle_fails_while_work_is_due(scenario: Scenario) -> None:
 
 
 async def test_idle_fails_while_a_protocol_evaluation_is_pending(scenario: Scenario) -> None:
-    """idle() refuses while a protocol waits for its 15 s evaluation."""
+    """idle() refuses while an audio protocol waits 15 s for the hardware address of its device."""
     airplay = await scenario.add_provider("airplay")
-    await scenario.attach(airplay.protocol("airplay_den", "Den", role="audio", identifiers=KITCHEN))
+    await scenario.attach(airplay.protocol("airplay_den", "Den", role="audio"))
 
     with pytest.raises(ScenarioError, match="protocol evaluation of airplay_den"):
         await scenario.idle()
     await scenario.advance(5)
-    await scenario.idle()
-
-
-async def test_idle_fails_while_a_cached_parent_is_awaited(scenario: Scenario) -> None:
-    """idle() refuses while a protocol waits 45 s for the native player it was linked to."""
-    sonos = await scenario.add_provider("sonos")
-    airplay = await scenario.add_provider("airplay")
-    await scenario.attach(sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN))
-    await scenario.attach(
-        airplay.protocol("airplay_kitchen", "K", role="audio", identifiers=KITCHEN)
-    )
-    await scenario.idle()
-    scenario.set_present("RINCON_KITCHEN", False)
-    await scenario.restart()
-
-    with pytest.raises(ScenarioError, match="protocol evaluation of airplay_kitchen"):
-        await scenario.idle()
-    await scenario.advance(35)
     await scenario.idle()
 
 
@@ -230,14 +212,16 @@ async def test_idle_passes_while_a_player_plays(scenario: Scenario) -> None:
 async def test_single_instance_provider_survives_a_restart(scenario: Scenario) -> None:
     """A provider that allows one instance gets the instance id the server gives it."""
     kiosk = await scenario.add_provider("fully_kiosk")
-    await scenario.attach(kiosk.protocol("kiosk", "Kiosk", identifiers=KITCHEN))
+    tablet = kiosk.protocol("kiosk", "Kiosk", identifiers=KITCHEN)
+    await scenario.attach(tablet)
+    player_id = scenario.single_player(tablet).player_id
 
     await scenario.restart()
     await scenario.idle()
 
     assert kiosk.instance_id == "fully_kiosk"
     assert scenario.protocol("kiosk").provider.instance_id == "fully_kiosk"
-    assert [player.player_id for player in scenario.visible_players()] == ["kiosk"]
+    assert [player.player_id for player in scenario.visible_players()] == [player_id]
 
 
 async def test_server_modules_share_the_clock(scenario: Scenario) -> None:
@@ -262,10 +246,10 @@ async def test_server_modules_share_the_clock(scenario: Scenario) -> None:
 async def _fail_evaluation(scenario: Scenario) -> None:
     """Let a server task fail in the background."""
 
-    async def _fail(*_args: object) -> None:
+    async def _fail(*_args: object, **_kwargs: object) -> None:
         raise KeyError("bug in the protocol evaluation")
 
-    with patch.object(ProtocolLinkingMixin, "_delayed_protocol_evaluation", _fail):
+    with patch.object(ProtocolLinkingMixin, "_evaluate_pending_protocol", _fail):
         airplay = await scenario.add_provider("airplay")
         await scenario.attach(airplay.protocol("airplay_den", "Den", role="audio"))
         await scenario.advance(20)
@@ -399,7 +383,7 @@ async def test_restart_leaves_nothing_of_the_old_server(scenario: Scenario) -> N
 
 
 async def test_player_of_follows_the_attachment(scenario: Scenario) -> None:
-    """A protocol is attached to its own player, to the player it links to, or to none."""
+    """A protocol is attached to the player of its device, or to none while it is unknown."""
     sonos = await scenario.add_provider("sonos")
     airplay = await scenario.add_provider("airplay")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
@@ -409,18 +393,19 @@ async def test_player_of_follows_the_attachment(scenario: Scenario) -> None:
     await scenario.attach(kitchen_airplay)
     await scenario.attach(den_airplay)
 
-    assert scenario.player_of(speaker) == "RINCON_KITCHEN"
-    assert scenario.player_of(kitchen_airplay) == "RINCON_KITCHEN"
+    kitchen_id = scenario.single_player(speaker).player_id
+    assert scenario.player_of(speaker) == kitchen_id
+    assert scenario.player_of(kitchen_airplay) == kitchen_id
     assert scenario.player_of(den_airplay) is None
+    await scenario.advance(15)
+    assert scenario.player_of(den_airplay) == scenario.single_player(den_airplay).player_id
+    assert scenario.player_of(den_airplay) != kitchen_id
     await scenario.detach(speaker)
     assert scenario.player_of(speaker) is None
-    await scenario.advance(15)
 
 
 async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> None:
     """player_configs() lists stored player configs, disabled ones included, protocol configs not."""
-    # relies on today's config shape, a protocol config under players/ and the protocol id as
-    # the player id, which the record split changes: a harness test may, a scenario may not
     sonos = await scenario.add_provider("sonos")
     airplay = await scenario.add_provider("airplay")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
@@ -428,12 +413,13 @@ async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> Non
     await scenario.attach(
         airplay.protocol("airplay_kitchen", "K", role="audio", identifiers=KITCHEN)
     )
-    await scenario.disable("RINCON_KITCHEN")
+    player_id = scenario.single_player(speaker).player_id
+    await scenario.disable(player_id)
     await scenario.idle()
 
-    assert await scenario.player_config("airplay_kitchen") is not None
+    assert scenario.protocol_config("airplay_kitchen") is not None
     assert [(c.player_id, c.enabled) for c in await scenario.player_configs()] == [
-        ("RINCON_KITCHEN", False)
+        (player_id, False)
     ]
 
 
@@ -474,6 +460,7 @@ async def test_player_config_only_misses_an_unstored_player(scenario: Scenario) 
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
 
     async def _fail(*_args: object) -> None:
         raise KeyError("bug in the player config")
@@ -483,7 +470,7 @@ async def test_player_config_only_misses_an_unstored_player(scenario: Scenario) 
         patch.object(type(scenario.mass.config), "get_player_config", _fail),
         pytest.raises(KeyError, match="bug in the player config"),
     ):
-        await scenario.player_config("RINCON_KITCHEN")
+        await scenario.player_config(player_id)
 
 
 async def test_protocol_config_holds_the_protocol_setting(scenario: Scenario) -> None:
@@ -491,10 +478,11 @@ async def test_protocol_config_holds_the_protocol_setting(scenario: Scenario) ->
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
 
     assert scenario.protocol_config("unknown") is None
     assert FAKE_SETTING not in (scenario.protocol_config("RINCON_KITCHEN") or {})
-    await scenario.configure_player("RINCON_KITCHEN", **{FAKE_SETTING: "loud"})
+    await scenario.configure_player(player_id, **{FAKE_SETTING: "loud"})
 
     assert (scenario.protocol_config("RINCON_KITCHEN") or {})[FAKE_SETTING] == "loud"
 
@@ -504,15 +492,15 @@ async def test_stored_config_mentions_come_from_the_saved_settings(scenario: Sce
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     await scenario.attach(speaker)
-    await scenario.configure_player("RINCON_KITCHEN", name="Kitchen Sonos")
+    player_id = scenario.single_player(speaker).player_id
+    await scenario.configure_player(player_id, name="Kitchen Sonos")
 
     mentions = await scenario.stored_config_mentioning("RINCON_KITCHEN")
 
-    assert "players/RINCON_KITCHEN" in mentions
-    assert "players/RINCON_KITCHEN/player_id = 'RINCON_KITCHEN'" in mentions
-    assert (
-        "players/RINCON_KITCHEN/name = 'Kitchen Sonos'"
-        in await scenario.stored_config_mentioning("Kitchen Sonos")
+    assert "player_protocols/RINCON_KITCHEN" in mentions
+    assert "player_protocols/RINCON_KITCHEN/protocol_id = 'RINCON_KITCHEN'" in mentions
+    assert f"players/{player_id}/name = 'Kitchen Sonos'" in await scenario.stored_config_mentioning(
+        "Kitchen Sonos"
     )
     assert await scenario.stored_config_mentioning("nothing like this") == []
 
@@ -522,12 +510,13 @@ async def test_play_runs_the_queue_on_the_fake_protocol(scenario: Scenario) -> N
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
 
-    await scenario.play("RINCON_KITCHEN")
+    await scenario.play(player_id)
 
     assert [command[0] for command in speaker.commands] == ["play_media"]
     assert speaker.playback_state == PlaybackState.PLAYING
-    queue = scenario.queue("RINCON_KITCHEN")
+    queue = scenario.queue(player_id)
     assert queue is not None
     assert (queue.state, queue.items) == (PlaybackState.PLAYING, 1)
     assert queue.current_item is not None
@@ -541,10 +530,11 @@ async def test_saved_queue_holds_the_items_a_queue_played(scenario: Scenario) ->
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     await scenario.attach(speaker)
     await scenario.idle()
+    player_id = scenario.single_player(speaker).player_id
 
-    assert await scenario.saved_queue("RINCON_KITCHEN") is None
-    await scenario.play("RINCON_KITCHEN")
-    assert await scenario.saved_queue("RINCON_KITCHEN") == [TEST_TRACK_URI]
+    assert await scenario.saved_queue(player_id) is None
+    await scenario.play(player_id)
+    assert await scenario.saved_queue(player_id) == [TEST_TRACK_URI]
     assert await scenario.saved_queue("unknown") is None
 
 

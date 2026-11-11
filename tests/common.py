@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
 from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     EventType,
@@ -21,6 +22,8 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
+    ProviderFeature,
     ProviderType,
 )
 from music_assistant_models.player import DeviceInfo
@@ -38,13 +41,14 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.player_state import (
     GroupSnapshot,
     PeerSnapshot,
     ProtocolSnapshot,
     StateInputs,
 )
-from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderAccess
@@ -230,11 +234,9 @@ def bound_sendspin_port(mass: MusicAssistant) -> int | None:
     :param mass: The booted server to inspect.
     """
     provider = mass.get_provider("sendspin")
-    if not isinstance(provider, SendspinProvider):
-        return None
     # aiosendspin keeps its aiohttp runner to itself; the runner's addresses are
     # the bound sockets' names, which is the only place the kernel-picked port lives
-    runner = provider.server_api._app_runner
+    runner = getattr(getattr(provider, "server_api", None), "_app_runner", None)
     if runner is None:
         return None
     return next((address[1] for address in runner.addresses if address), None)
@@ -352,9 +354,65 @@ def bare_player_controller() -> PlayerController:
     players = PlayerController.__new__(PlayerController)
     players._player_command_locks = {}
     players._players = {}
+    players._protocols = {}
     players._legacy_ids = {}
     players._task_held_locks = weakref.WeakKeyDictionary()
     players.logger = MagicMock()
+    return players
+
+
+def mock_player_mass() -> MagicMock:
+    """
+    Return a mocked MusicAssistant for tests of players and protocols without a server.
+
+    Nothing is stored in its config, no queue or player control exists, and its players
+    controller looks players and protocols up for real, in what
+    ``attach_mock()`` registers for a provider of it.
+    """
+    mass = MagicMock()
+    mass.closing = False
+    config = mass.config
+    config.get = MagicMock(side_effect=lambda _key, default=None: default)
+    config.get_player_value = MagicMock(side_effect=lambda _player_id, _key, default=None: default)
+    config.get_protocol_value = MagicMock(
+        side_effect=lambda _protocol_id, _key, default=None: default
+    )
+    config.get_protocol_record = MagicMock(return_value=None)
+    config.get_protocol_ids_of_player = MagicMock(return_value=[])
+    mass.player_queues.get = MagicMock(return_value=None)
+    use_player_registry(mass)
+    return mass
+
+
+def use_player_registry(mass: MagicMock | MusicAssistant) -> MagicMock:
+    """
+    Give a mass a mocked players controller that looks players and protocols up for real.
+
+    Its registries are empty: ``attach_mock()`` fills them. No player control or live
+    audio source exists.
+
+    :param mass: The (mocked) MusicAssistant instance.
+    """
+    players = MagicMock()
+    players.mass = mass
+    players._players = {}
+    players._protocols = {}
+    players._legacy_ids = {}
+    for lookup in (
+        "get_player",
+        "resolve_player_id",
+        "get_protocol",
+        "get_player_by_protocol",
+        "iter_players",
+        "iter_protocols",
+    ):
+        setattr(players, lookup, MethodType(getattr(PlayerController, lookup), players))
+    players.get_audio_source_session = MagicMock(return_value=None)
+    players.is_live_audio_source = MagicMock(return_value=False)
+    players.get_player_control = MagicMock(return_value=None)
+    players.player_controls = MagicMock(return_value=[])
+    players.scale_volume_from_device = MagicMock(side_effect=lambda _player_id, volume: volume)
+    mass.players = players
     return players
 
 
@@ -399,16 +457,16 @@ def grouping_player_controller(*player_ids: str) -> PlayerController:
     )
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     controller = PlayerController(mass)
+    mass.players = controller
     provider = MockProvider("test", instance_id="test", mass=mass)
     for player_id in player_ids:
-        player = MockPlayer(provider, player_id, f"Player {player_id.upper()}")
-        player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        player._attr_can_group_with = set(player_ids) - {player_id}
-        controller._players[player_id] = player
-    mass.players = controller
-    for registered in controller._players.values():
-        registered.set_initialized()
-        registered.update_state(signal_event=False)
+        _, protocol = attach_mock(
+            provider, player_id, f"Player {player_id.upper()}", player_id=player_id
+        )
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol._attr_can_group_with = set(player_ids) - {player_id}
+    for player in controller._players.values():
+        player.refresh_state(signal_event=False)
     controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
     use_api_command_registry(mass, controller)
     return controller
@@ -475,15 +533,6 @@ def set_music_source_access(
     )
 
 
-def create_mock_config(name: str) -> MagicMock:
-    """Create a mock player config with the given name."""
-    config = MagicMock()
-    config.name = None  # No custom name, use default
-    config.default_name = name
-    config.get_value = MagicMock(return_value="none")  # Default to no power control
-    return config
-
-
 class MockProvider:
     """Mock player provider for testing."""
 
@@ -500,38 +549,51 @@ class MockProvider:
         self.dashboards = MagicMock()
         self.logger = logging.getLogger(f"test.{domain}")
         self.unloading = False
-        # tests that let their players signal state updates fill this with the
-        # players of this provider, the way a real provider reports them
-        self.protocols: list[Player] = []
+        self.translation_owner = f"provider.{domain}"
+        # what a server needs of a provider that is registered on it
+        self.type = ProviderType.PLAYER
+        self.available = True
+        self.supported_features: set[ProviderFeature] = set()
+
+    # the lookups of a real player provider, over what attach_mock() registered
+    protocols = PlayerProvider.protocols
+    get_protocol = PlayerProvider.get_protocol
 
 
-class MockPlayer(Player):
-    """Mock player for testing."""
+class MockProtocol(PlayerProtocol):
+    """Mock protocol object of a player provider for testing."""
 
     def __init__(
         self,
         provider: MockProvider,
-        player_id: str,
+        protocol_id: str,
         name: str,
-        player_type: PlayerType = PlayerType.PLAYER,
+        role: ProtocolRole = ProtocolRole.NATIVE,
         identifiers: dict[IdentifierType, str] | None = None,
+        player_type: PlayerType = PlayerType.PLAYER,
     ) -> None:
-        """Initialize the mock player."""
-        # Set up the mock config before calling super().__init__
-        # because the parent __init__ accesses config
-        provider.mass.config.get_base_player_config.return_value = create_mock_config(name)
+        """
+        Initialize the mock protocol; use attach_mock() to get one attached to a player.
 
-        super().__init__(provider, player_id)  # type: ignore[arg-type]
+        :param provider: The (mock) provider the protocol belongs to.
+        :param protocol_id: ID of the protocol object.
+        :param name: The name its device reports.
+        :param role: The role it reports for its device.
+        :param identifiers: The device identifiers it reports.
+        :param player_type: The type of player it reports.
+        """
+        if isinstance(provider.mass.config, MagicMock):
+            # the base class asks the config controller for its config
+            provider.mass.config.get_base_protocol_config.return_value = PlayerConfig(
+                values={}, provider=provider.instance_id, player_id=protocol_id, default_name=name
+            )
+        super().__init__(provider, protocol_id)  # type: ignore[arg-type]
         self._attr_name = name
-        # Set type as instance attribute (overrides class attribute)
+        self._attr_role = role
         self._attr_type = player_type
         self._attr_available = True
         self._attr_powered = True
         self._attr_supported_features = {PlayerFeature.VOLUME_SET}
-        self._attr_can_group_with = set()
-        self._attr_group_members = []
-
-        # Set up device info with identifiers
         self._attr_device_info = DeviceInfo(
             model="Test Model",
             manufacturer="Test Manufacturer",
@@ -539,9 +601,6 @@ class MockPlayer(Player):
         if identifiers:
             for conn_type, value in identifiers.items():
                 self._attr_device_info.add_identifier(conn_type, value)
-
-        # Clear cached properties after modifying attributes
-        self._cache.clear()
 
     async def set_members(
         self,
@@ -559,8 +618,8 @@ class MockPlayer(Player):
 
         # Always include self as first member if there are members
         if current_members:
-            self._attr_group_members = [self.player_id] + [
-                pid for pid in current_members if pid != self.player_id
+            self._attr_group_members = [self.protocol_id] + [
+                pid for pid in current_members if pid != self.protocol_id
             ]
         else:
             self._attr_group_members = []
@@ -570,6 +629,69 @@ class MockPlayer(Player):
 
     async def stop(self) -> None:
         """Stop playback - required abstract method."""
+
+
+def attach_mock(
+    provider: MockProvider,
+    protocol_id: str,
+    name: str | None = None,
+    *,
+    role: ProtocolRole = ProtocolRole.NATIVE,
+    player: Player | None = None,
+    player_id: str | None = None,
+    identifiers: dict[IdentifierType, str] | None = None,
+    player_type: PlayerType = PlayerType.PLAYER,
+    protocol_class: type[MockProtocol] = MockProtocol,
+) -> tuple[Player, MockProtocol]:
+    """
+    Return a player and a mock protocol attached to it, without what attach() awaits.
+
+    Both are in the registries of the players controller of the provider's mass
+    (``provider.mass.players``). The player is created (initialized, with a config of
+    its own) unless one is given.
+
+    This only wires the objects together. It applies none of the attach rules of the
+    players controller (one protocol per domain, one that stands for the device, the
+    identifier vetoes), stores no config, calls no hook of the protocol and publishes
+    nothing. A test of a sequence the controller may refuse, or of what an attach
+    stores or announces, attaches to a real controller instead.
+
+    :param provider: The (mock) provider the protocol belongs to.
+    :param protocol_id: ID of the protocol object.
+    :param name: The name its device reports, the protocol id by default.
+    :param role: The role the protocol attaches in.
+    :param player: The player to attach it to, for a second protocol of a device.
+    :param player_id: Id of the player to create: by default one of its own, as a device
+        gets that is new. Pass the protocol id for a player from before the player
+        split, whose own protocol has the id of the player.
+    :param identifiers: The device identifiers the protocol reports.
+    :param player_type: The type of player the protocol reports.
+    :param protocol_class: The class of the protocol, for a test that overrides what the
+        provider implements.
+    """
+    controller = provider.mass.players
+    protocol = protocol_class(
+        provider, protocol_id, name or protocol_id, role, identifiers, player_type
+    )
+    if player is None:
+        player_id = player_id or f"pl_{protocol_id}"
+        player = Player(
+            provider.mass,
+            player_id,
+            PlayerConfig(
+                values={},
+                provider=provider.instance_id,
+                player_id=player_id,
+                default_name=name or protocol_id,
+                player_type=player_type,
+            ),
+        )
+        controller._players[player_id] = player
+        player.set_initialized()
+    controller._protocols[protocol_id] = protocol
+    player.add_protocol(protocol, role)
+    protocol.set_player(player)
+    return player, protocol
 
 
 def make_player_state(player_id: str = "player_1", **values: Any) -> PlayerState:
@@ -591,12 +713,13 @@ def make_player_state(player_id: str = "player_1", **values: Any) -> PlayerState
 
 def make_protocol_snapshot(protocol_id: str = "player_1", **values: Any) -> ProtocolSnapshot:
     """
-    Return what the provider object of an idle, available device reports.
+    Return what the native protocol of an idle, available device reports.
 
-    :param protocol_id: Player id the provider object is registered under.
+    :param protocol_id: Id of the protocol.
     :param values: The values that differ from that report.
     """
     defaults: dict[str, Any] = {
+        "role": ProtocolRole.NATIVE,
         "name": None,
         "available": True,
         "available_for_playback": True,
@@ -629,7 +752,6 @@ def make_peer_snapshot(
         "type": PlayerType.PLAYER,
         "available": True,
         "available_for_playback": True,
-        "protocol_parent_id": None,
         "grouping_locked": False,
     }
     return PeerSnapshot(
@@ -677,6 +799,8 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "expose_to_ha": True,
         "icon": "speaker",
         "legacy_ids": [],
+        "last_seen": None,
+        "unavailable_since": None,
         "power_control": PLAYER_CONTROL_NONE,
         "volume_control": PLAYER_CONTROL_NONE,
         "mute_control": PLAYER_CONTROL_NONE,
@@ -694,12 +818,13 @@ def make_state_inputs(**values: Any) -> StateInputs:
         "options": UniqueList(),
         "static_group_members": [],
         "can_group_with": set(),
+        "protocol_can_group_with": set(),
         "has_setup_flow": False,
         "linked": (),
         "active_protocol": None,
         "foreign_app": None,
-        "protocol_parent_id": None,
         "output_protocols": [],
+        "protocols": [],
         "active_output_protocol": None,
         "active_mass_source": None,
         "sleep_timer_expires_at": None,

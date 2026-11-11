@@ -29,14 +29,19 @@ from music_assistant_models.enums import (
     IdentifierType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
+    ProtocolRole,
     ProviderType,
 )
 from music_assistant_models.player import DeviceInfo
 from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
+    CONF_PLAYERS,
+)
 from music_assistant.controllers.player_queues.constants import CACHE_CATEGORY_PLAYER_QUEUE_ITEMS
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.helpers.util import load_provider_module
@@ -61,7 +66,7 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 # Player providers that keep their real implementation, as they own no device.
-REAL_PLAYER_PROVIDERS = frozenset({"universal_player", "universal_group", "sync_group"})
+REAL_PLAYER_PROVIDERS = frozenset({"universal_group", "sync_group"})
 
 # The provider instance that owns the fake power controls: one that is always loaded.
 POWER_CONTROL_PROVIDER = "builtin"
@@ -76,7 +81,7 @@ TEST_TRACK_URI = f"{MUSIC_PROVIDER}://track/0_0_0"
 CLOCK_START = 1000.0
 
 # Seconds idle() lets pass by default: past the server's debounces and follow-up checks
-# (0.25 s to 5 s), short of the 15 s protocol evaluation delay.
+# (0.25 s to 5 s), short of the 15 s a protocol waits for the identifiers of its device.
 IDLE_HORIZON = 10.0
 
 # Tracked server timers of background work that keeps coming back while the server runs
@@ -115,11 +120,10 @@ FAKE_SETTING = "fake_setting"
 type Role = Literal["native", "audio"]
 type Identifiers = Mapping[IdentifierType, str | list[str] | tuple[str, ...]]
 
-# Today the role of a protocol is its player type. Kept in this one place so the scenarios
-# stay valid when the role becomes an attribute of its own.
-_ROLE_TYPES: dict[Role, PlayerType] = {
-    "native": PlayerType.PLAYER,
-    "audio": PlayerType.PROTOCOL,
+# The role a protocol reports for each role a scenario names.
+_ROLES: dict[Role, ProtocolRole] = {
+    "native": ProtocolRole.NATIVE,
+    "audio": ProtocolRole.AUDIO,
 }
 
 # the real clock, for the harness's own time limits
@@ -167,7 +171,7 @@ class FakeProtocol(PlayerProtocol):
         Initialize the protocol object of a device; use FakePlayerProvider.protocol().
 
         :param provider: The fake provider this protocol belongs to.
-        :param protocol_id: ID of the protocol object (the player id it registers with).
+        :param protocol_id: ID of the protocol object.
         :param device: What the device reports, kept across restarts.
         """
         super().__init__(provider, protocol_id)
@@ -250,17 +254,17 @@ class FakeProtocol(PlayerProtocol):
         members.update(dict.fromkeys(player_ids_to_add or []))
         for player_id in player_ids_to_remove or []:
             members.pop(player_id, None)
-        others = [player_id for player_id in members if player_id != self.player_id]
+        others = [protocol_id for protocol_id in members if protocol_id != self.protocol_id]
         self._apply(
             "set_members",
             player_ids_to_add,
             player_ids_to_remove,
-            group_members=[self.player_id, *others] if others else [],
+            group_members=[self.protocol_id, *others] if others else [],
         )
 
     async def on_remove(self) -> None:
-        """Let the provider go of this object, so it finds the device again as a new one."""
-        cast("FakePlayerProvider", self.provider)._protocols.pop(self.player_id, None)
+        """Drop this object from its provider, which then finds the device again as a new one."""
+        cast("FakePlayerProvider", self.provider)._protocols.pop(self.protocol_id, None)
 
     def _apply(self, command: str, *args: Any, **state: Any) -> None:
         """Record a command and report the state it leads to."""
@@ -333,7 +337,7 @@ class FakePlayerProvider(PlayerProvider):
         """
         Create a new device with its protocol object of this provider; attach it to use it.
 
-        :param protocol_id: ID of the protocol object (the player id it registers with).
+        :param protocol_id: ID of the protocol object.
         :param name: The name the device reports.
         :param role: ``"native"`` for the vendor's own control plane, ``"audio"`` for an audio
             protocol of a device (AirPlay, Cast, DLNA, ...).
@@ -341,12 +345,12 @@ class FakePlayerProvider(PlayerProvider):
             values reports several identifiers of one type, for a device that stands for
             several (sub)devices.
         :param session_only: Whether the protocol reports that it exists only while attached,
-            like a browser session. No server behaviour depends on it yet.
+            like a browser session.
         :param state: Other reported state, as taken by Scenario.report().
         """
         self._devices[protocol_id] = _Device(
             provider_id=self.instance_id,
-            state={"name": name, "type": _ROLE_TYPES[role], **state},
+            state={"name": name, "role": _ROLES[role], **state},
             identifiers=dict(identifiers or {}),
             session_only=session_only,
         )
@@ -359,7 +363,7 @@ class FakePlayerProvider(PlayerProvider):
             if device.provider_id != self.instance_id or not device.present:
                 continue
             if self.mass.players.get_protocol(protocol_id) is None:
-                await self.mass.players.register_or_update(self._protocol_for(protocol_id))
+                await self.mass.players.attach(self._protocol_for(protocol_id))
 
     def _protocol_for(self, protocol_id: str) -> FakeProtocol:
         """Return the protocol object of a device on this provider instance."""
@@ -495,9 +499,9 @@ class Scenario:
         """
         self._check_current(protocol)
         if role is not None:
-            protocol._set_reported(type=_ROLE_TYPES[role])
+            protocol._set_reported(role=_ROLES[role])
         protocol._device.present = True
-        await self.mass.players.register_or_update(protocol)
+        await self.mass.players.attach(protocol)
         await self.settle()
 
     async def detach(self, protocol: FakeProtocol) -> None:
@@ -508,7 +512,7 @@ class Scenario:
         """
         self._check_current(protocol)
         protocol._device.present = False
-        await self.mass.players.unregister(protocol.player_id, permanent=False)
+        await self.mass.players.detach(protocol.protocol_id)
         await self.settle()
 
     def set_present(self, protocol_id: str, present: bool) -> None:
@@ -533,7 +537,7 @@ class Scenario:
             one, a list of values reports several of one type). A role changes with attach().
         """
         self._check_current(protocol)
-        if "type" in state:
+        if "role" in state:
             msg = "a role changes with attach(protocol, role=...)"
             raise ScenarioError(msg)
         protocol._set_reported(**state)
@@ -665,7 +669,7 @@ class Scenario:
         Let the follow-up work on short timers run (debounces), for an assertion of steady state.
 
         Raises ScenarioError when the server still has work due within the horizon after it, or
-        a protocol evaluation pending at all, which a scenario lets happen with advance().
+        a protocol that waits for its player at all, which a scenario lets happen with advance().
 
         :param horizon: Seconds to pass.
         """
@@ -678,10 +682,10 @@ class Scenario:
             and handle.when() <= limit
             and not task_id.startswith(BACKGROUND_TIMERS)
         ]
-        # the protocol evaluation delays (15 s, 45 s) are plain loop timers of the controller
+        # the wait of a protocol for its identifiers (15 s) is a plain loop timer of the controller
         pending += [
-            f"protocol evaluation of {player_id}"
-            for player_id, handle in self.mass.players._pending_protocol_evaluations.items()
+            f"protocol evaluation of {protocol_id}"
+            for protocol_id, handle in self.mass.players._pending_protocol_evaluations.items()
             if not handle.cancelled()
         ]
         if pending:
@@ -705,6 +709,24 @@ class Scenario:
         _merge(data, values)
         self._settings_file.write_text(json.dumps(data))
         await self._boot()
+
+    async def seed_pre_split_config(self, players: dict[str, dict[str, Any]]) -> None:
+        """
+        Restart the server on player configs as a version from before the player split left them.
+
+        The stored config is that of a server that never split its player configs: the
+        given configs are merged into its players, and it holds no protocol configs.
+
+        :param players: Stored player configs in the shape from before the split, by player id.
+        """
+        await self.seed_config(
+            {
+                CONF_PLAYERS: players,
+                CONF_PLAYER_PROTOCOLS: None,
+                CONF_PLAYER_SPLIT_SESSION_ONLY: None,
+                CONF_PLAYER_SPLIT_TREE: None,
+            }
+        )
 
     async def settle(self) -> None:
         """
@@ -762,11 +784,11 @@ class Scenario:
         """
         Return the visible players that carry any of the given protocols.
 
-        A player carries a protocol when it is that protocol or lists it as an output.
+        A player carries the protocols it lists as belonging to it.
 
         :param protocols: The protocol objects of one device.
         """
-        protocol_ids = {protocol.player_id for protocol in protocols}
+        protocol_ids = {protocol.protocol_id for protocol in protocols}
         return [
             self._visible(state)
             for state in self.mass.players.all_player_states()
@@ -775,20 +797,17 @@ class Scenario:
 
     def player_of(self, protocol: FakeProtocol) -> str | None:
         """
-        Return the id of the player a protocol is attached to, also when it is attached hidden.
+        Return the id of the player a protocol is attached to.
 
-        None when the protocol is attached to no player. A protocol listed as an output is
-        carried by that player (see players_carrying()).
+        None when the protocol is attached to no player: it is detached, or waits for the
+        identifiers that tell which player it belongs to.
 
         :param protocol: The protocol object of a device.
         """
-        if (registered := self.mass.players.get_protocol(protocol.player_id)) is None:
+        attached = self.mass.players.get_protocol(protocol.protocol_id)
+        if attached is None or attached.player is None:
             return None
-        if registered.protocol_parent_id is not None:
-            return registered.protocol_parent_id
-        # a protocol without a parent stands as a player of its own when clients see it
-        listed = {state.player_id for state in self.mass.players.all_player_states()}
-        return registered.player_id if registered.player_id in listed else None
+        return attached.player.player_id
 
     def single_player(self, *protocols: FakeProtocol) -> VisiblePlayer:
         """
@@ -801,7 +820,7 @@ class Scenario:
         """
         players = self.players_carrying(*protocols)
         if len(players) != 1 or any(self.players_carrying(p) != players for p in protocols):
-            ids = sorted(protocol.player_id for protocol in protocols)
+            ids = sorted(protocol.protocol_id for protocol in protocols)
             msg = f"Expected one player carrying all of {ids}: {players}"
             raise ScenarioError(msg)
         return players[0]
@@ -835,7 +854,7 @@ class Scenario:
 
         :param protocol_id: ID of the protocol object.
         """
-        if (stored := self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")) is None:
+        if (stored := self.mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}")) is None:
             return None
         return dict(stored.get("values") or {})
 
@@ -1015,8 +1034,8 @@ class Scenario:
         """Refuse a protocol object of a server or provider instance that is gone."""
         if self.mass.get_provider(protocol.provider.instance_id) is not protocol.provider:
             msg = (
-                f"{protocol.player_id} belongs to a server or provider instance that is gone, "
-                f"use scenario.protocol({protocol.player_id!r})"
+                f"{protocol.protocol_id} belongs to a server or provider instance that is gone, "
+                f"use scenario.protocol({protocol.protocol_id!r})"
             )
             raise ScenarioError(msg)
 
@@ -1321,7 +1340,7 @@ def _fake_manifest(manifest: ProviderManifest) -> ProviderManifest:
 
 def _carried_ids(state: PlayerState) -> set[str]:
     """Return the ids of the protocol objects a player state stands for."""
-    return {state.player_id} | {output.output_protocol_id for output in state.output_protocols}
+    return {protocol.protocol_id for protocol in state.protocols}
 
 
 def _mentions(value: Any, text: str, path: str = "") -> list[str]:
