@@ -73,11 +73,14 @@ from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_SEARCH_RESULTS,
     COLLECTION_COVER_COUNT,
     RANDOM_SORT_FIELDS,
+    RESUME_POSITION_TOLERANCE_SECONDS,
 )
 from music_assistant.controllers.music.helpers import (
+    ResumePoint,
     preferred_thumb,
     provider_mappings_from_urls,
     search_name_match_clause,
+    select_resume_point,
     sibling_instance_mappings,
     usable_thumb,
 )
@@ -214,6 +217,24 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
     narrators: tuple[str, ...]
     fully_played: bool | None
     resume_position_ms: int | None
+    resume_position_timestamp: datetime | None
+
+    def resume_point_changed(self, incoming_audiobook: Audiobook) -> bool:
+        """
+        Return True when the provider's resume point differs from the stored one and wins.
+
+        :param incoming_audiobook: The audiobook as the provider currently reports it.
+        """
+        provider_point = ResumePoint.from_item(incoming_audiobook)
+        stored_point = ResumePoint.from_item(self)
+        if provider_point is None or (
+            stored_point is not None
+            and provider_point.fully_played == stored_point.fully_played
+            and abs(provider_point.position_ms - stored_point.position_ms)
+            <= RESUME_POSITION_TOLERANCE_SECONDS * 1000
+        ):
+            return False
+        return select_resume_point(provider_point, stored_point) is provider_point
 
     def authors_narrators_changed(self, audiobook: Audiobook) -> bool:
         """
@@ -1017,7 +1038,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Resolution order matches get_library_item_by_prov_mappings (instance first,
         then domain).
         """
-        extra_columns, extra_joins, extra_params = self._sync_details_query_parts()
+        extra_columns, extra_joins, extra_params = await self._sync_details_query_parts(
+            provider_mappings
+        )
         base_sql = f"""
             SELECT
                 {self.db_table}.item_id,
@@ -3240,12 +3263,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         return True
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """
         Return extra (columns, joins, params) for this media type's sync-details query.
 
         Override in a subclass to select additional lightweight columns needed by the
         library sync change detection for this media type.
+
+        :param provider_mappings: The mappings of the item the provider is syncing.
         """
         return "", "", {}
 

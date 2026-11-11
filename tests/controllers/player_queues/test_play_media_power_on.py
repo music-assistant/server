@@ -16,6 +16,7 @@ def _controller() -> Any:
     ctrl: Any = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.mass = MagicMock()
     ctrl.mass.players.get_player.return_value.offline_by_power_control = True
+    ctrl.mass.players._resolve_playback_owner = lambda player: player  # plays on its own
     ctrl.mass.players._power_on_switched_off_player = AsyncMock()
     ctrl._check_player_permission = MagicMock()
     ctrl.get = MagicMock(return_value=MagicMock())

@@ -257,6 +257,18 @@ async def test_member_creates_a_music_source_of_its_own(flow_mass: MusicAssistan
     }
 
 
+async def test_adding_a_provider_leaves_onboarding_open(flow_mass: MusicAssistant) -> None:
+    """Onboarding completes when the wizard says so, not when the first provider is added."""
+    set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
+    assert not flow_mass.config.onboard_done
+    with patch.object(flow_mass, "load_provider_config", AsyncMock()):
+        await flow_mass.config._create_provider_instance(FAKE_DOMAIN, {})
+
+    assert not flow_mass.config.onboard_done
+    await flow_mass.config.set_onboard_complete()
+    assert flow_mass.config.onboard_done
+
+
 class _FlowlessProvider(MusicProvider):
     """
     A genuine (minimal) provider for a domain that ships no setup_flow module.

@@ -27,6 +27,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PODCASTS
+from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing, cached_listing
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -47,7 +48,7 @@ from music_assistant.models.music_provider import (
 from .base import MediaControllerBase, PodcastSyncDetails
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from music_assistant_models.auth import User
 
@@ -236,7 +237,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             item_type=PodcastEpisode,
         )
         # the progress the user made, as Music Assistant recorded it, is filled in on every
-        # request over what the provider reports, as it changes while listening
+        # request where it wins over what the provider reports, as it changes while listening
         await self._set_resume_positions(episodes, provider.instance_id)
         if fully_played is not None:
             episodes = [x for x in episodes if bool(x.fully_played) is fully_played]
@@ -414,13 +415,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         """
         Fill in the current user's resume position and played state for a single episode.
 
-        Skipped when the episode already has resume info set by the provider.
-
         :param episode: The episode to enrich with resume info.
         :param provider_instance_id: The provider instance the episode belongs to.
         """
-        if episode.fully_played is not None or episode.resume_position_ms:
-            return
         user: User | None = None
         if session_user := get_current_user():
             user = session_user
@@ -439,13 +436,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         rows = await self.mass.music.database.get_rows(
             DB_TABLE_MEDIA_PROGRESS, match=match, order_by="timestamp DESC", limit=1
         )
-        row = rows[0] if rows else None
-        if row is None:
-            return
-        if row["seconds_played"]:
-            episode.resume_position_ms = int(row["seconds_played"] * 1000)
-        if row["fully_played"] is not None:
-            episode.fully_played = bool(row["fully_played"])
+        self._apply_resume_row(episode, rows[0] if rows else None)
 
     async def _assemble_versions(
         self, item_id: str, provider_instance_id_or_domain: str
@@ -570,12 +561,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         # grab the episodes from the provider. Providers cache their own listing, so resume
         # info is applied here to keep per-user progress out of those caches
         async for item in prov.get_podcast_episodes(item_id):
-            # for providers that do not natively support providing resume info,
-            # we fallback to the playlog db table
-            if item.fully_played is None and not item.resume_position_ms:
-                if resume_rows is None:
-                    resume_rows = await self._get_resume_rows(prov.instance_id)
-                self._apply_resume_row(item, resume_rows.get(item.item_id))
+            if resume_rows is None:
+                resume_rows = await self._get_resume_rows(prov.instance_id)
+            self._apply_resume_row(item, resume_rows.get(item.item_id))
             await self._restore_probed_duration(item)
             yield item
 
@@ -612,7 +600,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
     async def _set_resume_positions(
         self, episodes: Sequence[PodcastEpisode], provider_instance_id: str
     ) -> None:
-        """Fill in the current user's resume info, over what the provider reports."""
+        """Fill in the current user's resume info, where it wins over what the provider reports."""
         if not episodes:
             return
         resume_rows = await self._get_resume_rows(provider_instance_id)
@@ -655,13 +643,15 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
     @staticmethod
     def _apply_resume_row(episode: PodcastEpisode, row: Mapping[str, Any] | None) -> None:
-        """Fill in the resume position and played state a playlog row holds for an episode."""
+        """Fill in the resume info a playlog row holds, when it wins over the provider's."""
         if row is None:
             return
-        if row["seconds_played"]:
-            episode.resume_position_ms = int(row["seconds_played"] * 1000)
-        if row["fully_played"] is not None:
-            episode.fully_played = bool(row["fully_played"])
+        playlog_point = ResumePoint.from_playlog_row(row)
+        if select_resume_point(ResumePoint.from_item(episode), playlog_point) is not playlog_point:
+            return
+        episode.fully_played = playlog_point.fully_played
+        episode.resume_position_ms = playlog_point.position_ms
+        episode.resume_position_timestamp = playlog_point.timestamp
 
     async def _restore_probed_duration(self, episode: PodcastEpisode) -> None:
         """
@@ -684,7 +674,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         item.total_episodes = db_row["total_episodes"]
         return item
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the podcasts sync-details query."""
         return f", json_extract({DB_TABLE_PODCASTS}.metadata, '$.genres') AS genres", "", {}
 
