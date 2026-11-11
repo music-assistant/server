@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import shortuuid
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import ProtocolRole
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_DYNAMIC_GROUP_MEMBERS, CONF_GROUP_MEMBERS
 from music_assistant.models.player_provider import PlayerProvider
@@ -52,29 +53,26 @@ class SyncGroupProvider(PlayerProvider):
                 # member is not compatible with the current group, skip it
                 continue
             final_members.append(member_id)
-        # generate a new player_id for the group player
-        player_id = f"{SGP_PREFIX}{shortuuid.random(8).lower()}"
-        self.mass.config.create_default_player_config(
-            player_id=player_id,
+        protocol_id = f"{SGP_PREFIX}{shortuuid.random(8).lower()}"
+        self.mass.config.create_protocol_record(
+            protocol_id,
             provider=self.instance_id,
-            player_type=PlayerType.GROUP,
-            name=name,
-            enabled=True,
-            values={
-                CONF_GROUP_MEMBERS: final_members,
-                CONF_DYNAMIC_GROUP_MEMBERS: dynamic,
-            },
+            player_id=None,
+            role=ProtocolRole.VIRTUAL,
+            default_name=name,
         )
-        return await self._register_player(player_id)
+        self.mass.config.set_protocol_value(protocol_id, CONF_GROUP_MEMBERS, final_members)
+        self.mass.config.set_protocol_value(protocol_id, CONF_DYNAMIC_GROUP_MEMBERS, dynamic)
+        group = SyncGroupPlayer(self, protocol_id)
+        # attaching creates the player of the group, which keeps the record stored above
+        await self.mass.players.attach(group)
+        if (player := group.player) is None:
+            raise PlayerCommandFailed(f"Could not create group player {name}")
+        return player
 
     async def discover_players(self) -> None:
-        """Discover players."""
-        for player_conf in await self.mass.config.get_player_configs(self.instance_id):
-            if player_conf.player_id.startswith(SGP_PREFIX):
-                await self._register_player(player_conf.player_id)
-
-    async def _register_player(self, player_id: str) -> Player:
-        """Register a sync group player."""
-        group = SyncGroupPlayer(self, player_id)
-        await self.mass.players.register_or_update(group)
-        return group
+        """Attach every stored sync group that has no attached protocol."""
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            if self.get_protocol(protocol_id):
+                continue  # already attached
+            await self.mass.players.attach(SyncGroupPlayer(self, protocol_id))
