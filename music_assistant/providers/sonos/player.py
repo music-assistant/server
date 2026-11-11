@@ -1829,6 +1829,12 @@ class SonosPlayer(Player):
         try:
             async with asyncio.timeout(GROUPS_REFRESH_TIMEOUT):
                 groups = await self.client.api.groups.get_groups(self.client.household_id)
+        except asyncio.CancelledError:
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
+            # a reconnect cancels the replies it still waited on, the refresh among them
+            self.logger.debug("Could not refresh the groups of %s: connection closed", self.name)
+            return
         except (SonosException, ClientError, OSError, TimeoutError) as err:
             self.logger.debug("Could not refresh the groups of %s: %s", self.name, err)
             return

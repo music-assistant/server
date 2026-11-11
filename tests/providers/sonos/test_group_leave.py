@@ -232,3 +232,33 @@ async def test_members_that_never_answer_cost_the_bound_once() -> None:
         await home.leader.set_members(player_ids_to_remove=[MEMBER, OTHER])
 
     assert time.monotonic() - start < 0.5
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_during_a_refresh_does_not_fail_the_removal() -> None:
+    """A reconnect cancels the reply the refresh waits on; the removal still succeeds."""
+    home = _Household()
+    home.next_groups = BOTH_LEFT
+    home.apis[MEMBER].groups.get_groups.side_effect = asyncio.CancelledError
+    home.answer_groups(OTHER, BOTH_LEFT)
+
+    await home.leader.set_members(player_ids_to_remove=[MEMBER, OTHER])
+    await asyncio.sleep(0)
+
+    assert home.leader.client.player.group_members == [LEADER]
+    assert home.players[OTHER].synced_to is None
+    assert home.member.synced_to == LEADER
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_refresh_is_still_cancelled() -> None:
+    """Cancelling the refresh itself is not mistaken for a reconnect."""
+    home = _Household()
+    home.apis[MEMBER].groups.get_groups.side_effect = _never_answers
+    refresh = asyncio.ensure_future(home.member._refresh_groups())
+    await asyncio.sleep(0.05)
+
+    refresh.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
