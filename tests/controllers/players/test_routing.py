@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import (
     IdentifierType,
@@ -13,7 +13,13 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
+from tests.common import grouping_player_controller
 from tests.scenarios.harness import FakeProtocol, Scenario
+
+if TYPE_CHECKING:
+    from unittest.mock import AsyncMock
+
+    from tests.common import MockProtocol
 
 KITCHEN = {
     IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0",
@@ -259,3 +265,24 @@ async def test_output_channels_of_the_player_apply_to_the_output_that_renders(
     scenario.mass.config.set_protocol_value("ap_kitchen", CONF_OUTPUT_CHANNELS, "right")
 
     assert streams._get_output_channels(audio, player_id) == "right"
+
+
+async def test_sync_the_protocols_report_in_their_own_ids_is_one_of_players() -> None:
+    """A sync is published and changed in player ids, while the protocols speak their own."""
+    controller = grouping_player_controller("a", "b", "c")
+    leader = controller.get_player("a")
+    member = controller.get_player("b")
+    assert leader is not None
+    assert member is not None
+    assert leader.state.can_group_with == {"b", "c"}
+
+    cast("MockProtocol", leader.own_protocol)._attr_group_members = ["proto_a", "proto_b"]
+    for player in controller:
+        player.refresh_state(signal_event=False)
+
+    assert leader.state.group_members == ["a", "b"]
+    assert member.state.synced_to == "a"
+
+    await controller.cmd_set_members("a", player_ids_to_remove=["b"])
+
+    cast("AsyncMock", controller._handle_set_members).assert_awaited_once_with(leader, None, ["b"])

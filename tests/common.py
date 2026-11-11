@@ -444,9 +444,11 @@ def grouping_player_controller(*player_ids: str) -> PlayerController:
     """
     Return a players controller over ungrouped players that can all group with each other.
 
-    The players are named "Player <ID>" and the controller's commands are in the command
-    registry of its mocked mass (see use_api_command_registry). The member change itself is
-    stubbed (``_handle_set_members``), so a test can see whether one was made, and how.
+    The players are named "Player <ID>". The protocol of each has an id of its own,
+    "proto_<player id>", and reports what it can group with in those protocol ids. The
+    controller's commands are in the command registry of its mocked mass (see
+    use_api_command_registry). The member change itself is stubbed
+    (``_handle_set_members``), so a test can see whether one was made, and how.
 
     :param player_ids: The ids of the players to register.
     """
@@ -461,10 +463,12 @@ def grouping_player_controller(*player_ids: str) -> PlayerController:
     provider = MockProvider("test", instance_id="test", mass=mass)
     for player_id in player_ids:
         _, protocol = attach_mock(
-            provider, player_id, f"Player {player_id.upper()}", player_id=player_id
+            provider, f"proto_{player_id}", f"Player {player_id.upper()}", player_id=player_id
         )
         protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-        protocol._attr_can_group_with = set(player_ids) - {player_id}
+        protocol._attr_can_group_with = {f"proto_{other}" for other in player_ids} - {
+            protocol.protocol_id
+        }
     for player in controller._players.values():
         player.refresh_state(signal_event=False)
     controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
