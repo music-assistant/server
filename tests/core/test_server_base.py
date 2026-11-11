@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -18,8 +19,6 @@ from music_assistant.mass import MusicAssistant
 from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import pytest
     from aiohttp import ClientSession
     from music_assistant_models.config_entries import CoreConfig
@@ -58,6 +57,14 @@ async def test_core_controller_setup_can_use_the_http_sessions(tmp_path: Path) -
             assert len(sessions) == 2
             assert sessions[0] is mass.http_session
             assert sessions[1] is mass.http_session_no_ssl
+
+
+async def test_runtime_dir_lives_while_the_server_runs(tmp_path: Path) -> None:
+    """The runtime dir is created on start and removed on stop."""
+    async with full_mass_context(tmp_path) as mass:
+        runtime_path = Path(mass.runtime_path)
+        assert runtime_path.is_dir()
+    assert not runtime_path.exists()
 
 
 async def test_server_info(mass: MusicAssistant) -> None:

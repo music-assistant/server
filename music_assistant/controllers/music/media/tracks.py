@@ -1794,7 +1794,9 @@ class TracksController(MediaControllerBase[Track]):
             return "artists.search_name ASC, tracks.search_name ASC"
         return super()._get_sort_sql(field, direction)
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the tracks sync-details query."""
         # the sync loop needs to know if the track has (valid) album and artist links
         # to be able to backfill missing ones on existing library tracks

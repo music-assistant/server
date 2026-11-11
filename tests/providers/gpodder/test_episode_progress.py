@@ -304,8 +304,10 @@ async def test_reset_in_another_client_carries_its_own_time(
     cast("Mock", provider._client).get_episode_actions = AsyncMock(return_value=([reset], 999))
 
     resume = await provider.get_resume_position(f"{FEED} guid-2", MediaType.PODCAST_EPISODE)
+    episode = await provider.get_podcast_episode(f"{FEED} guid-2")
 
     assert resume == (False, 0, timestamp)
+    assert episode.resume_position_timestamp == timestamp
 
 
 # a feed without itunes:duration leaves the episode without one

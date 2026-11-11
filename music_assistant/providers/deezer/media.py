@@ -58,6 +58,7 @@ from .parsers import (
     parse_audiobook,
     parse_audiobook_chapters,
     parse_audiobook_from_album,
+    parse_bookmark_time,
     parse_date,
     parse_gw_track,
     parse_playlist,
@@ -669,8 +670,10 @@ class DeezerMediaManager:
         for ep in episodes:
             ep.fully_played = False
             ep.resume_position_ms = 0
+            ep.resume_position_timestamp = None
             if ep.item_id in bookmarks:
-                ep.fully_played, ep.resume_position_ms, _ = bookmarks[ep.item_id]
+                ep.fully_played, ep.resume_position_ms, bookmarked_at = bookmarks[ep.item_id]
+                ep.resume_position_timestamp = parse_bookmark_time(bookmarked_at)
             yield ep
 
     @use_cache(3600)
