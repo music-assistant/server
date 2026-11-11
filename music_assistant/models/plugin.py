@@ -212,9 +212,8 @@ class PluginProvider(
             route passes the owner player). It is no player or queue id: do not use it as
             one; ``mass.players.get_player_by_protocol`` returns its player.
         :param owner_player_id: The player that owns this playback session. Prefer this
-            for anything you store: it is the user-facing player and stays valid for
-            play_media and cmd_stop, where ``player_id`` can be an ephemeral protocol
-            bridge whose id is gone by the time you use it.
+            for anything you store: it is the user-facing player, the id that player and
+            queue commands such as play_media and cmd_stop take.
         :param stream_session_id: Opaque controller-generated token identifying
             this specific stream request. The matching ``on_source_unselected``
             receives the same value.
