@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlaybackState,
+    ProtocolRole,
     ProviderFeature,
     ProviderType,
     RepeatMode,
@@ -69,6 +70,7 @@ from music_assistant.providers.yandex_ynison.ynison_client import (
     YnisonState,
     make_version_block,
 )
+from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
 
 def _arm_play_media_recorder(provider: YandexYnisonProvider) -> list[tuple[str, str]]:
@@ -153,6 +155,7 @@ def _make_mock_mass() -> MagicMock:
     # Players
     mass.players.all_players = MagicMock(return_value=[])
     mass.players.get_player = MagicMock(return_value=None)
+    mass.players.get_player_by_protocol = MagicMock(return_value=None)
     mass.players.cmd_stop = AsyncMock()
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_play = AsyncMock()
@@ -188,6 +191,29 @@ def _make_provider(player_id: str = "player1") -> YandexYnisonProvider:
     provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
     provider._credential_source = YandexMusicCredentialSource(mass, provider._ym_instance_id)
     return provider
+
+
+def _attach_protocols(provider: YandexYnisonProvider, protocols: dict[str, str]) -> None:
+    """
+    Attach protocols to players that the provider's players controller looks up.
+
+    :param provider: The provider whose mass gets the lookup of a protocol's player.
+    :param protocols: The player id each protocol id is attached to.
+    """
+    registry = mock_player_mass()
+    mock_provider = MockProvider("sendspin", mass=registry)
+    for protocol_id, player_id in protocols.items():
+        player = registry.players.get_player(player_id)
+        attach_mock(
+            mock_provider,
+            protocol_id,
+            player=player,
+            player_id=player_id,
+            role=ProtocolRole.AUDIO if player else ProtocolRole.NATIVE,
+        )
+    _stub_attr(
+        provider.mass.players, "get_player_by_protocol", registry.players.get_player_by_protocol
+    )
 
 
 # ------------------------------------------------------------------
@@ -449,11 +475,12 @@ class TestSourceSelection:
     """Tests for on_source_selected (the new PluginProvider hook)."""
 
     async def test_on_source_selected_sets_active(self) -> None:
-        """Selecting source sets the active player and records the session id."""
+        """Selecting source sets the player of the consuming protocol and records the session id."""
         provider = _make_provider()
+        _attach_protocols(provider, {"ap_new": "pl_new"})
 
-        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
-        assert provider._active_player_id == "new-player"
+        await provider.on_source_selected("main", "ap_new", "pl_new", "session_1")
+        assert provider._active_player_id == "pl_new"
         assert provider._active_session_id == "session_1"
 
     async def test_on_source_selected_publishes_last_ynison_options(self) -> None:
@@ -475,6 +502,9 @@ class TestSourceSelection:
     async def test_bridge_selection_does_not_stop_its_own_queue_player(self) -> None:
         """Selecting a bridge consumer for the same owner must leave playback running."""
         provider = _make_provider()
+        _attach_protocols(
+            provider, {"base-player": "base-player", "spb_base-player": "base-player"}
+        )
         provider._active_player_id = "base-player"
 
         await provider.on_source_selected(
@@ -485,8 +515,20 @@ class TestSourceSelection:
         )
 
         provider.mass.players.cmd_stop.assert_not_awaited()
-        assert provider._active_player_id == "spb_base-player"
+        assert provider._active_player_id == "base-player"
         assert provider._in_use_by_player == "base-player"
+
+    async def test_reselecting_the_group_member_that_consumes_does_not_stop_it(self) -> None:
+        """A new session of a group consumed by the same member leaves that member playing."""
+        provider = _make_provider()
+        _attach_protocols(provider, {"leaf_1": "pl_leaf_1"})
+        provider._active_player_id = "pl_leaf_1"
+
+        await provider.on_source_selected("main", "leaf_1", "group_1", "session_2")
+
+        provider.mass.players.cmd_stop.assert_not_awaited()
+        assert provider._active_player_id == "pl_leaf_1"
+        assert provider._in_use_by_player == "group_1"
 
     async def test_bridge_owner_is_allowed_when_player_switching_is_disabled(self) -> None:
         """A configured owner remains valid when its physical consumer is a bridge."""
@@ -504,6 +546,9 @@ class TestSourceSelection:
             {ProviderFeature.AUDIO_SOURCE},
         )
         mass.players.get_player.return_value = MagicMock()
+        _attach_protocols(
+            provider, {"base-player": "base-player", "spb_base-player": "base-player"}
+        )
 
         await provider.on_source_selected(
             "main",
@@ -519,7 +564,7 @@ class TestSourceSelection:
         )
 
         mass.player_queues.play_media.assert_not_awaited()
-        assert provider._active_player_id == "spb_base-player"
+        assert provider._active_player_id == "base-player"
         assert provider._in_use_by_player == "base-player"
         assert provider._active_session_id == "session_2"
 
@@ -529,6 +574,7 @@ class TestSourceSelection:
         provider._active_player_id = "old-player"
         provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerCommandFailed("stop failed"))
 
+        _attach_protocols(provider, {"new-player": "new-player"})
         await provider.on_source_selected("main", "new-player", "new-player", "session_1")
 
         assert provider._active_player_id == "new-player"
@@ -542,6 +588,7 @@ class TestSourceSelection:
             side_effect=PlayerUnavailableError("old-player is gone")
         )
 
+        _attach_protocols(provider, {"new-player": "new-player"})
         await provider.on_source_selected("main", "new-player", "new-player", "session_1")
 
         assert provider._active_player_id == "new-player"
@@ -2210,12 +2257,17 @@ class TestPlayerRateSnap:
         )
 
     @staticmethod
-    def _link_player(provider: YandexYnisonProvider, rates: list[tuple[int, int]]) -> MagicMock:
-        player = MagicMock()
-        player.get_supported_sample_rates = MagicMock(return_value=rates)
+    def _link_player(provider: YandexYnisonProvider, rates: list[tuple[int, int]]) -> MockProtocol:
+        """Make p1 the target player, rendered by a protocol that supports the given rates."""
+        registry = mock_player_mass()
+        player, protocol = attach_mock(
+            MockProvider("airplay", mass=registry), "ap_1", player_id="p1"
+        )
+        protocol._attr_supported_sample_rates = rates
+        player.update_state()
         provider._active_player_id = "p1"
-        provider.mass.players.get_player = MagicMock(return_value=player)  # type: ignore[attr-defined]
-        return player
+        provider.mass.players.get_player = registry.players.get_player  # type: ignore[method-assign]
+        return protocol
 
     async def test_hi_res_rate_snapped_down_to_supported(self) -> None:
         """A 96 kHz hint on a 48 kHz-max player declares 48 kHz (fast-path hit)."""
@@ -2240,6 +2292,23 @@ class TestPlayerRateSnap:
         provider._update_normalized_format(hint=self._hint(48000))
         assert provider._normalized_format.sample_rate == 48000
 
+    async def test_rate_follows_the_protocol_that_renders_the_player(self) -> None:
+        """The rates of the active output protocol apply, not those of the native one."""
+        provider = _make_provider()
+        native = self._link_player(provider, [(44100, 16)])
+        player = native.player
+        assert player is not None
+        _output_player, airplay = attach_mock(
+            MockProvider("airplay", mass=cast("MagicMock", native.mass)),
+            "ap_2",
+            player=player,
+            role=ProtocolRole.AUDIO,
+        )
+        airplay._attr_supported_sample_rates = [(44100, 16), (48000, 24)]
+        player._active_output_protocol = "ap_2"
+        provider._update_normalized_format(hint=self._hint(96000))
+        assert provider._normalized_format.sample_rate == 48000
+
     async def test_no_resolvable_player_keeps_hint_rate(self) -> None:
         """With no target player the hint rate survives and nothing raises (AC10)."""
         provider = _make_provider()
@@ -2258,8 +2327,12 @@ class TestPlayerRateSnap:
     async def test_invalid_capability_data_propagates(self) -> None:
         """A defective player capability implementation cannot select guessed PCM."""
         provider = _make_provider()
-        player = self._link_player(provider, [])
-        player.get_supported_sample_rates.side_effect = ValueError("invalid capabilities")
+        protocol = self._link_player(provider, [])
+        _stub_attr(
+            protocol,
+            "get_supported_sample_rates",
+            MagicMock(side_effect=ValueError("invalid capabilities")),
+        )
 
         with pytest.raises(ValueError, match="invalid capabilities"):
             provider._update_normalized_format(hint=self._hint(96000))
@@ -2267,9 +2340,10 @@ class TestPlayerRateSnap:
     async def test_unexpected_capability_error_propagates(self) -> None:
         """An internal capability error must not be hidden by rate fallback."""
         provider = _make_provider()
-        player = self._link_player(provider, [])
-        player.get_supported_sample_rates.side_effect = RuntimeError("bug")
-        player.resolve_output_player.return_value = player
+        protocol = self._link_player(provider, [])
+        _stub_attr(
+            protocol, "get_supported_sample_rates", MagicMock(side_effect=RuntimeError("bug"))
+        )
 
         with pytest.raises(RuntimeError, match="bug"):
             provider._update_normalized_format(hint=self._hint(96000))
