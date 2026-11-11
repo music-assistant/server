@@ -197,7 +197,7 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.models.provider import Provider
 
 # ruff: noqa: PLR0915
@@ -1236,7 +1236,7 @@ class StreamsAudio:
 
     def get_player_output_plan(
         self,
-        player_id: str,
+        protocol_id: str,
         input_format: AudioFormat,
         output_format: AudioFormat,
         *,
@@ -1249,7 +1249,7 @@ class StreamsAudio:
         """
         Return executable filters and matching output details for a player.
 
-        :param player_id: Destination player identifier.
+        :param protocol_id: ID of the protocol that renders the audio.
         :param input_format: PCM format entering player-specific processing.
         :param output_format: Furthest downstream output format known to the server.
         :param shared_player_ids: Additional players receiving this identical output path.
@@ -1260,10 +1260,8 @@ class StreamsAudio:
         :param queue_item_id: Queue item for a single-item output path.
         """
         filter_params: list[str | ComplexFilter] = []
-        player = self.mass.players.get_player(player_id)
-        destination_player_id = (
-            player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        )
+        player = self.mass.players.get_output_protocol(protocol_id)
+        destination_player_id = player.player.player_id if player and player.player else protocol_id
         resolved_shared_player_ids = (
             resolve_output_player_ids(self.mass, shared_player_ids) - {destination_player_id}
             if shared_player_ids is not None
@@ -1279,8 +1277,8 @@ class StreamsAudio:
             else:
                 dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
         else:
-            dsp_config_id = player_id
-            dsp = self.mass.config.get_player_dsp_config(player_id)
+            dsp_config_id = protocol_id
+            dsp = self.mass.config.get_player_dsp_config(protocol_id)
             dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
 
         enabled_filters = [dsp_filter for dsp_filter in dsp.filters if dsp_filter.enabled]
@@ -1300,7 +1298,7 @@ class StreamsAudio:
                         self.logger.warning(
                             "Skipping the convolution filter of player %s: "
                             "impulse response %s is not stored",
-                            player_id,
+                            protocol_id,
                             dsp_filter.ir_id,
                         )
                         continue
@@ -1312,7 +1310,7 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self._get_output_channels(player, player_id)
+        channel_value = self._get_output_channels(player, protocol_id)
         source_channel = None
         channel_mix = ""
         # a single channel source is already the downmix and holds no FL/FR to select
@@ -1369,7 +1367,7 @@ class StreamsAudio:
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Generated ffmpeg params for player %s: %s",
-            player_id,
+            protocol_id,
             filter_params,
         )
         return output_plan
@@ -1377,7 +1375,7 @@ class StreamsAudio:
     async def get_output_format(
         self,
         output_format_str: str,
-        player: Player,
+        player: PlayerProtocol,
         content_sample_rate: int,
         content_bit_depth: int,
         media_type: MediaType = MediaType.UNKNOWN,
@@ -1423,7 +1421,7 @@ class StreamsAudio:
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
 
-        output_channels_str = self._get_output_channels(player, player.player_id)
+        output_channels_str = self._get_output_channels(player, player.protocol_id)
         fmt = AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
@@ -1435,7 +1433,7 @@ class StreamsAudio:
 
     async def select_pcm_format(
         self,
-        player: Player,
+        player: PlayerProtocol,
         streamdetails: StreamDetails,
         crossfade_enabled: bool,
         overlay_active: bool = False,
@@ -1488,12 +1486,12 @@ class StreamsAudio:
 
     async def select_flow_pcm_format(
         self,
-        player: Player,
+        player: PlayerProtocol,
         start_streamdetails: StreamDetails | None = None,
         crossfade_enabled: bool = False,
         overlay_active: bool = False,
         fallback_sample_rate: int | None = None,
-        output_players: Iterable[Player] | None = None,
+        output_players: Iterable[PlayerProtocol] | None = None,
     ) -> AudioFormat:
         """
         Select the internal PCM format for a Queue Flow Mode stream.
@@ -1949,7 +1947,7 @@ class StreamsAudio:
 
     async def get_queue_item_stream_with_smartfade(  # noqa: C901, PLR0912
         self,
-        player: Player,
+        player: PlayerProtocol,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         crossfade_mode: CrossfadeMode = CrossfadeMode.SMART_CROSSFADE,
@@ -2244,7 +2242,7 @@ class StreamsAudio:
                 crossfade_allowed = self.crossfade_allowed(
                     queue_item,
                     crossfade_mode=crossfade_mode,
-                    player_id=player.player_id,
+                    player_id=player.protocol_id,
                     flow_mode=False,
                     next_queue_item=next_queue_item,
                     sample_rate=pcm_format.sample_rate,
@@ -2504,7 +2502,7 @@ class StreamsAudio:
         start_queue_item: QueueItem,
         pcm_format: AudioFormat,
         session_id: str | None = None,
-        protocol_player: Player | None = None,
+        protocol_player: PlayerProtocol | None = None,
         consumer_connected: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
@@ -5526,66 +5524,71 @@ class StreamsAudio:
             self.logger.debug("Invalid response encoding during Shoutcast validation for %s", url)
             return False
 
-    def _resolve_player_dsp_config(self, player: Player) -> DSPConfig:
+    def _resolve_player_dsp_config(self, player: PlayerProtocol) -> DSPConfig:
         """
         Resolve the effective DSP config for a player.
 
         Single source of truth shared by every code path that needs to know
-        whether DSP will run for this player. Protocol wrappers defer to their
-        parent player; single-leg ``player_group`` instances that don't expose
+        whether DSP will run for this player. A protocol uses the config of the
+        player it is attached to; single-leg ``player_group`` instances that don't expose
         ``MULTI_DEVICE_DSP`` defer to their first member; players whose grouping
         context prevents DSP get a disabled config back regardless.
 
-        :param player: The player to resolve DSP config for.
+        :param player: The protocol that renders the audio to resolve DSP config for.
         """
         dsp_player_id = self._resolve_player_dsp_config_id(player)
         dsp = self.mass.config.get_player_dsp_config(dsp_player_id)
         if is_grouping_preventing_dsp(player):
             dsp.enabled = False
         elif player.provider.domain == "player_group" and (
-            PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
+            PlayerFeature.MULTI_DEVICE_DSP not in player.supported_features
         ):
-            if not player.state.group_members:
+            if not player.group_members:
                 dsp.enabled = False
         return dsp
 
-    def _resolve_player_dsp_config_id(self, player: Player) -> str:
+    def _resolve_player_dsp_config_id(self, player: PlayerProtocol) -> str:
         """
         Return the player identifier that supplies the effective DSP config.
 
-        :param player: Player whose DSP config source should be resolved.
+        :param player: The protocol whose DSP config source should be resolved.
         """
-        dsp_player_id = player.protocol_parent_id or player.player_id
+        dsp_player_id = player.player.player_id if player.player else player.protocol_id
         if (
             not is_grouping_preventing_dsp(player)
             and player.provider.domain == "player_group"
-            and PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
-            and player.state.group_members
+            and PlayerFeature.MULTI_DEVICE_DSP not in player.supported_features
+            and player.group_members
         ):
-            child_player = self.mass.players.get_player(player.state.group_members[0])
+            child_player = self.mass.players.get_player_by_protocol(player.group_members[0])
             assert child_player is not None
             dsp_player_id = child_player.player_id
         return dsp_player_id
 
-    def _get_output_channels(self, player: Player | None, player_id: str) -> str:
+    def _get_output_channels(self, player: PlayerProtocol | None, protocol_id: str) -> str:
         """
-        Return the configured output channels for the rendering player.
+        Return the configured output channels for the rendering protocol.
 
-        The value may be stored on the rendering player(protocol) itself (the
-        protocol section of the config UI) or on its visible parent player (the
-        native section); the rendering player's own stored value wins.
+        The value may be stored on the rendering protocol itself (the protocol
+        section of the config UI) or on the own protocol of its player (the
+        native section); the rendering protocol's own stored value wins.
+
+        :param player: The protocol that renders the audio, if it is attached.
+        :param protocol_id: The id of the protocol that renders the audio.
         """
-        parent_id = player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        parent_value = self.mass.config.get_protocol_value(
-            parent_id, CONF_OUTPUT_CHANNELS, "stereo"
+        own = player.player.own_protocol if player and player.player else None
+        own_value = (
+            self.mass.config.get_protocol_value(own.protocol_id, CONF_OUTPUT_CHANNELS, "stereo")
+            if own
+            else "stereo"
         )
         return self.mass.config.get_protocol_value(
-            player.player_id if player else player_id, CONF_OUTPUT_CHANNELS, parent_value
+            player.protocol_id if player else protocol_id, CONF_OUTPUT_CHANNELS, own_value
         )
 
     def _pick_pcm_bit_depth(
         self,
-        players: Iterable[Player],
+        players: Iterable[PlayerProtocol],
         streamdetails: StreamDetails | None,
         crossfade_enabled: bool,
         overlay_active: bool = False,
@@ -5619,7 +5622,7 @@ class StreamsAudio:
 
     def _select_audio_source_pcm_format(
         self,
-        player: Player,
+        player: PlayerProtocol,
         streamdetails: StreamDetails,
         supported_sample_rates: Iterable[int] | None = None,
     ) -> AudioFormat:
@@ -5665,21 +5668,18 @@ class StreamsAudio:
         )
 
     def _flow_restart_context(
-        self, queue_id: str, protocol_player: Player | None
+        self, queue_id: str, protocol_player: PlayerProtocol | None
     ) -> tuple[str, list[int]]:
         """
         Resolve the flow mode config and supported sample rates for restart decisions.
 
-        Prefers the protocol player actually consuming the flow stream over the
-        queue's (wrapper) player, whose config may lack the audio specific entries.
+        Prefers the protocol actually consuming the flow stream over the one that
+        renders for the queue's player now.
         """
+        if protocol_player is None and (player := self.mass.players.get_player(queue_id)):
+            protocol_player = player.resolve_output_protocol()
         if protocol_player is None:
-            protocol_player = self.mass.players.get_player(queue_id)
-        if protocol_player is None:
-            flow_mode_sample_rate_conf = self.mass.config.get_protocol_value(
-                queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
-            )
-            return flow_mode_sample_rate_conf, []
+            return FLOW_MODE_SAMPLE_RATE_SMART, []
         flow_mode_sample_rate_conf = cast(
             "str",
             protocol_player.config.get_value(
