@@ -11,12 +11,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_PROTOCOL_KEY_SPLITTER
 
-from .helpers import build_bare_config_controller
+from .helpers import build_action_player, build_bare_config_controller
 
 
 async def test_provider_action_returning_none_yields_empty_list() -> None:
@@ -82,28 +83,21 @@ async def test_core_action_returning_entries_still_wraps_them() -> None:
 
 async def test_player_action_returning_none_yields_empty_list_without_rerender() -> None:
     """A player action returning None surfaces as [] and skips the full-entries re-render."""
-    mock_mass = MagicMock()
-    player = MagicMock()
-    player.handle_config_action = AsyncMock(return_value=None)
-    mock_mass.players.get_player.return_value = player
-    controller = build_bare_config_controller(mock_mass)
+    controller, own, _ = build_action_player()
 
     with patch.object(controller, "get_player_config_entries", AsyncMock()) as mock_rerender:
         result = await controller.invoke_player_config_action("player_1", "some_action")
 
     assert result == []
+    own.handle_config_action.assert_awaited_once_with("some_action")  # type: ignore[attr-defined]
     mock_rerender.assert_not_awaited()
 
 
 async def test_player_action_returning_entries_still_rerenders() -> None:
     """A player action that still returns entries keeps the existing full re-render."""
-    mock_mass = MagicMock()
-    player = MagicMock()
-    player.handle_config_action = AsyncMock(
-        return_value=[ConfigEntry(key="foo", type=ConfigEntryType.LABEL)]
+    controller, _, _ = build_action_player(
+        own_result=[ConfigEntry(key="foo", type=ConfigEntryType.LABEL)]
     )
-    mock_mass.players.get_player.return_value = player
-    controller = build_bare_config_controller(mock_mass)
     rerendered = [ConfigEntry(key="bar", type=ConfigEntryType.LABEL)]
 
     with patch.object(
@@ -116,42 +110,24 @@ async def test_player_action_returning_entries_still_rerenders() -> None:
 
 
 async def test_protocol_action_returning_none_yields_empty_list_without_rerender() -> None:
-    """A protocol-prefixed action returning None surfaces as [] without re-rendering the parent."""
-    mock_mass = MagicMock()
-    parent = MagicMock()
-    parent.handle_config_action = AsyncMock()
-    protocol_player = MagicMock()
-    protocol_player.handle_config_action = AsyncMock(return_value=None)
-    mock_mass.players.get_player.side_effect = lambda player_id, *_args: {
-        "player_1": parent,
-        "protocol_1": protocol_player,
-    }[player_id]
-    controller = build_bare_config_controller(mock_mass)
+    """A protocol-prefixed action returning None surfaces as [] without re-rendering the player."""
+    controller, own, audio = build_action_player()
     action = f"protocol_1{CONF_PROTOCOL_KEY_SPLITTER}some_action"
 
     with patch.object(controller, "get_player_config_entries", AsyncMock()) as mock_rerender:
         result = await controller.invoke_player_config_action("player_1", action)
 
     assert result == []
-    protocol_player.handle_config_action.assert_awaited_once_with("some_action")
-    parent.handle_config_action.assert_not_awaited()
+    audio.handle_config_action.assert_awaited_once_with("some_action")  # type: ignore[attr-defined]
+    own.handle_config_action.assert_not_awaited()  # type: ignore[attr-defined]
     mock_rerender.assert_not_awaited()
 
 
-async def test_protocol_action_returning_entries_rerenders_the_parent() -> None:
-    """A protocol-prefixed action returning entries re-renders the parent, not the target."""
-    mock_mass = MagicMock()
-    parent = MagicMock()
-    parent.handle_config_action = AsyncMock()
-    protocol_player = MagicMock()
-    protocol_player.handle_config_action = AsyncMock(
-        return_value=[ConfigEntry(key="foo", type=ConfigEntryType.LABEL)]
+async def test_protocol_action_returning_entries_rerenders_the_player() -> None:
+    """A protocol-prefixed action returning entries re-renders the player, not the protocol."""
+    controller, _, _ = build_action_player(
+        audio_result=[ConfigEntry(key="foo", type=ConfigEntryType.LABEL)]
     )
-    mock_mass.players.get_player.side_effect = lambda player_id, *_args: {
-        "player_1": parent,
-        "protocol_1": protocol_player,
-    }[player_id]
-    controller = build_bare_config_controller(mock_mass)
     rerendered = [ConfigEntry(key="bar", type=ConfigEntryType.LABEL)]
     action = f"protocol_1{CONF_PROTOCOL_KEY_SPLITTER}some_action"
 
@@ -162,3 +138,13 @@ async def test_protocol_action_returning_entries_rerenders_the_parent() -> None:
 
     assert result == rerendered
     mock_rerender.assert_awaited_once_with("player_1")
+
+
+async def test_action_of_a_protocol_that_is_not_attached_is_refused() -> None:
+    """An action can only reach a protocol that is attached to the player."""
+    controller, _, _ = build_action_player()
+
+    with pytest.raises(KeyError):
+        await controller.invoke_player_config_action(
+            "player_1", f"unknown{CONF_PROTOCOL_KEY_SPLITTER}some_action"
+        )
