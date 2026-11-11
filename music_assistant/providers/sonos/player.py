@@ -51,8 +51,8 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.helpers.wake_on_lan import send_magic_packet
-from music_assistant.models.player import AnnouncementFeature, PlayerSource
-from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.models.player import PlayerSource
+from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.providers.sonos.const import (
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
