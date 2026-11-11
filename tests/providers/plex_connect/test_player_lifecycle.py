@@ -9,6 +9,7 @@ from music_assistant_models.enums import EventType
 from music_assistant_models.event import MassEvent
 
 from music_assistant.providers.plex_connect import PlexConnectProvider
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 PLAYER_ID = "player1"
 
@@ -21,20 +22,26 @@ def _make_player(available: bool) -> MagicMock:
     return player
 
 
-def _make_provider(players: dict[str, MagicMock]) -> Any:
+def _make_provider(
+    players: dict[str, MagicMock], mass: MagicMock | None = None, player_id: str = PLAYER_ID
+) -> Any:
     """
     Create a PlexConnectProvider with mocked instance setup and teardown.
 
     :param players: The registered players; the caller may change it afterwards.
+    :param mass: A mass whose players controller has players of its own, instead of
+        one that serves the given players.
+    :param player_id: The player the provider is connected to.
     """
-    mass = MagicMock()
-    mass.players.get_player.side_effect = players.get
-    mass.players.iter_players.side_effect = lambda **_kwargs: [
-        player for player in players.values() if player.state.available
-    ]
+    if mass is None:
+        mass = MagicMock()
+        mass.players.get_player.side_effect = players.get
+        mass.players.iter_players.side_effect = lambda **_kwargs: [
+            player for player in players.values() if player.state.available
+        ]
     # setup and teardown run as tasks; close them, their calls are what is checked
     mass.create_task.side_effect = lambda coro, **_kwargs: coro.close()
-    setup_data = {"mass_player_id": PLAYER_ID, "plex_provider_id": "plexprov1"}
+    setup_data = {"mass_player_id": player_id, "plex_provider_id": "plexprov1"}
     mass.config.get = MagicMock(return_value=setup_data)
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     config = MagicMock()
@@ -118,3 +125,19 @@ async def test_player_added_after_removal_restarts_plex_connect() -> None:
     provider._player_instance = None
     provider._on_mass_player_event(_event(EventType.PLAYER_ADDED))
     assert provider._setup_player_instance.call_count == 2
+
+
+async def test_a_player_whose_id_is_not_its_protocols_is_followed_by_its_player_id() -> None:
+    """A connected player with an id of its own is set up and followed under that id."""
+    mass = mock_player_mass()
+    player, _protocol = attach_mock(MockProvider("airplay", mass=mass), "ap_1")
+    player.update_state()
+    provider = _make_provider({}, mass=mass, player_id=player.player_id)
+
+    await provider.handle_async_init()
+    provider._setup_player_instance.assert_called_once()
+    assert provider.mass.subscribe.call_args.kwargs["id_filter"] == "pl_ap_1"
+
+    provider._player_instance = MagicMock()
+    provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="pl_ap_1"))
+    provider._teardown_player_instance.assert_called_once()
