@@ -44,6 +44,7 @@ async def test_removed_player_prunes_manual_host_config() -> None:
     )
     provider.mass = Mock()
     provider.mass.config = Mock()
+    provider._host_players = {"mpd_office.local_6601": Mock(), "mpd_kitchen.local_6600": Mock()}
     player = MPDPlayer.__new__(MPDPlayer)
     player._provider = provider
     player.host = "office.local"
@@ -59,5 +60,6 @@ async def test_removed_player_prunes_manual_host_config() -> None:
         encrypted=False,
         immediate=False,
     )
-    # unregistering the player is up to the players controller
-    provider.mass.players.unregister.assert_not_called()
+    assert list(provider._host_players) == ["mpd_kitchen.local_6600"]
+    # removing the player is up to the players controller
+    provider.mass.players.remove_protocol.assert_not_called()
