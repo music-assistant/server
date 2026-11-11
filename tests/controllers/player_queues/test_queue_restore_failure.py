@@ -26,18 +26,27 @@ def _controller(cache_get: AsyncMock) -> Any:
     return queues
 
 
-def _player(player_id: str = "p1") -> Any:
-    """Build a player stand-in with the state fields the queue snapshot is built from."""
-    return SimpleNamespace(
+def _player(queues: Any, player_id: str = "p1") -> Any:
+    """
+    Build a live player stand-in with the state fields the queue snapshot is built from.
+
+    :param queues: The queue-controller stand-in, whose players controller gets the player.
+    :param player_id: The id of the player.
+    """
+    player = SimpleNamespace(
         player_id=player_id, state=SimpleNamespace(name="Player A", available=True)
     )
+    queues.mass.players.get_player = MagicMock(
+        side_effect=lambda queried_id: player if queried_id == player_id else None
+    )
+    return player
 
 
 async def test_player_gets_a_queue_when_the_state_lookup_fails() -> None:
     """A failing cache lookup for the stored queue state falls back to a fresh queue."""
     queues = _controller(AsyncMock(side_effect=OSError("database error")))
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     assert queues._queue_data["p1"].queue.queue_id == "p1"
     queues.logger.warning.assert_called_once()
@@ -47,7 +56,7 @@ async def test_player_gets_a_queue_when_the_items_lookup_fails() -> None:
     """A failing cache lookup for the stored queue items falls back to a fresh queue."""
     queues = _controller(AsyncMock(side_effect=[{"queue": {}}, OSError("database error")]))
 
-    await PlayerQueuesController.on_player_register(queues, _player())
+    await PlayerQueuesController.on_player_register(queues, _player(queues))
 
     assert queues._queue_data["p1"].queue.queue_id == "p1"
     queues.logger.warning.assert_called_once()
