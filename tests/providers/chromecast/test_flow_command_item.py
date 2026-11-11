@@ -39,7 +39,7 @@ def _fake_flow_player(*, cast_queue_items: list[Any] | None = None) -> Any:
     fake.mass = MagicMock()
     fake.mass.streams.get_command_url.return_value = COMMAND_URL
     fake.logger = MagicMock()
-    fake._player_id = "cast-child-1"
+    fake._protocol_id = "cast-child-1"
     fake.cc = MagicMock()
     fake.cc.media_controller.status.player_is_playing = True
     fake.cc.media_controller.status.media_session_id = 7
@@ -49,7 +49,11 @@ def _fake_flow_player(*, cast_queue_items: list[Any] | None = None) -> Any:
     fake._attr_powered = True
     fake._attr_playback_state = PlaybackState.PLAYING
     fake._attr_current_media = PlayerMedia(uri="http://mass:8097/flow/s1/q1/i1/p1.flac")
-    fake._state = MagicMock(current_media=PlayerMedia(uri="http://mass:8097/flow/s1/q1/i1/p1.flac"))
+    # the player the Cast is attached to, first seen after the player split
+    fake._player = MagicMock(
+        player_id="pl0123456789ab",
+        state=MagicMock(current_media=PlayerMedia(uri="http://mass:8097/flow/s1/q1/i1/p1.flac")),
+    )
     return fake
 
 
@@ -68,7 +72,8 @@ async def test_command_item_declares_the_type_of_the_served_silence_file() -> No
     media = insert["items"][0]["media"]
     assert media["contentId"] == COMMAND_URL
     assert media["contentType"] == mimetypes.guess_type(SILENCE_FILE)[0]
-    fake.mass.streams.get_command_url.assert_called_once_with("cast-child-1", "next")
+    # the command url names the queue, which is that of the player
+    fake.mass.streams.get_command_url.assert_called_once_with("pl0123456789ab", "next")
 
 
 async def test_command_item_is_not_inserted_without_a_command_url() -> None:
