@@ -42,7 +42,6 @@ from music_assistant.providers.hass.constants import (
 
 from .constants import (
     CONF_ENTRY_WARN_HASS_INTEGRATION,
-    CONF_PLAYERS,
     NATIVE_SUPPORTED_HASS_INTEGRATIONS,
 )
 from .helpers import ESPHomeSupportedAudioFormat, native_player_macs, normalized_mac
@@ -71,17 +70,17 @@ class HomeAssistantPlayer(PlayerProtocol):
         self,
         provider: PlayerProvider,
         hass: HomeAssistantClient,
-        player_id: str,
+        protocol_id: str,
         hass_state: HassState,
         dev_info: dict[str, Any],
         extra_player_data: dict[str, Any],
         entity_registry: dict[str, HassEntity],
     ) -> None:
         """Initialize the Home Assistant Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.hass = hass
         self.hass_state = hass_state
-        self._extra_data = extra_player_data
+        self._entity_data = extra_player_data
         # Set base attributes from Home Assistant state
         self._attr_available = hass_state["state"] not in UNAVAILABLE_STATES
         self._attr_device_info = DeviceInfo(
@@ -95,7 +94,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         # Work out supported features
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
         hass_supported_features = parse_supported_features(
-            hass_state["attributes"].get("supported_features"), player_id, self.logger
+            hass_state["attributes"].get("supported_features"), protocol_id, self.logger
         )
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
@@ -118,7 +117,7 @@ class HomeAssistantPlayer(PlayerProtocol):
             self._attr_supported_features.add(PlayerFeature.POWER)
             self._attr_powered = hass_state["state"] not in OFF_STATES
 
-        self.extra_data["hass_supported_features"] = hass_supported_features
+        self._entity_data["hass_supported_features"] = hass_supported_features
         self._hass_attributes: dict[str, Any] = {}
         self._ma_playback_active = False
         self._ma_playback_started = False
@@ -136,7 +135,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         self._update_hass_features(hass_supported_features)
 
         # Derive supported sample rates from ESPHome's reported formats when available
-        esphome_formats: list[ESPHomeSupportedAudioFormat] | None = self.extra_data.get(
+        esphome_formats: list[ESPHomeSupportedAudioFormat] | None = self._entity_data.get(
             "esphome_supported_audio_formats"
         )
         if esphome_formats:
@@ -165,11 +164,11 @@ class HomeAssistantPlayer(PlayerProtocol):
         base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
         # add alert if the player (type) is also supported by a native MA provider
         if (
-            self.extra_data.get("hass_domain") in NATIVE_SUPPORTED_HASS_INTEGRATIONS
+            self._entity_data.get("hass_domain") in NATIVE_SUPPORTED_HASS_INTEGRATIONS
             or self._has_native_duplicate()
         ):
             base_entries = [CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries]
-        supported_formats: list[ESPHomeSupportedAudioFormat] | None = self.extra_data.get(
+        supported_formats: list[ESPHomeSupportedAudioFormat] | None = self._entity_data.get(
             "esphome_supported_audio_formats"
         )
         if supported_formats:
@@ -199,7 +198,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="media_play",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
         )
 
     async def pause(self) -> None:
@@ -207,7 +206,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="media_pause",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
         )
 
     async def stop(self) -> None:
@@ -216,7 +215,7 @@ class HomeAssistantPlayer(PlayerProtocol):
             await self.hass.call_service(
                 domain="media_player",
                 service="media_stop",
-                target={"entity_id": self.player_id},
+                target={"entity_id": self.protocol_id},
             )
         except FailedCommand as exc:
             # some HA players do not support STOP
@@ -235,7 +234,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="volume_set",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
             service_data={"volume_level": volume_level / 100},
         )
 
@@ -244,7 +243,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="volume_mute",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
             service_data={"is_volume_muted": muted},
         )
 
@@ -253,7 +252,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="turn_on" if powered else "turn_off",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
         )
 
     async def next_track(self) -> None:
@@ -261,7 +260,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="media_next_track",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
         )
 
     async def previous_track(self) -> None:
@@ -269,12 +268,12 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="media_previous_track",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
         )
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         metadata: dict[str, Any] = {
             "title": media.title,
             "artist": media.artist,
@@ -285,7 +284,7 @@ class HomeAssistantPlayer(PlayerProtocol):
             "imageUrl": media.image_url,
             "duration": media.stream_duration or media.duration,
         }
-        if self.extra_data.get("hass_domain") == "dlna_dmr":
+        if self._entity_data.get("hass_domain") == "dlna_dmr":
             # the HA DLNA integration reads the album art from this key, not the cast keys
             metadata["album_art_uri"] = media.image_url or MASS_LOGO_ONLINE
         extra_data: dict[str, Any] = {
@@ -294,7 +293,7 @@ class HomeAssistantPlayer(PlayerProtocol):
             # unset values are left out, the HA DLNA integration would send them as "None"
             "metadata": {key: value for key, value in metadata.items() if value is not None},
         }
-        if self.extra_data.get("hass_domain") == "esphome":
+        if self._entity_data.get("hass_domain") == "esphome":
             # tell esphome mediaproxy to bypass the proxy,
             # as MA already delivers an optimized stream
             extra_data["bypass_proxy"] = True
@@ -306,7 +305,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         await self.hass.call_service(
             domain="media_player",
             service="play_media",
-            target={"entity_id": self.player_id},
+            target={"entity_id": self.protocol_id},
             service_data={
                 "media_content_id": url,
                 "media_content_type": "music",
@@ -344,7 +343,7 @@ class HomeAssistantPlayer(PlayerProtocol):
                 self.display_name,
             )
         hass_prov = cast("HomeAssistantPlayerProvider", self.provider).hass_prov
-        await hass_prov.play_announcement_on_entity(self.player_id, announcement)
+        await hass_prov.play_announcement_on_entity(self.protocol_id, announcement)
         self.logger.debug(
             "Playing announcement on %s completed",
             self.display_name,
@@ -375,17 +374,12 @@ class HomeAssistantPlayer(PlayerProtocol):
                 domain="media_player",
                 service="join",
                 service_data={"group_members": player_ids_to_add},
-                target={"entity_id": self.player_id},
+                target={"entity_id": self.protocol_id},
             )
 
     async def on_remove(self) -> None:
-        """Take the player out of the players this provider is set up with."""
-        player_ids = cast("list[str]", self.provider.config.get_value(CONF_PLAYERS))
-        if self.player_id in player_ids:
-            player_ids.remove(self.player_id)
-            self.mass.config.set_raw_provider_config_value(
-                self.provider.instance_id, CONF_PLAYERS, player_ids
-            )
+        """Take the entity out of the entities this provider is set up with."""
+        cast("HomeAssistantPlayerProvider", self.provider).forget_entity(self.protocol_id)
 
     def update_from_compressed_state(self, state: CompressedState) -> None:
         """Handle updating the player with updated info in a HA CompressedState."""
@@ -452,10 +446,10 @@ class HomeAssistantPlayer(PlayerProtocol):
                     if value
                     else []
                 )
-                if group_members and group_members[0] == self.player_id:
+                if group_members and group_members[0] == self.protocol_id:
                     # first in the list is the group leader
                     self._attr_group_members = group_members
-                elif group_members and group_members[0] != self.player_id:
+                elif group_members and group_members[0] != self.protocol_id:
                     # this player is not the group leader
                     self._attr_group_members.clear()
                 else:
@@ -463,12 +457,12 @@ class HomeAssistantPlayer(PlayerProtocol):
             elif key == "supported_features":
                 # Update supported features dynamically via shared helper
                 hass_supported_features = parse_supported_features(
-                    value, self.player_id, self.logger
+                    value, self.protocol_id, self.logger
                 )
-                self.extra_data["hass_supported_features"] = hass_supported_features
+                self._entity_data["hass_supported_features"] = hass_supported_features
                 self._update_hass_features(hass_supported_features)
 
-        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+        if self._announcement_in_progress:
             # the media attributes describe the announcement instead of the source that
             # is restored afterwards, so they tell us nothing about who owns playback.
             # Drop the announcement's id so a later partial update can not judge by it.
@@ -519,7 +513,7 @@ class HomeAssistantPlayer(PlayerProtocol):
         elif self.playback_state == PlaybackState.IDLE:
             # Clear external media if it was set
             if self._attr_active_source and self._attr_active_source not in (
-                self.player_id,
+                self.protocol_id,
                 None,
             ):
                 self._attr_current_media = None
@@ -531,7 +525,7 @@ class HomeAssistantPlayer(PlayerProtocol):
 
         :param hass_state: The raw state as reported by the entity.
         """
-        if self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+        if self._announcement_in_progress:
             # an announcement takes the entity over, its states say nothing about our stream
             return
         if self._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
@@ -562,6 +556,13 @@ class HomeAssistantPlayer(PlayerProtocol):
             )
             return self.mass.metadata.get_image_url(image)
         return None
+
+    @property
+    def _announcement_in_progress(self) -> bool:
+        """Whether the core plays an announcement on the player of this entity."""
+        return self.player is not None and bool(
+            self.player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
 
     def _has_native_duplicate(self) -> bool:
         """Whether this device is also registered as a native Music Assistant player."""
