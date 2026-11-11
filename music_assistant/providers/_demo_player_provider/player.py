@@ -5,24 +5,43 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    PlaybackState,
+    PlayerFeature,
+    ProtocolRole,
+)
 from music_assistant_models.player import PlayerOptionValueType, PlayerSource
 
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
 if TYPE_CHECKING:
+    from music_assistant.models.player import Player
+
     from .provider import DemoPlayerprovider
 
 
 class DemoPlayer(PlayerProtocol):
-    """DemoPlayer in Music Assistant."""
+    """
+    The protocol object of a demo device.
 
-    def __init__(self, provider: DemoPlayerprovider, player_id: str) -> None:
-        """Initialize the Player."""
-        super().__init__(provider, player_id)
+    A provider implements one of these per device: it reports what the device does
+    through the `_attr_*` values (or by overriding the properties) and sends the commands
+    to it. The player that users and clients see is built from it by the player controller
+    and is available as `self.player` while the protocol is attached.
+    """
+
+    # the role this protocol has for its device: NATIVE (the default) for the
+    # vendor's own control plane, AUDIO for an audio protocol next to it (AirPlay, Cast,
+    # DLNA, ...), VIRTUAL for a group player, CONTROL for control without audio.
+    _attr_role = ProtocolRole.NATIVE
+
+    def __init__(self, provider: DemoPlayerprovider, protocol_id: str) -> None:
+        """Initialize the protocol object."""
+        super().__init__(provider, protocol_id)
         # init some static variables
-        self._attr_name = f"Demo Player {player_id}"
+        self._attr_name = f"Demo Player {protocol_id}"
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
@@ -40,7 +59,7 @@ class DemoPlayer(PlayerProtocol):
         # OPTIONAL
         # This method is optional and should be implemented if you need to handle
         # any initialization logic after the config was initially loaded or updated.
-        # This is called after the player is registered and self.config was loaded.
+        # This is called when the protocol is attached and self.config was loaded.
         # And also when the config was updated.
         # You don't need to call update_state() here.
 
@@ -114,7 +133,7 @@ class DemoPlayer(PlayerProtocol):
         """Handle POWER command on the player."""
         # OPTIONAL - required only if you specified PlayerFeature.POWER
         # this method should send a power on/off command to the given player.
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         if powered:
             # In this demo implementation we just set the power state to ON
             # and optimistically update the state.
@@ -141,7 +160,7 @@ class DemoPlayer(PlayerProtocol):
         # and optimistically update the state.
         # In a real implementation you would send a command to the actual player and
         # get the actual value from the player either from a callback or by polling the player.
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info(
             "Received VOLUME_SET command on player %s with level %s",
             self.display_name,
@@ -155,7 +174,7 @@ class DemoPlayer(PlayerProtocol):
         """Handle VOLUME MUTE command on the player."""
         # OPTIONAL - required only if you specified PlayerFeature.VOLUME_MUTE
         # this method should send a volume mute command to the given player.
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info(
             "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
         )
@@ -174,7 +193,7 @@ class DemoPlayer(PlayerProtocol):
         # and optimistically set the playback state to PLAYING.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PLAY command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -191,7 +210,7 @@ class DemoPlayer(PlayerProtocol):
         # and optimistically set the playback state to IDLE.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_active_source = None
@@ -207,7 +226,7 @@ class DemoPlayer(PlayerProtocol):
         # and optimistically set the playback state to PAUSED.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        logger = self.provider.logger.getChild(self.player_id)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PAUSE command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
@@ -267,8 +286,8 @@ class DemoPlayer(PlayerProtocol):
         # In this demo implementation we just optimistically set the state.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        logger = self.provider.logger.getChild(self.player_id)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
+        logger = self.provider.logger.getChild(self.protocol_id)
         logger.info("Received PLAY_MEDIA command on player %s with url %s", self.display_name, url)
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
@@ -308,7 +327,7 @@ class DemoPlayer(PlayerProtocol):
         # This method is optional and should be implemented if the player supports
         # selecting a source (e.g. HDMI, AUX, etc.) on the player.
         # The source is the source ID to select on the player.
-        # available sources are specified in the Player.source_list property
+        # available sources are specified in the source_list property
 
     async def select_sound_mode(self, sound_mode: str) -> None:
         """Handle SELECT SOUND MODE command on the player."""
@@ -316,7 +335,7 @@ class DemoPlayer(PlayerProtocol):
         # This method is optional and should be implemented if the player supports
         # selecting a native sound mode (e.g. stereo, 5.1, classic...).
         # The sound_mode is the sound mode's id, and available sound modes
-        # are specified in the Player.sound_mode_list property.
+        # are specified in the sound_mode_list property.
 
     async def set_members(
         self,
@@ -327,18 +346,20 @@ class DemoPlayer(PlayerProtocol):
         # OPTIONAL - required only if you specified PlayerFeature.SET_MEMBERS
         # This method is optional and should be implemented if the player supports
         # syncing/grouping with other players.
+        # The ids are ids of protocol objects of this provider, and so are the ids you
+        # report in group_members.
         # This demo keeps a simple in-memory member list: the leader tracks its
         # group_members and each member's synced_to is then derived automatically by
-        # the base Player from the leader's list. A real provider would also issue the
+        # the base class from the leader's list. A real provider would also issue the
         # native sync command to the device here.
         members = dict.fromkeys(self._attr_group_members)
         for member_id in player_ids_to_add or []:
             members[member_id] = None
         for member_id in player_ids_to_remove or []:
             members.pop(member_id, None)
-        other_member_ids = [pid for pid in members if pid != self.player_id]
+        other_member_ids = [pid for pid in members if pid != self.protocol_id]
         # the leader is always the first member while the group is non-empty
-        self._attr_group_members = [self.player_id, *other_member_ids] if other_member_ids else []
+        self._attr_group_members = [self.protocol_id, *other_member_ids] if other_member_ids else []
         self.update_state()
         # refresh affected members so their derived synced_to / can_group_with recompute
         # (the ids passed to set_members are this provider's own ids, so look them up as protocols)
@@ -385,22 +406,30 @@ class DemoPlayer(PlayerProtocol):
         self._set_attributes()
         self.update_state()
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
+    async def on_attach(self, player: Player) -> None:
+        """Handle logic when the protocol is attached to its player."""
         # OPTIONAL
         # this method is optional and should be implemented if you need to handle
-        # any logic when the player is unloaded from the Player controller.
-        # This is called when the player is removed from the Player controller.
-        self.logger.info("Player %s unloaded", self.name)
+        # any logic once the player the device belongs to is known (self.player).
+        self.logger.info("%s attached to player %s", self.name, player.display_name)
+
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        # OPTIONAL
+        # this method is optional and should be implemented if you need to handle
+        # any logic when the protocol is detached: the device went away, the provider
+        # unloads or the user disabled the player. Always call the base implementation.
+        await super().on_detach()
+        self.logger.info("%s detached", self.name)
 
     async def on_remove(self) -> None:
-        """Handle logic when the player is removed for good."""
+        """Handle logic when the protocol is removed for good."""
         # OPTIONAL
         # this method is optional and should be implemented if your provider keeps
-        # something about the player outside of the player's own config, e.g. an entry
+        # something about the device outside of the protocol's own config, e.g. an entry
         # in a list of manually added devices that would otherwise bring it back.
-        # The player is unloaded and its config is deleted by the time this is called.
-        self.logger.info("Player %s removed", self.name)
+        # The protocol is detached and its config is deleted by the time this is called.
+        self.logger.info("%s removed", self.name)
 
     def _set_attributes(self) -> None:
         """Update/set (dynamic) properties."""
