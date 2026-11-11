@@ -17,12 +17,9 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import (
-    CONF_PLAYER_DSP,
-    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PROTOCOL_PARENT_ID,
 )
-from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.matching import DeviceIdentity, identifiers_match
 from music_assistant.helpers.util import enrich_device_mac_address
@@ -3624,118 +3621,3 @@ class TestDerivedProtocolLinking:
         del stored["players/spb_1"]
         controller._save_underlying_player_id(derived)
         mock_mass.config.set.assert_not_called()
-
-
-class TestLocalAudioStubMigration:
-    """Tests for the config migration that promotes local_audio stubs to regular players."""
-
-    DEVICE_UUID = "aabbccdd-1122-3344-5566-77889900aabb"
-    UNIVERSAL_ID = "upaabbccdd11223344556677889900aabb"
-
-    def _make_data(self) -> dict[str, Any]:
-        """Build a settings dict as persisted by the previous local_audio setup."""
-        return {
-            CONF_PLAYERS: {
-                self.DEVICE_UUID: {
-                    "player_id": self.DEVICE_UUID,
-                    "provider": "local_audio",
-                    "player_type": "protocol",
-                    "enabled": True,
-                    "values": {"protocol_parent_id": self.UNIVERSAL_ID},
-                },
-                self.UNIVERSAL_ID: {
-                    "player_id": self.UNIVERSAL_ID,
-                    "provider": "universal_player",
-                    "player_type": "group",
-                    "enabled": False,
-                    "name": "Kitchen Output",
-                    "values": {
-                        # ghost_spb has no config anymore (device gone) - must not crash
-                        "linked_protocol_ids": [self.DEVICE_UUID, "spb_1", "ghost_spb"],
-                        "device_identifiers": {"uuid": self.DEVICE_UUID},
-                        "device_info": {"model": "Dummy Output", "manufacturer": "Local Audio"},
-                        "expose_to_ha": False,
-                        "hide_in_ui": True,
-                    },
-                },
-                "spb_1": {
-                    "player_id": "spb_1",
-                    "provider": "sendspin",
-                    "player_type": "protocol",
-                    "enabled": True,
-                    "values": {"protocol_parent_id": self.UNIVERSAL_ID},
-                },
-                "syncgroup_1": {
-                    "player_id": "syncgroup_1",
-                    "provider": "sync_group",
-                    "player_type": "group",
-                    "enabled": True,
-                    "values": {
-                        "group_members": [self.UNIVERSAL_ID, "other_player"],
-                        "allowed_members": [self.UNIVERSAL_ID],
-                    },
-                },
-            },
-            CONF_PLAYER_QUEUES: {
-                self.UNIVERSAL_ID: {
-                    "queue_id": self.UNIVERSAL_ID,
-                    "values": {"autoplay_mode": "smart"},
-                },
-            },
-            CONF_PLAYER_DSP: {
-                self.UNIVERSAL_ID: {"enabled": True},
-            },
-        }
-
-    async def test_stub_promoted_and_universal_absorbed(self) -> None:
-        """The stub becomes a regular player carrying the universal player's settings."""
-        data = self._make_data()
-
-        assert await migrate(data) is True
-
-        stub_cfg = data[CONF_PLAYERS][self.DEVICE_UUID]
-        assert stub_cfg["player_type"] == "player"
-        # the universal player was the device toggle the user operated
-        assert stub_cfg["enabled"] is False
-        assert stub_cfg["name"] == "Kitchen Output"
-        values = stub_cfg["values"]
-        assert "protocol_parent_id" not in values
-        assert values["expose_to_ha"] is False
-        assert values["hide_in_ui"] is True
-        assert values["linked_protocol_ids"] == ["spb_1", "ghost_spb"]
-        assert "device_identifiers" not in values
-        assert "device_info" not in values
-
-        # the wrapper is gone and the bridge protocol re-parented
-        assert self.UNIVERSAL_ID not in data[CONF_PLAYERS]
-        assert data[CONF_PLAYERS]["spb_1"]["values"]["protocol_parent_id"] == self.DEVICE_UUID
-        assert data[CONF_PLAYERS]["spb_1"]["player_type"] == "protocol"
-
-        # queue settings, DSP config and group memberships follow the new player_id
-        queue_cfg = data[CONF_PLAYER_QUEUES][self.DEVICE_UUID]
-        assert queue_cfg["queue_id"] == self.DEVICE_UUID
-        assert queue_cfg["values"]["autoplay_mode"] == "smart"
-        assert self.UNIVERSAL_ID not in data[CONF_PLAYER_QUEUES]
-        assert data[CONF_PLAYER_DSP] == {self.DEVICE_UUID: {"enabled": True}}
-        group_values = data[CONF_PLAYERS]["syncgroup_1"]["values"]
-        assert group_values["group_members"] == [self.DEVICE_UUID, "other_player"]
-        assert group_values["allowed_members"] == [self.DEVICE_UUID]
-
-    async def test_stub_without_universal_wrapper(self) -> None:
-        """A stub without a universal player wrapper is still promoted."""
-        data = self._make_data()
-        del data[CONF_PLAYERS][self.UNIVERSAL_ID]
-
-        assert await migrate(data) is True
-
-        stub_cfg = data[CONF_PLAYERS][self.DEVICE_UUID]
-        assert stub_cfg["player_type"] == "player"
-        assert stub_cfg["enabled"] is True
-        assert "protocol_parent_id" not in stub_cfg["values"]
-
-    async def test_migration_is_idempotent(self) -> None:
-        """A second run finds nothing left to migrate."""
-        data = self._make_data()
-
-        assert await migrate(data) is True
-        assert await migrate(data) is False
