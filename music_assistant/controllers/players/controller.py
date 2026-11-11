@@ -583,13 +583,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     def get_output_protocol(self, protocol_or_player_id: str) -> PlayerProtocol | None:
         """
-        Return the protocol that renders the audio an id asks for.
+        Return the protocol that renders the audio a stream is asked for under a protocol id.
 
-        A protocol fetches its stream under its own id; a stream that is asked for
-        under the id of a player is rendered by the protocol that plays for that player
-        now.
+        A protocol fetches its stream under its own id. An id that names no attached
+        protocol is taken as that of a player: the protocol that renders for it now.
+        Code that holds a player id asks the player instead
+        (``get_player(player_id).resolve_output_protocol()``): a player from before the
+        split shares its id with its own protocol, which this returns also while one of
+        its audio protocols renders.
 
-        :param protocol_or_player_id: ID of an attached protocol or of a player, or one
+        :param protocol_or_player_id: ID of an attached protocol, else of a player or one
             of the legacy ids of a player.
         """
         if protocol := self._protocols.get(protocol_or_player_id):

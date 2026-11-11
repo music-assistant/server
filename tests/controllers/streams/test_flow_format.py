@@ -638,15 +638,15 @@ def test_flow_restart_context_prefers_protocol_player() -> None:
     )
     # the protocol the queue's player renders through now: 44100-only
     rendering_protocol = _make_player(supported=[(44100, 16)])
-    audio.mass.players.get_output_protocol = MagicMock(  # type: ignore[method-assign]
-        return_value=rendering_protocol
+    audio.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        return_value=MagicMock(resolve_output_protocol=MagicMock(return_value=rendering_protocol))
     )
 
     conf, rates = audio._flow_restart_context("queue-1", protocol_player)
 
     assert conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
     assert rates == [44100, 96000]
-    audio.mass.players.get_output_protocol.assert_not_called()
+    audio.mass.players.get_player.assert_not_called()
 
 
 def test_flow_restart_context_falls_back_to_the_protocol_rendering_for_the_queue() -> None:
@@ -655,21 +655,21 @@ def test_flow_restart_context_falls_back_to_the_protocol_rendering_for_the_queue
     rendering_protocol = _make_player(
         supported=[(48000, 16)], flow_mode=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
     )
-    audio.mass.players.get_output_protocol = MagicMock(  # type: ignore[method-assign]
-        return_value=rendering_protocol
+    audio.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        return_value=MagicMock(resolve_output_protocol=MagicMock(return_value=rendering_protocol))
     )
 
     conf, rates = audio._flow_restart_context("queue-1", None)
 
     assert conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
     assert rates == [48000]
-    audio.mass.players.get_output_protocol.assert_called_once_with("queue-1")
+    audio.mass.players.get_player.assert_called_once_with("queue-1")
 
 
 def test_flow_restart_context_without_any_protocol() -> None:
     """Without a protocol rendering for the queue, the smart default and no rates are used."""
     audio = _make_streams_audio()
-    audio.mass.players.get_output_protocol = MagicMock(return_value=None)  # type: ignore[method-assign]
+    audio.mass.players.get_player = MagicMock(return_value=None)  # type: ignore[method-assign]
     # a protocol setting is never read under the id of a queue
     audio.mass.config.get_protocol_value = MagicMock(  # type: ignore[method-assign]
         return_value=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT

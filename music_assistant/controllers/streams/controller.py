@@ -2462,8 +2462,8 @@ class StreamsController(CoreController):
         announce_player = None
         if announce_player_id := announce_data.get("announce_player_id"):
             announce_player = self.mass.players.get_protocol(announce_player_id)
-        if announce_player is None:
-            announce_player = self.mass.players.get_output_protocol(player_id)
+        if announce_player is None and (player := self.mass.players.get_player(player_id)):
+            announce_player = player.resolve_output_protocol()
         if announce_player is None:
             return "default"
         return cast("str", announce_player.config.get_value(CONF_HTTP_PROFILE, "default"))

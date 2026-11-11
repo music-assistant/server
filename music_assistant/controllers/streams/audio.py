@@ -5676,8 +5676,8 @@ class StreamsAudio:
         Prefers the protocol actually consuming the flow stream over the one that
         renders for the queue's player now.
         """
-        if protocol_player is None:
-            protocol_player = self.mass.players.get_output_protocol(queue_id)
+        if protocol_player is None and (player := self.mass.players.get_player(queue_id)):
+            protocol_player = player.resolve_output_protocol()
         if protocol_player is None:
             return FLOW_MODE_SAMPLE_RATE_SMART, []
         flow_mode_sample_rate_conf = cast(

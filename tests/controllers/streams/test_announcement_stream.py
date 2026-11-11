@@ -267,7 +267,7 @@ def test_announcement_http_profile_prefers_fetching_player() -> None:
     fetcher = _protocol_with_http_profile("forced_content_length")
     rendering = _protocol_with_http_profile("chunked")
     mass.players.get_protocol = MagicMock(side_effect={"fetcher": fetcher}.get)
-    mass.players.get_output_protocol = MagicMock(side_effect={"player": rendering}.get)
+    mass.players.get_player = MagicMock(side_effect={"player": _rendering_through(rendering)}.get)
 
     # a known fetcher (e.g. an audio protocol of the player) provides the profile
     profile = controller._get_announcement_http_profile("player", _announce_data("fetcher"))
@@ -284,6 +284,11 @@ def test_announcement_http_profile_prefers_fetching_player() -> None:
     # unknown player resolves to the safe default
     profile = controller._get_announcement_http_profile("unknown", _announce_data(None))
     assert profile == "default"
+
+
+def _rendering_through(protocol: MagicMock) -> MagicMock:
+    """Return a player double whose audio is rendered by the given protocol."""
+    return MagicMock(resolve_output_protocol=MagicMock(return_value=protocol))
 
 
 def _protocol_with_http_profile(http_profile: str) -> MagicMock:
@@ -325,6 +330,9 @@ def _announcement_controller(http_profile: str) -> tuple[StreamsController, Magi
     protocol.display_name = "Player A"
     mass.players.get_output_protocol = MagicMock(
         side_effect=lambda pid: protocol if pid == "player1" else None
+    )
+    mass.players.get_player = MagicMock(
+        side_effect=lambda pid: _rendering_through(protocol) if pid == "player1" else None
     )
     # no queue is registered for this player: announcements must be served regardless
     mass.player_queues.get = MagicMock(return_value=None)
