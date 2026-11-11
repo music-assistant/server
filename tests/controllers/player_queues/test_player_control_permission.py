@@ -31,9 +31,22 @@ LEADER = "bedroom"
 OWN_CLIENT = "browser_session_1"
 
 
+def _device_id(player_id: str) -> str:
+    """Return the id of the protocol of a shared speaker, which differs from its player id."""
+    return f"{player_id}_device"
+
+
 def _player(player_id: str, *, private: bool) -> SimpleNamespace:
-    """Build a stand-in player carrying just what the permission check reads."""
-    return SimpleNamespace(player_id=player_id, private=private)
+    """
+    Build a stand-in player carrying just what the permission check reads.
+
+    A private client player has the id of the protocol its client announces, a shared
+    speaker's protocol has an id of its own.
+    """
+    protocol_id = player_id if private else _device_id(player_id)
+    return SimpleNamespace(
+        player_id=player_id, protocols={protocol_id: SimpleNamespace(private=private)}
+    )
 
 
 @contextmanager
@@ -109,7 +122,7 @@ def test_a_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
     # the bound client id is not proof of ownership, so a non-private player claimed this way
     # must still be refused
     with (
-        _restricted_user([ALLOWED_PLAYER], own_player=OTHER_PLAYER),
+        _restricted_user([ALLOWED_PLAYER], own_player=_device_id(OTHER_PLAYER)),
         pytest.raises(InsufficientPermissions),
     ):
         _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
