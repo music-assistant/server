@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from mpd import CommandError, FailureResponseCode, MPDError
+from mpd import ConnectionError as MPDConnectionError
 from mpd.asyncio import MPDClient
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -31,6 +32,7 @@ from .constants import (
     HEALTHCHECK_POLL_INTERVAL,
     MPD_STATE_MAP,
     RECONNECT_DELAY,
+    STATUS_TIMEOUT,
 )
 
 if TYPE_CHECKING:
@@ -272,15 +274,28 @@ class MPDPlayer(Player):
     # ------------------------------------------------------------------
 
     async def _fetch_and_sync_state(self) -> None:
-        """Fetch current MPD status and update MA player state."""
+        """Fetch current MPD state to update elapsed time."""
         if self._client is None:
             return
         try:
-            status = await self._client.status()
-            await self._sync_state(status)
-            self.update_state()
-        except MPDError as err:
+            # python-mpd2 does not time out commands: on a half-open socket this
+            # would otherwise block the players controller loop for minutes, so
+            # cap it and treat the timeout as a lost connection.
+            async with asyncio.timeout(STATUS_TIMEOUT):
+                status = await self._client.status()
+        except TimeoutError:
+            self._handle_connection_lost(
+                TimeoutError(f"no status reply within {STATUS_TIMEOUT} seconds")
+            )
+            return
+        except MPDConnectionError as err:
             self._handle_connection_lost(err)
+            return
+        except MPDError as err:
+            self.logger.warning("Failed to fetch MPD status: %s", err)
+            return
+        await self._sync_state(status)
+        self.update_state()
 
     async def _sync_state(self, status: dict[str, Any]) -> None:
         """
@@ -325,8 +340,10 @@ class MPDPlayer(Player):
             self._attr_current_media = media
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
-        except MPDError as err:
+        except MPDConnectionError as err:
             self._handle_connection_lost(err)
+            raise PlayerCommandFailed(f"play_media failed: {err}") from err
+        except MPDError as err:
             raise PlayerCommandFailed(f"play_media failed: {err}") from err
 
     async def play(self) -> None:
@@ -337,8 +354,10 @@ class MPDPlayer(Player):
             await self._client.pause(0)
             self._attr_playback_state = PlaybackState.PLAYING
             self.update_state()
-        except MPDError as err:
+        except MPDConnectionError as err:
             self._handle_connection_lost(err)
+            raise PlayerCommandFailed(f"play failed: {err}") from err
+        except MPDError as err:
             raise PlayerCommandFailed(f"play failed: {err}") from err
 
     async def stop(self) -> None:
@@ -350,8 +369,10 @@ class MPDPlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
             self.update_state()
-        except MPDError as err:
+        except MPDConnectionError as err:
             self._handle_connection_lost(err)
+            raise PlayerCommandFailed(f"stop failed: {err}") from err
+        except MPDError as err:
             raise PlayerCommandFailed(f"stop failed: {err}") from err
 
     async def pause(self) -> None:
@@ -362,8 +383,10 @@ class MPDPlayer(Player):
             await self._client.pause(1)
             self._attr_playback_state = PlaybackState.PAUSED
             self.update_state()
-        except MPDError as err:
+        except MPDConnectionError as err:
             self._handle_connection_lost(err)
+            raise PlayerCommandFailed(f"pause failed: {err}") from err
+        except MPDError as err:
             raise PlayerCommandFailed(f"pause failed: {err}") from err
 
     async def volume_set(self, volume_level: int) -> None:
@@ -378,8 +401,10 @@ class MPDPlayer(Player):
             await self._client.setvol(volume_level)
             self._attr_volume_level = volume_level
             self.update_state()
-        except MPDError as err:
+        except MPDConnectionError as err:
             self._handle_connection_lost(err)
+            raise PlayerCommandFailed(f"volume_set failed: {err}") from err
+        except MPDError as err:
             raise PlayerCommandFailed(f"volume_set failed: {err}") from err
 
     async def seek(self, position: int) -> None:
@@ -392,6 +417,8 @@ class MPDPlayer(Player):
             return
         try:
             await self._client.seekcur(position)
-        except MPDError as err:
+        except MPDConnectionError as err:
             self._handle_connection_lost(err)
+            raise PlayerCommandFailed(f"seek failed: {err}") from err
+        except MPDError as err:
             raise PlayerCommandFailed(f"seek failed: {err}") from err

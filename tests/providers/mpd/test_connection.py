@@ -205,3 +205,60 @@ async def test_idle_player_is_still_polled(
     player._attr_playback_state = PlaybackState.PLAYING
 
     assert player.poll_interval == ELAPSED_POLL_INTERVAL
+
+
+async def test_command_ack_keeps_a_healthy_player(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """An MPD ACK (CommandError) is not a lost connection and must not reconnect."""
+    player = make_mpd_player()
+    client = _mock_client()
+    client.setvol = AsyncMock(side_effect=CommandError("[2@0] {setvol} No mixer configured"))
+    player._client = client
+    mass = cast("MagicMock", player.mass)
+    mass.call_later.reset_mock()
+
+    with pytest.raises(PlayerCommandFailed):
+        await player.volume_set(42)
+
+    assert player.available is True
+    mass.call_later.assert_not_called()
+
+
+async def test_poll_timeout_is_treated_as_a_lost_connection(
+    make_mpd_player: Callable[..., MPDPlayer],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A status poll that never answers must not stall the poll loop forever."""
+    monkeypatch.setattr("music_assistant.providers.mpd.player.STATUS_TIMEOUT", 0.05)
+    player = make_mpd_player()
+    client = _mock_client()
+
+    def _hang() -> object:
+        return asyncio.sleep(30)
+
+    client.status = _hang
+    player._client = client
+    cast("MagicMock", player.mass).call_later.reset_mock()
+
+    await asyncio.wait_for(player.poll(), timeout=5)
+
+    assert player.available is False
+    _assert_reconnect_scheduled(player)
+
+
+async def test_poll_command_error_keeps_the_player(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """A status command rejected by a live server is not a lost connection either."""
+    player = make_mpd_player()
+    client = _mock_client()
+    client.status = AsyncMock(side_effect=CommandError("[2@0] {status} unknown command"))
+    player._client = client
+    mass = cast("MagicMock", player.mass)
+    mass.call_later.reset_mock()
+
+    await player.poll()
+
+    assert player.available is True
+    mass.call_later.assert_not_called()
