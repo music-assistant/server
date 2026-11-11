@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -502,7 +502,7 @@ class WebRadioProvider(PlayerProvider):
             (last listener left), or ``"ended"`` (queue exhausted or session
             superseded by a skip).
         """
-        async for chunk in get_ffmpeg_stream(
+        stream = get_ffmpeg_stream(
             audio_input=self.mass.streams.audio.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=start_item,
@@ -516,35 +516,37 @@ class WebRadioProvider(PlayerProvider):
             # bursts close the gap further at the cost of more skip latency.
             extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "2"],
             chunk_size=chunk_size,
-        ):
-            # iter_chunked yields a short chunk only at ffmpeg EOF. Emitting
-            # one would desync the client's icy-metaint counter for the rest
-            # of the connection, so drop it (we lose <1s of audio at session
-            # end).
-            if len(chunk) < chunk_size:
-                continue
+        )
+        async with aclosing(stream):
+            async for chunk in stream:
+                # iter_chunked yields a short chunk only at ffmpeg EOF. Emitting
+                # one would desync the client's icy-metaint counter for the rest
+                # of the connection, so drop it (we lose <1s of audio at session
+                # end).
+                if len(chunk) < chunk_size:
+                    continue
 
-            if icy_preference != "disabled":
-                title, image_url = _icy_metadata_for_queue(queue, icy_preference)
-                new_metadata = format_icy_metadata_frame(title, image_url)
-                if new_metadata != station.current_metadata:
-                    self.logger.debug("Station %s ICY metadata: %s", station.slug, title)
-                    station.current_metadata = new_metadata
+                if icy_preference != "disabled":
+                    title, image_url = _icy_metadata_for_queue(queue, icy_preference)
+                    new_metadata = format_icy_metadata_frame(title, image_url)
+                    if new_metadata != station.current_metadata:
+                        self.logger.debug("Station %s ICY metadata: %s", station.slug, title)
+                        station.current_metadata = new_metadata
 
-            slow = self._broadcast_chunk(station, chunk)
-            for sub in slow:
-                self.logger.debug(
-                    "Dropping slow listener on station %s (queue backlog full)",
-                    station.slug,
-                )
-                station.subscribers.discard(sub)
-                _disconnect_subscriber(sub)
+                slow = self._broadcast_chunk(station, chunk)
+                for sub in slow:
+                    self.logger.debug(
+                        "Dropping slow listener on station %s (queue backlog full)",
+                        station.slug,
+                    )
+                    station.subscribers.discard(sub)
+                    _disconnect_subscriber(sub)
 
-            if not station.subscribers:
-                return "no_subscribers"
+                if not station.subscribers:
+                    return "no_subscribers"
 
-            if station.stop_event.is_set():
-                return "stopped"
+                if station.stop_event.is_set():
+                    return "stopped"
 
         return "stopped" if station.stop_event.is_set() else "ended"
 
