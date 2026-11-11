@@ -76,7 +76,7 @@ class YandexStationProvider(PlayerProvider):
         self._http_session: ClientSession | None = None
         self._passport_client: PassportClient | None = None
         self._pending_discoveries: set[str] = set()
-        self._mdns_players: dict[str, str] = {}  # mDNS service name → player_id
+        self._mdns_players: dict[str, str] = {}  # mDNS service name → protocol id
         self._discovery_done = False
         # what the cloud discovery found, by protocol id, to offer a device again that was
         # removed or re-enabled
