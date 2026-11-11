@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "dr_lyd",
+  "name": "DR LYD",
+  "stage": "beta",
+  "description": "Listen to the live radio channels and the podcasts of DR LYD, the audio service of the Danish public broadcaster DR.",
+  "codeowners": ["@mikkelke"],
+  "tier": "community",
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/dr-lyd/",
+  "multi_instance": false
+}

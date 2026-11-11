@@ -18,10 +18,12 @@ from music_assistant_models.errors import AudioError
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
     CACHE_ATTR_HLS_CMAF_BLOCKED,
+    CACHE_ATTR_READRATE_CATCHUP,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
@@ -228,6 +230,39 @@ def test_get_ffmpeg_args_skips_tls_verify_on_request(
 
     input_args, _ = _split_at_input(args)
     assert _has_tls_verify_off(input_args) is expected
+
+
+def _user_agents(args: list[str]) -> list[str]:
+    """Return the values of every -user_agent option in the args."""
+    return [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "-user_agent"]
+
+
+@pytest.mark.parametrize(
+    ("input_path", "extra_input_args", "expected"),
+    [
+        ("https://host/a.mp3", [], [MASS_USER_AGENT]),
+        ("http://host/a.mp3", ["-headers", "Cookie: a=b\r\n"], [MASS_USER_AGENT]),
+        ("https://host/a.mp3", ["-user_agent", "Caller/1.0"], ["Caller/1.0"]),
+        ("https://host/a.mp3", ["-headers", "user-agent: Caller/1.0\r\n"], []),
+        ("/music/a.mp3", [], []),
+        ("-", [], []),
+    ],
+    ids=["https", "http-other-headers", "caller-option", "caller-header", "local-file", "pipe"],
+)
+def test_get_ffmpeg_args_identifies_to_http_inputs(
+    input_path: str, extra_input_args: list[str], expected: list[str]
+) -> None:
+    """An http input gets our user agent, unless the caller already sets one."""
+    args = get_ffmpeg_args(
+        AudioFormat(content_type=ContentType.MP3),
+        _PCM_OUT,
+        [],
+        input_path=input_path,
+        extra_input_args=extra_input_args,
+    )
+
+    input_args, _ = _split_at_input(args)
+    assert _user_agents(input_args) == expected
 
 
 def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
@@ -1065,6 +1100,7 @@ def test_overlay_mixer_reconnects_for_http_sources() -> None:
     """An http overlay source additionally gets the reconnect options."""
     (overlay,) = _build_overlay_mixer("http://host/sound.mp3", _PCM_FORMAT, 100).inputs
     assert "-reconnect" in overlay.input_args
+    assert _user_agents(overlay.input_args) == [MASS_USER_AGENT]
     assert overlay.input_args[-2:] == ["-stream_loop", "-1"]
 
 
@@ -1569,14 +1605,32 @@ _FFMPEG_VERSION_OUTPUT = (
 )
 
 
+# Trimmed `ffmpeg -h long` output before and from 8.0 on, which added -readrate_catchup.
+_LONG_HELP_WITHOUT_CATCHUP = b"""-re <>              read input at native frame rate; equivalent to -readrate 1
+-readrate <speed>   read input at specified rate
+-readrate_initial_burst <seconds>  The initial amount of input to burst read before imposing any readrate
+"""
+_LONG_HELP_WITH_CATCHUP = (
+    _LONG_HELP_WITHOUT_CATCHUP
+    + b"-readrate_catchup <speed>  Temporary readrate used to catch up if an input lags behind"
+    b" the specified readrate\n"
+)
+
+
 def _fake_ffmpeg_probes(
-    monkeypatch: pytest.MonkeyPatch, hls_options: bytes, hls_returncode: int = 0
+    monkeypatch: pytest.MonkeyPatch,
+    hls_options: bytes,
+    hls_returncode: int = 0,
+    long_help: bytes = _LONG_HELP_WITHOUT_CATCHUP,
+    long_help_returncode: int = 0,
 ) -> None:
-    """Answer the version and HLS demuxer probes with canned output."""
+    """Answer the version, HLS demuxer and option help probes with canned output."""
 
     async def _check_output(
         *args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
     ) -> tuple[int, bytes]:
+        if "long" in args:
+            return (long_help_returncode, long_help)
         if "-h" in args:
             return (hls_returncode, hls_options)
         return (0, _FFMPEG_VERSION_OUTPUT)
@@ -1637,6 +1691,31 @@ async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero
     await check_ffmpeg_version()
 
     assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+@pytest.mark.parametrize(
+    ("long_help", "returncode", "expected"),
+    [
+        (_LONG_HELP_WITH_CATCHUP, 0, True),
+        (_LONG_HELP_WITHOUT_CATCHUP, 0, False),
+        (_LONG_HELP_WITH_CATCHUP, 1, False),
+    ],
+    ids=["from 8.0", "before 8.0", "failed probe"],
+)
+async def test_check_ffmpeg_version_finds_the_readrate_catchup_option(
+    monkeypatch: pytest.MonkeyPatch, long_help: bytes, returncode: int, expected: bool
+) -> None:
+    """Only a build that lists the option may be handed it: any other refuses to start."""
+    _fake_ffmpeg_probes(
+        monkeypatch,
+        _HLS_OPTIONS_ALLOWING_CMAF,
+        long_help=long_help,
+        long_help_returncode=returncode,
+    )
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_READRATE_CATCHUP) is expected
 
 
 # -- probe_audio_stream --
@@ -1746,7 +1825,21 @@ async def test_probe_audio_stream_opens_the_input_like_the_decoder(
     read_args_start = proc.args.index(_INPUT_READ_ARGS[0])
     assert proc.args[read_args_start : read_args_start + len(_INPUT_READ_ARGS)] == _INPUT_READ_ARGS
     assert proc.args.index("-user_agent") < proc.args.index("-i")
+    # the source's own user agent replaces ours
+    assert _user_agents(proc.args) == ["test"]
     assert proc.args[-2:] == ["-i", "https://example.com/a.flac"]
+
+
+async def test_probe_audio_stream_identifies_to_http_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe sends the same user agent as the decoder."""
+    proc = _FakeProbeProcess(_probe_output(codec_name="flac", sample_rate="44100", channels=2))
+    monkeypatch.setattr("music_assistant.helpers.ffmpeg.AsyncProcess", proc)
+
+    await probe_audio_stream("https://example.com/a.flac")
+
+    assert _user_agents(proc.args[: proc.args.index("-i")]) == [MASS_USER_AGENT]
 
 
 @pytest.mark.parametrize("verify_ssl", [False, True])

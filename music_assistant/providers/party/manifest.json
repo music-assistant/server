@@ -5,6 +5,7 @@
   "name": "Party",
   "description": "Enable guest access with a shareable URL for party, allowing guests to add songs to the queue with rate limiting.",
   "codeowners": ["@music-assistant"],
+  "tier": "core",
   "requirements": [],
   "documentation": "https://music-assistant.io/plugins/party",
   "multi_instance": false,

@@ -211,8 +211,11 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
     # - Background transfer mode supported (bit 22)
     # - DLNA v1.5 (bit 20)
     # the res duration describes the audio we hand over, which is shorter than
-    # the media item when playback starts at a seek position
-    stream_duration = int(media.stream_duration or media.duration or 0)
+    # the media item when playback starts at a seek position. A flow stream carries on
+    # past that point into the next track, so a player told the shorter duration drops
+    # the stream at its end (or requests it again): give a flow the whole track
+    served = media.stream_duration if "/flow/" not in uri else None
+    stream_duration = int(served or media.duration or 0)
     duration_str = str(stream_duration // 3600).zfill(2) + ":"
     duration_str += str((stream_duration % 3600) // 60).zfill(2) + ":"
     duration_str += str(stream_duration % 60).zfill(2)

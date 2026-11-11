@@ -124,7 +124,7 @@ class UniversalGroupPlayer(Player):
         # mute are advertised whether or not the group currently has a live session.
         for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
+            if member_player and member_player.available_for_playback:
                 for feature in EXTRA_FEATURES_FROM_MEMBERS:
                     if feature in member_player.state.supported_features:
                         features.add(feature)
@@ -284,7 +284,12 @@ class UniversalGroupPlayer(Player):
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     with suppress(PlayerUnavailableError):
-                        await self.mass.players.cmd_power(member.player_id, False)
+                        async with self.mass.players.get_group_and_player_lock(member.player_id):
+                            # once the member no longer reports this group, its power off does
+                            # not release the group again; the internal handler needs no access
+                            # to the member
+                            member.refresh_state()
+                            await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:
             # reset the original group members when powered off

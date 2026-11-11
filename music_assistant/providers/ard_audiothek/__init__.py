@@ -99,6 +99,7 @@ async def setup(
 async def _login(session: ClientSession, email: str, password: str) -> tuple[str, str, str]:
     response = await session.post(
         f"{IDENTITY_TOOLKIT_BASE_URL}:signInWithPassword?key={IDENTITY_TOOLKIT_TOKEN}",
+        # TODO: check whether this can use MASS_USER_AGENT
         headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
         json={
             "returnSecureToken": True,
@@ -608,12 +609,12 @@ class ARDAudiothek(MusicProvider):
 
 
 def _parse_social_media(
-    homepage_url: str | None, social_media_accounts: list[dict[str, str | None]]
+    homepage_url: str | None, social_media_accounts: list[dict[str, str | None]] | None
 ) -> set[MediaItemLink]:
     return_set = set()
     if homepage_url:
         return_set.add(MediaItemLink(type=LinkType.WEBSITE, url=homepage_url))
-    for entry in social_media_accounts:
+    for entry in social_media_accounts or []:
         if entry["url"]:
             link_type = None
             match entry["service"]:

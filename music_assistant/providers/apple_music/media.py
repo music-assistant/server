@@ -127,8 +127,6 @@ class AppleMusicMediaManager:
                 *(
                     parse_station(self.provider, item)
                     for item in response["results"]["stations"]["data"]
-                    # live broadcast stations require Widevine DRM
-                    if not item.get("attributes", {}).get("isLive", False)
                 ),
             ]
         return searchresult
@@ -154,8 +152,12 @@ class AppleMusicMediaManager:
     @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
-        response = await self.api.get_data(endpoint, include="artists,albums")
+        if is_library_id(prov_track_id):
+            endpoint = f"me/library/songs/{prov_track_id}"
+            response = await self.api.get_data(endpoint, include="catalog,artists,albums")
+        else:
+            endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
+            response = await self.api.get_data(endpoint, include="artists,albums")
         return parse_track(self.provider, response["data"][0])
 
     async def get_playlist(

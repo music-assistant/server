@@ -94,6 +94,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         assert self.slimproto is not None  # for type checker
+        self.slimproto.cli.display_name_lookup = self._lookup_display_name
         # subscribe before starting the socket server: aioslimproto does not buffer
         # events, so a client connecting before we subscribe would be missed entirely
         self.slimproto.subscribe(self._handle_slimproto_event)
@@ -127,6 +128,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
             slimplayer.player_id, CONF_SYNC_ADJUST, 0
         )
         return int(slimplayer.elapsed_milliseconds - sync_delay)
+
+    def _lookup_display_name(self, player_id: str) -> str | None:
+        """Return Music Assistant's display name for a player, or None if it does not know it."""
+        mass_player = self.mass.players.get_player(player_id)
+        return mass_player.display_name if mass_player else None
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None
@@ -178,6 +184,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
             slimclient = self.slimproto.get_player(event.player_id)
             if not slimclient:
                 return  # should not happen, but guard anyways
+            # a reconnect before the old socket closed is not reported as a disconnect
+            self._release_from_sync_leader(event.player_id)
             player = SqueezelitePlayer(self, event.player_id, slimclient)
             self.mass.create_task(player.setup())
             return
@@ -188,6 +196,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
+            self._release_from_sync_leader(player.player_id)
             self.mass.create_task(self.mass.players.unregister(player.player_id))
             return
 
@@ -262,3 +271,14 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 # race condition
                 break
         return resp
+
+    def _release_from_sync_leader(self, player_id: str) -> None:
+        """Drop a player whose connection ended from the group of its sync leader."""
+        # a reconnect registers a fresh player, so the leader must let go of the old
+        # one or it keeps listing a member that is no longer part of its stream
+        if (
+            (player := self.mass.players.get_player(player_id))
+            and (leader_id := player.synced_to)
+            and (leader := self.mass.players.get_player(leader_id))
+        ):
+            cast("SqueezelitePlayer", leader).remove_disconnected_member(player_id)

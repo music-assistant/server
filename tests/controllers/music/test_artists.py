@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, ImageType, ProviderFeature
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import (
     Album,
     AlbumSummary,
@@ -92,6 +93,51 @@ def _detailed_artist() -> Artist:
     return artist
 
 
+def _spotify_mapping(item_id: str) -> ProviderMapping:
+    """Return a spotify provider mapping for the given provider item id."""
+    return ProviderMapping(
+        item_id=item_id, provider_domain="spotify", provider_instance="spotify_1"
+    )
+
+
+async def _add_artist_with_two_spellings(mass: MusicAssistant) -> Artist:
+    """Store a library artist mapped to two provider spellings and holding a Discogs id."""
+    return await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Pyotr Ilyich Tchaikovsky",
+            sort_name="Tchaikovsky, Pyotr Ilyich",
+            provider_mappings={
+                _spotify_mapping("tchaikovsky_full"),
+                _spotify_mapping("tchaikovsky_short"),
+            },
+            external_ids={(ExternalID.DISCOGS, "1234")},
+        )
+    )
+
+
+def _short_spelling() -> Artist:
+    """Return the provider artist of the short spelling of the library artist."""
+    return Artist(
+        item_id="tchaikovsky_short",
+        provider="spotify_1",
+        name="Tchaikovsky",
+        provider_mappings={_spotify_mapping("tchaikovsky_short")},
+    )
+
+
+async def _assert_artist_unchanged(mass: MusicAssistant, artist: Artist) -> None:
+    """Assert that the stored library artist still matches the given one."""
+    stored = await mass.music.artists.get_library_item(artist.item_id)
+    assert stored.name == artist.name
+    assert stored.sort_name == artist.sort_name
+    assert stored.external_ids == artist.external_ids
+    assert {x.item_id for x in stored.provider_mappings} == {
+        x.item_id for x in artist.provider_mappings
+    }
+
+
 async def test_track_overwrite_keeps_artist_details(mass: MusicAssistant) -> None:
     """A track update carrying a bare artist stub must not blank that artist's details."""
     db_artist = await mass.music.artists.add_item_to_library(_detailed_artist())
@@ -132,6 +178,151 @@ async def test_track_overwrite_keeps_other_provider_artist_mapping(mass: MusicAs
         "spotify_1",
         "tidal_1",
     }
+
+
+async def test_track_overwrite_keeps_the_library_artist(mass: MusicAssistant) -> None:
+    """An overwriting track update links its artist without rewriting the library artist."""
+    artist = await _add_artist_with_two_spellings(mass)
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+
+    update = create_track("spotify_1", "track1")
+    update.artists = UniqueList(
+        [ItemMapping(item_id="tchaikovsky_short", provider="spotify_1", name="Tchaikovsky")]
+    )
+    stored = await mass.music.tracks.update_item_in_library(
+        db_track.item_id, update, overwrite=True
+    )
+
+    await _assert_artist_unchanged(mass, artist)
+    assert [x.item_id for x in stored.artists] == [artist.item_id]
+
+
+async def test_album_overwrite_keeps_the_library_artist(mass: MusicAssistant) -> None:
+    """An overwriting album update links its artist without rewriting the library artist."""
+    artist = await _add_artist_with_two_spellings(mass)
+    db_album = await mass.music.albums.add_item_to_library(create_album("spotify_1", "album1"))
+
+    update = create_album("spotify_1", "album1")
+    update.artists = UniqueList([_short_spelling()])
+    stored = await mass.music.albums.update_item_in_library(
+        db_album.item_id, update, overwrite=True
+    )
+
+    await _assert_artist_unchanged(mass, artist)
+    assert [x.item_id for x in stored.artists] == [artist.item_id]
+
+
+async def test_item_overwrite_adds_a_new_mbid_to_the_library_artist(mass: MusicAssistant) -> None:
+    """An update whose artist carries a new MusicBrainz id adds it to the library artist."""
+    artist = await _add_artist_with_two_spellings(mass)
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+    spelling = _short_spelling()
+    spelling.mbid = ARTIST_MBID
+
+    update = create_track("spotify_1", "track1")
+    update.artists = UniqueList([spelling])
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.artists.get_library_item(artist.item_id)
+    assert refreshed.external_ids == {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    assert refreshed.name == artist.name
+    assert refreshed.sort_name == artist.sort_name
+
+
+async def test_item_overwrite_keeps_the_stored_mbid_of_the_library_artist(
+    mass: MusicAssistant,
+) -> None:
+    """An update whose artist carries another MusicBrainz id leaves the stored one."""
+    artist = await _add_artist_with_two_spellings(mass)
+    await mass.music.artists.set_external_ids(
+        artist.item_id, {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    )
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+    spelling = _short_spelling()
+    spelling.mbid = "11111111-2222-3333-4444-555555555555"
+
+    update = create_track("spotify_1", "track1")
+    update.artists = UniqueList([spelling])
+    await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.artists.get_library_item(artist.item_id)
+    assert refreshed.external_ids == {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+
+
+async def test_item_overwrite_links_a_new_spelling_matched_by_mbid(
+    mass: MusicAssistant,
+) -> None:
+    """An update whose artist is a new spelling matched by MusicBrainz id adds it as a mapping."""
+    artist = await _add_artist_with_two_spellings(mass)
+    await mass.music.artists.set_external_ids(
+        artist.item_id, {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    )
+    db_album = await mass.music.albums.add_item_to_library(create_album("spotify_1", "album1"))
+    new_spelling = Artist(
+        item_id="tchaikovsky_new",
+        provider="spotify_1",
+        name="Tchaikovsky",
+        provider_mappings={_spotify_mapping("tchaikovsky_new")},
+    )
+    new_spelling.mbid = ARTIST_MBID
+
+    update = create_album("spotify_1", "album1")
+    update.artists = UniqueList([new_spelling])
+    stored = await mass.music.albums.update_item_in_library(
+        db_album.item_id, update, overwrite=True
+    )
+
+    refreshed = await mass.music.artists.get_library_item(artist.item_id)
+    assert {x.item_id for x in refreshed.provider_mappings} == {
+        *(x.item_id for x in artist.provider_mappings),
+        "tchaikovsky_new",
+    }
+    assert refreshed.name == artist.name
+    assert refreshed.sort_name == artist.sort_name
+    assert [x.item_id for x in stored.artists] == [artist.item_id]
+
+
+async def test_item_overwrite_keeps_the_ids_of_an_artist_matched_by_mbid(
+    mass: MusicAssistant,
+) -> None:
+    """A new spelling matched by MusicBrainz id adds no id of a type the library artist holds."""
+    artist = await _add_artist_with_two_spellings(mass)
+    await mass.music.artists.set_external_ids(
+        artist.item_id, {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    )
+    db_album = await mass.music.albums.add_item_to_library(create_album("spotify_1", "album1"))
+    new_spelling = Artist(
+        item_id="tchaikovsky_new",
+        provider="spotify_1",
+        name="Tchaikovsky",
+        provider_mappings={_spotify_mapping("tchaikovsky_new")},
+        external_ids={(ExternalID.DISCOGS, "9999")},
+    )
+    new_spelling.mbid = ARTIST_MBID
+
+    update = create_album("spotify_1", "album1")
+    update.artists = UniqueList([new_spelling])
+    await mass.music.albums.update_item_in_library(db_album.item_id, update, overwrite=True)
+
+    refreshed = await mass.music.artists.get_library_item(artist.item_id)
+    assert refreshed.external_ids == {*artist.external_ids, (ExternalID.MB_ARTIST, ARTIST_MBID)}
+    assert "tchaikovsky_new" in {x.item_id for x in refreshed.provider_mappings}
+    assert refreshed.name == artist.name
+
+
+async def test_item_overwrite_without_new_artist_ids_writes_no_artist(
+    mass: MusicAssistant,
+) -> None:
+    """An update whose artists bring nothing new leaves the library artists untouched."""
+    await _add_artist_with_two_spellings(mass)
+    db_track = await mass.music.tracks.add_item_to_library(create_track("spotify_1", "track1"))
+
+    update = create_track("spotify_1", "track1")
+    update.artists = UniqueList([_short_spelling()])
+    with patch.object(mass.music.artists, "_update_library_item", AsyncMock()) as artist_update:
+        await mass.music.tracks.update_item_in_library(db_track.item_id, update, overwrite=True)
+
+    artist_update.assert_not_called()
 
 
 async def test_overwrite_update_replaces_artist_details(mass: MusicAssistant) -> None:
@@ -310,6 +501,7 @@ async def test_library_artist_listings_query_one_instance_per_streaming_domain(
     }
     mass = MagicMock()
     mass.get_provider = MagicMock(side_effect=lambda instance, **_kwargs: providers[instance])
+    mass.music.get_visible_provider = mass.get_provider
     mass.get_providers_supporting_feature = MagicMock(return_value=[])
     ctrl = ArtistsController.__new__(ArtistsController)
     ctrl.mass = mass
@@ -325,3 +517,35 @@ async def test_library_artist_listings_query_one_instance_per_streaming_domain(
     queried = {call.args[1] for call in provider_listing.await_args_list}
     # one Spotify instance, and both (non-streaming) filesystem instances
     assert queried == {"spotify_1", "filesystem_local_1", "filesystem_local_2"}
+
+
+async def test_match_provider_skips_the_artists_mappings_on_hidden_sources() -> None:
+    """Matching an artist merged across a hidden source never asks that source."""
+    hidden, own = "plex_theirs", "spotify_mine"
+    ctrl = ArtistsController.__new__(ArtistsController)
+    ctrl.mass = MagicMock()
+    ctrl.logger = logging.getLogger("test.artists.match")
+    ctrl.mass.music.get_visible_provider = MagicMock(
+        side_effect=lambda instance: None if instance == hidden else MagicMock()
+    )
+
+    async def _listing(_item_id: str, provider_instance: str) -> list[Track]:
+        if provider_instance == hidden:
+            raise InsufficientPermissions(f"{hidden} is not a music source of this user")
+        return []
+
+    ctrl.mass.music.artists.tracks = AsyncMock(side_effect=_listing)
+    ctrl.mass.music.artists.albums = AsyncMock(side_effect=_listing)
+    db_artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Shared Artist",
+        provider_mappings={
+            ProviderMapping(item_id="a1", provider_domain="plex", provider_instance=hidden),
+            ProviderMapping(item_id="a2", provider_domain="spotify", provider_instance=own),
+        },
+    )
+
+    assert await ctrl.match_provider(db_artist, MagicMock(name="Tidal")) == []
+    asked = {call.args[1] for call in ctrl.mass.music.artists.tracks.await_args_list}
+    assert asked == {"library", own}

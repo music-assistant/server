@@ -118,6 +118,20 @@ def test_an_unavailable_player_is_not_selectable() -> None:
     assert "sleeping-speaker" not in {option.value for option in entry.options or []}
 
 
+def test_the_devices_own_player_stays_the_default_while_unavailable() -> None:
+    """A device still being set up is unavailable, yet it stays the default it later resolves to."""
+    player = _player(
+        negotiated_role_ids=["source@v1", "player@v1"],
+        line_sense=True,
+        known_players=["speaker"],
+        unavailable_players=["turntable"],
+    )
+    entry = _target_entry(player)
+    assert entry is not None
+    assert entry.default_value == "turntable"
+    assert "turntable" in {option.value for option in entry.options or []}
+
+
 def test_players_that_cannot_render_audio_are_not_offered() -> None:
     """Lights, displays and other capture-only clients are nowhere to play a line-in."""
     player = _player(

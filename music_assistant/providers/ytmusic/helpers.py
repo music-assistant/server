@@ -81,15 +81,19 @@ async def get_album(
         if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
+
+            # sigma67/ytmusicapi#1022 - uploaded album audioPlaylistId currently not resolvable
+            album.pop("audioPlaylistId", None)
         else:
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_album(browseId=prov_album_id)
 
-        if album.get("audioPlaylistId"):
+        playlist_id = album.get("audioPlaylistId")
+        if playlist_id:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
             try:
-                album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
+                album_playlist = ytm.get_playlist(playlistId=playlist_id, limit=None)
             except YTMusicError:
                 return album
 
@@ -180,18 +184,54 @@ async def get_podcast(
 
 
 async def get_podcast_episode(
-    prov_episode_id: str, headers: dict[str, str], language: str = "en"
+    prov_episode_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
 ) -> dict[str, Any]:
     """Async wrapper around the podcast episode function."""
 
     def _get_podcast_episode() -> dict[str, Any]:
-        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         episode = ytm.get_episode(videoId=prov_episode_id)
         if "videoId" not in episode:
             episode["videoId"] = prov_episode_id
         return episode
 
     return await _run_ytmusic(_get_podcast_episode)
+
+
+async def get_playback_tracking(
+    video_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
+) -> dict[str, Any] | None:
+    """Async wrapper around the ytmusicapi get_song function, returning its playback tracking."""
+
+    def _get_playback_tracking() -> dict[str, Any] | None:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        tracking: dict[str, Any] | None = ytm.get_song(videoId=video_id).get("playbackTracking")
+        return tracking
+
+    return await _run_ytmusic(_get_playback_tracking)
+
+
+async def get_episode_start_seconds(
+    video_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
+) -> int:
+    """Return the second YouTube resumes the given episode from, 0 if it has no resume point."""
+
+    def _get_episode_start_seconds() -> int:
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        # get_song drops this part of the player response, so the request is made directly
+        response = ytm._send_request(
+            "player",
+            {
+                "video_id": video_id,
+                "playbackContext": {
+                    "contentPlaybackContext": {"signatureTimestamp": int(time() // 86400) - 1}
+                },
+            },
+        )
+        start_config = response.get("playerConfig", {}).get("playbackStartConfig", {})
+        return int(start_config.get("startSeconds") or 0)
+
+    return await _run_ytmusic(_get_episode_start_seconds)
 
 
 async def get_library_artists(

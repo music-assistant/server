@@ -1,8 +1,9 @@
 name: Critical review gate (poll)
 
 # Scheduled gate: on a 10-minute cron, scan open PRs and convert to a draft any with an unresolved,
-# non-outdated Copilot [CRITICAL] thread from a review posted in the last 2 hours (a draft PR cannot
-# be merged), with one explanatory comment.
+# non-outdated [CRITICAL] thread from a Copilot or Bot-MArley review posted in the last 2 hours (a
+# draft PR cannot be merged), with one explanatory comment. Both reviewers tag findings with the
+# severities from .github/copilot-instructions.md.
 #
 # The gate is RECENCY-based, not "latest review": a scheduled poller should act on FRESH criticals
 # and then back off — gating on the latest review regardless of age would re-draft a PR with an old,
@@ -42,7 +43,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - name: Draft open PRs with a recent unresolved [CRITICAL] Copilot finding
+      - name: Draft open PRs with a recent unresolved [CRITICAL] review finding
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           ONLY_PR: ${{ inputs.pr }}
@@ -51,7 +52,7 @@ jobs:
             const { owner, repo } = context.repo;
             const ONLY_PR = (process.env.ONLY_PR || '').trim();
             const BASES = ['dev', 'stable'];
-            const COPILOT = 'copilot-pull-request-reviewer';  // exact GraphQL reviewer login
+            const REVIEWERS = ['copilot-pull-request-reviewer', 'Bot-MArley'];  // exact GraphQL reviewer logins
             const GATE_BOT = 'github-actions[bot]';            // author of this gate's comments
             const WINDOW_MS = 120 * 60 * 1000;                 // act only on criticals this recent
             const MARKER = '<!-- critical-gate -->';
@@ -65,7 +66,7 @@ jobs:
               '_Maintainers: add the `override-critical` label to bypass this._',
             ].join('\n');
 
-            // Gate on an unresolved, non-outdated [CRITICAL] thread whose Copilot review was posted
+            // Gate on an unresolved, non-outdated [CRITICAL] thread whose reviewer's review was posted
             // within WINDOW_MS. Recency (not "latest review") keeps the poller a responder, not a
             // perpetual enforcer; the exact author login prevents a look-alike username from
             // triggering the write-token job.
@@ -85,7 +86,7 @@ jobs:
                 for (const t of tr.nodes) {
                   if (t.isResolved || t.isOutdated) continue;
                   const c = t.comments.nodes[0];
-                  if (!c || (c.author && c.author.login) !== COPILOT) continue;
+                  if (!c || !REVIEWERS.includes(c.author && c.author.login)) continue;
                   if (!(c.body || '').includes('[CRITICAL]')) continue;
                   const at = c.pullRequestReview && c.pullRequestReview.submittedAt;
                   if (at && (now - new Date(at).getTime()) <= WINDOW_MS) return true;

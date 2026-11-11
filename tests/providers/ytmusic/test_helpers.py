@@ -121,6 +121,22 @@ async def test_get_album_survives_missing_audio_playlist_id() -> None:
     mock_ytm.get_playlist.assert_not_called()
 
 
+async def test_get_album_upload_does_not_resolve_audio_playlist_id() -> None:
+    """An uploaded album's audioPlaylistId must not be passed to get_playlist."""
+    album_id = "FEmusic_library_privately_owned_release_detailb_123"
+    mock_ytm = MagicMock()
+    mock_ytm.get_library_upload_album.return_value = {
+        "audioPlaylistId": "upload_playlist",
+        "tracks": [{"title": "track", "videoId": "upload_video"}],
+    }
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        album = await helpers.get_album(headers={}, prov_album_id=album_id)
+    mock_ytm.get_library_upload_album.assert_called_once_with(browseId=album_id)
+    mock_ytm.get_album.assert_not_called()
+    mock_ytm.get_playlist.assert_not_called()
+    assert album["tracks"] == [{"title": "track", "videoId": "upload_video"}]
+
+
 async def test_add_playlist_tracks_allows_duplicates() -> None:
     """Playlist writes must opt into duplicate entries."""
     mock_ytm = MagicMock()
@@ -151,3 +167,24 @@ async def test_rate_track_passes_auth_headers_and_user() -> None:
         )
     mock_ytmusic.assert_called_once_with(auth=headers, user="123")
     mock_ytm.rate_song.assert_called_once_with(videoId="video", rating=LikeStatus.DISLIKE)
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"playerConfig": {"playbackStartConfig": {"startSeconds": 1007}}}, 1007),
+        ({"playerConfig": {"playbackStartConfig": {}}}, 0),
+        ({}, 0),
+    ],
+)
+async def test_get_episode_start_seconds_reads_the_player_response(
+    response: dict[str, Any], expected: int
+) -> None:
+    """The resume second comes from the player response, 0 when YouTube sends none."""
+    ytm = MagicMock()
+    ytm._send_request.return_value = response
+    with patch.object(ytmusicapi, "YTMusic", return_value=ytm):
+        assert await helpers.get_episode_start_seconds("v1", headers={}) == expected
+
+    assert ytm._send_request.call_args.args[0] == "player"
+    assert ytm._send_request.call_args.args[1]["video_id"] == "v1"
