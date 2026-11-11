@@ -300,9 +300,9 @@ def _restore_missing_edges(records: dict[str, dict[str, Any]]) -> None:
     """
     Restore the edge of a protocol record that only its player still lists.
 
-    Only when exactly one player lists it, where the list of a wrapper outranks that of
-    a native player: an interrupted shutdown could leave a wrapper without the edges of
-    its protocols.
+    Only for a record stored as a protocol, and only when exactly one player lists it,
+    where the list of a wrapper outranks that of a native player: an interrupted shutdown
+    could leave a wrapper without the edges of its protocols.
     """
     listed_by: dict[str, list[str]] = {}
     for player_id, record in records.items():
@@ -313,7 +313,9 @@ def _restore_missing_edges(records: dict[str, dict[str, Any]]) -> None:
             if protocol_id != player_id and isinstance(protocol_id, str):
                 listed_by.setdefault(protocol_id, []).append(player_id)
     for protocol_id, parent_ids in listed_by.items():
-        if (child := records.get(protocol_id)) is None:
+        child = records.get(protocol_id)
+        # a player that is still listed after its type changed is a player of its own
+        if child is None or child.get("player_type") != PlayerType.PROTOCOL:
             continue
         if _values(child).get(LEGACY_PROTOCOL_PARENT_ID):
             continue

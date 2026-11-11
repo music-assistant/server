@@ -287,6 +287,50 @@ def test_a_lost_edge_is_not_guessed_between_two_players_of_a_kind() -> None:
     assert list(result[CONF_PLAYERS]) == ["up0005"]
 
 
+@pytest.mark.parametrize(
+    ("parent", "provider", "players"),
+    [
+        # the wrapper lists nothing else, so it has no protocol left
+        (
+            _record("up0030", UNIVERSAL_PLAYER, values={"linked_protocol_ids": ["dev_30"]}),
+            SENDSPIN,
+            ["dev_30", "syncgroup_30"],
+        ),
+        (
+            _record("sonos_30", SONOS, values={"linked_protocol_ids": ["dev_30"]}),
+            AIRPLAY,
+            ["dev_30", "sonos_30", "syncgroup_30"],
+        ),
+    ],
+    ids=["wrapper", "native"],
+)
+def test_a_player_that_is_still_listed_as_a_protocol_stays_a_player(
+    parent: dict[str, Any], provider: str, players: list[str]
+) -> None:
+    """A record stored as a player is not taken as a protocol because a player lists it."""
+    native = _record("dev_30", provider, name="Kitchen", values={"max_volume": 60})
+    sync_group = _record(
+        "syncgroup_30", "sync_group", "group", values={"group_members": ["dev_30"]}
+    )
+    dsp = {"dev_30": {"enabled": True}}
+    queues = {"dev_30": {"values": {"crossfade": True}}}
+
+    result = _migrated(
+        _settings(deepcopy(parent), native, sync_group, player_dsp=dsp, player_queues=queues)
+    )
+
+    assert sorted(result[CONF_PLAYERS]) == players
+    assert result[CONF_PLAYERS]["dev_30"] == _record(
+        "dev_30", provider, name="Kitchen", values={"max_volume": 60}
+    )
+    assert result[CONF_PLAYER_PROTOCOLS]["dev_30"] == _protocol_record(
+        "dev_30", provider, "dev_30", role="native"
+    )
+    assert result[CONF_PLAYER_PROTOCOLS]["syncgroup_30"]["values"] == {"group_members": ["dev_30"]}
+    assert result[CONF_PLAYER_DSP] == dsp
+    assert result[CONF_PLAYER_QUEUES] == queues
+
+
 def test_empty_wrapper_is_only_kept_when_the_user_customised_it() -> None:
     """A wrapper without protocols goes, unless it holds something the user set up."""
     plain = _record(
