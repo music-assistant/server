@@ -1,7 +1,7 @@
 """
 Tests for source (de)selection and its effect on future play targets.
 
-Regression coverage for a bug where the protocol player MA picked to actually
+Regression coverage for a bug where the player MA picked to actually
 consume a stream (e.g. a sync group's leader) leaked into becoming the play
 target for the *next* session, silently skipping the group and starving every
 other member.
@@ -14,6 +14,16 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant.providers.ariacast_receiver import AUDIO_SOURCE_ID, AriaCastReceiver
+from tests.common import MockProvider, attach_mock, mock_player_mass
+
+
+def _leaf_mass() -> MagicMock:
+    """Return a mass whose players pl_leaf_1 and pl_leaf_2 render over protocols leaf_1, leaf_2."""
+    mass = mock_player_mass()
+    provider = MockProvider("airplay", mass=mass)
+    for protocol_id in ("leaf_1", "leaf_2"):
+        attach_mock(provider, protocol_id)
+    return mass
 
 
 def _selection_receiver(
@@ -29,6 +39,7 @@ def _selection_receiver(
         _in_use_by_player=in_use_by_player,
         _active_session_id=active_session_id,
         _session_player_id=session_player_id,
+        mass=_leaf_mass(),
     )
 
 
@@ -45,12 +56,12 @@ async def _unselect(receiver: SimpleNamespace, owner: str, session: str) -> None
 
 
 async def test_on_source_selected_tracks_the_stream_player_separately() -> None:
-    """The consuming protocol player is recorded on its own field."""
+    """The player of the consuming protocol is recorded on its own field."""
     receiver = _selection_receiver(active_player_id="group_1")
 
     await _select(receiver, "leaf_1", "group_1", "session-a")
 
-    assert receiver._session_player_id == "leaf_1"
+    assert receiver._session_player_id == "pl_leaf_1"
     assert receiver._active_player_id == "group_1"
     assert receiver._in_use_by_player == "group_1"
     assert receiver._active_session_id == "session-a"
@@ -124,7 +135,7 @@ async def _pause(receiver: SimpleNamespace) -> None:
 
 
 async def test_cmd_pause_stops_the_stream_player_not_the_play_target() -> None:
-    """Pause stops the protocol player actually holding the stream."""
+    """Pause stops the player actually holding the stream."""
     receiver = _pause_receiver(session_player_id="leaf_1", active_player_id="group_1")
 
     await _pause(receiver)
@@ -156,7 +167,7 @@ async def test_cmd_pause_does_not_stop_anything_without_a_known_player() -> None
 
 async def test_a_second_session_replays_on_the_original_target_not_the_previous_leaf() -> None:
     """A second AriaCast session must not stick to the previous leaf player."""
-    mass = MagicMock()
+    mass = _leaf_mass()
     receiver = SimpleNamespace(
         _is_playing=False,
         _in_use_by_player=None,
@@ -180,7 +191,7 @@ async def test_a_second_session_replays_on_the_original_target_not_the_previous_
     assert receiver._active_player_id == "group_1"
     # mimic the queue handing the actual stream to the group's sync leader
     await _select(cast("Any", receiver), "leaf_1", "group_1", "session-a")
-    assert receiver._session_player_id == "leaf_1"
+    assert receiver._session_player_id == "pl_leaf_1"
 
     # --- first session ends: sender disconnects, source is unselected ---
     await _unselect(cast("Any", receiver), "group_1", "session-a")
