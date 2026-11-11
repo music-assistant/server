@@ -1950,6 +1950,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if self.mass.config.get_protocol_ids_of_player(player_id) or (player and player.protocols):
             if player:
                 player.refresh_state()
+            # a protocol that waits for the place of its domain may get it now
+            self._schedule_held_protocols()
             return
         await self._remove_player(player_id, rediscover=False)
 

@@ -154,7 +154,8 @@ class ProtocolLinkingMixin:
         Return the id of the player of the protocol a derived protocol rides on.
 
         None while that protocol is not attached to a player, when its player already
-        has a protocol of the domain of the derived one, or is being removed.
+        has a protocol of the domain of the derived one, attached or not, or when it is
+        being removed.
 
         :param protocol: The derived protocol.
         """
@@ -169,7 +170,8 @@ class ProtocolLinkingMixin:
         if (
             not player_id
             or player_id in self._removing
-            or self._has_other_protocol_of_domain(protocol, player_id)
+            # a protocol of the domain that is away returns to its place
+            or self._has_other_protocol_of_domain(protocol, player_id, include_away=True)
         ):
             return None
         return player_id
@@ -253,7 +255,9 @@ class ProtocolLinkingMixin:
                 return other_id
         return None
 
-    def _has_other_protocol_of_domain(self, protocol: PlayerProtocol, player_id: str) -> bool:
+    def _has_other_protocol_of_domain(
+        self, protocol: PlayerProtocol, player_id: str, include_away: bool = False
+    ) -> bool:
         """
         Return whether a player has an attached protocol of the domain of the given one.
 
@@ -262,14 +266,26 @@ class ProtocolLinkingMixin:
 
         :param protocol: The protocol that attaches.
         :param player_id: Id of the player.
+        :param include_away: Also count the protocols of the player that are not attached.
         """
+        domain = protocol.provider.domain
+        if include_away:
+            for other_id in self._get_protocol_ids(player_id) - {protocol.protocol_id}:
+                if other := self._protocols.get(other_id):
+                    other_domain = other.provider.domain
+                else:
+                    record = self.mass.config.get_protocol_record(other_id) or {}
+                    other_domain = str(record.get("provider") or "").split("--", maxsplit=1)[0]
+                if other_domain == domain:
+                    return True
+            return False
         if not (player := self._players.get(player_id)):
             return False
         # An attached protocol of this domain blocks, even if unavailable.
         # Being offline doesn't make it a different device — it's still occupying
         # this domain slot. The provider should remove stale protocols explicitly.
         return any(
-            other.provider.domain == protocol.provider.domain and other is not protocol
+            other.provider.domain == domain and other is not protocol
             for other in player.protocols.values()
         )
 

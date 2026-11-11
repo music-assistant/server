@@ -150,6 +150,46 @@ async def test_protocol_that_rides_on_another_waits_for_it(scenario: Scenario) -
     assert scenario.player_of(bridge) == scenario.player_of(base) is not None
 
 
+@pytest.mark.parametrize("returns", ["while_running", "after_a_restart"])
+async def test_protocol_that_returns_finds_its_place_also_when_a_bridge_waits_for_it(
+    scenario: Scenario, returns: str
+) -> None:
+    """A protocol that is away keeps the place of its domain against a bridge, in any order."""
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    carrier = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    bridge = sendspin.protocol(
+        "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+    )
+    for protocol in (carrier, client, bridge):
+        await scenario.attach(protocol)
+    player_id = scenario.single_player(carrier, client).player_id
+    if returns == "while_running":
+        await scenario.detach(client)
+        await scenario.idle()
+        assert scenario.player_of(bridge) is None
+    else:
+        for protocol_id in ("ap_kitchen", "sendspin_kitchen", "sendspin_bridge_kitchen"):
+            scenario.set_present(protocol_id, False)
+        await scenario.restart()
+        carrier = scenario.protocol("ap_kitchen")
+        bridge = scenario.protocol("sendspin_bridge_kitchen")
+        client = scenario.protocol("sendspin_kitchen")
+        # the bridge runs in the server and is there before the client reconnects
+        await scenario.attach(carrier)
+        await scenario.attach(bridge)
+        await scenario.advance(3)
+        assert scenario.player_of(bridge) is None
+
+    await scenario.attach(client)
+    await scenario.idle()
+
+    assert scenario.player_of(client) == player_id
+    assert scenario.player_of(bridge) is None
+    assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+
 async def test_protocol_returns_to_the_player_it_is_stored_for(scenario: Scenario) -> None:
     """A protocol that comes back is attached to its player without matching it again."""
     sonos = await scenario.add_provider("sonos")
