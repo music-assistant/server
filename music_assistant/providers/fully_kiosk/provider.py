@@ -40,6 +40,11 @@ def _parse_host_entry(entry: str) -> tuple[str, int]:
     return entry, DEFAULT_PORT
 
 
+def _protocol_id(host: str, port: int) -> str:
+    """Return the protocol id of the device at the given host and port."""
+    return f"fully_kiosk_{host}_{port}"
+
+
 class FullyKioskProvider(PlayerProvider):
     """
     Fully Kiosk Player provider.
@@ -51,6 +56,9 @@ class FullyKioskProvider(PlayerProvider):
     """
 
     dashboards: FullyKioskDashboards
+    # the player of each configured device, also one that is not attached (its player is
+    # disabled): the controller only remembers that one weakly, and a removal must reach it
+    _host_players: dict[str, FullyKioskPlayer]
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -67,38 +75,35 @@ class FullyKioskProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.dashboards = FullyKioskDashboards(self)
+        self._host_players = {}
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("fullykiosk").setLevel(logging.DEBUG)
         else:
             logging.getLogger("fullykiosk").setLevel(self.logger.level + 10)
 
     async def loaded_in_mass(self) -> None:
-        """Sync registered players against the current hosts config."""
+        """Forget the devices that are no longer in the hosts config."""
         entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
-        new_ids = {f"fully_kiosk_{h}_{p}" for h, p in (_parse_host_entry(e) for e in entries)}
-
-        for player in self.protocols:
-            if player.player_id not in new_ids:
-                await self.mass.players.unregister(player.player_id)
-
-        for entry in entries:
-            host, port = _parse_host_entry(entry)
-            player_id = f"fully_kiosk_{host}_{port}"
-            if self.get_protocol(player_id):
-                continue
-            player = FullyKioskPlayer(provider=self, player_id=player_id, host=host, port=port)
-            await self.mass.players.register(player)
+        new_ids = {_protocol_id(h, p) for h, p in (_parse_host_entry(e) for e in entries)}
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            if protocol_id not in new_ids:
+                await self.mass.players.remove_protocol(protocol_id)
 
     async def discover_players(self) -> None:
-        """Register one FullyKioskPlayer per entry in the hosts config."""
+        """Attach one FullyKioskPlayer per entry in the hosts config that is not attached."""
         entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
         for entry in entries:
             host, port = _parse_host_entry(entry)
-            player_id = f"fully_kiosk_{host}_{port}"
-            if self.get_protocol(player_id):
+            protocol_id = _protocol_id(host, port)
+            if self.get_protocol(protocol_id):
                 continue
-            player = FullyKioskPlayer(provider=self, player_id=player_id, host=host, port=port)
-            await self.mass.players.register(player)
+            if (player := self._host_players.get(protocol_id)) is None:
+                player = FullyKioskPlayer(
+                    provider=self, protocol_id=protocol_id, host=host, port=port
+                )
+                self._host_players[protocol_id] = player
+            # connects only when the server wants the device
+            await self.mass.players.attach(player)
 
     def forget_host(self, host: str, port: int) -> None:
         """
@@ -107,6 +112,7 @@ class FullyKioskProvider(PlayerProvider):
         :param host: Hostname or IP address of the device.
         :param port: Port of the device.
         """
+        self._host_players.pop(_protocol_id(host, port), None)
         entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
         new_entries = [entry for entry in entries if _parse_host_entry(entry) != (host, port)]
         if new_entries != entries:
