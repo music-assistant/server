@@ -107,3 +107,31 @@ async def test_a_removed_member_reports_its_leave_before_its_own_late_event() ->
     assert member.client.player.group.id == OWN_GROUP
     cast("MagicMock", member.update_state).assert_called()
     member_api.groups.get_groups.assert_awaited_once_with(HOUSEHOLD)
+
+
+@pytest.mark.asyncio
+async def test_a_member_added_back_right_away_is_synced_again() -> None:
+    """A speaker added back before it reported its leave sends no groups event at all."""
+    mass = MagicMock()
+    leader_api, member_api = AsyncMock(), AsyncMock()
+    leader = _player(mass, LEADER, leader_api)
+    member = _player(mass, MEMBER, member_api)
+    mass.players.get_player.side_effect = {LEADER: leader, MEMBER: member}.get
+    household = {"now": LEFT}
+
+    async def _modify_group_members(*_args: object) -> None:
+        leader.client._handle_groups_event(cast("Any", household["now"]))
+
+    leader_api.groups.modify_group_members.side_effect = _modify_group_members
+    member_api.groups.get_groups.side_effect = lambda *_args: household["now"]
+    await leader.set_members(player_ids_to_remove=[MEMBER])
+    synced_to_after_removal = member.synced_to
+
+    # back in the group it last reported to be in, the member has nothing to report
+    household["now"] = SYNCED
+    await leader.set_members(player_ids_to_add=[MEMBER])
+    await asyncio.sleep(0)
+
+    assert synced_to_after_removal is None
+    assert member.synced_to == LEADER
+    assert member.client.player.is_passive

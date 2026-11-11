@@ -895,14 +895,10 @@ class SonosPlayer(Player):
                 player_ids_to_remove=player_ids_to_remove,
             )
             await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
-            for player_id in player_ids_to_remove:
-                removed_player = self.mass.players.get_player(player_id)
-                if (
-                    player_id != self.player_id
-                    and isinstance(removed_player, SonosPlayer)
-                    and removed_player.connected
-                ):
-                    await removed_player._refresh_groups()
+            for player_id in {*player_ids_to_add, *player_ids_to_remove} - {self.player_id}:
+                member = self.mass.players.get_player(player_id)
+                if isinstance(member, SonosPlayer) and member.connected:
+                    await member._refresh_groups()
 
     async def ungroup(self) -> None:
         """
@@ -1818,8 +1814,8 @@ class SonosPlayer(Player):
 
     async def _refresh_groups(self) -> None:
         """Update the grouping of this speaker from what the speaker reports right now."""
-        # a speaker that leaves a group knows it at once, but its groups event can follow
-        # seconds later; until then it is seen as synced and refuses to play
+        # a speaker knows its new group at once, but holds its groups event back for seconds,
+        # and sends none at all when its group is back to what it last reported by then
         try:
             groups = await self.client.api.groups.get_groups(self.client.household_id)
         except SonosException as err:
