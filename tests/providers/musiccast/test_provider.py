@@ -57,36 +57,47 @@ async def test_rediscovery_keeps_one_device_per_receiver(
     ] == expected_ips
 
 
-@pytest.mark.parametrize(
-    ("player_id", "expected_registered"),
-    [
-        pytest.param("B___zone2", True, id="known-device"),
-        pytest.param("C___main", False, id="unknown-device"),
-    ],
-)
-async def test_player_enabled_again(
-    network: MusicCastNetwork,
-    monkeypatch: pytest.MonkeyPatch,
-    player_id: str,
-    expected_registered: bool,
+async def test_discovery_attaches_a_zone_enabled_again(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A re-enabled player of a known device gets registered without a rediscovery."""
-    monkeypatch.setattr(MusicCastPlayer, "setup", AsyncMock())
+    """A re-enabled zone of a known device is attached again; the attached zones are left alone."""
+    setup = AsyncMock()
+    monkeypatch.setattr(MusicCastPlayer, "setup", setup)
+    disabled = network.registry.pop("B___zone2")
+
+    await network.provider.discover_players()
+
+    network.mass.players.attach.assert_called_once()
+    setup.assert_awaited_once()
+    player = network.registry["B___zone2"]
+    assert player is not disabled
+    assert player.physical_device is network.provider.musiccast_player_helpers["B"].physical_device
+    assert network.player("B___zone2") is player
+
+    await network.provider.discover_players()
+
+    network.mass.players.attach.assert_called_once()
+
+
+async def test_discovery_leaves_a_disabled_zone_alone(
+    network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zone whose player is disabled is neither set up nor attached by a discovery."""
+    setup = AsyncMock()
+    monkeypatch.setattr(MusicCastPlayer, "setup", setup)
     network.registry.pop("B___zone2")
+    network.disabled.add("B___zone2")
 
-    network.provider.on_player_enabled(player_id)
-    await asyncio.gather(*network.tasks)
+    await network.provider.discover_players()
 
-    assert (player_id in network.registry) is expected_registered
-    if expected_registered:
-        physical_device = network.provider.musiccast_player_helpers["B"].physical_device
-        assert network.registry[player_id].physical_device is physical_device
+    setup.assert_not_awaited()
+    network.mass.players.attach.assert_not_called()
 
 
 async def test_player_enabled_while_receiver_unreachable(
     network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A main re-enabled while its receiver is unreachable still gets registered."""
+    """A main re-enabled while its receiver is unreachable still gets attached."""
     monkeypatch.setattr(
         AVTransport, "get_media_info", AsyncMock(side_effect=ClientError("unreachable"))
     )
@@ -99,8 +110,7 @@ async def test_player_enabled_while_receiver_unreachable(
     )
     network.registry.pop("B___main")
 
-    network.provider.on_player_enabled("B___main")
-    await asyncio.gather(*network.tasks)
+    await network.provider.discover_players()
 
     assert network.registry["B___main"].physical_device.device is device
 
@@ -136,7 +146,7 @@ async def test_rediscovery_with_failing_zone_keeps_registrations(
 async def test_player_enabled_during_rediscovery(
     network: MusicCastNetwork, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rediscovery while a re-enabled player sets up leaves the player on the new device."""
+    """A rediscovery while a re-enabled zone sets up leaves the zone on the new device."""
     monkeypatch.setattr(provider_module, "MusicCastDevice", _DiscoveredDevice)
     release_first_setup = asyncio.Event()
     setups: list[MusicCastPlayer] = []
@@ -150,7 +160,7 @@ async def test_player_enabled_during_rediscovery(
     network.registry.pop("B___zone2")
     network.player("B___main")._attr_available = False
 
-    network.provider.on_player_enabled("B___zone2")
+    discovery = asyncio.ensure_future(network.provider.discover_players())
     await asyncio.sleep(0)
     rediscovery = asyncio.ensure_future(
         network.provider._device_discovered(
@@ -161,7 +171,7 @@ async def test_player_enabled_during_rediscovery(
     )
     await asyncio.sleep(0.01)
     release_first_setup.set()
-    await asyncio.gather(rediscovery, *network.tasks)
+    await asyncio.gather(rediscovery, discovery, *network.tasks)
 
     physical_device = network.provider.musiccast_player_helpers["B"].physical_device
     assert physical_device.device.ip == "192.168.1.21"
