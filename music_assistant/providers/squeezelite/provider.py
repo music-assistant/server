@@ -13,7 +13,12 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENABLED,
+    CONF_PORT,
+    CONF_SYNC_ADJUST,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
@@ -120,7 +125,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if not self.slimproto:
             return
         for slimclient in self.slimproto.players:
-            if self.get_protocol(slimclient.player_id) is None:
+            if self.get_protocol(slimclient.player_id) is None and (
+                self.mass.config.get_protocol_value(slimclient.player_id, CONF_ENABLED, True)
+            ):
                 await SqueezelitePlayer(self, slimclient.player_id, slimclient).setup()
 
     async def unload(self, is_removed: bool = False) -> None:

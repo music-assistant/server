@@ -100,7 +100,9 @@ class MediaAssistantprovider(PlayerProvider):
         :param roku_player: The removed player.
         """
         await self._device_disconnect(roku_player)
-        self.roku_players.pop(roku_player.player_id, None)
+        # a discovery during the disconnect may have put a new player in its place
+        if self.roku_players.get(roku_player.player_id) is roku_player:
+            del self.roku_players[roku_player.player_id]
 
     async def _device_disconnect(self, roku_player: MediaAssistantPlayer) -> None:
         """Destroy connections to the device."""

@@ -126,13 +126,17 @@ async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None
 
 
 async def test_connected_player_without_player_object_is_registered() -> None:
-    """A connected client whose player was removed gets a new player, a registered one keeps it."""
+    """A connected client whose player was removed gets a new player; registered or disabled not."""
     provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
     registered = MagicMock(player_id="registered")
     removed = MagicMock(player_id="removed")
-    provider.slimproto = MagicMock(players=[registered, removed])
+    disabled = MagicMock(player_id="disabled")
+    provider.slimproto = MagicMock(players=[registered, removed, disabled])
     provider.mass = MagicMock()
     provider.mass.players.get_player.side_effect = {"registered": MagicMock()}.get
+    provider.mass.config.get_protocol_value.side_effect = lambda player_id, *_: (
+        player_id != "disabled"
+    )
 
     with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer") as player_class:
         player_class.return_value.setup = AsyncMock()
