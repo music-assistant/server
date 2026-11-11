@@ -27,7 +27,7 @@ from fastmcp import Client, FastMCP
 from fastmcp.exceptions import McpError
 from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import UserRole
-from music_assistant_models.enums import ProviderSharing
+from music_assistant_models.enums import PlaybackState, ProviderSharing
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -46,6 +46,7 @@ from music_assistant.providers.fastmcp_server.resources.library_resources import
 from music_assistant.providers.fastmcp_server.resources.player_resources import (
     register_player_resources,
 )
+from tests.common import MockProvider, attach_mock, make_player_state, mock_player_mass
 
 # (kind, mass-controller-attr, uri-stem) — keyed by library resource kind.
 _LIBRARY_KINDS = [
@@ -101,28 +102,25 @@ async def test_library_resource_returns_null_for_missing(
 
 async def test_player_resource_returns_json_text_for_brief(mock_mass: MagicMock) -> None:
     """A ``PlayerBrief`` returned by the player handler is JSON-serialised."""
-    player = SimpleNamespace(
-        player_id="p1",
-        display_name="P1",
-        name="P1",
-        playback_state=SimpleNamespace(value="playing"),
-        volume_level=100,
-        powered=True,
-        current_media=None,
-        state=SimpleNamespace(powered=True, current_media=None),
-    )
+    provider = MockProvider("test", mass=mock_player_mass())
+    player, protocol = attach_mock(provider, "p1", "P1")
+    protocol._attr_playback_state = PlaybackState.PLAYING
+    protocol._attr_volume_level = 100
+    player.update_state(force_update=True, signal_event=False)
     mock_mass.players.get_player.return_value = player
+    mock_mass.player_queues.get_active_queue.return_value = None
 
     mcp: FastMCP = FastMCP(name="t")
     register_player_resources(mcp, mock_mass)
     async with Client(mcp) as client:
-        contents = await client.read_resource("player://p1")
+        contents = await client.read_resource("player://pl_p1")
 
     text_blocks = [c.text for c in contents if hasattr(c, "text")]
     assert text_blocks, "no text content returned"
     parsed = json.loads(text_blocks[0])
-    assert parsed["player_id"] == "p1"
+    assert parsed["player_id"] == "pl_p1"
     assert parsed["state"] == "playing"
+    assert parsed["volume_level"] == 100
     assert parsed["powered"] is True
 
 
@@ -153,16 +151,7 @@ async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> Non
     would be caught here.
     """
     player = SimpleNamespace(
-        player_id="follower",
-        display_name="Lenco",
-        name="Lenco",
-        playback_state=SimpleNamespace(value="idle"),
-        volume_level=None,
-        powered=True,
-        current_media=None,
-        available=True,
-        enabled=True,
-        active_group="group-leader",
+        display_name="Lenco", state=make_player_state("pl_follower", active_group="pl_group")
     )
     mock_mass.players.get_player.return_value = player
 
@@ -173,22 +162,13 @@ async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> Non
 
     parsed = json.loads(next(c.text for c in contents if hasattr(c, "text")))
     assert parsed["state"] == "synced"
-    assert parsed["active_group"] == "group-leader"
+    assert parsed["active_group"] == "pl_group"
 
 
 async def test_player_resource_reports_needs_setup_state(mock_mass: MagicMock) -> None:
     """An unconfigured player fetched by URI carries ``state="needs_setup"``."""
     player = SimpleNamespace(
-        player_id="raw",
-        display_name="Unboxed",
-        name="Unboxed",
-        playback_state=SimpleNamespace(value="idle"),
-        volume_level=None,
-        powered=True,
-        current_media=None,
-        available=True,
-        enabled=True,
-        needs_setup=True,
+        display_name="Unboxed", state=make_player_state("pl_raw", needs_setup=True)
     )
     mock_mass.players.get_player.return_value = player
 
@@ -215,15 +195,7 @@ async def test_player_resource_reflects_external_source_playback(
     ``current_item`` identically to what ``players_get_player`` returns.
     """
     player = SimpleNamespace(
-        player_id="ext1",
-        display_name="Ynison Player",
-        name="Ynison Player",
-        playback_state=SimpleNamespace(value="idle"),
-        volume_level=80,
-        powered=True,
-        current_media=None,
-        available=True,
-        enabled=True,
+        display_name="Ynison Player", state=make_player_state("pl_ext1", volume_level=80)
     )
     mock_mass.players.get_player.return_value = player
 
