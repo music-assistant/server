@@ -93,11 +93,10 @@ from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALY
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import (
     MEDIA_IDENTITY_KEYS,
-    AnnouncementFeature,
     Player,
     PlayerMedia,
 )
-from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
 from .bridge_role import BridgePlayerRole
