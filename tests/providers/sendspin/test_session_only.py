@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
-from music_assistant_models.enums import IdentifierType, PlayerType
+from music_assistant_models.enums import IdentifierType, PlayerType, ProtocolRole
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.providers.sendspin.player import (
@@ -18,7 +18,7 @@ from music_assistant.providers.sendspin.player import (
     SendspinVisualizerPlayer,
 )
 from music_assistant.providers.sendspin.provider import SendspinProvider
-from tests.common import MockPlayer
+from tests.common import MockProtocol
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
@@ -41,7 +41,8 @@ def _refreshed_player(
     :param virtual: Whether the player is a virtual player of the provider.
     """
     player = SendspinPlayer.__new__(SendspinPlayer)
-    player._player_id = CLIENT_ID
+    player._protocol_id = CLIENT_ID
+    player._player = None
     player._provider = cast(
         "SendspinProvider", SimpleNamespace(is_virtual_player=lambda _player_id: virtual)
     )
@@ -95,16 +96,17 @@ def test_a_device_with_a_sendspin_client_is_not_session_only(
     player = _refreshed_player(product_name, manufacturer)
 
     assert player.session_only is False
-    assert player.type is PlayerType.PROTOCOL
+    assert player.type is PlayerType.PLAYER
 
 
 def test_a_web_player_that_is_restored_as_a_bridge_is_not_session_only() -> None:
     """A receiver app that reports as a browser is the Sendspin protocol of its device."""
     player = _refreshed_player("Web Browser")
+    player._attr_underlying_protocol_id = "cast-protocol"
     cast_device = DeviceInfo(model="Nest Hub", manufacturer="Google")
     cast_device.add_identifier(IdentifierType.CAST_UUID, "cast-uuid")
 
-    player.restore_bridge_identity(cast_device, PlayerType.PROTOCOL)
+    player.restore_bridge_identity(cast_device)
 
     assert player.session_only is False
 
@@ -117,13 +119,21 @@ async def test_a_web_player_that_is_claimed_as_a_bridge_is_not_session_only() ->
     provider = SendspinProvider.__new__(SendspinProvider)
     provider.logger = Mock()
     provider.mass = Mock()
-    provider.mass.players.register_or_update = AsyncMock()
+    provider.mass.players.attach = AsyncMock()
+    provider.mass.players.detach = AsyncMock()
     provider.get_protocol = Mock(return_value=player)  # type: ignore[method-assign]
+    player._attr_underlying_protocol_id = None
     hello = cast("ClientHelloPayload", SimpleNamespace(player_support=None))
 
-    assert await provider.apply_bridge_claim(CLIENT_ID, {}, hello) is True
+    assert await provider.apply_bridge_claim(CLIENT_ID, {}, hello, "cast-protocol") is True
 
     assert player.session_only is False
+    # an audio output of the player of its Cast device from now on: it leaves the player of
+    # its own first
+    assert player.role is ProtocolRole.AUDIO
+    assert player.underlying_protocol_id == "cast-protocol"
+    provider.mass.players.detach.assert_awaited_once_with(CLIENT_ID)
+    provider.mass.players.attach.assert_awaited_once_with(player)
 
 
 @pytest.mark.parametrize("player_class", [SendspinVisualizerPlayer, SendspinSourcePlayer])
@@ -154,9 +164,11 @@ def test_the_player_of_a_client_without_a_player_role_is_session_only(
     for player_class in (SendspinVisualizerPlayer, SendspinSourcePlayer):
         monkeypatch.setattr(player_class, "__init__", lambda *_args, **_kwargs: None)
     provider = SendspinProvider.__new__(SendspinProvider)
+    provider.mass = Mock()
+    provider.mass.config.get_protocol_value.return_value = None
     provider._bridge_identifiers = {}
     provider._bridge_player_types = {}
-    provider._bridge_underlying_players = {}
+    provider._bridge_underlying_protocols = {}
     provider._bridge_static_delay_defaults = {}
     if bridge_type:
         provider.register_bridge_player_type(CLIENT_ID, bridge_type)
@@ -166,8 +178,10 @@ def test_the_player_of_a_client_without_a_player_role_is_session_only(
 
     assert player.session_only is True
     assert player.type is expected_type
+    # a player of its own while it is connected
+    assert player.role is ProtocolRole.NATIVE
 
 
 def test_a_player_is_not_session_only_unless_it_reports_so() -> None:
     """Any other player is one to keep track of while its device is away."""
-    assert MockPlayer.__new__(MockPlayer).session_only is False
+    assert MockProtocol.__new__(MockProtocol).session_only is False
