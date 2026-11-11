@@ -1,0 +1,712 @@
+"""Tests for the migration that splits the stored player configs into players and protocols."""
+
+from __future__ import annotations
+
+import json
+import logging
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from music_assistant.constants import (
+    CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYER_QUEUES,
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
+    CONF_PLAYERS,
+)
+from music_assistant.controllers.config import player_split
+from music_assistant.controllers.config.controller import ConfigController
+from music_assistant.controllers.config.player_split import (
+    BACKUP_SUFFIX,
+    mark_player_split_done,
+    migrate_player_split,
+    needs_player_split,
+)
+from tests.common import capture_log_records
+
+AIRPLAY = "airplay--a1"
+CAST = "chromecast--c1"
+SONOS = "sonos--s1"
+DLNA = "dlna--d1"
+SQUEEZELITE = "squeezelite--q1"
+SENDSPIN = "sendspin"
+UNIVERSAL_PLAYER = "universal_player"
+
+FLAGS = {CONF_PLAYER_SPLIT_SESSION_ONLY: True, CONF_PLAYER_SPLIT_TREE: True}
+
+
+def _record(
+    player_id: str,
+    provider: str,
+    player_type: str = "player",
+    enabled: bool = True,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Return the stored config of a player as a version from before the split wrote it."""
+    return {
+        "player_id": player_id,
+        "provider": provider,
+        "player_type": player_type,
+        "enabled": enabled,
+        "name": None,
+        "default_name": f"Device {player_id}",
+        "values": {},
+        **extra,
+    }
+
+
+def _protocol(player_id: str, provider: str, parent_id: str | None, **extra: Any) -> dict[str, Any]:
+    """Return the stored config of a protocol player from before the split."""
+    extra.setdefault("values", {})
+    if parent_id:
+        extra["values"]["protocol_parent_id"] = parent_id
+    return _record(player_id, provider, "protocol", **extra)
+
+
+def _settings(*records: dict[str, Any], **trees: Any) -> dict[str, Any]:
+    """Return settings data from before the split around the given player configs."""
+    return {
+        "server_id": "x",
+        CONF_PLAYERS: {record["player_id"]: record for record in records},
+        **trees,
+    }
+
+
+def _migrated(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return the migrated copy of settings data, after checking that the result is stable.
+
+    A second run changes nothing, and neither does a run on the result without its flags.
+    """
+    result = deepcopy(data)
+    assert migrate_player_split(result) is True
+    assert all(result[flag] is True for flag in FLAGS)
+    again = deepcopy(result)
+    assert migrate_player_split(again) is False
+    assert again == result
+    unflagged = {key: value for key, value in deepcopy(result).items() if key not in FLAGS}
+    migrate_player_split(unflagged)
+    assert unflagged == result
+    return result
+
+
+def _protocol_record(
+    protocol_id: str,
+    provider: str,
+    player_id: str | None,
+    role: str = "audio",
+    enabled: bool = True,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Return the config of a protocol as the split stores it."""
+    return {
+        "protocol_id": protocol_id,
+        "provider": provider,
+        "player_id": player_id,
+        "role": role,
+        "enabled": enabled,
+        "default_name": f"Device {protocol_id}",
+        "values": {},
+        **extra,
+    }
+
+
+def test_native_player_keeps_its_own_values_and_gets_a_protocol_for_the_rest() -> None:
+    """A player record is split by who owns each value; what is stored next to it stays."""
+    record = _record(
+        "sonos_1",
+        SONOS,
+        name="Kitchen",
+        values={
+            "hide_in_ui": True,
+            "volume_control": "native",
+            "announce_volume": 40,
+            "icon": "mdi-speaker",
+            "preferred_output_protocol": "ap_1",
+            "created_at": 1,
+            "legacy_ids": ["old_1"],
+            "output_channels": "left",
+            "flow_mode": True,
+            "sample_rates": ["44100$16"],
+            "cached_arp_mac": "AA:BB:CC:DD:EE:01",
+            "reported_mac": "AA:BB:CC:DD:EE:02",
+            "provider_setting": "x",
+        },
+        setup_data={"token": "enc"},
+    )
+    dsp = {"sonos_1": {"enabled": True, "filters": []}}
+    queues = {"sonos_1": {"values": {"crossfade": True}}}
+
+    result = _migrated(_settings(record, player_dsp=dsp, player_queues=queues))
+
+    assert result[CONF_PLAYERS] == {
+        "sonos_1": _record(
+            "sonos_1",
+            SONOS,
+            name="Kitchen",
+            values={
+                "hide_in_ui": True,
+                "volume_control": "native",
+                "announce_volume": 40,
+                "icon": "mdi-speaker",
+                "preferred_output_protocol": "ap_1",
+                "created_at": 1,
+                "legacy_ids": ["old_1"],
+            },
+        )
+    }
+    assert result[CONF_PLAYER_PROTOCOLS] == {
+        "sonos_1": _protocol_record(
+            "sonos_1",
+            SONOS,
+            "sonos_1",
+            role="native",
+            values={
+                "output_channels": "left",
+                "flow_mode": True,
+                "sample_rates": ["44100$16"],
+                "cached_arp_mac": "AA:BB:CC:DD:EE:01",
+                "reported_mac": "AA:BB:CC:DD:EE:02",
+                "provider_setting": "x",
+            },
+            setup_data={"token": "enc"},
+        )
+    }
+    assert result[CONF_PLAYER_DSP] == dsp
+    assert result[CONF_PLAYER_QUEUES] == queues
+
+
+def test_wrapper_becomes_the_player_of_its_protocols() -> None:
+    """A universal player record keeps its id and names the provider of its best protocol."""
+    wrapper = _record(
+        "up0001",
+        UNIVERSAL_PLAYER,
+        name="Living",
+        values={
+            "linked_protocol_ids": ["ap_1", "cc_1"],
+            "device_identifiers": {"mac_address": "AA:BB:CC:DD:EE:03", "uuid": "uuid-1_MR"},
+            "device_info": {"model": "M", "manufacturer": "Acme"},
+            "created_at": 5,
+            "preferred_output_protocol": "cc_1",
+        },
+        setup_data={"stale": 1},
+    )
+    airplay = _protocol(
+        "ap_1",
+        AIRPLAY,
+        "up0001",
+        values={"cached_arp_mac": "AA:BB:CC:DD:EE:03", "output_codec": "pcm"},
+        setup_data={"credentials": "enc"},
+    )
+    cast = _protocol("cc_1", CAST, "up0001", enabled=False)
+
+    result = _migrated(_settings(wrapper, airplay, cast))
+
+    assert result[CONF_PLAYERS] == {
+        "up0001": _record(
+            "up0001",
+            AIRPLAY,
+            name="Living",
+            values={
+                "device_identifiers": {"mac_address": "AA:BB:CC:DD:EE:03", "uuid": "uuid-1"},
+                "device_info": {"model": "M", "manufacturer": "Acme"},
+                "created_at": 5,
+                "preferred_output_protocol": "cc_1",
+            },
+        )
+    }
+    # the wrapper has no protocol of its own, and the output the user switched off stays off
+    assert result[CONF_PLAYER_PROTOCOLS] == {
+        "ap_1": _protocol_record(
+            "ap_1",
+            AIRPLAY,
+            "up0001",
+            values={"cached_arp_mac": "AA:BB:CC:DD:EE:03", "output_codec": "pcm"},
+            setup_data={"credentials": "enc"},
+        ),
+        "cc_1": _protocol_record("cc_1", CAST, "up0001", enabled=False),
+    }
+
+
+@pytest.mark.parametrize(
+    ("linked", "parents"),
+    [
+        # the list of the wrapper was never written
+        ([], {"ap_2": "up0002", "cc_2": "up0002"}),
+        # one of the protocols lost its edge, the wrapper still lists it
+        (["ap_2", "cc_2"], {"ap_2": None, "cc_2": "up0002"}),
+    ],
+    ids=["list_missing", "edge_missing"],
+)
+def test_half_written_wrapper_gets_its_protocols_back(
+    linked: list[str], parents: dict[str, str | None]
+) -> None:
+    """A wrapper an interrupted shutdown left half-written still becomes one player."""
+    wrapper = _record("up0002", UNIVERSAL_PLAYER, values={"linked_protocol_ids": linked})
+    airplay = _protocol("ap_2", AIRPLAY, parents["ap_2"])
+    cast = _protocol("cc_2", CAST, parents["cc_2"])
+
+    result = _migrated(_settings(wrapper, airplay, cast))
+
+    assert result[CONF_PLAYERS] == {"up0002": _record("up0002", AIRPLAY)}
+    assert {
+        protocol_id: record["player_id"]
+        for protocol_id, record in result[CONF_PLAYER_PROTOCOLS].items()
+    } == {"ap_2": "up0002", "cc_2": "up0002"}
+
+
+def test_a_lost_edge_is_restored_from_the_wrapper_that_lists_it() -> None:
+    """Where a wrapper and a native player both list a protocol, it belongs to the wrapper."""
+    wrapper = _record("up0003", UNIVERSAL_PLAYER, values={"linked_protocol_ids": ["ap_3"]})
+    native = _record("sonos_3", SONOS, values={"linked_protocol_ids": ["ap_3"]})
+    airplay = _protocol("ap_3", AIRPLAY, None)
+
+    result = _migrated(_settings(wrapper, native, airplay))
+
+    assert result[CONF_PLAYER_PROTOCOLS]["ap_3"]["player_id"] == "up0003"
+
+
+def test_a_lost_edge_is_not_guessed_between_two_players_of_a_kind() -> None:
+    """A protocol two wrappers list stays unbound: it is matched again when it attaches."""
+    first = _record("up0004", UNIVERSAL_PLAYER, values={"linked_protocol_ids": ["ap_4"]})
+    second = _record(
+        "up0005", UNIVERSAL_PLAYER, name="Den", values={"linked_protocol_ids": ["ap_4"]}
+    )
+    airplay = _protocol("ap_4", AIRPLAY, None, enabled=False)
+
+    result = _migrated(_settings(first, second, airplay))
+
+    assert result[CONF_PLAYER_PROTOCOLS] == {"ap_4": _protocol_record("ap_4", AIRPLAY, None)}
+    # neither wrapper has a protocol left: only the one the user named is kept
+    assert list(result[CONF_PLAYERS]) == ["up0005"]
+
+
+def test_empty_wrapper_is_only_kept_when_the_user_customised_it() -> None:
+    """A wrapper without protocols goes, unless it holds something the user set up."""
+    plain = _record(
+        "up0006",
+        UNIVERSAL_PLAYER,
+        values={"linked_protocol_ids": [], "created_at": 1, "device_info": {"model": "M"}},
+    )
+    named = _record(
+        "up0007",
+        UNIVERSAL_PLAYER,
+        name="Kitchen",
+        values={
+            "linked_protocol_ids": ["gone"],
+            "device_identifiers": {"uuid": "uuid-7_MR"},
+            "device_info": {"model": "M", "manufacturer": "Acme"},
+        },
+        setup_data={"stale": 1},
+    )
+    with_value = _record("up0008", UNIVERSAL_PLAYER, values={"icon": "mdi-x"})
+    with_dsp = _record("up0009", UNIVERSAL_PLAYER)
+    with_queue = _record("up0010", UNIVERSAL_PLAYER)
+    dsp = {"up0006": {"enabled": False}, "up0009": {"enabled": True}}
+    queues = {"up0010": {"values": {"crossfade": True}}}
+
+    result = _migrated(
+        _settings(
+            plain, named, with_value, with_dsp, with_queue, player_dsp=dsp, player_queues=queues
+        )
+    )
+
+    # a kept one names no provider: it waits for a device that matches its identifiers
+    assert result[CONF_PLAYERS] == {
+        "up0007": _record(
+            "up0007",
+            "",
+            name="Kitchen",
+            values={
+                "device_identifiers": {"uuid": "uuid-7"},
+                "device_info": {"model": "M", "manufacturer": "Acme"},
+            },
+        ),
+        "up0008": _record("up0008", "", values={"icon": "mdi-x"}),
+        "up0009": _record("up0009", ""),
+        "up0010": _record("up0010", ""),
+    }
+    assert result[CONF_PLAYER_PROTOCOLS] == {}
+    assert result[CONF_PLAYER_DSP] == {"up0009": {"enabled": True}}
+    assert result[CONF_PLAYER_QUEUES] == queues
+
+
+def test_protocol_without_a_player_is_unbound_and_enabled() -> None:
+    """The enabled flag of a protocol without a player was that of its device."""
+    lone = _protocol("ap_5", AIRPLAY, None, enabled=False, values={"cached_arp_mac": "m"})
+
+    result = _migrated(_settings(lone))
+
+    assert result[CONF_PLAYERS] == {}
+    assert result[CONF_PLAYER_PROTOCOLS] == {
+        "ap_5": _protocol_record("ap_5", AIRPLAY, None, values={"cached_arp_mac": "m"})
+    }
+
+
+def test_record_with_an_edge_is_a_protocol_whatever_type_it_stores() -> None:
+    """A record that points at a player is a protocol of it, also when stored as a player."""
+    native = _record("sq_6", SQUEEZELITE)
+    dlna = _record("dl_6", DLNA, values={"protocol_parent_id": "sq_6", "output_channels": "mono"})
+
+    result = _migrated(_settings(native, dlna))
+
+    assert list(result[CONF_PLAYERS]) == ["sq_6"]
+    assert result[CONF_PLAYER_PROTOCOLS]["dl_6"] == _protocol_record(
+        "dl_6", DLNA, "sq_6", values={"output_channels": "mono"}
+    )
+
+
+def test_edge_to_nothing_usable_is_dropped() -> None:
+    """An edge to a missing record, to itself or to another protocol leaves a protocol unbound."""
+    missing = _protocol("ap_7a", AIRPLAY, "gone", enabled=False)
+    itself = _protocol("ap_7b", AIRPLAY, "ap_7b")
+    child = _protocol("cc_7c", CAST, "ap_7a")
+
+    result = _migrated(_settings(missing, itself, child))
+
+    assert result[CONF_PLAYERS] == {}
+    assert result[CONF_PLAYER_PROTOCOLS] == {
+        "ap_7a": _protocol_record("ap_7a", AIRPLAY, None),
+        "ap_7b": _protocol_record("ap_7b", AIRPLAY, None),
+        "cc_7c": _protocol_record("cc_7c", CAST, None),
+    }
+
+
+@pytest.mark.parametrize(
+    ("protocols", "kept"),
+    [
+        # the enabled one
+        (
+            [
+                _protocol("ap_8a", AIRPLAY, "up0008", enabled=False),
+                _protocol("ap_8b", AIRPLAY, "up0008", enabled=False, setup_data={"x": 1}),
+                _protocol("ap_8c", AIRPLAY, "up0008"),
+            ],
+            "ap_8c",
+        ),
+        # else the one that was set up
+        (
+            [
+                _protocol("ap_8a", AIRPLAY, "up0008", enabled=False),
+                _protocol("ap_8b", AIRPLAY, "up0008", enabled=False, setup_data={"x": 1}),
+            ],
+            "ap_8b",
+        ),
+        # else the lowest id
+        (
+            [_protocol("ap_8b", AIRPLAY, "up0008"), _protocol("ap_8a", AIRPLAY, "up0008")],
+            "ap_8a",
+        ),
+    ],
+    ids=["enabled", "set_up", "lowest_id"],
+)
+def test_one_protocol_per_domain_stays_on_a_player(
+    protocols: list[dict[str, Any]], kept: str
+) -> None:
+    """Of several protocols of one domain that point at a player, one keeps its edge."""
+    wrapper = _record("up0008", UNIVERSAL_PLAYER)
+
+    result = _migrated(_settings(wrapper, *deepcopy(protocols)))
+
+    edges = {
+        protocol_id: (record["player_id"], record["enabled"])
+        for protocol_id, record in result[CONF_PLAYER_PROTOCOLS].items()
+    }
+    kept_enabled = next(p for p in protocols if p["player_id"] == kept)["enabled"]
+    assert edges == {
+        protocol["player_id"]: ("up0008", kept_enabled)
+        if protocol["player_id"] == kept
+        else (None, True)
+        for protocol in protocols
+    }
+
+
+def test_outputs_of_a_disabled_player_are_enabled_again() -> None:
+    """A disabled player stays disabled, its outputs do not stay switched off with it."""
+    native = _record("sonos_9", SONOS, enabled=False)
+    airplay = _protocol("ap_9", AIRPLAY, "sonos_9")
+    cast = _protocol("cc_9", CAST, "sonos_9", enabled=False)
+
+    result = _migrated(_settings(native, airplay, cast))
+
+    assert result[CONF_PLAYERS]["sonos_9"]["enabled"] is False
+    assert {
+        protocol_id: record["enabled"]
+        for protocol_id, record in result[CONF_PLAYER_PROTOCOLS].items()
+    } == {"sonos_9": True, "ap_9": True, "cc_9": True}
+
+
+def test_group_members_name_players() -> None:
+    """A member list that names a protocol names its player after the split, once."""
+    wrapper = _record("up0010", UNIVERSAL_PLAYER)
+    airplay = _protocol("ap_10", AIRPLAY, "up0010")
+    native = _record("sonos_10", SONOS)
+    sync_group = _record(
+        "syncgroup_1",
+        "sync_group",
+        "group",
+        values={"group_members": ["ap_10", "sonos_10", "up0010"], "power_control": "fake"},
+    )
+    universal_group = _record(
+        "ugp_1", "universal_group", "group", values={"group_members": ["ap_10", "sonos_10"]}
+    )
+
+    result = _migrated(_settings(wrapper, airplay, native, sync_group, universal_group))
+
+    assert result[CONF_PLAYERS]["syncgroup_1"]["values"] == {"power_control": "fake"}
+    assert result[CONF_PLAYER_PROTOCOLS]["syncgroup_1"] == _protocol_record(
+        "syncgroup_1",
+        "sync_group",
+        "syncgroup_1",
+        role="virtual",
+        values={"group_members": ["up0010", "sonos_10"]},
+    )
+    assert result[CONF_PLAYER_PROTOCOLS]["ugp_1"]["role"] == "virtual"
+    assert result[CONF_PLAYER_PROTOCOLS]["ugp_1"]["values"] == {
+        "group_members": ["up0010", "sonos_10"]
+    }
+
+
+def test_session_only_players_are_deleted_unless_customised() -> None:
+    """A Sendspin player that is no protocol of a device is only kept when the user set it up."""
+    records = [
+        _record("ss_plain", SENDSPIN),
+        _record("ss_auto", SENDSPIN, values={"sendspin_static_delay": 30, "created_at": 1}),
+        _record("ss_dsp_off", SENDSPIN),
+        _record("ss_light", SENDSPIN, "light"),
+        _record("ss_named", SENDSPIN, name="Tablet"),
+        _record("ss_value", SENDSPIN, values={"hide_in_ui": True, "sendspin_static_delay": 5}),
+        _record("ss_dsp", SENDSPIN),
+        _record("ss_queue", SENDSPIN),
+        # the Sendspin clients of devices are protocols: of a player, or still without one
+        _record("sq_hw", SQUEEZELITE),
+        _protocol("esp_1", SENDSPIN, "sq_hw"),
+        _protocol("esp_2", SENDSPIN, None),
+    ]
+    dsp = {"ss_dsp": {"enabled": True}, "ss_dsp_off": {"enabled": False}}
+    queues = {"ss_queue": {"values": {"crossfade": True}}}
+
+    result = _migrated(_settings(*records, player_dsp=dsp, player_queues=queues))
+
+    assert sorted(result[CONF_PLAYERS]) == ["sq_hw", "ss_dsp", "ss_named", "ss_queue", "ss_value"]
+    assert result[CONF_PLAYERS]["ss_named"] == _record(
+        "ss_named", SENDSPIN, name="Tablet", values={"session_only": True}
+    )
+    assert result[CONF_PLAYERS]["ss_value"]["values"] == {"hide_in_ui": True, "session_only": True}
+    assert result[CONF_PLAYER_PROTOCOLS]["ss_value"] == _protocol_record(
+        "ss_value", SENDSPIN, "ss_value", role="native", values={"sendspin_static_delay": 5}
+    )
+    assert sorted(result[CONF_PLAYER_PROTOCOLS]) == [
+        "esp_1",
+        "esp_2",
+        "sq_hw",
+        "ss_dsp",
+        "ss_named",
+        "ss_queue",
+        "ss_value",
+    ]
+    # a deleted one keeps what is stored next to it: its id comes back when it connects again
+    assert result[CONF_PLAYER_DSP] == dsp
+    assert result[CONF_PLAYER_QUEUES] == queues
+    assert set(result) == {
+        "server_id",
+        CONF_PLAYERS,
+        CONF_PLAYER_PROTOCOLS,
+        CONF_PLAYER_DSP,
+        CONF_PLAYER_QUEUES,
+        *FLAGS,
+    }
+
+
+def test_record_that_is_no_mapping_is_left_alone() -> None:
+    """A record that can not be read is logged and skipped, the others are migrated."""
+    data = _settings(_record("sonos_11", SONOS), _record("odd", SONOS, values="not a dict"))
+    data[CONF_PLAYERS]["broken"] = "not a dict"
+
+    with capture_log_records(player_split.LOGGER) as records:
+        result = _migrated(data)
+
+    assert result[CONF_PLAYERS]["broken"] == "not a dict"
+    assert result[CONF_PLAYERS]["odd"]["values"] == {}
+    assert sorted(result[CONF_PLAYER_PROTOCOLS]) == ["odd", "sonos_11"]
+    assert any("broken" in record.getMessage() for record in records)
+
+
+def test_record_that_fails_to_convert_is_skipped() -> None:
+    """A failure on one record does not stop the migration of the others."""
+    data = _settings(_record("sonos_12", SONOS), _record("sonos_13", SONOS))
+    split = player_split._split_player_record
+
+    def _fail_for_one(protocols: dict[str, Any], player_id: str, record: dict[str, Any]) -> None:
+        if player_id == "sonos_12":
+            raise ValueError(player_id)
+        split(protocols, player_id, record)
+
+    with (
+        patch.object(player_split, "_split_player_record", _fail_for_one),
+        capture_log_records(player_split.LOGGER) as records,
+    ):
+        assert migrate_player_split(data) is True
+
+    assert list(data[CONF_PLAYER_PROTOCOLS]) == ["sonos_13"]
+    assert data[CONF_PLAYER_SPLIT_TREE] is True
+    assert [record.levelno for record in records] == [logging.ERROR]
+
+
+def test_step_that_fails_as_a_whole_raises_before_its_flag_is_set() -> None:
+    """A failing step is not marked as done, so the next start runs it again."""
+    data = _settings(_record("sonos_14", SONOS))
+
+    with (
+        patch.object(player_split, "_restore_missing_edges", side_effect=ValueError("boom")),
+        pytest.raises(ValueError, match="boom"),
+    ):
+        migrate_player_split(data)
+
+    assert CONF_PLAYER_SPLIT_TREE not in data
+
+
+def test_session_only_step_does_not_run_on_split_data() -> None:
+    """With only the flag of the tree step set, no player is taken for a session-only one."""
+    data = _migrated(
+        _settings(_record("up0015", UNIVERSAL_PLAYER), _protocol("ss_15", SENDSPIN, "up0015"))
+    )
+    del data[CONF_PLAYER_SPLIT_SESSION_ONLY]
+    expected = deepcopy(data) | {CONF_PLAYER_SPLIT_SESSION_ONLY: True}
+
+    assert migrate_player_split(data) is True
+
+    assert data == expected
+
+
+def test_protocol_config_of_the_new_shape_wins_over_a_leftover_of_the_old_one() -> None:
+    """Where a protocol is stored in both shapes, the old record goes without overwriting."""
+    data = _settings(_record("sonos_16", SONOS), _protocol("ap_16", AIRPLAY, "sonos_16"))
+    stored = _protocol_record("ap_16", AIRPLAY, "sonos_16", values={"output_codec": "flac"})
+    data[CONF_PLAYER_PROTOCOLS] = {"ap_16": deepcopy(stored)}
+
+    result = _migrated(data)
+
+    assert list(result[CONF_PLAYERS]) == ["sonos_16"]
+    assert result[CONF_PLAYER_PROTOCOLS]["ap_16"] == stored
+
+
+def test_new_installation_is_marked_as_split() -> None:
+    """A config that never held player records needs no migration."""
+    data: dict[str, Any] = {}
+    assert needs_player_split(data) is True
+
+    mark_player_split_done(data)
+
+    assert data == FLAGS
+    assert needs_player_split(data) is False
+    assert migrate_player_split(data) is False
+
+
+def _make_controller(tmp_path: Path) -> ConfigController:
+    """Return a config controller that stores its settings in a folder."""
+    return ConfigController(SimpleNamespace(storage_path=str(tmp_path)))  # type: ignore[arg-type]
+
+
+async def test_settings_from_before_the_split_are_kept_as_a_backup(tmp_path: Path) -> None:
+    """The settings file is copied once before the split, and the split is saved."""
+    settings = tmp_path / "settings.json"
+    backup = tmp_path / f"settings.json{BACKUP_SUFFIX}"
+    before = json.dumps(_settings(_record("sonos_1", SONOS)))
+    settings.write_text(before)
+
+    with capture_log_records(player_split.LOGGER) as records:
+        await _make_controller(tmp_path)._load()
+
+    assert backup.read_text() == before
+    stored = json.loads(settings.read_text())
+    assert stored[CONF_PLAYER_SPLIT_TREE] is True
+    assert list(stored[CONF_PLAYER_PROTOCOLS]) == ["sonos_1"]
+    assert [r.levelno for r in records if str(backup) in r.getMessage()] == [logging.INFO]
+
+    # a later start leaves the copy alone
+    with capture_log_records(player_split.LOGGER) as records:
+        await _make_controller(tmp_path)._load()
+
+    assert backup.read_text() == before
+    assert records == []
+
+
+async def test_backup_is_not_overwritten_by_a_retry(tmp_path: Path) -> None:
+    """A start that runs the split again keeps the copy the first one made."""
+    settings = tmp_path / "settings.json"
+    backup = tmp_path / f"settings.json{BACKUP_SUFFIX}"
+    backup.write_text("the first copy")
+    settings.write_text(json.dumps(_settings(_record("sonos_1", SONOS))))
+
+    await _make_controller(tmp_path)._load()
+
+    assert backup.read_text() == "the first copy"
+
+
+async def test_empty_backup_is_written_again(tmp_path: Path) -> None:
+    """An empty copy, as a power failure can leave it, does not count as a backup."""
+    settings = tmp_path / "settings.json"
+    backup = tmp_path / f"settings.json{BACKUP_SUFFIX}"
+    before = json.dumps(_settings(_record("sonos_1", SONOS)))
+    settings.write_text(before)
+    backup.write_text("")
+
+    await _make_controller(tmp_path)._load()
+
+    assert backup.read_text() == before
+
+
+async def test_start_stops_when_the_backup_can_not_be_written(tmp_path: Path) -> None:
+    """Without a backup nothing is migrated: the file stays as it was for the next start."""
+    settings = tmp_path / "settings.json"
+    before = json.dumps(_settings(_record("sonos_1", SONOS)))
+    settings.write_text(before)
+    controller = _make_controller(tmp_path)
+
+    with (
+        patch.object(Path, "replace", side_effect=OSError("disk full")),
+        pytest.raises(RuntimeError, match="disk full"),
+    ):
+        await controller._load()
+
+    assert settings.read_text() == before
+    assert not (tmp_path / f"settings.json{BACKUP_SUFFIX}").exists()
+
+
+async def test_split_runs_again_after_a_save_that_was_interrupted(tmp_path: Path) -> None:
+    """A crash between the two renames of a save leaves the old file, which is split again."""
+    before = _settings(
+        _record("up0001", UNIVERSAL_PLAYER, name="Living"), _protocol("ap_1", AIRPLAY, "up0001")
+    )
+    complete = tmp_path / "complete"
+    complete.mkdir()
+    (complete / "settings.json").write_text(json.dumps(before))
+    await _make_controller(complete)._load()
+    expected = json.loads((complete / "settings.json").read_text())
+
+    # the previous file was rotated to the backup, the new one never got its name
+    interrupted = tmp_path / "interrupted"
+    interrupted.mkdir()
+    (interrupted / "settings.json.backup").write_text(json.dumps(before))
+    (interrupted / "settings.json.tmp").write_text(json.dumps(expected)[:40])
+    await _make_controller(interrupted)._load()
+
+    assert json.loads((interrupted / "settings.json").read_text()) == expected
+    assert json.loads((interrupted / f"settings.json{BACKUP_SUFFIX}").read_text()) == before
+
+
+async def test_new_installation_gets_no_backup(tmp_path: Path) -> None:
+    """A server without a settings file starts out split."""
+    controller = _make_controller(tmp_path)
+
+    await controller._load()
+
+    assert controller._data == FLAGS
+    assert list(tmp_path.iterdir()) == []
