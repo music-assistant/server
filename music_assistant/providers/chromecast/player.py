@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
 )
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
@@ -84,23 +85,22 @@ class ChromecastPlayer(PlayerProtocol):
     def __init__(
         self,
         provider: ChromecastProvider,
-        player_id: str,
+        protocol_id: str,
         cast_info: ChromecastInfo,
         chromecast: Chromecast,
     ) -> None:
         """Init."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         if cast_info.is_audio_group and cast_info.is_multichannel_group:
             player_type = PlayerType.STEREO_PAIR
         elif cast_info.is_audio_group:
             player_type = PlayerType.GROUP
-        elif is_google_device(cast_info):
-            # Google devices (Chromecast, Nest, Google Home) have native Cast support
-            player_type = PlayerType.PLAYER
         else:
-            # Non-Google devices are generic Chromecast receivers
-            # Will be wrapped in a UniversalPlayer
-            player_type = PlayerType.PROTOCOL
+            player_type = PlayerType.PLAYER
+        if not cast_info.is_audio_group and not is_google_device(cast_info):
+            # Non-Google devices are generic Chromecast receivers: Cast is an output of
+            # the device, next to its own protocol (a TV, a speaker of another brand)
+            self._attr_role = ProtocolRole.AUDIO
         self.cc = chromecast
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
@@ -110,8 +110,8 @@ class ChromecastPlayer(PlayerProtocol):
         self.last_poll = 0.0
         self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
-        self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
-        self._app_track_change_task_id: str = f"cast_app_track_change_{player_id}"
+        self._app_quit_task_id: str = f"cast_quit_app_{protocol_id}"
+        self._app_track_change_task_id: str = f"cast_app_track_change_{protocol_id}"
         self._media_error_reported = False
         # a volume set while idle, kept back until playback starts (see volume_set)
         self._pending_volume: int | None = None
@@ -260,7 +260,7 @@ class ChromecastPlayer(PlayerProtocol):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         queuedata = {
             "type": "LOAD",
             "media": self._create_cc_media_item(media, stream_url),
@@ -281,7 +281,7 @@ class ChromecastPlayer(PlayerProtocol):
         """Handle enqueuing of the next item on the player."""
         next_item_id = None
         status = self.cc.media_controller.status
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         # lookup position of current track in cast queue
         cast_current_item_id = getattr(status, "current_item_id", 0)
         cast_queue_items = getattr(status, "items", [])
@@ -325,9 +325,9 @@ class ChromecastPlayer(PlayerProtocol):
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
         self.cancel_pending_app_quit()
         self.mz_controller = None
         if self.status_listener is not None:
@@ -348,7 +348,7 @@ class ChromecastPlayer(PlayerProtocol):
     async def on_remove(self) -> None:
         """Handle logic when the player is removed for good."""
         await cast("ChromecastProvider", self.provider).bridge_manager.remove_bridge(
-            self.player_id, permanent=True
+            self.protocol_id, permanent=True
         )
 
     ### Callbacks from Chromecast Statuslistener
@@ -392,7 +392,7 @@ class ChromecastPlayer(PlayerProtocol):
             return
         if self._attr_playback_state != PlaybackState.PLAYING:
             return
-        if not (current_media := self.state.current_media):
+        if (player := self.player) is None or not (current_media := player.state.current_media):
             return
         if not (
             (self._attr_current_media and "/flow/" in self._attr_current_media.uri)
@@ -436,7 +436,7 @@ class ChromecastPlayer(PlayerProtocol):
                 )
 
             if len(getattr(media_controller.status, "items", [])) < 2 and (
-                cmd_next_url := self.mass.streams.get_command_url(self.player_id, "next")
+                cmd_next_url := self.mass.streams.get_command_url(player.player_id, "next")
             ):
                 # In flow mode, all queue tracks are sent to the player as continuous stream.
                 # add a special 'command' item to the queue
@@ -470,7 +470,7 @@ class ChromecastPlayer(PlayerProtocol):
                 )
 
         self.mass.create_task(
-            update_flow_metadata(), task_name=f"cast_flow_metadata_{self.player_id}"
+            update_flow_metadata(), task_name=f"cast_flow_metadata_{self.protocol_id}"
         )
 
     async def _launch_app(self) -> None:
@@ -654,7 +654,7 @@ class ChromecastPlayer(PlayerProtocol):
         if cast_idle and self._pending_volume is not None:
             # the device keeps reporting its old level while a volume set is kept back
             self._attr_volume_level = self._pending_volume
-        elif cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL:
+        elif cast_idle and volume_level == 0 and self.role == ProtocolRole.AUDIO:
             self._attr_volume_level = None
         else:
             self._attr_volume_level = volume_level
@@ -835,7 +835,12 @@ class ChromecastPlayer(PlayerProtocol):
         :param group_player: Cast group player whose status is being followed, if any.
         """
         if group_player:
-            self._attr_active_source = group_player.active_source or group_player.player_id
+            # the queue of the group is the queue of its player
+            self._attr_active_source = group_player.active_source or (
+                group_player.player.player_id
+                if group_player.player is not None
+                else group_player.protocol_id
+            )
         elif self.cc.app_id == SENDSPIN_CAST_APP_ID or self._is_own_session(status):
             self._attr_active_source = None
         elif self.cc.app_id in (None, IDLE_APP_ID):
@@ -1011,10 +1016,14 @@ class ChromecastPlayer(PlayerProtocol):
     def _flow_stream_underrun(self) -> bool:
         """Return whether the active queue's flow stream has been fully consumed."""
         # Resolve the queue-owning player: a Cast group child mirrors the group's
-        # status, and a Cast exposed as a protocol player is wrapped by a universal
-        # player that owns the queue. Only a native/standalone Cast owns its own queue.
-        queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
-        return self.mass.player_queues.flow_stream_finished(queue_id)
+        # status, any other Cast plays the queue of its own player.
+        owner = self.player
+        if self.active_cast_group is not None:
+            group = self.provider.get_protocol(self.active_cast_group)
+            owner = group.player if group is not None else None
+        if owner is None:
+            return False
+        return self.mass.player_queues.flow_stream_finished(owner.player_id)
 
     def _handle_receiver_command(self, command: str) -> None:
         """
@@ -1035,7 +1044,7 @@ class ChromecastPlayer(PlayerProtocol):
                 return
             # A stopped queue still reports active=True, so also reject IDLE or a
             # press on a dashboard-only session would start playback.
-            queue = self.mass.players.get_active_queue(self)
+            queue = self.mass.players.get_active_queue(self.player) if self.player else None
             if queue is None or not queue.active or queue.state == PlaybackState.IDLE:
                 self.logger.debug(
                     "Ignoring %s command: no playing queue for %s", command, self.display_name
