@@ -21,15 +21,18 @@ from music_assistant.constants import (
     CONF_ENABLE_ICY_METADATA,
     CONF_HTTP_PROFILE,
     CONF_ICON,
-    CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
-    CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_NORMALIZATION,
+)
+from music_assistant.controllers.config.player_split import (
+    LEGACY_LINKED_PROTOCOL_IDS,
+    LEGACY_PROTOCOL_PARENT_ID,
+    migrate_player_split,
 )
 from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
@@ -550,13 +553,6 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_bluesound_http_profile(data):
         changed = True
 
-    # Drop disabled protocol player configs that lost their parent player: the device they
-    # belong to can never register again while such a config lingers, and it is not shown
-    # in the UI so there is no way to enable it again.
-    # TODO: remove after 2.12 release
-    if _migrate_orphaned_disabled_protocol_configs(data):
-        changed = True
-
     # Clear the stored name of players that were never renamed, so an updated default
     # name is no longer shadowed by the auto-generated name stored at creation time.
     # TODO: remove after 2.12 release
@@ -589,6 +585,11 @@ async def migrate(data: dict[str, Any]) -> bool:
     # Move Raumfeld players still on the former "full" ICY default to "basic".
     # TODO: remove after 2.13 release
     if _migrate_raumfeld_icy_basic(data):
+        changed = True
+
+    # Split the player configs into one record per player and one per protocol. This runs
+    # last: the steps above work on the records as they were before the split.
+    if migrate_player_split(data):
         changed = True
 
     return changed
@@ -953,7 +954,7 @@ def _migrate_local_audio_attribution_stubs(data: dict[str, Any]) -> bool:
             continue
         player_cfg["player_type"] = "player"
         values = player_cfg.setdefault("values", {})
-        values.pop(CONF_PROTOCOL_PARENT_ID, None)
+        values.pop(LEGACY_PROTOCOL_PARENT_ID, None)
         changed = True
 
         # the universal player wrapper was keyed on the stub's player_id
@@ -999,8 +1000,8 @@ def _absorb_universal_player_config(
     universal_values = universal_values if isinstance(universal_values, dict) else {}
     # bookkeeping only relevant to the universal player wrapper itself
     internal_keys = (
-        CONF_LINKED_PROTOCOL_IDS,
-        CONF_PROTOCOL_PARENT_ID,
+        LEGACY_LINKED_PROTOCOL_IDS,
+        LEGACY_PROTOCOL_PARENT_ID,
         "device_identifiers",
         "device_info",
     )
@@ -1012,11 +1013,11 @@ def _absorb_universal_player_config(
     # carry the linked protocols (minus the stub itself, it is the parent now)
     # and re-point their cached parent so they restore fast on the next start
     linked_ids = [
-        pid for pid in (universal_values.get(CONF_LINKED_PROTOCOL_IDS) or []) if pid != player_id
+        pid for pid in (universal_values.get(LEGACY_LINKED_PROTOCOL_IDS) or []) if pid != player_id
     ]
     if linked_ids:
-        existing_ids = list(values.get(CONF_LINKED_PROTOCOL_IDS) or [])
-        values[CONF_LINKED_PROTOCOL_IDS] = existing_ids + [
+        existing_ids = list(values.get(LEGACY_LINKED_PROTOCOL_IDS) or [])
+        values[LEGACY_LINKED_PROTOCOL_IDS] = existing_ids + [
             pid for pid in linked_ids if pid not in existing_ids
         ]
     all_player_configs = data.get(CONF_PLAYERS, {})
@@ -1025,8 +1026,8 @@ def _absorb_universal_player_config(
         if not isinstance(protocol_cfg, dict):
             continue
         protocol_values = protocol_cfg.setdefault("values", {})
-        if protocol_values.get(CONF_PROTOCOL_PARENT_ID) == universal_id:
-            protocol_values[CONF_PROTOCOL_PARENT_ID] = player_id
+        if protocol_values.get(LEGACY_PROTOCOL_PARENT_ID) == universal_id:
+            protocol_values[LEGACY_PROTOCOL_PARENT_ID] = player_id
 
     # move per-queue settings and DSP configuration to the new player_id
     for tree_key in (CONF_PLAYER_QUEUES, CONF_PLAYER_DSP):
@@ -1137,53 +1138,6 @@ def _migrate_unrenamed_player_names(data: dict[str, Any]) -> bool:
     return changed
 
 
-def _migrate_orphaned_disabled_protocol_configs(data: dict[str, Any]) -> bool:
-    """
-    Remove disabled protocol player configs that no longer belong to a player.
-
-    A protocol player is only ever presented as part of the player that owns it, so a
-    disabled config that outlived its owner keeps the device from registering again while
-    offering no way to enable it.
-    """
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_player_configs, dict):
-        return False
-    linked_ids: set[str] = set()
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict):
-            continue
-        player_values = player_cfg.get("values")
-        if not isinstance(player_values, dict):
-            continue
-        if isinstance(cached_ids := player_values.get(CONF_LINKED_PROTOCOL_IDS), list):
-            linked_ids.update(pid for pid in cached_ids if isinstance(pid, str))
-    orphaned: list[str] = []
-    for player_id, player_cfg in all_player_configs.items():
-        if not isinstance(player_cfg, dict):
-            continue
-        if player_cfg.get("player_type") != "protocol":
-            continue
-        if player_cfg.get("enabled", True):
-            continue
-        # a player owns a protocol player from either side of the link
-        if player_id in linked_ids:
-            continue
-        player_values = player_cfg.get("values")
-        parent_id = (
-            player_values.get(CONF_PROTOCOL_PARENT_ID) if isinstance(player_values, dict) else None
-        )
-        if parent_id in all_player_configs:
-            continue
-        orphaned.append(player_id)
-    dsp_configs = data.get(CONF_PLAYER_DSP)
-    for player_id in orphaned:
-        del all_player_configs[player_id]
-        if isinstance(dsp_configs, dict):
-            dsp_configs.pop(player_id, None)
-        LOGGER.warning("Removed orphaned player configuration %s", player_id)
-    return bool(orphaned)
-
-
 def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
     """
     Migrate MSX Bridge configs to the settings and players of the current provider.
@@ -1232,7 +1186,7 @@ def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
         player_values = player_cfg.get("values")
         if not isinstance(player_values, dict):
             continue
-        cached_ids = player_values.get(CONF_LINKED_PROTOCOL_IDS)
+        cached_ids = player_values.get(LEGACY_LINKED_PROTOCOL_IDS)
         if not isinstance(cached_ids, list):
             continue
         kept_ids = [
@@ -1241,7 +1195,7 @@ def _migrate_msx_bridge_settings(data: dict[str, Any]) -> bool:
             if not (isinstance(pid, str) and pid.startswith(LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX))
         ]
         if len(kept_ids) != len(cached_ids):
-            player_values[CONF_LINKED_PROTOCOL_IDS] = kept_ids
+            player_values[LEGACY_LINKED_PROTOCOL_IDS] = kept_ids
             changed = True
     return changed
 

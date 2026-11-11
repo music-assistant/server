@@ -210,8 +210,10 @@ CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available 
 CONF_SESSION_ONLY: Final[str] = "session_only"
 # the device info a player last published, for when none of its protocols is attached
 CONF_DEVICE_INFO: Final[str] = "device_info"
-# the identifiers of a device: on a protocol the ones it reported, as [type, value] pairs
+# the identifiers a player from before the protocols kept their own stored for its device
 CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
+# the identifiers a protocol reported for its device, as [type, value] pairs
+CONF_PROTOCOL_IDENTIFIERS: Final[str] = "identifiers"
 # the moment a player was created, as a nanosecond timestamp so players created in
 # the same second still order
 CONF_CREATED_AT: Final[str] = "created_at"
