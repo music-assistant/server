@@ -320,8 +320,9 @@ class HueEntertainmentBridge:
         """Queue spectrum and onset-peak features for the renderer."""
         # Frames arrive ahead of the playhead (in-process delivery follows the audio push);
         # the analyzer queues them by timestamp and drains at render time. Gated so the
-        # queues only fill while the lights are up or coming up.
-        if self._analyzer is None or not (self._is_streaming or self._entertainment_starting):
+        # queues only fill while the lights are up or coming up: a lost stream or a parked
+        # Zigbee target skips the render that drains them.
+        if self._analyzer is None or not (self.target.is_streaming or self._entertainment_starting):
             return
         if frame.spectrum is not None:
             self._analyzer.apply_spectrum(frame.spectrum.tolist(), frame.timestamp_us)

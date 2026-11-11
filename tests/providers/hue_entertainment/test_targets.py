@@ -11,6 +11,7 @@ import pytest
 from hue_entertainment import EntertainmentArea, ZigbeeLight, ZigguratError
 
 from music_assistant.providers.hue_entertainment import targets
+from music_assistant.providers.hue_entertainment.constants import CONF_CLIENTKEY, CONF_USERNAME
 from music_assistant.providers.hue_entertainment.targets import (
     HueAreaTarget,
     TargetUnavailableError,
@@ -185,6 +186,129 @@ def test_hue_area_client_id_is_unchanged() -> None:
     area = EntertainmentArea(id="8a3e1c2f-1b2c-4d5e-9f00-112233445566", name="TV")
 
     assert HueAreaTarget(_provider(), area).client_id == "hue-8a3e1c2f1b2c4d5e"
+
+
+class FakeHueSession:
+    """Stands in for the lib's bridge session."""
+
+    def __init__(self, hue: FakeHue, host: str, username: str, clientkey: str, **_: Any) -> None:
+        """Initialize the session."""
+        self._hue = hue
+        self.host = host
+        self.credentials = (username, clientkey)
+        self.closed = 0
+
+    async def start(self, area_id: str) -> None:
+        """Start streaming, or fail while the test makes starts fail."""
+        self._hue.log.append(("start", area_id))
+        if self._hue.fail_starts:
+            self._hue.fail_starts -= 1
+            msg = "DTLS handshake timed out"
+            raise TimeoutError(msg)
+
+    async def aclose(self) -> None:
+        """Stop streaming, or fail as the test asks."""
+        self.closed += 1
+        if self._hue.close_error is not None:
+            raise self._hue.close_error
+
+
+class FakeHue:
+    """The paired Hue bridge and the sessions the area target opens."""
+
+    def __init__(self) -> None:
+        """Initialize a bridge whose area is not streaming."""
+        self.status = "inactive"
+        self.log: list[tuple[str, str]] = []
+        self.sessions: list[FakeHueSession] = []
+        self.fail_starts = 0
+        self.close_error: Exception | None = None
+        self.host = "192.168.1.20"
+
+    async def get_entertainment_status(self, area_id: str) -> tuple[str, str]:
+        """Return the area's entertainment status."""
+        return self.status, area_id
+
+    async def stop_entertainment(self, area_id: str) -> None:
+        """Stop the area's entertainment."""
+        self.log.append(("stop", area_id))
+        self.status = "inactive"
+
+    def session(self, host: str, username: str, clientkey: str, **kwargs: Any) -> FakeHueSession:
+        """Create a session, as the target does."""
+        session = FakeHueSession(self, host, username, clientkey, **kwargs)
+        self.sessions.append(session)
+        return session
+
+
+@pytest.fixture
+def hue(monkeypatch: pytest.MonkeyPatch) -> FakeHue:
+    """Stand in for the paired bridge and the lib's bridge session."""
+    fake = FakeHue()
+    monkeypatch.setattr(targets, "EntertainmentSession", fake.session)
+    monkeypatch.setattr(targets, "_ENTERTAINMENT_STALE_COOLDOWN_S", 0)
+    return fake
+
+
+def _area_target(hue: FakeHue | None) -> HueAreaTarget:
+    provider: Any = SimpleNamespace(
+        hue_api=hue, get_setup_value={CONF_USERNAME: "user", CONF_CLIENTKEY: "key"}.get
+    )
+    return HueAreaTarget(provider, EntertainmentArea(id="area-1", name="TV"))
+
+
+async def test_hue_area_start_without_a_bridge_is_unavailable() -> None:
+    """Without a configured bridge the area can not stream, and a retry will not help."""
+    with pytest.raises(TargetUnavailableError):
+        await _area_target(None).start()
+
+
+async def test_hue_area_start_clears_a_stale_stream_once(hue: FakeHue) -> None:
+    """An area still active from a failed handshake is stopped before the stream starts."""
+    hue.status = "active"
+    target = _area_target(hue)
+
+    await target.start()
+
+    assert hue.log == [("stop", "area-1"), ("start", "area-1")]
+    (session,) = hue.sessions
+    assert session.host == hue.host
+    assert session.credentials == ("user", "key")
+
+
+async def test_hue_area_retry_reuses_the_session_until_closed(hue: FakeHue) -> None:
+    """A start after a failed one reuses the session; after a close the next start is fresh."""
+    hue.status = "active"
+    hue.fail_starts = 1
+    target = _area_target(hue)
+    with pytest.raises(TimeoutError):
+        await target.start()
+    hue.status = "active"
+    await target.start()
+    assert len(hue.sessions) == 1
+    assert hue.log == [("stop", "area-1"), ("start", "area-1"), ("start", "area-1")]
+
+    await target.aclose()
+    await target.start()
+
+    first, second = hue.sessions
+    assert first.closed == 1
+    assert second.closed == 0
+    assert hue.log[-2:] == [("stop", "area-1"), ("start", "area-1")]
+
+
+async def test_hue_area_close_is_idempotent_and_never_raises(hue: FakeHue) -> None:
+    """Closing twice closes the session once; an error while closing is swallowed."""
+    target = _area_target(hue)
+    await target.start()
+    hue.close_error = RuntimeError("bridge went away")
+
+    await target.aclose()
+    await target.aclose()
+
+    (session,) = hue.sessions
+    assert session.closed == 1
+    assert not target.is_streaming
 
 
 async def test_start_streams_to_the_lamps_by_their_zha_name(

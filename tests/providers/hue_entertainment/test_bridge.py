@@ -189,3 +189,25 @@ async def test_started_target_streams_until_the_stream_ends(
     assert target.close_calls == 1
     assert not target.streaming
     assert bridge._render_handle is None
+
+
+async def test_frames_are_only_queued_while_the_target_streams(
+    bridge: HueEntertainmentBridge, target: FakeTarget
+) -> None:
+    """A parked or lost stream queues no visualizer frames that no render would drain."""
+    analyzer = Mock()
+    bridge._analyzer = analyzer
+    frame: Any = SimpleNamespace(
+        spectrum=Mock(tolist=Mock(return_value=[1, 2])), peak=0.5, timestamp_us=10
+    )
+    bridge._on_stream_start()
+    assert bridge._start_task is not None
+    await bridge._start_task
+
+    bridge._on_visualizer_frame(frame)
+    target.streaming = False  # taken over by another Zigbee target, or lost
+    bridge._on_visualizer_frame(frame)
+
+    assert bridge._is_streaming
+    analyzer.apply_spectrum.assert_called_once_with([1, 2], 10)
+    analyzer.apply_peak.assert_called_once_with(0.5, 10)
