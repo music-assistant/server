@@ -118,7 +118,7 @@ class SonosPlayer(PlayerProtocol):
         self._avtransport_tasks: set[asyncio.Task[None]] = set()
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
-        self._poll_task_id: str = f"sonos_poll_{self.player_id}"
+        self._poll_task_id: str = f"sonos_poll_{self.protocol_id}"
         self._unloaded: bool = False
 
     @property
@@ -140,7 +140,7 @@ class SonosPlayer(PlayerProtocol):
 
         await asyncio.to_thread(_read_speaker_state)
         await self.subscribe()
-        await self.mass.players.register_or_update(self)
+        await self.mass.players.attach(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all provider-specific configuration entries for the player."""
@@ -151,9 +151,9 @@ class SonosPlayer(PlayerProtocol):
         async with self._subscription_lock:
             await self._offline()
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
         # a poll already running in its worker thread cannot be interrupted, so the flag
         # is what keeps its results from reaching a player the controller no longer has
         self._unloaded = True
@@ -175,7 +175,7 @@ class SonosPlayer(PlayerProtocol):
         if self.synced_to:
             self.logger.debug(
                 "Ignore STOP command for %s: Player is synced to another player.",
-                self.player_id,
+                self.protocol_id,
             )
             return
         if self._attr_active_source in LINEIN_SOURCE_IDS:
@@ -192,7 +192,7 @@ class SonosPlayer(PlayerProtocol):
         if self.synced_to:
             self.logger.debug(
                 "Ignore PLAY command for %s: Player is synced to another player.",
-                self.player_id,
+                self.protocol_id,
             )
             return
         await asyncio.to_thread(self.soco.play)
@@ -203,7 +203,7 @@ class SonosPlayer(PlayerProtocol):
         if self.synced_to:
             self.logger.debug(
                 "Ignore PAUSE command for %s: Player is synced to another player.",
-                self.player_id,
+                self.protocol_id,
             )
             return
 
@@ -253,7 +253,7 @@ class SonosPlayer(PlayerProtocol):
                 translation_args=[self.display_name],
             )
 
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         if not media.duration:
             # Sonos really does not like FLAC streams without duration
             stream_url = stream_url.replace(".flac", ".mp3")
@@ -282,7 +282,7 @@ class SonosPlayer(PlayerProtocol):
                 translation_args=[self.display_name],
             )
 
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         didl_metadata = create_didl_metadata(media, stream_url)
 
         def add_to_queue() -> None:
@@ -407,7 +407,7 @@ class SonosPlayer(PlayerProtocol):
             manufacturer=self._attr_device_info.manufacturer,
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, soco.ip_address)
-        self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self.protocol_id)
         mac_address = self._extract_mac_from_player_id()
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
@@ -623,8 +623,7 @@ class SonosPlayer(PlayerProtocol):
         :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
         """
         # Remove RINCON_ prefix if present
-        player_id = self.player_id
-        player_id = player_id.removeprefix("RINCON_")
+        player_id = self.protocol_id.removeprefix("RINCON_")
 
         # Remove the 01400 suffix (or similar) - should be last 5 chars
         if len(player_id) >= 17:  # 12 hex chars for MAC + 5 chars suffix
