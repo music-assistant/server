@@ -16,7 +16,7 @@ from tests.common import use_real_create_task
 def _roku_player(player_id: str) -> MagicMock:
     """Return a connected Roku player stand-in."""
     player = MagicMock()
-    player.player_id = player_id
+    player.protocol_id = player_id
     player.name = player_id
     player.lock = asyncio.Lock()
     player.roku.close_session = AsyncMock()
@@ -30,7 +30,7 @@ async def test_unload_disconnects_every_player() -> None:
     use_real_create_task(provider.mass)
     provider.logger = logging.getLogger("test.roku_media_assistant.provider")
     players = [_roku_player("ROKU_A"), _roku_player("ROKU_B")]
-    provider.roku_players = {p.player_id: p for p in players}  # type: ignore[misc]
+    provider.roku_players = {p.protocol_id: p for p in players}  # type: ignore[misc]
 
     await provider.unload()
 
@@ -46,7 +46,8 @@ async def test_removed_player_is_disconnected_and_forgotten(connected: bool) -> 
     provider.logger = logging.getLogger("test.roku_media_assistant.provider")
     player = MediaAssistantPlayer.__new__(MediaAssistantPlayer)
     player._provider = provider
-    player._player_id = "ROKU_A"
+    player._protocol_id = "ROKU_A"
+    player._player = None
     player._attr_name = "Roku A"
     player.lock = asyncio.Lock()
     roku = MagicMock()
