@@ -1724,37 +1724,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                             prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
-                    elif self._library_item_needs_update(
-                        sync_details, prov_item
-                    ) or sync_details.authors_narrators_changed(prov_item):
+                    elif (
+                        self._library_item_needs_update(sync_details, prov_item)
+                        or sync_details.authors_narrators_changed(prov_item)
+                        or sync_details.resume_point_changed(prov_item)
+                    ):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
                     else:
                         db_id = sync_details.item_id
-                        lib_fully_played = sync_details.fully_played
-                        lib_resume_position_ms = sync_details.resume_position_ms
 
                     cur_db_ids.add(db_id)
                     if prov_item.favorite is not None:
                         await self.mass.music.favorites.record_from_provider(
                             self.instance_id, MediaType.AUDIOBOOK, db_id, prov_item.favorite
                         )
-                    # check if resume_position_ms or fully_played changed
-                    if (
-                        prov_item.resume_position_ms is not None
-                        and prov_item.fully_played is not None
-                        and (
-                            lib_resume_position_ms != prov_item.resume_position_ms
-                            or lib_fully_played != prov_item.fully_played
-                        )
-                    ):
-                        await self.mass.music.audiobooks.update_item_in_library(db_id, prov_item)
 
                     fallback_genres = (
                         set(prov_item.metadata.genres)

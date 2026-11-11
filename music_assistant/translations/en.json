@@ -717,6 +717,7 @@
   "core.metadata.manifest.description": "Configuration of the core metadata management module",
   "core.metadata.manifest.name": "Metadata",
   "core.music.background_task.add_playlist_tracks": "Add items to playlist {0}",
+  "core.music.background_task.check_unavailable_mappings": "Check unavailable podcasts and radio stations",
   "core.music.background_task.correct_provider_mappings": "Correct provider mappings",
   "core.music.background_task.database_cleanup": "Database cleanup",
   "core.music.background_task.import_playlist_matching": "Import playlist {0}",
