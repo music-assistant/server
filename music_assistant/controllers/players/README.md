@@ -262,7 +262,7 @@ instance (`UUID` or `SERIAL_NUMBER`), which vetoes within the domain.
 |---|---|---|
 | `attach(protocol)` | a provider found a device, or found it again | the player is found or created and the protocol bound to it; `on_config_updated()` and `on_attach(player)` run. Attaching the attached object again publishes what it reports now; another object under the same id replaces it. Nothing attaches for a disabled player or an output the user switched off. |
 | `detach(protocol_id)` | the device is gone, or its provider unloads | `on_detach()` runs; the player stays (unavailable while no other protocol is) and keeps its queue, which only stops when this protocol was the one that played. A player that only exists while connected goes with its last protocol. |
-| `remove_protocol(protocol_id)` | a provider forgets a device | detach and delete the protocol record; the player goes when no protocol record of it is left. |
+| `remove_protocol(protocol_id)` | a provider forgets a device | detach and delete the protocol record, and the same for the protocols that ride on it; the player goes when no protocol record of it is left. |
 | `remove(player_id)` | the user removes a player | every protocol is detached and gets `on_remove()`, also one whose player is not live; the player, its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries go. Its providers look for devices again, so a device still on the network comes back as a new player (not for a group). |
 
 An attach that waits on the provider (a hook, an address lookup) is stopped by a detach of its

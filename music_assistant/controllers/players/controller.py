@@ -1927,11 +1927,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Remove a protocol for good: its provider forgets the device.
 
-        The protocol is detached and its config deleted. The player it belonged to goes
-        with it when no other protocol of it is left.
+        The protocol is detached and its config deleted, and so are the protocols that
+        ride on it. The player it belonged to goes with it when no other protocol of it
+        is left.
 
         :param protocol_id: Id of the protocol to remove.
         """
+        for derived_id in self.mass.config.get_protocol_ids_derived_from(protocol_id):
+            # it can never attach again without the protocol it rides on
+            await self.remove_protocol(derived_id)
         protocol = self._protocols.get(protocol_id)
         player_id = self._get_player_id_of_protocol(protocol_id)
         await self.detach(protocol_id)
