@@ -62,7 +62,13 @@ def _attach(
     :param player_type: The type of player the protocol reports.
     """
     return attach_mock(
-        provider, _proto(player_id), name, player_id=player_id, player_type=player_type
+        provider,
+        _proto(player_id),
+        name,
+        # a group is a virtual player
+        role=ProtocolRole.VIRTUAL if player_type == PlayerType.GROUP else ProtocolRole.NATIVE,
+        player_id=player_id,
+        player_type=player_type,
     )
 
 
