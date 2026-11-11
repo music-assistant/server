@@ -20,7 +20,7 @@ from music_assistant.constants import (
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
@@ -81,12 +81,12 @@ class WiimPlayer(PlayerProtocol):
     def __init__(
         self,
         provider: WiimProvider,
-        player_id: str,
+        protocol_id: str,
         device: WiimDevice,
         mac_address: str | None = None,
     ) -> None:
         """Initialize the Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
 
         self._attr_name = device.name
         self._attr_type = PlayerType.PLAYER
@@ -161,16 +161,16 @@ class WiimPlayer(PlayerProtocol):
         # An unknown-leader follower belongs to an external group MA cannot see the leader
         # of; locking here keeps core from offering it as a grouping target for a regroup
         # the coordinator would then have to refuse.
-        return self._native_groups.is_unknown_leader_follower(self.player_id)
+        return self._native_groups.is_unknown_leader_follower(self.protocol_id)
 
     @property
     def poll_interval(self) -> int:
         """Return the poll interval in seconds, short while playing to keep the position fresh."""
         return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
-    def is_native_group_compatible(self, other: Player) -> bool:
+    def is_native_group_compatible(self, other: PlayerProtocol) -> bool:
         """Only reachable coordinator-approved peers of either backend group natively."""
-        return other.player_id in self.can_group_with
+        return other.protocol_id in self.can_group_with
 
     def make_command_client(self) -> WiiMClient:
         """
@@ -182,7 +182,7 @@ class WiimPlayer(PlayerProtocol):
         by an earlier client are passed on so a fresh client does not re-probe the device.
         """
         if not (ip := self.device.ip_address):
-            raise PlayerCommandFailed(f"Cannot command {self.player_id}: device address unknown")
+            raise PlayerCommandFailed(f"Cannot command {self.protocol_id}: device address unknown")
         capabilities = dict(self._command_capabilities) if self._command_capabilities else None
         return WiiMClient(ip, session=self.mass.http_session, capabilities=capabilities)
 
@@ -201,8 +201,7 @@ class WiimPlayer(PlayerProtocol):
         """Re-publish state after the topology coordinator changed this player's role."""
         # role/membership are derived by the coordinator, not from this player's own
         # attributes, so force a recalculation (e.g. synced_to) even when idle.
-        self.mark_state_dirty()
-        self._update_ma_state_from_sdk_cache()
+        self._update_ma_state_from_sdk_cache(force_update=True)
 
     # --- Lifecycle ---
 
@@ -223,10 +222,10 @@ class WiimPlayer(PlayerProtocol):
         # slow, TTL-gated re-read of the native slave list (no busy polling loop)
         await self._native_groups.refresh_leader(self)
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
-        self._native_groups.unregister(self.player_id)
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
+        self._native_groups.unregister(self.protocol_id)
         self._native_groups.schedule_reconcile()
         self.device.general_event_callback = None
         self.device.av_transport_event_callback = None
@@ -237,7 +236,7 @@ class WiimPlayer(PlayerProtocol):
             await self.device.disconnect()
         except Exception:
             self.logger.exception("Error tearing down WiiM device %s", self.name)
-        self.logger.debug("Player %s unloaded, SDK resources released", self.name)
+        self.logger.debug("Player %s detached, SDK resources released", self.name)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return player-specific config entries."""
@@ -255,7 +254,7 @@ class WiimPlayer(PlayerProtocol):
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
         self._drop_join_restart_resume()
-        stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
         didl_metadata = create_didl_metadata(media, url=stream_url)
         self.set_current_media(
             uri=stream_url,
@@ -281,7 +280,7 @@ class WiimPlayer(PlayerProtocol):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
-        stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
         didl_metadata = create_didl_metadata(media, url=stream_url)
         self.logger.debug(
             "enqueue_next_media on %s: queue_item_id=%s, uri=%s",
@@ -379,8 +378,9 @@ class WiimPlayer(PlayerProtocol):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        queue = self.mass.player_queues.get(self.player_id)
-        pq_data = self.mass.player_queues.queue_data_or_none(self.player_id) if queue else None
+        queue_id = self._queue_id
+        queue = self.mass.player_queues.get(queue_id) if queue_id else None
+        pq_data = self.mass.player_queues.queue_data_or_none(queue_id) if queue_id else None
         entry_sdk_uri = self.device.current_media.uri if self.device.current_media else None
         self.logger.debug(
             "set_members entry on %s: add=%s, remove=%s | "
@@ -475,8 +475,17 @@ class WiimPlayer(PlayerProtocol):
 
     # --- Private helpers ---
 
-    def _update_ma_state_from_sdk_cache(self) -> None:
-        """Update MA state from SDK's cache/HTTP poll attributes."""
+    @property
+    def _queue_id(self) -> str | None:
+        """Return the id of the queue of the player this protocol is attached to."""
+        return self.player.player_id if self.player is not None else None
+
+    def _update_ma_state_from_sdk_cache(self, force_update: bool = False) -> None:
+        """
+        Update MA state from SDK's cache/HTTP poll attributes.
+
+        :param force_update: Recalculate the player state even when nothing reported changed.
+        """
         was_available = self._attr_available
         self._attr_available = self.device.available
         self._republish_peers_if_availability_changed(was_available)
@@ -486,7 +495,7 @@ class WiimPlayer(PlayerProtocol):
         if not self._attr_available:
             self._attr_current_media = None
             self._attr_active_source = None
-            self.update_state()
+            self.update_state(force_update=force_update)
             return
 
         self._attr_volume_level = self.device.volume
@@ -495,8 +504,8 @@ class WiimPlayer(PlayerProtocol):
         # The coordinator is the single native topology authority across both backends; this
         # mapper only reads the role, never writes it. The self-follower signal is fed from a
         # live group read on the poll/event refresh path.
-        if self._native_groups.role_of(self.player_id) == NativeGroupRole.FOLLOWER:
-            self._publish_follower_state()
+        if self._native_groups.role_of(self.protocol_id) == NativeGroupRole.FOLLOWER:
+            self._publish_follower_state(force_update)
             return
 
         media = self.device.current_media
@@ -508,19 +517,20 @@ class WiimPlayer(PlayerProtocol):
             self._attr_playback_state = new_state
 
         # Group members
-        self._attr_group_members = self._native_groups.members_of(self.player_id)
+        self._attr_group_members = self._native_groups.members_of(self.protocol_id)
 
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
         elif play_mode == SOURCE_NETWORK:
             # the queue is registered just after the player, so an early poll can precede it
-            ma_queue = self.mass.player_queues.get(self.player_id)
+            queue_id = self._queue_id
+            ma_queue = self.mass.player_queues.get(queue_id) if queue_id else None
             if device_uri == "wiimu_airplay":
                 self._attr_active_source = SOURCE_AIRPLAY
             elif device_uri.startswith("spotify:"):
                 self._attr_active_source = SOURCE_SPOTIFY
             elif ma_queue and ma_queue.current_item:
-                self._attr_active_source = self.player_id
+                self._attr_active_source = queue_id
             else:
                 self._attr_active_source = SOURCE_UNKNOWN
         else:
@@ -532,7 +542,7 @@ class WiimPlayer(PlayerProtocol):
         elif self._attr_active_source in PASSIVE_SOURCES:
             source_display_name = PASSIVE_SOURCES[self._attr_active_source].name
 
-        is_ma_source = self._attr_active_source == self.player_id
+        is_ma_source = self._queue_id is not None and self._attr_active_source == self._queue_id
         sdk_has_metadata = bool(media and (media.title or media.artist or media.album))
 
         if self._attr_active_source is None:
@@ -552,7 +562,7 @@ class WiimPlayer(PlayerProtocol):
             )
 
         self._log_sdk_state_change()
-        self.update_state()
+        self.update_state(force_update=force_update)
 
     def _resolve_playback_state(
         self, device_uri: str, play_mode: str | None
@@ -592,7 +602,8 @@ class WiimPlayer(PlayerProtocol):
             and new_sdk_status == self._last_logged_sdk_status
         ):
             return
-        ma_queue = self.mass.player_queues.get(self.player_id)
+        queue_id = self._queue_id
+        ma_queue = self.mass.player_queues.get(queue_id) if queue_id else None
         self.logger.debug(
             "WiiM state changed on %s: uri=%r->%r, status=%s->%s | queue.current_item_id=%s",
             self._attr_name,
@@ -660,8 +671,12 @@ class WiimPlayer(PlayerProtocol):
         if was_available != self._attr_available:
             self._native_groups.schedule_republish()
 
-    def _publish_follower_state(self) -> None:
-        """Publish the volume-only state of a native follower and clear its playback."""
+    def _publish_follower_state(self, force_update: bool = False) -> None:
+        """
+        Publish the volume-only state of a native follower and clear its playback.
+
+        :param force_update: Recalculate the player state even when nothing reported changed.
+        """
         # MA derives a follower's playback from the leader, so this player publishes only its
         # own volume/mute and manages no members. Clear the follower-owned state first so the
         # active-output clear below (which publishes immediately) never emits the stale
@@ -672,9 +687,9 @@ class WiimPlayer(PlayerProtocol):
         self._attr_active_source = None
         self._attr_current_media = None
         self._attr_group_members = []
-        if self.active_output_protocol is not None:
-            self.set_active_output_protocol(None)
-        self.update_state()
+        if self.player is not None and self.player.active_output_protocol is not None:
+            self.player.set_active_output_protocol(None)
+        self.update_state(force_update=force_update)
 
     def _schedule_topology_refresh(self) -> None:
         """Force one live topology + self-role re-read, deduplicated over Slave-event bursts."""
@@ -684,7 +699,7 @@ class WiimPlayer(PlayerProtocol):
         # reconciliation.
         self.mass.create_task(
             self._native_groups.refresh_leader(self, force=True),
-            task_id=f"wiim_topology_{self.player_id}",
+            task_id=f"wiim_topology_{self.protocol_id}",
         )
 
     def _create_join_restart_watch(
@@ -694,13 +709,15 @@ class WiimPlayer(PlayerProtocol):
         # the firmware only restarts a stream it started while it had no followers
         if not player_ids_to_add:
             return None
-        if [m for m in self._native_groups.members_of(self.player_id) if m != self.player_id]:
+        if [m for m in self._native_groups.members_of(self.protocol_id) if m != self.protocol_id]:
             return None
         if self._attr_playback_state != PlaybackState.PLAYING:
             return None
         # the leader's own queue or the syncgroup queue it renders, never an external source
-        queue = self.mass.players.get_active_queue(self)
-        if not queue or queue.queue_id != self.state.active_source:
+        if self.player is None:
+            return None
+        queue = self.mass.players.get_active_queue(self.player)
+        if not queue or queue.queue_id != self.player.state.active_source:
             return None
         if not queue.active or not queue.current_item:
             return None
