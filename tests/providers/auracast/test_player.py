@@ -30,10 +30,10 @@ PLAYER_MODULE = "music_assistant.providers.auracast.player"
 def create_player(raw_config: dict[str, Any] | None = None) -> AuracastPlayer:
     """Build a player with a minimal provider and mass stub, and stored raw config values."""
     mass = MagicMock()
-    mass.config.get_base_player_config.return_value = MagicMock()
+    mass.config.get_base_protocol_config.return_value = MagicMock()
     mass.config.get_protocol_value.return_value = 100
     if raw_config is not None:
-        mass.config.get_protocol_value.side_effect = lambda _player_id, key, *_: raw_config.get(
+        mass.config.get_protocol_value.side_effect = lambda _protocol_id, key, *_: raw_config.get(
             key, 100
         )
     mass.streams.audio.get_player_output_plan.return_value = MagicMock(filter_params=[])
@@ -98,7 +98,7 @@ async def test_play_media_keeps_broadcast_active_after_stream_eof() -> None:
     assert player.playback_state == PlaybackState.PLAYING
     await wait_for_idle(player)
 
-    player.mass.streams.get_stream.assert_called_once_with(media, PCM_FORMAT, player.player_id)
+    player.mass.streams.get_stream.assert_called_once_with(media, PCM_FORMAT, player.protocol_id)
     player._broadcaster.start.assert_awaited_once()
     assert player._broadcaster.send_pcm.await_args_list[0].args == (chunk,)
     player._broadcaster.drain.assert_awaited_once()
@@ -461,7 +461,7 @@ async def test_volume_set_is_supported_and_scales_little_endian_pcm() -> None:
     await player.volume_set(35)
     assert player.volume_level == 35
     player.mass.config.set_protocol_value.assert_called_once_with(
-        player.player_id, "auracast_stored_volume", 35
+        player.protocol_id, "auracast_stored_volume", 35
     )
     player.update_state.assert_called_once()
 
@@ -471,7 +471,7 @@ def test_player_restores_persisted_volume() -> None:
     player = create_player()
     cast("Any", player.mass.config.get_protocol_value).return_value = 42
 
-    restored_player = AuracastPlayer(cast("Any", player.provider), player.player_id)
+    restored_player = AuracastPlayer(cast("Any", player.provider), player.protocol_id)
 
     assert restored_player.volume_level == 42
 
@@ -483,7 +483,7 @@ def test_player_shows_controller_details_from_setup_probe() -> None:
         "Bluetooth Core 5.4; company ID 0x0059" if key == CONTROLLER_STACK_SETUP_KEY else default
     )
 
-    player_with_details = AuracastPlayer(cast("Any", player.provider), player.player_id)
+    player_with_details = AuracastPlayer(cast("Any", player.provider), player.protocol_id)
 
     assert player_with_details.device_info.model == (
         "Host stack: Bumble; Controller stack: Bluetooth Core 5.4; company ID 0x0059"
