@@ -12,7 +12,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 if TYPE_CHECKING:
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 
 def _streamdetails(
@@ -396,7 +396,7 @@ def test_the_audio_source_passthrough_follows_the_arriving_audio() -> None:
 
     pcm_format = StreamsAudio._select_audio_source_pcm_format(
         cast("StreamsAudio", SimpleNamespace()),
-        player=cast("Player", SimpleNamespace()),
+        player=cast("PlayerProtocol", SimpleNamespace()),
         streamdetails=_streamdetails(advertised, arriving, MediaType.AUDIO_SOURCE),
         supported_sample_rates=(44100, 48000),
     )
