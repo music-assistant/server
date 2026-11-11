@@ -117,13 +117,15 @@ DEFAULT_FEATURES = frozenset(
 # The one config entry every fake protocol has of its own, for scenarios about protocol config.
 FAKE_SETTING = "fake_setting"
 
-type Role = Literal["native", "audio"]
+type Role = Literal["native", "audio", "control", "virtual"]
 type Identifiers = Mapping[IdentifierType, str | list[str] | tuple[str, ...]]
 
 # The role a protocol reports for each role a scenario names.
 _ROLES: dict[Role, ProtocolRole] = {
     "native": ProtocolRole.NATIVE,
     "audio": ProtocolRole.AUDIO,
+    "control": ProtocolRole.CONTROL,
+    "virtual": ProtocolRole.VIRTUAL,
 }
 
 # the real clock, for the harness's own time limits
@@ -340,7 +342,8 @@ class FakePlayerProvider(PlayerProvider):
         :param protocol_id: ID of the protocol object.
         :param name: The name the device reports.
         :param role: ``"native"`` for the vendor's own control plane, ``"audio"`` for an audio
-            protocol of a device (AirPlay, Cast, DLNA, ...).
+            protocol of a device (AirPlay, Cast, DLNA, ...), ``"control"`` for control without
+            an audio path (LinkPlay), ``"virtual"`` for a group (with ``type=PlayerType.GROUP``).
         :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...); a list of
             values reports several identifiers of one type, for a device that stands for
             several (sub)devices.

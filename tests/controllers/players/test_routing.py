@@ -9,7 +9,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
-    ProtocolRole,
 )
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
@@ -175,10 +174,13 @@ async def test_device_that_follows_a_native_leader_gives_up_its_own_output(
     """A control protocol that reports a native group leader ends the output it played on."""
     wiim = await scenario.add_provider("wiim")
     dlna = await scenario.add_provider("dlna")
-    control = wiim.protocol("wiim_den", "Den", identifiers=KITCHEN, powered=True)
     # it controls the device, the audio goes through DLNA
-    control._set_reported(
-        role=ProtocolRole.CONTROL,
+    control = wiim.protocol(
+        "wiim_den",
+        "Den",
+        role="control",
+        identifiers=KITCHEN,
+        powered=True,
         supported_features={PlayerFeature.VOLUME_SET, PlayerFeature.PAUSE},
     )
     audio = dlna.protocol("dlna_den", "Den", role="audio", identifiers=KITCHEN)

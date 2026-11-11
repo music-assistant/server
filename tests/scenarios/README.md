@@ -20,16 +20,16 @@ tests of the harness itself.
 - **Providers**: every player provider domain except `universal_group` and `sync_group` loads
   as a `FakePlayerProvider`. It keeps its real domain, as protocol linking keys on it (priority,
   one protocol per domain), with as many instances as the real domain allows.
-- **Devices**: `provider.protocol(...)` creates a device and its `FakeProtocol`. The scenario sets
-  what it reports; its commands are recorded in `protocol.commands` and applied to its state.
-  `role="native"` or `role="audio"` stands for the role of the protocol on its device,
-  `session_only=True` for a protocol that reports it exists only while attached (a browser
-  session). Every fake protocol has one config entry of its own, `FAKE_SETTING`, like a provider
-  setting of the device. A device is present from `attach()` until `detach()` (or
-  `set_present()`), and like a real provider the fake one attaches the present devices when it
-  loads (boot, reload) and 5 s after a player of it gets enabled or removed. A protocol object
-  belongs to one server and provider instance: after a restart or a reload,
-  `scenario.protocol(protocol_id)` returns the current one.
+- **Devices**: `provider.protocol(...)` creates a device and its `FakeProtocol`. The scenario
+  sets what it reports; its commands are recorded in `protocol.commands` and applied to its
+  state. `role="native"`, `"audio"`, `"control"` or `"virtual"` (a group) stands for the role of
+  the protocol on its device, `session_only=True` for a protocol that reports it exists only
+  while attached (a browser session). Every fake protocol has one config entry of its own,
+  `FAKE_SETTING`, like a provider setting of the device. A device is present from `attach()`
+  until `detach()` (or `set_present()`), and like a real provider the fake one attaches the
+  present devices when it loads (boot, reload) and 5 s after a player of it gets enabled or
+  removed. A protocol object belongs to one server and provider instance: after a restart or a
+  reload, `scenario.protocol(protocol_id)` returns the current one.
 - **Music**: `play(player_id)` plays a track on a player through its queue, as a client does
   (`player_queues/play_media`). The track is one of the server's own `test` music provider
   (fake media items, no network), which loads on first use. No audio is decoded: the buffer a
