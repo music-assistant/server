@@ -180,6 +180,19 @@ All Providers (of all types) can be found in the `music_assistant/providers` fol
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
+A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and hands it to `mass.players.attach()`. The server builds the `Player` that users see from the protocols of a device, and gives it to the protocol as `self.player`. The contract between the two:
+
+* A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
+* It reads `self.player.state` only for what the device has to display or follow: the current media and its position.
+* The grouping as users see it (`group_members`, `synced_to`, `active_group`) comes from `self.player.state`; what a protocol reports about grouping names the protocol ids of its own provider.
+* Data that only lives while the server runs (`extra_data`, the stop and external source markers) stays on `self.player`.
+* `self.player` is already `None` when `on_detach()` runs: a protocol releases what it holds itself.
+* `on_remove()` also reaches a protocol that is not attached, as long as its provider holds the object: the server keeps those only weakly, so a provider with a configured device list keeps the object of every device on it.
+* The config of a protocol has no name: the name the user gave the device is `self.player.config.name`.
+* Software players that share a host report an id of their own instance as `UUID` or `SERIAL_NUMBER` identifier, the zones of one chassis their zone as `ZONE`.
+
+Enabling a player and removing one both end with a discovery request to the providers of its protocols: the server replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets, so `discover_players()` only has to offer the known devices that this cannot reach. An audio protocol whose only MAC address is a locally administered one is held up to 15 seconds before it gets a player of its own, as the other protocols of its device may still identify it.
+
 ## 💽 Building your own Metadata Provider
 Will follow soon™
 
