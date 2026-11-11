@@ -135,7 +135,7 @@ StreamsController, combines queue processing and per-player output plans into co
 ```
 Music Provider -> get_media_stream() -> FFmpeg (decode to raw PCM)
     -> AudioBuffer (raw PCM storage, analyze callbacks run here)
-    -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, speed, fade-in)
+    -> buffer.get_stream() -> Optional: FFmpeg (volume normalization, limiter after a positive gain, speed, fade-in)
     -> Optional: Smart Fades (crossfade mixing between tracks)
     -> FFmpeg (encode to output format with player-specific DSP)
     -> HTTP Response / Direct PCM stream
