@@ -925,7 +925,7 @@ class OpenSonicProvider(MusicProvider):
                 return (
                     False,
                     mark.position,
-                    datetime.fromisoformat(mark.created) if mark.created else None,
+                    datetime.fromisoformat(mark.changed) if mark.changed else None,
                 )
         # If we get here, there is no bookmark
         return (False, 0, None)
