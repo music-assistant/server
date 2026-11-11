@@ -8,11 +8,11 @@ plugin so an upstream session stops pointing at Music Assistant.
 
 import asyncio
 from contextlib import suppress
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, ProviderFeature
+from music_assistant_models.enums import MediaType, PlaybackState, ProtocolRole, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import AudioSource, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
@@ -21,10 +21,10 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.players.controller import AUDIO_SOURCE_CLAIM_TIMEOUT
-from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.player_state import derive_player_state
 from music_assistant.models.plugin import PluginProvider
-from tests.common import make_state_inputs
+from tests.common import MockProvider, attach_mock, make_state_inputs
 
 PLAYER_ID = "player_1"
 PROVIDER_INSTANCE = "spotify_connect--abc"
@@ -68,13 +68,35 @@ def _controller(resolved: Any = None) -> tuple[Any, MagicMock, MagicMock]:
     player.state.active_source = None
     player.state.active_group = None
     player.state.synced_to = None
-    player.protocol_parent_id = None
     controller._players[PLAYER_ID] = player
     controller.get_player = MagicMock(return_value=player)  # type: ignore[method-assign]
     controller._handle_play_media = AsyncMock()  # type: ignore[method-assign]
     controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
     controller.trigger_player_update = MagicMock()  # type: ignore[method-assign]
     return controller, provider, player
+
+
+def _device(controller: PlayerController, *, audio_protocol: bool = False) -> Player:
+    """
+    Give a controller of ``_controller`` a real player, with the protocols of its device.
+
+    :param controller: The controller, whose player lookup goes back to the real one.
+    :param audio_protocol: Also attach an audio protocol next to the device's own one.
+    """
+    mass = cast("MagicMock", controller.mass)
+    mass.players = controller
+    del controller.get_player
+    player, _ = attach_mock(MockProvider("test", mass=mass), "speaker_1", "Player 1")
+    if audio_protocol:
+        attach_mock(
+            MockProvider("other", instance_id="other", mass=mass),
+            "speaker_1_audio",
+            role=ProtocolRole.AUDIO,
+            player=player,
+        )
+    mass.config.get_player_object_config = AsyncMock(return_value=player.config)
+    player.update_state(signal_event=False)
+    return player
 
 
 async def test_selecting_a_source_starts_it_and_names_it_on_the_player() -> None:
@@ -484,7 +506,6 @@ async def test_cmd_stop_locks_the_redirected_playback_owner() -> None:
     group = MagicMock()
     group.player_id = group_id
     group.available = True
-    group.protocol_parent_id = None
     group.state.active_group = None
     group.state.synced_to = None
     controller._players[group_id] = group
@@ -560,7 +581,7 @@ async def test_a_source_whose_provider_dropped_the_feature_is_not_started() -> N
     assert await controller._resolve_audio_source_uri(SOURCE_URI) is None
 
 
-async def test_unregistering_a_player_releases_its_source() -> None:
+async def test_removing_a_player_releases_its_source() -> None:
     """
     A player going away hands its source back.
 
@@ -571,10 +592,42 @@ async def test_unregistering_a_player_releases_its_source() -> None:
     await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
     assert controller.get_audio_source_session(PLAYER_ID) is not None
 
-    await controller.unregister(PLAYER_ID)
+    await controller.remove(PLAYER_ID)
 
+    assert PLAYER_ID not in controller._players
     assert controller.get_audio_source_session(PLAYER_ID) is None
     provider.on_source_released.assert_awaited_once_with("main", PLAYER_ID)
+
+
+async def test_detaching_the_protocol_that_plays_releases_the_source() -> None:
+    """
+    A player that loses the protocol its audio went through hands its source back.
+
+    The player stays, but nothing plays the source anymore: the plugin is told, so
+    an upstream session does not stay pointed at a player that went silent.
+    """
+    controller, provider, _player = _controller(_source())
+    player = _device(controller)
+    await controller._handle_select_source(player.player_id, SOURCE_URI)
+    assert controller.get_audio_source_session(player.player_id) is not None
+
+    await controller.detach("speaker_1")
+
+    assert controller._players[player.player_id] is player
+    assert controller.get_audio_source_session(player.player_id) is None
+    provider.on_source_released.assert_awaited_once_with("main", player.player_id)
+
+
+async def test_detaching_a_protocol_that_does_not_play_keeps_the_source() -> None:
+    """A protocol the audio does not go through leaves the source playing when it detaches."""
+    controller, provider, _player = _controller(_source())
+    player = _device(controller, audio_protocol=True)
+    await controller._handle_select_source(player.player_id, SOURCE_URI)
+
+    await controller.detach("speaker_1_audio")
+
+    assert controller.get_audio_source_session(player.player_id) is not None
+    provider.on_source_released.assert_not_awaited()
 
 
 async def test_refreshing_a_rebuilt_source_reaches_the_session() -> None:
