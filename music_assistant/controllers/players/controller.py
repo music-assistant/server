@@ -2818,6 +2818,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._store_player_base(player)
         if not player.initialized.is_set():
             await self._publish_player(player)
+            if self._attach_aborted(protocol, attach):
+                # the detach found the player not published yet, and left it to this attach
+                await self._settle_player(player)
+                return
         else:
             player.set_config(await self.mass.config.get_player_object_config(player))
             if self._attach_aborted(protocol, attach):

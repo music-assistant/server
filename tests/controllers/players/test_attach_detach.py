@@ -246,6 +246,69 @@ async def test_detach_while_a_new_device_attaches_stops_the_attach(scenario: Sce
     assert scenario.events(*LIFECYCLE_EVENTS) == []
 
 
+@pytest.mark.parametrize("step", ["power_cache", "player_config"])
+@pytest.mark.parametrize("session_only", [True, False])
+async def test_detach_while_a_new_player_is_published_settles_that_player(
+    scenario: Scenario, step: str, session_only: bool
+) -> None:
+    """A device that is lost while its new player is announced leaves it as any detach does."""
+    if session_only:
+        sendspin = await scenario.add_provider("sendspin")
+        protocol = sendspin.protocol("sendspin_web_1", "Web Browser", session_only=True)
+    else:
+        sonos = await scenario.add_provider("sonos")
+        protocol = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    players = scenario.mass.players
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    load_config = scenario.mass.config.get_player_object_config
+    cache_get = scenario.mass.cache.get
+
+    async def _load_config_later(player: Player) -> Any:
+        reached.set()
+        await release.wait()
+        return await load_config(player)
+
+    async def _cache_get_later(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("provider") == players.domain:
+            reached.set()
+            await release.wait()
+        return await cache_get(*args, **kwargs)
+
+    if step == "power_cache":
+        delayed = patch.object(scenario.mass.cache, "get", _cache_get_later)
+    else:
+        delayed = patch.object(scenario.mass.config, "get_player_object_config", _load_config_later)
+    scenario.clear_events()
+    with delayed:
+        task = await scenario.command(players.attach(protocol))
+        assert reached.is_set()
+        await players.detach(protocol.protocol_id)
+        release.set()
+        await scenario.settle()
+        await task
+    await scenario.idle()
+
+    assert protocol.player is None
+    if session_only:
+        assert list(players) == []
+        assert scenario.events(*LIFECYCLE_EVENTS) == [
+            Event(EventType.PLAYER_ADDED, "sendspin_web_1"),
+            Event(EventType.QUEUE_ADDED, "sendspin_web_1"),
+            Event(EventType.PLAYER_REMOVED, "sendspin_web_1"),
+        ]
+        return
+    # a device that was found stays known, unavailable until it is found again
+    (visible,) = scenario.visible_players()
+    state = scenario.player(visible.player_id)
+    assert state is not None
+    assert state.available is False
+    assert [(info.protocol_id, info.available) for info in state.protocols] == [
+        ("RINCON_KITCHEN", False)
+    ]
+    assert _stored(scenario) == ([visible.player_id], ["RINCON_KITCHEN"])
+
+
 async def test_detach_while_the_address_of_a_device_is_resolved_stops_the_attach(
     scenario: Scenario,
 ) -> None:
