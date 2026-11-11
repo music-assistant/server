@@ -78,7 +78,11 @@ from music_assistant.helpers.guest_access import (
     credential_owners_for_user_id,
     is_session_scoped_owner,
 )
-from music_assistant.helpers.util import format_ip_for_url, is_valid_mac_address
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    is_locally_administered_mac,
+    is_valid_mac_address,
+)
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import OWN_PROTOCOL_ROLES
@@ -652,7 +656,7 @@ class SendspinProvider(PlayerProvider):
         client_id: str,
         identifiers: dict[IdentifierType, str],
         bridge_hello: ClientHelloPayload,
-        underlying_protocol_id: str | None = None,
+        underlying_protocol_id: str,
     ) -> bool:
         """
         Post-claim an already-registered SendspinPlayer as a bridge client.
@@ -679,11 +683,7 @@ class SendspinProvider(PlayerProvider):
             return False
         for id_type, id_value in identifiers.items():
             player.device_info.add_identifier(id_type, id_value)
-        moves = underlying_protocol_id is not None and (
-            underlying_protocol_id != player.underlying_protocol_id
-        )
-        if underlying_protocol_id is not None:
-            player._attr_underlying_protocol_id = underlying_protocol_id
+        moves = underlying_protocol_id != player.underlying_protocol_id
         bridge_supported_commands: list[PlayerCommand] = []
         if bridge_hello.player_support:
             bridge_supported_commands = list(bridge_hello.player_support.supported_commands or [])
@@ -700,11 +700,7 @@ class SendspinProvider(PlayerProvider):
         # player. A JS Cast receiver advertises product_name="Web Browser" and
         # would otherwise be classified as is_web_player (a hidden player of its
         # own). As a bridge it is an output of the player of its Cast device.
-        player.is_web_player = False
-        player._attr_hidden_by_default = False
-        player._attr_private = False
-        player._attr_expose_to_ha_by_default = True
-        player._attr_session_only = False
+        player.ride_on(underlying_protocol_id)
         player._attr_role = ProtocolRole.AUDIO
         self.logger.info(
             "Bridge claim applied to existing SendspinPlayer %s (client_id=%s)",
@@ -1316,6 +1312,14 @@ class SendspinProvider(PlayerProvider):
         underlying_protocol_id = self._bridge_underlying_protocols.pop(client_id, None)
         if underlying_protocol_id is None and existing_player is not None:
             underlying_protocol_id = existing_player.underlying_protocol_id
+        if underlying_protocol_id is None:
+            # a bridge client that connects before its bridge is set up, such as a Cast
+            # receiver app that reconnects first after a restart
+            stored_underlying_id = self.mass.config.get_protocol_value(
+                client_id, CONF_UNDERLYING_PLAYER_ID
+            )
+            if isinstance(stored_underlying_id, str):
+                underlying_protocol_id = stored_underlying_id
         static_delay_default_ms = self._bridge_static_delay_defaults.pop(client_id, None)
         if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
             static_delay_default_ms = existing_player.static_delay_default_ms
@@ -1353,7 +1357,7 @@ class SendspinProvider(PlayerProvider):
             for id_type, id_value in extra_ids.items():
                 player.device_info.add_identifier(id_type, id_value)
         if underlying_protocol_id is not None:
-            player._attr_underlying_protocol_id = underlying_protocol_id
+            player.ride_on(underlying_protocol_id)
         if static_delay_default_ms is not None and isinstance(player, SendspinPlayer):
             player.static_delay_default_ms = static_delay_default_ms
         player._attr_role = (
@@ -1825,12 +1829,11 @@ class SendspinProvider(PlayerProvider):
             if not isinstance(existing_player, SendspinBasePlayer):
                 return
             previous_device_info = existing_player.device_info
-            was_bridge = existing_player.underlying_protocol_id is not None
             was_session_only = existing_player.session_only
             existing_player._refresh_client_info(sendspin_client)
             await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
             if isinstance(existing_player, SendspinPlayer):
-                existing_player.restore_bridge_identity(previous_device_info, was_bridge)
+                existing_player.restore_bridge_identity(previous_device_info)
             await self._apply_hass_esphome_enrichment([existing_player])
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
@@ -1984,9 +1987,9 @@ class SendspinProvider(PlayerProvider):
 
         A bridge client rides on another protocol of its device, and a client of a device
         whose player has a protocol of its own from another provider plays as an output of
-        that player: both are audio protocols. So is a client that is seen for the first
-        time, which joins the player of its device when there is one. Any other client is
-        the native protocol of its player.
+        that player: both are audio protocols. So is a client with a hardware MAC address
+        that is seen for the first time, which joins the player of its device when there is
+        one. Any other client is the native protocol of its player.
 
         :param protocol: The protocol of the client.
         """
@@ -1994,6 +1997,10 @@ class SendspinProvider(PlayerProvider):
             return ProtocolRole.AUDIO
         record = self.mass.config.get_protocol_record(protocol.protocol_id)
         if record is None or not (player_id := record.get("player_id")):
+            # without a hardware MAC address nothing else can tie it to a device
+            mac_address = _reported_mac_address(protocol)
+            if mac_address is None or is_locally_administered_mac(mac_address):
+                return ProtocolRole.NATIVE
             return ProtocolRole.AUDIO
         for other_id in self.mass.config.get_protocol_ids_of_player(player_id):
             other = self.mass.config.get_protocol_record(other_id) or {}

@@ -219,7 +219,7 @@ Sendspin players support:
 Every Sendspin client is a protocol (`SendspinBasePlayer`) whose id is its client id.
 
 - A web or app player, a virtual player, a display, a visualizer, a light and an audio source exist only while they are connected (`session_only`): each is the native protocol of a player of its own, whose player id is its client id. Nothing is stored for one until its config is changed.
-- Any other client is the native protocol of its player, unless that player has a protocol of its own from another provider: then it is an audio output of it. A client seen for the first time joins the player of its device when there is one, as an audio output; it is the native protocol of a player of its own from its next connection on.
+- Any other client is the native protocol of its player, unless that player has a protocol of its own from another provider: then it is an audio output of it. A client with a hardware MAC address that is seen for the first time joins the player of its device when there is one, as an audio output; it is the native protocol of a player of its own from its next connection on. A new client without one is the native protocol of a player of its own at once, as nothing else can tie it to a device.
 - A client reports the MAC address it uses as client id or reports in its hello. A client whose id is not its MAC address also reports its id as an instance id, so several clients on one host stay separate players; a device whose client id changes from its MAC address to its key id keeps its player and settings.
 
 ## External Players (Protocol Bridges)
@@ -233,7 +233,9 @@ External players are registered programmatically via `server_api.register_extern
 1. The bridge provider creates a `ClientHelloPayload` with the device info and supported capabilities
 2. The Sendspin server creates a `SendspinClient` and triggers `ClientAddedEvent`
 3. The Sendspin provider creates a `SendspinPlayer` for this client, with the id of the bridged protocol as its underlying protocol
-4. That Sendspin protocol is a derived audio protocol: it attaches to the player of the protocol it rides on, as soon as that one is attached
+4. That Sendspin protocol is a derived audio protocol: it attaches to the player of the protocol it rides on, also while that protocol is away (through the player its record names), and is an available output only while that protocol is attached
+
+A client whose record says it rides on another protocol is that bridge again when it connects before its bridge is set up, as the Sendspin Cast receiver app does after a restart: it is no browser player of its own then, although it reports as one.
 
 The bridge managers (`SendspinBridgeManagerBase` in `bridge_manager.py`, subclassed by the AirPlay and Chromecast bridges) keep a bridge for as long as the protocol it bridges is attached and its Sendspin output is switched on. The interface they offer the bridged providers takes the protocol id of the bridged protocol.
 

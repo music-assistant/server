@@ -102,10 +102,11 @@ def test_a_device_with_a_sendspin_client_is_not_session_only(
 def test_a_web_player_that_is_restored_as_a_bridge_is_not_session_only() -> None:
     """A receiver app that reports as a browser is the Sendspin protocol of its device."""
     player = _refreshed_player("Web Browser")
+    player._attr_underlying_protocol_id = "cast-protocol"
     cast_device = DeviceInfo(model="Nest Hub", manufacturer="Google")
     cast_device.add_identifier(IdentifierType.CAST_UUID, "cast-uuid")
 
-    player.restore_bridge_identity(cast_device, True)
+    player.restore_bridge_identity(cast_device)
 
     assert player.session_only is False
 
@@ -163,6 +164,8 @@ def test_the_player_of_a_client_without_a_player_role_is_session_only(
     for player_class in (SendspinVisualizerPlayer, SendspinSourcePlayer):
         monkeypatch.setattr(player_class, "__init__", lambda *_args, **_kwargs: None)
     provider = SendspinProvider.__new__(SendspinProvider)
+    provider.mass = Mock()
+    provider.mass.config.get_protocol_value.return_value = None
     provider._bridge_identifiers = {}
     provider._bridge_player_types = {}
     provider._bridge_underlying_protocols = {}

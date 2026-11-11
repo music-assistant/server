@@ -161,6 +161,41 @@ async def test_a_device_with_nothing_else_is_the_native_protocol_of_its_player(
     assert player.own_protocol is again
 
 
+@pytest.mark.parametrize(
+    ("mac_address", "role"),
+    [
+        (MAC, ProtocolRole.AUDIO),
+        (None, ProtocolRole.NATIVE),
+        # locally administered: no address of the hardware
+        ("a2:b7:65:00:11:22", ProtocolRole.NATIVE),
+    ],
+    ids=["hardware_mac", "no_mac", "local_mac"],
+)
+async def test_a_new_client_gets_its_player_at_once(
+    scenario: Scenario, mac_address: str | None, role: ProtocolRole
+) -> None:
+    """
+    A client seen for the first time is on a player right away.
+
+    One with a hardware MAC address is an audio protocol, so the native protocol of its
+    device can still join; any other is the native protocol of a player of its own, as no
+    other identifier can tie it to a device.
+    """
+    sendspin = await _sendspin(scenario)
+    first = _client(
+        sendspin,
+        "sendspin-cli-1111",
+        name="Pi Kitchen",
+        mac_address=mac_address,
+        product_name="sendspin-cli",
+    )
+
+    player = await _attach(scenario, first)
+
+    assert first.role == role
+    assert player.get_role(first.protocol_id) == role
+
+
 async def test_two_clients_on_one_host_stay_two_players(scenario: Scenario) -> None:
     """A second software client on a host does not take over the offline first one's player."""
     sendspin = await _sendspin(scenario)

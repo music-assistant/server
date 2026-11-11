@@ -442,6 +442,32 @@ class SendspinBasePlayer(PlayerProtocol):
         await super().on_detach()
         self._unsubscribe_client_callbacks()
 
+    def ride_on(self, underlying_protocol_id: str) -> None:
+        """
+        Make this client the bridge of another protocol of its device.
+
+        A bridge is an audio output of the player of the protocol it rides on and is kept
+        track of while away, also when its client reports as a browser (the Sendspin Cast
+        receiver app does).
+
+        :param underlying_protocol_id: Id of the protocol the bridge rides on.
+        """
+        self._attr_underlying_protocol_id = underlying_protocol_id
+        self.is_web_player = False
+        self._attr_hidden_by_default = False
+        self._attr_private = False
+        self._attr_expose_to_ha_by_default = True
+        self._attr_session_only = False
+
+    @property
+    def available(self) -> bool:
+        """Return if the client is usable: a bridge only while the protocol it rides on is attached."""
+        if (underlying_protocol_id := self.underlying_protocol_id) is not None:
+            underlying = self.mass.players.get_protocol(underlying_protocol_id)
+            if underlying is None or underlying.player is None:
+                return False
+        return self._attr_available
+
     @property
     def needs_setup(self) -> bool:
         """
@@ -744,11 +770,19 @@ class SendspinBasePlayer(PlayerProtocol):
         values = await session.form([entry], step_id="source_autostart", last_step=True)
         target = values[CONF_SOURCE_AUTOSTART_TARGET]
         # Keep the default unstored, as the settings page does, so it follows the device's player.
-        self.mass.config.set_protocol_value(
-            self.protocol_id,
-            CONF_SOURCE_AUTOSTART_TARGET,
-            None if target == entry.default_value else target,
-        )
+        value = None if target == entry.default_value else target
+        if (
+            value is not None
+            and self.player is not None
+            and self.mass.config.get_protocol_record(self.protocol_id) is None
+        ):
+            # saved as the settings page saves it: the first choice of the user stores the
+            # config of a client that only exists while it is connected
+            await self.mass.config.save_player_config(
+                self.player.player_id, {CONF_SOURCE_AUTOSTART_TARGET: value}
+            )
+            return
+        self.mass.config.set_protocol_value(self.protocol_id, CONF_SOURCE_AUTOSTART_TARGET, value)
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
@@ -1523,19 +1557,13 @@ class SendspinPlayer(SendspinBasePlayer):
         await hass.play_announcement_on_entity(entity_id, announcement)
         self.logger.debug("Playing announcement on %s completed", self.display_name)
 
-    def restore_bridge_identity(self, previous_device_info: DeviceInfo, was_bridge: bool) -> None:
+    def restore_bridge_identity(self, previous_device_info: DeviceInfo) -> None:
         """
         Keep a bridge client a bridge after its client sent a new hello.
 
         :param previous_device_info: The device info the client had before the new hello.
-        :param was_bridge: Whether the client rode on another protocol before the new hello.
         """
-        if not was_bridge:
-            return
-        if not (
-            IdentifierType.CAST_UUID in previous_device_info.identifiers
-            or IdentifierType.AIRPLAY_ID in previous_device_info.identifiers
-        ):
+        if (underlying_protocol_id := self.underlying_protocol_id) is None:
             return
         refreshed_identifiers = dict(self._attr_device_info.identifiers)
         self._attr_device_info = DeviceInfo(
@@ -1545,11 +1573,7 @@ class SendspinPlayer(SendspinBasePlayer):
         )
         for id_type, id_value in refreshed_identifiers.items():
             self._attr_device_info.add_identifier(id_type, id_value)
-        self.is_web_player = False
-        self._attr_hidden_by_default = False
-        self._attr_private = False
-        self._attr_expose_to_ha_by_default = True
-        self._attr_session_only = False
+        self.ride_on(underlying_protocol_id)
 
     def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
         """Event callback registered to the sendspin client."""

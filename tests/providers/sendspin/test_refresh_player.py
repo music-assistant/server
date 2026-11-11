@@ -101,6 +101,7 @@ class _StubPlayer:
         initial_hello: object | None = None,
     ) -> None:
         self.protocol_id = client_id
+        self.api = SimpleNamespace(info_or_none=None)
         self.session_only = False
         self._attr_type: PlayerType | None = None
         self._attr_underlying_protocol_id: str | None = None
@@ -117,7 +118,11 @@ def _class_selection_provider(monkeypatch: pytest.MonkeyPatch) -> SendspinProvid
     provider = SendspinProvider.__new__(SendspinProvider)
     provider.mass = cast(
         "MusicAssistant",
-        SimpleNamespace(config=SimpleNamespace(get_protocol_record=lambda _: None)),
+        SimpleNamespace(
+            config=SimpleNamespace(
+                get_protocol_record=lambda _: None, get_protocol_value=lambda *_args: None
+            )
+        ),
     )
     provider._bridge_identifiers = {}
     provider._bridge_player_types = {}
