@@ -13,7 +13,7 @@ from music_assistant_models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderType
+from music_assistant_models.enums import ConfigEntryType, PlayerType, ProtocolRole, ProviderType
 
 from music_assistant.constants import (
     CONF_ENTRY_LOG_LEVEL,
@@ -86,7 +86,9 @@ async def test_set_player_value_updates_player_copy(
     mass_minimal: MusicAssistant,
 ) -> None:
     """A stored player value is reflected in the player's in-place config copy."""
-    mass_minimal.config.create_default_player_config(PLAYER_ID, "test_instance", PlayerType.PLAYER)
+    mass_minimal.config.create_player_record(
+        PLAYER_ID, provider="test_instance", player_type=PlayerType.PLAYER, default_name=None
+    )
     player = _owner_with_config_copy()
     mass_minimal.players = MagicMock()
     mass_minimal.players.get_player.return_value = player
@@ -101,7 +103,13 @@ async def test_set_protocol_value_updates_protocol_copy(
     mass_minimal: MusicAssistant,
 ) -> None:
     """A stored protocol value is reflected in the protocol object's in-place config copy."""
-    mass_minimal.config.create_default_player_config(PLAYER_ID, "test_instance", PlayerType.PLAYER)
+    mass_minimal.config.create_protocol_record(
+        PLAYER_ID,
+        provider="test_instance",
+        player_id=None,
+        role=ProtocolRole.NATIVE,
+        default_name=None,
+    )
     protocol = _owner_with_config_copy()
     mass_minimal.players = MagicMock()
     mass_minimal.players.get_protocol.return_value = protocol
