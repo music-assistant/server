@@ -2373,6 +2373,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         End a start of the queue that could not load an item.
 
+        Stops the queue's player, unless it plays along with a group or sync leader: then its
+        device keeps playing and only the session of this start is ended.
+
         :param queue_data: The data of the queue whose start failed.
         """
         queue_id = queue_data.queue.queue_id
