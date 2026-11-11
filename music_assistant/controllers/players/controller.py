@@ -207,12 +207,14 @@ class _Attach:
     takes it away, after which the attach stops at its next step.
     """
 
-    __slots__ = ("minted_player_id",)
+    __slots__ = ("minted_player_id", "new_player")
 
     def __init__(self) -> None:
         """Initialize the state of an attach."""
         # id of the player whose config this attach stored for a new device
         self.minted_player_id: str | None = None
+        # the player this attach created, unpublished until the attach completes
+        self.new_player: Player | None = None
 
 
 class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixin, CoreController):
@@ -2786,7 +2788,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         protocol_id = protocol.protocol_id
         if (player := self._players.get(player_id)) is None:
             # a new player, or one that only exists while its device is connected
-            player = self._create_player(player_id, protocol)
+            player = attach.new_player = self._create_player(player_id, protocol)
         self._unattached.pop(protocol_id, None)
         self._release_held_protocol(protocol)
         # The protocol is bound before it is fully ready (config not loaded), so it can
@@ -2805,7 +2807,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # a hook may have finished after the detach that stopped this attach, which
             # also left a player nobody saw yet to it
             await self._run_on_detach(protocol)
-            self._discard_unpublished_player(player, attach)
+            self._discard_unpublished_player(attach)
             return
         self._store_player_base(player)
         if not player.initialized.is_set():
@@ -2848,37 +2850,36 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     async def _rollback_attach(self, protocol: PlayerProtocol, attach: _Attach) -> None:
         """
-        Undo what a failed attach bound.
+        Undo what a failed attach did, also when a detach took its protocol away already.
 
         :param protocol: The protocol object that failed to attach.
         :param attach: The state of that attach.
         """
         protocol_id = protocol.protocol_id
-        if self._attaching.get(protocol_id) is not attach:
-            # a detach dropped it already, and it released the protocol itself
-            return
-        player = protocol.player
-        if self._protocols.get(protocol_id) is protocol:
-            del self._protocols[protocol_id]
-        self._release_held_protocol(protocol)
-        if player is not None:
-            player.remove_protocol(protocol_id)
-            protocol.set_player(None)
-        self._discard_unpublished_player(player, attach)
+        if self._attaching.get(protocol_id) is attach:
+            # no detach took the protocol off its player yet
+            player = protocol.player
+            if self._protocols.get(protocol_id) is protocol:
+                del self._protocols[protocol_id]
+            self._release_held_protocol(protocol)
+            if player is not None:
+                player.remove_protocol(protocol_id)
+                protocol.set_player(None)
+        self._discard_unpublished_player(attach)
         # protocols claim resources (event subscriptions, connections) that only
-        # on_detach releases
+        # on_detach releases, and a failing hook may have claimed them after a detach
         await self._run_on_detach(protocol)
 
-    def _discard_unpublished_player(self, player: Player | None, attach: _Attach) -> None:
+    def _discard_unpublished_player(self, attach: _Attach) -> None:
         """
         Drop what an attach that did not complete created and nobody saw yet.
 
         That is the player it created, and the config it stored for a new device: a
         device that is found again starts from scratch.
 
-        :param player: The player the protocol was bound to, if it got that far.
         :param attach: The state of the attach.
         """
+        player = attach.new_player
         if player is not None and player.initialized.is_set():
             return
         if player is not None and self._players.get(player.player_id) is player:
