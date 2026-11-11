@@ -15,13 +15,13 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import RepeatMode
+from music_assistant_models.enums import ProtocolRole, RepeatMode
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 
 from music_assistant.controllers.players.audio_sources import AudioSourceSession
-from music_assistant.models.player import LinkedOutputProtocol
+from music_assistant.models.player import Player
 from music_assistant.models.plugin import PluginProvider
-from tests.common import MockPlayer, MockProvider
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerSource
@@ -33,12 +33,7 @@ SOURCE_URI = "spotify_connect--test://audio_source/main"
 @pytest.fixture
 def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
-    mass = MagicMock()
-    mass.config.get_player_value = MagicMock(
-        side_effect=lambda _player_id, _key, default=None: default
-    )
-    mass.players.get_audio_source_session = MagicMock(return_value=None)
-    return mass
+    return mock_player_mass()
 
 
 @pytest.fixture
@@ -109,7 +104,7 @@ def _bound_plugin(mock_mass: MagicMock, source: AudioSource, player_id: str = PL
     mock_mass.get_providers_supporting_feature = MagicMock(return_value=[plugin])
 
 
-def _live_source(player: MockPlayer, uri: str = SOURCE_URI) -> PlayerSource | None:
+def _live_source(player: Player, uri: str = SOURCE_URI) -> PlayerSource | None:
     """Return the external source entry from the source list the player publishes."""
     player.refresh_state(signal_event=False)
     return next((x for x in player.state.source_list if x.id == uri), None)
@@ -134,7 +129,7 @@ def test_a_shuffle_report_tells_subscribers(mock_mass: MagicMock, provider: Mock
     player's change fingerprint, so a report that does not move it leaves every
     subscriber on the old value until something unrelated happens to fire.
     """
-    player = MockPlayer(provider, PLAYER_ID, "Player")
+    player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
     source = _audio_source(can_shuffle=True, can_repeat=True)
     _playing(mock_mass, source)
     # settle the baseline, so the next update only carries the report
@@ -152,7 +147,7 @@ def test_a_shuffle_report_tells_subscribers(mock_mass: MagicMock, provider: Mock
 
 def test_bound_source_gets_a_standing_entry(mock_mass: MagicMock, provider: MockProvider) -> None:
     """A source bound to this player is selectable without a session being active."""
-    player = MockPlayer(provider, PLAYER_ID, "Player")
+    player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
     _bound_plugin(mock_mass, _audio_source(can_initiate=True, can_play_pause=True))
 
     source = _live_source(player)
@@ -166,7 +161,7 @@ def test_source_bound_to_another_player_is_not_listed(
     mock_mass: MagicMock, provider: MockProvider
 ) -> None:
     """Another player's bound source stays out of this player's source menu."""
-    player = MockPlayer(provider, PLAYER_ID, "Player")
+    player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
     _bound_plugin(mock_mass, _audio_source(can_initiate=True), player_id="other_player")
 
     assert _live_source(player) is None
@@ -174,7 +169,7 @@ def test_source_bound_to_another_player_is_not_listed(
 
 def test_device_input_gets_a_standing_entry(mock_mass: MagicMock, provider: MockProvider) -> None:
     """An input of the player's own device is selectable without a session being active."""
-    player = MockPlayer(provider, PLAYER_ID, "Player")
+    player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
     _input_plugin(mock_mass, _audio_source(can_initiate=True), PLAYER_ID)
 
     assert _live_source(player) is not None
@@ -183,9 +178,14 @@ def test_device_input_gets_a_standing_entry(mock_mass: MagicMock, provider: Mock
 def test_input_reported_on_a_linked_protocol_lands_on_the_visible_player(
     mock_mass: MagicMock, provider: MockProvider
 ) -> None:
-    """An input the plugin reports for a protocol player is listed on the player it belongs to."""
-    player = MockPlayer(provider, PLAYER_ID, "Player")
-    player.set_linked_output_protocols([LinkedOutputProtocol("sendspin_x", "sendspin")])
+    """An input the plugin reports for an audio protocol is listed on the player it belongs to."""
+    player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
+    attach_mock(
+        MockProvider("sendspin", mass=mock_mass),
+        "sendspin_x",
+        role=ProtocolRole.AUDIO,
+        player=player,
+    )
     _input_plugin(mock_mass, _audio_source(can_initiate=True), "sendspin_x")
 
     assert _live_source(player) is not None
@@ -195,7 +195,7 @@ def test_input_of_another_device_is_not_listed(
     mock_mass: MagicMock, provider: MockProvider
 ) -> None:
     """Another device's input stays out of this player's source menu."""
-    player = MockPlayer(provider, PLAYER_ID, "Player")
+    player, _ = attach_mock(provider, "protocol_1", "Player", player_id=PLAYER_ID)
     _input_plugin(mock_mass, _audio_source(can_initiate=True), "other_player")
 
     assert _live_source(player) is None
