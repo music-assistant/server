@@ -61,6 +61,8 @@ from .const import (
 from .helpers import extract_preset_id, source_id
 
 if TYPE_CHECKING:
+    from music_assistant.models.player import Player
+
     from .client import SoundtouchDevice
     from .provider import BoseSoundTouchProvider
 
@@ -71,12 +73,12 @@ class BoseSoundTouchPlayer(PlayerProtocol):
     def __init__(
         self,
         provider: BoseSoundTouchProvider,
-        player_id: str,
+        protocol_id: str,
         client: SoundtouchDevice,
         info: Info,
     ) -> None:
         """Initialize the Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self._client = client
         self._device_id = info.device_id
         # Native announcements require a Bose developer app key; when configured the
@@ -90,7 +92,7 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         self._supported_player_options: set[PlayerOptionKeys] = set()
 
     async def setup(self, info: Info) -> None:
-        """Fetch initial state and start listening for device updates."""
+        """Fetch the initial state of the speaker."""
         self.set_static_attributes(info)
 
         # initial refresh no lock needed
@@ -109,6 +111,8 @@ class BoseSoundTouchPlayer(PlayerProtocol):
 
         self.update_state()
 
+    async def on_attach(self, player: Player) -> None:
+        """Listen to the updates the speaker pushes while the protocol is attached."""
         self._listener_task = self.mass.create_task(self._listen())
 
     def set_static_attributes(self, info: Info) -> None:
@@ -166,14 +170,14 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         )
         self.update_state()
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
         if self._listener_task:
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listener_task
             self._listener_task = None
-        await super().on_unload()
+        await super().on_detach()
 
     # --- Player commands ---
 
@@ -215,7 +219,7 @@ class BoseSoundTouchPlayer(PlayerProtocol):
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media."""
         async with self._update_lock:
-            media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+            media.uri = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
             # clear any pending AVT state to avoid wedging on rapid play_media
             self.logger.debug("Starting to play %s.", media.title)
             await self.avt.stop()
@@ -338,7 +342,7 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         self.logger.debug("Address updated to %s for player %s", ip_address, self.name)
         self._client.session_config.ip = ip_address
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
-        self.mass.players.trigger_player_update(self.player_id)
+        self.update_state()
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Get config entries."""
@@ -473,9 +477,11 @@ class BoseSoundTouchPlayer(PlayerProtocol):
             )
             return
         self.logger.info("Preset %s pressed on %s, playing %s", preset_id, self.name, media_id)
-        player_id = self.player_id if self.synced_to is None else self.synced_to
+        if (player := self.player) is None:
+            return
+        queue_id = player.state.synced_to or player.player_id
         try:
-            await self.mass.player_queues.play_media(queue_id=player_id, media=media_id)
+            await self.mass.player_queues.play_media(queue_id=queue_id, media=media_id)
         except MediaNotFoundError:
             self.logger.error(
                 "Unable to play media for preset %s, as the media does not exist.", preset_id
@@ -586,7 +592,7 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         """Refresh multiroom zone (group) membership from the speaker."""
         zone = await self._client.get_zone()
         if zone.leader and zone.leader.mac == self._device_id and zone.members:
-            members = [self.player_id]
+            members = [self.protocol_id]
             members.extend(
                 f"{PLAYER_ID_PREFIX}{member_id}"
                 for member_id in [x.mac for x in zone.members]
@@ -619,7 +625,7 @@ class BoseSoundTouchPlayer(PlayerProtocol):
             self._attr_elapsed_time = float(now_playing.time_information.position)
             self._attr_elapsed_time_last_updated = time.time()
 
-        active_queue = self.mass.player_queues.get(self.player_id)
+        active_queue = self.mass.player_queues.get(self.player.player_id) if self.player else None
         if (
             active_queue
             and active_queue.current_item
@@ -628,7 +634,7 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         ):
             # Music Assistant is the active source; audio is rendered via the linked
             # protocol and Music Assistant owns the metadata, so don't override it here.
-            self._attr_active_source = self.player_id
+            self._attr_active_source = self.protocol_id
             # resuming a paused UPnP stream plays a few seconds and then stalls,
             # so let Music Assistant stop and restart the stream at the position instead
             self._attr_supported_features.discard(PlayerFeature.PAUSE)
