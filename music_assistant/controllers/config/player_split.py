@@ -239,7 +239,7 @@ def _migrate_session_only_players(data: dict[str, Any]) -> None:
 
 def _is_customised(data: dict[str, Any], player_id: str, record: dict[str, Any]) -> bool:
     """Return whether the user changed something about a stored player."""
-    if record.get("name"):
+    if record.get("name") or not record.get("enabled", True):
         return True
     if any(key not in AUTOMATIC_KEYS for key in _values(record)):
         return True

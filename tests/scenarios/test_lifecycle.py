@@ -310,6 +310,27 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
     ]
 
 
+async def test_pre_split_session_only_player_the_user_disabled_stays_disabled(
+    scenario: Scenario,
+) -> None:
+    """A web player the user disabled before the split is still disabled when it next connects."""
+    sendspin = await scenario.add_provider("sendspin")
+    sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+
+    await scenario.seed_pre_split_config(
+        {"sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER | {"enabled": False}}
+    )
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.advance(15)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert scenario.events(EventType.PLAYER_ADDED) == []
+    assert [(c.player_id, c.enabled) for c in await scenario.player_configs()] == [
+        ("sendspin_web_3f2a", False)
+    ]
+
+
 # the stored config of a protocol-only player as written before the split: a universal player
 # config and the configs of its protocols pointing at it
 PRE_SPLIT_DEN_TV: dict[str, dict[str, Any]] = {

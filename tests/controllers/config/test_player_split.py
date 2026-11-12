@@ -359,12 +359,20 @@ def test_empty_wrapper_is_only_kept_when_the_user_customised_it() -> None:
     with_value = _record("up0008", UNIVERSAL_PLAYER, values={"icon": "mdi-x"})
     with_dsp = _record("up0009", UNIVERSAL_PLAYER)
     with_queue = _record("up0010", UNIVERSAL_PLAYER)
+    disabled = _record("up0011", UNIVERSAL_PLAYER, enabled=False)
     dsp = {"up0006": {"enabled": False}, "up0009": {"enabled": True}}
     queues = {"up0010": {"values": {"crossfade": True}}}
 
     result = _migrated(
         _settings(
-            plain, named, with_value, with_dsp, with_queue, player_dsp=dsp, player_queues=queues
+            plain,
+            named,
+            with_value,
+            with_dsp,
+            with_queue,
+            disabled,
+            player_dsp=dsp,
+            player_queues=queues,
         )
     )
 
@@ -382,6 +390,7 @@ def test_empty_wrapper_is_only_kept_when_the_user_customised_it() -> None:
         "up0008": _record("up0008", "", values={"icon": "mdi-x"}),
         "up0009": _record("up0009", ""),
         "up0010": _record("up0010", ""),
+        "up0011": _record("up0011", "", enabled=False),
     }
     assert result[CONF_PLAYER_PROTOCOLS] == {}
     assert result[CONF_PLAYER_DSP] == {"up0009": {"enabled": True}}
@@ -569,6 +578,7 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
         _record("ss_value", SENDSPIN, values={"hide_in_ui": True, "sendspin_static_delay": 5}),
         _record("ss_dsp", SENDSPIN),
         _record("ss_queue", SENDSPIN),
+        _record("ss_disabled", SENDSPIN, enabled=False),
         # the Sendspin clients of devices are protocols: of a player, or still without one
         _record("sq_hw", SQUEEZELITE),
         _protocol("esp_1", SENDSPIN, "sq_hw"),
@@ -579,7 +589,17 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
 
     result = _migrated(_settings(*records, player_dsp=dsp, player_queues=queues))
 
-    assert sorted(result[CONF_PLAYERS]) == ["sq_hw", "ss_dsp", "ss_named", "ss_queue", "ss_value"]
+    assert sorted(result[CONF_PLAYERS]) == [
+        "sq_hw",
+        "ss_disabled",
+        "ss_dsp",
+        "ss_named",
+        "ss_queue",
+        "ss_value",
+    ]
+    assert result[CONF_PLAYERS]["ss_disabled"] == _record(
+        "ss_disabled", SENDSPIN, enabled=False, values={"session_only": True}
+    )
     assert result[CONF_PLAYERS]["ss_named"] == _record(
         "ss_named", SENDSPIN, name="Tablet", values={"session_only": True}
     )
@@ -591,6 +611,7 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
         "esp_1",
         "esp_2",
         "sq_hw",
+        "ss_disabled",
         "ss_dsp",
         "ss_named",
         "ss_queue",
