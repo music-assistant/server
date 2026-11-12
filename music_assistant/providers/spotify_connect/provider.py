@@ -299,16 +299,7 @@ class SpotifyConnectProvider(PluginProvider):
         await super().loaded_in_mass()
         if self._assigned_player_ids:
             self._availability = PlayerAvailabilityTracker(self.mass)
-            self._unsubscribe = self.mass.subscribe(
-                self._on_player_event,
-                event_filter=(
-                    EventType.PLAYER_ADDED,
-                    EventType.PLAYER_REMOVED,
-                    EventType.PLAYER_CONFIG_UPDATED,
-                    EventType.PLAYER_UPDATED,
-                ),
-                id_filter=self._assigned_player_ids,
-            )
+            self._subscribe_player_events()
         # players come online after plugins load, so on a cold boot this typically starts
         # nothing yet: the events of players becoming available drive the daemon startups
         await self._reconcile()
@@ -647,6 +638,10 @@ class SpotifyConnectProvider(PluginProvider):
                     # to a source that can no longer stream
                     self._clear_active_player(daemon)
                     await self._stop_daemon(daemon)
+            if event.object_id and event.object_id not in self._connected_player_ids:
+                # merged into another player, which gets the daemon from now on
+                self._subscribe_player_events()
+                await self._reconcile()
             return
         if came_available and event.object_id:
             # a player that comes back earns a permanently failed daemon a fresh start
@@ -664,7 +659,7 @@ class SpotifyConnectProvider(PluginProvider):
             if self._unload_called:
                 return
             template = self.get_config_value(CONF_PUBLISH_NAME_TEMPLATE)
-            for player_id in self._assigned_player_ids:
+            for player_id in self._connected_player_ids:
                 if player_id in self._failed_player_ids:
                     # this daemon gave up permanently; blocked from restarts until the
                     # player comes back or the provider reloads
@@ -689,6 +684,28 @@ class SpotifyConnectProvider(PluginProvider):
                 await self._start_daemon(player, publish_name)
                 # the standing source entry feeds the player's cached source list
                 self.mass.players.trigger_player_update(player_id)
+
+    @property
+    def _connected_player_ids(self) -> tuple[str, ...]:
+        """Return the ids the connected players answer to now, also after one was merged."""
+        return tuple(
+            dict.fromkeys(map(self.mass.players.resolve_player_id, self._assigned_player_ids))
+        )
+
+    def _subscribe_player_events(self) -> None:
+        """Follow the lifecycle events of the connected players."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+        self._unsubscribe = self.mass.subscribe(
+            self._on_player_event,
+            event_filter=(
+                EventType.PLAYER_ADDED,
+                EventType.PLAYER_REMOVED,
+                EventType.PLAYER_CONFIG_UPDATED,
+                EventType.PLAYER_UPDATED,
+            ),
+            id_filter=self._connected_player_ids,
+        )
 
     async def _start_daemon(self, player: Player, publish_name: str) -> None:
         """

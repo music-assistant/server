@@ -650,6 +650,7 @@ def _reconcile_provider(
     assigned: tuple[str, ...],
     registered: dict[str, str],
     unavailable: set[str] | None = None,
+    legacy_ids: dict[str, str] | None = None,
 ) -> tuple[SpotifyConnectProvider, _ReconcileMocks]:
     """
     Build a bare provider with the real reconcile logic and mocked daemon control.
@@ -657,6 +658,7 @@ def _reconcile_provider(
     :param assigned: The connected player ids the provider was loaded with.
     :param registered: Currently registered player ids mapped to their display name.
     :param unavailable: Registered player ids that are currently unavailable.
+    :param legacy_ids: The ids of merged players, mapped to the player they went into.
     """
     prov = SpotifyConnectProvider.__new__(SpotifyConnectProvider)
     prov.logger = MagicMock()
@@ -680,6 +682,8 @@ def _reconcile_provider(
         return player
 
     mass.players.get_player.side_effect = get_player
+    legacy = legacy_ids if legacy_ids is not None else {}
+    mass.players.resolve_player_id.side_effect = lambda player_id: legacy.get(player_id, player_id)
     prov._availability = PlayerAvailabilityTracker(mass)
 
     async def start_daemon(player: MagicMock, publish_name: str) -> None:
@@ -789,6 +793,38 @@ async def test_player_removed_event_stops_daemon() -> None:
     await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p1"))
     mocks.stop_daemon.assert_awaited_once_with(daemon)
     assert not prov._daemons
+
+
+async def test_daemon_of_a_merged_player_runs_once_for_the_player_it_went_into() -> None:
+    """A connected player merged before the load gets one daemon, under its new id."""
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Kitchen"}, legacy_ids={"p_old": "p_new"}
+    )
+
+    await prov._reconcile()
+    await prov._reconcile()
+
+    mocks.start_daemon.assert_awaited_once()
+    assert list(prov._daemons) == ["p_new"]
+
+
+async def test_daemon_follows_a_connected_player_that_is_merged_into_another() -> None:
+    """A merge of the connected player moves its daemon to the player it went into."""
+    registered = {"p_old": "Kitchen"}
+    legacy_ids: dict[str, str] = {}
+    prov, mocks = _reconcile_provider(("p_old",), registered, legacy_ids=legacy_ids)
+    await prov.loaded_in_mass()
+    old_daemon = prov._daemons["p_old"]
+
+    registered.pop("p_old")
+    registered["p_new"] = "Kitchen"
+    legacy_ids["p_old"] = "p_new"
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_old"))
+
+    mocks.stop_daemon.assert_awaited_once_with(old_daemon)
+    assert list(prov._daemons) == ["p_new"]
+    # the events of the player it went into are followed from now on
+    assert mocks.mass.subscribe.call_args.kwargs["id_filter"] == ("p_new",)
 
 
 async def test_player_added_event_triggers_reconcile() -> None:
