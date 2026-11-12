@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from functools import partial
 
@@ -87,17 +88,24 @@ def test_ma_source_expires_only_if_player_remains_idle(
     player, protocol = _create_player()
     pending: dict[str, Callable[[], None]] = {}
     source_timer = f"set_mass_source_{PLAYER_ID}"
+    now = [1000.0]
 
     def schedule(
-        _delay: float,
+        delay: float,
         callback: Callable[..., None],
         *args: object,
         task_id: str | None = None,
         **kwargs: object,
     ) -> None:
         if task_id == source_timer:
-            pending[task_id] = partial(callback, *args, **kwargs)
+            # a timer runs once its delay has passed
+            def _fire() -> None:
+                now[0] += delay
+                callback(*args, **kwargs)
 
+            pending[task_id] = _fire
+
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
     monkeypatch.setattr(player.mass, "call_later", schedule)
     monkeypatch.setattr(player.mass, "cancel_timer", lambda task_id: pending.pop(task_id, None))
     player.set_active_mass_source("group_queue")
@@ -113,3 +121,39 @@ def test_ma_source_expires_only_if_player_remains_idle(
 
     expected_source = PLAYER_ID if resumed_state == PlaybackState.IDLE else "group_queue"
     assert player.state.active_source == expected_source
+
+
+def test_an_early_wake_up_keeps_the_ma_source_until_its_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wake-up that runs before the source is due arms the rest of the wait instead."""
+    player, protocol = _create_player()
+    armed: list[tuple[float, Callable[[], None]]] = []
+    now = [1000.0]
+
+    def schedule(
+        delay: float,
+        callback: Callable[..., None],
+        *args: object,
+        task_id: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        if task_id == f"set_mass_source_{PLAYER_ID}":
+            armed.append((delay, partial(callback, *args, **kwargs)))
+
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(player.mass, "call_later", schedule)
+    player.set_active_mass_source("group_queue")
+    protocol._attr_playback_state = PlaybackState.PLAYING
+    player.update_state(signal_event=False)
+    protocol._attr_playback_state = PlaybackState.IDLE
+    player.update_state(signal_event=False)
+
+    now[0] += 4.9
+    armed[-1][1]()
+    assert player.state.active_source == "group_queue"
+    assert armed[-1][0] == pytest.approx(0.1)
+
+    now[0] += 0.1
+    armed[-1][1]()
+    assert player.state.active_source == PLAYER_ID

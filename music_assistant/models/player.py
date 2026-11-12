@@ -51,7 +51,6 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
-    ATTR_POWER_ON_IN_PROGRESS,
     ATTR_REACHABLE,
     CONF_DEVICE_INFO,
     CONF_ENTRY_PLAYER_ICON,
@@ -110,6 +109,14 @@ MEDIA_IDENTITY_KEYS = frozenset(
         "current_media.palette",
     }
 )
+
+# How long the media updated callback waits, so a burst of state updates of one media change
+# fires it once.
+MEDIA_UPDATED_DEBOUNCE = 1
+
+# How long a player that went idle keeps naming the Music Assistant source it played: a device
+# that stops for a moment while its playback is replaced must not lose the queue it plays.
+MASS_SOURCE_IDLE_MEMORY = 5
 
 # config-derived cached properties (propcache keys in Player._cache); these are
 # only invalidated by set_config, all other cached properties are invalidated on
@@ -568,8 +575,14 @@ class Player:
         self._active_output_protocol: str | None = None
         self._extra_data: dict[str, Any] = {}
         self._active_mass_source: str | None = None
+        # when a player that went idle forgets its active mass source (monotonic)
+        self._active_mass_source_expires_at: float | None = None
         self._sleep_timer_expires_at: float | None = None
         self._sleep_timer_mode: SleepTimerMode | None = None
+        # a power on through the power control that waits for the device to come online
+        self._power_on_in_progress: bool = False
+        # when (monotonic) Music Assistant issued a power off the player has not reported yet
+        self._power_off_issued_at: float | None = None
         self._stop_called: bool = False
         self._external_pause_since: float | None = None
         self._ended_external_source: str | None = None
@@ -1352,6 +1365,7 @@ class Player:
         for protocol in self._protocols.values():
             protocol.invalidate_cache()
         self._expire_stale_external_pause()
+        self._expire_idle_mass_source()
         new_snapshot = self._collect_input_snapshot()
         if (
             not force_update
@@ -1384,23 +1398,28 @@ class Player:
         # track stop called state
         if effects.left_idle:
             self._stop_called = False
+            self._active_mass_source_expires_at = None
             self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         elif effects.went_idle:
             self._stop_called = True
-            # when we're going to idle,
-            # we want to reset the active mass source after a short delay
-            # this is done using a timer which gets reset if the player starts playing again
-            # before the timer is up, using the task_id
-            self.mass.call_later(
-                5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
-            )
+            # when we're going to idle, the active mass source is forgotten after a short
+            # delay, unless the player starts playing again before that
+            if self._active_mass_source is not None:
+                self._active_mass_source_expires_at = time.monotonic() + MASS_SOURCE_IDLE_MEMORY
+                self.mass.call_later(
+                    MASS_SOURCE_IDLE_MEMORY,
+                    self.update_state,
+                    task_id=f"set_mass_source_{self.player_id}",
+                )
         changed_values = self._diff_state(prev_state, reachable)
         if not MEDIA_IDENTITY_KEYS.isdisjoint(changed_values.keys()):
             # current media changed, call the media updated callback
             # debounce the callback to avoid multiple calls when multiple
             # state updates happen in a short time
             self.mass.call_later(
-                1, self._on_media_updated, task_id=f"player_media_updated_{self.player_id}"
+                MEDIA_UPDATED_DEBOUNCE,
+                self._on_media_updated,
+                task_id=f"player_media_updated_{self.player_id}",
             )
         # persist the default name if it changed
         if effects.default_name:
@@ -1605,6 +1624,7 @@ class Player:
         so we can restore it when needed (e.g. after switching to a plugin source).
         """
         self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
+        self._active_mass_source_expires_at = None
         self._active_mass_source = value
         self.update_state()
 
@@ -1633,6 +1653,38 @@ class Player:
     def sleep_timer_mode(self) -> SleepTimerMode | None:
         """Return the point at which the active sleep timer stops playback."""
         return self._sleep_timer_mode
+
+    @property
+    def power_on_in_progress(self) -> bool:
+        """Return if a power on through the power control waits for the device to come online."""
+        return self._power_on_in_progress
+
+    def set_power_on_in_progress(self, value: bool) -> None:
+        """
+        Set whether a power on through the power control waits for the device to come online.
+
+        May only be called by the PlayerController.
+
+        :param value: True while the power on waits for the device, False once it ended or
+            was called off.
+        """
+        self._power_on_in_progress = value
+        self.mark_state_dirty()
+
+    @property
+    def power_off_issued_at(self) -> float | None:
+        """Return when (monotonic) Music Assistant issued a power off that is not reported yet."""
+        return self._power_off_issued_at
+
+    def set_power_off_issued_at(self, value: float | None) -> None:
+        """
+        Set when (monotonic) Music Assistant issued a power off of the player.
+
+        May only be called by the PlayerController.
+
+        :param value: The time the power off was issued, None once the player reported it.
+        """
+        self._power_off_issued_at = value
 
     def mark_stop_called(self) -> None:
         """Mark that the STOP command was called on the player."""
@@ -1812,7 +1864,7 @@ class Player:
         control = self.mass.players.get_player_control(self.power_control)
         if control is None or not control.supports_power:
             return False
-        return not control.power_state or ATTR_POWER_ON_IN_PROGRESS in self._extra_data
+        return not control.power_state or self._power_on_in_progress
 
     def _missing_provider_reason(self) -> str | None:
         """Return why the player has no protocol at all, when its provider is not installed."""
@@ -2464,6 +2516,19 @@ class Player:
         if source is None or source in (self.player_id, own.protocol_id):
             return False
         return self.mass.player_queues.get(source) is None
+
+    def _expire_idle_mass_source(self) -> None:
+        """Forget the active mass source of a player that has been idle for long enough."""
+        if (expires_at := self._active_mass_source_expires_at) is None:
+            return
+        if (remaining := expires_at - time.monotonic()) > 0:
+            # a wake-up that runs a hair early would otherwise leave the source remembered
+            self.mass.call_later(
+                remaining, self.update_state, task_id=f"set_mass_source_{self.player_id}"
+            )
+            return
+        self._active_mass_source = None
+        self._active_mass_source_expires_at = None
 
     def _expire_stale_external_pause(self) -> None:
         """Report an external source that has been paused for a while as no longer active."""
