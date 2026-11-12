@@ -639,6 +639,21 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return protocol.player
         return self.get_player(protocol_or_player_id)
 
+    def get_player_id_of_protocol(self, protocol_id: str) -> str | None:
+        """
+        Return the id of the player a protocol belongs to, attached or not.
+
+        That is the player it is attached to, else the player its stored config names;
+        None for a protocol that is neither attached nor stored.
+
+        :param protocol_id: Id of the protocol.
+        """
+        if (protocol := self._protocols.get(protocol_id)) and protocol.player:
+            return protocol.player.player_id
+        if record := self.mass.config.get_protocol_record(protocol_id):
+            return cast("str | None", record.get("player_id"))
+        return None
+
     @api_command("players/get", required_scope=Scope.PLAYERS_READ)
     def get_player_state(
         self,
@@ -1968,7 +1983,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # it can never attach again without the protocol it rides on
             await self.remove_protocol(derived_id)
         protocol = self._protocols.get(protocol_id)
-        player_id = self._get_player_id_of_protocol(protocol_id)
+        player_id = self.get_player_id_of_protocol(protocol_id)
         await self.detach(protocol_id)
         self.mass.config.remove_protocol_record(protocol_id)
         if protocol is not None:
@@ -3098,7 +3113,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param protocol_id: Id of the protocol the user switched on again.
         """
-        player_id = self._get_player_id_of_protocol(protocol_id)
+        player_id = self.get_player_id_of_protocol(protocol_id)
         if not player_id or (player := self._players.get(player_id)) is None:
             return
         derived = [
@@ -3670,18 +3685,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self.mass.config.set(f"{conf_key}/provider", player.provider_id)
         if stored.get("player_type") != player.type:
             self.mass.config.set(f"{conf_key}/player_type", player.type)
-
-    def _get_player_id_of_protocol(self, protocol_id: str) -> str | None:
-        """
-        Return the id of the player a protocol belongs to, attached or not.
-
-        :param protocol_id: Id of the protocol.
-        """
-        if (protocol := self._protocols.get(protocol_id)) and protocol.player:
-            return protocol.player.player_id
-        if record := self.mass.config.get_protocol_record(protocol_id):
-            return cast("str | None", record.get("player_id"))
-        return None
 
     async def _restore_players(self) -> None:
         """Bring back every stored player that is enabled and kept while its device is away."""

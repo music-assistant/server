@@ -122,11 +122,11 @@ class ProtocolLinkingMixin:
             self, protocol_or_player_id: str
         ) -> Player | None: ...
 
+        def get_player_id_of_protocol(self, protocol_id: str) -> str | None: ...  # noqa: D102
+
         def wants_protocol(self, protocol_id: str) -> bool: ...  # noqa: D102
 
         async def _run_attach(self, protocol: PlayerProtocol, final: bool = False) -> None: ...
-
-        def _get_player_id_of_protocol(self, protocol_id: str) -> str | None: ...
 
     def _resolve_player_id(self, protocol: PlayerProtocol) -> str | None:
         """
@@ -587,7 +587,7 @@ class ProtocolLinkingMixin:
         if (protocol and protocol.session_only) or not record:
             msg = f"{name} only exists while it is connected and can not stand on its own"
             raise self._refused(msg, "unlink_session_only", name)
-        if not (player_id := self._get_player_id_of_protocol(protocol_id)):
+        if not (player_id := self.get_player_id_of_protocol(protocol_id)):
             raise InvalidDataError(f"Protocol {protocol_id} belongs to no player")
         if (protocol and protocol.underlying_protocol_id) or (record.get("values") or {}).get(
             CONF_UNDERLYING_PLAYER_ID
