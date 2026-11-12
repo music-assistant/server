@@ -42,7 +42,7 @@
     },
     "hue_latency_ms": {
       "label": "Light latency (ms)",
-      "description": "Milliseconds to render light updates ahead of the audio, to offset the Hue bridge and DTLS delay. Increase if the lights lag the music, decrease if they run ahead of it."
+      "description": "Milliseconds to render light updates ahead of the audio, to offset the delay of the Hue bridge or the Zigbee network. Increase if the lights lag the music, decrease if they run ahead of it."
     }
   },
   "setup_flow": {
