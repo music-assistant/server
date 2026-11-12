@@ -1,0 +1,12 @@
+{
+  "media": {
+    "folder": {
+      "radio_shows": {
+        "name": "Radio Shows"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Listen to live radio stations, podcasts, and on-demand radio shows from CBC Listen, the audio service of the Canadian public broadcaster CBC."
+  }
+}
