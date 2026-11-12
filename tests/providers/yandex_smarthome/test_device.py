@@ -71,6 +71,7 @@ class MockPlayer:
     supported_features: set[str] = field(default_factory=set)
     source_list: list[MockPlayerSource] = field(default_factory=list)
     active_source: str | None = None
+    legacy_ids: list[str] = field(default_factory=list)
     group_members: list[str] = field(default_factory=list)
     group_volume: int | None = None
     group_volume_muted: bool | None = None
@@ -638,6 +639,13 @@ class TestIsPlayerExposable:
     def test_synced_to_another(self) -> None:
         """Test synced to another."""
         assert is_player_exposable(_player(synced_to="other_player")) is False
+
+    def test_selected_player_merged_into_another_stays_exposed(self) -> None:
+        """A selected player that was merged into another is exposed as that one."""
+        merged_into = _player(player_id="player2", legacy_ids=["player1"])
+
+        assert is_player_exposable(merged_into, exposed_ids={"player1"}) is True
+        assert is_player_exposable(merged_into, exposed_ids={"player3"}) is False
 
 
 # ---------------------------------------------------------------------------
