@@ -418,13 +418,21 @@ class AirPlayReceiverProvider(PluginProvider):
         Align the running receiver daemons with the connected players.
 
         Starts a daemon for every connected player that is available, and restarts
-        a daemon whose advertised name drifted from the player's current name.
+        a daemon whose advertised name drifted from the player's current name. A player
+        keeps one receiver, also when several connected players were merged into it.
         """
         async with self._reconcile_lock:
             if self._unload_called:
                 return
             template = self.get_config_value(CONF_PUBLISH_NAME_TEMPLATE)
-            for player_id in self._assigned_player_ids:
+            receiver_ids = self._receiver_ids.values()
+            for stored_id in self._daemons.keys() - receiver_ids:
+                # merged into another connected player, whose own receiver stays
+                merged = self._daemons.pop(stored_id)
+                self._clear_active_player(merged)
+                await self._stop_receiver(merged)
+                self.mass.players.trigger_player_update(stored_id)
+            for player_id in receiver_ids:
                 if player_id in self._failed_player_ids:
                     # this daemon gave up permanently; blocked from restarts until the
                     # player comes back or the provider reloads
@@ -453,9 +461,22 @@ class AirPlayReceiverProvider(PluginProvider):
     @property
     def _connected_player_ids(self) -> tuple[str, ...]:
         """Return the ids the connected players answer to now, also after one was merged."""
-        return tuple(
-            dict.fromkeys(map(self.mass.players.resolve_player_id, self._assigned_player_ids))
-        )
+        return tuple(self._receiver_ids)
+
+    @property
+    def _receiver_ids(self) -> dict[str, str]:
+        """
+        Return the stored id that keys the receiver of each connected player, by its id now.
+
+        That is the id of the player itself when it is connected, else the first connected
+        player that was merged into it: the receiver keeps the port and name it had.
+        """
+        receiver_ids: dict[str, str] = {}
+        for stored_id in self._assigned_player_ids:
+            player_id = self.mass.players.resolve_player_id(stored_id)
+            if player_id not in receiver_ids or stored_id == player_id:
+                receiver_ids[player_id] = stored_id
+        return receiver_ids
 
     def _stored_ids_of(self, player_id: str) -> set[str]:
         """

@@ -240,6 +240,32 @@ async def test_receiver_follows_a_connected_player_that_is_merged_into_another()
     mocks.stop_receiver.assert_awaited_once_with(daemon)
 
 
+async def test_merge_of_two_connected_players_keeps_the_receiver_of_the_one_that_stays() -> None:
+    """Two connected players turn out to be one: one receiver stays, that of the kept player."""
+    registered = {"p_old": "Kitchen", "p_new": "Kitchen"}
+    legacy_ids: dict[str, str] = {}
+    prov, mocks = _reconcile_provider(("p_old", "p_new"), registered, legacy_ids=legacy_ids)
+    await prov.loaded_in_mass()
+    absorbed = prov._daemons["p_old"]
+    kept = prov._daemons["p_new"]
+
+    registered.pop("p_old")
+    legacy_ids["p_old"] = "p_new"
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_old"))
+    await prov._reconcile()
+
+    assert prov._daemons == {"p_new": kept}
+    mocks.stop_receiver.assert_awaited_once_with(absorbed)
+    assert prov.get_player_audio_sources("p_new") == [kept.audio_source]
+
+    restarted, restarted_mocks = _reconcile_provider(
+        ("p_old", "p_new"), registered, legacy_ids=legacy_ids
+    )
+    await restarted._reconcile()
+    assert list(restarted._daemons) == ["p_new"]
+    restarted_mocks.start_receiver.assert_called_once()
+
+
 async def test_player_added_event_triggers_reconcile() -> None:
     """A player registering (cold boot path) starts its daemon via the event handler."""
     prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
