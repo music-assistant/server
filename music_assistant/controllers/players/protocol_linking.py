@@ -166,7 +166,13 @@ class ProtocolLinkingMixin:
         if protocol.session_only:
             # what only exists while it is connected stands for no device
             return None
-        for player_id in self._get_candidate_player_ids():
+        candidates = sorted(
+            self._get_candidate_player_ids(),
+            # a player holding a protocol of its provider that is away is where the device
+            # came back to under another id
+            key=lambda player_id: self._get_replaced_protocol_id(protocol, player_id) is None,
+        )
+        for player_id in candidates:
             if not self._can_attach_to(protocol, identity, player_id):
                 continue
             if not matches_device(identity, self._identity_parts(player_id)):

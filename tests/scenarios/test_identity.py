@@ -700,6 +700,52 @@ async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switche
     }
 
 
+@pytest.mark.parametrize(
+    "first", ["RINCON_5478C9E60DA001400", "media_player.kitchen"], ids=["vendor", "twin"]
+)
+async def test_a_twin_under_a_new_entity_id_returns_to_its_own_player(
+    scenario: Scenario, first: str
+) -> None:
+    """
+    A twin stored as a player of its own that comes back under a new entity id goes there.
+
+    It takes over the record of the entity it replaces, whichever of the two players is
+    listed first, and never joins the vendor player.
+    """
+    speaker = await _speaker(scenario)
+    for protocol in (speaker.vendor, speaker.twin):
+        scenario.set_present(protocol.protocol_id, True)
+    stored = {
+        player_id: PRE_SPLIT_SPEAKER_AND_TWIN[player_id]
+        for player_id in sorted(
+            PRE_SPLIT_SPEAKER_AND_TWIN, key=lambda player_id: player_id != first
+        )
+    }
+    await scenario.seed_pre_split_config(stored)
+    await scenario.idle()
+    # the entity is renamed while the server is down
+    scenario.set_present(speaker.twin.protocol_id, False)
+    await scenario.restart()
+    await scenario.idle()
+    if scenario.mass.players.all_player_states()[0].player_id != first:
+        msg = f"{first} is not the first player"
+        raise ScenarioError(msg)
+
+    renamed = scenario.provider("hass_players").protocol(
+        "media_player.kitchen_2",
+        "Kitchen speaker",
+        identifiers={IdentifierType.MAC_ADDRESS: SPEAKER[IdentifierType.MAC_ADDRESS]},
+    )
+    await scenario.attach(renamed)
+    await scenario.idle()
+
+    assert scenario.player_of(renamed) == "media_player.kitchen"
+    assert [
+        p.outputs for p in scenario.players_carrying(scenario.protocol(speaker.vendor.protocol_id))
+    ] == [(("sonos", True),)]
+    assert await scenario.stored_config_mentioning('"media_player.kitchen"') == []
+
+
 async def test_a_removed_player_of_a_speaker_comes_back_with_the_same_roles(
     scenario: Scenario,
 ) -> None:
