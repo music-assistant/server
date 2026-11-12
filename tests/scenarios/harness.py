@@ -776,6 +776,10 @@ class Scenario:
                 # the loop can run meanwhile, and a loop timer would wait for the clock
                 time.sleep(0.001)  # noqa: ASYNC251
 
+    def wall_time(self) -> float:
+        """Return the wall clock time as the server reads it (time.time()), for reported state."""
+        return self._clock.wall_time()
+
     def protocol(self, protocol_id: str) -> FakeProtocol:
         """
         Return the protocol object of a device on the running server and provider instance.

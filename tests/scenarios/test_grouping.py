@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
-from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    PlayerCommandFailed,
+    UnsupportedFeaturedException,
+)
+
+from tests.common import as_user
 
 from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakePlayerProvider, FakeProtocol, Scenario
 
@@ -315,6 +321,72 @@ async def test_a_native_session_moves_to_the_protocol_a_new_member_needs(
     assert _state(scenario, lounge_id).playback_state == PlaybackState.PLAYING
 
 
+async def test_a_leader_paused_during_the_join_moves_its_output_without_resuming(
+    scenario: Scenario,
+) -> None:
+    """
+    A leader the device pauses while the member joins hands its output over, paused.
+
+    The playback moves to the leader's AirPlay protocol for the new member as it does while it
+    plays, but nothing resumes it there.
+    """
+    lounge_airplay, lounge_id, study_id = await _mixed_makes(scenario)
+    lounge = scenario.protocol("sonos_lounge")
+    await scenario.play(lounge_id)
+    join = lounge_airplay.set_members
+
+    async def _paused_on_the_device_while_it_joins(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        await scenario.report(lounge, playback_state=PlaybackState.PAUSED)
+        await join(player_ids_to_add, player_ids_to_remove)
+
+    lounge_airplay.set_members = _paused_on_the_device_while_it_joins  # type: ignore[method-assign]
+
+    await scenario.mass.players.cmd_set_members(lounge_id, player_ids_to_add=[study_id])
+    await scenario.idle()
+
+    assert _grouping_commands(lounge_airplay) == [("set_members", ["airplay_study"], None)]
+    assert _active_output(scenario, lounge_id) == "airplay_lounge"
+    assert not any(command[0] in ("play_media", "play") for command in lounge_airplay.commands)
+    assert _state(scenario, study_id).synced_to == lounge_id
+    assert _state(scenario, lounge_id).playback_state != PlaybackState.PLAYING
+
+
+async def test_a_member_is_paused_through_its_leader_and_leaves_on_its_own_access(
+    scenario: Scenario,
+) -> None:
+    """
+    A pause on a member reaches its leader and needs access to the leader too.
+
+    Leaving the group needs access to the member only.
+    """
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id])
+    await scenario.idle()
+    await scenario.play(kitchen_id)
+
+    with as_user([office_id]), pytest.raises(InsufficientPermissions):
+        await scenario.mass.players.cmd_pause(office_id)
+    await scenario.idle()
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+
+    with as_user([office_id, kitchen_id]):
+        await scenario.mass.players.cmd_pause(office_id)
+    await scenario.idle()
+    assert "pause" in [command[0] for command in kitchen.commands]
+    assert "pause" not in [command[0] for command in office.commands]
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PAUSED
+
+    with as_user([office_id]):
+        await scenario.mass.players.cmd_ungroup(office_id)
+    await scenario.idle()
+    assert _grouping_commands(kitchen)[-1] == ("set_members", None, ["sonos_office"])
+    assert _state(scenario, office_id).synced_to is None
+
+
 async def test_powering_off_a_member_takes_it_out_of_its_group(scenario: Scenario) -> None:
     """A member that is powered off leaves its group; the leader keeps the others."""
     _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
@@ -582,3 +654,37 @@ async def test_ungrouping_a_member_of_a_fixed_group_ends_the_groups_session(
     assert _state(scenario, office_id).synced_to is None
     assert _state(scenario, office_id).active_group is None
     assert _state(scenario, kitchen_id).active_group is None
+
+
+async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
+    scenario: Scenario,
+) -> None:
+    """
+    A member of a playing group with a fixed member list that drops off and returns rejoins.
+
+    The leader's device lets the member go while it is away; once it is back, its leader takes
+    it again and the group plays on.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group = await scenario.mass.players.create_group_player(
+        "sync_group", "Downstairs", [kitchen_id, office_id, den_id], dynamic=False
+    )
+    group_id = group.player_id
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    await scenario.detach(office)
+    # the leader's device drops the member it lost
+    await scenario.report(kitchen, group_members=["sonos_kitchen", "sonos_den"])
+    await scenario.idle()
+    assert _state(scenario, kitchen_id).group_members == [kitchen_id, den_id]
+
+    await scenario.attach(office)
+    await scenario.idle()
+
+    assert _grouping_commands(kitchen)[-1] == ("set_members", ["sonos_office"], None)
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)

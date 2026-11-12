@@ -41,6 +41,7 @@ once and that every test it names exists.
 - [Commands to a busy player](#commands-to-a-busy-player) (BUSY)
 - [What a stopped player keeps for a moment](#what-a-stopped-player-keeps-for-a-moment) (KEEP)
 - [Grouping](#grouping) (GROUP)
+- [Where playback goes](#where-playback-goes) (OUTPUT)
 
 ## A device appears
 
@@ -85,6 +86,18 @@ about it, and it plays.
 
 - End-to-end: **no**: there is no virtual device that its provider disables by default.
 - Proven by: `test_lifecycle.py::test_disabled_by_default_device_is_no_player_until_enabled`
+
+### APPEAR-5 · A device whose first setup fails or is called off is no player
+
+A provider finds the Kitchen speaker, but its setup fails, or is called off halfway, as a new
+discovery round does. No player appears, clients are told about none, and nothing of it is
+stored. After a failed setup there is still no player after a restart. A setup that was called
+off leaves the device free: once its provider finds it again, it is the player Kitchen.
+
+- End-to-end: **no**: it needs a device whose setup fails or stalls on purpose.
+- Proven by:
+  - `test_attach_detach.py::test_a_new_device_whose_setup_is_called_off_leaves_nothing_behind`
+  - `tests/controllers/players/test_attach_detach.py::test_failed_attach_of_a_new_device_leaves_nothing_behind`
 
 ## A device goes away and comes back
 
@@ -151,6 +164,15 @@ fails as unavailable, and since the device never came, the player shows as unava
 - End-to-end: **possible with** a power control the lab can switch and a container that stays
   stopped.
 - Proven by: `test_player_memory.py::test_a_stop_calls_off_a_power_on_that_waits_for_the_device`
+
+### AWAY-6 · A device that comes back finds its queue where it was
+
+The Kitchen speaker drops off the network while it plays. Its queue stops and keeps its item and
+the position it got to. The provider finds the speaker again, idle: nothing plays by itself, and
+the queue still has that item at that position. A resume plays the item from there.
+
+- End-to-end: **yes**. Stop the container of a playing virtual player, start it again, resume.
+- Proven by: `test_attach_detach.py::test_a_returning_device_resumes_where_its_queue_was`
 
 ## Several devices on one host
 
@@ -573,6 +595,16 @@ restart.
 - End-to-end: **no**: it is about records an older version stores.
 - Proven by: `test_identity.py::test_the_cleanup_at_start_keeps_every_player_of_this_version`
 
+### RESTART-6 · A stored player of a provider that is not installed says so
+
+The settings hold the Patio player of a provider this install does not have, and the Kitchen
+player of the Sonos provider, which is installed but not set up. After the start both are
+listed, unavailable. Patio gives as its setup reason that its provider is not installed; Kitchen
+gives no setup reason.
+
+- End-to-end: **no**: the lab boots fresh, without stored players.
+- Proven by: `test_lifecycle.py::test_a_stored_player_whose_provider_is_not_installed_says_so`
+
 ## Removing and disabling
 
 What goes when the user removes a provider, removes a player or disables one. Clients learn
@@ -676,6 +708,17 @@ connects, no player appears and no player is announced as added; the settings li
 - End-to-end: **no**: the lab has no settings of an older version.
 - Proven by: `test_lifecycle.py::test_pre_split_session_only_player_the_user_disabled_stays_disabled`
 
+### WEB-7 · A browser player is offered to a plugin only while it is the plugin's choice
+
+A plugin builds its settings with the server's player pickers: one player, or the players it
+connects to. With the Living speaker and a browser connected, the pickers offer Living only. A
+browser player that is already the plugin's choice stays offered next to it, so that saving the
+form keeps it.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player, and the
+  settings form of a plugin that uses these pickers.
+- Proven by: `test_lifecycle.py::test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choice`
+
 ## Commands to a busy player
 
 Commands to one player run one at a time: a command waits for the one before it.
@@ -717,8 +760,8 @@ gets the full 5 s again.
 
 ### KEEP-2 · Playing again within 5 s keeps the source
 
-The Den speaker stops and plays again 3 s later. It keeps naming the group's queue as its
-source, also long after the 5 s.
+The Den speaker stops and plays again 3 s later, or is paused 3 s later. It keeps naming the
+group's queue as its source, also long after the 5 s.
 
 - End-to-end: **possible with** a source read at margins well inside the 5 s.
 - Proven by: `test_player_memory.py::test_playing_again_within_5_seconds_keeps_the_source`
@@ -888,3 +931,64 @@ to nothing, and neither Kitchen nor Office plays for Downstairs any more.
 
 - End-to-end: **yes**. A static sync group of two Squeezelite players.
 - Proven by: `test_grouping.py::test_ungrouping_a_member_of_a_fixed_group_ends_the_groups_session`
+
+### GROUP-18 · A returning member of a fixed group rejoins its leader
+
+Downstairs is a sync group with a fixed member list, Kitchen, Office and Den, and plays with
+Kitchen leading. Office drops off the network, and Kitchen's device lets it go. When the provider
+finds Office again, Kitchen takes it back: Office shows as synced to Kitchen, and Downstairs plays
+on.
+
+- End-to-end: **yes**. A static sync group of three Squeezelite players; restart the container
+  of a member.
+- Proven by: `test_grouping.py::test_a_returning_member_of_a_fixed_group_rejoins_its_leader`
+
+### GROUP-19 · A leader the device pauses during a group change moves without resuming
+
+Lounge plays through its own protocol. The user adds Study, which can only follow over AirPlay.
+While Lounge's AirPlay receiver takes Study, Lounge is paused at the device. Study shows as synced
+to Lounge and Lounge's output moves to its AirPlay receiver, as in GROUP-10, but nothing resumes
+the playback there: the receiver gets no play, and Lounge does not play.
+
+- End-to-end: **no**: the pause has to fall within the group change.
+- Proven by: `test_grouping.py::test_a_leader_paused_during_the_join_moves_its_output_without_resuming`
+
+### GROUP-20 · A member is paused through its leader, and leaves on its own access
+
+Kitchen leads Office and plays. A user who may only use Office pauses Office: that is refused,
+as Kitchen owns the playback, and Kitchen plays on. A user who may use both pauses Office: the
+pause reaches Kitchen, not Office, and Kitchen is paused. The user who may only use Office
+ungroups it: Kitchen lets Office go, and Office is synced to nothing.
+
+- End-to-end: **possible with** two Squeezelite players and a user limited to one of them.
+- Proven by: `test_grouping.py::test_a_member_is_paused_through_its_leader_and_leaves_on_its_own_access`
+
+## Where playback goes
+
+A player plays through one of its outputs, and what the device plays by itself is steered
+through the protocol that plays it. These scenarios show which output plays and where a
+transport command goes.
+
+### OUTPUT-1 · A player plays through the output the user prefers, else through its own
+
+The Kitchen speaker has its own protocol and an AirPlay receiver: it plays through its own
+protocol. Once the user prefers the AirPlay receiver as its output, it plays through that, and
+names it as its active output. A LinkPlay device, which is controlled without an audio path of
+its own, plays through its DLNA renderer, the output LinkPlay prefers, and not through its
+AirPlay receiver, which otherwise ranks higher.
+
+- End-to-end: **possible with** a host that runs a native player and an AirPlay receiver, such as
+  Squeezelite and shairport-sync.
+- Proven by:
+  - `test_outputs.py::test_playback_goes_to_the_output_the_user_prefers`
+  - `tests/providers/wiim/test_linkplay_control.py::test_playback_goes_to_dlna_before_a_higher_priority_output`
+
+### OUTPUT-2 · Transport commands follow the app that plays on the device
+
+A Spotify Connect session plays on the DLNA renderer of a LinkPlay device. The player names
+Spotify as its source and offers next and previous. Pause, play and next reach the renderer, in
+that order, and the player shows paused after the pause.
+
+- End-to-end: **possible with** the WiiM bench device, with a Spotify Connect session started on
+  it.
+- Proven by: `tests/providers/wiim/test_linkplay_control.py::test_transport_commands_reach_an_app_playing_on_the_renderer`
