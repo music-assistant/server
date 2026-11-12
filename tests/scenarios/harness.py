@@ -52,7 +52,7 @@ from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
     import pathlib
-    from collections.abc import Callable, Coroutine, Iterator, Mapping
+    from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping
 
     import pytest
     from music_assistant_models.config_entries import PlayerConfig, ProviderConfig
@@ -183,8 +183,15 @@ class FakeProtocol(PlayerProtocol):
         self._attr_session_only = device.session_only
         self._device = device
         self._attr_supported_features = set(DEFAULT_FEATURES)
+        # whether its native grouping only works while it renders its own stream (AirPlay)
+        self._attr_native_grouping_requires_own_stream = False
         self._attr_device_info = DeviceInfo(model=f"Fake {provider.domain}", manufacturer="Fake")
         self._set_reported(identifiers=dict(device.identifiers), **device.state)
+
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return whether native grouping only works while this device renders its own stream."""
+        return self._attr_native_grouping_requires_own_stream
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return the protocol's own config entry."""
@@ -251,22 +258,35 @@ class FakeProtocol(PlayerProtocol):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Handle a set members command."""
+        """Handle a set members command; a device that joins leaves the group it was in."""
+        for protocol_id in player_ids_to_add or []:
+            for leader in cast("FakePlayerProvider", self.provider)._protocols.values():
+                if leader is not self and protocol_id in leader._attr_group_members:
+                    leader._report_members(leader._attr_group_members, [protocol_id])
         members = dict.fromkeys(self._attr_group_members)
         members.update(dict.fromkeys(player_ids_to_add or []))
-        for player_id in player_ids_to_remove or []:
-            members.pop(player_id, None)
-        others = [protocol_id for protocol_id in members if protocol_id != self.protocol_id]
         self._apply(
             "set_members",
             player_ids_to_add,
             player_ids_to_remove,
-            group_members=[self.protocol_id, *others] if others else [],
+            group_members=self._members_without(members, player_ids_to_remove or []),
         )
 
     async def on_remove(self) -> None:
         """Drop this object from its provider, which then finds the device again as a new one."""
         cast("FakePlayerProvider", self.provider)._protocols.pop(self.protocol_id, None)
+
+    def _report_members(self, members: Iterable[str], removed: Iterable[str]) -> None:
+        """Report the group without the removed members, the way the device reports it."""
+        self._set_reported(group_members=self._members_without(dict.fromkeys(members), removed))
+        self.update_state()
+
+    def _members_without(self, members: dict[str, None], removed: Iterable[str]) -> list[str]:
+        """Return the group members without the removed ones, itself first, empty when alone."""
+        for protocol_id in removed:
+            members.pop(protocol_id, None)
+        others = [protocol_id for protocol_id in members if protocol_id != self.protocol_id]
+        return [self.protocol_id, *others] if others else []
 
     def _apply(self, command: str, *args: Any, **state: Any) -> None:
         """Record a command and report the state it leads to."""
