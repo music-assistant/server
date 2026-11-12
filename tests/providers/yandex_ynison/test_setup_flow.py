@@ -33,6 +33,7 @@ def _player(player_id: str = "living-room", name: str = "Living room") -> MagicM
     player.player_id = player_id
     player.display_name = name
     player.type = PlayerType.PLAYER
+    player.session_only = False
     return player
 
 

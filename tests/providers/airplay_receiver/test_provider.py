@@ -14,6 +14,7 @@ from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.player import PlayerAvailabilityTracker
+from music_assistant.models.player import Player
 from music_assistant.providers.airplay_receiver import (
     AirPlayReceiverProvider,
     airplay_receiver_ports,
@@ -422,6 +423,34 @@ def test_a_fatal_log_line_marks_the_daemon_started() -> None:
     prov._process_shairport_log_line(daemon, "fatal error: Could not bind any listening ports")
 
     assert daemon.started.is_set()
+
+
+# --- Receiver config ------------------------------------------------------------
+
+
+async def test_receiver_config_starts_at_the_volume_of_the_player(tmp_path: Path) -> None:
+    """The receiver's default volume is the level the player's state shows."""
+    prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
+    prov.mass = MagicMock()
+    player = MagicMock(spec=Player)
+    player.state.volume_level = 40
+    prov.mass.players.get_player.return_value = player
+    prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
+    daemon = MagicMock(
+        player_id="pl0123456789ab",
+        airplay_name="Player A",
+        port=7000,
+        config_file=str(tmp_path / "shairport.conf"),
+    )
+    daemon.metadata_pipe.path = str(tmp_path / "metadata")
+    daemon.audio_pipe.path = str(tmp_path / "audio")
+
+    await prov._create_config_file(daemon)
+
+    prov.mass.players.get_player.assert_called_once_with("pl0123456789ab")
+    # 40 % of the -30.0 to 0.0 dB range
+    config = (tmp_path / "shairport.conf").read_text(encoding="utf-8")
+    assert "default_airplay_volume = -18.0;" in config
 
 
 def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:

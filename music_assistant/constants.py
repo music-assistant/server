@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 108
+API_SCHEMA_VERSION: Final[int] = 109
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -130,6 +130,8 @@ CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
+CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
 # the registered folders that were a mountpoint when they were registered
 CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"
@@ -138,8 +140,7 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
-# the config of a protocol object is stored among the player configs, under its own id
-CONF_PLAYER_PROTOCOLS: Final[str] = CONF_PLAYERS
+CONF_PLAYER_PROTOCOLS: Final[str] = "player_protocols"
 CONF_PLAYER_QUEUES: Final[str] = "player_queues"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
@@ -201,12 +202,20 @@ CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
-CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
-CONF_PROTOCOL_PARENT_ID: Final[str] = (
-    "protocol_parent_id"  # cached native player ID for protocol player
-)
+CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available protocol
+# a player that only exists while its device is connected (a browser tab, an app)
+CONF_SESSION_ONLY: Final[str] = "session_only"
+# the device info a player last published, for when none of its protocols is attached
+CONF_DEVICE_INFO: Final[str] = "device_info"
+# the identifiers a player from before the protocols kept their own stored for its device
+CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
+# the identifiers a protocol reported for its device, as [type, value] pairs
+CONF_PROTOCOL_IDENTIFIERS: Final[str] = "identifiers"
+# the moment a player was created, as a nanosecond timestamp so players created in
+# the same second still order
+CONF_CREATED_AT: Final[str] = "created_at"
 CONF_UNDERLYING_PLAYER_ID: Final[str] = (
-    "underlying_player_id"  # player this (bridge) protocol player is derived from
+    "underlying_player_id"  # protocol this (bridge) protocol is derived from
 )
 # Translation key of the warning a provider stores on a protocol player it considers
 # experimental. Its presence also makes the output's enable entry default to disabled;
@@ -1074,6 +1083,10 @@ FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
+
+# setup reason of a player without any protocol whose provider is not installed
+SETUP_REASON_PROVIDER_NOT_INSTALLED: Final[str] = "provider_not_installed"
+
 DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)

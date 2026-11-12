@@ -64,17 +64,16 @@ async def test_multi_client_stream_content_type_describes_output_format(
 
 
 def _synced_member() -> tuple[MagicMock, SqueezelitePlayer, MagicMock]:
-    """Return a mocked provider whose registered player 'member' is synced to 'leader'."""
+    """Return a mocked provider whose attached protocol 'member' is synced to 'leader'."""
     leader = SqueezelitePlayer.__new__(SqueezelitePlayer)
-    leader._player_id = "leader"
+    leader._protocol_id = "leader"
     leader._attr_group_members = ["leader", "member"]
     update_state = MagicMock()
     leader.update_state = update_state  # type: ignore[misc,method-assign]
-    member = MagicMock(player_id="member", synced_to="leader")
+    member = MagicMock(protocol_id="member", synced_to="leader")
     provider = MagicMock()
     provider.mass.closing = False
-    provider.mass.players.get_player.side_effect = {"leader": leader, "member": member}.get
-    provider.get_protocol = lambda pid: provider.mass.players.get_player(pid)
+    provider.get_protocol = MagicMock(side_effect={"leader": leader, "member": member}.get)
     provider._release_from_sync_leader = partial(
         SqueezelitePlayerProvider._release_from_sync_leader, provider
     )
@@ -82,7 +81,7 @@ def _synced_member() -> tuple[MagicMock, SqueezelitePlayer, MagicMock]:
 
 
 def test_disconnected_member_leaves_its_sync_leader() -> None:
-    """A synced player that disconnects is dropped from its leader, so it returns ungrouped."""
+    """A synced player that disconnects is dropped from its leader and detached from its player."""
     provider, leader, update_state = _synced_member()
     event = SlimEvent(type=SlimEventType.PLAYER_DISCONNECTED, player_id="member")
 
@@ -90,7 +89,7 @@ def test_disconnected_member_leaves_its_sync_leader() -> None:
 
     assert leader.group_members == []
     update_state.assert_called_once()
-    provider.mass.players.unregister.assert_called_once_with("member")
+    provider.mass.players.detach.assert_called_once_with("member")
 
 
 def test_reconnected_member_leaves_its_sync_leader() -> None:
@@ -107,7 +106,10 @@ def test_reconnected_member_leaves_its_sync_leader() -> None:
 def test_the_display_name_is_the_one_set_in_music_assistant() -> None:
     """The name for a client comes from Music Assistant's player, and is None for an unknown one."""
     provider = MagicMock()
-    provider.mass.players.get_player.side_effect = {"p1": MagicMock(display_name="Kitchen")}.get
+    # the CLI names a client by its slimproto id, which is the id of its protocol
+    provider.mass.players.get_player_by_protocol.side_effect = {
+        "p1": MagicMock(display_name="Kitchen")
+    }.get
 
     assert SqueezelitePlayerProvider._lookup_display_name(provider, "p1") == "Kitchen"
     assert SqueezelitePlayerProvider._lookup_display_name(provider, "other") is None
@@ -125,18 +127,16 @@ async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None
     assert provider.slimproto.cli.display_name_lookup == provider._lookup_display_name
 
 
-async def test_connected_player_without_player_object_is_registered() -> None:
-    """A connected client whose player was removed gets a new player; registered or disabled not."""
+async def test_connected_client_without_attached_protocol_is_attached() -> None:
+    """A connected client whose player was removed is attached again; attached or disabled not."""
     provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
-    registered = MagicMock(player_id="registered")
+    attached = MagicMock(player_id="attached")
     removed = MagicMock(player_id="removed")
     disabled = MagicMock(player_id="disabled")
-    provider.slimproto = MagicMock(players=[registered, removed, disabled])
+    provider.slimproto = MagicMock(players=[attached, removed, disabled])
     provider.mass = MagicMock()
-    provider.mass.players.get_player.side_effect = {"registered": MagicMock()}.get
-    provider.mass.config.get_protocol_value.side_effect = lambda player_id, *_: (
-        player_id != "disabled"
-    )
+    provider.mass.players.get_protocol.side_effect = {"attached": MagicMock()}.get
+    provider.mass.players.wants_protocol.side_effect = lambda protocol_id: protocol_id != "disabled"
 
     with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer") as player_class:
         player_class.return_value.setup = AsyncMock()
@@ -144,3 +144,18 @@ async def test_connected_player_without_player_object_is_registered() -> None:
 
     player_class.assert_called_once_with(provider, "removed", removed)
     player_class.return_value.setup.assert_awaited_once()
+
+
+def test_a_client_of_a_disabled_player_gets_no_commands() -> None:
+    """A client that connects while its player is disabled is left alone until enabled."""
+    provider = MagicMock()
+    provider.mass.closing = False
+    provider.get_protocol = MagicMock(return_value=None)
+    provider.mass.players.wants_protocol = MagicMock(return_value=False)
+    event = SlimEvent(type=SlimEventType.PLAYER_CONNECTED, player_id="disabled")
+
+    with patch("music_assistant.providers.squeezelite.provider.SqueezelitePlayer") as player_class:
+        SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
+
+    player_class.assert_not_called()
+    provider.mass.players.wants_protocol.assert_called_once_with("disabled")

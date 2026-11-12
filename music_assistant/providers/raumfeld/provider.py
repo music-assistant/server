@@ -66,8 +66,8 @@ from .helpers import (
     parse_line_in,
     parse_model_name,
     parse_serial_number,
-    room_udn_to_player_id,
-    serial_to_player_id,
+    room_udn_to_protocol_id,
+    serial_to_protocol_id,
 )
 from .host import RaumfeldHost
 from .player import RaumfeldPlayer
@@ -118,7 +118,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _line_in: dict[str, tuple[str, str]]
     # when the station buttons were last read
     _library_read_at: float = 0.0
-    # room name -> renderer hardware serial, the basis for the player_id. Read from the
+    # room name -> renderer hardware serial, the basis for the protocol id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
     # room name -> UDN of the renderer the room's serial, model and control URL were read from
@@ -128,7 +128,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # room name -> AVTransport control URL of its renderer as the description gives it,
     # usually relative to the renderer's own address
     _room_transport_paths: dict[str, str]
-    # room name -> player_id, derived from _room_serials on every sync (see _assign_room_ids)
+    # room name -> protocol id, derived from _room_serials on every sync (see _assign_room_ids)
     _room_ids: dict[str, str]
     # rooms already warned about sharing a serial, so the warning goes out once per room
     _shared_serial_warned: set[str]
@@ -136,6 +136,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # last connect: a speaker that installed an update restarts, and the host with it
     _room_versions: dict[str, str]
     _versions_read: set[str]
+    # held while the rooms are synced, which discovery and the supervisor both do
+    _sync_lock: asyncio.Lock
 
     def line_in(self, renderer_uuid: str | None) -> tuple[str, str] | None:
         """Return the ``(stream url, title)`` of a room's Line-In input, or ``None``."""
@@ -216,6 +218,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._shared_serial_warned = set()
         self._room_versions = {}
         self._versions_read = set()
+        self._sync_lock = asyncio.Lock()
         # empty until connected; replaced by a fresh one on every connect
         self.host = RaumfeldHost(self.mass.http_session, self._host_url, self._handle_rooms_changed)
         self.room_events = RendererEvents(
@@ -259,6 +262,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 )
         except TimeoutError:
             self.logger.debug("Ending the Raumfeld renderer events took too long")
+
+    async def discover_players(self) -> None:
+        """Attach the rooms of the connected host that have no attached protocol."""
+        # the supervisor does the same on every check of the host; this brings a room back
+        # without waiting for it, after its player was enabled or removed
+        if self._connected:
+            await self._sync_rooms()
 
     def get_zone_for_room(self, room: str) -> list[str] | None:
         """
@@ -396,8 +406,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 else:
                     self._host_check_failures = 0
                     # host still healthy: re-sync so a room that (re)appeared or vanished
-                    # (e.g. a speaker returning from deep standby) is registered / marked
-                    # available again without needing a full reconnect
+                    # (e.g. a speaker returning from deep standby) is attached again or
+                    # detached without needing a full reconnect
                     await self._resync()
             except asyncio.CancelledError:
                 raise
@@ -410,7 +420,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             await asyncio.sleep(RECONNECT_INTERVAL)
 
     async def _try_connect(self) -> None:
-        """Try once to connect to the host and register its rooms."""
+        """Try once to connect to the host and attach its rooms."""
         if not self._host_address:
             self.logger.debug("No Raumfeld host configured yet; will retry")
             return
@@ -433,7 +443,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             )
             await self._disconnect("initial update timed out")
             return
-        # load Line-In inputs before registering players so each room can expose its own
+        # load Line-In inputs before attaching the rooms so each room can expose its own
         await self._load_line_in()
         self._library_read_at = 0.0
         self._versions_read = set()
@@ -496,7 +506,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 player.set_available(False)
 
     async def _resync(self) -> None:
-        """Periodic re-sync: register rooms that (re)appeared and mark vanished ones gone."""
+        """Periodic re-sync: attach rooms that (re)appeared and detach vanished ones."""
         await self._sync_rooms()
         await self._refresh_room_events()
         await self._refresh_zone_events()
@@ -599,47 +609,53 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._line_in = parse_line_in(didl)
 
     async def _sync_rooms(self) -> None:
-        """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
-        # ``get_rooms`` returns the list of room names currently known to the host.
-        rooms = self.host.get_rooms()
-        self._forget_moved_renderers(rooms)
-        # the id comes from the renderer's hardware serial, which has to be read from the
-        # device once; a room whose serial we cannot read yet is skipped for now rather than
-        # registered under an id that would have to change once the serial comes in
-        for room in rooms:
-            await self._ensure_room_serial(room)
-        self._assign_room_ids()
-        await self._read_software_versions(
-            [room for room in rooms if room not in self._versions_read]
-        )
-        present: set[str] = set()
-        for room in rooms:
-            if (player_id := self._room_player_id(room)) is None:
-                continue
-            present.add(player_id)
-            if (existing := self.get_protocol(player_id)) is not None:
-                # already registered (e.g. after a reconnect): mark it available and, since
-                # the player_id is tied to the hardware, follow a room rename by refreshing
-                # the stored room name (used for host calls) and the display name
-                if isinstance(existing, RaumfeldPlayer):
-                    existing.set_room(room)
-                    existing.set_software_version(self.room_software_version(room))
-                    existing.set_available(True)
-                self._ensure_icy_default(player_id)
-                continue
-            player = RaumfeldPlayer(provider=self, player_id=player_id, room=room)
-            await self.mass.players.register(player)
-            # registration creates the config; a room that did not register (e.g. while
-            # the provider unloads) has no config to store the default in
-            if self.get_protocol(player_id) is player:
-                self._ensure_icy_default(player_id)
-                self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
-        # a room whose UDN the host no longer lists (e.g. a speaker that dropped to deep
-        # standby or left the network) is gone until it returns; show it as unavailable.
-        # Match on the stable player_id, never the room name, so a rename does not orphan it.
-        for known in self.protocols:
-            if isinstance(known, RaumfeldPlayer) and known.player_id not in present:
-                known.set_available(False)
+        """Attach a protocol for every Raumfeld room, and detach the ones of rooms that left."""
+        async with self._sync_lock:
+            # ``get_rooms`` returns the list of room names currently known to the host.
+            rooms = self.host.get_rooms()
+            self._forget_moved_renderers(rooms)
+            # the id comes from the renderer's hardware serial, which has to be read from the
+            # device once; a room whose serial we cannot read yet is skipped for now rather
+            # than attached under an id that would have to change once the serial comes in
+            for room in rooms:
+                await self._ensure_room_serial(room)
+            self._assign_room_ids()
+            await self._read_software_versions(
+                [room for room in rooms if room not in self._versions_read]
+            )
+            ids = {
+                room: protocol_id
+                for room in rooms
+                if (protocol_id := self._room_protocol_id(room)) is not None
+            }
+            # a room whose UDN the host no longer lists (e.g. a speaker that dropped to deep
+            # standby or left the network) is gone until it returns; its player stays,
+            # unavailable. Match on the stable protocol id, never the room name, so a rename
+            # does not orphan it. Detached before any room attaches: a room that now has
+            # another id can only take over the player of its old one once that is detached.
+            for known in self.protocols:
+                if isinstance(known, RaumfeldPlayer) and known.protocol_id not in ids.values():
+                    await self.mass.players.detach(known.protocol_id)
+            for room, protocol_id in ids.items():
+                if (existing := self.get_protocol(protocol_id)) is not None:
+                    # already attached (e.g. after a reconnect): mark it available and, since
+                    # the protocol id is tied to the hardware, follow a room rename by
+                    # refreshing the stored room name (used for host calls) and the display name
+                    if isinstance(existing, RaumfeldPlayer):
+                        existing.set_room(room)
+                        existing.set_software_version(self.room_software_version(room))
+                        existing.set_available(True)
+                    self._ensure_icy_default(protocol_id)
+                    continue
+                if not self.mass.players.wants_protocol(protocol_id):
+                    continue
+                player = RaumfeldPlayer(provider=self, protocol_id=protocol_id, room=room)
+                await self.mass.players.attach(player)
+                # attaching creates the record; a room that did not attach (e.g. while the
+                # provider unloads) has no record to store the default in
+                if self.get_protocol(protocol_id) is player:
+                    self._ensure_icy_default(protocol_id)
+                    self.logger.debug("Attached Raumfeld room '%s' as %s", room, protocol_id)
 
     async def _refresh_room_events(self) -> None:
         """Follow the events of every room's own renderer, and tell each room which come in."""
@@ -810,10 +826,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
         return frozenset(groups)
 
     def _room_player(self, room: str) -> RaumfeldPlayer | None:
-        """Return the registered player of a room, or ``None``."""
-        if (player_id := self._room_player_id(room)) is None:
+        """Return the attached protocol of a room, or ``None``."""
+        if (protocol_id := self._room_protocol_id(room)) is None:
             return None
-        player = self.get_protocol(player_id)
+        player = self.get_protocol(protocol_id)
         return player if isinstance(player, RaumfeldPlayer) else None
 
     async def _queue_owners(self) -> dict[frozenset[str], str] | None:
@@ -838,7 +854,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             for claimant in claimants:
                 answers.append(plays := await claimant.plays_queue_in(list(zone_rooms)))
                 if plays:
-                    owners[frozenset(zone_rooms)] = claimant.player_id
+                    owners[frozenset(zone_rooms)] = claimant.protocol_id
                     break
             else:
                 if None in answers:
@@ -860,7 +876,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         for zone_rooms in self.host.get_zones():
             # coordinator first: the room the zone was created from (get_zones sorts them)
             member_ids = [
-                member.player_id
+                member.protocol_id
                 for room in self._zone_rooms_leader_first(zone_rooms)
                 if (member := self._room_player(room)) is not None
             ]
@@ -876,15 +892,15 @@ class RaumfeldPlayerProvider(PlayerProvider):
         followers = {member_id for members in groups.values() for member_id in members[1:]}
         for player in self.protocols:
             if isinstance(player, RaumfeldPlayer):
-                player.set_group_members(groups.get(player.player_id, []))
-                if player.player_id in followers:
+                player.set_group_members(groups.get(player.protocol_id, []))
+                if player.protocol_id in followers:
                     player.drop_next_item()
 
     def _pick_leader(self, member_ids: list[str]) -> str:
         """
         Return which member leads a zone's group in Music Assistant.
 
-        :param member_ids: The player ids of the zone's rooms, the zone coordinator first.
+        :param member_ids: The protocol ids of the zone's rooms, the zone coordinator first.
         """
         # The member playing a queue Music Assistant started leads, and failing that one that
         # already leads a group here: the host's coordinator is often another room than the
@@ -899,10 +915,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
             if isinstance(member := self.get_protocol(member_id), RaumfeldPlayer)
         ]
         if claimants := self._queue_claimants(members):
-            return claimants[0].player_id
+            return claimants[0].protocol_id
         for member in members:
             if member.leads_group:
-                return member.player_id
+                return member.protocol_id
         return member_ids[0]
 
     def _queue_claimants(self, members: list[RaumfeldPlayer]) -> list[RaumfeldPlayer]:
@@ -916,15 +932,15 @@ class RaumfeldPlayerProvider(PlayerProvider):
         return [
             member
             for member in members
-            if member.plays_own_queue and member.player_id not in following
+            if member.plays_own_queue and member.protocol_id not in following
         ]
 
-    def _room_player_id(self, room: str) -> str | None:
-        """Return the player_id for a room, or ``None`` if its serial is not known yet."""
+    def _room_protocol_id(self, room: str) -> str | None:
+        """Return the protocol id of a room, or ``None`` if its serial is not known yet."""
         return self._room_ids.get(room)
 
     def _assign_room_ids(self) -> None:
-        """Derive each room's player_id from its serial, falling back to its room UDN."""
+        """Derive each room's protocol id from its serial, falling back to its room UDN."""
         # The host runs virtual renderers that inherit its own serial, so two rooms can end
         # up reporting the same one. Only one of them can use it as its id; the other falls
         # back to its room UDN so it still shows up. Taking the rooms in a fixed order (by
@@ -936,17 +952,17 @@ class RaumfeldPlayerProvider(PlayerProvider):
             serial = self._room_serials[room]
             if serial not in claimed:
                 claimed.add(serial)
-                ids[room] = serial_to_player_id(serial)
+                ids[room] = serial_to_protocol_id(serial)
                 continue
             room_udn = self._room_udn(room)
             if room_udn is None:
                 continue
-            ids[room] = room_udn_to_player_id(room_udn)
+            ids[room] = room_udn_to_protocol_id(room_udn)
             if room not in self._shared_serial_warned:
                 self._shared_serial_warned.add(room)
                 self.logger.warning(
                     "Room %s reports the same serial (%s) as another room; using its room "
-                    "UDN for its player id instead, which a rebuild of the Raumfeld system "
+                    "UDN for its id instead, which a rebuild of the Raumfeld system "
                     "would change",
                     room,
                     serial,
@@ -1071,19 +1087,19 @@ class RaumfeldPlayerProvider(PlayerProvider):
             self.logger.debug("Failed to read the software version of %s: %r", room, err)
             return None
 
-    def _ensure_icy_default(self, player_id: str) -> None:
+    def _ensure_icy_default(self, protocol_id: str) -> None:
         """
         Store the ICY-metadata default for a player that has none stored yet.
 
-        :param player_id: The player whose stored config to check.
+        :param protocol_id: The protocol of the room whose stored config to check.
         """
         # Flow mode and the chunked profile come from the player and its config entries.
         # The ICY preference, however, is read straight from stored config with the base
         # entry's own default ("disabled"), so the "basic" default this provider's entry
         # declares would only take effect once the user saves the player's settings. Store
         # it once - only while nothing is stored, so a value the user picks later stays.
-        if self.mass.config.get_protocol_value(player_id, CONF_ENABLE_ICY_METADATA) is None:
-            self.mass.config.set_protocol_value(player_id, CONF_ENABLE_ICY_METADATA, "basic")
+        if self.mass.config.get_protocol_value(protocol_id, CONF_ENABLE_ICY_METADATA) is None:
+            self.mass.config.set_protocol_value(protocol_id, CONF_ENABLE_ICY_METADATA, "basic")
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
         """Return the zone's rooms ordered with the coordinator (leader) first."""

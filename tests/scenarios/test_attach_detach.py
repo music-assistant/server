@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import ANY
 
-import pytest
 from music_assistant_models.enums import EventType, IdentifierType
 
 from .harness import Event, Scenario, VisiblePlayer
@@ -49,8 +48,8 @@ async def test_airplay_and_cast_of_one_device_become_one_player(scenario: Scenar
     """
     The AirPlay and the Cast protocol of one device end up as one player.
 
-    Today both stay hidden for the 15 s evaluation delay, after which a universal player
-    stands for the device.
+    Both report the hardware address of the device, so the player is there with the first
+    protocol and the second one joins it.
     """
     airplay = await scenario.add_provider("airplay")
     chromecast = await scenario.add_provider("chromecast")
@@ -58,34 +57,32 @@ async def test_airplay_and_cast_of_one_device_become_one_player(scenario: Scenar
     den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
 
     await scenario.attach(den_airplay)
+    await scenario.idle()
+
+    player_id = scenario.single_player(den_airplay).player_id
+
     await scenario.attach(den_cast)
-    await scenario.advance(14.9)
-
-    assert scenario.visible_players() == []
-
-    await scenario.advance(0.1)
     await scenario.idle()
 
     assert scenario.players_carrying(den_airplay, den_cast) == [
         VisiblePlayer(
-            player_id=ANY,
+            player_id=player_id,
             name="Den",
             available=True,
             powered=None,
-            provider="universal_player",
+            provider="airplay",
             outputs=(("airplay", True), ("chromecast", True)),
         )
     ]
-    player_id = scenario.single_player(den_airplay, den_cast).player_id
     assert scenario.events(EventType.PLAYER_ADDED) == [Event(EventType.PLAYER_ADDED, player_id)]
 
 
-async def test_detached_native_player_vanishes_also_after_restart(scenario: Scenario) -> None:
+async def test_detached_native_player_is_listed_also_after_restart(scenario: Scenario) -> None:
     """
-    A native player whose protocol detaches drops out of the player list, with its queue.
+    A native player whose protocol detaches stays listed, also after a restart.
 
-    Today's behaviour: a player only exists while its protocol is attached. Clients get an
-    update but no removal, the config stays, and a restart does not bring the player back.
+    Clients get an update but no removal, and the player is unavailable until its provider
+    attaches the protocol again.
     """
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
@@ -96,25 +93,24 @@ async def test_detached_native_player_vanishes_also_after_restart(scenario: Scen
     await scenario.detach(speaker)
     await scenario.idle()
 
-    assert scenario.visible_players() == []
-    assert scenario.queue(player_id) is None
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
     assert scenario.events(EventType.PLAYER_UPDATED, EventType.PLAYER_REMOVED) == [
         Event(EventType.PLAYER_UPDATED, player_id)
     ]
-    assert await scenario.player_config(player_id) is not None
 
     await scenario.restart()
     await scenario.idle()
 
     assert scenario.provider(sonos.instance_id).available
-    assert scenario.visible_players() == []
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
+    assert scenario.queue(player_id) is not None
+
+    await scenario.attach(scenario.protocol("RINCON_KITCHEN"))
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, True)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 1 (#415): a player outlives its detached protocol",
-)
 async def test_detached_native_player_stays_listed_unavailable(scenario: Scenario) -> None:
     """A native player whose protocol detaches stays listed as unavailable and keeps its queue."""
     sonos = await scenario.add_provider("sonos")

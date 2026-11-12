@@ -306,9 +306,9 @@ def is_google_device(cast_info: ChromecastInfo) -> bool:
     """
     Check if a device is a Google device with native Cast support.
 
-    Google devices (Chromecast, Nest, Google Home) have native Cast support
-    and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-    support should be exposed as PlayerType.PROTOCOL.
+    Google devices (Chromecast, Nest, Google Home) have native Cast support,
+    so Cast is their native protocol. For a device of another brand Cast is an
+    audio protocol next to the device's own.
     """
     if not cast_info.manufacturer:
         # If no manufacturer, check model name for Google devices
@@ -403,7 +403,7 @@ class CastStatusListener:
         """Handle the cast removed from a group."""
         if not self._valid:
             return
-        if group_uuid == self.castplayer.active_source:
+        if group_uuid == self.castplayer.active_cast_group:
             mass = self.castplayer.mass
             mass.loop.call_soon_threadsafe(self.castplayer.update_state)
         self.castplayer.logger.debug(

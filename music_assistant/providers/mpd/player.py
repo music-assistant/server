@@ -52,7 +52,7 @@ class MPDPlayer(PlayerProtocol):
     def __init__(
         self,
         provider: MPDPlayerProvider,
-        player_id: str,
+        protocol_id: str,
         host: str,
         port: int = 6600,
     ) -> None:
@@ -60,11 +60,11 @@ class MPDPlayer(PlayerProtocol):
         Initialize MPDPlayer.
 
         :param provider: The MPDPlayerProvider instance.
-        :param player_id: Unique player identifier.
+        :param protocol_id: Unique protocol identifier.
         :param host: Hostname or IP address of the MPD server.
         :param port: TCP port MPD is listening on.
         """
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.host = host
         self.port = port
 
@@ -76,7 +76,7 @@ class MPDPlayer(PlayerProtocol):
         self._client: MPDClient | None = None
         self._idle_client: MPDClient | None = None
         self._idle_task: asyncio.Task[None] | None = None
-        self._reconnect_task_id: str = f"mpd_reconnect_{self.player_id}"
+        self._reconnect_task_id: str = f"mpd_reconnect_{self.protocol_id}"
         self._attr_needs_setup: bool = False
         self._attr_setup_reason: str | None = None
 
@@ -87,11 +87,10 @@ class MPDPlayer(PlayerProtocol):
             PlayerFeature.SEEK,
             PlayerFeature.VOLUME_SET,
         }
-
-        def _schedule_disconnect() -> None:
-            self.mass.call_later(0, self._disconnect, task_id=f"mpd_disconnect_{self.player_id}")
-
-        self._on_unload_callbacks.append(_schedule_disconnect)
+        self._attr_device_info = DeviceInfo(model="MPD", manufacturer="Music Player Daemon")
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, host)
+        # several MPD servers can run on one host: the host and port tell them apart
+        self._attr_device_info.add_identifier(IdentifierType.UUID, protocol_id)
 
     @property
     def needs_setup(self) -> bool:
@@ -144,6 +143,13 @@ class MPDPlayer(PlayerProtocol):
         self._attr_setup_reason = None
         await self._connect()
 
+    async def on_detach(self) -> None:
+        """Disconnect from MPD."""
+        await super().on_detach()
+        # a poll or command still waiting on the closed connection must not arm a reconnect
+        self._attr_available = False
+        await self._disconnect()
+
     async def on_remove(self) -> None:
         """Take the server out of the hosts the provider is set up with."""
         cast("MPDPlayerProvider", self.provider).forget_host(self.host, self.port)
@@ -186,11 +192,7 @@ class MPDPlayer(PlayerProtocol):
             self._attr_available = True
             self._attr_needs_setup = False
             self._attr_setup_reason = None
-            self._attr_device_info = DeviceInfo(
-                model=f"MPD {client.mpd_version}",
-                manufacturer="Music Player Daemon",
-            )
-            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.host)
+            self._attr_device_info.model = f"MPD {client.mpd_version}"
             self.logger.info("Connected to MPD at %s:%s", self.host, self.port)
             self._idle_task = self.mass.create_task(self._idle_loop())
             await self._sync_state(status)
@@ -406,7 +408,7 @@ class MPDPlayer(PlayerProtocol):
         """
         if self._client is None:
             return
-        url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
         self.logger.debug("Sending stream URL to MPD: %s", url)
         async with self._command("play_media"):
             await self._client.clear()

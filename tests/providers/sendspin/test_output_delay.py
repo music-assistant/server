@@ -11,7 +11,7 @@ from aiosendspin.models.types import PlayerCommand
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.v1 import PlayerPersistentState
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
-from music_assistant_models.enums import ConfigEntryType, PlayerType
+from music_assistant_models.enums import ConfigEntryType, ProtocolRole
 
 from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinPlayer
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 def _player(configured_delay: int) -> MagicMock:
     player = MagicMock()
-    player.player_id = "p1"
+    player.protocol_id = "p1"
     player.static_delay_default_ms = 0
     player.config.values = {CONF_SENDSPIN_STATIC_DELAY: MagicMock()}
     player.config.get_value.return_value = configured_delay
@@ -38,8 +38,9 @@ def _unregistered_player(mass: MusicAssistant) -> SendspinPlayer:
     player = object.__new__(SendspinPlayer)
     player.mass = mass
     player.logger = logging.getLogger("test.sendspin")
-    player._player_id = "p1"
-    player._config = mass.config.get_base_player_config("p1", "sendspin")
+    player._protocol_id = "p1"
+    player._player = None
+    player._config = mass.config.get_base_protocol_config("p1", "sendspin")
     mass.players = MagicMock()
     mass.players.get_protocol.return_value = player
     return player
@@ -57,7 +58,21 @@ def _load_config(mass: MusicAssistant, player: SendspinPlayer) -> PlayerConfig:
         type=ConfigEntryType.INTEGER,
         default_value=player.static_delay_default_ms,
     )
-    return cast("PlayerConfig", PlayerConfig.parse([entry], mass.config.get("players/p1")))
+    return cast(
+        "PlayerConfig",
+        PlayerConfig.parse([entry], mass.config._get_raw_protocol_config("p1", "sendspin")),
+    )
+
+
+def _create_record(mass: MusicAssistant) -> None:
+    """
+    Store the config of the protocol, as its first attach does.
+
+    :param mass: The Music Assistant instance to store it in.
+    """
+    mass.config.create_protocol_record(
+        "p1", provider="sendspin", player_id=None, role=ProtocolRole.AUDIO, default_name=None
+    )
 
 
 async def _run_config_hook(player: SendspinPlayer) -> MagicMock:
@@ -76,6 +91,14 @@ async def _run_config_hook(player: SendspinPlayer) -> MagicMock:
     return player_role
 
 
+def _entries_player() -> SendspinPlayer:
+    """Return a player of a regular client with only what its config entries read."""
+    player = object.__new__(SendspinPlayer)
+    player._protocol_id = "p1"
+    player._provider = MagicMock(is_virtual_player=lambda _client_id: False)
+    return player
+
+
 def test_device_reported_delay_is_stored() -> None:
     """A delay the device reports becomes the player's stored delay setting."""
     player = _player(configured_delay=0)
@@ -90,13 +113,13 @@ def test_device_reported_delay_is_stored() -> None:
 async def test_delay_reported_before_registration_is_stored_and_applied(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """A delay reported before the player config exists is stored and pushed on registration."""
+    """A delay reported before the protocol config exists is stored and pushed on attach."""
     player = _unregistered_player(mass_minimal)
 
     SendspinPlayer.event_cb(player, MagicMock(), OutputDelayChangedEvent(output_delay_ms=120))
-    assert mass_minimal.config.get("players/p1") is None
+    assert mass_minimal.config.get_protocol_record("p1") is None
 
-    mass_minimal.config.create_default_player_config("p1", "sendspin", PlayerType.PROTOCOL)
+    _create_record(mass_minimal)
     player._config = _load_config(mass_minimal, player)
     player_role = await _run_config_hook(player)
 
@@ -109,7 +132,7 @@ async def test_delay_reported_while_registration_loads_the_config_is_applied(
 ) -> None:
     """A delay reported after the config was created but before it is loaded is not lost."""
     player = _unregistered_player(mass_minimal)
-    mass_minimal.config.create_default_player_config("p1", "sendspin", PlayerType.PROTOCOL)
+    _create_record(mass_minimal)
     # registration read the stored config before the report came in
     loaded_config = _load_config(mass_minimal, player)
 
@@ -154,7 +177,7 @@ async def test_delay_setting_follows_the_declared_commands(
     commands: list[PlayerCommand], offered: bool
 ) -> None:
     """The delay setting shows for either delay command a player declares."""
-    player = object.__new__(SendspinPlayer)
+    player = _entries_player()
     player_role = MagicMock()
     player_role.get_supported_formats.return_value = []
     player_role.state_supported_commands = commands
@@ -181,7 +204,7 @@ async def test_a_detached_player_says_when_its_delay_setting_returns(
     connected: bool, commands: list[PlayerCommand], noted: bool
 ) -> None:
     """The note follows the commands the disconnected device last declared."""
-    player = object.__new__(SendspinPlayer)
+    player = _entries_player()
     player.api = MagicMock()
     player.api.is_connected = connected
     player.api.get_role_state.return_value = PlayerPersistentState(

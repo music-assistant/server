@@ -22,7 +22,6 @@ from music_assistant.controllers.config.migrations import (
     _migrate_bose_soundtouch_presets,
     _migrate_emby_album_artists_heal,
     _migrate_nicovideo_drop_mail_login,
-    _migrate_orphaned_disabled_protocol_configs,
     _migrate_player_icons,
     _migrate_player_setup_data,
     _migrate_raumfeld_icy_basic,
@@ -734,10 +733,15 @@ def test_migrate_connected_player_plugins_all_disabled_stays_disabled(tmp_path: 
     assert survivor["values"]["connected_players"] == []
 
 
-def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
+def test_migrate_connected_player_plugins_drops_auto_and_keeps_unstored_players(
     tmp_path: Path,
 ) -> None:
-    """The removed automatic selection and vanished players contribute nothing."""
+    """
+    The removed automatic selection contributes nothing, every configured player carries over.
+
+    Also one without a stored config: a player that only exists while its device is
+    connected has none.
+    """
     data: dict[str, Any] = {
         "providers": {
             "airplay_receiver--1": {
@@ -749,7 +753,7 @@ def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
                 "domain": "airplay_receiver",
                 "instance_id": "airplay_receiver--2",
                 "setup_data": {
-                    "mass_player_id": ENCRYPT_SUFFIX + "vanished",
+                    "mass_player_id": ENCRYPT_SUFFIX + "web_player",
                     "airplay_name": ENCRYPT_SUFFIX + "Garage [AirPlay]",
                 },
             },
@@ -767,9 +771,9 @@ def test_migrate_connected_player_plugins_drops_auto_and_unknown_players(
     providers = data["providers"]
     assert set(providers) == {"airplay_receiver"}
     survivor = providers["airplay_receiver"]
-    # the first instance survives; only the still-existing explicit player carries over
+    # the first instance survives; the explicitly configured players carry over
     assert survivor["instance_id"] == "airplay_receiver"
-    assert survivor["values"]["connected_players"] == ["office"]
+    assert survivor["values"]["connected_players"] == ["web_player", "office"]
     assert survivor["setup_data"] == {}
 
 
@@ -870,7 +874,7 @@ def test_migrate_connected_player_plugins_sanitizes_player_id_in_data_path(
 
 
 def test_migrate_connected_player_plugins_mandatory_player_cleanup(tmp_path: Path) -> None:
-    """AriaCast/Ynison auto or vanished players are cleared, valid ones kept, names dropped."""
+    """AriaCast/Ynison: the automatic selection is cleared, a player kept, names dropped."""
     data: dict[str, Any] = {
         "providers": {
             "ariacast_receiver": {
@@ -885,7 +889,7 @@ def test_migrate_connected_player_plugins_mandatory_player_cleanup(tmp_path: Pat
                 "domain": "yandex_ynison",
                 "instance_id": "yandex_ynison--1",
                 "setup_data": {
-                    "mass_player_id": ENCRYPT_SUFFIX + "vanished",
+                    "mass_player_id": ENCRYPT_SUFFIX + "web_player",
                     "publish_name": ENCRYPT_SUFFIX + "Office Yandex",
                     "token": ENCRYPT_SUFFIX + "music-token",
                 },
@@ -903,8 +907,11 @@ def test_migrate_connected_player_plugins_mandatory_player_cleanup(tmp_path: Pat
 
     providers = data["providers"]
     assert providers["ariacast_receiver"]["setup_data"] == {}
-    # the vanished player is cleared, the unrelated auth values stay untouched
-    assert providers["yandex_ynison--1"]["setup_data"] == {"token": ENCRYPT_SUFFIX + "music-token"}
+    # a player without a stored config can be one that only exists while it is connected
+    assert providers["yandex_ynison--1"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "web_player",
+        "token": ENCRYPT_SUFFIX + "music-token",
+    }
     assert providers["yandex_ynison--2"]["setup_data"] == {
         "mass_player_id": ENCRYPT_SUFFIX + "office"
     }
@@ -997,95 +1004,6 @@ def test_migrate_player_icons_tolerates_malformed_data() -> None:
     assert _migrate_player_icons(data) is False
     assert data["players"]["p3"]["values"]["icon"] is None
     assert data["players"]["p4"]["values"]["icon"] == 123
-
-
-def _orphaned_protocol_data() -> dict[str, Any]:
-    """Build a config store with a disabled protocol player whose parent was removed."""
-    return {
-        "players": {
-            "spb_esp32": {
-                "player_id": "spb_esp32",
-                "provider": "sendspin",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {"protocol_parent_id": "up_esp32"},
-            },
-            "spb_kitchen": {
-                "player_id": "spb_kitchen",
-                "provider": "sendspin",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {"protocol_parent_id": "up_kitchen"},
-            },
-            # only the parent side of the link survived
-            "ap_office": {
-                "player_id": "ap_office",
-                "provider": "airplay",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {},
-            },
-            "cast_office": {
-                "player_id": "cast_office",
-                "provider": "chromecast",
-                "player_type": "player",
-                "enabled": True,
-                "values": {"linked_protocol_ids": ["ap_office"]},
-            },
-            # neither side of the link survived
-            "ap_ghost": {
-                "player_id": "ap_ghost",
-                "provider": "airplay",
-                "player_type": "protocol",
-                "enabled": False,
-                "values": {},
-            },
-            "up_kitchen": {
-                "player_id": "up_kitchen",
-                "provider": "universal_player",
-                "player_type": "player",
-                "enabled": False,
-                "values": {"linked_protocol_ids": ["spb_kitchen"]},
-            },
-        },
-        "player_dsp": {"spb_esp32": {"enabled": True}, "spb_kitchen": {"enabled": True}},
-    }
-
-
-def test_migrate_orphaned_disabled_protocol_configs() -> None:
-    """A disabled protocol player without a parent config is dropped, others are kept."""
-    data = _orphaned_protocol_data()
-    assert _migrate_orphaned_disabled_protocol_configs(data) is True
-    assert "spb_esp32" not in data["players"]
-    assert "spb_esp32" not in data["player_dsp"]
-    assert "ap_ghost" not in data["players"]
-    # protocol players that are still owned by a player are left alone
-    assert "spb_kitchen" in data["players"]
-    assert "spb_kitchen" in data["player_dsp"]
-    assert "ap_office" in data["players"]
-    assert _migrate_orphaned_disabled_protocol_configs(data) is False
-
-
-def test_migrate_orphaned_disabled_protocol_configs_keeps_enabled_players() -> None:
-    """An enabled protocol player is kept: it can register and find a new parent."""
-    data = _orphaned_protocol_data()
-    data["players"]["spb_esp32"]["enabled"] = True
-    data["players"]["ap_ghost"]["enabled"] = True
-    assert _migrate_orphaned_disabled_protocol_configs(data) is False
-    assert "spb_esp32" in data["players"]
-
-
-def test_migrate_orphaned_disabled_protocol_configs_tolerates_malformed_data() -> None:
-    """Non-dict player configs/values and non-protocol players are skipped."""
-    data: dict[str, Any] = {
-        "players": {
-            "p1": "not-a-dict",
-            "p2": {"player_id": "p2", "player_type": "player", "enabled": False, "values": None},
-            "p3": {"player_id": "p3", "player_type": "player", "enabled": False, "values": {}},
-        }
-    }
-    assert _migrate_orphaned_disabled_protocol_configs(data) is False
-    assert len(data["players"]) == 3
 
 
 def test_migrate_unrenamed_player_names() -> None:

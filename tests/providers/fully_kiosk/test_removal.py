@@ -24,6 +24,7 @@ async def test_removed_player_prunes_manual_host_config() -> None:
         config_entries.get(key, SimpleNamespace(value=default)).value
     )
     provider.mass = Mock()
+    provider._host_players = {"fully_kiosk_office.local_2324": Mock(), "kitchen": Mock()}
     player = FullyKioskPlayer.__new__(FullyKioskPlayer)
     player._provider = provider
     player.host = "office.local"
@@ -38,3 +39,4 @@ async def test_removed_player_prunes_manual_host_config() -> None:
         encrypted=False,
         immediate=False,
     )
+    assert list(provider._host_players) == ["kitchen"]

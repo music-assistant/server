@@ -453,9 +453,9 @@ class SpotifyConnectProvider(PluginProvider):
         if daemon is None or not player_id:
             return
 
-        # Cache the owner_player_id (== user-facing MA player) rather than the
-        # protocol-level player_id. Some protocol players are ephemeral bridges
-        # whose ID is invalid for play_media / queue lookups once torn down.
+        # Cache the owner_player_id (the user-facing MA player) rather than
+        # player_id: that is the id of the protocol the stream is fetched under,
+        # which is no id for play_media or queue lookups.
         active_player_id = owner_player_id
         prev_player_id = (
             daemon.active_player_id if daemon.active_player_id != active_player_id else None

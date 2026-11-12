@@ -40,7 +40,7 @@ EXPECTED_PLAYER_ID_ARGUMENTS = (
     "web_player_id",
 )
 # the arguments named after a player or queue that hold something else
-NO_PLAYER_ID_ARGUMENTS = {"queue_item_id", "return_protocol_players"}
+NO_PLAYER_ID_ARGUMENTS = {"queue_item_id"}
 
 
 def _mass() -> MusicAssistant:

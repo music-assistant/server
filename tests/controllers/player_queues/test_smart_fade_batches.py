@@ -321,9 +321,10 @@ def test_a_track_change_asks_for_the_next_batch() -> None:
     def player_plays(queue_item_id: str) -> None:
         player: Any = SimpleNamespace(
             player_id=QUEUE_ID,
-            active_output_protocol=None,
-            current_media=SimpleNamespace(
-                source_id=QUEUE_ID, queue_item_id=queue_item_id, uri=None
+            resolve_output_protocol=lambda: SimpleNamespace(
+                current_media=SimpleNamespace(
+                    source_id=QUEUE_ID, queue_item_id=queue_item_id, uri=None
+                )
             ),
             state=SimpleNamespace(
                 name="Q1",
