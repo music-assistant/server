@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from typing import TYPE_CHECKING, Any, NamedTuple
-from unittest.mock import ANY
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType, ProtocolRole
@@ -564,6 +565,50 @@ async def test_the_settings_of_a_disabled_player_stay_those_of_its_vendor_protoc
     await scenario.disable(player_id)
 
     assert await scenario.mass.config.get_player_config_value(player_id, FAKE_SETTING) == "loud"
+
+
+@pytest.mark.parametrize("failure", ["raises", "cancelled"])
+async def test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native(
+    scenario: Scenario, failure: str
+) -> None:
+    """
+    A vendor protocol whose first attach fails, or is cancelled, leaves nothing behind.
+
+    The twin it made a control protocol for the attach stands for the speaker again, and
+    the player plays through it as before.
+    """
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.twin).player_id
+
+    if failure == "raises":
+        speaker.vendor.on_attach = AsyncMock(side_effect=RuntimeError("the device went away"))  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            await scenario.attach(speaker.vendor)
+    else:
+        never = asyncio.Event()
+
+        async def _never_returns(_player: object) -> None:
+            await never.wait()
+
+        speaker.vendor.on_attach = _never_returns  # type: ignore[method-assign, assignment]
+        attach = await scenario.command(scenario.mass.players.attach(speaker.vendor))
+        attach.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await attach
+    await scenario.idle()
+
+    assert scenario.players_carrying(speaker.twin) == [
+        VisiblePlayer(
+            player_id=player_id,
+            name="Kitchen speaker",
+            available=True,
+            powered=None,
+            provider="hass_players",
+            outputs=(("hass_players", True),),
+        )
+    ]
+    assert _roles(scenario, player_id) == {speaker.twin.protocol_id: ProtocolRole.NATIVE}
 
 
 async def test_a_removed_player_of_a_speaker_comes_back_with_the_same_roles(
