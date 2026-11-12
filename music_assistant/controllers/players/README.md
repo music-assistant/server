@@ -12,6 +12,7 @@ the lifecycle and the rules for commands and volume.
 - [Legacy Ids](#legacy-ids)
 - [Core Components](#core-components)
 - [Locking](#locking)
+- [Grouping](#grouping)
 - [Player Types and Protocol Roles](#player-types-and-protocol-roles)
 - [Finding the Player of a Protocol](#finding-the-player-of-a-protocol)
 - [Lifecycle](#lifecycle)
@@ -201,15 +202,19 @@ commands, sync group coordination, availability and the state events.
 ### 2. ProtocolLinkingMixin ([protocol_linking.py](protocol_linking.py))
 
 Finding the player a protocol belongs to, creating the player of a new device, holding a protocol
-until it is known which player it belongs to, and the output protocol selection and grouping
-translation for playback.
+until it is known which player it belongs to, and the output protocol selection for playback.
 
 ### 3. Identifier Matching ([matching.py](matching.py))
 
 The pure function that decides whether a protocol stands for the device of a player, with every
 veto and precedence rule in one table (see [Device Identifier Matching](#device-identifier-matching)).
 
-### 4. Helper Utilities ([helpers.py](helpers.py))
+### 4. Grouping ([grouping_plan.py](grouping_plan.py), [grouping.py](grouping.py))
+
+The plan of a group change, a pure function of a snapshot of the players, and the executor that
+carries a plan out (see [Grouping](#grouping)).
+
+### 5. Helper Utilities ([helpers.py](helpers.py))
 
 The `handle_player_command` decorator for command validation, and `AnnounceData`.
 
@@ -230,6 +235,40 @@ A command that locks a member and only then reaches the group — a power off de
 A command holds the lock of the player it works on, and of no player it only passes through. `get_group_and_player_lock` is for a command that works on the player under its group: it takes the lock of the group holding the player (following the same redirect as `cmd_set_members`) and then the player's own, and holds both from the release of the group to the command on the player; a power off, an announcement, a source selection, a play media that takes the player out of its group and the queue play actions use it. A playback command that is redirected to the owner (stop, play, resume, and play media with the override off) works on the owner and holds the owner's lock alone, as the owner's handler locks each member it works on itself (a universal group plays each member in a task of its own, which takes that member's lock). Either way the command never holds a player's lock while it waits for the lock of that player's owner: once it holds its locks it checks that the owner is still the one whose lock it took, and when the player joined or left a group meanwhile it releases them and takes them again in the new order (a few times at most, then it fails as busy); a command that already holds the player and finds it in a group whose lock it does not hold fails at once. Releasing the session of a static group (an ungroup of its member) takes the group's lock. A sync group's formation takes the leader's lock before it records that leader, and its dissolve holds the recorded leader's lock (and that of the player a provider handed the members to); the re-form after an unjoin and the hand-over to a new leader record a leader that already belongs to the group (its pending re-form, or the old leader, keeps it the group's), so that player's owner does not change there. Work that a handler hands to tasks of its own and waits for never waits for a lock its caller holds: a universal group plays a member whose lock the calling command holds (a play action on that member's own queue) in the command's own task. A capture nobody asked for at that moment (a sync group re-adding a member that came back) takes each member's lock only when it is free and holds it across the capture, so it never takes a player a command is busy with; such a member is tried again at the leader's next report. A change that comes from a device itself (speakers grouped in the vendor's app) holds no lock of ours: a command notices the new owner at its next check, and a wait for that owner's lock ends in a busy error at the timeout, never in running without the lock. The re-entrancy is per task, so a group command that fans out to its members in separate tasks (a group announcement) has those tasks take the member's lock only.
 
 A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect, worked out under the owner's lock, is what puts the command under the group's lock rather than the leader's. The playback commands flagged with `handle_player_command(to_playback_owner=True)` and the sleep timer commands need the caller's access to that owner as well as to the player they name. Taking the player out of its group (ungroup, power off, select source, play media with its `play_media_overrides_group` setting on) only needs access to the player itself.
+
+## Grouping
+
+How a group change reaches the devices is decided in one place: `plan_group_change` in
+[grouping_plan.py](grouping_plan.py). It is a pure function of a `GroupingSnapshot`: per player
+and protocol what grouping reads (the published state, the protocols with their features, the
+groups they report and what they can group with, the outputs, the active and the preferred
+output, the queue it plays). It returns the steps of the change: which protocol of each member
+carries it, who leads, what is released first, what is refused and why, the lines for the log.
+`apply_group_change` in [grouping.py](grouping.py) runs the steps, and is the only code of the
+controller that calls a protocol's grouping methods. The entries stay what callers use:
+`cmd_set_members`, `cmd_ungroup`, and `_handle_set_members` and `_detach_member` for a group
+provider or a protocol that changes the group of its leader itself.
+
+A plan stops where the outcome of a step decides what follows: after a member is released from
+another leader, gives up a group of its own or is powered on, after the content takeover hook,
+after a joining member's output is activated, after the protocol's join call, after the leader's
+output moved, after the protocol it rendered on before stopped and let its members go, after a
+resume. The executor then takes a new snapshot and plans on from where the change got to. What
+the change captured before such a step travels with it and is not read again: whether the leader
+played before its output moved, the members of the old protocol before it stopped. So the hand
+over of the leader's output is decided on the state after the join call: a leader paused on the
+device while that call ran hands its output over without resuming.
+
+For the whole change the executor keeps the objects it addresses (the leader, the protocol the
+group joins, the protocol it leaves). It takes no lock of its own: a change runs under the lock
+its entry holds (`cmd_set_members` takes the target's), and the nested commands it calls take
+theirs.
+
+A trigger (play media with `play_media_overrides_group`, select source, power off, disabling, an
+announcement, a queue transfer) decides whether a player leaves what holds it and through which
+entry; the plan decides how. A group player's provider (sync group, universal group) decides its
+own members, its leader and when it forms, and reaches the plan through `_handle_set_members` on
+its leader.
 
 ## Player Types and Protocol Roles
 
