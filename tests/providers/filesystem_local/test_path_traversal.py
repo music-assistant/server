@@ -309,6 +309,9 @@ def test_accepts_stored_image_path_relative_paths(music_tree: Path, path: str) -
         "Documents/secret.pdf",
         "notes.txt?cs=cover.png",
         "cover",
+        "Mix.m3u8",
+        "Mix.pls",
+        "Album/album.cue",
     ],
 )
 def test_accepts_stored_image_path_refuses_paths(music_tree: Path, path: str) -> None:
