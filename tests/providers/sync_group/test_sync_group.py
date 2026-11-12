@@ -46,6 +46,9 @@ from tests.common import (
     mock_player_mass,
 )
 
+# the lock budget of the tests that wait for a real player lock, in seconds
+LOCK_BUDGET = 0.25
+
 # what a member that can be (sync) grouped reports
 MEMBER_FEATURES = frozenset({PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS})
 
@@ -1192,6 +1195,52 @@ class TestSetMembersDoesNotRegisterIncompatible:
         assert sgp._attr_group_members == []
 
 
+def _controller_with_a_sync_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[PlayerController, SyncGroupPlayer, Player, Player]:
+    """
+    Build a sync group of the speakers L and B, not formed, on a real players controller.
+
+    The lock budget is short and background tasks are left out.
+
+    :return: The controller, the group, speaker L and speaker B.
+    """
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", LOCK_BUDGET)
+    mass = mock_player_mass()
+    mass.config.get_raw_core_config_value.return_value = "GLOBAL"
+    mass.test_providers = {}
+
+    def _discard_background(target: Any, *_args: Any, **_kwargs: Any) -> MagicMock:
+        if asyncio.iscoroutine(target):
+            target.close()
+        return MagicMock()
+
+    mass.create_task = MagicMock(side_effect=_discard_background)
+    players = PlayerController(mass)
+    mass.players = players
+    mass.loop = asyncio.get_running_loop()
+    group = _make_sync_group(mass, members=["L", "B"])
+    leader = _make_member(mass, "L")
+    member = _make_member(mass, "B")
+    leader.state.can_group_with = {"B"}
+    member.state.can_group_with = {"L"}
+    group._attr_group_members = ["L", "B"]
+    leader.own_protocol._attr_can_group_with = {"sonos_B"}  # type: ignore[union-attr]
+    member.own_protocol._attr_can_group_with = {"sonos_L"}  # type: ignore[union-attr]
+    leader.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
+    member.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
+    for player in (group.player, leader, member):
+        assert player is not None
+        player.refresh_state(signal_event=False)
+    players.wait_for_player_update = MagicMock(return_value=_noop_context())  # type: ignore[method-assign]
+    players.trigger_player_update = MagicMock()  # type: ignore[method-assign]
+    players.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
+    players._release_audio_source = AsyncMock()  # type: ignore[method-assign]
+    group.update_state = MagicMock()  # type: ignore[method-assign,misc]
+    return players, group, leader, member
+
+
 class TestFormationAndACommandOnItsLeader:
     """A group that forms around a player and a command queued on that player both complete."""
 
@@ -1204,40 +1253,8 @@ class TestFormationAndACommandOnItsLeader:
         The play forms the group around the speaker while the selection still waits for the
         speaker's lock; neither may then hold one lock while it waits for the other's.
         """
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.25)
-        mass = mock_player_mass()
-        mass.config.get_raw_core_config_value.return_value = "GLOBAL"
-        mass.test_providers = {}
-
-        def _discard_background(target: Any, *_args: Any, **_kwargs: Any) -> MagicMock:
-            if asyncio.iscoroutine(target):
-                target.close()
-            return MagicMock()
-
-        mass.create_task = MagicMock(side_effect=_discard_background)
-        players = PlayerController(mass)
-        mass.players = players
-        mass.loop = asyncio.get_running_loop()
-        group = _make_sync_group(mass, members=["L", "B"])
-        leader = _make_member(mass, "L")
-        member = _make_member(mass, "B")
-        leader.state.can_group_with = {"B"}
-        member.state.can_group_with = {"L"}
-        group._attr_group_members = ["L", "B"]
-        leader.own_protocol._attr_can_group_with = {"sonos_B"}  # type: ignore[union-attr]
-        member.own_protocol._attr_can_group_with = {"sonos_L"}  # type: ignore[union-attr]
-        leader.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
-        member.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
-        for player in (group.player, leader, member):
-            assert player is not None
-            player.refresh_state(signal_event=False)
-        players.wait_for_player_update = MagicMock(return_value=_noop_context())  # type: ignore[method-assign]
-        players.trigger_player_update = MagicMock()  # type: ignore[method-assign]
-        players.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
         players._handle_select_source = AsyncMock()  # type: ignore[method-assign]
-        players._release_audio_source = AsyncMock()  # type: ignore[method-assign]
-        group.update_state = MagicMock()  # type: ignore[method-assign,misc]
         group_id = _group_id(group)
 
         async with players.get_player_lock("L"):
@@ -1257,6 +1274,66 @@ class TestFormationAndACommandOnItsLeader:
         assert list(results) == [None, None]
         players._handle_select_source.assert_awaited_once()
         assert not players._lock_holders
+
+
+def _queue_resume_plays(players: PlayerController) -> None:
+    """Let a queue resume play the queue's next item on its player, as a play action does."""
+
+    async def _resume(queue_id: str, fade_in: bool | None = None) -> None:  # noqa: ARG001
+        async with players.get_group_and_player_lock(queue_id):
+            await players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    mass = cast("MagicMock", players.mass)
+    mass.player_queues.get = MagicMock(side_effect=lambda queue_id: MagicMock(queue_id=queue_id))
+    mass.player_queues.has_lost_paused_stream = MagicMock(return_value=False)
+    mass.player_queues.resume = AsyncMock(side_effect=_resume)
+
+
+class TestCommandOnAMemberOfASyncGroup:
+    """A play addressed to a player that follows another one plays on whatever leads it."""
+
+    @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume"])
+    async def test_a_member_of_a_formed_sync_group_plays_through_the_group(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        """The group's leader plays, and the command returns at once."""
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        _queue_resume_plays(players)
+        # formed: the leader holds the member natively
+        group.sync_leader = leader
+        leader.own_protocol._attr_group_members = ["sonos_L", "sonos_B"]  # type: ignore[union-attr]
+        member.own_protocol._attr_synced_to = "sonos_L"  # type: ignore[union-attr]
+        # the group follows its leader, the member follows both
+        for player in (leader, group.player, member):
+            assert player is not None
+            player.refresh_state(signal_event=False)
+        assert member.state.active_group == _group_id(group)
+
+        started = time.monotonic()
+        await getattr(players, command)("B")
+
+        assert time.monotonic() - started < LOCK_BUDGET
+        leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
+
+    @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume"])
+    async def test_a_native_sync_child_plays_through_its_leader(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        """The child's own leader plays, and the command returns at once."""
+        players, _group, leader, child = _controller_with_a_sync_group(monkeypatch)
+        _queue_resume_plays(players)
+        leader.own_protocol._attr_group_members = ["sonos_L", "sonos_B"]  # type: ignore[union-attr]
+        child.own_protocol._attr_synced_to = "sonos_L"  # type: ignore[union-attr]
+        for player in (leader, child):
+            player.refresh_state(signal_event=False)
+        assert child.state.synced_to == "L"
+
+        started = time.monotonic()
+        await getattr(players, command)("B")
+
+        assert time.monotonic() - started < LOCK_BUDGET
+        leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
+        child.own_protocol.play_media.assert_not_awaited()  # type: ignore[union-attr]
 
 
 class TestFormationTakesTheLeaderFirst:

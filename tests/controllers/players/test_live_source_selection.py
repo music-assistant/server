@@ -517,11 +517,8 @@ async def test_cmd_stop_locks_the_redirected_playback_owner() -> None:
     await controller.cmd_stop(PLAYER_ID)
 
     controller._handle_cmd_stop.assert_awaited_once_with(group_id)
-    # the group's lock is created (and taken) before the member's own
-    assert list(controller._player_command_locks) == [
-        f"{PlayerLockPurpose.PLAYBACK.value}_{group_id}",
-        f"{PlayerLockPurpose.PLAYBACK.value}_{PLAYER_ID}",
-    ]
+    assert f"{PlayerLockPurpose.PLAYBACK.value}_{group_id}" in controller._player_command_locks
+    assert f"{PlayerLockPurpose.PLAYBACK.value}_{PLAYER_ID}" not in controller._player_command_locks
 
 
 async def test_releasing_a_player_with_nothing_playing_is_a_no_op() -> None:

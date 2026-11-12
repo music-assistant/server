@@ -2372,7 +2372,7 @@ class TestOwnerChangesWhileWaitingForTheLock:
     async def test_a_player_that_joins_a_group_meanwhile_is_stopped_through_it(
         self, mock_mass: MagicMock
     ) -> None:
-        """The command lets go of the player's lock and takes the group's first."""
+        """The command lets go of the player's lock and stops the group under the group's alone."""
         controller, group, protocol, member, stops = self._member(mock_mass, captured=False)
 
         async with _lock_held_elsewhere(controller, "member"):
@@ -2382,7 +2382,7 @@ class TestOwnerChangesWhileWaitingForTheLock:
             _refresh(group, member)
         await stop
 
-        assert stops == [("g1", frozenset({"playback_g1", "playback_member"}))]
+        assert stops == [("g1", frozenset({"playback_g1"}))]
 
     async def test_a_player_whose_group_ends_meanwhile_is_stopped_on_its_own(
         self, mock_mass: MagicMock
