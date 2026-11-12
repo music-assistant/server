@@ -284,6 +284,9 @@ def test_a_room_whose_serial_another_room_holds_uses_its_room_udn() -> None:
     provider._assign_room_ids(["Sofa", "Bar"])
 
     assert provider._room_ids == {"Bar": "raumfeld_04a316f3b6c4", "Sofa": "raumfeld_sofa"}
+    warning = cast("MagicMock", provider.logger).warning
+    assert "keeps from before" in warning.call_args.args[0]
+    assert warning.call_args.args[1:] == ("Sofa", "04:a3:16:f3:b6:c4", "Bar")
 
 
 # a speaker's renderer UDN -> (description url, serial) on its own hardware
@@ -293,13 +296,17 @@ _SPEAKERS = {
 }
 
 
-def _moving_provider(rooms: dict[str, tuple[str, str]]) -> RaumfeldPlayerProvider:
+def _moving_provider(
+    rooms: dict[str, tuple[str, str]], cache: _Cache | None = None
+) -> RaumfeldPlayerProvider:
     """
     Build a provider whose host reports the given rooms, each with the speaker in it.
 
     :param rooms: Room name -> (room UDN, renderer UDN of the speaker in it).
+    :param cache: The cache the room ids are remembered in, to start again from.
     """
     provider, mass = _provider(_DEVICE_DESCRIPTION)
+    _remember_room_ids(provider, cache or _Cache())
     descriptions = {
         location: _DEVICE_DESCRIPTION.replace("04:a3:16:f3:b6:c4", serial)
         for location, serial in _SPEAKERS.values()
@@ -325,14 +332,24 @@ def _place_speakers(provider: RaumfeldPlayerProvider, rooms: dict[str, tuple[str
     )
 
 
+def _remember_room_ids(provider: RaumfeldPlayerProvider, cache: _Cache) -> None:
+    """Have the provider remember its room ids in the given cache, with no player configured."""
+    provider.config = MagicMock(instance_id="raumfeld")
+    mass = cast("MagicMock", provider.mass)
+    mass.cache = cache
+    mass.config.get.return_value = None
+
+
 async def _room_ids(provider: RaumfeldPlayerProvider) -> dict[str, str | None]:
     """Run the id part of a room sync and return each room's player_id."""
     rooms = provider.host.get_rooms()
     provider._forget_moved_renderers(rooms)
     for room in rooms:
+        await provider._load_room_pin(room)
         await provider._settle_room_renderer(room)
         await provider._ensure_room_serial(room)
     provider._assign_room_ids(rooms)
+    await provider._pin_room_ids()
     return {room: provider._room_player_id(room) for room in rooms}
 
 
@@ -364,14 +381,34 @@ async def test_a_speaker_moved_out_of_a_room_that_is_gone_keeps_its_player() -> 
 
 
 async def test_a_room_with_another_speaker_is_read_again() -> None:
-    """A room that got another speaker reads that speaker's serial and control URL."""
+    """A room that got another speaker keeps its player, and reads that speaker's control URL."""
     provider = _moving_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
     await _room_ids(provider)
 
     _place_speakers(provider, {"Marshall": ("uuid:5e1d", "uuid:pi3")})
 
-    assert await _room_ids(provider) == {"Marshall": "raumfeld_b827eb57daf9"}
+    assert await _room_ids(provider) == {"Marshall": "raumfeld_d83addda8e62"}
     assert provider.room_transport_url("Marshall") == "http://192.168.1.44:40177/AVTransport/ctrl"
+
+
+async def test_a_speaker_swapped_out_of_a_room_gets_a_player_of_its_own() -> None:
+    """The old speaker of a room, alone in a new room, gets a player of its own; both keep theirs."""
+    cache = _Cache()
+    provider = _moving_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, cache)
+    await _room_ids(provider)
+
+    swapped = {"Marshall": ("uuid:5e1d", "uuid:pi3"), "Keuken": ("uuid:0aaa", "uuid:pi4")}
+    _place_speakers(provider, swapped)
+
+    ids = {"Marshall": "raumfeld_d83addda8e62", "Keuken": "raumfeld_0aaa"}
+    assert await _room_ids(provider) == ids
+    warning = cast("MagicMock", provider.logger).warning
+    warning.assert_called_once()
+    assert "keeps from before" in warning.call_args.args[0]
+    assert warning.call_args.args[1:] == ("Keuken", "d8:3a:dd:da:8e:62", "Marshall")
+
+    restarted = _moving_provider(dict(reversed(swapped.items())), cache)
+    assert await _room_ids(restarted) == ids
 
 
 async def test_a_room_keeping_its_speaker_is_not_read_again() -> None:
@@ -1108,7 +1145,13 @@ class _Cache:
         return self.entries.get((key, provider, category))
 
     async def set(
-        self, key: str, data: Any, expiration: int, provider: str = "default", category: int = 0
+        self,
+        key: str,
+        data: Any,
+        expiration: int,
+        provider: str = "default",
+        category: int = 0,
+        persistent: bool = False,
     ) -> None:
         assert expiration > 0
         self.entries[(key, provider, category)] = data
@@ -2509,6 +2552,7 @@ async def test_a_room_sharing_a_serial_falls_back_to_its_room_udn() -> None:
     provider, _ = _provider(_DEVICE_DESCRIPTION)
     provider._room_ids = {}
     provider._shared_serial_warned = set()
+    _remember_room_ids(provider, _Cache())
     provider.host = _host(
         {"TV": ("uuid:room-b", "uuid:r2"), "Bar": ("uuid:room-a", "uuid:r1")},
         {"uuid:r1": _LOCATION, "uuid:r2": "http://192.168.1.41:50000/virtual.xml"},
@@ -2522,7 +2566,10 @@ async def test_a_room_sharing_a_serial_falls_back_to_its_room_udn() -> None:
         "TV": "raumfeld_room-b",
         "Bar": "raumfeld_04a316f3b6c4",
     }
-    cast("MagicMock", provider.logger).warning.assert_called_once()
+    warning = cast("MagicMock", provider.logger).warning
+    warning.assert_called_once()
+    assert "the same serial" in warning.call_args.args[0]
+    assert warning.call_args.args[1:] == ("TV", "04:a3:16:f3:b6:c4", "Bar")
 
 
 @contextlib.contextmanager

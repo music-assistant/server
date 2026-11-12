@@ -142,7 +142,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _renderer_descriptions: dict[str, str]
     # room name -> player_id, from _room_pins or _room_serials on every sync (see _assign_room_ids)
     _room_ids: dict[str, str]
-    # rooms already warned about sharing a serial, so the warning goes out once per room
+    # rooms already warned about falling back to their room UDN, so the warning goes out once
+    # per room
     _shared_serial_warned: set[str]
     # room name -> software version of its speaker, and the rooms it was read for since the
     # last connect: a speaker that installed an update restarts, and the host with it
@@ -950,18 +951,20 @@ class RaumfeldPlayerProvider(PlayerProvider):
         # up reporting the same one. Only one of them can use it as its id; the other falls
         # back to its room UDN so it still shows up. Taking the rooms in a fixed order (by
         # room UDN) makes the same room keep the serial on every start, so ids - and the
-        # player config stored under them - do not swap between restarts.
+        # player config stored under them - do not swap between restarts. A room whose
+        # speaker came from a room that keeps the player it gave falls back the same way.
         ids: dict[str, str] = {}
-        claimed: set[str] = set()
+        # player_id -> the room that has it
+        claimed: dict[str, str] = {}
         for room in rooms:
             if (pinned := self._room_pin(room)) is not None and pinned not in claimed:
-                claimed.add(pinned)
+                claimed[pinned] = room
                 ids[room] = pinned
         unassigned = [room for room in rooms if room not in ids and room in self._room_serials]
         for room in sorted(unassigned, key=self._room_sort_key):
             serial = self._room_serials[room]
             if (player_id := serial_to_player_id(serial)) not in claimed:
-                claimed.add(player_id)
+                claimed[player_id] = room
                 ids[room] = player_id
                 continue
             room_udn = self._room_udn(room)
@@ -970,13 +973,25 @@ class RaumfeldPlayerProvider(PlayerProvider):
             ids[room] = room_udn_to_player_id(room_udn)
             if room not in self._shared_serial_warned:
                 self._shared_serial_warned.add(room)
-                self.logger.warning(
-                    "Room %s reports the same serial (%s) as another room; using its room "
-                    "UDN for its player id instead, which a rebuild of the Raumfeld system "
-                    "would change",
-                    room,
-                    serial,
-                )
+                holder = claimed[player_id]
+                if self._room_pin(holder) == player_id:
+                    self.logger.warning(
+                        "Room %s reports serial %s, whose player id room %s keeps from "
+                        "before; using its room UDN for its player id instead, which a "
+                        "rebuild of the Raumfeld system would change",
+                        room,
+                        serial,
+                        holder,
+                    )
+                else:
+                    self.logger.warning(
+                        "Room %s reports the same serial (%s) as room %s; using its room "
+                        "UDN for its player id instead, which a rebuild of the Raumfeld "
+                        "system would change",
+                        room,
+                        serial,
+                        holder,
+                    )
         self._room_ids = ids
 
     def _follow_error(self) -> str:
