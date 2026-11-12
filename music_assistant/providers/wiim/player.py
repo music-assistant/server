@@ -126,6 +126,7 @@ class WiimPlayer(PlayerProtocol):
         # the SDK device, set up at every attach
         self._device: WiimDevice | None = None
         self._connect_task: asyncio.Task[None] | None = None
+        self._location_changed = asyncio.Event()
         self._udn = upnp_device.udn
         self._description_url = description_url
         self._wiim_controller = provider.wiim_controller
@@ -204,6 +205,17 @@ class WiimPlayer(PlayerProtocol):
         """Only reachable coordinator-approved peers of either backend group natively."""
         return other.protocol_id in self.can_group_with
 
+    def set_location(self, ip_address: str, description_url: str) -> None:
+        """
+        Follow the speaker to the address discovery found it at.
+
+        :param ip_address: The address of the speaker.
+        :param description_url: The URL of its UPnP description at that address.
+        """
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        self._description_url = description_url
+        self._location_changed.set()
+
     def make_command_client(self) -> WiiMClient:
         """
         Return a command-only LinkPlay client bound to this device's current address.
@@ -258,11 +270,12 @@ class WiimPlayer(PlayerProtocol):
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
         await super().on_detach()
-        if self._connect_task is not None:
-            self._connect_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._connect_task
+        if (connect_task := self._connect_task) is not None:
             self._connect_task = None
+            connect_task.cancel()
+            # waits for the setup to end without raising how it ended: a failed setup was
+            # logged when it failed
+            await asyncio.wait([connect_task])
         self._native_groups.unregister(self.protocol_id)
         self._native_groups.schedule_reconcile()
         if (device := self._device) is None:
@@ -530,6 +543,8 @@ class WiimPlayer(PlayerProtocol):
         device.av_transport_event_callback = self._handle_sdk_av_transport_event
         device.play_queue_event_callback = self._handle_sdk_play_queue_event
         await self._wiim_controller.add_device(device)
+        self._attr_device_info.model = device.model_name
+        self._attr_device_info.manufacturer = device.manufacturer or "WiiM"
         self._attr_device_info.software_version = device.firmware_version
         self._attr_source_list = [
             INPUT_MODE_SOURCES[mode_name]
@@ -539,12 +554,18 @@ class WiimPlayer(PlayerProtocol):
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_AIRPLAY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
         self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
+        # read the live topology before the availability goes out, then reconcile so any
+        # leader that already lists this device, or that it leads, self-heals regardless
+        # of discovery order.
+        await self._native_groups.refresh_leader(self, force=True)
+        self._native_groups.schedule_reconcile()
         self._update_ma_state_from_sdk_cache()
 
     async def _create_device(self) -> WiimDevice:
         """Create the SDK device, retrying with a growing delay while it is not reachable."""
         delay = CONNECT_RETRY_INITIAL_DELAY
         while True:
+            self._location_changed.clear()
             ip_address = self.native_ip
             create = asyncio.ensure_future(
                 async_create_wiim_device(
@@ -563,7 +584,9 @@ class WiimPlayer(PlayerProtocol):
                 raise
             except (WiimRequestException, WiimDeviceException) as err:
                 self.logger.warning("Failed to initialize WiiM device at %s: %s", ip_address, err)
-            await asyncio.sleep(delay)
+            with contextlib.suppress(TimeoutError):
+                # a new location is tried at once
+                await asyncio.wait_for(self._location_changed.wait(), delay)
             delay = min(delay * 2, CONNECT_RETRY_MAX_DELAY)
 
     def _disconnect_abandoned_device(self, create: asyncio.Future[WiimDevice]) -> None:

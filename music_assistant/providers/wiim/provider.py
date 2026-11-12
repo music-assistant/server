@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, cast
 from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.exceptions import UpnpError
-from music_assistant_models.enums import IdentifierType
 from pywiim import WiiMClient, WiiMError
 from wiim import WiimController
 from zeroconf import ServiceStateChange
@@ -139,12 +138,6 @@ class WiimProvider(PlayerProvider):
             if self.get_protocol(protocol_id) is not player:
                 # the user disabled the player meanwhile
                 return
-            # read the live topology now the protocol is attached (the coordinator would
-            # discard a read taken before the attach), then
-            # reconcile so any leader that already lists this device, or that it leads,
-            # self-heals regardless of discovery order.
-            await self.native_groups.refresh_leader(player, force=True)
-            self.native_groups.schedule_reconcile()
             self.logger.info("WiiM player attached: %s (%s)", player.name, protocol_id)
         except Exception:
             self.logger.exception("Failed to attach WiiM player %s", protocol_id)
@@ -292,6 +285,7 @@ class WiimProvider(PlayerProvider):
             await mass_player.async_handle_address_change(
                 cur_address, upnp_device, matched_location
             )
-        else:
-            # Official players self-heal their connection; only refresh their identifier.
-            mass_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
+        elif isinstance(mass_player, WiimPlayer):
+            # Official players self-heal a live connection; one still to set up (or set up
+            # again) uses the new location.
+            mass_player.set_location(cur_address, matched_location)

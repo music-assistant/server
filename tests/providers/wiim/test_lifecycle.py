@@ -11,10 +11,13 @@ from music_assistant_models.enums import IdentifierType
 from wiim.exceptions import WiimRequestException
 
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX
-from music_assistant.providers.wiim.grouping import NativeGroupRole
+from music_assistant.providers.wiim.grouping import NativeGroupCoordinator, NativeGroupRole
 from music_assistant.providers.wiim.player import WiimPlayer
+from music_assistant.providers.wiim.provider import WiimProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from tests.scenarios.harness import Scenario
 
 UDN = "uuid:wiim-pro-001"
@@ -185,15 +188,22 @@ async def test_a_speaker_not_reachable_at_its_attach_is_set_up_later() -> None:
     device = _sdk_device()
     create = AsyncMock(side_effect=[WiimRequestException("unreachable"), device])
 
+    delays: list[float] = []
+
+    async def _wait_for(awaitable: Coroutine[object, object, object], timeout: float) -> None:
+        awaitable.close()
+        delays.append(timeout)
+        raise TimeoutError
+
     with (
         patch("music_assistant.providers.wiim.player.async_create_wiim_device", create),
-        patch("music_assistant.providers.wiim.player.asyncio.sleep", AsyncMock()) as sleep,
+        patch("music_assistant.providers.wiim.player.asyncio.wait_for", _wait_for),
     ):
         await protocol.on_attach(MagicMock())
         assert protocol._connect_task is not None
         await protocol._connect_task
 
-    sleep.assert_awaited_once_with(30)
+    assert delays == [30]
     assert protocol.device is device
     provider.wiim_controller.add_device.assert_awaited_once_with(device)
     assert protocol.available is True
@@ -213,3 +223,136 @@ async def test_a_speaker_without_its_sdk_device_is_unavailable() -> None:
 
     assert protocol.available is False
     assert protocol.native_available is False
+
+
+async def test_a_detach_after_a_failed_setup_still_tears_down() -> None:
+    """A setup that failed half way leaves a detach to release the group and the device."""
+    provider = _detached_provider()
+    provider.wiim_controller.add_device = AsyncMock(side_effect=RuntimeError("controller"))
+    protocol = _speaker(provider)
+    device = _sdk_device()
+    with patch(
+        "music_assistant.providers.wiim.player.async_create_wiim_device",
+        AsyncMock(return_value=device),
+    ):
+        await protocol.on_attach(MagicMock())
+        assert protocol._connect_task is not None
+        await asyncio.wait([protocol._connect_task])
+
+    await protocol.on_detach()
+
+    provider.native_groups.unregister.assert_called_once_with(PROTOCOL_ID)
+    device.disconnect.assert_awaited_once_with()
+    assert device.rendering_control_event_callback is None
+
+
+async def test_a_cancelled_detach_is_not_swallowed() -> None:
+    """A detach that is itself cancelled while it ends the setup stops there."""
+    protocol = _speaker(_detached_provider())
+    creating = asyncio.Event()
+
+    async def _create(*_args: object, **_kwargs: object) -> MagicMock:
+        creating.set()
+        await asyncio.Event().wait()
+        return _sdk_device()
+
+    with patch("music_assistant.providers.wiim.player.async_create_wiim_device", _create):
+        await protocol.on_attach(MagicMock())
+        await creating.wait()
+        detach = asyncio.create_task(protocol.on_detach())
+        await asyncio.sleep(0)
+        detach.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await detach
+
+
+async def test_a_speaker_moved_while_its_setup_backs_off_connects_at_its_new_location() -> None:
+    """A speaker discovery finds at a new location is set up there at once, not after its delay."""
+    provider = _detached_provider()
+    protocol = _speaker(provider)
+    device = _sdk_device()
+    new_address = "192.168.1.81"
+    new_location = f"http://{new_address}:49152/description.xml"
+    attempts: list[tuple[str, object]] = []
+
+    async def _create(location: str, *_args: object, **kwargs: object) -> MagicMock:
+        attempts.append((location, kwargs["host"]))
+        if location != new_location:
+            raise WiimRequestException("unreachable")
+        return device
+
+    with patch("music_assistant.providers.wiim.player.async_create_wiim_device", _create):
+        await protocol.on_attach(MagicMock())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(attempts) == 1
+        await WiimProvider._reconcile_player_address(
+            provider, protocol, new_address, MagicMock(udn=UDN), new_location
+        )
+        assert protocol._connect_task is not None
+        await asyncio.wait_for(protocol._connect_task, 1)
+
+    assert attempts == [
+        (f"http://{IP_ADDRESS}:49152/description.xml", IP_ADDRESS),
+        (new_location, new_address),
+    ]
+    assert protocol.device is device
+    assert protocol.device_info.ip_address == new_address
+
+
+async def test_a_follower_is_published_with_its_native_role_once_set_up() -> None:
+    """The setup reads the native topology before the speaker shows as available."""
+    provider = _detached_provider()
+    provider.native_groups = NativeGroupCoordinator(provider)
+    protocol = _speaker(provider)
+    provider.get_protocol = MagicMock(return_value=protocol)
+    provider.protocols = [protocol]
+    client = MagicMock(capabilities={})
+    client.get_device_group_info = AsyncMock(return_value=MagicMock(role="slave"))
+    published: list[tuple[bool, NativeGroupRole]] = []
+
+    def _update_state(*_args: object, **_kwargs: object) -> None:
+        published.append((protocol.available, provider.native_groups.role_of(PROTOCOL_ID)))
+
+    with (
+        patch(
+            "music_assistant.providers.wiim.player.async_create_wiim_device",
+            AsyncMock(return_value=_sdk_device()),
+        ),
+        patch.object(protocol, "make_command_client", return_value=client),
+        patch.object(protocol, "update_state", side_effect=_update_state),
+    ):
+        await protocol.on_attach(MagicMock())
+        assert protocol._connect_task is not None
+        await protocol._connect_task
+
+    client.get_device_group_info.assert_awaited_once_with()
+    first_available = next(state for state in published if state[0])
+    assert first_available == (True, NativeGroupRole.FOLLOWER)
+
+
+async def test_a_speaker_set_up_reports_the_model_of_its_sdk_device() -> None:
+    """Model and manufacturer follow the SDK device once it is up, not the UPnP description."""
+    provider = _detached_provider()
+    upnp_device = MagicMock(
+        friendly_name="Speaker A", model_name="WiiM", manufacturer=None, udn=UDN
+    )
+    protocol = WiimPlayer(
+        provider, PROTOCOL_ID, upnp_device, f"http://{IP_ADDRESS}/description.xml", IP_ADDRESS
+    )
+    device = _sdk_device()
+    device.model_name = "WiiM Pro Plus"
+    device.manufacturer = "Linkplay"
+
+    with patch(
+        "music_assistant.providers.wiim.player.async_create_wiim_device",
+        AsyncMock(return_value=device),
+    ):
+        await protocol.on_attach(MagicMock())
+        assert protocol._connect_task is not None
+        await protocol._connect_task
+
+    assert protocol.device_info.model == "WiiM Pro Plus"
+    assert protocol.device_info.manufacturer == "Linkplay"
+    assert protocol.device_info.software_version == "4.8.1"
