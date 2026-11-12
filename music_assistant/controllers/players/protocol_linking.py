@@ -128,15 +128,18 @@ class ProtocolLinkingMixin:
         if stored and (player_id := stored.get("player_id")):
             if self._can_attach_to(protocol, identity, player_id, attached_only=True):
                 return str(player_id)
-            # the player it was attached to turned out to be another device
-            self.logger.info(
-                "Protocol %s no longer belongs to player %s, looking for its device again",
-                protocol_id,
-                player_id,
-            )
-            self.mass.config.set_protocol_value(protocol_id, "player_id", None)
-            if player := self._players.get(player_id):
-                player.remove_protocol(protocol_id, forget=True)
+            # what only exists while it is connected stands for no device: a link it can
+            # not follow stays for when the protocol connects as the device again
+            if not protocol.session_only:
+                # the player it was attached to turned out to be another device
+                self.logger.info(
+                    "Protocol %s no longer belongs to player %s, looking for its device again",
+                    protocol_id,
+                    player_id,
+                )
+                self.mass.config.set_protocol_value(protocol_id, "player_id", None)
+                if player := self._players.get(player_id):
+                    player.remove_protocol(protocol_id, forget=True)
         if protocol.role == ProtocolRole.VIRTUAL:
             # a group is no device that another protocol could stand for
             return None
@@ -506,18 +509,18 @@ class ProtocolLinkingMixin:
         Store what has to be known about a protocol while it is away.
 
         That is the player it belongs to, its role and the identifiers of its device.
-        Nothing is stored for a protocol that only exists while its device is connected,
-        unless its player has a config.
+        Nothing is stored for a player without a config, which only exists while its
+        device is connected: a config of the protocol that names another player stays.
 
         :param protocol: The protocol.
         :param player_id: Id of the player it belongs to.
         """
         config = self.mass.config
         protocol_id = protocol.protocol_id
+        if not isinstance(config.get(f"{CONF_PLAYERS}/{player_id}"), dict):
+            return
         stored = config.get_protocol_record(protocol_id)
         if stored is None:
-            if not isinstance(config.get(f"{CONF_PLAYERS}/{player_id}"), dict):
-                return
             config.create_protocol_record(
                 protocol_id,
                 provider=protocol.provider_id,

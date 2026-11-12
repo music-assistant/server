@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from typing import Any
 from unittest.mock import patch
@@ -579,6 +580,88 @@ async def test_session_only_protocol_never_follows_a_link_to_the_player_of_a_dev
     state = scenario.player(player_id)
     assert state is not None
     assert [info.protocol_id for info in state.protocols] == ["cast_tv"]
+    # the link stays, for when the client connects as an output of the device again
+    assert _edge(scenario, "sendspin_receiver") == player_id
+
+
+async def test_session_only_session_of_a_client_of_a_device_leaves_its_link_alone(
+    scenario: Scenario, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A client of a device that connects as one that only exists while connected stores nothing.
+
+    When it connects as a client of its device again, it returns to the player of the device.
+    """
+    sonos = await scenario.add_provider("sonos")
+    sendspin = await scenario.add_provider("sendspin")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(native)
+    player_id = scenario.single_player(native).player_id
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(client)
+    assert scenario.player_of(client) == player_id
+    await scenario.detach(client)
+    stored = deepcopy(scenario.mass.config.get(CONF_PLAYER_PROTOCOLS))
+    stored_players = sorted(scenario.mass.config.get(CONF_PLAYERS))
+
+    session = sendspin.protocol("sendspin_kitchen", "Kitchen", role="native", session_only=True)
+    with caplog.at_level(logging.INFO, logger="music_assistant"):
+        for _ in range(2):
+            await scenario.attach(session)
+            assert scenario.player_of(session) == "sendspin_kitchen"
+            state = scenario.player(player_id)
+            assert state is not None
+            assert {info.protocol_id: info.available for info in state.protocols} == {
+                "RINCON_KITCHEN": True,
+                "sendspin_kitchen": False,
+            }
+            await scenario.detach(session)
+
+    assert "no longer belongs" not in caplog.text
+    assert scenario.mass.config.get(CONF_PLAYER_PROTOCOLS) == stored
+    assert sorted(scenario.mass.config.get(CONF_PLAYERS)) == stored_players
+    assert _edge(scenario, "sendspin_kitchen") == player_id
+
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(client)
+    await scenario.idle()
+
+    assert scenario.player_of(client) == player_id
+    assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+
+async def test_removing_the_player_of_a_device_leaves_a_session_of_its_client_alone(
+    scenario: Scenario,
+) -> None:
+    """A client of the device that is connected as a player of its own stays that player."""
+    sonos = await scenario.add_provider("sonos")
+    sendspin = await scenario.add_provider("sendspin")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(native)
+    player_id = scenario.single_player(native).player_id
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(client)
+    await scenario.detach(client)
+    session = sendspin.protocol("sendspin_kitchen", "Kitchen", role="native", session_only=True)
+    await scenario.attach(session)
+    removed: list[str] = []
+
+    async def _on_remove() -> None:
+        removed.append(session.protocol_id)
+
+    session.on_remove = _on_remove  # type: ignore[method-assign]
+    scenario.set_present("RINCON_KITCHEN", False)
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert scenario.player_of(session) == "sendspin_kitchen"
+    assert removed == []
+    assert [(player.player_id, player.available) for player in scenario.visible_players()] == [
+        ("sendspin_kitchen", True)
+    ]
+    # the config the removed player had of the client went with it
+    assert scenario.mass.config.get_protocol_record("sendspin_kitchen") is None
 
 
 async def test_protocol_that_takes_the_place_of_one_that_is_away_keeps_its_own_config(

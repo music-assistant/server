@@ -3181,6 +3181,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     protocol := self._protocols.get(protocol_id)
                     or self._unattached.get(protocol_id)
                 )
+                # one that connected as a player of its own meanwhile belongs to that player
+                and protocol.player in (None, player)
             ]
             for protocol in protocols:
                 provider_ids.add(protocol.provider_id)
