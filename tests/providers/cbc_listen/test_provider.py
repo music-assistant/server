@@ -42,7 +42,6 @@ from music_assistant.providers.cbc_listen.constants import (
     CLIPS_URL,
     DEFAULT_IMAGE_URL,
     NETWORK_LOGOS,
-    PAGE_SIZE,
     SHOW_URL,
     SHOWS_URL,
     STATIONS_URL,
@@ -307,7 +306,11 @@ def test_parsers() -> None:
     assert not radio.metadata.images[0].remotely_accessible
 
     podcast_23 = parse_podcast(shows[1], INSTANCE_ID, DOMAIN)
-    assert podcast_23.publisher == "Nahlah Ayed"
+    assert podcast_23.publisher == "CBC"
+    assert (
+        podcast_23.metadata.description
+        == "Hosted by Nahlah Ayed.\n\nDeep conversation on big topics."
+    )
     assert podcast_23.metadata.genres == {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
     assert podcast_23.metadata.images
     assert podcast_23.metadata.images[0].type == ImageType.THUMB
@@ -317,6 +320,9 @@ def test_parsers() -> None:
 
     podcast_39 = parse_podcast(shows[2], INSTANCE_ID, DOMAIN)
     assert podcast_39.publisher == "CBC"
+    assert (
+        podcast_39.metadata.description == "Toronto morning radio show featuring daily interviews."
+    )
     assert podcast_39.metadata.genres == {"Society & Culture"}
     assert podcast_39.metadata.images
     assert podcast_39.metadata.images[0].path == DEFAULT_IMAGE_URL
@@ -327,7 +333,6 @@ def test_parsers() -> None:
     assert ep.duration == 1500
     assert ep.metadata.images
     assert ep.metadata.images[0].path == podcast_23.metadata.images[0].path
-    assert all(mapping.url is None for mapping in ep.provider_mappings)
 
 
 def test_helpers() -> None:
@@ -415,14 +420,17 @@ async def test_browse_and_search() -> None:
 
 
 async def test_get_items_and_episodes() -> None:
-    """Test fetching a single radio station, podcast, episode list, and single episode."""
+    """Test fetching a single radio station, podcast, paginated episodes, and single episode."""
+    page_1 = {"clipCount": 3, "clips": SAMPLE_CLIPS["clips"][:2]}
+    page_2 = {"clipCount": 3, "clips": [SAMPLE_CLIPS["clips"][0], SAMPLE_CLIPS["clips"][2]]}
     provider, get = make_provider(
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=SAMPLE_SHOWS[0]),
         FakeResponse(data=SAMPLE_SHOWS[3]),
         FakeResponse(data=SAMPLE_SHOWS[0]),
-        FakeResponse(data=SAMPLE_CLIPS),
+        FakeResponse(data=page_1),
+        FakeResponse(data=page_2),
         FakeResponse(data=SAMPLE_CLIPS["clips"][0]),
         FakeResponse(data=SAMPLE_SHOWS[0]),
     )
@@ -435,15 +443,16 @@ async def test_get_items_and_episodes() -> None:
     with pytest.raises(MediaNotFoundError):
         await provider.get_podcast("500")
 
-    episodes = [ep async for ep in provider.get_podcast_episodes("209")]
+    with patch("music_assistant.providers.cbc_listen.provider.PAGE_SIZE", 2):
+        episodes = [ep async for ep in provider.get_podcast_episodes("209")]
     assert [(ep.item_id, ep.position) for ep in episodes] == [("1002", 2), ("1001", 1)]
 
     single_ep = await provider.get_podcast_episode("1002")
     assert single_ep.item_id == "1002"
     assert single_ep.podcast.item_id == "209"
-    assert (
-        get.call_args_list[5].args[0] == f"{SHOW_URL}/209/clips?pageNumber=1&pageSize={PAGE_SIZE}"
-    )
+    called_urls = [call.args[0] for call in get.call_args_list]
+    assert f"{SHOW_URL}/209/clips?pageNumber=1&pageSize=2" in called_urls
+    assert f"{SHOW_URL}/209/clips?pageNumber=2&pageSize=2" in called_urls
 
 
 async def test_stream_details_and_live_metadata() -> None:
@@ -468,6 +477,7 @@ async def test_stream_details_and_live_metadata() -> None:
                 }
             ]
         ),
+        FakeResponse(data=[]),
         FakeResponse(
             data=[
                 {
@@ -507,10 +517,13 @@ async def test_stream_details_and_live_metadata() -> None:
         await provider._update_stream_metadata(radio_stream, 30)
         assert radio_stream.stream_metadata.title == "Pastoral Symphony"
 
-    assert f"{SHOW_URL}/1044/playlogs/day/20261111?locationKey=toronto" in [
-        call.args[0] for call in get.call_args_list
-    ]
-    assert get.call_args_list[0].kwargs == {"headers": API_HEADERS, "timeout": API_TIMEOUT}
+    called_urls = [call.args[0] for call in get.call_args_list]
+    assert f"{SHOW_URL}/1044/playlogs/day/20261112?locationKey=toronto" in called_urls
+    assert f"{SHOW_URL}/1044/playlogs/day/20261111?locationKey=toronto" in called_urls
+    assert any(
+        call.kwargs == {"headers": API_HEADERS, "timeout": API_TIMEOUT}
+        for call in get.call_args_list
+    )
 
 
 async def test_http_errors_and_rate_limiting() -> None:

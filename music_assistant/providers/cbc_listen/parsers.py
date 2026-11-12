@@ -93,7 +93,7 @@ def parse_podcast(show: CBCShow, instance_id: str, domain: str) -> Podcast:
     podcast = Podcast(
         item_id=item_id,
         name=show.title.strip(),
-        publisher=show.hosts.strip() or PUBLISHER,
+        publisher=PUBLISHER,
         provider=instance_id,
         provider_mappings={
             ProviderMapping(
@@ -103,7 +103,11 @@ def parse_podcast(show: CBCShow, instance_id: str, domain: str) -> Podcast:
             )
         },
     )
-    podcast.metadata.description = show.description.strip()
+    hosts = show.hosts.strip()
+    description = show.description.strip()
+    podcast.metadata.description = (
+        f"Hosted by {hosts}.\n\n{description}".strip() if hosts else description
+    )
     podcast.metadata.genres = (
         {show.category.strip()}
         if show.category and show.category.strip()

@@ -41,7 +41,6 @@ from .constants import (
     API_RATE_LIMIT,
     API_RATE_PERIOD,
     API_TIMEOUT,
-    BROADCAST_DAY_OFFSET_HOURS,
     BROWSE_FOLDERS,
     BROWSE_PODCASTS,
     BROWSE_RADIO_SHOWS,
@@ -52,6 +51,7 @@ from .constants import (
     DEFAULT_IMAGE_URL,
     FREE_TIER,
     IMAGE_HEADERS,
+    MAX_PAGES,
     NOW_PLAYING_CACHE_SECONDS,
     PAGE_SIZE,
     PODCAST_CACHE_SECONDS,
@@ -61,7 +61,13 @@ from .constants import (
     STATIONS_URL,
     STREAM_METADATA_UPDATE_INTERVAL,
 )
-from .helpers import find_program, get_stream_metadata, search_channels, search_shows
+from .helpers import (
+    find_program,
+    find_track,
+    get_stream_metadata,
+    search_channels,
+    search_shows,
+)
 from .models import CBCClip, CBCClipPage, CBCNetwork, CBCProgram, CBCShow, CBCTrack, Channel
 from .parsers import parse_channels, parse_podcast, parse_podcast_episode, parse_radio
 
@@ -231,24 +237,21 @@ class CBCListenProvider(MusicProvider):
         :param path: Image URL to fetch.
         """
         # CBC's Akamai WAF drops image proxy requests whose User-Agent contains a URL.
+        if (image := await self._fetch_image(path)) is not None or path == DEFAULT_IMAGE_URL:
+            return image
+        return await self._fetch_image(DEFAULT_IMAGE_URL)
+
+    async def _fetch_image(self, url: str) -> bytes | None:
+        """Return raw image bytes for ``url``, or ``None`` on a 4xx/5xx HTTP status."""
         try:
             async with self.mass.http_session.get(
-                path, headers=IMAGE_HEADERS, timeout=API_TIMEOUT
+                url, headers=IMAGE_HEADERS, timeout=API_TIMEOUT
             ) as response:
-                if response.status != HTTPStatus.NOT_FOUND:
-                    response.raise_for_status()
-                    return await response.read()
-            if path == DEFAULT_IMAGE_URL:
-                return None
-            async with self.mass.http_session.get(
-                DEFAULT_IMAGE_URL, headers=IMAGE_HEADERS, timeout=API_TIMEOUT
-            ) as fallback:
-                if fallback.status == HTTPStatus.NOT_FOUND:
+                if response.status >= HTTPStatus.BAD_REQUEST:
                     return None
-                fallback.raise_for_status()
-                return await fallback.read()
+                return await response.read()
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise MediaNotFoundError(f"Could not load image {path}: {err}") from err
+            raise MediaNotFoundError(f"Could not load image {url}: {err}") from err
 
     async def _update_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
@@ -266,8 +269,13 @@ class CBCListenProvider(MusicProvider):
             program = find_program(programs, at_ms)
             tracks: list[CBCTrack] = []
             if program and isinstance(program.show_id, int) and channel.location_key:
-                date_id = (now - timedelta(hours=BROADCAST_DAY_OFFSET_HOURS)).strftime("%Y%m%d")
-                tracks = await self._get_tracks(program.show_id, date_id, channel.location_key)
+                today = now.strftime("%Y%m%d")
+                tracks = await self._get_tracks(program.show_id, today, channel.location_key)
+                if find_track(tracks, at_ms) is None:
+                    yesterday = (now - timedelta(days=1)).strftime("%Y%m%d")
+                    tracks = await self._get_tracks(
+                        program.show_id, yesterday, channel.location_key
+                    )
         except (MediaNotFoundError, ProviderUnavailableError, RateLimited, RetriesExhausted) as err:
             self.logger.debug(
                 "Could not update stream metadata for %s: %s", stream_details.item_id, err
@@ -316,14 +324,30 @@ class CBCListenProvider(MusicProvider):
     async def _get_episodes(self, show_id: str) -> list[PodcastEpisode]:
         """Return the playable episodes or segments of a podcast or radio show."""
         podcast = ItemMapping.from_item(await self._get_series(show_id))
-        url = f"{SHOW_URL}/{show_id}/clips?pageNumber=1&pageSize={PAGE_SIZE}"
-        page = CBCClipPage.from_dict(await self._get_data(url))
-        clips = [clip for clip in page.clips if clip.src and clip.content_tier == FREE_TIER]
+        raw_clips = await self._get_clips(show_id)
+        seen: set[int] = set()
+        clips: list[CBCClip] = []
+        for clip in raw_clips:
+            if not clip.src or clip.content_tier != FREE_TIER or clip.clip_id in seen:
+                continue
+            seen.add(clip.clip_id)
+            clips.append(clip)
         positions = rank_episodes_by_date([clip.released_at for clip in clips])
         return [
             parse_podcast_episode(clip, podcast, position, self.instance_id, self.domain)
             for position, clip in zip(positions, clips, strict=True)
         ]
+
+    async def _get_clips(self, show_id: str) -> list[CBCClip]:
+        """Fetch all clip pages for a show up to ``MAX_PAGES``."""
+        clips: list[CBCClip] = []
+        for page_number in range(1, MAX_PAGES + 1):
+            url = f"{SHOW_URL}/{show_id}/clips?pageNumber={page_number}&pageSize={PAGE_SIZE}"
+            page = CBCClipPage.from_dict(await self._get_data(url))
+            clips.extend(page.clips)
+            if len(page.clips) < PAGE_SIZE or (page.clip_count and len(clips) >= page.clip_count):
+                break
+        return clips
 
     async def _get_clip(self, clip_id: str) -> CBCClip:
         """Return one playable clip by ID, or raise MediaNotFoundError."""

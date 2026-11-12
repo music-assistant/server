@@ -103,10 +103,11 @@ class CBCClip(Document):
 class CBCClipPage(Document):
     """A page of clips for a CBC show."""
 
+    clip_count: int = field(metadata=field_options(alias="clipCount"), default=0)
     clips: list[CBCClip] = field(default_factory=list)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Channel(DataClassDictMixin):
     """A playable live radio station of CBC Listen."""
 
