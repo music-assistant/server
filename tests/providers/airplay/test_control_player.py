@@ -1582,3 +1582,32 @@ async def test_a_detach_ends_the_reconnect_backoff() -> None:
     assert task.done()
     create_task.assert_not_called()
     assert not player._reconnect_wakeup.is_set()
+
+
+async def test_an_attach_after_a_detach_connects_the_control_services_again() -> None:
+    """The same object attached again after a detach connects its control services again."""
+    player = _make_control_player()
+    cast("MagicMock", player.provider).bridge_manager.evaluate_bridge = AsyncMock()
+    cast("MagicMock", player.mass.create_task).side_effect = lambda coro, **_: asyncio.create_task(
+        coro
+    )
+    connect = AsyncMock(return_value=False)
+
+    async def _bind() -> None:
+        await player.on_config_updated()
+        await player.on_attach(MagicMock())
+        assert player._connection_task is not None
+        await asyncio.wait_for(player._connection_task, 1)
+
+    with (
+        patch.object(player, "_connect_control_services", connect),
+        patch.object(player, "_disconnect_control_services", AsyncMock()),
+    ):
+        await _bind()
+        connect.assert_awaited_once()
+        await player.on_detach()
+        connect.reset_mock()
+
+        await _bind()
+
+    connect.assert_awaited_once()
