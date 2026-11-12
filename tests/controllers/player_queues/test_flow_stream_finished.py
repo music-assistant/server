@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
@@ -195,3 +195,42 @@ def test_flow_stream_played_out_when_a_newer_session_took_over() -> None:
 def test_flow_stream_played_out_for_unknown_queue() -> None:
     """There is nothing to hold for a queue that does not exist."""
     assert _played_out(_streamed_session(), 10.0, queue_id="other") is True
+
+
+async def test_queue_resumes_items_added_while_a_long_buffer_plays_out() -> None:
+    """
+    Items added while the player plays out a long buffer still start once it goes idle.
+
+    A held-open flow stream lets the player play its whole buffer, which takes minutes after a
+    long session, before it reports idle.
+    """
+    queue = MagicMock(
+        queue_id="q",
+        session_id="sess-1",
+        active=True,
+        state=PlaybackState.PLAYING,
+        current_index=0,
+        display_name="Queue",
+    )
+    fake = _fake_controller(queue)
+    scheduled: list[Any] = []
+    fake.mass.create_task = MagicMock(side_effect=lambda coro, **_kw: scheduled.append(coro))
+    fake.mass.players.get_player.return_value = MagicMock(offline_by_power_control=False)
+    fake.get_next_item.return_value = MagicMock(queue_item_id="added")
+    fake.index_by_id.return_value = 1
+    fake.play_index = AsyncMock()
+    polls = 0
+
+    async def _sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 120:
+            queue.state = PlaybackState.IDLE
+
+    PlayerQueuesController.queue_buffer_completed(
+        cast("PlayerQueuesController", fake), "q", queue_exhausted=True
+    )
+    with patch("music_assistant.controllers.player_queues.controller.asyncio.sleep", _sleep):
+        await scheduled[0]
+
+    fake.play_index.assert_awaited_once_with("q", 1)

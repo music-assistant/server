@@ -79,6 +79,7 @@ from music_assistant.controllers.player_queues.constants import (
     DEFAULT_CROSSFADE_ENABLED,
     DEFAULT_PAUSE_TIMEOUT,
     FLOW_PLAYED_OUT_MARGIN,
+    FLOW_PLAYOUT_IDLE_TIMEOUT,
     PAUSE_TIMEOUT_RANGE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
@@ -1753,7 +1754,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
             idle_detected = False
-            for _ in range(60):
+            for _ in range(FLOW_PLAYOUT_IDLE_TIMEOUT):
                 await asyncio.sleep(1)
                 if not queue.active or queue_data.session_id != original_session_id:
                     return
