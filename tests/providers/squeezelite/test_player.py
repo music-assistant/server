@@ -8,7 +8,9 @@ from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
+from aioslimproto.models import SlimEvent
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player import PlayerMedia
 
@@ -16,6 +18,10 @@ from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_OUTPUT_CODEC,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
+)
+from music_assistant.providers.squeezelite.constants import (
+    CONF_STORED_VOLUME,
+    DEFAULT_PLAYER_VOLUME,
 )
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
 from tests.common import use_real_create_task
@@ -218,3 +224,74 @@ async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
         )
 
     assert player._attr_elapsed_time == 0
+
+
+def _player_for_volume_restore(
+    stored: dict[str, object], legacy_cache: list[object] | None
+) -> tuple[SqueezelitePlayer, MagicMock]:
+    """Return a player whose stored config values and legacy cache entry are mocked."""
+    player, mass = _player_with_mocked_mass()
+    player._player_id = "p1"
+    player._provider = MagicMock(mass=mass, instance_id="squeezelite_1")
+    player.logger = MagicMock()
+    player.client = MagicMock(player_id="p1", muted=False, volume_level=20)
+    player.client.stop = AsyncMock()
+    player.client.mute = AsyncMock()
+    player.client.volume_set = AsyncMock(
+        side_effect=lambda level: setattr(player.client, "volume_level", level)
+    )
+    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, key, default=None: (
+        stored.get(key, default)
+    )
+    mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+        stored.__setitem__(key, value)
+    )
+    mass.cache.get = AsyncMock(return_value=legacy_cache)
+    mass.players.register_or_update = AsyncMock()
+    return player, mass
+
+
+@pytest.mark.parametrize(
+    ("stored", "legacy_cache", "expected_volume"),
+    [
+        # volume mapped to an AVR: the provider never sends volume commands, so the
+        # cache entry expired, but the stored value must still be restored
+        ({CONF_STORED_VOLUME: 100}, None, 100),
+        ({CONF_STORED_VOLUME: 35}, [False, 80], 35),
+        # stored before the volume moved out of the cache
+        ({}, [True, 55], 55),
+        ({}, None, DEFAULT_PLAYER_VOLUME),
+    ],
+)
+async def test_setup_restores_volume_without_a_valid_cache_entry(
+    stored: dict[str, object],
+    legacy_cache: list[object] | None,
+    expected_volume: int,
+) -> None:
+    """Reconnecting restores the last volume even after the cache entry expired."""
+    player, mass = _player_for_volume_restore(stored, legacy_cache)
+
+    with patch.object(player, "update_attributes"):
+        await player.setup()
+
+    player.client.mute.assert_not_called()
+    player.client.volume_set.assert_awaited_once_with(expected_volume)
+    mass.players.register_or_update.assert_awaited_once_with(player)
+    assert stored[CONF_STORED_VOLUME] == expected_volume
+
+
+async def test_volume_changed_on_the_player_is_stored() -> None:
+    """A volume change made on the player itself (e.g. JiveLite) is kept for the next connect."""
+    stored: dict[str, object] = {}
+    player, mass = _player_for_volume_restore(stored, None)
+    with patch.object(player, "update_attributes"), patch.object(player, "update_state"):
+        await player.setup()
+        mass.config.set_raw_player_config_value.reset_mock()
+        event = SlimEvent(type=SlimEventType.PLAYER_UPDATED, player_id="p1")
+
+        player.client.volume_level = 65
+        player.handle_slim_event(event)
+        assert stored[CONF_STORED_VOLUME] == 65
+
+        player.handle_slim_event(event)
+        mass.config.set_raw_player_config_value.assert_called_once()
