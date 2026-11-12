@@ -2795,6 +2795,10 @@ class SendspinPlayer(SendspinBasePlayer):
         """
         if not is_playing or queue_item is None:
             return metadata, None
+        if queue_item.streamdetails is not None and queue_item.streamdetails.stream_metadata:
+            # A radio station that reports each song: the position is the song's, not the
+            # time since the station started.
+            return metadata, None
         provider = cast("SendspinProvider", self.provider)
         now_us = provider.server_api.clock.now_us()
         if (start := self._timeline_track_start_us(queue, queue_item, now_us)) is None:

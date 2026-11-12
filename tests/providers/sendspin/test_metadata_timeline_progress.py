@@ -31,12 +31,16 @@ _NOW_US = 50_000_000
 _QUEUE_PROGRESS_MS = 4_500
 
 
-def _queue_item(seek_position: int = 0, playback_speed: float | None = None) -> QueueItem:
+def _queue_item(
+    seek_position: int = 0, playback_speed: float | None = None, stream_metadata: object = None
+) -> QueueItem:
     return cast(
         "QueueItem",
         SimpleNamespace(
             queue_item_id=_QUEUE_ITEM_ID,
-            streamdetails=SimpleNamespace(seek_position=seek_position),
+            streamdetails=SimpleNamespace(
+                seek_position=seek_position, stream_metadata=stream_metadata
+            ),
             extra_attributes={} if playback_speed is None else {"playback_speed": playback_speed},
         ),
     )
@@ -161,6 +165,24 @@ def test_a_seek_not_heard_yet_takes_effect_at_its_position(
 
     assert metadata.track_progress == 60_000
     assert timestamp_us == first_chunk_us
+
+
+def test_a_radio_song_keeps_its_own_position(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A station that reports each song publishes the song's position.
+
+    The timeline would give the time since the station started, which clamped to the
+    song's duration shows every new song as already finished.
+    """
+    player = _player(monkeypatch, timeline_start_us=_NOW_US - 600_000_000)
+    song = SimpleNamespace(title="Song", duration=180, elapsed_time=4)
+
+    metadata, timestamp_us = player._timeline_anchored(
+        _metadata(), _queue(), _queue_item(stream_metadata=song), is_playing=True
+    )
+
+    assert metadata.track_progress == _QUEUE_PROGRESS_MS
+    assert timestamp_us is None
 
 
 def test_without_a_timeline_the_queue_position_stays(monkeypatch: pytest.MonkeyPatch) -> None:
