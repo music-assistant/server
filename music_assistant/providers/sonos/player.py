@@ -315,6 +315,9 @@ class SonosPlayer(PlayerProtocol):
         self._on_detach_callbacks.append(
             self.client.subscribe(self._on_session_error, SonosEventType.SESSION_ERROR)
         )
+        if not self.connected and not self._marked_asleep:
+            # the object attaches again after a detach closed its connection
+            self.reconnect()
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""

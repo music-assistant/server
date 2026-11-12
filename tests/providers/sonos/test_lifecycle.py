@@ -172,3 +172,32 @@ async def test_a_speaker_of_a_disabled_player_releases_its_connection(scenario: 
 
     assert protocol.player is None
     cast("AsyncMock", protocol.client.disconnect).assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("asleep", [False, True])
+async def test_a_speaker_taken_off_its_player_connects_again(
+    scenario: Scenario, asleep: bool
+) -> None:
+    """A speaker moved to a player of its own connects again, unless it sleeps."""
+    protocol = await _attach_speaker(scenario)
+    if asleep:
+        protocol._mark_asleep()
+    audio = (await scenario.add_provider("airplay")).protocol(
+        "apf0f6c1cc8d04",
+        "Speaker A",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "F0:F6:C1:CC:8D:04"},
+    )
+    await scenario.attach(audio)
+    assert protocol.player is not None
+    old_player_id = protocol.player.player_id
+    assert scenario.player_of(audio) == old_player_id
+    connect = AsyncMock()
+
+    with patch.object(protocol, "_connect", connect):
+        new_player_id = await scenario.mass.players.unlink_protocol(UID)
+        await scenario.advance(2)
+
+    assert protocol.player is not None
+    assert protocol.player.player_id == new_player_id != old_player_id
+    assert connect.await_count == (0 if asleep else 1)
