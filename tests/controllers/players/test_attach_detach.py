@@ -1174,6 +1174,55 @@ async def test_remove_unavailable_is_refused_while_the_providers_find_their_devi
     assert await scenario.mass.players.remove_unavailable() == [player_id]
 
 
+async def test_remove_unavailable_waits_only_for_the_players_of_a_provider_that_just_loaded(
+    scenario: Scenario,
+) -> None:
+    """
+    A provider that was loaded shortly ago protects its own players, not those of the others.
+
+    A player without protocols, which any provider may find again, waits for all of them.
+    """
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    gone = sonos.protocol(
+        "RINCON_DEN", "Den", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B1"}
+    )
+    reloading = airplay.protocol(
+        "ap_office",
+        "Office",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C1"},
+    )
+    await scenario.attach(gone)
+    await scenario.attach(reloading)
+    gone_id = scenario.single_player(gone).player_id
+    reloading_id = scenario.single_player(reloading).player_id
+    # a player with nothing but a config of its own, as the migration keeps a customised one
+    scenario.mass.config.create_player_record(
+        "up0a1b2c3d", provider="", player_type=PlayerType.PLAYER, default_name="Kitchen"
+    )
+    scenario.mass.config.set_player_value("up0a1b2c3d", "name", "Kitchen radio")
+    scenario.set_present("RINCON_DEN", False)
+    scenario.set_present("ap_office", False)
+    await scenario.restart()
+    airplay = scenario.provider("airplay")
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+    # the provider keeps reloading
+    for _ in range(3):
+        await scenario.advance(45)
+        airplay = await scenario.reload_provider(airplay)
+
+    assert await scenario.mass.players.remove_unavailable() == [gone_id]
+    with pytest.raises(ActionUnavailable):
+        await scenario.mass.players.remove_unavailable()
+    assert sorted(_stored(scenario)[0]) == sorted([reloading_id, "up0a1b2c3d"])
+
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+    assert sorted(await scenario.mass.players.remove_unavailable()) == sorted(
+        [reloading_id, "up0a1b2c3d"]
+    )
+
+
 async def test_discovery_after_a_removal_is_dropped_when_its_provider_unloads(
     scenario: Scenario,
 ) -> None:

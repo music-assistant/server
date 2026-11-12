@@ -190,8 +190,8 @@ AUDIO_SOURCE_CLAIM_TIMEOUT = 30
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
 
-# How long after the start, and after a player provider was loaded, the providers get to find
-# their devices again before players/remove_unavailable may remove what they did not find.
+# How long after a player provider was loaded (the builtin ones at every start) it gets to find
+# its devices again before players/remove_unavailable may remove the players it did not find.
 REMOVE_UNAVAILABLE_GRACE = 60.0
 
 # Player types that must be detached from their (sync)group when they power off.
@@ -246,8 +246,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._attaching: dict[str, _Attach] = {}
         # the ids of the players that are being removed, which no protocol attaches to
         self._removing: set[str] = set()
-        # when a player provider was last loaded (monotonic): the builtin ones load at every start
-        self._providers_loaded_at = 0.0
+        # when each player provider was last loaded (monotonic), by instance id
+        self._providers_loaded_at: dict[str, float] = {}
         # when each protocol that needs polling was last polled, by protocol id
         self._last_polls: dict[str, float] = {}
         # the player id behind every legacy id of the stored players
@@ -429,7 +429,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
-        self._providers_loaded_at = time.monotonic()
+        self._providers_loaded_at[provider.instance_id] = time.monotonic()
 
     async def on_provider_unload(self, provider: PlayerProvider) -> None:
         """
@@ -1992,16 +1992,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Remove every player that is unavailable while its providers are running.
 
         A player is left alone while one of its protocols reaches its device (also one
-        that still needs setup), while a provider of its protocols is not loaded, and
-        when it is disabled. Returns the ids of the players that were removed.
+        that still needs setup), while a provider of its protocols is not loaded or was
+        loaded shortly ago and still finds its devices, and when it is disabled. Returns
+        the ids of the players that were removed.
 
-        :raises ActionUnavailable: Shortly after the start or after a player provider was
-            loaded, while the providers are still finding their devices.
+        :raises ActionUnavailable: When every player to remove was left alone because its
+            providers are still finding their devices, shortly after the start or a load.
         """
-        if (wait := self._providers_loaded_at + REMOVE_UNAVAILABLE_GRACE - time.monotonic()) > 0:
-            msg = f"Players are still being found, try again in {math.ceil(wait)} seconds"
-            raise ActionUnavailable(msg)
+        now = time.monotonic()
         removed: list[str] = []
+        waits: list[float] = []
         for player in list(self._players.values()):
             if (
                 player.state.available
@@ -2016,8 +2016,22 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             }
             if not all(self.mass.get_provider(provider_id) for provider_id in provider_ids):
                 continue
+            # without a protocol, any provider may find the device of the player again
+            loaded_at = max(
+                (
+                    self._providers_loaded_at.get(provider_id, -math.inf)
+                    for provider_id in provider_ids or self._providers_loaded_at
+                ),
+                default=-math.inf,
+            )
+            if (wait := loaded_at + REMOVE_UNAVAILABLE_GRACE - now) > 0:
+                waits.append(wait)
+                continue
             await self._remove_player(player.player_id, rediscover=False)
             removed.append(player.player_id)
+        if waits and not removed:
+            msg = f"Players are still being found, try again in {math.ceil(max(waits))} seconds"
+            raise ActionUnavailable(msg)
         return removed
 
     def wants_protocol(self, protocol_id: str) -> bool:
