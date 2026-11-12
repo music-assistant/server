@@ -1195,3 +1195,24 @@ async def test_duplicate_that_plays_is_merged_only_once_it_stopped(scenario: Sce
     await scenario.attach(tv.airplay)
     await scenario.idle()
     assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.older_id]
+
+
+async def test_player_commands_take_the_id_of_a_merged_player(scenario: Scenario) -> None:
+    """
+    A player command called inside the server with a legacy id reaches the player it names.
+
+    Providers that store a target player (the intercept target of a Yandex Station, the
+    autostart target of a Sendspin source) call them with the stored id.
+    """
+    tv = await _two_players_for_one_tv(scenario)
+    await _merge(scenario, tv.older_id, tv.younger_id)
+    players = scenario.mass.players
+    await scenario.play(tv.younger_id)
+
+    await players.cmd_volume_set(tv.younger_id, 30)
+    await players.cmd_pause(tv.younger_id)
+    await scenario.idle()
+
+    kept = scenario.player(tv.older_id)
+    assert kept is not None
+    assert (kept.volume_level, kept.playback_state) == (30, PlaybackState.PAUSED)
