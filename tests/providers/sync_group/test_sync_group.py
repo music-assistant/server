@@ -647,6 +647,35 @@ class TestActiveProtocolDomain:
         mass.players.schedule_active_output_protocol_clear.assert_any_call(leader)
         mass.players.trigger_player_update.assert_any_call("m2")
 
+    async def test_a_dissolve_holds_the_leader_and_the_player_holding_its_members(
+        self,
+    ) -> None:
+        """Both players whose group changes are locked before the members are released."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        living_room = _make_member(mass, "living_room", "sendspin")
+        bathroom = _make_member(mass, "bathroom", "sendspin")
+        _make_member(mass, "kitchen", "sendspin")
+        bathroom.state.group_members = UniqueList(["bathroom", "living_room", "kitchen"])
+        sgp.sync_leader = living_room
+        sgp._attr_group_members = ["living_room", "bathroom", "kitchen"]
+        events: list[str] = []
+        mass.players.get_player_lock = _recording_lock(events)
+        mass.players._handle_set_members.side_effect = lambda *_args, **_kwargs: events.append(
+            "ungroup"
+        )
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        assert events == [
+            "lock:living_room",
+            "lock:bathroom",
+            "ungroup",
+            "unlock:bathroom",
+            "unlock:living_room",
+        ]
+
     async def test_a_busy_leader_leaves_the_group_and_its_session_as_they_were(self) -> None:
         """A dissolve that cannot get the leader's lock fails and changes nothing."""
         mass = _make_mock_mass()
@@ -1228,6 +1257,34 @@ class TestFormationAndACommandOnItsLeader:
         assert list(results) == [None, None]
         players._handle_select_source.assert_awaited_once()
         assert not players._lock_holders
+
+
+class TestFormationTakesTheLeaderFirst:
+    """A group that forms records its leader only once it holds the leader's lock."""
+
+    async def test_a_busy_leader_is_not_recorded(self) -> None:
+        """A formation that cannot get the leader's lock leaves the group and its timers be."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+        leader.state.can_group_with = {"member"}
+        _make_member(mass, "member")
+        sgp.sync_leader = None
+        sgp._attr_group_members = ["leader", "member"]
+        mass.players.get_player_lock = _busy_lock()
+
+        with (
+            patch.object(sgp, "_cancel_idle_grace_timer") as cancel_idle_grace,
+            patch.object(sgp, "_cancel_reform_timer") as cancel_reform,
+            pytest.raises(ResourceBusyError),
+        ):
+            await sgp._form_syncgroup()
+
+        assert sgp.sync_leader is None
+        mass.players.get_player_lock.assert_called_once_with("leader", PlayerLockPurpose.PLAYBACK)
+        mass.players._handle_set_members.assert_not_awaited()
+        cancel_idle_grace.assert_not_called()
+        cancel_reform.assert_not_called()
 
 
 class TestSetMembersWithABusyLeader:
