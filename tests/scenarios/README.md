@@ -81,6 +81,7 @@ tests of the harness itself.
 | `await player_configs()` | the stored player configs as the settings page lists them, disabled ones included |
 | `protocol_config(protocol_id)` | the stored config values of a protocol object, None when none is stored |
 | `await stored_config_mentioning(text)` | every key and value of the stored config (settings.json) that mentions the text, e.g. a protocol id |
+| `timeline` | every command any device received, in order, as (protocol id, command), as each protocol records it in `protocol.commands` |
 | `events(*types)`, `clear_events()` | the emitted events in order, from the boot on; repeats of an update event collapsed |
 | `removals()` | the player id and the data of every `PLAYER_REMOVED` event in order, from the boot on |
 | `provider(domain_or_id)`, `protocol(protocol_id)` | the loaded fake provider, the current protocol object of a device |

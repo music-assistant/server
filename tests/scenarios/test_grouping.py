@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
@@ -77,6 +78,11 @@ def _grouping_commands(protocol: FakeProtocol) -> list[tuple[object, ...]]:
     return [command for command in protocol.commands if command[0] in ("set_members", "ungroup")]
 
 
+def _grouping_timeline(scenario: Scenario) -> list[tuple[str, tuple[object, ...]]]:
+    """Return the grouping commands all devices received, in order, with the protocol id."""
+    return [entry for entry in scenario.timeline if entry[1][0] in ("set_members", "ungroup")]
+
+
 async def test_speakers_of_one_make_group_on_their_own_protocol(scenario: Scenario) -> None:
     """
     Speakers of one make group through their own protocol.
@@ -127,7 +133,7 @@ async def test_ungrouping_an_idle_leader_dissolves_its_group(scenario: Scenario)
 
 
 async def test_a_speaker_that_can_not_group_with_the_leader_is_left_out(
-    scenario: Scenario,
+    scenario: Scenario, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A speaker the leader can not group with stays out; the others join, and it is logged."""
     sonos, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
@@ -138,16 +144,20 @@ async def test_a_speaker_that_can_not_group_with_the_leader_is_left_out(
     garden_id = _player_id(scenario, garden)
     scenario.expect_log("can not be grouped with")
 
-    await scenario.mass.players.cmd_set_members(
-        kitchen_id, player_ids_to_add=[garden_id, office_id]
-    )
-    await scenario.idle()
+    with caplog.at_level(logging.WARNING, logger="music_assistant"):
+        await scenario.mass.players.cmd_set_members(
+            kitchen_id, player_ids_to_add=[garden_id, office_id]
+        )
+        await scenario.idle()
 
     assert _grouping_commands(kitchen) == [("set_members", ["sonos_office"], None)]
     assert _state(scenario, garden_id).synced_to is None
+    assert "can not be grouped with" in caplog.text
 
 
-async def test_an_unavailable_speaker_is_left_out(scenario: Scenario) -> None:
+async def test_an_unavailable_speaker_is_left_out(
+    scenario: Scenario, caplog: pytest.LogCaptureFixture
+) -> None:
     """A speaker that can not play right now stays out of the group, and it is logged."""
     _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
     kitchen_id = _player_id(scenario, kitchen)
@@ -156,10 +166,14 @@ async def test_an_unavailable_speaker_is_left_out(scenario: Scenario) -> None:
     await scenario.idle()
     scenario.expect_log("is not available")
 
-    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[den_id, office_id])
-    await scenario.idle()
+    with caplog.at_level(logging.WARNING, logger="music_assistant"):
+        await scenario.mass.players.cmd_set_members(
+            kitchen_id, player_ids_to_add=[den_id, office_id]
+        )
+        await scenario.idle()
 
     assert _grouping_commands(kitchen) == [("set_members", ["sonos_office"], None)]
+    assert "is not available" in caplog.text
 
 
 async def test_a_speaker_moves_over_from_the_group_it_is_in(scenario: Scenario) -> None:
@@ -173,7 +187,10 @@ async def test_a_speaker_moves_over_from_the_group_it_is_in(scenario: Scenario) 
     await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id])
     await scenario.idle()
 
-    assert _grouping_commands(den)[-1] == ("set_members", None, ["sonos_office"])
+    assert _grouping_timeline(scenario)[-2:] == [
+        ("sonos_den", ("set_members", None, ["sonos_office"])),
+        ("sonos_kitchen", ("set_members", ["sonos_office"], None)),
+    ]
     assert _grouping_commands(kitchen) == [("set_members", ["sonos_office"], None)]
     assert _state(scenario, office_id).synced_to == kitchen_id
 
@@ -463,7 +480,10 @@ async def test_an_airplay_speaker_gives_up_its_own_group_before_it_joins_another
     await scenario.mass.players.cmd_set_members(hall_id, player_ids_to_add=[attic_id])
     await scenario.idle()
 
-    assert _grouping_commands(attic)[-1] == ("set_members", None, ["airplay_porch"])
+    assert _grouping_timeline(scenario)[-2:] == [
+        ("airplay_attic", ("set_members", None, ["airplay_porch"])),
+        ("airplay_hall", ("set_members", ["airplay_attic"], None)),
+    ]
     assert _grouping_commands(hall) == [("set_members", ["airplay_attic"], None)]
     assert _state(scenario, porch_id).synced_to is None
     assert _state(scenario, attic_id).synced_to == hall_id
@@ -532,6 +552,8 @@ async def test_a_protocol_switch_that_would_silence_a_member_is_refused(
     assert _grouping_commands(lounge_sendspin) == []
     assert _state(scenario, study_id).synced_to == lounge_id
     assert _state(scenario, garage_id).synced_to is None
+    assert _active_output(scenario, lounge_id) == "airplay_lounge"
+    assert _state(scenario, lounge_id).playback_state == PlaybackState.PLAYING
 
 
 async def test_ungrouping_a_member_of_a_fixed_group_ends_the_groups_session(

@@ -896,7 +896,8 @@ async def test_a_choice_that_names_the_demoted_twin_sends_it_nothing(
     A control or output the user picked for the twin is passed over once the twin is demoted.
 
     It resolves as if nothing were picked: to the vendor protocol, or to the AirPlay receiver
-    when the vendor protocol has no volume of its own.
+    when the vendor protocol has no volume of its own, and the player plays through the vendor
+    protocol.
     """
     speaker = await _speaker(scenario)
     await scenario.attach(speaker.twin)
@@ -931,6 +932,11 @@ async def test_a_choice_that_names_the_demoted_twin_sends_it_nothing(
         player = scenario.mass.players.get_player(player_id)
         assert player is not None
         assert player.volume_control_for_output("native") == PLAYER_CONTROL_NATIVE
+
+    await scenario.play(player_id)
+
+    assert _played_through(speaker.vendor)
+    assert speaker.twin.commands == []
 
 
 async def test_a_command_to_the_player_never_reaches_the_twin(scenario: Scenario) -> None:
@@ -998,7 +1004,8 @@ async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(
     The receiver of a secondary zone that joined the main zone is moved there by the user.
 
     On a chassis whose every zone has a receiver of its own the first one seen joins the
-    main zone, in every discovery order, and the other one is a player of its own. The user
+    main zone, and the other one is a player of its own: here the second zone's receiver is
+    found before the main zone's, in every order with the zones. The user
     unlinks the first one and merges its player into the zone it belongs to; the main zone's
     own receiver is merged into the main zone. That stays so after a restart in either
     order, and the automatic merge does not undo it.

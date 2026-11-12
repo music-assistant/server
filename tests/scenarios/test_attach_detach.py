@@ -82,7 +82,8 @@ async def test_detached_native_player_is_listed_also_after_restart(scenario: Sce
     A native player whose protocol detaches stays listed, also after a restart.
 
     Clients get an update but no removal, and the player is unavailable until its provider
-    attaches the protocol again.
+    attaches the protocol again. After a restart clients are told about the player before
+    any provider has loaded.
     """
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
@@ -98,9 +99,13 @@ async def test_detached_native_player_is_listed_also_after_restart(scenario: Sce
         Event(EventType.PLAYER_UPDATED, player_id)
     ]
 
+    scenario.clear_events()
     await scenario.restart()
     await scenario.idle()
 
+    assert scenario.events(EventType.PLAYER_ADDED, EventType.PROVIDERS_UPDATED)[0] == Event(
+        EventType.PLAYER_ADDED, player_id
+    )
     assert scenario.provider(sonos.instance_id).available
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
     assert scenario.queue(player_id) is not None

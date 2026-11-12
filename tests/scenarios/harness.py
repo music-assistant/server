@@ -291,6 +291,9 @@ class FakeProtocol(PlayerProtocol):
     def _apply(self, command: str, *args: Any, **state: Any) -> None:
         """Record a command and report the state it leads to."""
         self.commands.append((command, *args))
+        cast("FakePlayerProvider", self.provider)._timeline.append(
+            (self.protocol_id, (command, *args))
+        )
         if state:
             self._set_reported(**state)
             self.update_state()
@@ -328,6 +331,7 @@ class FakePlayerProvider(PlayerProvider):
         manifest: ProviderManifest,
         config: ProviderConfig,
         devices: dict[str, _Device],
+        timeline: list[tuple[str, tuple[Any, ...]]],
     ) -> None:
         """
         Initialize the provider.
@@ -336,9 +340,11 @@ class FakePlayerProvider(PlayerProvider):
         :param manifest: The (fake) manifest of the impersonated domain.
         :param config: The provider instance config.
         :param devices: The devices of the scenario, by protocol id.
+        :param timeline: The commands the devices of the scenario received, in order.
         """
         super().__init__(mass, manifest, config)
         self._devices = devices
+        self._timeline = timeline
         self._protocols: dict[str, FakeProtocol] = {}
 
     def protocol(
@@ -431,6 +437,8 @@ class Scenario:
         self._removals: list[tuple[str | None, Any]] = []
         self._unsubscribe: Callable[[], None] | None = None
         self._devices: dict[str, _Device] = {}
+        # every command any device received, in order: (protocol id, command)
+        self.timeline: list[tuple[str, tuple[Any, ...]]] = []
         self._power_controls: dict[str, FakePowerControl] = {}
         self._commands: set[asyncio.Task[Any]] = set()
         self._threads_busy = 0
@@ -1123,7 +1131,7 @@ class Scenario:
         async def _setup_provider(
             mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
         ) -> FakePlayerProvider:
-            return FakePlayerProvider(mass, manifest, config, self._devices)
+            return FakePlayerProvider(mass, manifest, config, self._devices, self.timeline)
 
         async def _load_module(domain: str, requirements: list[str]) -> Any:
             if domain in fake_domains:

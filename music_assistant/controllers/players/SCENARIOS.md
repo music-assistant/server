@@ -95,8 +95,9 @@ queue. These scenarios say what a client sees meanwhile and which commands the p
 ### AWAY-1 · A player whose device goes away stays listed
 
 The Sonos provider loses the Kitchen speaker. The player stays in the list, unavailable, with its
-queue. Clients get an update of the player, never a removal. After a restart the player is in the
-list from the start, still unavailable and with its queue, also once its provider has loaded.
+queue. Clients get an update of the player, never a removal. After a restart clients are told
+about the player before any provider has loaded, and once its provider has loaded the player is
+in the list, still unavailable and with its queue.
 When the provider finds the speaker again, the player is available again under the same id.
 
 - End-to-end: **yes**. Stop the container of a virtual player, check the player list, restart
@@ -260,8 +261,9 @@ announced as removed.
 ### ZONE-7 · The user puts a receiver that joined the wrong zone right
 
 A chassis where every zone has an AirPlay receiver of its own, and the receivers report no zone:
-the first receiver found joins the main zone, the other one becomes a player of its own, in every
-discovery order. Here the Patio receiver is found first and lands on Living. The user takes it
+the first receiver found joins the main zone, the other one becomes a player of its own. Here the
+Patio receiver is found before the Living receiver, in every order with the zones, and lands on
+Living. The user takes it
 off Living and merges its new player into Patio, then merges the Living receiver's player into
 Living. After a restart, in either order, every protocol is where the user put it, there are two
 players, and no automatic merge undoes it.
@@ -348,10 +350,10 @@ name, with the twin as its own protocol and only output, and it plays through th
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native`
 
-### TWIN-8 · A twin its provider announces again is not set up again
+### TWIN-8 · A twin object its provider announces again is not set up again
 
-The Home Assistant provider announces the twin again while it is a control. The twin is not set
-up a second time, and the roles stay as they were.
+The Home Assistant provider announces the same twin object again while it is a control. The twin
+is not set up a second time, and the roles stay as they were.
 
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_the_twin_object_attached_again_keeps_its_role_and_its_hooks_quiet`
@@ -390,9 +392,9 @@ merged instead (MERGE-5).
 
 While the twin stood for the speaker, the user picked it as the volume and mute control, or as
 the preferred output. Then the vendor protocol arrives and the twin becomes a control. Volume and
-mute go where they go when nothing is picked: to the vendor protocol, also for the output that
-takes over the level when it plays, or to the AirPlay receiver when the vendor protocol has no
-volume of its own. The twin gets no command.
+mute go where they go when nothing is picked: to the vendor protocol, which is also the volume
+control of its own output, or to the AirPlay receiver when the vendor protocol has no volume of
+its own. The player plays through the vendor protocol, and the twin gets no command.
 
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_a_choice_that_names_the_demoted_twin_sends_it_nothing`
@@ -556,7 +558,7 @@ player.
 The user ran an older version on these settings in between, which stored its own records of the
 players. At the next start exactly this version's players are left. Living and Den keep their
 ids and protocols, a TV that only the older version saw is found again as a player, and a browser
-that connects afterwards is a player under its client id. The cleanup is logged.
+that connects afterwards is a player under its client id.
 
 - End-to-end: **no**: the lab has no settings of an older version.
 - Proven by: `test_lifecycle.py::test_what_an_older_version_stored_goes_at_the_next_start`
@@ -689,9 +691,9 @@ reach the speaker while the play is under way. It does once the play is done, af
 ### BUSY-2 · A command behind one that never returns fails as busy after 120 s
 
 A play on the Den speaker never returns. An input switch sent behind it waits 120 s, then fails
-with a busy error that names Den, and nothing reaches the speaker. The warning that is logged
-names what the play waits for. Once the play returns, the player takes commands again: the input
-switch reaches the speaker.
+with a busy error that names Den, and the input switch does not reach the speaker. The warning
+that is logged names what the play waits for. Once the play returns, the player takes commands
+again: the input switch reaches the speaker.
 
 - End-to-end: **no**: it needs a device that never answers a command.
 - Proven by: `test_commands.py::test_a_command_behind_a_command_that_never_returns_fails_as_busy`
@@ -762,7 +764,7 @@ same way.
 A group change on a speaker without grouping is refused before anything happens: nothing is sent
 to it, and it stays idle.
 
-- End-to-end: **possible with** a player kind that does not offer grouping.
+- End-to-end: **yes**. A group change on an MPD player, which offers no grouping.
 - Proven by: `test_grouping.py::test_a_speaker_without_grouping_can_not_lead`
 
 ### GROUP-4 · A speaker in another group moves over
@@ -778,7 +780,7 @@ Kitchen takes it. Office shows as synced to Kitchen.
 Kitchen leads Office and Den. The user ungroups Office: Kitchen is asked to let Office go, Office
 is synced to nothing, and Kitchen keeps Den.
 
-- End-to-end: **yes**. Ungroup a member of a two-player group; the leader plays on.
+- End-to-end: **yes**. Ungroup one member of a group of three Squeezelite players.
 - Proven by: `test_grouping.py::test_a_member_leaves_its_group_when_it_is_ungrouped`
 
 ### GROUP-6 · A member that is powered off or drops off leaves its group
@@ -812,7 +814,7 @@ Kitchen is no longer part of the group.
 
 Lounge and Study can not group with each other on their own protocols, but each has an AirPlay
 receiver. The user adds Study to Lounge: Lounge's AirPlay receiver takes Study's AirPlay
-receiver, Study shows as synced to Lounge, and both play through AirPlay from then on.
+receiver, Study shows as synced to Lounge, and both have their AirPlay receiver as their output.
 
 - End-to-end: **possible with** two virtual players of different kinds that each also run an
   AirPlay receiver on their host.
@@ -829,17 +831,19 @@ Lounge's playback moves to its AirPlay receiver and goes on playing there, with 
 ### GROUP-11 · A member that would silence another member is refused
 
 Lounge plays over AirPlay with Study, which only has AirPlay. Garage can only follow over
-Sendspin, which would move the group off AirPlay and leave Study silent. Adding Garage is refused
-with an error, and nothing changes.
+Sendspin, which Lounge also has; moving the group to Sendspin would leave Study silent. Adding
+Garage is refused with an error: Lounge's Sendspin receiver gets no grouping command, Study stays
+synced to Lounge and Garage to nothing, and Lounge plays on through its AirPlay receiver.
 
-- End-to-end: **possible with** the setup of GROUP-9 plus a player that only has Sendspin.
+- End-to-end: **possible with** the setup of GROUP-9 with a Sendspin receiver on Lounge's host,
+  plus a player that only has Sendspin.
 - Proven by: `test_grouping.py::test_a_protocol_switch_that_would_silence_a_member_is_refused`
 
 ### GROUP-12 · An AirPlay speaker lets its own members go before it joins another
 
-Attic leads Porch over AirPlay, and Porch plays from Attic's own stream. The user adds Attic to
-Hall: Attic lets Porch go first, because Porch would be silent once Attic follows Hall. Then Attic
-joins Hall.
+Attic leads Porch over AirPlay, where a member plays from its leader's own stream. The user adds
+Attic to Hall: Attic lets Porch go first, because Porch would be silent once Attic follows Hall.
+Then Attic joins Hall.
 
 - End-to-end: **possible with** three AirPlay receivers.
 - Proven by: `test_grouping.py::test_an_airplay_speaker_gives_up_its_own_group_before_it_joins_another`

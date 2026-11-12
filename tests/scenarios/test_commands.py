@@ -71,7 +71,7 @@ async def test_a_command_behind_a_command_that_never_returns_fails_as_busy(
     scenario: Scenario, caplog: pytest.LogCaptureFixture
 ) -> None:
     """
-    A command that waits 120 s for a player that stays busy fails, and sends nothing.
+    A command that waits 120 s for a player that stays busy fails, and is not sent.
 
     The error tells the user the player is still busy, the log names what the command that
     holds the player waits for, and the player takes commands again once that one returns.

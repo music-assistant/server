@@ -509,6 +509,26 @@ async def test_play_runs_the_queue_on_the_fake_protocol(scenario: Scenario) -> N
     await scenario.idle()
 
 
+async def test_timeline_holds_the_commands_of_every_device_in_order(scenario: Scenario) -> None:
+    """The timeline lists what each device received, across devices and providers, in order."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    kitchen = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    den = airplay.protocol("airplay_den", "Den", role="audio")
+    await scenario.attach(kitchen)
+    await scenario.attach(den)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    await scenario.mass.players.cmd_volume_set(scenario.single_player(den).player_id, 20)
+    await scenario.mass.players.cmd_volume_set(scenario.single_player(kitchen).player_id, 30)
+
+    assert scenario.timeline == [
+        ("airplay_den", ("volume_set", 20)),
+        ("RINCON_KITCHEN", ("volume_set", 30)),
+    ]
+
+
 async def test_saved_queue_holds_the_items_a_queue_played(scenario: Scenario) -> None:
     """A queue that never held an item has no saved queue; a played one has, also before the debounce."""
     sonos = await scenario.add_provider("sonos")
