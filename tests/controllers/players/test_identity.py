@@ -726,6 +726,25 @@ async def test_web_player_reconnects_while_the_player_its_record_names_is_disabl
     assert scenario.player_of(web) == "sendspin_kitchen"
 
 
+async def test_provider_learns_whether_it_may_set_up_a_client_it_has_no_object_of_yet(
+    scenario: Scenario,
+) -> None:
+    """Before it attaches a new object, a provider asks with that object: what it is counts."""
+    player_id, web = await _web_session_of_a_device_client(scenario)
+    await scenario.detach(web)
+    await scenario.disable(player_id)
+    sendspin = scenario.provider("sendspin")
+    players = scenario.mass.players
+
+    # a new connection of the client, of which the server knows no object yet
+    session = FakeProtocol(sendspin, "sendspin_kitchen", web._device)
+    device_client = FakeProtocol(sendspin, "sendspin_kitchen", web._device)
+    device_client._attr_session_only = False
+
+    assert players.wants_protocol("sendspin_kitchen", session) is True
+    assert players.wants_protocol("sendspin_kitchen", device_client) is False
+
+
 async def test_web_player_the_user_disabled_stays_away_until_it_is_enabled(
     scenario: Scenario,
 ) -> None:

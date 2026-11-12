@@ -2038,7 +2038,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             raise ActionUnavailable(msg)
         return removed
 
-    def wants_protocol(self, protocol_id: str) -> bool:
+    def wants_protocol(self, protocol_id: str, protocol: PlayerProtocol | None = None) -> bool:
         """
         Return whether the server wants a protocol attached now.
 
@@ -2047,9 +2047,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         for a device before it attaches it can ask this first.
 
         :param protocol_id: Id of the protocol.
+        :param protocol: The protocol object about to be attached, when the provider has one:
+            what it is decides whether its stored config applies to it (a protocol that only
+            exists while it is connected is no output of the player of a device).
         """
         return self._wants_protocol(
-            protocol_id, self._protocols.get(protocol_id) or self._unattached.get(protocol_id)
+            protocol_id,
+            protocol or self._protocols.get(protocol_id) or self._unattached.get(protocol_id),
         )
 
     def on_unattached_protocol_update(self, protocol: PlayerProtocol) -> None:
