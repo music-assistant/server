@@ -213,6 +213,9 @@ CONF_DEVICE_INFO: Final[str] = "device_info"
 CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
 # the identifiers a protocol reported for its device, as [type, value] pairs
 CONF_PROTOCOL_IDENTIFIERS: Final[str] = "identifiers"
+# the ZONE identifier of the main zone of a chassis, where its protocols that report no
+# zone (AirPlay, DLNA, ...) play
+MAIN_ZONE: Final[str] = "main"
 # the moment a player was created, as a nanosecond timestamp so players created in
 # the same second still order
 CONF_CREATED_AT: Final[str] = "created_at"

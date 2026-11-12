@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from music_assistant_models.enums import IdentifierType
 
-from music_assistant.controllers.players.matching import DeviceIdentity, identifiers_match
+from music_assistant.constants import MAIN_ZONE
+from music_assistant.controllers.players.matching import (
+    DeviceIdentity,
+    identifiers_match,
+    vetoes_device,
+)
 
 MAC = IdentifierType.MAC_ADDRESS
 SERIAL = IdentifierType.SERIAL_NUMBER
@@ -251,11 +256,31 @@ def test_shared_zone_is_no_match_on_its_own() -> None:
     )
 
 
-def test_a_zone_only_one_side_reports_never_vetoes() -> None:
-    """An output that does not know its zone still lands on the chassis it shares."""
-    assert same_device(
-        identity("bluesound", {MAC: HARDWARE_MAC, IP: HOST, ZONE: "2"}, native=True),
-        identity("airplay", {MAC: HARDWARE_MAC, IP: HOST}),
+def test_a_side_without_a_zone_is_in_the_main_zone() -> None:
+    """
+    An output that reports no zone lands on the main zone of its chassis, never on another one.
+
+    Reported as music-assistant/support#6847: the receiver of the chassis joined whichever
+    zone was found first.
+    """
+    airplay = identity("airplay", {MAC: HARDWARE_MAC, IP: HOST})
+    main_zone = identity("bluesound", {MAC: HARDWARE_MAC, IP: HOST, ZONE: MAIN_ZONE}, native=True)
+    assert same_device(main_zone, airplay)
+    assert not same_device(
+        identity("bluesound", {MAC: HARDWARE_MAC, IP: HOST, ZONE: "2"}, native=True), airplay
+    )
+    # also on its shared IP alone
+    assert not same_device(
+        identity("bluesound", {IP: HOST, ZONE: "2"}, native=True), identity("dlna", {IP: HOST})
+    )
+
+
+def test_a_missing_zone_never_rules_out_the_player_a_protocol_was_attached_to() -> None:
+    """An output without a zone that was attached to another zone stays there."""
+    second_zone = identity("bluesound", {MAC: HARDWARE_MAC, IP: HOST, ZONE: "2"}, native=True)
+    assert not vetoes_device(identity("airplay", {MAC: HARDWARE_MAC, IP: HOST}), [second_zone])
+    assert vetoes_device(
+        identity("airplay", {MAC: HARDWARE_MAC, IP: HOST, ZONE: "1"}), [second_zone]
     )
 
 

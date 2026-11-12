@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+import itertools
+from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import ANY
 
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType
+
+from music_assistant.constants import MAIN_ZONE
 
 from .harness import FAKE_SETTING, Event, Role, Scenario, ScenarioError, VisiblePlayer
 
@@ -22,6 +25,11 @@ CHASSIS = {
     IdentifierType.MAC_ADDRESS: "00:1A:2B:3C:4D:5E",
     IdentifierType.IP_ADDRESS: "192.168.1.50",
 }
+# the main zone and a second zone of that chassis, and its AirPlay receiver, which plays on
+# the main zone and knows nothing of zones
+MAIN = {**CHASSIS, IdentifierType.ZONE: MAIN_ZONE}
+SECOND = {**CHASSIS, IdentifierType.ZONE: "zone2"}
+CHASSIS_AIRPLAY = {**CHASSIS, IdentifierType.AIRPLAY_ID: "00:1A:2B:3C:4D:5F"}
 # an ESP32 speaker, identified by its MAC under any firmware
 ESP32 = {IdentifierType.MAC_ADDRESS: "A0:B7:65:00:11:22", IdentifierType.IP_ADDRESS: "192.168.1.70"}
 
@@ -178,6 +186,172 @@ async def test_zones_of_one_chassis_are_one_player_each(scenario: Scenario) -> N
             outputs=(("airplay", True), ("bluesound", True)),
         )
     ]
+
+
+class _Receiver(NamedTuple):
+    """The protocols of a receiver with two zones, by their part."""
+
+    main: FakeProtocol
+    second: FakeProtocol
+    airplay: FakeProtocol
+
+
+async def _receiver(scenario: Scenario) -> _Receiver:
+    """Create the zones of a receiver and its AirPlay receiver; attach them to use them."""
+    musiccast = await scenario.add_provider("musiccast")
+    airplay = await scenario.add_provider("airplay")
+    return _Receiver(
+        main=musiccast.protocol("receiver_main", "Living", identifiers=MAIN),
+        second=musiccast.protocol("receiver_zone2", "Patio", identifiers=SECOND),
+        airplay=airplay.protocol(
+            "receiver_airplay", "AV Receiver", role="audio", identifiers=CHASSIS_AIRPLAY
+        ),
+    )
+
+
+def _receiver_players(scenario: Scenario, receiver: _Receiver) -> tuple[str, str]:
+    """Return the players of the main zone, with the AirPlay receiver, and of the second zone."""
+    main = scenario.players_carrying(receiver.main, receiver.airplay)
+    second = scenario.players_carrying(receiver.second)
+    assert [player.outputs for player in main] == [(("airplay", True), ("musiccast", True))]
+    assert [player.outputs for player in second] == [(("musiccast", True),)]
+    return main[0].player_id, second[0].player_id
+
+
+@pytest.mark.parametrize(
+    "order", list(itertools.permutations(("main", "second", "airplay"))), ids="-".join
+)
+async def test_a_receiver_without_a_zone_lands_on_the_main_zone(
+    scenario: Scenario, order: tuple[str, ...]
+) -> None:
+    """
+    The AirPlay receiver of a multi-zone chassis is an output of its main zone, in every order.
+
+    It shares the MAC and IP of every zone and reports no zone. After a restart every
+    protocol finds the same player again, in the reverse order this time.
+    """
+    receiver = await _receiver(scenario)
+    for part in order:
+        await scenario.attach(getattr(receiver, part))
+    await scenario.idle()
+    player_ids = _receiver_players(scenario, receiver)
+
+    for protocol in receiver:
+        scenario.set_present(protocol.protocol_id, False)
+    await scenario.restart()
+    for part in reversed(order):
+        await scenario.attach(scenario.protocol(getattr(receiver, part).protocol_id))
+    await scenario.idle()
+
+    receiver = _Receiver(*(scenario.protocol(protocol.protocol_id) for protocol in receiver))
+    assert _receiver_players(scenario, receiver) == player_ids
+    assert len(scenario.visible_players()) == 2
+
+
+@pytest.mark.parametrize("main_zone", ["away", "disabled"])
+async def test_a_receiver_first_seen_without_its_main_zone_still_lands_on_it(
+    scenario: Scenario, main_zone: str
+) -> None:
+    """
+    A receiver found while the main zone is away, or its player disabled, belongs to its player.
+
+    It never lands on the second zone, which is there and was found first.
+    """
+    receiver = await _receiver(scenario)
+    await scenario.attach(receiver.second)
+    await scenario.attach(receiver.main)
+    main_id = scenario.single_player(receiver.main).player_id
+    if main_zone == "away":
+        await scenario.detach(receiver.main)
+    else:
+        await scenario.disable(main_id)
+
+    await scenario.attach(receiver.airplay)
+    await scenario.idle()
+
+    assert scenario.player_of(receiver.airplay) == (main_id if main_zone == "away" else None)
+    if main_zone == "away":
+        await scenario.attach(receiver.main)
+    else:
+        await scenario.enable(main_id)
+    await scenario.idle()
+    receiver = _Receiver(*(scenario.protocol(protocol.protocol_id) for protocol in receiver))
+    assert _receiver_players(scenario, receiver)[0] == main_id
+
+
+async def test_a_receiver_lands_on_the_main_zone_again_after_a_removal(scenario: Scenario) -> None:
+    """
+    A receiver its provider forgets, or the player of the main zone the user removes, is found again.
+
+    Either way it lands on the main zone again, not on the second zone.
+    """
+    receiver = await _receiver(scenario)
+    for protocol in receiver:
+        await scenario.attach(protocol)
+    main_id, second_id = _receiver_players(scenario, receiver)
+
+    await scenario.mass.players.remove_protocol(receiver.airplay.protocol_id)
+    await scenario.attach(receiver.airplay)
+    await scenario.idle()
+    assert _receiver_players(scenario, receiver) == (main_id, second_id)
+
+    await scenario.remove(main_id)
+    await scenario.idle()
+
+    receiver = _Receiver(*(scenario.protocol(protocol.protocol_id) for protocol in receiver))
+    new_main_id, new_second_id = _receiver_players(scenario, receiver)
+    assert (new_main_id != main_id, new_second_id) == (True, second_id)
+
+
+# a chassis whose AirPlay receiver was stored on its second zone before the player split
+PRE_SPLIT_RECEIVER_ON_THE_SECOND_ZONE: dict[str, dict[str, Any]] = {
+    "receiver_main": {
+        "player_id": "receiver_main",
+        "provider": "musiccast",
+        "player_type": "player",
+        "enabled": True,
+        "default_name": "Living",
+        "values": {},
+    },
+    "receiver_zone2": {
+        "player_id": "receiver_zone2",
+        "provider": "musiccast",
+        "player_type": "player",
+        "enabled": True,
+        "default_name": "Patio",
+        "values": {"linked_protocol_ids": ["receiver_airplay"]},
+    },
+    "receiver_airplay": {
+        "player_id": "receiver_airplay",
+        "provider": "airplay",
+        "player_type": "protocol",
+        "enabled": True,
+        "default_name": "AV Receiver",
+        "values": {"protocol_parent_id": "receiver_zone2"},
+    },
+}
+
+
+async def test_a_receiver_stored_on_another_zone_stays_there(scenario: Scenario) -> None:
+    """
+    A receiver an existing install keeps on a zone other than the main one stays on that zone.
+
+    Its link was made before the zones were told apart; whether it is the right zone is
+    not known, so nothing moves it by itself.
+    """
+    receiver = await _receiver(scenario)
+    for protocol in receiver:
+        scenario.set_present(protocol.protocol_id, True)
+
+    await scenario.seed_pre_split_config(PRE_SPLIT_RECEIVER_ON_THE_SECOND_ZONE)
+    await scenario.idle()
+
+    receiver = _Receiver(*(scenario.protocol(protocol.protocol_id) for protocol in receiver))
+    assert [p.player_id for p in scenario.players_carrying(receiver.second, receiver.airplay)] == [
+        "receiver_zone2"
+    ]
+    assert [p.player_id for p in scenario.players_carrying(receiver.main)] == ["receiver_main"]
+    assert len(scenario.visible_players()) == 2
 
 
 @pytest.mark.xfail(

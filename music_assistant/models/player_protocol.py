@@ -214,7 +214,8 @@ class PlayerProtocol(ABC):
         Return the device info of the player.
 
         Software players that share a host report an id of their own instance among its
-        identifiers as UUID or SERIAL_NUMBER, and the zones of one chassis their zone as ZONE.
+        identifiers as UUID or SERIAL_NUMBER, and the zones of one chassis their zone as ZONE
+        (MAIN_ZONE for the zone the protocols of the chassis without a zone play on).
         """
         return self._attr_device_info
 
