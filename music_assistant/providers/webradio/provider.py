@@ -50,7 +50,7 @@ from .helpers import slugify_station_name
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
@@ -134,6 +134,18 @@ class WebRadioProvider(PlayerProvider):
         """
         super().__init__(mass, manifest, config, supported_features)
         self._stations: dict[str, _Station] = {}
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the config entries of the provider, holding its list of stations."""
+        return (
+            ConfigEntry(
+                key=CONF_STATIONS,
+                type=ConfigEntryType.STRING,
+                default_value=[],
+                required=False,
+                multi_value=True,
+            ),
+        )
 
     async def loaded_in_mass(self) -> None:
         """Register players and HTTP routes for all configured stations."""
@@ -882,13 +894,8 @@ class WebRadioPlayer(Player):
         """Cache the public URL so it can be shown in the player's settings."""
         self._stream_url = url
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return player-level config entries."""
-        del action, values
         return [
             CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
             CONF_ENTRY_ENABLE_ICY_METADATA_BASIC,

@@ -37,8 +37,8 @@ CONF_ENTRY_OUTPUT_CODEC_WEBRADIO: Final[ConfigEntry] = ConfigEntry.from_dict(
         **CONF_ENTRY_OUTPUT_CODEC.to_dict(),
         "default_value": "mp3",
         "options": [
-            ConfigValueOption("MP3 (lossy)", "mp3").to_dict(),
-            ConfigValueOption("AAC (lossy)", "aac").to_dict(),
+            ConfigValueOption("mp3").to_dict(),
+            ConfigValueOption("aac").to_dict(),
         ],
     }
 )
