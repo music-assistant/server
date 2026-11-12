@@ -250,6 +250,71 @@ class StreamServerInfo(DataClassDictMixin):
     base_url: str
 
 
+class AudioSourceStream:
+    """A live source selected for one raw PCM consumer, with its stream details resolved."""
+
+    def __init__(
+        self,
+        streams: StreamsController,
+        session: AudioSourceSession,
+        provider: PluginProvider,
+        streamdetails: StreamDetails,
+        playback_session_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """Initialize instance."""
+        self.streamdetails = streamdetails
+        self._streams = streams
+        self._session = session
+        self._provider = provider
+        self._playback_session_id = playback_session_id
+        self._stream_session_id = stream_session_id
+        self._serving = False
+        self._closed = False
+
+    def stream(self, pcm_format: AudioFormat) -> AsyncGenerator[bytes]:
+        """
+        Stream the source as raw PCM, releasing it when the stream ends.
+
+        :param pcm_format: The PCM format the consumer wants.
+        """
+        return self._streams._count_as_output_stream(self._iter_pcm(pcm_format))
+
+    async def aclose(self) -> None:
+        """Release the source, and take it off its player when it never streamed."""
+        if self._closed:
+            return
+        self._closed = True
+        await self._streams._close_audio_source(
+            self._session,
+            self._provider,
+            self._playback_session_id,
+            self._stream_session_id,
+            served=self._serving,
+        )
+
+    async def _iter_pcm(self, pcm_format: AudioFormat) -> AsyncGenerator[bytes]:
+        session = self._session
+        players = self._streams.mass.players
+        self._serving = True
+        try:
+            async for chunk in self._streams.audio.get_audio_source_stream(
+                streamdetails=self.streamdetails,
+                pcm_format=pcm_format,
+                raise_on_error=False,
+                display_name=session.source.name,
+            ):
+                if (
+                    players.get_audio_source_session(session.player_id) is not session
+                    or session.playback_session_id != self._playback_session_id
+                    or session.stream_session_id != self._stream_session_id
+                ):
+                    break
+                yield chunk
+        finally:
+            await self.aclose()
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -1762,23 +1827,9 @@ class StreamsController(CoreController):
                 # no conversion needed
                 return ugp_stream.subscribe_raw()
             return ugp_stream.get_stream(output_format=pcm_format)
-        if (
-            media.media_type == MediaType.AUDIO_SOURCE
-            and not media.queue_item_id
-            and media.source_id
-            and (session := self.mass.players.get_audio_source_session(media.source_id))
-        ):
-            # a live source playing on a player rather than an item in a queue
-            if media.queue_session_id != session.playback_session_id:
-                # a stale request from a superseded session must not attach to the one
-                # playing now; the http route rejects the same mismatch with a 404
-                raise AudioError(
-                    f"Unknown (or invalid) audio source session: {media.queue_session_id}"
-                )
-            return self._count_as_output_stream(
-                self._get_audio_source_session_stream(
-                    session, pcm_format, player_id or media.source_id
-                )
+        if session := self._get_live_audio_source_session(media):
+            return self._get_audio_source_session_stream(
+                session, pcm_format, player_id or session.player_id
             )
         if media.source_id and media.queue_item_id:
             # Queue stream request - determine flow_mode based on player capabilities
@@ -1891,6 +1942,22 @@ class StreamsController(CoreController):
             input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
             output_format=pcm_format,
         )
+
+    async def open_audio_source_stream(
+        self, media: PlayerMedia, consumer_player_id: str
+    ) -> AudioSourceStream | None:
+        """
+        Select the live source ``media`` plays, so a raw PCM consumer can pick its format.
+
+        The caller streams the result, or releases it with ``aclose`` when it does not.
+
+        :param media: The media about to be played.
+        :param consumer_player_id: The player that will consume the stream.
+        :return: None when ``media`` is not a live source playing on a player.
+        """
+        if not (session := self._get_live_audio_source_session(media)):
+            return None
+        return await self._open_audio_source_stream(session, consumer_player_id)
 
     async def get_preview_stream(
         self,
@@ -2172,6 +2239,14 @@ class StreamsController(CoreController):
         :param consumer_player_id: The player consuming this stream, which is not
             necessarily the one that owns the source.
         """
+        source_stream = await self._open_audio_source_stream(session, consumer_player_id)
+        async with aclosing(source_stream.stream(pcm_format)) as chunks:
+            async for chunk in chunks:
+                yield chunk
+
+    async def _open_audio_source_stream(
+        self, session: AudioSourceSession, consumer_player_id: str
+    ) -> AudioSourceStream:
         prov = self.mass.get_provider(session.provider_instance_id)
         if not isinstance(prov, PluginProvider):
             raise AudioError(
@@ -2179,7 +2254,7 @@ class StreamsController(CoreController):
             )
         playback_session_id = session.playback_session_id
         stream_session_id = uuid4().hex
-        serving = False
+        opened = False
         try:
             try:
                 await prov.on_source_selected(
@@ -2202,35 +2277,54 @@ class StreamsController(CoreController):
                     )
                 session.attach_streamdetails(streamdetails)
             self._update_audio_source_processing_context(session, prov)
-            serving = True
-            async for chunk in self.audio.get_audio_source_stream(
-                streamdetails=streamdetails,
-                pcm_format=pcm_format,
-                raise_on_error=False,
-                display_name=session.source.name,
-            ):
-                if (
-                    self.mass.players.get_audio_source_session(session.player_id) is not session
-                    or session.playback_session_id != playback_session_id
-                    or session.stream_session_id != stream_session_id
-                ):
-                    break
-                yield chunk
+            opened = True
         finally:
-            try:
-                await prov.on_source_unselected(
-                    session.source_id, session.player_id, stream_session_id
+            if not opened:
+                await self._close_audio_source(
+                    session, prov, playback_session_id, stream_session_id, served=False
                 )
-            except Exception:
-                self.logger.warning(
-                    "on_source_unselected raised for provider %s source %s player %s",
-                    prov.instance_id,
-                    session.source_id,
-                    session.player_id,
-                    exc_info=True,
-                )
-            if not serving:
-                await self._release_unstarted_audio_source(session, playback_session_id)
+        return AudioSourceStream(
+            self, session, prov, streamdetails, playback_session_id, stream_session_id
+        )
+
+    async def _close_audio_source(
+        self,
+        session: AudioSourceSession,
+        provider: PluginProvider,
+        playback_session_id: str,
+        stream_session_id: str,
+        *,
+        served: bool,
+    ) -> None:
+        try:
+            await provider.on_source_unselected(
+                session.source_id, session.player_id, stream_session_id
+            )
+        except Exception:
+            self.logger.warning(
+                "on_source_unselected raised for provider %s source %s player %s",
+                provider.instance_id,
+                session.source_id,
+                session.player_id,
+                exc_info=True,
+            )
+        if not served:
+            await self._release_unstarted_audio_source(session, playback_session_id)
+
+    def _get_live_audio_source_session(self, media: PlayerMedia) -> AudioSourceSession | None:
+        """Return the session of the live source ``media`` plays on a player, if it is one."""
+        if (
+            media.media_type != MediaType.AUDIO_SOURCE
+            or media.queue_item_id
+            or not media.source_id
+            or not (session := self.mass.players.get_audio_source_session(media.source_id))
+        ):
+            return None
+        if media.queue_session_id != session.playback_session_id:
+            # a stale request from a superseded session must not attach to the one
+            # playing now; the http route rejects the same mismatch with a 404
+            raise AudioError(f"Unknown (or invalid) audio source session: {media.queue_session_id}")
+        return session
 
     async def _wrap_with_audio_source_lifecycle(
         self,
