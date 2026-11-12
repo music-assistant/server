@@ -141,3 +141,25 @@ async def test_a_renderer_of_a_disabled_player_releases_its_subscriptions(
 
     assert renderer.player is None
     assert renderer.device is None
+
+
+async def test_a_renderer_taken_off_its_player_connects_again(scenario: Scenario) -> None:
+    """A renderer moved to a player of its own connects to its device again at its next poll."""
+    cast = await scenario.add_provider("chromecast")
+    tv = cast.protocol("cast-tv", "TV", identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS})
+    await scenario.attach(tv)
+    renderer = await _attach_renderer(scenario)
+    assert renderer.player is not None
+    old_player_id = renderer.player.player_id
+    assert scenario.player_of(tv) == old_player_id
+    device = renderer.device
+    connect = AsyncMock(side_effect=lambda: setattr(renderer, "device", device))
+    renderer._device_connect = connect  # type: ignore[method-assign]
+
+    new_player_id = await scenario.mass.players.unlink_protocol(UDN)
+    await scenario.advance(renderer.poll_interval)
+
+    assert renderer.player is not None
+    assert renderer.player.player_id == new_player_id != old_player_id
+    connect.assert_awaited_once_with()
+    assert renderer.device is device
