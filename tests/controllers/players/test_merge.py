@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROTOCOL_KEY_SPLITTER,
 )
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from tests.scenarios.harness import (
     DEFAULT_FEATURES,
@@ -1227,3 +1228,69 @@ async def test_player_commands_take_the_id_of_a_merged_player(scenario: Scenario
     kept = scenario.player(tv.older_id)
     assert kept is not None
     assert (kept.volume_level, kept.playback_state) == (30, PlaybackState.PAUSED)
+
+
+async def test_playback_commands_by_the_id_of_a_merged_player_check_the_kept_player(
+    scenario: Scenario,
+) -> None:
+    """A playback command by an absorbed id needs access to the kept player, not to that id."""
+    tv = await _two_players_for_one_tv(scenario)
+    await _merge(scenario, tv.older_id, tv.younger_id)
+    await scenario.play(tv.older_id)
+    auth = scenario.mass.webserver.auth
+    allowed = await auth.create_user(username="allowed", player_filter=[tv.older_id])
+    by_old_id = await auth.create_user(username="by_old_id", player_filter=[tv.younger_id])
+    players = scenario.mass.players
+
+    try:
+        set_current_user(by_old_id)
+        with pytest.raises(InsufficientPermissions):
+            await players.cmd_pause(tv.younger_id)
+        set_current_user(allowed)
+        await players.cmd_pause(tv.younger_id)
+    finally:
+        set_current_user(None)
+    await scenario.idle()
+
+    kept = scenario.player(tv.older_id)
+    assert kept is not None
+    assert kept.playback_state == PlaybackState.PAUSED
+
+
+async def test_playback_commands_by_the_id_of_a_merged_group_member_check_its_group(
+    scenario: Scenario,
+) -> None:
+    """For a merged member of a group that plays, the command also needs access to the group."""
+    tv = await _two_players_for_one_tv(scenario)
+    await _merge(scenario, tv.older_id, tv.younger_id)
+    sonos = await scenario.add_provider("sonos")
+    hall = sonos.protocol("RINCON_HALL", "Hall", identifiers=HALL)
+    await scenario.attach(hall)
+    hall_id = scenario.single_player(hall).player_id
+    await scenario.mass.config._create_provider_instance("universal_group", {})
+    group = await scenario.mass.players.create_group_player(
+        "universal_group", "Group Z", [tv.older_id, hall_id], False
+    )
+    await scenario.settle()
+    await scenario.play(group.player_id)
+    auth = scenario.mass.webserver.auth
+    member_only = await auth.create_user(username="member_only", player_filter=[tv.older_id])
+    with_group = await auth.create_user(
+        username="with_group", player_filter=[tv.older_id, group.player_id]
+    )
+    players = scenario.mass.players
+
+    try:
+        set_current_user(member_only)
+        with pytest.raises(InsufficientPermissions):
+            await players.cmd_pause(tv.younger_id)
+        set_current_user(with_group)
+        await players.cmd_pause(tv.younger_id)
+    finally:
+        set_current_user(None)
+    await scenario.advance(1)
+
+    # the group played on until the user allowed the group paused it
+    group_state = scenario.player(group.player_id)
+    assert group_state is not None
+    assert group_state.playback_state != PlaybackState.PLAYING
