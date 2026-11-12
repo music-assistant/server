@@ -2235,8 +2235,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 corrected or self._unexpired_volume_target(player) is None
             ):
                 self._invalidate_group_volume_snapshot(player_id)
-        if changed_values.keys() & {ATTR_VOLUME_CONTROL, ATTR_MUTE_CONTROL}:
-            self._hand_over_controls_taken_from_unreachable_own(player, changed_values)
         # dispatch to internal state update subscribers (with changed_values)
         self._dispatch_state_update_subscribers(player, changed_values)
 
@@ -3861,20 +3859,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ):
             self.mass.create_task(self.cmd_ungroup(player.player_id))
 
-    def _hand_over_controls_taken_from_unreachable_own(
-        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
-    ) -> None:
-        """Give a protocol that took a control from the unreachable own protocol the level and mute."""
-        controls = [
-            change[1]
-            if (change := changed_values.get(key))
-            and player.takes_control_from_unreachable_own(*change)
-            else None
-            for key in (ATTR_VOLUME_CONTROL, ATTR_MUTE_CONTROL)
-        ]
-        if any(controls):
-            self.mass.create_task(self._hand_over_volume(player, *controls))
-
     def _handle_external_power_off(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -5320,6 +5304,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # Scale logical volume (0-100) to device volume (min_volume-max_volume)
         device_volume = self.scale_volume_to_device(player_id, volume_level)
+        # from now on the player shows the level its volume control reports
+        player.release_held_volume(PlayerFeature.VOLUME_SET)
 
         await self._notify_source_volume_change(player, volume_level)
 
@@ -5417,6 +5403,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param mute_control: the already resolved mute control of the player.
         :param muted: bool if player should be muted.
         """
+        # from now on the player shows the mute its mute control reports
+        player.release_held_volume(PlayerFeature.VOLUME_MUTE)
         if mute_control == PLAYER_CONTROL_NATIVE and (own := player.own_protocol):
             # player supports mute command natively: forward to player
             await own.volume_mute(muted)
@@ -5567,11 +5555,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         volume_control = player.volume_control_for_output(output_protocol_id)
         mute_control = player.mute_control_for_output(output_protocol_id)
+        # a control that takes over, or one the player still keeps its level or mute for
         await self._hand_over_volume(
             player,
-            volume_control if volume_control != player.volume_control else None,
-            mute_control if mute_control != player.mute_control else None,
+            volume_control
+            if volume_control == player.held_volume_control(PlayerFeature.VOLUME_SET)
+            or volume_control != player.volume_control
+            else None,
+            mute_control
+            if mute_control == player.held_volume_control(PlayerFeature.VOLUME_MUTE)
+            or mute_control != player.mute_control
+            else None,
         )
+        player.release_held_volume()
         player.set_active_output_protocol(output_protocol_id)
 
     async def _hand_over_volume(

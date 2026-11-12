@@ -236,10 +236,14 @@ def _published_levels(scenario: Scenario, player_id: str) -> list[int | None]:
 
 
 @pytest.mark.parametrize("playing", [False, True])
-async def test_audio_protocol_that_takes_over_from_an_unreachable_native_gets_the_player_level(
+async def test_audio_protocol_that_takes_over_from_an_unreachable_native_gets_the_level_to_play(
     scenario: Scenario, playing: bool
 ) -> None:
-    """The level and mute of the player stay when its native drops: AirPlay is handed them."""
+    """
+    The level and mute of the player stay when its native drops; AirPlay gets them when it plays.
+
+    Nothing is sent to it before that: the level it has may be newer than what the native knew.
+    """
     player_id, native, audio = await _native_and_airplay(
         scenario, volume_level=30, volume_muted=True
     )
@@ -250,8 +254,12 @@ async def test_audio_protocol_that_takes_over_from_an_unreachable_native_gets_th
 
     await scenario.report(native, available=False)
     await scenario.idle()
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    # an update that changes nothing else keeps them too
+    player.update_state(force_update=True)
 
-    assert audio.commands == [("volume_set", 30), ("volume_mute", True)]
+    assert audio.commands == []
     state = scenario.player(player_id)
     assert state is not None
     assert (state.volume_control, state.mute_control) == ("ap_kitchen", "ap_kitchen")
@@ -259,13 +267,105 @@ async def test_audio_protocol_that_takes_over_from_an_unreachable_native_gets_th
     # the level the output had before it took over is never shown for the player
     assert 80 not in published
 
-    if not playing:
-        await scenario.play(player_id)
-        assert _names(audio)[-1] == "play_media"
-        assert "volume_set" not in _names(audio)[2:]
-        state = scenario.player(player_id)
-        assert state is not None
-        assert state.volume_level == 30
+    await scenario.play(player_id)
+
+    assert audio.commands[:2] == [("volume_set", 30), ("volume_mute", True)]
+    assert _names(audio)[2] == "play_media"
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_level, state.volume_muted) == (30, True)
+
+    # given the level, what the output reports counts again
+    await scenario.report(audio, volume_level=50)
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_level == 50
+
+
+async def test_output_that_takes_over_is_never_made_louder_than_the_device_was_left(
+    scenario: Scenario,
+) -> None:
+    """
+    The native connection died quietly while the device was turned down at its buttons.
+
+    Only the DLNA side of the device heard of it: its lower level is the one that counts, for
+    what the player shows and for what it plays at.
+    """
+    sonos = await scenario.add_provider("sonos")
+    dlna = await scenario.add_provider("dlna")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=60)
+    audio = dlna.protocol(
+        "uuid:kitchen", "Kitchen", role="audio", identifiers=KITCHEN, volume_level=60
+    )
+    await scenario.attach(native)
+    await scenario.attach(audio)
+    await scenario.idle()
+    player_id = scenario.single_player(native, audio).player_id
+    await scenario.report(audio, volume_level=8)
+    audio.commands.clear()
+    published = _published_levels(scenario, player_id)
+
+    await scenario.report(native, available=False)
+    await scenario.idle()
+
+    assert audio.commands == []
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_control, state.volume_level) == ("uuid:kitchen", 8)
+    assert 60 not in published
+
+    # turned down further at the device
+    await scenario.report(audio, volume_level=5)
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_level == 5
+
+    await scenario.configure_player(player_id, preferred_output_protocol="uuid:kitchen")
+    await scenario.play(player_id)
+
+    assert "play_media" in _names(audio)
+    assert all(command[1] <= 5 for command in audio.commands if command[0] == "volume_set")
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_level == 5
+
+
+async def test_volume_commands_after_the_native_dropped_start_from_the_level_of_the_player(
+    scenario: Scenario,
+) -> None:
+    """A step up and an unmute while the native can not be reached act on what the player had."""
+    player_id, native, audio = await _native_and_airplay(
+        scenario, volume_level=30, volume_muted=True
+    )
+    await scenario.report(native, available=False)
+    audio.commands.clear()
+
+    await scenario.mass.players.cmd_volume_up(player_id)
+    await scenario.mass.players.cmd_volume_mute(player_id, False)
+    await scenario.idle()
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_level is not None
+    assert 30 < state.volume_level < 80
+    assert state.volume_muted is False
+    assert audio.commands == [("volume_set", state.volume_level), ("volume_mute", False)]
+
+
+async def test_native_that_drops_again_leaves_the_level_it_had_the_second_time(
+    scenario: Scenario,
+) -> None:
+    """What the player keeps when its native drops is what the native had last, every time."""
+    player_id, native, _ = await _native_and_airplay(scenario, volume_level=30)
+    await scenario.report(native, available=False)
+    await scenario.report(native, available=True)
+    await scenario.report(native, volume_level=60)
+
+    await scenario.report(native, available=False)
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_control, state.volume_level) == ("ap_kitchen", 60)
 
 
 async def test_native_that_can_be_reached_again_takes_the_controls_back_at_its_own_level(
