@@ -154,7 +154,7 @@ def migrate_player_split(data: dict[str, Any]) -> bool:
     if not data.get(CONF_PLAYER_SPLIT_SESSION_ONLY):
         if not data.get(CONF_PLAYER_SPLIT_TREE):
             # the candidates are told apart by the shape from before the split
-            _migrate_session_only_players(data)
+            _migrate_session_only_players(data, _owners_before_the_split(data))
         data[CONF_PLAYER_SPLIT_SESSION_ONLY] = True
         changed = True
     if not data.get(CONF_PLAYER_SPLIT_TREE):
@@ -188,7 +188,14 @@ def remove_player_records_of_older_versions(data: dict[str, Any]) -> bool:
         elif player_id not in owners and _is_older_version_record(player_id, record, protocols):
             _drop_player(data, player_id)
             removed.append(player_id)
-    deleted, marked = _migrate_session_only_players(data)
+    # what this version created holds its creation time, which no older version stores on
+    # a Sendspin player
+    created_here = {
+        player_id
+        for player_id, record in players.items()
+        if isinstance(record, dict) and CONF_CREATED_AT in _values(record)
+    }
+    deleted, marked = _migrate_session_only_players(data, owners | created_here)
     removed += deleted
     for player_id in removed:
         LOGGER.info("Removed the stored player %s, which an older version stored", player_id)
@@ -239,7 +246,24 @@ def _player_ids_with_protocols(data: dict[str, Any]) -> set[str]:
     }
 
 
-def _migrate_session_only_players(data: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _owners_before_the_split(data: dict[str, Any]) -> set[str]:
+    """Return the ids of the players that own a protocol, by the records of both shapes."""
+    # a player that has protocols was split before, and is no candidate anymore
+    owners = _player_ids_with_protocols(data)
+    for record in _records(data, CONF_PLAYERS).values():
+        if not isinstance(record, dict):
+            continue
+        values = _values(record)
+        if parent_id := values.get(LEGACY_PROTOCOL_PARENT_ID):
+            owners.add(str(parent_id))
+        if isinstance(linked := values.get(LEGACY_LINKED_PROTOCOL_IDS), list):
+            owners.update(str(protocol_id) for protocol_id in linked)
+    return owners
+
+
+def _migrate_session_only_players(
+    data: dict[str, Any], left_alone: set[str]
+) -> tuple[list[str], list[str]]:
     """
     Delete or mark the players that only exist while their device is connected.
 
@@ -248,20 +272,13 @@ def _migrate_session_only_players(data: dict[str, Any]) -> tuple[list[str], list
     customised is kept and marked; of the others only the player record is deleted:
     they come back by themselves, with the same id, when they connect. Returns the ids
     of the deleted and of the marked players.
+
+    :param data: The persistent settings data.
+    :param left_alone: Ids of the players that are no candidates.
     """
     deleted: list[str] = []
     marked: list[str] = []
     players = _records(data, CONF_PLAYERS)
-    # a player that has protocols was split before, and is no candidate anymore
-    pointed_at = _player_ids_with_protocols(data)
-    for record in players.values():
-        if not isinstance(record, dict):
-            continue
-        values = _values(record)
-        if parent_id := values.get(LEGACY_PROTOCOL_PARENT_ID):
-            pointed_at.add(str(parent_id))
-        if isinstance(linked := values.get(LEGACY_LINKED_PROTOCOL_IDS), list):
-            pointed_at.update(str(protocol_id) for protocol_id in linked)
     for player_id, record in list(players.items()):
         try:
             if (
@@ -270,7 +287,7 @@ def _migrate_session_only_players(data: dict[str, Any]) -> tuple[list[str], list
                 or record.get("player_type") == PlayerType.PROTOCOL
                 or _values(record).get(LEGACY_PROTOCOL_PARENT_ID)
                 or _values(record).get(CONF_SESSION_ONLY)
-                or player_id in pointed_at
+                or player_id in left_alone
             ):
                 continue
             if _is_customised(data, player_id, record):

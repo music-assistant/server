@@ -949,6 +949,46 @@ def test_a_player_whose_own_protocol_went_to_another_player_stays(
     assert data == expected
 
 
+@pytest.mark.parametrize("name", [None, "My speaker"], ids=["unnamed", "named"])
+def test_a_sendspin_player_this_version_created_stays_without_its_protocol(
+    name: str | None,
+) -> None:
+    """
+    A permanent Sendspin player whose client turned into a session-only one is left alone.
+
+    Its protocol record names the session player the user customised since.
+    """
+    data = _split_settings()
+    data[CONF_PLAYERS]["pl00aa11bb22cc"] = _record(
+        "pl00aa11bb22cc", SENDSPIN, name=name, values={"created_at": 1}
+    )
+    data[CONF_PLAYERS]["ss_client"] = _record(
+        "ss_client", SENDSPIN, values={"session_only": True, "created_at": 2}
+    )
+    data[CONF_PLAYER_PROTOCOLS]["ss_client"] = _protocol_record(
+        "ss_client", SENDSPIN, "ss_client", role="native"
+    )
+    expected = deepcopy(data)
+
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == expected
+
+
+def test_the_old_lists_of_leftovers_protect_nothing() -> None:
+    """In a split config only the protocol records say who owns what: one run removes all."""
+    data = _split_settings()
+    data[CONF_PLAYERS] |= {
+        "ss_a": _record("ss_a", SENDSPIN, values={"linked_protocol_ids": ["ss_b"]}),
+        "ss_b": _record("ss_b", SENDSPIN),
+    }
+    expected = _split_settings()
+
+    assert remove_player_records_of_older_versions(data) is True
+    assert data == expected
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == expected
+
+
 def test_an_unsplit_config_is_left_to_the_split() -> None:
     """Before the split, the records of the old shape are the ones the split converts."""
     data = _settings(_record("up0040", UNIVERSAL_PLAYER), _protocol("ap_40", AIRPLAY, "up0040"))
