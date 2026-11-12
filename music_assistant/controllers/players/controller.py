@@ -196,6 +196,10 @@ EXTERNAL_POWER_OFF_STOP_DELAY = 15
 # brought it here.
 UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}
 
+# How long a release for an explicit play_media waits for the player to confirm it left its group.
+# A Sonos speaker not reached by the direct refresh reports it ~7 s later; others can be late too.
+RELEASE_FOR_PLAY_MEDIA_TIMEOUT = 10
+
 # Sentinel used to detect omitted optional arguments where ``None`` is a valid value.
 _SENTINEL: Any = object()
 
@@ -607,10 +611,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Return the active sleep timer expiry timestamp for the player.
 
         :param player_id: Player ID to check.
-        :raises InsufficientPermissions: if the current user may not use the player.
+        :raises InsufficientPermissions: if the current user may not use the player, or the
+            sync leader or group player it plays along with.
         """
-        self.check_player_access(player_id)
-        player = self._get_player_with_redirect(player_id)
+        player = self._get_sleep_timer_player(player_id)
         return player.sleep_timer_expires_at
 
     @api_command("players/sleep_timer/set", required_scope=Scope.PLAYERS_CONTROL)
@@ -629,11 +633,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: Player ID to set the timer for.
         :param seconds: Delay in seconds before playback is stopped, for the DURATION mode.
         :param mode: The point at which playback is stopped.
-        :raises InsufficientPermissions: if the current user may not use the player.
+        :raises InsufficientPermissions: if the current user may not use the player, or the
+            sync leader or group player it plays along with.
         """
-        self.check_player_access(player_id)
+        player = self._get_sleep_timer_player(player_id)
         if mode in (SleepTimerMode.END_OF_ITEM, SleepTimerMode.END_OF_CHAPTER):
-            player = self._get_player_with_redirect(player_id)
             # the queue stops itself at that point, shows it on the player and raises when
             # nothing with an end plays
             expires_at = self.mass.player_queues.set_sleep_timer_target(player.player_id, mode)
@@ -645,7 +649,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if seconds is None or seconds <= 0:
             msg = "Sleep timer duration must be greater than zero seconds"
             raise InvalidDataError(msg)
-        player = self._get_player_with_redirect(player_id)
         try:
             # guard against absurd durations that overflow the float timestamp math
             expires_at = time.time() + seconds
@@ -671,11 +674,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Clear the active sleep timer for the player.
 
         :param player_id: Player ID to clear the timer for.
-        :raises InsufficientPermissions: if the current user may not use the player.
+        :raises InsufficientPermissions: if the current user may not use the player, or the
+            sync leader or group player it plays along with.
         """
-        self.check_player_access(player_id)
-        player = self._get_player_with_redirect(player_id)
-        self._clear_sleep_timer(player)
+        self._clear_sleep_timer(self._get_sleep_timer_player(player_id))
 
     def update_sleep_timer(
         self, player_id: str, mode: SleepTimerMode, expires_at: float | None
@@ -722,7 +724,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     # Player commands
 
     @api_command("players/cmd/stop", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON)
+    @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON, to_playback_owner=True)
     async def cmd_stop(self, player_id: str) -> None:
         """
         Send STOP command to given player.
@@ -739,7 +741,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_stop(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
+    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON, to_playback_owner=True)
     async def cmd_play(self, player_id: str) -> None:
         """
         Send PLAY (unpause) command to given player.
@@ -748,6 +750,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self._get_player_with_redirect(player_id)
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            # the player can have joined a group while waiting for the lock
+            self.check_player_access(self._resolve_playback_owner(player).player_id)
             if player.state.playback_state == PlaybackState.PLAYING:
                 self.logger.info(
                     "Ignore PLAY request to player %s: player is already playing",
@@ -767,7 +771,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._handle_cmd_play(player.player_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON)
+    @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON, to_playback_owner=True)
     async def cmd_pause(self, player_id: str) -> None:
         """
         Send PAUSE command to given player.
@@ -783,6 +787,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._handle_cmd_pause(player.player_id)
 
     @api_command("players/cmd/play_pause", required_scope=Scope.PLAYERS_CONTROL)
+    @handle_player_command(switched_off=SwitchedOffAction.RUN, to_playback_owner=True)
     async def cmd_play_pause(self, player_id: str) -> None:
         """
         Toggle play/pause on given player.
@@ -796,7 +801,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/resume", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
+    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON, to_playback_owner=True)
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
@@ -811,10 +816,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self._get_player_with_redirect(player_id)
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            # the player can have joined a group while waiting for the lock
+            self.check_player_access(self._resolve_playback_owner(player).player_id)
             await self._handle_cmd_resume(player.player_id, source, media)
 
     @api_command("players/cmd/seek", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(to_playback_owner=True)
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """
         Handle SEEK command for given player.
@@ -846,7 +853,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await (player.foreign_protocol_player or player).seek(position)
 
     @api_command("players/cmd/shuffle", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(to_playback_owner=True)
     async def cmd_shuffle(
         self, player_id: str, shuffle_enabled: bool, source_id: str | None = None
     ) -> None:
@@ -883,7 +890,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         raise PlayerCommandFailed(msg)
 
     @api_command("players/cmd/repeat", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(to_playback_owner=True)
     async def cmd_repeat(
         self, player_id: str, repeat_mode: RepeatMode, source_id: str | None = None
     ) -> None:
@@ -923,7 +930,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         raise PlayerCommandFailed(msg)
 
     @api_command("players/cmd/next", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(to_playback_owner=True)
     async def cmd_next_track(self, player_id: str) -> None:
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
@@ -949,7 +956,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/previous", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(to_playback_owner=True)
     async def cmd_previous_track(self, player_id: str) -> None:
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
@@ -2968,7 +2975,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.player_id,
                 attribute_name="synced_to",
                 attribute_value=None,
-                timeout=5,
+                timeout=RELEASE_FOR_PLAY_MEDIA_TIMEOUT,
             ):
                 await self.cmd_ungroup(player.player_id)
             return
@@ -2991,7 +2998,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.player_id,
                 attribute_name="active_group",
                 attribute_value=None,
-                timeout=5,
+                timeout=RELEASE_FOR_PLAY_MEDIA_TIMEOUT,
             ):
                 await self.cmd_set_members(group.player_id, player_ids_to_remove=[player.player_id])
             return
@@ -3002,7 +3009,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             player.player_id,
             attribute_name="active_group",
             attribute_value=None,
-            timeout=5,
+            timeout=RELEASE_FOR_PLAY_MEDIA_TIMEOUT,
         ):
             if group.state.power_control != PLAYER_CONTROL_NONE and group.state.powered:
                 self.logger.debug(
@@ -4504,6 +4511,21 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: Player ID to build the task ID for.
         """
         return f"player_sleep_timer_{player_id}"
+
+    def _get_sleep_timer_player(self, player_id: str) -> Player:
+        """
+        Return the player that holds the sleep timer of the given player.
+
+        That is the owner of its playback (see _resolve_playback_owner).
+
+        :param player_id: The player the sleep timer command names.
+        :raises InsufficientPermissions: if the current user may not use the player or that owner.
+        """
+        self.check_player_access(player_id)
+        player = self._get_player_with_redirect(player_id)
+        if player.player_id != player_id:
+            self.check_player_access(player.player_id)
+        return player
 
     # Private command handlers (no permission checks)
 
