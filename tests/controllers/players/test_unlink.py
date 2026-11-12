@@ -367,3 +367,18 @@ async def test_protocol_taken_off_a_player_is_not_merged_back_into_the_player_th
 
     assert scenario.player_of(match.receiver) == studio_id
     assert scenario.player_of(match.speaker) == kitchen_id
+
+
+async def test_protocol_of_a_disabled_player_comes_back_on_its_new_player(
+    scenario: Scenario,
+) -> None:
+    """A protocol taken off a disabled player attaches to its new player, without a restart."""
+    match = await _wrong_match(scenario)
+    await scenario.disable(match.player_id)
+
+    new_id = await _unlink(scenario, "ap_studio")
+
+    assert scenario.player_of(match.receiver) == new_id
+    new_player = scenario.player(new_id)
+    assert new_player is not None
+    assert new_player.available

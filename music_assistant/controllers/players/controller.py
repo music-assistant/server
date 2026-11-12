@@ -3608,8 +3608,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     "Protocol %s did not attach to its new player", attached_protocol.protocol_id
                 )
         if new_id not in self._players:
-            # its device is away: the player waits for it, like a stored one at startup
+            # its device is away, or was not attached as its player was disabled: the
+            # player waits for it like a stored one at startup, and its provider looks again
             await self._publish_player(self._create_player(new_id))
+            if isinstance(
+                provider := self.mass.get_provider(str(record.get("provider"))), PlayerProvider
+            ):
+                provider.schedule_discovery()
         if player is not None:
             await self._settle_player(player)
         self._schedule_update_all_players()
