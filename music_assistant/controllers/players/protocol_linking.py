@@ -620,8 +620,8 @@ class ProtocolLinkingMixin:
             other_id
             for other_id in self._players
             if other_id != player_id
-            and self._merge_refusal(other_id, player_id) is None
             and matches_device(identity, self._identity_parts(other_id))
+            and self._merge_refusal(other_id, player_id) is None
             and not self._taken_apart(player_id, other_id)
         ]
 
