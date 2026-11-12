@@ -3,7 +3,7 @@
   "stage": "beta",
   "domain": "hue_entertainment",
   "name": "Hue Lights Sync",
-  "description": "Sync Philips Hue lights to music using Entertainment Mode.",
+  "description": "Sync Philips Hue lights to music, through a Hue bridge's Entertainment Mode or straight to Hue lamps on ZHA via Ziggurat.",
   "codeowners": ["@music-assistant"],
   "tier": "core",
   "depends_on": "sendspin",
