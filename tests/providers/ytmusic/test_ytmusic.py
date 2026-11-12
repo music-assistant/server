@@ -1317,3 +1317,68 @@ async def test_get_resume_position_unavailable(
         pytest.raises(NotImplementedError),
     ):
         await provider.get_resume_position("pod1|v1", MediaType.PODCAST_EPISODE)
+
+
+def _listing(*set_video_ids: str) -> dict[str, Any]:
+    """Build a get_playlist result holding entries with the given setVideoIds."""
+    return {"tracks": [{"videoId": f"v{svid}", "setVideoId": svid} for svid in set_video_ids]}
+
+
+async def test_remove_playlist_tracks_removes_the_selected_position(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Removing position 2 deletes the second entry, read as the brand account."""
+    provider._yt_user = "123456789012345678901"
+    get_playlist = AsyncMock(return_value=_listing("A", "B", "C"))
+    with (
+        patch("music_assistant.providers.ytmusic.get_playlist", get_playlist),
+        patch(
+            "music_assistant.providers.ytmusic.add_remove_playlist_tracks", AsyncMock()
+        ) as mock_remove,
+    ):
+        await provider.remove_playlist_tracks("PL1", (2,))
+
+    assert mock_remove.call_args.kwargs["prov_track_ids"] == [{"videoId": "vB", "setVideoId": "B"}]
+    assert get_playlist.call_args.kwargs["user"] == "123456789012345678901"
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position", "moved", "successor"),
+    [
+        ([1], 3, ["A"], "D"),
+        ([4], 1, ["D"], "A"),
+        ([2], None, ["B"], None),
+        ([1, 3], 2, ["A", "C"], "D"),
+    ],
+)
+async def test_move_playlist_tracks_moves_the_block_before_its_successor(
+    provider: YoutubeMusicProvider,
+    positions: list[int],
+    to_position: int | None,
+    moved: list[str],
+    successor: str | None,
+) -> None:
+    """The selected entries move in order in front of the entry that ends up after them."""
+    get_playlist = AsyncMock(return_value=_listing("A", "B", "C", "D"))
+    with (
+        patch("music_assistant.providers.ytmusic.get_playlist", get_playlist),
+        patch("music_assistant.providers.ytmusic.move_playlist_entries", AsyncMock()) as mock_move,
+    ):
+        await provider.move_playlist_tracks("PL1", positions, to_position)
+
+    assert mock_move.call_args.kwargs["set_video_ids"] == moved
+    assert mock_move.call_args.kwargs["successor"] == successor
+
+
+async def test_move_playlist_tracks_leaves_a_block_already_in_place(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Moving the last entries to the end does not touch the playlist."""
+    get_playlist = AsyncMock(return_value=_listing("A", "B", "C", "D"))
+    with (
+        patch("music_assistant.providers.ytmusic.get_playlist", get_playlist),
+        patch("music_assistant.providers.ytmusic.move_playlist_entries", AsyncMock()) as mock_move,
+    ):
+        await provider.move_playlist_tracks("PL1", [3, 4])
+
+    mock_move.assert_not_called()
