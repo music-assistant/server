@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     IdentifierType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -24,6 +25,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
+    CONF_CREATED_AT,
     CONF_DEVICE_IDENTIFIERS,
     CONF_GROUP_MEMBERS,
     CONF_MAX_VOLUME,
@@ -31,6 +33,7 @@ from music_assistant.constants import (
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
+    CONF_PROTOCOL_KEY_SPLITTER,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from tests.scenarios.harness import (
@@ -39,12 +42,17 @@ from tests.scenarios.harness import (
     Event,
     FakeProtocol,
     Scenario,
+    ScenarioError,
     VisiblePlayer,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 # what the AirPlay and the Cast receiver of one TV report: nothing they share
 TV_AIRPLAY = {IdentifierType.AIRPLAY_ID: "C0:FF:EE:00:00:01"}
 TV_CAST = {IdentifierType.CAST_UUID: "6f0c1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"}
+TV_IP = "192.168.1.60"
 KITCHEN_MAC = "54:78:C9:E6:0D:A0"
 KITCHEN = {IdentifierType.MAC_ADDRESS: KITCHEN_MAC}
 HALL = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"}
@@ -592,3 +600,300 @@ async def test_merge_command_takes_legacy_ids(scenario: Scenario) -> None:
 
     assert error is None
     assert [player.player_id for player in scenario.players_carrying(tv.airplay)] == [dlna_id]
+
+
+async def _duplicates(scenario: Scenario) -> _TwoPlayers:
+    """
+    Let the receivers of one TV end up as two players, which can tell they are one later.
+
+    The Cast receiver reports the address of the TV; the AirPlay receiver does once it is
+    found again (see _seen_again_with_its_address).
+    """
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    tv_airplay = airplay.protocol("ap_tv", "Living TV", role="audio", identifiers=TV_AIRPLAY)
+    tv_cast = chromecast.protocol(
+        "cast_tv",
+        "Living TV",
+        role="audio",
+        identifiers={**TV_CAST, IdentifierType.IP_ADDRESS: TV_IP},
+    )
+    await scenario.attach(tv_airplay)
+    await scenario.advance(15)
+    await scenario.attach(tv_cast)
+    await scenario.advance(15)
+    await scenario.idle()
+    older_id = scenario.single_player(tv_airplay).player_id
+    younger_id = scenario.single_player(tv_cast).player_id
+    if older_id == younger_id:
+        msg = "the receivers of the TV were matched at first sight"
+        raise ScenarioError(msg)
+    return _TwoPlayers(tv_airplay, tv_cast, older_id, younger_id)
+
+
+async def _seen_again_with_its_address(scenario: Scenario, protocol: FakeProtocol) -> None:
+    """Let the AirPlay receiver report the address of the TV and be found again."""
+    await scenario.report(protocol, identifiers={IdentifierType.IP_ADDRESS: TV_IP})
+    await scenario.detach(protocol)
+    await scenario.attach(protocol)
+    await scenario.idle()
+
+
+async def test_unused_duplicate_merges_into_the_older_player_by_itself(
+    scenario: Scenario,
+) -> None:
+    """A younger duplicate nothing is set on goes into the older player once they match."""
+    tv = await _duplicates(scenario)
+
+    await _seen_again_with_its_address(scenario, tv.airplay)
+
+    assert [player.player_id for player in scenario.players_carrying(tv.airplay, tv.cast)] == [
+        tv.older_id
+    ]
+    kept = scenario.player(tv.older_id)
+    assert kept is not None
+    assert kept.legacy_ids == [tv.younger_id]
+
+
+async def _renamed(scenario: Scenario, tv: _TwoPlayers) -> None:
+    await scenario.configure_player(tv.younger_id, name="Kitchen TV")
+
+
+async def _player_setting(scenario: Scenario, tv: _TwoPlayers) -> None:
+    await scenario.configure_player(tv.younger_id, **{CONF_MAX_VOLUME: 80})
+
+
+async def _protocol_setting(scenario: Scenario, tv: _TwoPlayers) -> None:
+    key = f"cast_tv{CONF_PROTOCOL_KEY_SPLITTER}{FAKE_SETTING}"
+    await scenario.configure_player(tv.younger_id, **{key: "on the cast receiver"})
+    if (scenario.protocol_config("cast_tv") or {}).get(FAKE_SETTING) != "on the cast receiver":
+        msg = "the setting of the Cast receiver was not stored"
+        raise ScenarioError(msg)
+
+
+async def _dsp(scenario: Scenario, tv: _TwoPlayers) -> None:
+    await scenario.mass.config.save_dsp_config(tv.younger_id, DSPConfig(enabled=True))
+
+
+async def _queue_settings(scenario: Scenario, tv: _TwoPlayers) -> None:
+    await scenario.mass.config.save_player_queue_config(
+        tv.younger_id, {"volume_normalization": "disabled"}
+    )
+
+
+async def _played(scenario: Scenario, tv: _TwoPlayers) -> None:
+    await scenario.play(tv.younger_id)
+    await scenario.mass.player_queues.stop(tv.younger_id)
+    await scenario.idle()
+
+
+async def _group_member(scenario: Scenario, tv: _TwoPlayers) -> None:
+    await scenario.mass.config._create_provider_instance("universal_group", {})
+    await scenario.mass.players.create_group_player(
+        "universal_group", "Group Z", [tv.younger_id], False
+    )
+    await scenario.idle()
+
+
+async def _in_active_group(scenario: Scenario, tv: _TwoPlayers) -> None:
+    group = scenario.provider("chromecast").protocol(
+        "cast_group",
+        "Cast Group",
+        role="virtual",
+        type=PlayerType.GROUP,
+        group_members=["cast_tv"],
+        powered=True,
+    )
+    await scenario.attach(group)
+    await scenario.idle()
+    if (state := scenario.player(tv.younger_id)) is None or not state.active_group:
+        msg = f"{tv.younger_id} is in no active group"
+        raise ScenarioError(msg)
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        _renamed,
+        _player_setting,
+        _protocol_setting,
+        _dsp,
+        _queue_settings,
+        _played,
+        _group_member,
+        _in_active_group,
+    ],
+    ids=[
+        "renamed",
+        "player_setting",
+        "protocol_setting",
+        "dsp",
+        "queue_settings",
+        "queue_items",
+        "group_member",
+        "active_group",
+    ],
+)
+async def test_used_duplicate_stays_a_player_of_its_own(
+    scenario: Scenario, use: Callable[[Scenario, _TwoPlayers], Awaitable[None]]
+) -> None:
+    """A younger duplicate the user set something on, that played or is grouped, stays."""
+    tv = await _duplicates(scenario)
+    await use(scenario, tv)
+
+    await _seen_again_with_its_address(scenario, tv.airplay)
+
+    assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.younger_id]
+    assert [player.player_id for player in scenario.players_carrying(tv.airplay)] == [tv.older_id]
+
+
+async def test_player_without_a_creation_moment_counts_as_the_older(scenario: Scenario) -> None:
+    """Of two duplicates, one whose record holds no creation moment is kept."""
+    tv = await _duplicates(scenario)
+    scenario.mass.config.remove(f"{CONF_PLAYERS}/{tv.younger_id}/values/{CONF_CREATED_AT}")
+
+    await _seen_again_with_its_address(scenario, tv.airplay)
+
+    assert [player.player_id for player in scenario.players_carrying(tv.airplay, tv.cast)] == [
+        tv.younger_id
+    ]
+
+
+async def test_player_from_before_the_split_is_kept_of_two_equally_old_ones(
+    scenario: Scenario,
+) -> None:
+    """Of two players without a creation moment, the one with an id from before the split is kept."""
+    config = scenario.mass.config
+    for player_id in ("pl0123456789ab", "RINCON_KITCHEN"):
+        config.create_player_record(
+            player_id, provider="sonos", player_type=PlayerType.PLAYER, default_name="Kitchen"
+        )
+
+    ranked = sorted(("pl0123456789ab", "RINCON_KITCHEN"), key=scenario.mass.players._merge_rank)
+
+    assert ranked == ["RINCON_KITCHEN", "pl0123456789ab"]
+
+
+async def test_duplicates_with_a_protocol_of_one_domain_stay_apart(scenario: Scenario) -> None:
+    """Two players of one host that each have a DLNA protocol are not merged by their address."""
+    dlna = await scenario.add_provider("dlna")
+    host = {IdentifierType.IP_ADDRESS: "192.168.1.40"}
+    first = dlna.protocol("uuid:renderer-1", "Renderer 1", role="audio", identifiers=host)
+    second = dlna.protocol("uuid:renderer-2", "Renderer 2", role="audio", identifiers=host)
+    await scenario.attach(first)
+    await scenario.advance(15)
+    await scenario.attach(second)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    first_id, second_id = scenario.player_of(first), scenario.player_of(second)
+    assert first_id is not None
+    assert second_id is not None
+    assert first_id != second_id
+
+
+async def test_disabled_duplicate_is_not_merged_by_itself(scenario: Scenario) -> None:
+    """A disabled player is the user's choice: it stays, also once its device turns out known."""
+    tv = await _duplicates(scenario)
+    await scenario.disable(tv.younger_id)
+
+    await _seen_again_with_its_address(scenario, tv.airplay)
+
+    assert await scenario.player_config(tv.younger_id) is not None
+    assert (scenario.mass.config.get_protocol_record("cast_tv") or {})["player_id"] == tv.younger_id
+
+
+@pytest.mark.parametrize("grouping", ["none", "member", "leader"])
+async def test_synced_duplicate_stays_a_player_of_its_own(
+    scenario: Scenario, grouping: str
+) -> None:
+    """
+    A younger duplicate that is synced to a leader, or leads members, stays.
+
+    Without a sync it is merged, as the control.
+    """
+    airplay = await scenario.add_provider("airplay")
+    sonos = await scenario.add_provider("sonos")
+    features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+    # the AirPlay receiver of the speaker was first seen without its address
+    kitchen_airplay = airplay.protocol("ap_kitchen", "Kitchen", role="audio")
+    await scenario.attach(kitchen_airplay)
+    await scenario.advance(15)
+    older_id = scenario.single_player(kitchen_airplay).player_id
+    kitchen = sonos.protocol(
+        "RINCON_KITCHEN",
+        "Kitchen",
+        identifiers=KITCHEN,
+        supported_features=features,
+        can_group_with={"RINCON_HALL"},
+    )
+    hall = sonos.protocol(
+        "RINCON_HALL",
+        "Hall",
+        identifiers=HALL,
+        supported_features=features,
+        can_group_with={"RINCON_KITCHEN"},
+    )
+    await scenario.attach(kitchen)
+    await scenario.attach(hall)
+    # the speakers learn who they can be grouped with
+    await scenario.advance(3)
+    younger_id = scenario.single_player(kitchen).player_id
+    hall_id = scenario.single_player(hall).player_id
+    if grouping == "member":
+        await scenario.mass.players.cmd_set_members(hall_id, player_ids_to_add=[younger_id])
+    elif grouping == "leader":
+        await scenario.mass.players.cmd_set_members(younger_id, player_ids_to_add=[hall_id])
+    await scenario.idle()
+
+    await scenario.report(kitchen_airplay, identifiers=KITCHEN)
+    await scenario.detach(kitchen_airplay)
+    await scenario.attach(kitchen_airplay)
+    await scenario.idle()
+
+    expected = [older_id] if grouping == "none" else [younger_id]
+    assert [player.player_id for player in scenario.players_carrying(kitchen)] == expected
+
+
+async def test_duplicate_is_merged_when_its_attached_protocol_is_attached_again(
+    scenario: Scenario,
+) -> None:
+    """A provider that announces an attached device again with new identifiers merges it."""
+    tv = await _duplicates(scenario)
+    await scenario.report(tv.airplay, identifiers={IdentifierType.IP_ADDRESS: TV_IP})
+
+    await scenario.attach(tv.airplay)
+    await scenario.idle()
+
+    assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.older_id]
+
+
+async def test_every_unused_duplicate_of_a_device_is_merged_at_once(scenario: Scenario) -> None:
+    """A player that turns out to stand for the devices of two others takes in both."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    dlna = await scenario.add_provider("dlna")
+    serial = {IdentifierType.SERIAL_NUMBER: "TV-0001"}
+    tv_airplay = airplay.protocol("ap_tv", "Living TV", role="audio", identifiers=TV_AIRPLAY)
+    tv_cast = chromecast.protocol(
+        "cast_tv", "Living TV", role="audio", identifiers={**TV_CAST, **KITCHEN}
+    )
+    tv_dlna = dlna.protocol("uuid:tv", "Living TV", role="audio", identifiers=serial)
+    for protocol in (tv_airplay, tv_cast, tv_dlna):
+        await scenario.attach(protocol)
+        await scenario.advance(15)
+    await scenario.idle()
+    older_id = scenario.single_player(tv_airplay).player_id
+    if len({scenario.player_of(p) for p in (tv_airplay, tv_cast, tv_dlna)}) != 3:
+        msg = "the receivers of the TV were matched at first sight"
+        raise ScenarioError(msg)
+
+    # the AirPlay receiver learns what ties it to both others
+    await scenario.report(tv_airplay, identifiers={**KITCHEN, **serial})
+    await scenario.detach(tv_airplay)
+    await scenario.attach(tv_airplay)
+    await scenario.idle()
+
+    assert [
+        player.player_id for player in scenario.players_carrying(tv_airplay, tv_cast, tv_dlna)
+    ] == [older_id]

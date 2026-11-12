@@ -2949,6 +2949,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             player.display_name,
         )
         self._schedule_held_protocols()
+        self._schedule_duplicate_merge(player_id)
 
     async def _refresh_protocol(self, protocol: PlayerProtocol) -> None:
         """
@@ -2971,6 +2972,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._store_protocol(protocol, player.player_id)
         player.refresh_state()
         self._schedule_held_protocols()
+        self._schedule_duplicate_merge(player.player_id)
 
     async def _rollback_attach(self, protocol: PlayerProtocol, attach: _Attach) -> None:
         """
@@ -3524,6 +3526,42 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ):
             config.remove(key)
         self._build_legacy_id_index()
+
+    def _schedule_duplicate_merge(self, player_id: str) -> None:
+        """
+        Look for unused duplicates of a player, now that one of its protocols attached.
+
+        :param player_id: Id of the player.
+        """
+        self.mass.create_task(
+            self._merge_duplicates(player_id), task_id=f"merge_duplicates_{player_id}"
+        )
+
+    async def _merge_duplicates(self, player_id: str) -> None:
+        """
+        Merge the players that turn out to stand for the device of a player, while unused.
+
+        Of two such players the younger one goes into the older one, and only while nothing
+        about it is the user's own yet (see _is_unused); otherwise both stay, for the user to
+        merge by hand.
+
+        :param player_id: Id of the player.
+        """
+        async with self._register_lock:
+            while not self.mass.closing and player_id in self._players:
+                for other_id in self._duplicates_of(player_id):
+                    keep_id, absorb_id = sorted((player_id, other_id), key=self._merge_rank)
+                    if (absorbed := self._players.get(absorb_id)) and self._is_unused(absorbed):
+                        break
+                else:
+                    return
+                self.logger.info(
+                    "Player %s turns out to be the device of %s",
+                    self._stored_player_name(absorb_id),
+                    self._stored_player_name(keep_id),
+                )
+                await self._merge_players(keep_id, absorb_id)
+                player_id = keep_id
 
     def _store_player_base(self, player: Player) -> None:
         """
