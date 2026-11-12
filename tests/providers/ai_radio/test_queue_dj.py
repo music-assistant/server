@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
 )
+from music_assistant_models.event import MassEvent
 
 from music_assistant.providers.ai_radio.constants import (
     ATTR_GAP_NEXT_ID,
@@ -209,6 +210,11 @@ def _dj_harness(tmp_path: Path) -> DummyQueueDJ:
     dj._hosts["amy"] = {"id": "amy", "name": "Amy", "instructions": "x", "tts_engine": ""}
     dj._stations["morning_show"] = {"id": "morning_show", "host_id": "amy"}
     return dj
+
+
+def _player_removed(queue_id: str, *, permanent: bool) -> MassEvent:
+    """Build the PLAYER_REMOVED event of the player of a queue, for good or for now."""
+    return MassEvent(EventType.PLAYER_REMOVED, queue_id, data={"permanent": permanent})
 
 
 def _fake_queue_with_sources(dj: DummyQueueDJ, queue_id: str, source_uris: list[str]) -> FakeQueue:
@@ -703,19 +709,41 @@ async def test_ending_the_queue_detaches_and_clears_the_armed_record(tmp_path: P
 
 
 async def test_on_dj_queue_event_forgets_armed_show_on_player_removed(tmp_path: Path) -> None:
-    """Removing the player behind a show-bound DJ also forgets its arm-once record."""
+    """Removing the player behind a show-bound DJ for good also forgets its arm-once record."""
     dj = _dj_harness(tmp_path)
     _fake_queue_with_sources(dj, "q1", [])
     state = dj._arm_dj_state("q1", "amy")
     state.station_id = "morning_show"
     dj._armed_show_queues["q1"] = "morning_show"
 
-    await dj._on_dj_queue_event(
-        cast("Any", SimpleNamespace(event=EventType.PLAYER_REMOVED, object_id="q1"))
-    )
+    await dj._on_dj_queue_event(_player_removed("q1", permanent=True))
 
     assert "q1" not in dj._dj_queues
     assert "q1" not in dj._armed_show_queues
+
+
+async def test_a_show_dj_outlives_a_player_that_is_gone_for_now(tmp_path: Path) -> None:
+    """A show-bound DJ and its arm-once record stay while the player is gone, and run again."""
+    dj = _dj_harness(tmp_path)
+    show = [f"{dj.instance_id}://radio/morning_show"]
+    _fake_queue_with_sources(dj, "q1", show)
+    await dj._ensure_show_dj("q1")
+    dj.replanned.clear()
+    # the player is disabled, or its client disconnected: its queue goes with it
+    _fake_queue_with_sources(dj, "other-queue", [])
+
+    await dj._on_dj_queue_event(_player_removed("q1", permanent=False))
+
+    assert dj._dj_queues["q1"].station_id == "morning_show"
+    assert dj._armed_show_queues["q1"] == "morning_show"
+
+    _fake_queue_with_sources(dj, "q1", show)
+    await dj._on_dj_queue_event(MassEvent(EventType.QUEUE_ADDED, "q1"))
+
+    assert dj._dj_queues["q1"].station_id == "morning_show"
+    assert dj._armed_show_queues["q1"] == "morning_show"
+    assert dj.replanned == ["q1"]
+    assert dj.rendered_ahead == ["q1"]
 
 
 async def test_ensure_show_dj_arms_via_the_shows_library_uri(tmp_path: Path) -> None:
@@ -2054,14 +2082,42 @@ async def test_set_queue_dj_announces_the_rollback(tmp_path: Path) -> None:
 
 
 async def test_player_removed_emits_a_queue_dj_hint(tmp_path: Path) -> None:
-    """Dropping the DJ of a removed player announces a refetch hint."""
+    """Dropping the DJ of a player removed for good announces a refetch hint."""
     dummy = DummyQueueDJ(tmp_path)
     await dummy.set_queue_dj("queue-1", "rick")
     dummy.provider_events.clear()
 
-    await dummy._on_dj_queue_event(
-        cast("Any", SimpleNamespace(event=EventType.PLAYER_REMOVED, object_id="queue-1"))
-    )
+    await dummy._on_dj_queue_event(_player_removed("queue-1", permanent=True))
 
     assert "queue-1" not in dummy._dj_queues
     assert dummy.provider_events == [{"event": EVENT_QUEUE_DJ_UPDATED}]
+
+    fresh = DummyQueueDJ(tmp_path)
+    await fresh._load_queue_dj()
+    assert "queue-1" not in fresh._dj_queues
+
+
+async def test_a_queue_dj_outlives_a_player_that_is_gone_for_now(tmp_path: Path) -> None:
+    """
+    The DJ of a disabled player, or of a client that disconnected, stays and runs again.
+
+    It stays stored, and resumes once the queue of the player is back.
+    """
+    dummy = DummyQueueDJ(tmp_path)
+    await dummy.set_queue_dj("queue-1", "rick")
+    dummy.replanned.clear()
+    dummy.provider_events.clear()
+
+    await dummy._on_dj_queue_event(_player_removed("queue-1", permanent=False))
+
+    assert dummy._dj_queues["queue-1"].host_id == "rick"
+    assert dummy.provider_events == []
+    fresh = DummyQueueDJ(tmp_path)
+    await fresh._load_queue_dj()
+    assert fresh._dj_queues["queue-1"].host_id == "rick"
+
+    dummy.mass.player_queues._queue = FakeQueue("queue-1", None, None)
+    await dummy._on_dj_queue_event(MassEvent(EventType.QUEUE_ADDED, "queue-1"))
+
+    assert dummy.replanned == ["queue-1"]
+    assert dummy.rendered_ahead == ["queue-1"]
