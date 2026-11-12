@@ -437,6 +437,22 @@ async def test_level_the_player_had_is_kept_while_its_native_can_not_be_reached(
     assert state.volume_level == 30
 
 
+async def test_player_shows_muted_when_the_output_in_control_reports_it_while_held(
+    scenario: Scenario,
+) -> None:
+    """An output that reports muted while the native is away shows the player muted."""
+    player_id, native, audio = await _native_and_airplay(
+        scenario, volume_level=30, volume_muted=False
+    )
+    await scenario.report(native, available=False)
+
+    await scenario.report(audio, volume_muted=True)
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.mute_control, state.volume_muted) == ("ap_kitchen", True)
+
+
 async def test_native_that_drops_again_leaves_the_level_it_had_the_second_time(
     scenario: Scenario,
 ) -> None:
