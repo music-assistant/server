@@ -146,7 +146,9 @@ Every scenario is written out in plain words in the players controller's
 [SCENARIOS.md](../../music_assistant/controllers/players/SCENARIOS.md). A new test goes into exactly
 one entry there: the entry whose rule it proves, or a new entry. A renamed test is renamed there
 too. `tests/controllers/players/test_scenarios_document.py` fails when a test is named by no entry
-or by two, or when an entry names a test that does not exist.
+or by two, when an entry names a test that does not exist, when a heading is no entry heading,
+when an end-to-end line lacks what a run needs or why there is none, and when a scenario file
+holds a test class: scenarios are functions at the top level of their file.
 
 ## One xfail marker per phase
 
