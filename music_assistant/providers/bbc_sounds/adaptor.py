@@ -14,6 +14,24 @@ from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from auntie_sounds.models import (
+    Category,
+    Collection,
+    LiveStation,
+    MenuItem,
+    Playlist,
+    Podcast,
+    PodcastEpisode,
+    RadioClip,
+    RadioSeries,
+    RadioShow,
+    RecommendedMenuItem,
+    Schedule,
+    ScheduleItem,
+    SoundsTypes,
+    Station,
+    StationSearchResult,
+)
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
@@ -32,24 +50,6 @@ from music_assistant_models.media_items import Podcast as MAPodcast
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
-from sounds.models import (
-    Category,
-    Collection,
-    LiveStation,
-    MenuItem,
-    Playlist,
-    Podcast,
-    PodcastEpisode,
-    RadioClip,
-    RadioSeries,
-    RadioShow,
-    RecommendedMenuItem,
-    Schedule,
-    ScheduleItem,
-    SoundsTypes,
-    Station,
-    StationSearchResult,
-)
 
 import music_assistant.helpers.datetime as dt
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, VERBOSE_LOG_LEVEL
@@ -77,10 +77,6 @@ def _to_time(timestamp: str | datetime) -> str:
     return _date_convertor(timestamp, "%H:%M")
 
 
-def _to_date_and_time(timestamp: str | datetime) -> str:
-    return _date_convertor(timestamp, "%a %d %B %H:%M")
-
-
 def _to_date(timestamp: str | datetime) -> str:
     return _date_convertor(timestamp, "%d/%m/%y")
 
@@ -101,12 +97,13 @@ class ConversionError(MusicAssistantError):
 class ImageProvider:
     """Handles image URL resolution and MediaItemImage creation."""
 
-    ICON_BASE_URL = (
-        "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid"
-    )
+    ICON_BASE_URL = "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@3.0.0/assets/icons/solid"
 
     ICON_MAPPING: ClassVar[dict[str, str]] = {
-        ValidMenuIDs.LISTEN_LIVE: "listen_live",
+        ValidMenuIDs.LIVE: "listen_live",
+        ValidMenuIDs.CATCH_UP: "latest",
+        ValidMenuIDs.SCHEDULES: "episodes",
+        ValidMenuIDs.MY_SOUNDS: "my_sounds",
         ValidMenuIDs.CONTINUE_LISTENING: "continue",
         ValidMenuIDs.EDITORIAL_COLLECTION: "editorial",
         ValidMenuIDs.LOCAL_RAIL: "my_location",
@@ -174,7 +171,6 @@ class Context:
     force_type: (
         type[
             Track
-            | LiveStation
             | Radio
             | MAPodcast
             | MAPodcastEpisode
@@ -207,7 +203,6 @@ class BaseConverter(ABC):
         self, source_obj: Any
     ) -> (
         Track
-        | LiveStation
         | Radio
         | MAPodcast
         | MAPodcastEpisode
@@ -237,9 +232,15 @@ class BaseConverter(ABC):
                     current = current[part]
                 else:
                     return default
-            return current
+            return default if current is None else current
         except AttributeError, KeyError, TypeError:
             return default
+
+    def _require_id(self, item_id: str | None, obj: Any) -> str:
+        """Return an id of an auntie-sounds object, raising ConversionError if None."""
+        if not item_id:
+            raise ConversionError(f"No id for {obj}")
+        return item_id
 
     def _get_synopsis(self, obj: Any) -> str | None:
         """Return the fullest synopsis the given object carries, if any."""
@@ -260,7 +261,7 @@ class StationConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: Any) -> StreamDetails | None:
         """Convert the source object to a stream."""
-        if not isinstance(source_obj, self.ConvertableTypes):
+        if not isinstance(source_obj, (Station, LiveStation)):
             return None
         # TODO: can't seek this stream
         station = await self.convert(source_obj)
@@ -325,7 +326,7 @@ class StationConverter(BaseConverter):
             provider_mappings={self._create_provider_mapping(station.id)},
         )
         if station.stream:
-            radio.uri = station.stream.uri
+            radio.uri = station.stream
         return radio
 
     def _convert_live_station(self, station: LiveStation) -> Radio:
@@ -367,16 +368,15 @@ class PodcastConverter(BaseConverter):
     PODCAST_EPISODE_DETAILED_FORMAT = "{episode_title} • {detail} ({date})"
 
     def _format_show_title(self, show: RadioShow) -> str:
-        if show is None:
-            return "Unknown show"
-        if show.start and show.titles:
+        has_titles = bool(show.titles and (show.titles.primary or show.titles.secondary))
+        if show.start and has_titles:
             return self.SCHEDULE_ITEM_FORMAT.format(
                 start=_to_time(show.start),
                 show_name=self._get_attr(show.titles, "primary"),
                 show_title=self._get_attr(show.titles, "secondary"),
                 date=_to_date(show.start),
             )
-        if show.titles:
+        if has_titles:
             # TODO: when getting a schedule listing, we have a broadcast time
             # when we fetch the streaming details later we lose that from the new API call
             title = self.SCHEDULE_ITEM_DEFAULT_FORMAT.format(
@@ -392,23 +392,21 @@ class PodcastConverter(BaseConverter):
     def _format_podcast_episode_title(self, episode: PodcastEpisode) -> str:
         # Similar to show, but not quite: we expect to see this in the context of a podcast detail
         # page
-        if episode is None:
-            return "Unknown episode"
-
         if episode.release:
             date = episode.release.get("date")
         elif episode.availability:
             date = episode.availability.get("from")
         else:
             date = None
-        if isinstance(date, (str, datetime)) and episode.titles:
+        episode_title = episode.titles.secondary if episode.titles else None
+        if isinstance(date, (str, datetime)) and episode_title:
             datestamp = _to_date(date)
             title = self.PODCAST_EPISODE_DEFAULT_FORMAT.format(
-                episode_title=episode.titles.get("secondary"),
+                episode_title=episode_title,
                 date=datestamp,
             )
         else:
-            title = str(episode.titles.get("secondary")) if episode.titles else "Unknown episode"
+            title = episode_title or "Unknown episode"
         return title
 
     def can_convert(self, source_obj: Any) -> bool:
@@ -478,7 +476,7 @@ class PodcastConverter(BaseConverter):
 
     async def convert(self, source_obj: Any) -> OutputTypes:
         """Convert podcast objects."""
-        if isinstance(source_obj, (Podcast, RadioSeries)) or self.context.force_type is Podcast:
+        if isinstance(source_obj, (Podcast, RadioSeries)) or self.context.force_type is MAPodcast:
             return await self._convert_podcast(source_obj)
         if isinstance(source_obj, PodcastEpisode):
             return await self._convert_podcast_episode(source_obj)
@@ -503,12 +501,13 @@ class PodcastConverter(BaseConverter):
         )
         if isinstance(podcast, Podcast):
             metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
+        item_id = self._require_id(podcast.item_id, podcast)
         return MAPodcast(
-            item_id=podcast.id,
+            item_id=item_id,
             name=name,
             provider=self.context.provider_domain,
             metadata=metadata,
-            provider_mappings={self._create_provider_mapping(podcast.item_id)},
+            provider_mappings={self._create_provider_mapping(item_id)},
         )
 
     async def _convert_podcast_episode(self, episode: PodcastEpisode) -> MAPodcastEpisode:
@@ -665,7 +664,7 @@ class LiveProgrammeConverter(BaseConverter):
         return (
             isinstance(source_obj, ScheduleItem)
             and self._programme_id(source_obj) is not None
-            and source_obj.is_live(LOCAL_TIMEZONE)
+            and source_obj.is_live
         )
 
     async def get_stream_details(self, source_obj: Any) -> StreamDetails | None:
@@ -761,8 +760,9 @@ class BrowseConverter(BaseConverter):
         """Convert MenuItem to BrowseFolder or RecommendationFolder."""
         if not item or not item.title:
             raise ConversionError(f"No menu item {item}")
+        item_id = self._require_id(item.item_id, item)
         if not item.image_url:
-            image_url = ImageProvider.get_icon_url(item.item_id)
+            image_url = ImageProvider.get_icon_url(item_id)
             image = (
                 ImageProvider.create_image(image_url, self.context.provider_domain)
                 if image_url
@@ -771,15 +771,14 @@ class BrowseConverter(BaseConverter):
         else:
             image = ImageProvider.create_image(item.image_url, self.context.provider_domain)
 
-        path = self._build_path(item.item_id)
+        path = self._build_path(item_id)
 
         return_type = BrowseFolder
 
         if self.context.force_type is RecommendationFolder:
             return_type = RecommendationFolder
-
         return return_type(
-            item_id=item.item_id,
+            item_id=self._require_id(item.item_id, item),
             name=item.title,
             provider=self.context.provider_domain,
             path=path,
@@ -790,17 +789,18 @@ class BrowseConverter(BaseConverter):
         self, item: Category | Collection | Playlist
     ) -> BrowseFolder:
         """Convert Category, Collection or Playlist to BrowseFolder."""
+        item_id = self._require_id(item.item_id, item)
         if isinstance(item, Playlist):
             if not isinstance(self.context.path_parts, list):
-                path = f"{self.context.provider_domain}://playlists/{item.item_id}"
+                path = f"{self.context.provider_domain}://playlists/{item_id}"
             else:
-                path = "/".join([*self.context.path_parts, item.item_id])
+                path = "/".join([*self.context.path_parts, item_id])
         else:
             path_prefix = "categories" if isinstance(item, Category) else "collections"
-            path = f"{self.context.provider_domain}://{path_prefix}/{item.item_id}"
+            path = f"{self.context.provider_domain}://{path_prefix}/{item_id}"
 
         return BrowseFolder(
-            item_id=item.item_id,
+            item_id=item_id,
             name=self._get_attr(item, "titles.primary", "Untitled folder"),
             provider=self.context.provider_domain,
             path=path,
@@ -839,7 +839,7 @@ class BrowseConverter(BaseConverter):
                 items.append(new_item)
 
         return RecommendationFolder(
-            item_id=item.item_id,
+            item_id=self._require_id(item.item_id, item),
             name=item.title,
             provider=self.context.provider_domain,
             items=UniqueList(items),
@@ -909,9 +909,6 @@ class Adaptor:
         Returns:
             Converted Music Assistant media item or None if no converter found
         """
-        if source_obj is None:
-            return None
-
         context = self._create_context(path_parts, force_type)
 
         converters = [
@@ -975,9 +972,6 @@ class Adaptor:
         Returns:
             Converted Music Assistant media item or None if no converter found
         """
-        if source_obj is None:
-            return None
-
         context = self._create_context(path_parts, force_type)
 
         converters = [
@@ -1007,10 +1001,10 @@ class Adaptor:
                     raise ConversionError(msg)
                 msg = "Successfully converted %s to %s"
                 args = [type(source_obj).__name__, type(result).__name__]
-                if hasattr(result, "item_id"):
+                if hasattr(result, "item_id") and result.item_id is not None:
                     msg += " item_id: %s"
                     args.append(result.item_id)
-                if hasattr(result, "urn"):
+                if hasattr(result, "urn") and result.urn is not None:
                     msg += " urn: %s"
                     args.append(result.urn)
                 self.logger.debug(msg, *args)

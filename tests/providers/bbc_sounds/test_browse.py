@@ -25,6 +25,12 @@ def incorrect_provider_domain() -> str:
         "stations",
         "stations/bbc_radio_one",
         "stations/bbc_radio_one/2020-01-01",
+        "catch_up",
+        "catch_up/bbc_radio_one",
+        "catch_up/bbc_radio_one/2020-01-01",
+        "schedule",
+        "schedule/bbc_radio_one",
+        "schedule/bbc_radio_one/2020-01-01",
     ]
 )
 def station_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
@@ -93,7 +99,7 @@ class TestBrowse:
         self, provider: BBCSoundsProvider, provider_domain: str
     ) -> None:
         """Test valid listen live paths are dispatched into the right browse branch."""
-        browse_string = f"{provider_domain}listen_live"
+        browse_string = f"{provider_domain}radio"
         provider._browse_live = AsyncMock()  # type: ignore[method-assign]
         await provider.browse(browse_string)
         provider._browse_live.assert_awaited_once()

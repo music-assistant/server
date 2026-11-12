@@ -32,7 +32,10 @@ class _Constants:
 class ValidMenuIDs(StrEnum):
     """Expected main menu IDs from the API / library."""
 
-    LISTEN_LIVE = auto()
+    LIVE = auto()
+    CATCH_UP = auto()
+    SCHEDULES = auto()
+    MY_SOUNDS = auto()
     CONTINUE_LISTENING = auto()
     EDITORIAL_COLLECTION = auto()
     LOCAL_RAIL = auto()

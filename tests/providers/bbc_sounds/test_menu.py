@@ -12,7 +12,7 @@ from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.constants import _Constants
 
 if TYPE_CHECKING:
-    from sounds.models import Menu
+    from auntie_sounds.models import Menu
 
 
 class TestMenuLoading:
@@ -68,4 +68,4 @@ class TestMenuLoading:
         result = await provider._get_menu()
 
         provider._refresh_menu_from_api.assert_not_called()
-        assert result == uk_menu.sub_items
+        assert result == uk_menu.sub_items  # type: ignore[comparison-overlap]
