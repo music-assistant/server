@@ -411,12 +411,31 @@ def test_discovery_registers_device_with_dashboards() -> None:
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.available = True
     castplayer.cast_info = MagicMock(is_audio_group=False)
-    castplayer.cc = MagicMock()  # discovery fast-path reads castplayer.cc.socket_client
+    # discovery fast-path reads castplayer.cc.socket_client of a connected protocol
+    castplayer.status_listener = MagicMock()
+    castplayer.cc = MagicMock()
     provider.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
 
     provider._on_chromecast_discovered(uuid, "service")
 
     provider.dashboards.register.assert_called_once_with(uuid, disc_info)  # type: ignore[attr-defined]
+
+
+def test_discovery_of_a_device_still_attaching_leaves_its_client_alone() -> None:
+    """A record of a device whose attach has not connected it yet only updates its cast info."""
+    provider = _make_provider()
+    uuid = uuid4()
+    disc_info = _cast_info()
+    disc_info.uuid = uuid
+    provider.browser = MagicMock(devices={uuid: disc_info})
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cast_info = MagicMock(is_audio_group=False)
+    castplayer.status_listener = None
+    provider.mass.players.get_protocol.return_value = castplayer  # type: ignore[attr-defined]
+
+    provider._on_chromecast_discovered(uuid, "service")
+
+    castplayer.cast_info.update.assert_called_once()
 
 
 def test_discovery_registers_device_even_when_player_disabled() -> None:

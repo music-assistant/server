@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -47,6 +47,12 @@ _CLIENT_CODE = (
     "_await_client_hello",
     "_apply_hass_esphome_enrichment",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_cast_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep an attached Cast protocol from connecting to its device."""
+    monkeypatch.setattr("pychromecast.get_chromecast_from_cast_info", MagicMock())
 
 
 @pytest.fixture(autouse=True)
@@ -160,8 +166,8 @@ def _carrier(scenario: Scenario, domain: str) -> PlayerProtocol:
             is_dynamic_group=False,
             is_multichannel_group=False,
         )
-        with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-            return ChromecastPlayer(provider, str(CAST_UUID), cast_info, MagicMock())
+        provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+        return ChromecastPlayer(provider, str(CAST_UUID), cast_info)
     provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock(), remove_bridge=AsyncMock())
     provider.get_players = lambda: list(provider.protocols)
     return GenericAirPlayPlayer(

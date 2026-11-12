@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pychromecast import dial
 from pychromecast.const import CAST_TYPE_CHROMECAST, CAST_TYPE_GROUP
-from pychromecast.models import HostServiceInfo
+from pychromecast.models import CastInfo, HostServiceInfo
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from pychromecast.controllers.multizone import MultizoneManager, MultiZoneManagerListener
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.controllers.receiver import CastStatusListener as ReceiverStatusListener
-    from pychromecast.models import CastInfo, MDNSServiceInfo
+    from pychromecast.models import MDNSServiceInfo
     from pychromecast.socket_client import ConnectionStatus, ConnectionStatusListener
     from zeroconf import Zeroconf
 
@@ -159,6 +159,19 @@ class ChromecastInfo:
     def from_cast_info(cls, cast_info: CastInfo) -> ChromecastInfo:
         """Instantiate ChromecastInfo from CastInfo."""
         return cls(**asdict(cast_info))
+
+    def to_cast_info(self) -> CastInfo:
+        """Return the CastInfo pychromecast connects to the device with."""
+        return CastInfo(
+            set(self.services),
+            self.uuid,
+            self.model_name,
+            self.friendly_name,
+            self.host,
+            self.port,
+            self.cast_type,
+            self.manufacturer,
+        )
 
     def update(self, cast_info: CastInfo) -> None:
         """Update ChromecastInfo from CastInfo."""

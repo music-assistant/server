@@ -10,7 +10,6 @@ import time
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-import pychromecast
 from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
 
@@ -191,10 +190,12 @@ class ChromecastProvider(PlayerProvider):
             if castplayer:
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 castplayer.cast_info.update(disc_info)
-                socket_client = castplayer.cc.socket_client
-                if socket_client.services != disc_info.services:
-                    socket_client.services.clear()
-                    socket_client.services.update(disc_info.services)
+                # a protocol that is still attaching connects with the updated cast info
+                if castplayer.status_listener is not None:
+                    socket_client = castplayer.cc.socket_client
+                    if socket_client.services != disc_info.services:
+                        socket_client.services.clear()
+                        socket_client.services.update(disc_info.services)
                 self.mass.loop.call_soon_threadsafe(castplayer.update_state)
                 # An unavailable player may be a passive multichannel endpoint that
                 # slipped past the discovery filter (e.g. incomplete multizone info
@@ -239,14 +240,9 @@ class ChromecastProvider(PlayerProvider):
                     "Discovered a passive (multichannel) endpoint which will be ignored."
                 )
                 return
-            # create new Chromecast instance
-            chromecast = pychromecast.get_chromecast_from_cast_info(
-                disc_info,
-                self.mass.discovery.aiozc.zeroconf,
-            )
             # create and register the new ChromeCastPlayer
             asyncio.run_coroutine_threadsafe(
-                self._create_and_register_player(protocol_id, cast_info, chromecast),
+                self._create_and_register_player(protocol_id, cast_info),
                 loop=self.mass.loop,
             )
             scheduled = True
@@ -266,23 +262,11 @@ class ChromecastProvider(PlayerProvider):
                 self._on_chromecast_discovered(uuid, "")
 
     async def _create_and_register_player(
-        self, protocol_id: str, cast_info: ChromecastInfo, chromecast: pychromecast.Chromecast
+        self, protocol_id: str, cast_info: ChromecastInfo
     ) -> None:
         """Create and attach a new ChromecastPlayer."""
         try:
-            castplayer = ChromecastPlayer(
-                self, protocol_id, cast_info=cast_info, chromecast=chromecast
-            )
-            await castplayer.async_setup()
-            await self.mass.players.attach(castplayer)
-            if self.get_protocol(protocol_id) is not castplayer:
-                # the attach skipped it (e.g. a disabled player or during a teardown):
-                # release the connection setup opened, as only an attached protocol
-                # gets detached
-                await castplayer.on_detach()
-                return
-            # Set up Sendspin bridge
-            await self.bridge_manager.evaluate_bridge(castplayer)
+            await self.mass.players.attach(ChromecastPlayer(self, protocol_id, cast_info=cast_info))
         finally:
             self._pending_discoveries.discard(protocol_id)
 
