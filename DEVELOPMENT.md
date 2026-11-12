@@ -191,13 +191,15 @@ A player provider implements one `PlayerProtocol` (`music_assistant/models/playe
 * The config of a protocol has no name: the name the user gave the device is `self.player.config.name`.
 * Software players that share a host report an id of their own instance as `UUID` or `SERIAL_NUMBER` identifier, the zones of one chassis their zone as `ZONE`.
 
-Enabling a player and removing one both end with a discovery request to the providers of its protocols: the server replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets, so `discover_players()` only has to offer the known devices that this cannot reach. An audio protocol whose only MAC address is a locally administered one is held up to 15 seconds before it gets a player of its own, as the other protocols of its device may still identify it.
+Enabling a player, removing one and merging one into another all end with a discovery request to the providers of its protocols: the server replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets, so `discover_players()` only has to offer the known devices that this cannot reach. An audio protocol whose only MAC address is a locally administered one is held up to 15 seconds before it gets a player of its own, as the other protocols of its device may still identify it.
 
 ## 💽 Building your own Metadata Provider
 Will follow soon™
 
 ## 🔌 Building your own Plugin Provider
 Will follow soon™
+
+A provider that stores the id of a player (in its config or setup data) can find it turned into a legacy id: the user merged that player into another one, which answers to the stored id from then on. Resolve a stored id with `mass.players.resolve_player_id()` where it is read, and compare the ids of events and live players with the resolved id.
 
 ## ⚙️ Manifest file
 The manifest file contains metadata and configuration about a provider. The supported properties are:

@@ -96,6 +96,19 @@ def airplay_player() -> AirPlayPlayer:
     )
 
 
+async def test_detached_protocol_leaves_the_stream_session_it_plays_in(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol that is detached, also to move to another player, leaves its running stream."""
+    session = MagicMock(remove_client=AsyncMock())
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    await airplay_player.on_detach()
+
+    session.remove_client.assert_awaited_once_with(airplay_player, reason="player unloaded")
+    assert airplay_player.stream is None
+
+
 async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
     airplay_player: AirPlayPlayer,
 ) -> None:

@@ -55,3 +55,17 @@ async def test_grouping_own_players_is_permitted(controller: PlayerController) -
     cast("MagicMock", controller._handle_set_members).assert_awaited_once_with(
         controller._players["a"], ["c"], None
     )
+
+
+async def test_a_player_is_found_by_the_id_of_a_player_merged_into_it(
+    controller: PlayerController,
+) -> None:
+    """An id the agent kept from before a merge names the player it went into."""
+    controller._legacy_ids["old_a"] = "a"
+
+    with as_user(["a", "c"]):
+        await _group_players(controller, "old_a", ["c"])
+
+    cast("MagicMock", controller._handle_set_members).assert_awaited_once_with(
+        controller._players["a"], ["c"], None
+    )

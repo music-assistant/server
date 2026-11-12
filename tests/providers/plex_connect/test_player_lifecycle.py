@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import EventType
 from music_assistant_models.event import MassEvent
@@ -23,7 +23,10 @@ def _make_player(available: bool) -> MagicMock:
 
 
 def _make_provider(
-    players: dict[str, MagicMock], mass: MagicMock | None = None, player_id: str = PLAYER_ID
+    players: dict[str, MagicMock],
+    mass: MagicMock | None = None,
+    player_id: str = PLAYER_ID,
+    legacy_ids: dict[str, str] | None = None,
 ) -> Any:
     """
     Create a PlexConnectProvider with mocked instance setup and teardown.
@@ -32,10 +35,14 @@ def _make_provider(
     :param mass: A mass whose players controller has players of its own, instead of
         one that serves the given players.
     :param player_id: The player the provider is connected to.
+    :param legacy_ids: The ids of merged players, mapped to the player they went into;
+        the caller may change it afterwards.
     """
     if mass is None:
         mass = MagicMock()
         mass.players.get_player.side_effect = players.get
+        legacy = legacy_ids if legacy_ids is not None else {}
+        mass.players.resolve_player_id.side_effect = lambda pid: legacy.get(pid, pid)
         mass.players.iter_players.side_effect = lambda **_kwargs: [
             player for player in players.values() if player.state.available
         ]
@@ -136,8 +143,82 @@ async def test_a_player_whose_id_is_not_its_protocols_is_followed_by_its_player_
 
     await provider.handle_async_init()
     provider._setup_player_instance.assert_called_once()
-    assert provider.mass.subscribe.call_args.kwargs["id_filter"] == "pl_ap_1"
 
     provider._player_instance = MagicMock()
     provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="pl_ap_1"))
     provider._teardown_player_instance.assert_called_once()
+
+
+async def test_plex_connect_follows_its_player_into_the_player_it_is_merged_into() -> None:
+    """A merge of the connected player moves the instance to the player it went into."""
+    legacy_ids: dict[str, str] = {}
+    players = {PLAYER_ID: _make_player(available=True)}
+    provider = _make_provider(players, legacy_ids=legacy_ids)
+    await provider.handle_async_init()
+    restart = provider._restart_player_instance = AsyncMock()
+
+    merged_into = _make_player(available=True)
+    merged_into.player_id = "player2"
+    players.pop(PLAYER_ID)
+    players["player2"] = merged_into
+    legacy_ids[PLAYER_ID] = "player2"
+    provider._on_mass_player_event(_event(EventType.PLAYER_REMOVED))
+
+    restart.assert_called_once()
+    provider._teardown_player_instance.assert_not_called()
+    # the events of the player it went into are followed from now on
+    provider._player_instance = None
+    merged_into.state.available = False
+    provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="player2"))
+    merged_into.state.available = True
+    provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="player2"))
+    assert provider._setup_player_instance.call_count == 2
+
+
+async def test_restart_sets_up_the_player_it_is_connected_to_now() -> None:
+    """The instance is started again on the player the stored one was merged into."""
+    merged_into = _make_player(available=True)
+    merged_into.player_id = "player2"
+    provider = _make_provider({"player2": merged_into}, legacy_ids={PLAYER_ID: "player2"})
+    provider._player_instance = MagicMock()
+
+    await provider._restart_player_instance()
+
+    provider._teardown_player_instance.assert_called_once()
+    provider._setup_player_instance.assert_called_once()
+
+
+async def test_instance_plays_on_the_player_the_stored_one_was_merged_into() -> None:
+    """The remote control instance gets the id of the player, not the stored legacy id."""
+    merged_into = _make_player(available=True)
+    merged_into.player_id = "player2"
+    merged_into.display_name = "Kitchen"
+    provider = _make_provider({"player2": merged_into}, legacy_ids={PLAYER_ID: "player2"})
+    del provider._setup_player_instance
+    provider._plex_provider = MagicMock()
+    provider._allocated_port = 32500
+
+    with patch("music_assistant.providers.plex_connect.PlayerRemoteInstance") as instance:
+        instance.return_value.start = AsyncMock()
+        await provider._setup_player_instance()
+
+    assert instance.call_args.kwargs["ma_player_id"] == "player2"
+    assert provider._instance_player_id == "player2"
+
+
+async def test_plex_connect_follows_its_player_through_a_chain_of_merges() -> None:
+    """The instance moves on when the player it went into is merged into a third one."""
+    legacy_ids: dict[str, str] = {}
+    players = {PLAYER_ID: _make_player(available=True)}
+    provider = _make_provider(players, legacy_ids=legacy_ids)
+    await provider.handle_async_init()
+    restart = provider._restart_player_instance = AsyncMock()
+    legacy_ids[PLAYER_ID] = "player2"
+    provider._on_mass_player_event(_event(EventType.PLAYER_REMOVED))
+    # the instance runs on the player the configured one went into
+    provider._instance_player_id = "player2"
+
+    legacy_ids.update({PLAYER_ID: "player3", "player2": "player3"})
+    provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="player2"))
+
+    assert restart.call_count == 2

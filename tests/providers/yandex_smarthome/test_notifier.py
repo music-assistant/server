@@ -40,6 +40,7 @@ class MockPlayer:
     supported_features: set[str] = field(default_factory=set)
     source_list: list[str] = field(default_factory=list)
     active_source: str | None = None
+    legacy_ids: list[str] = field(default_factory=list)
     group_members: list[str] = field(default_factory=list)
 
     @property

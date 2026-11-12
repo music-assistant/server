@@ -383,7 +383,7 @@ class YandexYnisonProvider(PluginProvider):
                     EventType.PLAYER_CONFIG_UPDATED,
                     EventType.PLAYER_UPDATED,
                 ),
-                id_filter=self._default_player_id,
+                id_filter=self._connected_player_id,
             )
         )
         # Initial check for matching provider
@@ -658,7 +658,7 @@ class YandexYnisonProvider(PluginProvider):
 
         # Check if manual player switching is allowed
         if not self._allow_player_switch:
-            locked_owner_id = self._default_player_id
+            locked_owner_id = self._connected_player_id
             if owner_player_id != locked_owner_id:
                 # Redirect to the configured target, but only once per
                 # idempotency window. Compare stable owner ids here: the
@@ -1484,13 +1484,19 @@ class YandexYnisonProvider(PluginProvider):
         self.mass.call_later(1, self.mass.load_provider_config, self.config, task_id=task_id)
 
     @property
+    def _connected_player_id(self) -> str:
+        """Return the id the configured player answers to now, also after it was merged."""
+        return self.mass.players.resolve_player_id(self._default_player_id)
+
+    @property
     def _display_name(self) -> str:
         """Return the connected player's current or stored display name."""
-        if player := self.mass.players.get_player(self._default_player_id):
+        player_id = self._connected_player_id
+        if player := self.mass.players.get_player(player_id):
             return str(player.display_name)
         stored_name = self.mass.config.get_player_value(
-            self._default_player_id, "name"
-        ) or self.mass.config.get_player_value(self._default_player_id, "default_name")
+            player_id, "name"
+        ) or self.mass.config.get_player_value(player_id, "default_name")
         return stored_name if isinstance(stored_name, str) and stored_name else DEFAULT_DISPLAY_NAME
 
     def _get_target_player_id(self) -> str | None:
@@ -1502,8 +1508,8 @@ class YandexYnisonProvider(PluginProvider):
             self._active_player_id = None
 
         # The configured player is mandatory; never redirect to another player.
-        if get_available_player(self.mass, self._default_player_id):
-            return self._default_player_id
+        if get_available_player(self.mass, player_id := self._connected_player_id):
+            return player_id
 
         self.logger.warning(
             "Configured default player '%s' is not available",

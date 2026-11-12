@@ -1,13 +1,15 @@
 """Tests for the Spotify Connect provider."""
 
 import asyncio
+import contextlib
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderType
 from music_assistant_models.event import MassEvent
@@ -33,6 +35,7 @@ from music_assistant.providers.spotify_connect.go_librespot.backend import (
     GoLibrespotBackend,
 )
 from music_assistant.providers.spotify_connect.go_librespot.client import GoLibrespotClient
+from music_assistant.providers.spotify_connect.helpers import generate_device_id
 from music_assistant.providers.spotify_connect.models import BackendEvent, BackendEventType
 from music_assistant.providers.spotify_connect.provider import (
     CONF_AUDIO_QUALITY,
@@ -260,6 +263,8 @@ def _tethered_provider() -> tuple[SpotifyConnectProvider, _PlayerDaemon, AsyncMo
 def test_get_player_audio_sources_scopes_to_the_daemon_player() -> None:
     """Each daemon's source is bound to its own connected player only."""
     provider = object.__new__(SpotifyConnectProvider)
+    provider.mass = MagicMock()
+    provider.mass.players.resolve_player_id.side_effect = lambda player_id: player_id
     daemon = _make_daemon()
     daemon.audio_source = MagicMock()
     provider._daemons = {_PLAYER_ID: daemon}
@@ -625,7 +630,7 @@ async def test_soloist_data_dir_matches_the_migration_target(tmp_path: Path) -> 
     player.display_name = "Player One"
 
     with patch.object(SoloistBackend, "start", new=AsyncMock()):
-        await provider._start_daemon(player, "Player One | Music Assistant")
+        await provider._start_daemon("player one!", player, "Player One | Music Assistant")
 
     daemon = provider._daemons["player one!"]
     backend = cast("SoloistBackend", daemon.backend)
@@ -650,6 +655,7 @@ def _reconcile_provider(
     assigned: tuple[str, ...],
     registered: dict[str, str],
     unavailable: set[str] | None = None,
+    legacy_ids: dict[str, str] | None = None,
 ) -> tuple[SpotifyConnectProvider, _ReconcileMocks]:
     """
     Build a bare provider with the real reconcile logic and mocked daemon control.
@@ -657,6 +663,8 @@ def _reconcile_provider(
     :param assigned: The connected player ids the provider was loaded with.
     :param registered: Currently registered player ids mapped to their display name.
     :param unavailable: Registered player ids that are currently unavailable.
+    :param legacy_ids: The ids of merged players, mapped to the player they went into;
+        the caller may change it afterwards.
     """
     prov = SpotifyConnectProvider.__new__(SpotifyConnectProvider)
     prov.logger = MagicMock()
@@ -670,7 +678,10 @@ def _reconcile_provider(
     prov._assigned_player_ids = assigned
     prov.get_config_value = MagicMock(return_value="player_mass")  # type: ignore[method-assign]
 
+    legacy = legacy_ids if legacy_ids is not None else {}
+
     def get_player(player_id: str) -> MagicMock | None:
+        player_id = legacy.get(player_id, player_id)
         if player_id not in registered:
             return None
         player = MagicMock()
@@ -680,13 +691,14 @@ def _reconcile_provider(
         return player
 
     mass.players.get_player.side_effect = get_player
+    mass.players.resolve_player_id.side_effect = lambda player_id: legacy.get(player_id, player_id)
     prov._availability = PlayerAvailabilityTracker(mass)
 
-    async def start_daemon(player: MagicMock, publish_name: str) -> None:
+    async def start_daemon(player_id: str, _player: MagicMock, publish_name: str) -> None:
         # stop_called / active_player_id are spelled out: a bare MagicMock attribute is
         # truthy, which would trip the stopped-daemon guard and the deselect path
-        prov._daemons[player.player_id] = MagicMock(
-            player_id=player.player_id,
+        prov._daemons[player_id] = MagicMock(
+            player_id=player_id,
             publish_name=publish_name,
             stop_called=False,
             active_player_id=None,
@@ -711,7 +723,7 @@ async def test_reconcile_starts_daemon_when_assigned_player_registers() -> None:
     registered["p1"] = "Kitchen"
     await prov._reconcile()
     mocks.start_daemon.assert_awaited_once()
-    assert mocks.start_daemon.call_args.args[1] == "Kitchen | Music Assistant"
+    assert mocks.start_daemon.call_args.args[2] == "Kitchen | Music Assistant"
     assert "p1" in prov._daemons
 
 
@@ -727,7 +739,7 @@ async def test_reconcile_starts_the_daemon_of_a_player_whose_id_is_not_its_proto
     await prov._on_player_event(MassEvent(event=EventType.PLAYER_ADDED, object_id="pl_ap_1"))
 
     mocks.start_daemon.assert_awaited_once()
-    assert mocks.start_daemon.call_args.args[0] is player
+    assert mocks.start_daemon.call_args.args[1] is player
     assert list(prov._daemons) == ["pl_ap_1"]
 
 
@@ -789,6 +801,150 @@ async def test_player_removed_event_stops_daemon() -> None:
     await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p1"))
     mocks.stop_daemon.assert_awaited_once_with(daemon)
     assert not prov._daemons
+
+
+async def test_daemon_of_a_merged_player_runs_once_under_its_stored_id() -> None:
+    """A connected player merged before the load gets one daemon, on the player it went into."""
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Kitchen"}, legacy_ids={"p_old": "p_new"}
+    )
+
+    await prov._reconcile()
+    await prov._reconcile()
+
+    mocks.start_daemon.assert_awaited_once()
+    assert mocks.start_daemon.call_args.args[1].player_id == "p_new"
+    assert list(prov._daemons) == ["p_old"]
+
+
+async def test_removal_of_the_player_a_connected_one_went_into_stops_its_daemon() -> None:
+    """The player a connected one was merged into is removed for good: its daemon stops."""
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Kitchen"}, legacy_ids={"p_old": "p_new"}
+    )
+    await prov._reconcile()
+    daemon = prov._daemons["p_old"]
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_new"))
+
+    mocks.stop_daemon.assert_awaited_once_with(daemon)
+    assert not prov._daemons
+
+
+SOLOIST_SETUP = {
+    CONF_BACKEND: BACKEND_SOLOIST,
+    CONF_API_KEY: "soloist-api-key-0123456789abcdef",
+    CONF_SOLOIST_CONSENT: True,
+}
+
+
+def _daemon_provider(
+    setup_data: dict[str, Any],
+    tmp_path: Path,
+    assigned: tuple[str, ...],
+    registered: dict[str, str],
+    legacy_ids: dict[str, str],
+) -> tuple[SpotifyConnectProvider, _ReconcileMocks]:
+    """
+    Build a provider with the real reconcile logic and the real daemon start.
+
+    Only the start of the backend itself is left to the test (see _backends_started).
+
+    :param setup_data: The stored setup data, which selects the backend.
+    :param tmp_path: Root of the storage and cache paths.
+    :param assigned: The connected player ids the provider was loaded with.
+    :param registered: Currently registered player ids mapped to their display name.
+    :param legacy_ids: The ids of merged players, mapped to the player they went into.
+    """
+    prov, mocks = _reconcile_provider(assigned, registered, legacy_ids=legacy_ids)
+    stored = _provider_with_stored_config(setup_data, tmp_path)
+    prov.config = stored.config
+    mocks.mass.storage_path = stored.mass.storage_path
+    mocks.mass.cache_path = stored.mass.cache_path
+    mocks.mass.config.get.return_value = setup_data
+    mocks.mass.config.decrypt_string.side_effect = lambda value: value
+    prov.manifest = MagicMock(domain="spotify_connect")
+    del prov._start_daemon
+    return prov, mocks
+
+
+@contextlib.contextmanager
+def _backends_started() -> Iterator[None]:
+    """Let both backends start without launching a daemon process."""
+    with (
+        patch.object(GoLibrespotBackend, "start", new=AsyncMock()),
+        patch.object(SoloistBackend, "start", new=AsyncMock()),
+    ):
+        yield
+
+
+def _spotify_device(daemon: _PlayerDaemon) -> tuple[str, ...]:
+    """Return what names the device of a daemon towards Spotify and on disk."""
+    if isinstance(backend := daemon.backend, SoloistBackend):
+        return (str(backend._data_dir), str(backend._cache_dir))
+    backend = cast("GoLibrespotBackend", backend)
+    return (generate_device_id(backend._identity_key), backend.cache_dir)
+
+
+@pytest.mark.parametrize("setup_data", [{}, SOLOIST_SETUP], ids=["go_librespot", "soloist"])
+async def test_merge_of_a_connected_player_keeps_its_spotify_device(
+    setup_data: dict[str, Any], tmp_path: Path
+) -> None:
+    """
+    The connected player is merged into another: its daemon goes on with the device it had.
+
+    The device id, the stored credentials and the storage stay, also after a restart.
+    """
+    registered = {"p_old": "Kitchen"}
+    legacy_ids: dict[str, str] = {}
+    prov, mocks = _daemon_provider(setup_data, tmp_path, ("p_old",), registered, legacy_ids)
+    with _backends_started():
+        prov._subscribe_player_events()
+        await prov._reconcile()
+        device = _spotify_device(prov._daemons["p_old"])
+
+        registered["p_new"] = registered.pop("p_old")
+        legacy_ids["p_old"] = "p_new"
+        await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_old"))
+        await prov._reconcile()
+
+    assert [_spotify_device(daemon) for daemon in prov._daemons.values()] == [device]
+    mocks.stop_daemon.assert_not_awaited()
+    assert prov.get_player_audio_sources("p_new") == [
+        daemon.audio_source for daemon in prov._daemons.values()
+    ]
+    # the events of the player it went into are followed from now on
+    assert mocks.mass.subscribe.call_args.kwargs["id_filter"] == ("p_new",)
+
+    restarted, _ = _daemon_provider(setup_data, tmp_path, ("p_old",), registered, legacy_ids)
+    with _backends_started():
+        await restarted._reconcile()
+    assert [_spotify_device(daemon) for daemon in restarted._daemons.values()] == [device]
+
+
+async def test_merge_of_two_connected_players_keeps_the_device_of_the_one_that_stays(
+    tmp_path: Path,
+) -> None:
+    """Two connected players turn out to be one: one daemon stays, that of the kept player."""
+    registered = {"p_old": "Kitchen", "p_new": "Kitchen"}
+    legacy_ids: dict[str, str] = {}
+    prov, mocks = _daemon_provider({}, tmp_path, ("p_old", "p_new"), registered, legacy_ids)
+    with _backends_started():
+        await prov._reconcile()
+        absorbed = prov._daemons["p_old"]
+        device = _spotify_device(prov._daemons["p_new"])
+
+        registered.pop("p_old")
+        legacy_ids["p_old"] = "p_new"
+        await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_old"))
+
+    assert [_spotify_device(daemon) for daemon in prov._daemons.values()] == [device]
+    mocks.stop_daemon.assert_awaited_once_with(absorbed)
+
+    restarted, _ = _daemon_provider({}, tmp_path, ("p_old", "p_new"), registered, legacy_ids)
+    with _backends_started():
+        await restarted._reconcile()
+    assert [_spotify_device(daemon) for daemon in restarted._daemons.values()] == [device]
 
 
 async def test_player_added_event_triggers_reconcile() -> None:
@@ -931,6 +1087,23 @@ async def test_player_turning_available_gives_a_failed_daemon_a_fresh_start() ->
     assert "p1" not in prov._failed_player_ids
     mocks.start_daemon.assert_awaited_once()
     assert "p1" in prov._daemons
+
+
+async def test_merged_player_turning_available_gives_its_failed_daemon_a_fresh_start() -> None:
+    """The player a connected one was merged into coming back lifts the block of its daemon."""
+    unavailable = {"p_new"}
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Kitchen"}, unavailable, legacy_ids={"p_old": "p_new"}
+    )
+    prov._failed_player_ids = {"p_old"}
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p_new"))
+
+    unavailable.clear()
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p_new"))
+
+    assert not prov._failed_player_ids
+    mocks.start_daemon.assert_awaited_once()
+    assert list(prov._daemons) == ["p_old"]
 
 
 async def test_update_of_an_available_player_keeps_a_failed_daemon_blocked() -> None:

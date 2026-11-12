@@ -156,6 +156,7 @@ def _make_mock_mass() -> MagicMock:
     mass.players.all_players = MagicMock(return_value=[])
     mass.players.get_player = MagicMock(return_value=None)
     mass.players.get_player_by_protocol = MagicMock(return_value=None)
+    mass.players.resolve_player_id = MagicMock(side_effect=lambda player_id: player_id)
     mass.players.cmd_stop = AsyncMock()
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_play = AsyncMock()
@@ -5024,3 +5025,57 @@ class TestStableOnlySource:
         )
         assert not hasattr(provider, "_dynamic_task")
         assert provider._normalized_format.content_type == ContentType.PCM_S16LE
+
+
+# ------------------------------------------------------------------
+# A configured player that was merged into another one
+# ------------------------------------------------------------------
+
+
+def _merged_provider() -> YandexYnisonProvider:
+    """Create a provider whose configured player "player1" was merged into "player2"."""
+    mass = _make_mock_mass()
+    mass.players.resolve_player_id = MagicMock(
+        side_effect=lambda player_id: "player2" if player_id == "player1" else player_id
+    )
+    merged_into = MagicMock()
+    merged_into.player_id = "player2"
+    merged_into.display_name = "Kitchen"
+    merged_into.state.available = True
+    mass.players.get_player = MagicMock(
+        side_effect=lambda player_id: merged_into if player_id == "player2" else None
+    )
+    config = _make_mock_config({CONF_MASS_PLAYER_ID: "player1", CONF_ALLOW_PLAYER_SWITCH: False})
+    return YandexYnisonProvider(mass, _make_mock_manifest(), config, {ProviderFeature.AUDIO_SOURCE})
+
+
+class TestMergedConnectedPlayer:
+    """The configured player answers to another id once it was merged."""
+
+    async def test_locked_source_is_accepted_on_the_player_it_went_into(self) -> None:
+        """The player the configured one was merged into owns the source: no redirect."""
+        provider = _merged_provider()
+
+        await provider.on_source_selected("main", "player2", "player2", "session_1")
+
+        provider.mass.player_queues.play_media.assert_not_awaited()
+        assert provider._active_player_id == "player2"
+
+    async def test_playback_targets_and_names_the_player_it_went_into(self) -> None:
+        """Playback goes to the merged player, which is advertised by its name."""
+        provider = _merged_provider()
+
+        assert provider._get_target_player_id() == "player2"
+        assert provider._display_name == "Kitchen"
+
+    async def test_renames_of_the_player_it_went_into_are_followed(self) -> None:
+        """The events of the player the configured one was merged into are watched."""
+        provider = _merged_provider()
+        _stub_attr(provider, "_resolve_token", AsyncMock(return_value=SecretStr("test-token")))
+
+        await provider.handle_async_init()
+
+        id_filters = [
+            call.kwargs.get("id_filter") for call in provider.mass.subscribe.call_args_list
+        ]
+        assert "player2" in id_filters

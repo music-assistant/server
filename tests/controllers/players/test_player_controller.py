@@ -2239,7 +2239,17 @@ class TestReleaseWaitForPlayMedia:
     The release of a captured player for an explicit play_media waits for its confirmation.
 
     The clock runs 50 times faster, so the waits are measured in the seconds real devices take.
+    The tests check the order of the leave, the play and the end of the wait, with the bound
+    of the wait far past every leave: a pause of the test machine can not change that order.
     """
+
+    # the bound of the wait in these tests, in seconds of the fast clock, and that of the server
+    BOUND = 60.0
+    SERVER_BOUND = players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
+
+    @pytest.fixture(autouse=True)
+    def _wide_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(players_controller, "RELEASE_FOR_PLAY_MEDIA_TIMEOUT", self.BOUND)
 
     @pytest.fixture(autouse=True)
     async def _fast_clock(self) -> AsyncIterator[None]:
@@ -2292,11 +2302,16 @@ class TestReleaseWaitForPlayMedia:
 
     @staticmethod
     def _confirm_release_after(
-        controller: PlayerController, owner: MockProtocol, member: Player, delay: float | None
+        controller: PlayerController,
+        owner: MockProtocol,
+        member: Player,
+        delay: float | None,
+        events: list[str],
     ) -> None:
         """Let the release command return at once and the player report its leave later."""
 
         def _report_left() -> None:
+            events.append("left")
             owner._attr_group_members = [_proto("owner")] if owner.type == PlayerType.PLAYER else []
             owner.update_state()
             member.update_state()
@@ -2309,19 +2324,28 @@ class TestReleaseWaitForPlayMedia:
         controller.cmd_set_members = _release  # type: ignore[method-assign]
         controller._handle_cmd_stop = _release  # type: ignore[method-assign]
 
-    @staticmethod
-    async def _play_media(controller: PlayerController) -> tuple[list[str], float]:
-        """Play on the member; return where play_media was sent and after how many seconds."""
+    @classmethod
+    async def _play_media(cls, controller: PlayerController, events: list[str]) -> None:
+        """
+        Play on the member, and add the play and the end of the wait to the events.
+
+        The end of the wait is "bound", the time twice as long "twice the bound".
+        """
         loop = asyncio.get_running_loop()
-        played_on: list[str] = []
 
         async def _handle_play_media(player_id: str, media: object) -> None:  # noqa: ARG001
-            played_on.append(player_id)
+            events.append(f"play on {player_id}")
 
         controller._handle_play_media = _handle_play_media  # type: ignore[method-assign]
-        start = loop.time()
-        await controller.play_media("member", MagicMock(uri="x", source_id="src"))
-        return played_on, loop.time() - start
+        markers = [
+            loop.call_later(cls.BOUND, events.append, "bound"),
+            loop.call_later(2 * cls.BOUND, events.append, "twice the bound"),
+        ]
+        try:
+            await controller.play_media("member", MagicMock(uri="x", source_id="src"))
+        finally:
+            for marker in markers:
+                marker.cancel()
 
     @pytest.mark.parametrize("capture", ["synced", "dynamic", "static"])
     async def test_plays_as_soon_as_the_player_reports_its_leave(
@@ -2329,14 +2353,14 @@ class TestReleaseWaitForPlayMedia:
     ) -> None:
         """A leave reported quickly lets the play go out right after it."""
         controller, owner, member = self._captured_member(mock_mass, capture)
-        self._confirm_release_after(controller, owner, member, 0.5)
+        events: list[str] = []
+        self._confirm_release_after(controller, owner, member, 0.5, events)
 
-        played_on, elapsed = await self._play_media(controller)
+        await self._play_media(controller, events)
 
-        assert played_on == ["member"]
+        assert events == ["left", "play on member"]
         assert member.state.synced_to is None
         assert member.state.active_group is None
-        assert elapsed < 2
 
     @pytest.mark.parametrize("capture", ["synced", "dynamic", "static"])
     async def test_a_leave_reported_late_still_plays_on_the_released_player(
@@ -2344,29 +2368,27 @@ class TestReleaseWaitForPlayMedia:
     ) -> None:
         """A leave reported as late as a Sonos speaker reports it through its own event."""
         controller, owner, member = self._captured_member(mock_mass, capture)
-        self._confirm_release_after(controller, owner, member, 6.7)
+        events: list[str] = []
+        self._confirm_release_after(controller, owner, member, 6.7, events)
 
-        played_on, elapsed = await self._play_media(controller)
+        await self._play_media(controller, events)
 
-        assert played_on == ["member"]
+        assert events == ["left", "play on member"]
         assert member.state.synced_to is None
         assert member.state.active_group is None
-        assert 6.7 <= elapsed < players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
+        # the bound of the server outlasts it too
+        assert self.SERVER_BOUND > 6.7
 
     async def test_a_leave_never_reported_plays_at_the_bound(self, mock_mass: MagicMock) -> None:
         """Without a confirmation the play goes out once the wait ran out, for the player to judge."""
         controller, owner, member = self._captured_member(mock_mass, "synced")
-        self._confirm_release_after(controller, owner, member, None)
+        events: list[str] = []
+        self._confirm_release_after(controller, owner, member, None, events)
 
-        played_on, elapsed = await self._play_media(controller)
+        await self._play_media(controller, events)
 
-        assert played_on == ["member"]
+        assert events == ["bound", "play on member"]
         assert member.state.synced_to == "owner"
-        assert (
-            players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
-            <= elapsed
-            < players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT + 1
-        )
 
 
 class TestExternalSourcePlayPause:

@@ -115,6 +115,53 @@ Protocols name each other by protocol id in what they report (`group_members`, `
 members by player id. `get_player_by_protocol` resolves either kind; `get_protocol` only knows
 protocol ids and never goes through the legacy-id resolver.
 
+### One device, two players
+
+Which player a protocol belongs to is decided when it attaches, and that can turn out wrong: a
+device ends up as two players when its second protocol was first seen while the first was away, or
+before the identifiers that tie them together were known, and a protocol can end up on the player
+of another device. So two players can be merged into one, and a protocol can be taken off its
+player again.
+
+**Merging.** The player that goes hands its protocols to the player that stays, which answers to
+its id from then on: that id and the legacy ids of the player that goes become legacy ids of the
+kept player. Group member lists and allow-lists, the player filters of users and the edges of the
+protocols name the kept player. A name, a setting, DSP or queue settings only the player that goes
+has are kept; where both have one, the kept player's stays. The queue of the player that goes is
+dropped, and stopped first when it plays its own queue. A group it plays for keeps playing and
+keeps it as a member, as the kept player. Whether its own audio goes on depends on its protocol,
+which is detached to move: one that leaves its stream when it is detached, as AirPlay does, is
+silent until it joins the playback again, at the latest when the group or the player is started
+again. The attach rules decide whether two players can be one: not when
+both have a protocol that stands for the device, or a protocol of the same domain, when a strong
+identifier of one rules the other out, and never for a group or a player that only exists while
+connected. What is stored changes in one step, right after that check, and is saved before
+anything else of the player that goes is deleted, so after a crash either both players are as
+they were or the merge is stored. The user filters are rewritten once the removal of the player
+that goes reached the users limited to it; a crash in between leaves such a user limited to an id
+that no player has anymore.
+
+Two players also merge by themselves: when a protocol attaches, or is attached again, and the
+identifiers of its player match another live player, while the attach rules allow it and the
+younger of the two is unused. Unused means nothing about it is the user's own yet: no custom name,
+no value the user set on it or on one of its protocols, no DSP switched on, no queue settings, no
+queue items, nothing playing right now, no place in the member list of a group, no sync leader or members, no group that
+holds it. Values the server or a provider stores by itself never count. The older player stays:
+by the moment it was created, a player without one counting as the oldest, and of two equally old
+ones the one with an id from before the split. Otherwise both stay, for the user to merge.
+
+**Taking a protocol off its player.** A protocol that ended up on the wrong player gets a player of
+its own, and the protocols that ride on it go along: a new player (a minted id, the name of the
+protocol, default settings, an empty queue) that its stored edge names from then on. Its record
+keeps the id of the player it was taken off (`unlinked_from`): the two players are never merged
+by themselves again, also when either of them goes into another player later (the id resolves
+like any legacy id); a merge of the two that the user asks for forgets it. The old player keeps
+its id, name, settings and queue, and its output and control choices that named the protocol fall
+back to their default: the identity stays with the protocols that stay, whichever role the one
+taken off has, so without its own protocol the old player is a player of its audio protocols. A
+protocol that rides on another, the protocol of a group, a protocol that only exists while
+connected and the only protocol of a player are not taken off.
+
 ## Legacy Ids
 
 A player keeps answering to its legacy ids: ids it was known under before, such as the id of a
@@ -130,14 +177,15 @@ and resolved in one place, `PlayerController.resolve_player_id`. They resolve in
   source;
 - `has_player_access`, when the caller passes the player it looked up.
 
-A command called inside the server is not rewritten: it takes the id of the player itself.
-Protocol ids never resolve.
+A command called inside the server is not rewritten. The queue commands resolve the id they are
+given themselves, so a plugin setting that still names a merged player reaches its queue; other
+commands called inside the server take the id of the player itself. Protocol ids never resolve.
 
 The state a player publishes lists its legacy ids (`legacy_ids`), so a client can tell which ids
 it answers to.
 
-The lookup is built from the stored player configs at startup and again whenever a player
-config is deleted. An id resolves to the player that lists it only while no player is
+The lookup is built from the stored player configs at startup, by a merge, which writes the
+legacy ids, and again whenever a player config is deleted. An id resolves to the player that lists it only while no player is
 registered under that id and no config is stored under it.
 
 ## Core Components
@@ -146,8 +194,8 @@ registered under that id and no config is stored under it.
 
 The main orchestrator. It keeps the players and, next to them, the protocols the providers attached
 (also those that still wait for their player), and owns their lifecycle (`attach`, `detach`,
-`remove_protocol`, `remove`), the player commands, sync group coordination, availability and the
-state events.
+`remove_protocol`, `remove`, merging players and taking a protocol off its player), the player
+commands, sync group coordination, availability and the state events.
 
 ### 2. ProtocolLinkingMixin ([protocol_linking.py](protocol_linking.py))
 

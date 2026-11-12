@@ -390,11 +390,6 @@ async def _seen_again_with_its_address(scenario: Scenario, protocol: FakeProtoco
     await scenario.idle()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 2 (#416): the id of a merged player becomes a legacy id",
-)
 async def test_unused_duplicate_is_merged_into_the_older_player(scenario: Scenario) -> None:
     """
     Two players for one device merge into the older one once their identifiers match.
@@ -446,11 +441,6 @@ async def _renamed(scenario: Scenario, players: _TwoPlayers) -> None:
 
 
 @pytest.mark.parametrize("used", [_played, _renamed], ids=["played", "renamed"])
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 2 (#416): only an unused duplicate is merged by itself",
-)
 async def test_used_duplicate_is_not_merged(
     scenario: Scenario, used: Callable[[Scenario, _TwoPlayers], Awaitable[None]]
 ) -> None:

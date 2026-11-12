@@ -593,8 +593,13 @@ def is_player_exposable(player: Player, exposed_ids: set[str] | None = None) -> 
     # Don't expose players that are synced to another player (they are controlled via leader)
     if player.synced_to:
         return False
-    # If a filter is set, only expose selected players
-    return not (exposed_ids and player.player_id not in exposed_ids)
+    # If a filter is set, only expose selected players; a selected player that was merged
+    # into another one is selected by its legacy id
+    return not (
+        exposed_ids
+        and player.player_id not in exposed_ids
+        and exposed_ids.isdisjoint(player.legacy_ids)
+    )
 
 
 def make_error_device_state(device_id: str) -> DeviceState:

@@ -269,6 +269,27 @@ async def test_playing_fires_play_media_after_debounce(monkeypatch: pytest.Monke
     mass.player_queues.play_media.assert_called_once_with("player1", _SOURCE_URI)
 
 
+async def test_playing_on_the_daemon_of_a_merged_player_starts_the_player_it_went_into(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connected player was merged into another: playback starts on that one."""
+    monkeypatch.setattr(provider_mod, "PLAY_MEDIA_DEBOUNCE_S", 0.01)
+    backend = FakeBackend()
+    provider, daemon, mass = _make_provider(backend, session_active=True)
+    mass.players.resolve_player_id.side_effect = lambda player_id: (
+        "kept_player" if player_id == _PLAYER_ID else player_id
+    )
+    mass.players.get_player.return_value = MagicMock()
+
+    await provider._handle_backend_event(daemon, BackendEvent(BackendEventType.PLAYING))
+
+    task = daemon.pending_play_media_task
+    assert task is not None
+    await task
+    mass.player_queues.play_media.assert_called_once_with("kept_player", _SOURCE_URI)
+    assert daemon.active_player_id == "kept_player"
+
+
 async def test_stop_daemon_awaits_inflight_play_and_ignores_late_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

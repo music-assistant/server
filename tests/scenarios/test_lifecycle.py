@@ -10,7 +10,12 @@ import pytest
 from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYER_QUEUES, CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYER_QUEUES,
+    CONF_PLAYERS,
+    CONF_UNLINKED_FROM,
+)
 
 from .harness import Event, Role, Scenario, VisiblePlayer
 
@@ -487,7 +492,8 @@ async def test_a_player_whose_own_protocol_was_unlinked_stays_at_the_next_start(
                     "role": "native",
                     "enabled": True,
                     "default_name": "Living",
-                    "values": {},
+                    # as the unlink stored it, so the two are not merged back by themselves
+                    "values": {CONF_UNLINKED_FROM: "wiim_living"},
                 },
                 "airplay_living": {
                     "protocol_id": "airplay_living",

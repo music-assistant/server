@@ -290,6 +290,9 @@ class _FakePlayers:
         finally:
             self.locks_held -= 1
 
+    def resolve_player_id(self, player_id: str) -> str:
+        return player_id
+
     async def _power_on_switched_off_player(self, player_id: str) -> _FakePlayer:
         self.powered_on.append((player_id, self.locks_held > 0))
         player = self._players[player_id]

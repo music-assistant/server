@@ -131,7 +131,14 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
             assert isinstance(queue_id, str)  # for type checking
             queue_data = self._queue_data.get(queue_id)
             if queue_data is None:
-                return await fn(self, *args, **kwargs)
+                # a legacy id of the queue's player: the action works on the queue's own id
+                queue_id = self.mass.players.resolve_player_id(queue_id)
+                if (queue_data := self._queue_data.get(queue_id)) is None:
+                    return await fn(self, *args, **kwargs)
+                if "queue_id" in kwargs:
+                    kwargs["queue_id"] = queue_id
+                else:
+                    args = (queue_id, *args[1:])  # type: ignore[assignment]
             if (
                 player := self.mass.players.get_player(queue_id)
             ) is not None and player.offline_by_power_control:
