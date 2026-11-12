@@ -4,6 +4,9 @@ This document provides an overview of the Music Assistant Player Controller arch
 Player and the protocols it is made up of, how a protocol finds its player, the stored config,
 the lifecycle and the rules for commands and volume.
 
+What the controller guarantees, scenario by scenario and each proven by tests, is written out in
+[SCENARIOS.md](SCENARIOS.md).
+
 ## Table of Contents
 
 - [Overview](#overview)
