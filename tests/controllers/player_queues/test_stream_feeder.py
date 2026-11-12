@@ -196,8 +196,7 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
 ) -> None:
     """A handover that cannot get the lock in time is dropped quietly."""
     monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.02)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
     controller, mass, players, items = _handover_controller()
 
     async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):

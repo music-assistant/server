@@ -913,6 +913,7 @@
   "core.players.errors.merge_session_only": "{0} only exists while it is connected and can not be merged.",
   "core.players.errors.merge_shared_domain": "{0} and {1} both have a {2} output, so they can not be one player.",
   "core.players.errors.merge_two_own_protocols": "{0} and {1} each stand for a device of their own, so they can not be one player.",
+  "core.players.errors.player_busy": "{0} is still busy with a previous command. Try again in a moment.",
   "core.players.errors.unlink_derived": "{0} rides on another output and follows it.",
   "core.players.errors.unlink_group": "{0} belongs to a group and can not be taken off it.",
   "core.players.errors.unlink_only_protocol": "{0} is the only output of its player, which is a player of its own already.",

@@ -258,20 +258,19 @@ async def test_previous_restarts_the_track_when_past_the_threshold() -> None:
     assert queue.current_index == 1
 
 
-async def test_overlapping_presses_stay_serialized_past_the_lock_timeout(
+async def test_overlapping_presses_stay_serialized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A play action waits for the running one however long it takes, never runs alongside it."""
     monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 1.0)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 1.0)
     ctrl, _queue, seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
     release = asyncio.Event()
     seeks: list[int] = []
 
     async def _slow_seek(_queue_id: str, position: int) -> None:
         seeks.append(position)
-        # the first press stands in for a play request that outlasts the lock timeout
+        # the first press stands in for a play request that takes long
         if len(seeks) == 1:
             await release.wait()
 
@@ -280,7 +279,7 @@ async def test_overlapping_presses_stay_serialized_past_the_lock_timeout(
     first = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
     await asyncio.sleep(0)
     second = asyncio.create_task(ctrl.skip(QUEUE_ID, 10))
-    # well past the point where the lock used to be given up on
+    # well past the slow threshold
     await asyncio.sleep(0.1)
     assert len(seeks) == 1
     release.set()

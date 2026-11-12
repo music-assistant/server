@@ -1651,11 +1651,10 @@ class RaumfeldPlayer(PlayerProtocol):
         # A check started by a join in the Raumfeld app runs on its own, so it waits for a
         # play, seek or stop in progress and looks at the playback that leaves.
         # a Sync Group this room renders for owns the queue, so its lock goes first
-        # strict: the check never looks at playback without the lock
         if (player := self.player) is None:
             return
         try:
-            async with self.mass.players.get_group_and_player_lock(player.player_id, strict=True):
+            async with self.mass.players.get_group_and_player_lock(player.player_id):
                 if joined is not None and self._joins_settling:
                     # a room joined while this waited for the lock and is still being hooked
                     # in; that join's check restarts once it plays, for these rooms as well
@@ -2304,11 +2303,10 @@ class RaumfeldPlayer(PlayerProtocol):
         """
         # a group rate check waits for this play to finish, so it sees the stream it started
         generation = self._playback_generation
-        # strict, like the queue's own play actions: never start the item without the lock
         if (player := self.player) is None:
             return
         try:
-            async with self.mass.players.get_group_and_player_lock(player.player_id, strict=True):
+            async with self.mass.players.get_group_and_player_lock(player.player_id):
                 if generation != self._playback_generation or not self._advance_armed:
                     # a play, seek or restart ran while this waited and replaced what ends
                     # here, or the room became a follower and its next item was dropped

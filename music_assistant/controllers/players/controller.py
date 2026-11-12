@@ -138,7 +138,6 @@ from .announcements import AnnouncementsMixin
 from .audio_sources import AudioSourceMixin, AudioSourceSession
 from .constants import (
     PLAYER_LOCK_SLOW_THRESHOLD,
-    PLAYER_LOCK_STRICT_TIMEOUT,
     PLAYER_LOCK_TIMEOUT,
     PlayerLockPurpose,
     SwitchedOffAction,
@@ -275,6 +274,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._task_held_locks: weakref.WeakKeyDictionary[asyncio.Task[Any], set[str]] = (
             weakref.WeakKeyDictionary()
         )
+        # the task that holds each player lock, by lock key, named when a wait times out
+        self._lock_holders: weakref.WeakValueDictionary[str, asyncio.Task[Any]] = (
+            weakref.WeakValueDictionary()
+        )
         # Lock to prevent race conditions while protocols attach
         self._register_lock = asyncio.Lock()
         # the end of the wait of every held protocol whose identifiers may still arrive
@@ -291,7 +294,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self,
         player_id: str,
         purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-        strict: bool = False,
     ) -> AsyncIterator[None]:
         """
         Acquire a purpose-scoped lock for a player, with re-entrant support.
@@ -300,10 +302,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         task skip re-acquisition (preventing deadlocks), while deferred callbacks
         (call_later / create_task) correctly acquire a fresh lock.
 
-        If the lock can't be acquired within 30s the body runs anyway, to keep
-        the player responsive when a previous holder is stuck on a hung command.
-        A strict acquisition never runs without the lock: it keeps waiting, up to
-        120s per lock, and then raises ResourceBusyError.
+        The body never runs without the lock: a command that cannot get it within
+        120s fails with ResourceBusyError, as the player is still busy with another.
 
         Ordering rule: when a command needs both a group/leader lock and a member
         lock, it must take the group's first. The group players themselves always
@@ -314,10 +314,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
             concurrently on the same player.
-        :param strict: Fail once the strict timeout is over instead of running the
-            body without the lock, for work that corrupts shared state when it
-            overlaps with the holder (the queue play actions).
-        :raises ResourceBusyError: When a strict acquisition timed out.
+        :raises ResourceBusyError: When the lock is still held by another command at the
+            timeout.
         """
         lock_key = f"{purpose.value}_{player_id}"
         task = asyncio.current_task()
@@ -327,45 +325,46 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return
 
         lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
-        acquired = await self._acquire_player_lock(lock, purpose, player_id, strict)
-        if acquired and task is not None:
+        await self._acquire_player_lock(lock, lock_key, purpose, player_id)
+        if task is not None:
             self._task_held_locks.setdefault(task, set()).add(lock_key)
+            self._lock_holders[lock_key] = task
         try:
             yield
         finally:
-            if acquired:
-                if task is not None and (held := self._task_held_locks.get(task)) is not None:
+            if task is not None:
+                if (held := self._task_held_locks.get(task)) is not None:
                     held.discard(lock_key)
                     if not held:
                         del self._task_held_locks[task]
-                lock.release()
+                if self._lock_holders.get(lock_key) is task:
+                    del self._lock_holders[lock_key]
+            lock.release()
 
     @contextlib.asynccontextmanager
-    async def get_group_and_player_lock(
-        self, player_id: str, strict: bool = False
-    ) -> AsyncIterator[None]:
+    async def get_group_and_player_lock(self, player_id: str) -> AsyncIterator[None]:
         """
         Acquire the playback lock of a player, preceded by that of the group holding it.
 
         For a command on a group member that reaches its (sync)group: releasing the
         member, joining it back or restarting the group all take the group's lock,
         which has to be taken before the member's own (see get_player_lock). A player
-        that is not part of a group only takes its own lock.
+        that is not part of a group only takes its own lock. Each lock has its own
+        timeout, so a player held by a group waits for both in turn.
 
         :param player_id: The player to lock.
-        :param strict: Never run without either lock, see get_player_lock. Each lock has
-            its own strict timeout, so a player held by a group waits for both in turn.
-        :raises ResourceBusyError: When a strict acquisition timed out.
+        :raises ResourceBusyError: When either lock is still held by another command at
+            its timeout.
         """
         async with contextlib.AsyncExitStack() as stack:
             if (player := self.get_player(player_id)) and (
                 owner := self._resolve_playback_owner(player)
             ) is not player:
                 await stack.enter_async_context(
-                    self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK, strict=strict)
+                    self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK)
                 )
             await stack.enter_async_context(
-                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK, strict=strict)
+                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
             )
             yield
 
@@ -2817,24 +2816,21 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         return iter(self._players.values())
 
     async def _acquire_player_lock(
-        self, lock: asyncio.Lock, purpose: PlayerLockPurpose, player_id: str, strict: bool
-    ) -> bool:
+        self, lock: asyncio.Lock, lock_key: str, purpose: PlayerLockPurpose, player_id: str
+    ) -> None:
         """
         Wait for a player lock, logging a wait that gets long.
 
         :param lock: The lock to acquire.
+        :param lock_key: The key the lock is kept under, which names its holder.
         :param purpose: The lock's category, named in the log lines and the error.
         :param player_id: The player the lock belongs to.
-        :param strict: Keep waiting past the lock timeout and fail at the strict timeout,
-            instead of giving up on the lock.
-        :return: Whether the lock was acquired. A non-strict wait gives up at the lock
-            timeout and returns False, so the caller runs without the lock; a strict
-            wait raises ResourceBusyError at the strict timeout instead.
+        :raises ResourceBusyError: When the lock is still held at the timeout.
         """
         try:
             async with asyncio.timeout(PLAYER_LOCK_SLOW_THRESHOLD):
                 await lock.acquire()
-            return True
+            return
         except TimeoutError:
             self.logger.debug(
                 "Acquiring %s lock for player %s is slow (>%ss)",
@@ -2845,36 +2841,31 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         try:
             async with asyncio.timeout(PLAYER_LOCK_TIMEOUT - PLAYER_LOCK_SLOW_THRESHOLD):
                 await lock.acquire()
-            return True
+            return
         except TimeoutError:
-            if not strict:
-                self.logger.warning(
-                    "Timed out (%ss) acquiring %s lock for player %s — "
-                    "previous holder appears stuck; proceeding without lock",
-                    PLAYER_LOCK_TIMEOUT,
-                    purpose.value,
-                    player_id,
-                )
-                return False
-            self.logger.info(
-                "Waited %ss for the %s lock of player %s — previous holder is still busy; "
-                "waiting on, giving up after %ss in total",
-                PLAYER_LOCK_TIMEOUT,
-                purpose.value,
-                player_id,
-                PLAYER_LOCK_STRICT_TIMEOUT,
-            )
-        try:
-            async with asyncio.timeout(PLAYER_LOCK_STRICT_TIMEOUT - PLAYER_LOCK_TIMEOUT):
-                await lock.acquire()
-            return True
-        except TimeoutError:
-            name = player.display_name if (player := self.get_player(player_id)) else player_id
-            msg = (
-                f"Player {name} is still busy with a previous {purpose.value} command "
-                f"after {PLAYER_LOCK_STRICT_TIMEOUT}s"
-            )
-            raise ResourceBusyError(msg) from None
+            pass
+        name = player.display_name if (player := self.get_player(player_id)) else player_id
+        # the holder's call graph shows what it waits for, so a stuck command can be found
+        holder = self._lock_holders.get(lock_key)
+        self.logger.warning(
+            "Gave up waiting %ss for the %s lock of player %s, which is held by %s",
+            PLAYER_LOCK_TIMEOUT,
+            purpose.value,
+            name,
+            asyncio.format_call_graph(holder)
+            if holder is not None and not holder.done()
+            else "a task that is gone",
+        )
+        msg = (
+            f"Player {name} is still busy with a previous {purpose.value} command "
+            f"after {PLAYER_LOCK_TIMEOUT}s"
+        )
+        raise ResourceBusyError(
+            msg,
+            translation_key="player_busy",
+            translation_owner=self.translation_owner,
+            translation_args=[name],
+        )
 
     async def _run_attach(self, protocol: PlayerProtocol, final: bool = False) -> None:
         """
@@ -4588,7 +4579,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         try:
             # a command that holds the player may play on it, which starts the count over.
             # So never run without the lock, and check again once it is ours.
-            async with self.get_group_and_player_lock(player_id, strict=True):
+            async with self.get_group_and_player_lock(player_id):
                 player = self.get_player(player_id)
                 if player is None or not self._is_idle_power_off_due(player):
                     return
@@ -4701,7 +4692,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     async def _resume_queue_after_dsp_change(self, queue_id: str) -> None:
         """Resume a queue to apply a DSP change, unless it was emptied while waiting for the lock."""
         # a running command (e.g. a leadership transfer) may move the queue away meanwhile
-        async with self.get_group_and_player_lock(queue_id, strict=True):
+        async with self.get_group_and_player_lock(queue_id):
             queue = self.mass.player_queues.get(queue_id)
             if queue is None or not queue.items:
                 self.logger.debug("Not restarting queue %s after DSP change: it is empty", queue_id)

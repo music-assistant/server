@@ -3594,7 +3594,6 @@ class TestIdlePowerOff:
         """A power off that can't get the player lock in time gives up and keeps the count."""
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
         controller, player, _protocol, power_off = self._setup(mock_mass)
         player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
         controller._check_idle_power_off(player)
@@ -4023,86 +4022,79 @@ class TestAddCurrentlyPlayingToFavorites:
 
 
 class TestPlayerLockTimeouts:
-    """A command gives up on a lock it cannot get in time, unless it asked for it strictly."""
+    """A command that cannot get a player lock in time fails; the warning names the holder."""
 
     @pytest.fixture(autouse=True)
     def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.3)
 
-    async def test_a_command_runs_without_the_lock_once_the_timeout_is_over(
+    async def test_a_nested_acquisition_keeps_its_holder_named(
         self, controller: PlayerController, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A stuck holder must not keep the player from responding to the next command."""
-        ran = False
-        async with _lock_held_elsewhere(controller, "p1"):
-            with caplog.at_level(logging.WARNING):
-                async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK):
-                    ran = True
+        """A holder that took its lock a second time is still the one a waiter names."""
+        held = asyncio.Event()
+        release = asyncio.Event()
 
-        assert ran
-        assert "proceeding without lock" in caplog.text
+        async def _holder_waiting_for_its_device() -> None:
+            async with controller.get_player_lock("p1"):
+                async with controller.get_player_lock("p1"):
+                    pass
+                held.set()
+                await release.wait()
 
-    async def test_a_strict_command_fails_instead_of_running_without_the_lock(
-        self, controller: PlayerController, caplog: pytest.LogCaptureFixture
+        holder = asyncio.create_task(_holder_waiting_for_its_device())
+        await held.wait()
+        with caplog.at_level(logging.WARNING), pytest.raises(ResourceBusyError):
+            async with controller.get_player_lock("p1"):
+                pytest.fail("the body ran without the lock")
+        release.set()
+        await holder
+
+        assert "_holder_waiting_for_its_device" in caplog.text
+
+    @pytest.mark.parametrize("holder_state", ["unknown", "done"])
+    async def test_a_lock_without_a_live_holder_still_fails_as_busy(
+        self,
+        controller: PlayerController,
+        caplog: pytest.LogCaptureFixture,
+        holder_state: str,
     ) -> None:
-        """A strict command that would overlap with the holder is refused as busy."""
-        ran = False
-        async with _lock_held_elsewhere(controller, "p1"):
-            with caplog.at_level(logging.INFO), pytest.raises(ResourceBusyError):
-                async with controller.get_player_lock(
-                    "p1", PlayerLockPurpose.PLAYBACK, strict=True
-                ):
-                    ran = True
+        """The warning of a wait that times out never fails on the holder it describes."""
+        lock = controller._player_command_locks.setdefault("playback_p1", asyncio.Lock())
+        await lock.acquire()
+        if holder_state == "done":
+            finished = asyncio.create_task(asyncio.sleep(0))
+            await finished
+            controller._lock_holders["playback_p1"] = finished
+        try:
+            with caplog.at_level(logging.WARNING), pytest.raises(ResourceBusyError):
+                async with controller.get_player_lock("p1"):
+                    pytest.fail("the body ran without the lock")
+        finally:
+            lock.release()
 
-        assert not ran
-        assert "still busy" in caplog.text
-        # the lock itself is left intact for the next command
-        async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
-            ran = True
-        assert ran
+        assert "held by a task that is gone" in caplog.text
 
-    async def test_a_strict_command_keeps_waiting_past_the_timeout(
-        self, controller: PlayerController
-    ) -> None:
-        """A strict command runs once the holder is done, however long that takes."""
-        ran = asyncio.Event()
-
-        async def _strict_command() -> None:
-            async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
-                ran.set()
-
-        async with _lock_held_elsewhere(controller, "p1"):
-            command = asyncio.create_task(_strict_command())
-            # well past the point where a non-strict command would have given up
-            await asyncio.sleep(0.1)
-            assert not ran.is_set()
-
-        await command
-        assert ran.is_set()
-
-    async def test_a_strict_group_and_player_lock_takes_both_strictly(
+    async def test_a_group_and_player_lock_takes_the_group_lock_first(
         self, mock_mass: MagicMock
     ) -> None:
-        """The group's lock, taken before the member's, is waited for just as strictly."""
+        """A grouped player waits for the group's lock, then for its own."""
         controller, _group, _member = _group_with_member(mock_mass)
-        acquisitions: list[tuple[str, bool]] = []
+        acquisitions: list[str] = []
         acquire_lock = controller.get_player_lock
 
         def _record(
-            player_id: str,
-            purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-            strict: bool = False,
+            player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
         ) -> contextlib.AbstractAsyncContextManager[None]:
-            acquisitions.append((player_id, strict))
-            return acquire_lock(player_id, purpose, strict=strict)
+            acquisitions.append(player_id)
+            return acquire_lock(player_id, purpose)
 
         controller.get_player_lock = _record  # type: ignore[assignment]
-        async with controller.get_group_and_player_lock("member", strict=True):
+        async with controller.get_group_and_player_lock("member"):
             pass
 
-        assert acquisitions == [("group", True), ("member", True)]
+        assert acquisitions == ["group", "member"]
 
 
 def test_state_update_during_attach_is_not_published(mock_mass: MagicMock) -> None:

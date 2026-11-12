@@ -3492,10 +3492,7 @@ class TestNextTrackHandoverLocksTheLeader:
 
         mass.players._handle_enqueue_next_media.assert_awaited_once_with("leader", media)
         assert events == ["lock:leader", "enqueue", "unlock:leader"]
-        # strict, so a busy leader fails the handover instead of running without the lock
-        mass.players.get_player_lock.assert_called_once_with(
-            "leader", PlayerLockPurpose.PLAYBACK, strict=True
-        )
+        mass.players.get_player_lock.assert_called_once_with("leader", PlayerLockPurpose.PLAYBACK)
 
     async def test_a_leader_swapped_while_waiting_is_not_enqueued(self) -> None:
         """A handover meant for a leader that was replaced while waiting is dropped."""

@@ -214,7 +214,7 @@ The `handle_player_command` decorator for command validation, and `AnnounceData`
 
 ## Locking
 
-Player commands are serialized per player with `get_player_lock`. A command that cannot get the lock within 30 seconds runs without it, so a player stays responsive when the previous holder hangs on a dead provider call. A strict acquisition (`strict=True`) never does that: it keeps waiting, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError`. The queue play actions and the next-track handover take the lock strictly, since two of them running at once on one queue corrupt it. The timeouts live in [constants.py](constants.py).
+Player commands are serialized per player with `get_player_lock`. A command never runs without the lock: it waits for the command that holds it, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError` ("still busy with a previous command"), since two commands running at once on one player or queue corrupt it. That wait outlasts what a command legitimately holds a player for, such as a play request that loads a large playlist or an announcement, so only a holder that is stuck makes the next command fail; the warning logged then shows where the holder waits. The timeouts live in [constants.py](constants.py).
 
 Attaching protocols is serialized by one lock of the controller, so an object that replaces
 another under the same protocol id waits for an attach of that id that is still running. A detach

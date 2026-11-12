@@ -770,7 +770,7 @@ class WiimPlayer(PlayerProtocol):
     async def _seek_after_join_restart(self, watch: _JoinRestartWatch, position: int) -> None:
         """Seek the queue, which rebuilds the stream at a position the firmware keeps."""
         try:
-            async with self.mass.players.get_group_and_player_lock(watch.queue_id, strict=True):
+            async with self.mass.players.get_group_and_player_lock(watch.queue_id):
                 # a command that waited behind the join ran first and dropped the resume
                 if self._pending_join_resume is not watch:
                     return

@@ -357,6 +357,7 @@ def bare_player_controller() -> PlayerController:
     players._protocols = {}
     players._legacy_ids = {}
     players._task_held_locks = weakref.WeakKeyDictionary()
+    players._lock_holders = weakref.WeakValueDictionary()
     players.logger = MagicMock()
     return players
 

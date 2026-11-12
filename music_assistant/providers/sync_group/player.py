@@ -524,10 +524,9 @@ class SyncGroupPlayer(PlayerProtocol):
                 return
             # the leader is commanded from under the group's lock, like play_media does,
             # so leader-scoped work such as a member re-join cannot interleave with it.
-            # Strict, like the handover's own lock: a busy leader drops the handover
-            # rather than letting it run alongside whatever holds the leader
+            # A busy leader drops the handover, like the handover's own lock does
             async with self.mass.players.get_player_lock(
-                sync_leader.player_id, PlayerLockPurpose.PLAYBACK, strict=True
+                sync_leader.player_id, PlayerLockPurpose.PLAYBACK
             ):
                 if self.sync_leader is not sync_leader:
                     # the group was re-led while we waited: the new leader gets its own
