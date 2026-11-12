@@ -68,7 +68,6 @@ from music_assistant.constants import (
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
-    SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
@@ -656,11 +655,6 @@ class StreamsController(CoreController):
                     "*",
                     "/source/{session_id}/{source_player_id}/{player_id}.{fmt}",
                     self.serve_audio_source_stream,
-                ),
-                (
-                    "*",
-                    "/command/{session_id}/{queue_id}/{command}.mp3",
-                    self.serve_command_request,
                 ),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
                 (
@@ -1627,28 +1621,6 @@ class StreamsController(CoreController):
 
         return resp
 
-    async def serve_command_request(self, request: web.Request) -> web.FileResponse:
-        """Handle special 'command' request for a player."""
-        self._log_request(request)
-        queue_id = request.match_info["queue_id"]
-        session_id = request.match_info["session_id"]
-        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
-        if queue_data is None or queue_data.session_id != session_id:
-            raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
-        command = request.match_info["command"]
-        if queue_data.last_served_item_id is None:
-            # the session rotates when a new item starts loading, so a command fetched before
-            # any of its audio went out follows the superseded stream and would skip a track
-            self.logger.debug(
-                "Ignoring %s command for queue %s: session %s has not streamed yet",
-                command,
-                queue_id,
-                session_id,
-            )
-        elif command == "next":
-            self.mass.create_task(self.mass.player_queues.next(queue_id))
-        return web.FileResponse(SILENCE_FILE, headers={"icy-name": "Music Assistant"})
-
     async def serve_announcement_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream announcement audio to a player."""
         self._log_request(request)
@@ -1727,24 +1699,6 @@ class StreamsController(CoreController):
         )
 
         return resp
-
-    def get_command_url(self, player_or_queue_id: str, command: str) -> str | None:
-        """
-        Get the url for the special command stream, or None if the queue is not playing.
-
-        :param player_or_queue_id: Queue (or player) to send the command to.
-        :param command: Command the url triggers when fetched.
-        """
-        # resolve to the active queue: a protocol player (e.g. the cast child of a
-        # universal player) does not own the active queue, its parent player does
-        if active_queue := self.mass.player_queues.get_active_queue(player_or_queue_id):
-            queue_id = active_queue.queue_id
-        else:
-            queue_id = player_or_queue_id
-        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
-        if queue_data is None or (session_id := queue_data.session_id) is None:
-            return None
-        return f"{self.base_url}/command/{session_id}/{queue_id}/{command}.mp3"
 
     def get_announcement_url(
         self,

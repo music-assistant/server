@@ -113,7 +113,6 @@ AUDIOBOOK_GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
 )
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
-SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
 SILENCE_FILE_LONG: Final[str] = str(RESOURCES_DIR.joinpath("silence_long.ogg"))
 VARIOUS_ARTISTS_FANART: Final[str] = str(RESOURCES_DIR.joinpath("fallback_fanart.jpeg"))
 MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
