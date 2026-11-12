@@ -244,6 +244,10 @@ and protocol what grouping reads (the published state, the protocols with their 
 groups they report and what they can group with, the outputs, the active and the preferred
 output, the queue it plays). It returns the steps of the change: which protocol of each member
 carries it, who leads, what is released first, what is refused and why, the lines for the log.
+The snapshot builds the view of a player or protocol when the plan first reads it, and asks
+whether two protocols group natively only for the pair the plan asks about, so a change costs
+what it reads. A playback start whose player has no grouped audio protocol has nothing to
+regroup and takes no snapshot at all.
 `apply_group_change` in [grouping.py](grouping.py) runs the steps, and is the only code of the
 controller that calls a protocol's grouping methods. The entries stay what callers use:
 `cmd_set_members`, `cmd_ungroup`, and `_handle_set_members` and `_detach_member` for a group

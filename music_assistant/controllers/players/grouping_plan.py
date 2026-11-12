@@ -26,7 +26,7 @@ from music_assistant_models.errors import (
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Container, Iterable, Mapping, Sequence
 
     from music_assistant_models.errors import MusicAssistantError
 
@@ -70,8 +70,8 @@ class ProtocolView:
     :param synced_to: The id of the protocol it reports to be synced to.
     :param can_group_with: The ids it reports it can group with: protocol ids or provider
         instance ids.
-    :param native_peers: The own protocols of other players it groups with natively; only
-        given for an own protocol with SET_MEMBERS.
+    :param native_peers: The own protocols of other players it groups with natively (asked by
+        their id); only given for an own protocol with SET_MEMBERS.
     :param needs_own_stream: Its native grouping only works while it renders its own stream.
     :param prefers_native: It groups natively before any audio protocol.
     """
@@ -87,7 +87,7 @@ class ProtocolView:
     group_members: tuple[str, ...]
     synced_to: str | None
     can_group_with: frozenset[str]
-    native_peers: frozenset[str] = frozenset()
+    native_peers: Container[str] = frozenset()
     needs_own_stream: bool = False
     prefers_native: bool = False
 

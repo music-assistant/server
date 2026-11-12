@@ -5651,7 +5651,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if output_protocol is not None:
                 target_player = protocol_player
         if target_player is None:
-            if is_fresh_start:
+            # nothing to regroup without a grouped audio protocol, which the player alone tells
+            if is_fresh_start and self._get_grouped_output_protocol(player) is not None:
                 await apply_group_change(
                     self,
                     GroupChange(kind=ChangeKind.REGROUP_FOR_START, target_id=player.player_id),

@@ -9,6 +9,8 @@ mock in for the controller.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Container, Mapping
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import PlayerFeature
@@ -50,7 +52,7 @@ from music_assistant.controllers.players.grouping_plan import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Iterator
 
     from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
@@ -74,6 +76,9 @@ def grouping_snapshot(
     """
     Return a snapshot of the players and protocols, as a group change is planned on.
 
+    The view of a player or protocol is built when the plan first reads it, and kept for the
+    snapshot; a plan made right after, with no await in between, reads the state as it is now.
+
     :param players: The players controller.
     :param held: The protocols a running change holds.
     :param held_players: The players a running change holds.
@@ -85,22 +90,12 @@ def grouping_snapshot(
         for legacy_id, player_id in players._legacy_ids.items()
         if legacy_id not in live and legacy_id not in stored
     }
-    own_protocols = [own for player in live.values() if (own := player.own_protocol) is not None]
     return GroupingSnapshot(
-        players={player_id: _player_view(players, player) for player_id, player in live.items()},
-        protocols={
-            protocol_id: _protocol_view(protocol, own_protocols)
-            for protocol_id, protocol in players._protocols.items()
-        },
+        players=_Views(dict(live), partial(_player_view, players)),
+        protocols=_Views(dict(players._protocols), partial(_protocol_view, players)),
         aliases=aliases,
-        held={
-            protocol_id: _protocol_view(protocol, own_protocols)
-            for protocol_id, protocol in (held or {}).items()
-        },
-        held_players={
-            player_id: _player_view(players, player)
-            for player_id, player in (held_players or {}).items()
-        },
+        held=_Views(dict(held or {}), partial(_protocol_view, players)),
+        held_players=_Views(dict(held_players or {}), partial(_player_view, players)),
     )
 
 
@@ -445,21 +440,17 @@ def _output_view(player: Player, output: OutputProtocol) -> OutputView:
     )
 
 
-def _protocol_view(protocol: PlayerProtocol, own_protocols: list[PlayerProtocol]) -> ProtocolView:
+def _protocol_view(players: PlayerController, protocol: PlayerProtocol) -> ProtocolView:
     """
     Return what grouping reads of a protocol.
 
+    :param players: The players controller.
     :param protocol: The protocol.
-    :param own_protocols: The own protocols of the players, for its native peers.
     """
     features = frozenset(protocol.supported_features)
-    native_peers: frozenset[str] = frozenset()
-    if PlayerFeature.SET_MEMBERS in features and any(own is protocol for own in own_protocols):
-        native_peers = frozenset(
-            own.protocol_id
-            for own in own_protocols
-            if own is not protocol and protocol.is_native_group_compatible(own)
-        )
+    native_peers: Container[str] = frozenset()
+    if PlayerFeature.SET_MEMBERS in features and _is_own_protocol(players, protocol):
+        native_peers = _NativePeers(players, protocol)
     return ProtocolView(
         protocol_id=protocol.protocol_id,
         player_id=protocol.player.player_id if protocol.player is not None else None,
@@ -476,6 +467,83 @@ def _protocol_view(protocol: PlayerProtocol, own_protocols: list[PlayerProtocol]
         needs_own_stream=protocol.native_grouping_requires_own_stream,
         prefers_native=protocol.prefer_native_grouping,
     )
+
+
+def _is_own_protocol(players: PlayerController, protocol: PlayerProtocol) -> bool:
+    """
+    Return whether a protocol is the own protocol of a live player.
+
+    :param players: The players controller.
+    :param protocol: The protocol.
+    """
+    player = protocol.player
+    return (
+        player is not None
+        and players._players.get(player.player_id) is player
+        and player.own_protocol is protocol
+    )
+
+
+class _Views[T, V](Mapping[str, V]):
+    """The views of live objects by id, each built on its first read and kept."""
+
+    def __init__(self, objects: dict[str, T], build: Callable[[T], V]) -> None:
+        """
+        Initialize the views.
+
+        :param objects: The objects by id, in their order.
+        :param build: Returns the view of an object.
+        """
+        self._objects = objects
+        self._build = build
+        self._views: dict[str, V] = {}
+
+    def __getitem__(self, key: str) -> V:
+        """Return the view of the object with the id, building it on its first read."""
+        if (view := self._views.get(key)) is None:
+            view = self._views[key] = self._build(self._objects[key])
+        return view
+
+    def __contains__(self, key: object) -> bool:
+        """Return whether an object has the id."""
+        return key in self._objects
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over the ids, in their order."""
+        return iter(self._objects)
+
+    def __len__(self) -> int:
+        """Return the number of objects."""
+        return len(self._objects)
+
+
+class _NativePeers(Container[str]):
+    """The own protocols of other players a protocol groups with natively, asked per pair."""
+
+    def __init__(self, players: PlayerController, protocol: PlayerProtocol) -> None:
+        """
+        Initialize the peers of a protocol.
+
+        :param players: The players controller.
+        :param protocol: The own protocol whose peers these are.
+        """
+        self._players = players
+        self._protocol = protocol
+        self._answers: dict[object, bool] = {}
+
+    def __contains__(self, protocol_id: object) -> bool:
+        """Return whether the own protocol with the id is a native peer, asking it once."""
+        if (answer := self._answers.get(protocol_id)) is None:
+            other = (
+                self._players._protocols.get(protocol_id) if isinstance(protocol_id, str) else None
+            )
+            answer = self._answers[protocol_id] = (
+                other is not None
+                and other is not self._protocol
+                and _is_own_protocol(self._players, other)
+                and self._protocol.is_native_group_compatible(other)
+            )
+        return answer
 
 
 def _queue_view(queue: PlayerQueue | None) -> QueueView | None:
