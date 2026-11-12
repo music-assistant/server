@@ -1368,3 +1368,17 @@ async def test_move_playlist_tracks_moves_the_block_before_its_successor(
 
     assert mock_move.call_args.kwargs["set_video_ids"] == moved
     assert mock_move.call_args.kwargs["successor"] == successor
+
+
+async def test_move_playlist_tracks_leaves_a_block_already_in_place(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Moving the last entries to the end does not touch the playlist."""
+    get_playlist = AsyncMock(return_value=_listing("A", "B", "C", "D"))
+    with (
+        patch("music_assistant.providers.ytmusic.get_playlist", get_playlist),
+        patch("music_assistant.providers.ytmusic.move_playlist_entries", AsyncMock()) as mock_move,
+    ):
+        await provider.move_playlist_tracks("PL1", [3, 4])
+
+    mock_move.assert_not_called()

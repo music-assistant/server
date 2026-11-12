@@ -951,8 +951,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if selected == list(range(to_position, to_position + len(selected))):
             return
         moved = [entries[pos - 1]["setVideoId"] for pos in selected]
-        rest = [entry["setVideoId"] for pos, entry in enumerate(entries, 1) if pos not in selected]
-        successor = rest[to_position - 1] if to_position <= len(rest) else None
+        rest = [entry for pos, entry in enumerate(entries, 1) if pos not in selected]
+        successor = rest[to_position - 1]["setVideoId"] if to_position <= len(rest) else None
         await move_playlist_entries(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
