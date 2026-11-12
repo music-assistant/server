@@ -8,14 +8,15 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import ANY, AsyncMock
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType, ProtocolRole
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
+from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, ProtocolRole
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidCommand,
     PlayerUnavailableError,
 )
 
-from music_assistant.constants import MAIN_ZONE
+from music_assistant.constants import CONF_PLAYERS, MAIN_ZONE
 from tests.common import as_user
 
 from .harness import FAKE_SETTING, Event, Role, Scenario, ScenarioError, VisiblePlayer
@@ -854,6 +855,51 @@ async def test_a_speaker_and_its_twin_stored_as_two_players_stay_two_players(
         ("RINCON_5478C9E60DA001400", "Kitchen"),
         ("media_player.kitchen", "Kitchen (HA)"),
     ]
+
+
+@pytest.mark.parametrize("choice", ["volume_and_mute", "preferred_output"])
+async def test_a_choice_that_names_the_demoted_twin_sends_it_nothing(
+    scenario: Scenario, choice: str
+) -> None:
+    """
+    A control or output the user picked for the twin is passed over once the twin is demoted.
+
+    It resolves as if nothing were picked: to the vendor protocol, or to the AirPlay receiver
+    when the vendor protocol has no volume of its own.
+    """
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.twin).player_id
+    twin_id = speaker.twin.protocol_id
+    if choice == "volume_and_mute":
+        picked = {"volume_control": twin_id, "mute_control": twin_id}
+    else:
+        picked = {"preferred_output_protocol": twin_id}
+    # what the user picked while the entity stood for the speaker
+    await scenario.seed_config({CONF_PLAYERS: {player_id: {"values": picked}}})
+    speaker = _current(scenario, speaker)
+    if choice == "preferred_output":
+        await scenario.report(speaker.vendor, supported_features={PlayerFeature.PLAY_MEDIA})
+        await scenario.attach(speaker.airplay)
+    await scenario.attach(speaker.vendor)
+    await scenario.idle()
+    assert _roles(scenario, player_id)[twin_id] == ProtocolRole.CONTROL
+
+    await scenario.mass.players.cmd_volume_set(player_id, 30)
+    await scenario.mass.players.cmd_volume_mute(player_id, True)
+    await scenario.idle()
+
+    target = speaker.vendor if choice == "volume_and_mute" else speaker.airplay
+    assert [command for command in target.commands if command[0].startswith("volume")] == [
+        ("volume_set", 30),
+        ("volume_mute", True),
+    ]
+    assert speaker.twin.commands == []
+    if choice == "volume_and_mute":
+        # also for the output that takes over the level when it starts to play
+        player = scenario.mass.players.get_player(player_id)
+        assert player is not None
+        assert player.volume_control_for_output("native") == PLAYER_CONTROL_NATIVE
 
 
 async def test_a_command_to_the_player_never_reaches_the_twin(scenario: Scenario) -> None:

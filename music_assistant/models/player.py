@@ -1895,7 +1895,7 @@ class Player:
         if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # the control type is explicitly set to a protocol or player control,
             # check if it exists and is (currently) available
-            if (protocol := self._protocols.get(str(conf))) and protocol.available:
+            if (protocol := self._commandable_protocol(str(conf))) and protocol.available:
                 return protocol.protocol_id
             if _control := self.mass.players.get_player_control(str(conf)):
                 return _control.id
@@ -1929,7 +1929,7 @@ class Player:
             self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred_conf and preferred_conf not in ("auto", "native"):
-            preferred = self._protocols.get(str(preferred_conf))
+            preferred = self._commandable_protocol(str(preferred_conf))
             if (
                 preferred is not None
                 and preferred is not self._own_protocol
@@ -1959,7 +1959,7 @@ class Player:
         if conf and conf not in (PLAYER_CONTROL_PROTOCOL, "auto"):
             # An explicitly configured control is a statement about the device as a whole,
             # so it stays in charge no matter which of its interfaces renders the audio.
-            if (protocol := self._protocols.get(str(conf))) and protocol.available:
+            if (protocol := self._commandable_protocol(str(conf))) and protocol.available:
                 return protocol.protocol_id
             if _control := self.mass.players.get_player_control(str(conf)):
                 return _control.id
@@ -1977,6 +1977,19 @@ class Player:
         if self._own_controls(feature):
             return PLAYER_CONTROL_NATIVE
         return PLAYER_CONTROL_NONE
+
+    def _commandable_protocol(self, protocol_id: str) -> PlayerProtocol | None:
+        """
+        Return an attached protocol that takes commands: the own one or an audio one.
+
+        A control protocol another one ranks above takes none, also when it was picked.
+
+        :param protocol_id: Id of the protocol.
+        """
+        protocol = self._protocols.get(protocol_id)
+        if protocol is self._own_protocol or protocol in self._audio_protocols:
+            return protocol
+        return None
 
     def _collect_input_snapshot(self) -> tuple[Any, ...]:
         """
