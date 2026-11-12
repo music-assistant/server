@@ -9,7 +9,7 @@ import logging
 import secrets
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -73,6 +73,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
+from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.util import (
     import_module_in_thread,
     infer_album_type,
@@ -107,6 +108,7 @@ from .helpers import (
     library_add_remove_album,
     library_add_remove_artist,
     library_add_remove_playlist,
+    move_playlist_entries,
     rate_track,
     search,
 )
@@ -179,6 +181,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.ALBUM_VERSIONS,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
 }
 
 
@@ -888,38 +892,72 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        # Grab the full playlist by default
-        limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
-        if (
-            prov_playlist_id in YT_PERSONAL_PLAYLISTS
-            and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
-        ):
-            # Personal playlists are dynamic and can result in endless tracks
-            # limit to avoid memory issues
-            limit = DYNAMIC_PLAYLIST_TRACK_LIMIT
-        playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id, headers=self._headers, limit=limit
-        )
-        if "tracks" not in playlist_obj:
-            return
+        entries = await self._get_playlist_entries(prov_playlist_id)
         tracks_to_delete = []
-        for index, track in enumerate(playlist_obj["tracks"]):
-            if index in positions_to_remove:
+        for position, track in enumerate(entries, 1):
+            if position in positions_to_remove:
                 # YT needs both the videoId and the setVideoId in order to remove
                 # the track. Thus, we need to obtain the playlist details and
                 # grab the info from there.
                 tracks_to_delete.append(
                     {"videoId": track["videoId"], "setVideoId": track["setVideoId"]}
                 )
+        if not tracks_to_delete:
+            return
 
         await add_remove_playlist_tracks(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
             prov_track_ids=tracks_to_delete,
             add=False,
+            user=self._yt_user,
+        )
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
+        """
+        await self.move_playlist_tracks(prov_playlist_id, [from_position], to_position)
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based. None
+            moves the tracks to the end of the playlist.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER, maxsplit=1)[0]
+        entries = await self._get_playlist_entries(prov_playlist_id)
+        if to_position is None:
+            to_position = len(entries) - len(positions) + 1
+        selected = validate_playlist_block_move(len(entries), positions, to_position)
+        if selected == list(range(to_position, to_position + len(selected))):
+            return
+        moved = [entries[pos - 1]["setVideoId"] for pos in selected]
+        rest = [entry["setVideoId"] for pos, entry in enumerate(entries, 1) if pos not in selected]
+        successor = rest[to_position - 1] if to_position <= len(rest) else None
+        await move_playlist_entries(
+            headers=self._headers,
+            prov_playlist_id=prov_playlist_id,
+            set_video_ids=moved,
+            successor=successor,
             user=self._yt_user,
         )
 
@@ -1668,6 +1706,26 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")
+
+    async def _get_playlist_entries(self, prov_playlist_id: str) -> list[dict[str, Any]]:
+        """Return the raw entries of a playlist in listing order."""
+        # Grab the full playlist by default
+        limit = None
+        if (
+            prov_playlist_id in YT_PERSONAL_PLAYLISTS
+            and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
+        ):
+            # Personal playlists are dynamic and can result in endless tracks
+            # limit to avoid memory issues
+            limit = DYNAMIC_PLAYLIST_TRACK_LIMIT
+        playlist_obj = await get_playlist(
+            prov_playlist_id=prov_playlist_id,
+            headers=self._headers,
+            limit=limit,
+            user=self._yt_user,
+        )
+        entries: list[dict[str, Any]] = playlist_obj.get("tracks", [])
+        return entries
 
 
 def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:

@@ -17,6 +17,7 @@ import ytmusicapi
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
+from ytmusicapi.models.content.enums import PlaylistSortOrder
 
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
@@ -373,6 +374,37 @@ async def add_remove_playlist_tracks(
         return ytm.remove_playlist_items(playlistId=prov_playlist_id, videos=prov_track_ids)
 
     return await _run_ytmusic(_add_playlist_tracks)
+
+
+async def move_playlist_entries(
+    headers: dict[str, str],
+    prov_playlist_id: str,
+    set_video_ids: list[str],
+    successor: str | None,
+    user: str | None = None,
+) -> None:
+    """
+    Async wrapper around moving entries of a playlist.
+
+    :param headers: The authentication headers.
+    :param prov_playlist_id: The playlist id on YouTube Music.
+    :param set_video_ids: The setVideoIds of the entries to move, in the order they end up in.
+    :param successor: The setVideoId of the entry they are placed in front of, None for the end.
+    :param user: The brand account id, if any.
+    """
+
+    def _move_playlist_entries() -> None:
+        ytm = ytmusicapi.YTMusic(auth=headers, user=user)
+        # YouTube drops moves on a playlist sorted by date, and only honours the manual
+        # order when it is set in a call of its own
+        ytm.edit_playlist(prov_playlist_id, sortOrder=PlaylistSortOrder.MANUAL)
+        for set_video_id in set_video_ids:
+            ytm.edit_playlist(
+                prov_playlist_id,
+                moveItem=set_video_id if successor is None else (set_video_id, successor),
+            )
+
+    await _run_ytmusic(_move_playlist_entries)
 
 
 async def rate_track(
