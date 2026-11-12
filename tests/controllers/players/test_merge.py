@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import pathlib
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -37,9 +38,13 @@ from music_assistant.constants import (
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PROTOCOL_KEY_SPLITTER,
+)
+from music_assistant.controllers.config.player_split import (
+    remove_player_records_of_older_versions,
 )
 from music_assistant.controllers.players.controller import REMOVE_UNAVAILABLE_GRACE
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
@@ -1386,3 +1391,39 @@ async def test_duplicate_merged_while_the_native_is_unreachable_plays_at_the_hel
 
     assert audio.commands[0] == ("volume_set", 30)
     assert "play_media" in [command[0] for command in audio.commands]
+
+
+async def test_a_restart_after_a_merge_keeps_every_record(scenario: Scenario) -> None:
+    """The cleanup of records an older version stored leaves what a merge stored alone."""
+    tv = await _two_players_for_one_tv(scenario)
+    await _merge(scenario, tv.older_id, tv.younger_id)
+
+    await _assert_a_restart_keeps_every_record(scenario)
+
+    assert (scenario.mass.config.get_protocol_record("cast_tv") or {}).get(
+        "player_id"
+    ) == tv.older_id
+
+
+async def _assert_a_restart_keeps_every_record(scenario: Scenario) -> None:
+    """
+    Assert that the cleanup of records an older version stored finds nothing to do.
+
+    Run on the stored settings as they are now, and through the restart that runs it.
+    """
+    config = scenario.mass.config
+    stored = copy.deepcopy(config._data)
+    checked = copy.deepcopy(stored)
+    assert remove_player_records_of_older_versions(checked) is False
+    assert checked == stored
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert sorted(config.get(CONF_PLAYERS, {})) == sorted(stored[CONF_PLAYERS])
+    assert _edges(config.get(CONF_PLAYER_PROTOCOLS, {})) == _edges(stored[CONF_PLAYER_PROTOCOLS])
+
+
+def _edges(protocols: dict[str, Any]) -> dict[str, Any]:
+    """Return the player each stored protocol names, by protocol id."""
+    return {protocol_id: record.get("player_id") for protocol_id, record in protocols.items()}

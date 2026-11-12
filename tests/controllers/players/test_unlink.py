@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, NamedTuple
 from unittest.mock import AsyncMock
@@ -18,7 +19,15 @@ from music_assistant_models.errors import (
     InvalidDataError,
 )
 
-from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL, CONF_UNLINKED_FROM
+from music_assistant.constants import (
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYERS,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_UNLINKED_FROM,
+)
+from music_assistant.controllers.config.player_split import (
+    remove_player_records_of_older_versions,
+)
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from tests.scenarios.harness import Event, FakeProtocol, Scenario, VisiblePlayer
 
@@ -382,3 +391,119 @@ async def test_protocol_of_a_disabled_player_comes_back_on_its_new_player(
     new_player = scenario.player(new_id)
     assert new_player is not None
     assert new_player.available
+
+
+@pytest.mark.parametrize("domain", ["airplay", "sendspin"])
+async def test_a_restart_after_an_unlink_keeps_every_record(
+    scenario: Scenario, domain: str
+) -> None:
+    """The cleanup of older versions leaves both players of an unlink alone, a Sendspin one too."""
+    sonos = await scenario.add_provider("sonos")
+    other = await scenario.add_provider(domain)
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    receiver = other.protocol(
+        f"{domain}_studio",
+        "Studio",
+        role="audio",
+        identifiers={IdentifierType.IP_ADDRESS: KITCHEN_IP},
+    )
+    await scenario.attach(speaker)
+    await scenario.attach(receiver)
+    await scenario.advance(15)
+    await scenario.idle()
+    old_id = scenario.single_player(speaker, receiver).player_id
+
+    new_id = await _unlink(scenario, receiver.protocol_id)
+
+    assert (scenario.mass.config.get(f"{CONF_PLAYERS}/{new_id}") or {}).get("provider") == domain
+    await _assert_a_restart_keeps_every_record(scenario)
+    assert {old_id, new_id} <= set(scenario.mass.config.get(CONF_PLAYERS, {}))
+
+
+async def test_a_restart_after_an_unlink_keeps_a_player_from_before_the_split(
+    scenario: Scenario,
+) -> None:
+    """The own protocol of a player from before the split is taken off it: both players stay."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    airplay.protocol(
+        "ap_studio", "Studio", role="audio", identifiers={IdentifierType.IP_ADDRESS: KITCHEN_IP}
+    )
+    scenario.set_present("RINCON_KITCHEN", True)
+    scenario.set_present("ap_studio", True)
+    await scenario.seed_pre_split_config(
+        {
+            "RINCON_KITCHEN": {
+                "player_id": "RINCON_KITCHEN",
+                "provider": "sonos",
+                "player_type": "player",
+                "enabled": True,
+                "default_name": "Kitchen",
+                "values": {},
+            },
+            "ap_studio": {
+                "player_id": "ap_studio",
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": True,
+                "default_name": "Studio",
+                "values": {"protocol_parent_id": "RINCON_KITCHEN"},
+            },
+        }
+    )
+    await scenario.idle()
+    assert scenario.player_of(scenario.protocol("ap_studio")) == "RINCON_KITCHEN"
+
+    new_id = await _unlink(scenario, "RINCON_KITCHEN")
+
+    assert scenario.player_of(scenario.protocol("RINCON_KITCHEN")) == new_id
+    await _assert_a_restart_keeps_every_record(scenario)
+    assert {"RINCON_KITCHEN", new_id} <= set(scenario.mass.config.get(CONF_PLAYERS, {}))
+
+
+async def test_a_restart_after_an_unlink_and_a_merge_into_a_third_player_keeps_every_record(
+    scenario: Scenario,
+) -> None:
+    """The player an unlink gave a protocol is merged into a third one: what stays, stays."""
+    match = await _wrong_match(scenario)
+    new_id = await _unlink(scenario, "ap_studio")
+    dlna = await scenario.add_provider("dlna")
+    studio_dlna = dlna.protocol("uuid:studio", "Studio", role="audio")
+    await scenario.attach(studio_dlna)
+    await scenario.advance(15)
+    await scenario.idle()
+    third_id = scenario.single_player(studio_dlna).player_id
+
+    await scenario.mass.players.merge_players(third_id, new_id)
+    await scenario.idle()
+
+    assert (scenario.mass.config.get_protocol_record("ap_studio") or {}).get(
+        "player_id"
+    ) == third_id
+    await _assert_a_restart_keeps_every_record(scenario)
+    assert {match.player_id, third_id} <= set(scenario.mass.config.get(CONF_PLAYERS, {}))
+
+
+async def _assert_a_restart_keeps_every_record(scenario: Scenario) -> None:
+    """
+    Assert that the cleanup of records an older version stored finds nothing to do.
+
+    Run on the stored settings as they are now, and through the restart that runs it.
+    """
+    config = scenario.mass.config
+    stored = copy.deepcopy(config._data)
+    checked = copy.deepcopy(stored)
+    assert remove_player_records_of_older_versions(checked) is False
+    assert checked == stored
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert sorted(config.get(CONF_PLAYERS, {})) == sorted(stored[CONF_PLAYERS])
+    assert _edges(config.get(CONF_PLAYER_PROTOCOLS, {})) == _edges(stored[CONF_PLAYER_PROTOCOLS])
+
+
+def _edges(protocols: dict[str, Any]) -> dict[str, Any]:
+    """Return the player each stored protocol names, by protocol id."""
+    return {protocol_id: record.get("player_id") for protocol_id, record in protocols.items()}
