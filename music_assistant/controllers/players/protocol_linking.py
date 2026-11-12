@@ -279,7 +279,8 @@ class ProtocolLinkingMixin:
 
         That is the role it reports, unless it stands for the device itself while another
         protocol of the player that does so ranks above it (NATIVE_PRIORITY), attached or
-        away: then it is a control protocol of the player.
+        away, and the user has that one switched on: then it is a control protocol of the
+        player.
 
         :param protocol: The protocol.
         :param player_id: Id of the player it is attached to.
@@ -295,7 +296,11 @@ class ProtocolLinkingMixin:
                 record = self.mass.config.get_protocol_record(other_id) or {}
                 stands_for_device = record.get("role") in OWN_PROTOCOL_ROLES
                 other_provider = str(record.get("provider"))
-            if stands_for_device and _native_rank(other_provider) < rank:
+            if (
+                stands_for_device
+                and _native_rank(other_provider) < rank
+                and self.mass.config.is_protocol_switched_on(other_id)
+            ):
                 return ProtocolRole.CONTROL
         return protocol.role
 

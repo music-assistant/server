@@ -440,6 +440,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
         self._providers_loaded_at[provider.instance_id] = time.monotonic()
+        # a provider the user enabled again ranks its protocols above others again
+        self._schedule_protocol_roles_of_provider(provider.instance_id)
 
     async def on_provider_unload(self, provider: PlayerProvider) -> None:
         """
@@ -452,6 +454,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         for protocol in list(self._protocols.values()):
             if protocol.provider.instance_id == provider.instance_id:
                 await self.detach(protocol.protocol_id)
+        # a provider the user disabled ranks its protocols above no others
+        self._schedule_protocol_roles_of_provider(provider.instance_id)
 
     @property
     def providers(self) -> list[PlayerProvider]:
@@ -2691,12 +2695,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         protocol = self._protocols.get(protocol_id)
         if ATTR_ENABLED in changed_keys:
+            player_id = self.get_player_id_of_protocol(protocol_id)
             if not self.wants_protocol(protocol_id):
                 # the user switched this output of the player off
                 await self.detach(protocol_id)
                 # a protocol that waits for the place of its domain may take it now
                 self._schedule_held_protocols()
+                if player_id:
+                    # and one it ranked above stands for the device again
+                    self._schedule_protocol_roles(player_id)
                 return
+            if player_id:
+                # a protocol switched on again ranks above others again
+                self._schedule_protocol_roles(player_id)
             await self._hold_derived_protocols_without_place(protocol_id)
             if protocol is None or protocol.player is None:
                 # its provider attaches it when it looks for its devices again
@@ -3006,6 +3017,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self.mass.create_task(
             self._settle_protocol_roles(player_id), task_id=f"protocol_roles_{player_id}"
         )
+
+    def _schedule_protocol_roles_of_provider(self, provider_id: str) -> None:
+        """
+        Attach the protocols again whose role changed with those of a provider.
+
+        :param provider_id: Instance id of the provider.
+        """
+        if self.mass.closing:
+            return
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(provider_id):
+            record = self.mass.config.get_protocol_record(protocol_id) or {}
+            if (player_id := record.get("player_id")) in self._players:
+                self._schedule_protocol_roles(str(player_id))
 
     async def _settle_protocol_roles(self, player_id: str) -> None:
         """

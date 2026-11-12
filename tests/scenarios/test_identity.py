@@ -540,14 +540,17 @@ async def test_the_twin_is_the_native_protocol_once_the_vendor_protocol_is_remov
     assert _roles(scenario, player_id) == {speaker.twin.protocol_id: ProtocolRole.NATIVE}
 
 
-async def test_the_settings_of_a_disabled_player_stay_those_of_its_vendor_protocol(
-    scenario: Scenario,
+@pytest.mark.parametrize("found", ["while_enabled", "while_disabled"])
+async def test_the_settings_of_a_disabled_player_are_those_of_its_vendor_protocol(
+    scenario: Scenario, found: str
 ) -> None:
     """
-    A disabled player shows the settings of its vendor protocol, not of the twin.
+    A disabled player keeps its settings on its vendor protocol, not on the twin.
 
     The vendor protocol here controls the device without an audio path of its own, like
-    the twin does as control protocol, so only the rank tells the two apart.
+    the twin does as control protocol, so only the rank tells the two apart. Found while
+    the player is disabled, it does not attach, and the twin still stands as native in
+    what is stored for it.
     """
     wiim = await scenario.add_provider("wiim")
     hass_players = await scenario.add_provider("hass_players")
@@ -558,13 +561,47 @@ async def test_the_settings_of_a_disabled_player_stay_those_of_its_vendor_protoc
     )
     linkplay = wiim.protocol("linkplay_kitchen", "Kitchen", role="control", identifiers=SPEAKER)
     await scenario.attach(twin)
-    await scenario.attach(linkplay)
-    player_id = scenario.single_player(twin, linkplay).player_id
-    await scenario.configure_player(player_id, **{FAKE_SETTING: "loud"})
+    player_id = scenario.single_player(twin).player_id
+    await scenario.configure_player(player_id, **{FAKE_SETTING: "of the twin"})
+    if found == "while_enabled":
+        await scenario.attach(linkplay)
+        await scenario.disable(player_id)
+    else:
+        await scenario.disable(player_id)
+        await scenario.attach(linkplay)
+
+    await scenario.mass.config.save_protocol_config(
+        linkplay.protocol_id, {FAKE_SETTING: "of the vendor"}
+    )
+
+    value = await scenario.mass.config.get_player_config_value(
+        player_id, FAKE_SETTING, return_type=str
+    )
+    assert value == "of the vendor"
+
+
+async def test_the_settings_of_a_disabled_player_follow_the_protocol_switched_on(
+    scenario: Scenario,
+) -> None:
+    """A disabled player keeps its settings on the twin while the vendor's provider is disabled."""
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.vendor)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+    for protocol, value in ((speaker.vendor, "of the vendor"), (speaker.twin, "of the twin")):
+        await scenario.mass.config.save_protocol_config(protocol.protocol_id, {FAKE_SETTING: value})
+    scenario.set_present(speaker.vendor.protocol_id, False)
+    await scenario.mass.config.save_provider_config(
+        "sonos", {"enabled": False}, instance_id=scenario.provider("sonos").instance_id
+    )
+    await scenario.idle()
 
     await scenario.disable(player_id)
 
-    assert await scenario.mass.config.get_player_config_value(player_id, FAKE_SETTING) == "loud"
+    value = await scenario.mass.config.get_player_config_value(
+        player_id, FAKE_SETTING, return_type=str
+    )
+    assert value == "of the twin"
 
 
 @pytest.mark.parametrize("failure", ["raises", "cancelled"])
@@ -609,6 +646,58 @@ async def test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native
         )
     ]
     assert _roles(scenario, player_id) == {speaker.twin.protocol_id: ProtocolRole.NATIVE}
+
+
+@pytest.mark.parametrize("switch", ["provider", "protocol"])
+async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switched_off(
+    scenario: Scenario, switch: str
+) -> None:
+    """
+    A vendor protocol the user switched off, or whose provider the user disabled, has no rank.
+
+    The twin stands for the speaker meanwhile, also after a restart, and the player plays
+    through it. Switched on again, the vendor protocol ranks above it again at once, also
+    while it is away.
+    """
+    speaker = await _speaker(scenario)
+    sonos = scenario.provider("sonos")
+    await scenario.attach(speaker.twin)
+    await scenario.attach(speaker.vendor)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+    scenario.set_present(speaker.vendor.protocol_id, False)
+
+    async def _switch(enabled: bool) -> None:
+        if switch == "provider":
+            await scenario.mass.config.save_provider_config(
+                "sonos", {"enabled": enabled}, instance_id=sonos.instance_id
+            )
+        else:
+            await scenario.mass.config.save_protocol_config(
+                speaker.vendor.protocol_id, {"enabled": enabled}
+            )
+        await scenario.idle()
+
+    await _switch(False)
+    for _ in range(2):
+        assert [(p.player_id, p.available) for p in scenario.players_carrying(speaker.twin)] == [
+            (player_id, True)
+        ]
+        assert _roles(scenario, player_id) == {
+            speaker.vendor.protocol_id: ProtocolRole.NATIVE,
+            speaker.twin.protocol_id: ProtocolRole.NATIVE,
+        }
+        await scenario.restart()
+        await scenario.idle()
+
+    await _switch(True)
+
+    assert [(p.player_id, p.available) for p in scenario.players_carrying(speaker.twin)] == [
+        (player_id, False)
+    ]
+    assert _roles(scenario, player_id) == {
+        speaker.vendor.protocol_id: ProtocolRole.NATIVE,
+        speaker.twin.protocol_id: ProtocolRole.CONTROL,
+    }
 
 
 async def test_a_removed_player_of_a_speaker_comes_back_with_the_same_roles(
