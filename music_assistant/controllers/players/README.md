@@ -214,7 +214,7 @@ The `handle_player_command` decorator for command validation, and `AnnounceData`
 
 ## Locking
 
-Player commands are serialized per player with `get_player_lock`. A command never runs without the lock: it waits for the command that holds it, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError` ("still busy with a previous command"), since two commands running at once on one player or queue corrupt it. That wait outlasts what a command legitimately holds a player for, such as a play request that loads a large playlist or an announcement, so only a holder that is stuck makes the next command fail; the warning logged then shows where the holder waits. The timeouts live in [constants.py](constants.py).
+Player commands are serialized per player with `get_player_lock`. A command never runs without the lock: it waits for the command that holds it, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError` ("still busy with a previous command"), since two commands running at once on one player or queue corrupt it. That wait outlasts what most commands hold a player for, such as a play request that loads a large playlist, but the budget can also turn away a command behind long work that is legitimate: an announcement holds the player for as long as it plays. The warning logged at the timeout shows where the holder waits. The timeouts live in [constants.py](constants.py).
 
 Attaching protocols is serialized by one lock of the controller, so an object that replaces
 another under the same protocol id waits for an attach of that id that is still running. A detach
@@ -222,7 +222,7 @@ does not wait for it: it stops an attach of its protocol that is in progress.
 
 ### Lock Ordering
 
-A group player always locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**.
+A group player locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**. The one exception is a sync group's automatic re-add of members that came back: it holds the native leader's lock and each member's, not the group player's, and that is safe because it never waits for a member (it takes a member's lock only when it is free).
 
 A command that locks a member and only then reaches the group — a power off detaching the player from its group is the typical one — has to acquire the group's lock up front. Taking them the other way round deadlocks against any concurrent command on that group. Nested acquisitions within the same task are re-entrant, so locking the group up front costs nothing further down the call chain.
 

@@ -2384,6 +2384,32 @@ class TestOwnerChangesWhileWaitingForTheLock:
 
         assert stops == [("g1", frozenset({"playback_g1"}))]
 
+    async def test_a_stop_is_refused_for_a_group_the_user_may_not_use(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A user who may use the player only is refused once it joined a group meanwhile."""
+        controller, group, protocol, member, stops = self._member(mock_mass, captured=False)
+
+        with _restricted_user(["member"]):
+            async with _lock_held_elsewhere(controller, "member"):
+                stop = asyncio.create_task(controller.cmd_stop("member"))
+                await asyncio.sleep(0.05)
+                protocol._attr_group_members = ["member"]
+                _refresh(group, member)
+            with pytest.raises(InsufficientPermissions):
+                await stop
+
+        assert stops == []
+
+    async def test_a_stop_on_a_player_the_user_may_use_stops_it(self, mock_mass: MagicMock) -> None:
+        """A user who may use the player stops it when its group did not change."""
+        controller, _group, _protocol, _member, stops = self._member(mock_mass, captured=False)
+
+        with _restricted_user(["member"]):
+            await controller.cmd_stop("member")
+
+        assert stops == [("member", frozenset({"playback_member"}))]
+
     async def test_a_player_whose_group_ends_meanwhile_is_stopped_on_its_own(
         self, mock_mass: MagicMock
     ) -> None:

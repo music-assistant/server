@@ -307,10 +307,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         120s fails with ResourceBusyError, as the player is still busy with another.
 
         Ordering rule: when a command needs both a group/leader lock and a member
-        lock, it must take the group's first. The group players themselves always
-        lock their members from under their own lock, so a member-first
-        acquisition is an inversion and will deadlock. A command on a member that
-        reaches its group uses get_group_and_player_lock for that.
+        lock, it must take the group's first. The group players themselves lock their
+        members from under their own lock, so a member-first acquisition is an
+        inversion and will deadlock. The one exception is a sync group's automatic
+        re-add of returned members, which holds the native leader's lock and each
+        member's without the group player's: it is safe because it never waits for a
+        member (see get_player_lock_if_free). A command on a member that reaches its
+        group uses get_group_and_player_lock for that.
 
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
@@ -331,8 +334,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Acquire a player's lock only when no other command holds it or waits for it.
 
         For work nobody asked for at this moment, such as an automatic re-add of a group
-        member: it never makes a command on the player wait or fail, and leaves the player
-        alone when that player is busy. Re-entrant like get_player_lock.
+        member: it skips a player that is busy and never waits itself. A command that
+        arrives while the lock is held waits behind it, as behind any other holder.
+        Re-entrant like get_player_lock.
 
         :param player_id: The player to lock.
         :param purpose: Lock category.
@@ -890,6 +894,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         async with self._playback_owner_locks(player_id, hold_player=False):
             player = self._get_player_with_redirect(player_id)
+            # the player can have joined a group while waiting for the lock
+            self.check_player_access(self._resolve_playback_owner(player).player_id)
             # Redirect to queue controller if it is active (skip if already in queue command context)
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues.stop(active_queue.queue_id)
@@ -2909,12 +2915,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if wait:
             await self._acquire_player_lock(lock, lock_key, purpose, player_id)
         else:
+            acquired = True
             try:
                 # a free lock is taken without suspending, so only a held one (or one others
                 # wait for) reaches the timeout
                 async with asyncio.timeout(0):
                     await lock.acquire()
             except TimeoutError:
+                acquired = False
+            if not acquired:
                 yield False
                 return
         if task is not None:
