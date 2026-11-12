@@ -158,8 +158,8 @@ class ProtocolLinkingMixin:
         Return the id of the player of the protocol a derived protocol rides on.
 
         None while that protocol is not attached to a player, when its player already
-        has a protocol of the domain of the derived one, attached or not, or when it is
-        being removed.
+        has a protocol of the domain of the derived one (attached, or away and not
+        switched off by the user), or when it is being removed.
 
         :param protocol: The derived protocol.
         """
@@ -278,7 +278,8 @@ class ProtocolLinkingMixin:
 
         :param protocol: The protocol that attaches.
         :param player_id: Id of the player.
-        :param include_away: Also count the protocols of the player that are not attached.
+        :param include_away: Also count the protocols of the player that are not attached,
+            unless the user switched them off.
         """
         domain = protocol.provider.domain
         if include_away:
@@ -287,6 +288,8 @@ class ProtocolLinkingMixin:
                     other_domain = other.provider.domain
                 else:
                     record = self.mass.config.get_protocol_record(other_id) or {}
+                    if not record.get("enabled", True):
+                        continue
                     other_domain = str(record.get("provider") or "").split("--", maxsplit=1)[0]
                 if other_domain == domain:
                     return True

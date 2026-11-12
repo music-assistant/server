@@ -2588,7 +2588,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if not self.wants_protocol(protocol_id):
                 # the user switched this output of the player off
                 await self.detach(protocol_id)
+                # a protocol that waits for the place of its domain may take it now
+                self._schedule_held_protocols()
                 return
+            await self._hold_derived_protocols_without_place(protocol_id)
             if protocol is None or protocol.player is None:
                 # its provider attaches it when it looks for its devices again
                 stored = self.mass.config.get_protocol_record(protocol_id) or {}
@@ -2955,6 +2958,31 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             handle.cancel()
         if protocol.player is None and self._protocols.get(protocol_id) is protocol:
             del self._protocols[protocol_id]
+
+    async def _hold_derived_protocols_without_place(self, protocol_id: str) -> None:
+        """
+        Hold again the derived protocols that took the place of a protocol switched on again.
+
+        A protocol that is away keeps the place of its domain for when it returns, once the
+        user switches it on again.
+
+        :param protocol_id: Id of the protocol the user switched on again.
+        """
+        player_id = self._get_player_id_of_protocol(protocol_id)
+        if not player_id or (player := self._players.get(player_id)) is None:
+            return
+        derived = [
+            protocol
+            for protocol in player.protocols.values()
+            if protocol.underlying_protocol_id
+            and self._has_other_protocol_of_domain(protocol, player_id, include_away=True)
+        ]
+        for protocol in derived:
+            self._attaching.pop(protocol.protocol_id, None)
+            await self._unbind(protocol)
+            self._hold_protocol(protocol)
+        if derived:
+            await self._settle_player(player)
 
     async def _settle_player(self, player: Player) -> None:
         """

@@ -191,6 +191,89 @@ async def test_protocol_that_returns_finds_its_place_also_when_a_bridge_waits_fo
     assert [player.player_id for player in scenario.visible_players()] == [player_id]
 
 
+@pytest.mark.parametrize("after", ["switching_off", "a_restart"])
+async def test_bridge_takes_the_place_of_a_protocol_that_is_away_and_switched_off(
+    scenario: Scenario, after: str
+) -> None:
+    """An output that is gone and that the user switched off leaves the place of its domain free."""
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    carrier = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    bridge = sendspin.protocol(
+        "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+    )
+    for protocol in (carrier, client, bridge):
+        await scenario.attach(protocol)
+    player_id = scenario.single_player(carrier, client).player_id
+    # the client of the device is gone for good, its record stays
+    await scenario.detach(client)
+    await scenario.idle()
+    assert scenario.player_of(bridge) is None
+
+    await scenario.mass.config.save_protocol_config("sendspin_kitchen", {"enabled": False})
+    await scenario.idle()
+    if after == "a_restart":
+        for protocol_id in ("ap_kitchen", "sendspin_bridge_kitchen"):
+            scenario.set_present(protocol_id, False)
+        await scenario.restart()
+        await scenario.attach(scenario.protocol("ap_kitchen"))
+        bridge = scenario.protocol("sendspin_bridge_kitchen")
+        await scenario.attach(bridge)
+        await scenario.idle()
+
+    assert scenario.player_of(bridge) == player_id
+    assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+
+async def test_protocol_switched_on_again_gets_its_place_back_from_the_bridge(
+    scenario: Scenario,
+) -> None:
+    """An output switched on again holds its place: the bridge waits, the output returns to it."""
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    carrier = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    bridge = sendspin.protocol(
+        "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+    )
+    for protocol in (carrier, client, bridge):
+        await scenario.attach(protocol)
+    player_id = scenario.single_player(carrier, client).player_id
+    await scenario.detach(client)
+    await scenario.mass.config.save_protocol_config("sendspin_kitchen", {"enabled": False})
+    await scenario.idle()
+    assert scenario.player_of(bridge) == player_id
+    # the server holds a bridge that waits: its provider does not offer it again
+    scenario.set_present("sendspin_bridge_kitchen", False)
+
+    await scenario.mass.config.save_protocol_config("sendspin_kitchen", {"enabled": True})
+    await scenario.idle()
+
+    assert scenario.player_of(bridge) is None
+    state = scenario.player(player_id)
+    assert state is not None
+    assert {info.protocol_id: info.available for info in state.protocols} == {
+        "ap_kitchen": True,
+        "sendspin_bridge_kitchen": False,
+        "sendspin_kitchen": False,
+    }
+
+    await scenario.attach(client)
+    await scenario.idle()
+
+    assert scenario.player_of(client) == player_id
+    assert scenario.player_of(bridge) is None
+    assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+    # switched off once more, the output leaves its place to the bridge that waits
+    await scenario.mass.config.save_protocol_config("sendspin_kitchen", {"enabled": False})
+    await scenario.idle()
+
+    assert scenario.player_of(client) is None
+    assert scenario.player_of(bridge) == player_id
+
+
 @pytest.mark.parametrize(
     ("away_domain", "domain", "role", "own_identifiers"),
     [
