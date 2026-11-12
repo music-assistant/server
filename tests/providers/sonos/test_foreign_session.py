@@ -13,6 +13,7 @@ from aiosonos.group import SonosGroup
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -83,6 +84,7 @@ def _speaker(mass: MagicMock, player_id: str = SPEAKER, leader: str | None = Non
     client.player.volume_level = 20
     client.api.playback_session.create_session = AsyncMock(return_value={"sessionId": "new"})
     client.api.playback_session.leave_session = AsyncMock()
+    client.api.playback.play = AsyncMock()
     player.client = client
     player.connected = True
     player._attr_available = True
@@ -90,9 +92,10 @@ def _speaker(mass: MagicMock, player_id: str = SPEAKER, leader: str | None = Non
     mass.players._players[player_id] = player
     player.set_initialized()
     queue = PlayerQueue(
-        queue_id=player_id, active=False, display_name=player_id, available=True, items=0
+        queue_id=player_id, active=False, display_name=player_id, available=True, items=1
     )
-    mass.player_queues._queue_data[player_id] = PlayerQueueData(queue=queue)
+    item = QueueItem(queue_id=player_id, queue_item_id="abc", name="Shout", duration=200)
+    mass.player_queues._queue_data[player_id] = PlayerQueueData(queue=queue, items=[item])
     return player
 
 
@@ -450,3 +453,112 @@ def test_our_queue_over_airplay_is_still_our_queue() -> None:
     assert player.state.active_source == SPEAKER
     assert queue.active is True
     assert queue.state == PlaybackState.PLAYING
+
+
+async def _play_our_queue(mass: MagicMock, player: SonosPlayer) -> SonosGroup:
+    """Start our queue on the speaker as the controllers would, and let the speaker report it."""
+    group = player.client.player.group
+    assert group is not None
+    player.set_active_mass_source(player.player_id)
+    with _flow_mode(False):
+        await _play(player, _queue_media(), lambda: None)
+    mass.player_queues._queue_data[player.player_id].session_id = "queue-session"
+    _report(group, _cloud_queue_container())
+    return group
+
+
+@pytest.mark.parametrize(
+    ("command", "reported"),
+    [
+        ("cmd_stop", SonosPlayBackState.PLAYBACK_STATE_PAUSED),
+        ("cmd_stop", SonosPlayBackState.PLAYBACK_STATE_IDLE),
+        # pausing our queue stops the speaker
+        ("cmd_pause", SonosPlayBackState.PLAYBACK_STATE_PAUSED),
+    ],
+)
+async def test_play_after_we_stopped_our_queue_resumes_it(
+    command: str, reported: SonosPlayBackState
+) -> None:
+    """Test the session we left on the speaker hands play back to our queue."""
+    mass = _mass()
+    player = _speaker(mass)
+    group = await _play_our_queue(mass, player)
+    _update(mass, player)
+    await getattr(mass.players, command)(SPEAKER)
+    _session_api(player).leave_session.assert_awaited_once_with(OUR_SESSION)
+    # the speaker keeps showing what our session played
+    _report(group, _cloud_queue_container(), reported)
+    queue = _update(mass, player)
+    resume = AsyncMock()
+    mass.player_queues.resume = resume
+
+    await mass.players.cmd_play(SPEAKER)
+
+    assert player.state.playback_state == PlaybackState.IDLE
+    assert player.state.active_source == SPEAKER
+    assert queue.active is True
+    # the pause, next, previous and seek commands go to the same queue
+    assert mass.players.get_active_queue(player) is queue
+    resume.assert_awaited_once_with(SPEAKER)
+    cast("MagicMock", player.client).api.playback.play.assert_not_awaited()
+
+
+async def test_play_on_a_member_after_its_group_stopped_resumes_the_queue() -> None:
+    """Test a member of a group we stopped hands play to the coordinator's queue."""
+    mass = _mass()
+    leader = _speaker(mass)
+    member = _speaker(mass, MEMBER, leader=SPEAKER)
+    cast("MagicMock", leader.client).player.group_members = [SPEAKER, MEMBER]
+    group = await _play_our_queue(mass, leader)
+    _update(mass, leader, member)
+    await mass.players.cmd_stop(MEMBER)
+    _session_api(leader).leave_session.assert_awaited_once_with(OUR_SESSION)
+    _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
+    _update(mass, leader, member)
+    resume = AsyncMock()
+    mass.player_queues.resume = resume
+
+    await mass.players.cmd_play(MEMBER)
+
+    resume.assert_awaited_once_with(SPEAKER)
+    cast("MagicMock", leader.client).api.playback.play.assert_not_awaited()
+
+
+async def test_play_after_our_queue_ran_out_resumes_it() -> None:
+    """Test a queue that ended by itself is still ours to start again."""
+    mass = _mass()
+    player = _speaker(mass)
+    group = await _play_our_queue(mass, player)
+    _update(mass, player)
+    _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_IDLE)
+    queue = _update(mass, player)
+    resume = AsyncMock()
+    mass.player_queues.resume = resume
+
+    await mass.players.cmd_play(SPEAKER)
+
+    assert player._attr_active_source is None
+    assert queue.active is True
+    resume.assert_awaited_once_with(SPEAKER)
+
+
+async def test_a_session_started_after_we_stopped_ours_is_not_ours() -> None:
+    """Test another server playing after we stopped our queue is not taken for our queue."""
+    mass = _mass()
+    player = _speaker(mass)
+    group = await _play_our_queue(mass, player)
+    _update(mass, player)
+    await mass.players.cmd_stop(SPEAKER)
+    _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
+    _update(mass, player)
+
+    _report(group, _cloud_queue_container())
+    queue = _update(mass, player)
+    await mass.player_queues.close()
+
+    assert player.state.active_source == SOURCE_MUSIC_ASSISTANT
+    assert queue.active is False
+    assert queue.state == PlaybackState.IDLE
+    # the leave of our own stop is all that went to the speaker
+    _session_api(player).leave_session.assert_awaited_once_with(OUR_SESSION)
+    _session_api(player).create_session.assert_not_awaited()
