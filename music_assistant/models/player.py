@@ -1553,6 +1553,25 @@ class Player:
             return self._own_protocol
         return self._protocols.get(control)
 
+    def takes_control_from_unreachable_own(self, previous_control: str, control: str) -> bool:
+        """
+        Return whether a protocol takes the volume or mute control from the own protocol.
+
+        That is when the own protocol is attached but can not be reached. The protocol that
+        takes over is to be given the level and mute of the player, which the player keeps
+        publishing meanwhile.
+
+        :param previous_control: The volume or mute control the player published last.
+        :param control: The same control as it is resolved now.
+        """
+        own = self._own_protocol
+        return (
+            previous_control == PLAYER_CONTROL_NATIVE
+            and control in self._protocols
+            and own is not None
+            and not own.available
+        )
+
     def set_active_mass_source(self, value: str | None) -> None:
         """
         Set the id of the (last) active mass source.
@@ -2326,6 +2345,9 @@ class Player:
     def _volume_control_level(self) -> int | None:
         """Return the volume level based on the playercontrol which may have been set-up."""
         volume_control = self.volume_control
+        # the state is still the one published last
+        if self.takes_control_from_unreachable_own(self._state.volume_control, volume_control):
+            return self._state.volume_level
         if volume_control == PLAYER_CONTROL_FAKE:
             # Fake volume is already stored as logical (0-100)
             return int(self._extra_data.get(ATTR_FAKE_VOLUME, 0))
@@ -2346,6 +2368,9 @@ class Player:
     def _mute_control_state(self) -> bool | None:
         """Return the mute state based on any playercontrol which may have been set-up."""
         mute_control = self.mute_control
+        # the state is still the one published last
+        if self.takes_control_from_unreachable_own(self._state.mute_control, mute_control):
+            return self._state.volume_muted
         if mute_control == PLAYER_CONTROL_FAKE:
             return bool(self._extra_data.get(ATTR_FAKE_MUTE, False))
         if mute_control == PLAYER_CONTROL_NONE:

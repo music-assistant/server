@@ -70,6 +70,7 @@ async def test_audio_protocol_that_takes_over_gets_the_level_of_the_player_first
     assert "play_media" not in _names(native)
     assert _names(audio).index("volume_set") < _names(audio).index("play_media")
     assert ("volume_set", 30) in audio.commands
+    assert _names(audio).count("volume_set") == 1
     # the level the device had before it took over is never shown for the player
     assert 80 not in published
     state = scenario.player(player_id)
@@ -186,7 +187,7 @@ async def test_native_protocol_that_can_not_be_reached_leaves_the_controls_to_th
     assert state is not None
     assert state.available
     assert (state.volume_control, state.mute_control) == ("ap_kitchen", "ap_kitchen")
-    assert state.volume_level == 80
+    assert state.volume_level == 30
     # powering on a device that can not be reached is how its own protocol wakes it
     assert state.power_control == "native"
     native.commands.clear()
@@ -219,6 +220,210 @@ async def test_native_protocol_that_can_not_be_reached_leaves_the_controls_to_th
         "native",
         "native",
     )
+
+
+def _published_levels(scenario: Scenario, player_id: str) -> list[int | None]:
+    """Collect every volume level the player publishes from now on."""
+    published: list[int | None] = []
+    scenario.mass.players.subscribe_player_state_update(
+        lambda player, changed: (
+            published.append(changed["volume_level"][1])
+            if player.player_id == player_id and "volume_level" in changed
+            else None
+        )
+    )
+    return published
+
+
+@pytest.mark.parametrize("playing", [False, True])
+async def test_audio_protocol_that_takes_over_from_an_unreachable_native_gets_the_player_level(
+    scenario: Scenario, playing: bool
+) -> None:
+    """The level and mute of the player stay when its native drops: AirPlay is handed them."""
+    player_id, native, audio = await _native_and_airplay(
+        scenario, volume_level=30, volume_muted=True
+    )
+    if playing:
+        await scenario.play(player_id)
+    audio.commands.clear()
+    published = _published_levels(scenario, player_id)
+
+    await scenario.report(native, available=False)
+    await scenario.idle()
+
+    assert audio.commands == [("volume_set", 30), ("volume_mute", True)]
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_control, state.mute_control) == ("ap_kitchen", "ap_kitchen")
+    assert (state.volume_level, state.volume_muted) == (30, True)
+    # the level the output had before it took over is never shown for the player
+    assert 80 not in published
+
+    if not playing:
+        await scenario.play(player_id)
+        assert _names(audio)[-1] == "play_media"
+        assert "volume_set" not in _names(audio)[2:]
+        state = scenario.player(player_id)
+        assert state is not None
+        assert state.volume_level == 30
+
+
+async def test_native_that_can_be_reached_again_takes_the_controls_back_at_its_own_level(
+    scenario: Scenario,
+) -> None:
+    """A native back in reach reports the level of the device again, and gets no level itself."""
+    player_id, native, audio = await _native_and_airplay(scenario, volume_level=30)
+    await scenario.report(native, available=False)
+    await scenario.mass.players.cmd_volume_set(player_id, 44)
+    await scenario.idle()
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_level == 44
+    native.commands.clear()
+    audio.commands.clear()
+
+    await scenario.report(native, available=True)
+    await scenario.idle()
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_control, state.volume_level) == ("native", 30)
+    assert native.commands == []
+    assert audio.commands == []
+
+
+async def test_member_that_joins_through_airplay_while_its_native_is_unreachable_keeps_its_level(
+    scenario: Scenario,
+) -> None:
+    """A member whose native can not be reached joins a group through AirPlay at its own level."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    airplay_features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+    hall = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"}
+    protocols = [
+        sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30),
+        airplay.protocol(
+            "ap_kitchen",
+            "Kitchen",
+            role="audio",
+            identifiers=KITCHEN,
+            volume_level=80,
+            supported_features=airplay_features,
+            can_group_with={"ap_hall"},
+        ),
+        sonos.protocol("RINCON_HALL", "Hall", identifiers=hall, volume_level=20),
+        airplay.protocol(
+            "ap_hall",
+            "Hall",
+            role="audio",
+            identifiers=hall,
+            volume_level=90,
+            supported_features=airplay_features,
+            can_group_with={"ap_kitchen"},
+        ),
+    ]
+    for protocol in protocols:
+        await scenario.attach(protocol)
+    await scenario.idle()
+    kitchen_native, kitchen_airplay, hall_native, hall_airplay = protocols
+    kitchen_id = scenario.single_player(kitchen_native, kitchen_airplay).player_id
+    hall_id = scenario.single_player(hall_native, hall_airplay).player_id
+    published = _published_levels(scenario, hall_id)
+
+    await scenario.report(hall_native, available=False)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[hall_id])
+    await scenario.idle()
+
+    hall_state = scenario.player(hall_id)
+    assert hall_state is not None
+    assert (hall_state.active_output_protocol, hall_state.volume_level) == ("ap_hall", 20)
+    assert ("volume_set", 20) in hall_airplay.commands
+    assert 90 not in published
+    kitchen_state = scenario.player(kitchen_id)
+    assert kitchen_state is not None
+    assert hall_id in kitchen_state.group_members
+
+
+async def test_volume_control_the_user_chose_stays_when_the_native_can_not_be_reached(
+    scenario: Scenario,
+) -> None:
+    """A volume control the user stored keeps the volume: nothing is handed to another protocol."""
+    player_id, native, audio = await _native_and_airplay(scenario, volume_level=30)
+    # stored as such: the config save leaves out a value that equals the default
+    scenario.mass.config.set_player_value(player_id, CONF_VOLUME_CONTROL, "native")
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    player.update_state(force_update=True)
+    audio.commands.clear()
+
+    await scenario.report(native, available=False)
+    await scenario.idle()
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_control, state.volume_level) == ("native", 30)
+    assert "volume_set" not in _names(audio)
+
+
+@pytest.mark.parametrize("action", ["play", "join"])
+async def test_output_that_refuses_the_level_of_the_player_is_activated_all_the_same(
+    scenario: Scenario, action: str
+) -> None:
+    """A protocol that fails to take the level over still takes the audio of the player."""
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    airplay_features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+    hall = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"}
+    protocols = [
+        sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30),
+        airplay.protocol(
+            "ap_kitchen",
+            "Kitchen",
+            role="audio",
+            identifiers=KITCHEN,
+            volume_level=80,
+            supported_features=airplay_features,
+            can_group_with={"ap_hall"},
+        ),
+        sonos.protocol("RINCON_HALL", "Hall", identifiers=hall, volume_level=20),
+        airplay.protocol(
+            "ap_hall",
+            "Hall",
+            role="audio",
+            identifiers=hall,
+            volume_level=90,
+            supported_features=airplay_features,
+            can_group_with={"ap_kitchen"},
+        ),
+    ]
+    for protocol in protocols:
+        await scenario.attach(protocol)
+    await scenario.idle()
+    kitchen_native, kitchen_airplay, hall_native, hall_airplay = protocols
+    kitchen_id = scenario.single_player(kitchen_native, kitchen_airplay).player_id
+    hall_id = scenario.single_player(hall_native, hall_airplay).player_id
+
+    async def _refuse(volume_level: int) -> None:  # noqa: ARG001
+        raise ConnectionError("no answer")
+
+    refusing = kitchen_airplay if action == "play" else hall_airplay
+    refusing.volume_set = _refuse  # type: ignore[method-assign]
+    scenario.expect_log("Could not give ap_")
+
+    if action == "play":
+        await scenario.configure_player(kitchen_id, preferred_output_protocol="ap_kitchen")
+        await scenario.play(kitchen_id)
+        assert "play_media" in _names(kitchen_airplay)
+    else:
+        await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[hall_id])
+        await scenario.idle()
+        kitchen_state = scenario.player(kitchen_id)
+        assert kitchen_state is not None
+        assert hall_id in kitchen_state.group_members
+        assert ("set_members", ["ap_hall"], None) in kitchen_airplay.commands
+    refusing_state = scenario.player(kitchen_id if action == "play" else hall_id)
+    assert refusing_state is not None
+    assert refusing_state.active_output_protocol == refusing.protocol_id
 
 
 async def test_output_without_a_volume_of_its_own_gets_none_while_the_native_is_unreachable(

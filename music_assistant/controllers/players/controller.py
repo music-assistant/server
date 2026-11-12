@@ -2221,6 +2221,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 corrected or self._unexpired_volume_target(player) is None
             ):
                 self._invalidate_group_volume_snapshot(player_id)
+        if changed_values.keys() & {ATTR_VOLUME_CONTROL, ATTR_MUTE_CONTROL}:
+            self._hand_over_controls_taken_from_unreachable_own(player, changed_values)
         # dispatch to internal state update subscribers (with changed_values)
         self._dispatch_state_update_subscribers(player, changed_values)
 
@@ -3814,6 +3816,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             player.state.synced_to or player.state.active_group or player.state.group_members
         ):
             self.mass.create_task(self.cmd_ungroup(player.player_id))
+
+    def _hand_over_controls_taken_from_unreachable_own(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Give a protocol that took a control from the unreachable own protocol the level and mute."""
+        controls = [
+            change[1]
+            if (change := changed_values.get(key))
+            and player.takes_control_from_unreachable_own(*change)
+            else None
+            for key in (ATTR_VOLUME_CONTROL, ATTR_MUTE_CONTROL)
+        ]
+        if any(controls):
+            self.mass.create_task(self._hand_over_volume(player, *controls))
 
     def _handle_external_power_off(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -5505,35 +5521,62 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param output_protocol_id: Id of the output that takes the audio, "native" for
             the own protocol of the player.
         """
-        await self._hand_over_volume(player, output_protocol_id)
+        volume_control = player.volume_control_for_output(output_protocol_id)
+        mute_control = player.mute_control_for_output(output_protocol_id)
+        await self._hand_over_volume(
+            player,
+            volume_control if volume_control != player.volume_control else None,
+            mute_control if mute_control != player.mute_control else None,
+        )
         player.set_active_output_protocol(output_protocol_id)
 
-    async def _hand_over_volume(self, player: Player, output_protocol_id: str) -> None:
+    async def _hand_over_volume(
+        self, player: Player, volume_control: str | None, mute_control: str | None
+    ) -> None:
         """
-        Give the protocol that takes the audio of a player over its volume and mute.
+        Give the protocols that take over the volume and mute control of a player its level and mute.
 
-        The level and mute of a player are its own, whichever of its protocols renders
-        the audio: a protocol that becomes the one to control them starts out with them,
-        before it is made the active output and the stream starts.
+        The level and mute of a player are its own, whichever of its protocols controls
+        them: a protocol that takes over starts out with them, before it renders any audio
+        of the player. A protocol that does not take them is logged, and what the hand-over
+        is part of goes on.
 
-        :param player: The player whose output is about to be (re)selected.
-        :param output_protocol_id: Id of the output that takes the audio, "native" for
-            the own protocol of the player.
+        :param player: The player whose controls move.
+        :param volume_control: The volume control that takes over, None when it stays.
+        :param mute_control: The mute control that takes over, None when it stays.
         """
-        volume_control = player.volume_control_for_output(output_protocol_id)
+        # read both first: what a protocol reports back is published right away
+        volume_level, volume_muted = player.state.volume_level, player.state.volume_muted
         if (
-            (volume_level := player.state.volume_level) is not None
-            and volume_control != player.volume_control
+            volume_control
+            and volume_level is not None
             and (protocol := player.get_control_protocol(volume_control))
         ):
-            await protocol.volume_set(self.scale_volume_to_device(player.player_id, volume_level))
-        mute_control = player.mute_control_for_output(output_protocol_id)
+            try:
+                await protocol.volume_set(
+                    self.scale_volume_to_device(player.player_id, volume_level)
+                )
+            except Exception as err:
+                self.logger.warning(
+                    "Could not give %s the volume of %s: %s",
+                    protocol.protocol_id,
+                    player.display_name,
+                    err,
+                )
         if (
-            (volume_muted := player.state.volume_muted) is not None
-            and mute_control != player.mute_control
+            mute_control
+            and volume_muted is not None
             and (protocol := player.get_control_protocol(mute_control))
         ):
-            await protocol.volume_mute(volume_muted)
+            try:
+                await protocol.volume_mute(volume_muted)
+            except Exception as err:
+                self.logger.warning(
+                    "Could not give %s the mute of %s: %s",
+                    protocol.protocol_id,
+                    player.display_name,
+                    err,
+                )
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
