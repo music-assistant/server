@@ -2756,10 +2756,15 @@ class LocalFileSystemProvider(MusicProvider):
             )
         ):
             keep_album_id = str(db_album.item_id)
-        for linked_album in await self.mass.music.tracks.get_library_track_albums(
-            prior.item_id, unfiltered=True
+        assert self.mass.music.database
+        for db_row in await self.mass.music.database.get_rows(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(prior.item_id)}, limit=0
         ):
-            if str(linked_album.item_id) == keep_album_id:
+            if str(db_row["album_id"]) == keep_album_id:
+                continue
+            try:
+                linked_album = await self.mass.music.albums.get_library_item(db_row["album_id"])
+            except MediaNotFoundError:
                 continue
             # an album of another source, or one shared with another source, is left alone:
             # that source may still place the track on it, and the orphan cleanup would

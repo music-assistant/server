@@ -730,16 +730,8 @@ class TracksController(MediaControllerBase[Track]):
     async def get_library_track_albums(
         self,
         item_id: str | int,
-        *,
-        unfiltered: bool = False,
     ) -> list[Album]:
-        """
-        Return all in-library albums for a track.
-
-        :param item_id: The library item id of the track.
-        :param unfiltered: Return every album the track is linked to, regardless of the
-            current user's music sources or the albums' in-library state.
-        """
+        """Return all in-library albums for a track."""
         db_id = int(item_id)  # ensure integer
         subquery = (
             f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} "
@@ -750,8 +742,8 @@ class TracksController(MediaControllerBase[Track]):
             limit=0,
             extra_query_parts=[query],
             extra_query_params={"track_id": db_id},
-            provider_filter=None if unfiltered else self._ensure_provider_filter(None),
-            in_library_only=not unfiltered,
+            provider_filter=self._ensure_provider_filter(None),
+            in_library_only=True,
         )
 
     async def get_library_match(self, item: Track) -> Track | None:
