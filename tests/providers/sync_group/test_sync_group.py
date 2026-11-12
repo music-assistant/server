@@ -1162,6 +1162,37 @@ class TestSetMembersDoesNotRegisterIncompatible:
         assert sgp._attr_group_members == []
 
 
+class TestSetMembersWithABusyLeader:
+    """A member change that cannot get the leader's lock leaves the recorded members as they were."""
+
+    @pytest.mark.parametrize(
+        ("add", "remove"),
+        [(["new"], None), (None, ["member"]), (None, ["leader"]), (None, ["leader", "member"])],
+    )
+    async def test_the_member_list_stays_as_it_was(
+        self, add: list[str] | None, remove: list[str] | None
+    ) -> None:
+        """Adding, removing, and removing the leader all fail before the list changes."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+        leader.state.can_group_with = {"member", "new"}
+        _make_member(mass, "member")
+        _make_member(mass, "new")
+        leader.state.group_members = UniqueList(["leader", "member"])
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+        mass.players.get_player_lock = _busy_lock()
+
+        with patch.object(sgp, "update_state"), pytest.raises(ResourceBusyError):
+            await sgp.set_members(player_ids_to_add=add, player_ids_to_remove=remove)
+
+        assert sgp._attr_group_members == ["leader", "member"]
+        assert sgp.sync_leader is leader
+        mass.players._handle_set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
+
 class TestSetMembersRemovesExternalJoiner:
     """Regression: a member joined to the leader outside MA must be removable."""
 

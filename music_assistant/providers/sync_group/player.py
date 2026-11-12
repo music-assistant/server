@@ -599,6 +599,9 @@ class SyncGroupPlayer(PlayerProtocol):
             self.playback_state != PlaybackState.PAUSED and self._playback_recently_started
         )
 
+        # the requested members are staged, and recorded only once the leader's lock is
+        # held: a change that cannot get it leaves the group as it was
+        members = self._attr_group_members.copy()
         # handle additions
         final_players_to_add: list[str] = []
         can_group_with = sync_leader.state.can_group_with.copy() if sync_leader else set()
@@ -627,8 +630,8 @@ class SyncGroupPlayer(PlayerProtocol):
             if not sync_leader:
                 # no leader yet (e.g. empty group) - just register the member
                 # the leader and protocol selection happen on the next form/play
-                if member_id not in self._attr_group_members:
-                    self._attr_group_members.append(member_id)
+                if member_id not in members:
+                    members.append(member_id)
                 continue
             if (
                 member_id != sync_leader.player_id
@@ -643,8 +646,8 @@ class SyncGroupPlayer(PlayerProtocol):
                     f"not compatible with the (current) sync leader"
                 )
                 continue
-            if member_id not in self._attr_group_members:
-                self._attr_group_members.append(member_id)
+            if member_id not in members:
+                members.append(member_id)
             if member_id != sync_leader.player_id:
                 final_players_to_add.append(member_id)
 
@@ -652,7 +655,7 @@ class SyncGroupPlayer(PlayerProtocol):
         final_players_to_remove: list[str] = []
         leader_removed = False
         for member_id in player_ids_to_remove or []:
-            if member_id not in self._attr_group_members:
+            if member_id not in members:
                 # Fallback for a member that was grouped to the sync leader
                 # outside of MA (e.g. via the Sonos app): it isn't part of our
                 # tracked member list but does show up in group_members via the
@@ -681,47 +684,27 @@ class SyncGroupPlayer(PlayerProtocol):
                     translation_owner=self.translation_owner,
                     translation_args=[self.display_name],
                 )
-            self._attr_group_members.remove(member_id)
+            members.remove(member_id)
             final_players_to_remove.append(member_id)
 
-        if self.sync_leader and leader_removed and self._attr_group_members:
-            # we removed the current sync leader, but we still have members in the group
-            old_leader_id = self.sync_leader.player_id
-            session_protocol = self._active_session_protocol()
-            supports_handoff = (
-                session_protocol is not None
-                and session_protocol.provider.domain in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
-            )
-
-            if was_playing and supports_handoff:
-                # protocol supports dynamic leader switching: try to remove
-                # only the departing leader and keep remaining members playing.
-                # _dynamic_leader_switch will fall back to dissolve+reform
-                # automatically if no remaining member is part of the live
-                # session (e.g. only freshly-added players are left).
-                await self._dynamic_leader_switch(old_leader_id)
-            else:
-                # protocol doesn't support dynamic leader switching or not playing
-                await self._dissolve_and_reform(old_leader_id, resume_playback=was_playing)
-        elif (leader := self.sync_leader) and (leader_removed or not self._attr_group_members):
-            # we removed the current sync leader, and we have no members left in the group
-            # or we just removed the last member from the group, so we dissolve the syncgroup
-            # Use internal handler to stop the sync leader directly,
-            # bypassing group redirect that would loop back to this player.
-            await self._stop_departing_leader(leader)
-            await self._dissolve_syncgroup()
-
-        elif leader := self.sync_leader:
-            # just a regular member(s) added/removed action,
-            # we can simply update the syncgroup members on the sync leader.
-            # `active_protocol_domain` is derived from live state, so the
-            # group will naturally downshift once it re-forms if every
-            # remaining member can play on the leader's native protocol.
+        if (leader := self.sync_leader) is None:
+            self._attr_group_members = members
+            if self._reform_task is not None:
+                if self._attr_group_members:
+                    # leaderless with a debounced re-form pending: membership just changed,
+                    # so re-arm the window — the re-form picks up the final member list.
+                    self._schedule_reform_timer()
+                else:
+                    # nothing left to re-form for: dropping the pending re-form also
+                    # ends the group's claim on the session
+                    self._cancel_reform_timer()
+        else:
             # use _handle_set_members directly to avoid the redirect loop
             # (cmd_set_members redirects sync-leader targets back to this syncgroup)
             async with self.mass.players.get_player_lock(
                 leader.player_id, PlayerLockPurpose.PLAYBACK
             ):
+                self._attr_group_members = members
                 current_leader: Player | None = self.sync_leader
                 if current_leader is not leader:
                     # the group dissolved or picked another leader while we waited for
@@ -743,21 +726,43 @@ class SyncGroupPlayer(PlayerProtocol):
                     ):
                         # a re-form only runs while the group is leaderless
                         self._schedule_reform_timer()
+                elif leader_removed and self._attr_group_members:
+                    # we removed the current sync leader, but we still have members in the group
+                    old_leader_id = leader.player_id
+                    session_protocol = self._active_session_protocol()
+                    supports_handoff = (
+                        session_protocol is not None
+                        and session_protocol.provider.domain in PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH
+                    )
+
+                    if was_playing and supports_handoff:
+                        # protocol supports dynamic leader switching: try to remove
+                        # only the departing leader and keep remaining members playing.
+                        # _dynamic_leader_switch will fall back to dissolve+reform
+                        # automatically if no remaining member is part of the live
+                        # session (e.g. only freshly-added players are left).
+                        await self._dynamic_leader_switch(old_leader_id)
+                    else:
+                        # protocol doesn't support dynamic leader switching or not playing
+                        await self._dissolve_and_reform(old_leader_id, resume_playback=was_playing)
+                elif leader_removed or not self._attr_group_members:
+                    # we removed the current sync leader, and we have no members left in the
+                    # group or we just removed the last member from the group, so we dissolve
+                    # the syncgroup. Use internal handler to stop the sync leader directly,
+                    # bypassing group redirect that would loop back to this player.
+                    await self._stop_departing_leader(leader)
+                    await self._dissolve_syncgroup()
                 else:
+                    # just a regular member(s) added/removed action,
+                    # we can simply update the syncgroup members on the sync leader.
+                    # `active_protocol_domain` is derived from live state, so the
+                    # group will naturally downshift once it re-forms if every
+                    # remaining member can play on the leader's native protocol.
                     await self.mass.players._handle_set_members(
                         leader,
                         player_ids_to_add=final_players_to_add,
                         player_ids_to_remove=final_players_to_remove,
                     )
-        elif self._reform_task is not None:
-            if self._attr_group_members:
-                # leaderless with a debounced re-form pending: membership just changed,
-                # so re-arm the window — the re-form picks up the final member list.
-                self._schedule_reform_timer()
-            else:
-                # nothing left to re-form for: dropping the pending re-form also
-                # ends the group's claim on the session
-                self._cancel_reform_timer()
         # NOTE: If we weren't playing before, we don't need to do anything else,
         # since the syncing will be done once playback starts
         self.mass.players.trigger_player_update(group_player_id)
