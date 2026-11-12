@@ -8,7 +8,7 @@ import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 
-from .harness import DEFAULT_FEATURES, FakePlayerProvider, FakeProtocol, Scenario
+from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakePlayerProvider, FakeProtocol, Scenario
 
 if TYPE_CHECKING:
     from music_assistant_models.player import Player as PlayerState
@@ -213,6 +213,13 @@ async def test_a_leader_that_leaves_its_playing_group_hands_it_to_a_member(
     assert _state(scenario, den_id).synced_to == office_id
     assert _state(scenario, kitchen_id).synced_to is None
     assert _state(scenario, kitchen_id).group_members == []
+    office_queue, kitchen_queue = scenario.queue(office_id), scenario.queue(kitchen_id)
+    assert office_queue is not None
+    assert office_queue.current_item is not None
+    assert office_queue.current_item.uri == TEST_TRACK_URI
+    assert _state(scenario, office_id).active_source == office_id
+    assert kitchen_queue is not None
+    assert kitchen_queue.items == 0
 
 
 async def _mixed_makes(scenario: Scenario) -> tuple[FakeProtocol, str, str]:

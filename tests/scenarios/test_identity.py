@@ -407,6 +407,11 @@ def _roles(scenario: Scenario, player_id: str) -> dict[str, ProtocolRole]:
     return {protocol.protocol_id: protocol.role for protocol in state.protocols}
 
 
+def _played_through(protocol: FakeProtocol) -> bool:
+    """Return whether a protocol got media to play."""
+    return any(command[0] == "play_media" for command in protocol.commands)
+
+
 def _current(scenario: Scenario, speaker: _Speaker) -> _Speaker:
     """Return the current protocol objects of a speaker, after a restart or a reload."""
     return _Speaker(*(scenario.protocol(protocol.protocol_id) for protocol in speaker))
@@ -487,8 +492,8 @@ async def test_the_twin_stays_a_control_while_the_vendor_protocol_is_gone(
     """
     A vendor protocol that is away, reloads or belongs to a disabled player keeps its rank.
 
-    The twin stays a control protocol meanwhile, so the player is unavailable while only the
-    twin reaches the speaker, and nothing changes once the vendor protocol is back.
+    The twin stays a control protocol meanwhile, so the player is unavailable while the vendor
+    protocol is away, and nothing changes once the vendor protocol is back.
     """
     speaker = await _speaker(scenario)
     await scenario.attach(speaker.vendor)
@@ -578,6 +583,10 @@ async def test_the_settings_of_a_disabled_player_are_those_of_its_vendor_protoco
     else:
         await scenario.disable(player_id)
         await scenario.attach(linkplay)
+        assert scenario.player_of(linkplay) is None
+        assert (scenario.mass.config.get_protocol_record(twin.protocol_id) or {})["role"] == (
+            ProtocolRole.NATIVE.value
+        )
 
     await scenario.mass.config.save_protocol_config(
         linkplay.protocol_id, {FAKE_SETTING: "of the vendor"}
@@ -621,7 +630,7 @@ async def test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native
     A vendor protocol whose first attach fails, or is cancelled, leaves nothing behind.
 
     The twin it made a control protocol for the attach stands for the speaker again, and
-    the player plays through it as before.
+    the player plays through it.
     """
     speaker = await _speaker(scenario)
     await scenario.attach(speaker.twin)
@@ -655,6 +664,9 @@ async def test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native
         )
     ]
     assert _roles(scenario, player_id) == {speaker.twin.protocol_id: ProtocolRole.NATIVE}
+    await scenario.play(player_id)
+    assert _played_through(speaker.twin)
+    assert not _played_through(speaker.vendor)
 
 
 @pytest.mark.parametrize("switch", ["provider", "unloaded_provider", "protocol"])
@@ -702,6 +714,8 @@ async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switche
         }
         await scenario.restart()
         await scenario.idle()
+    await scenario.play(player_id)
+    assert _played_through(scenario.protocol(speaker.twin.protocol_id))
 
     await _switch(True)
 
@@ -717,7 +731,7 @@ async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switche
 async def test_the_twin_object_attached_again_keeps_its_role_and_its_hooks_quiet(
     scenario: Scenario,
 ) -> None:
-    """A demoted twin whose provider attaches the same object again is refreshed, not re-attached."""
+    """A demoted twin attached again as the same object keeps its role and is not set up again."""
     speaker = await _speaker(scenario)
     await scenario.attach(speaker.vendor)
     await scenario.attach(speaker.twin)
@@ -809,7 +823,7 @@ async def test_a_removed_player_of_a_speaker_comes_back_with_the_same_roles(
 async def test_two_native_protocols_of_one_rank_on_one_host_stay_two_players(
     scenario: Scenario,
 ) -> None:
-    """A Squeezelite and a Snapcast client on one Raspberry Pi are two players, as before."""
+    """A Squeezelite and a Snapcast client on one Raspberry Pi are two players."""
     squeezelite = await scenario.add_provider("squeezelite")
     snapcast = await scenario.add_provider("snapcast")
     kitchen = squeezelite.protocol("b8:27:eb:11:22:33", "Kitchen", identifiers=PI)
@@ -852,8 +866,8 @@ async def test_a_speaker_and_its_twin_stored_as_two_players_stay_two_players(
     """
     An install that has a speaker and its Home Assistant twin as two players keeps both.
 
-    Each has its own name, settings, queue and Home Assistant entity; making them one is a
-    merge, which the rank of a protocol never does by itself.
+    Each keeps its name, its settings, its queue and its protocol as its own protocol; making
+    them one is a merge, which the rank of a protocol never does by itself.
     """
     speaker = await _speaker(scenario)
     for protocol in (speaker.vendor, speaker.twin):
@@ -866,6 +880,12 @@ async def test_a_speaker_and_its_twin_stored_as_two_players_stay_two_players(
         ("RINCON_5478C9E60DA001400", "Kitchen"),
         ("media_player.kitchen", "Kitchen (HA)"),
     ]
+    speaker = _current(scenario, speaker)
+    for protocol in (speaker.vendor, speaker.twin):
+        player_id = protocol.protocol_id
+        assert _roles(scenario, player_id) == {protocol.protocol_id: ProtocolRole.NATIVE}
+        assert await scenario.player_config(player_id) is not None
+        assert scenario.queue(player_id) is not None
 
 
 @pytest.mark.parametrize("choice", ["volume_and_mute", "preferred_output"])
@@ -1228,8 +1248,9 @@ async def test_a_role_change_neither_merges_nor_splits_players(scenario: Scenari
     """
     Disabling the vendor's provider and enabling it again changes roles, never players.
 
-    The speaker and its twin, merged by hand, stay one player; the AirPlay receiver the
-    user took off it stays a player of its own.
+    The twin stands for the speaker while the vendor's provider is disabled and is a control
+    again once it is enabled. The speaker and its twin, merged by hand, stay one player; the
+    AirPlay receiver the user took off it stays a player of its own.
     """
     speaker = await _speaker(scenario)
     for protocol in (speaker.vendor, speaker.twin, speaker.airplay):
@@ -1254,6 +1275,9 @@ async def test_a_role_change_neither_merges_nor_splits_players(scenario: Scenari
         )
         twin = scenario.protocol(speaker.twin.protocol_id)
         assert scenario.player_of(twin) == "RINCON_5478C9E60DA001400"
+        assert _roles(scenario, "RINCON_5478C9E60DA001400")[twin.protocol_id] == (
+            ProtocolRole.CONTROL if enabled else ProtocolRole.NATIVE
+        )
 
     assert scenario.events(EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED) == []
 

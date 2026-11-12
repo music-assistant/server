@@ -86,7 +86,7 @@ async def test_player_without_other_protocols_goes_with_its_removed_provider(
 
 
 async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Scenario) -> None:
-    """A removed player whose device is still there comes back as a new player with its defaults."""
+    """A removed player whose device is still there comes back new: a new id, its defaults."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
@@ -109,9 +109,11 @@ async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Sc
             outputs=(("wiim", True),),
         )
     ]
+    new_player_id = scenario.single_player(current).player_id
+    assert new_player_id != player_id
     assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
         Event(EventType.PLAYER_REMOVED, player_id),
-        Event(EventType.PLAYER_ADDED, scenario.single_player(current).player_id),
+        Event(EventType.PLAYER_ADDED, new_player_id),
     ]
 
 
@@ -222,13 +224,14 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
     """
     A session-only player the user customised keeps its config while it is away.
 
-    It comes back with the config, and still exists only while attached.
+    It comes back with the config, and still exists only while attached: it goes again once
+    it detaches, its config stays.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
     player_id = scenario.single_player(browser).player_id
-    await scenario.configure_player(player_id, name="Marcel's browser")
+    await scenario.configure_player(player_id, name="Den browser")
 
     await scenario.detach(browser)
     await scenario.restart()
@@ -236,14 +239,23 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
 
     assert scenario.visible_players() == []
     assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
-        (player_id, "Marcel's browser")
+        (player_id, "Den browser")
     ]
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    returned = scenario.protocol("sendspin_web_3f2a")
+    await scenario.attach(returned)
     await scenario.idle()
 
     assert [(p.player_id, p.name) for p in scenario.visible_players()] == [
-        (player_id, "Marcel's browser")
+        (player_id, "Den browser")
+    ]
+
+    await scenario.detach(returned)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
+        (player_id, "Den browser")
     ]
 
 
@@ -321,7 +333,7 @@ async def test_a_session_only_player_whose_client_disconnects_is_gone_for_now(
 
 
 async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario) -> None:
-    """A removed player is announced as removed for good; its device comes back as a new player."""
+    """A player the user removes is announced as removed for good."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
@@ -335,7 +347,7 @@ async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario)
 
 
 async def test_a_player_merged_into_another_one_is_removed_for_good(scenario: Scenario) -> None:
-    """The player that goes in a merge is announced as removed for good: its queue goes with it."""
+    """The player that goes in a merge is announced as removed for good."""
     airplay = await scenario.add_provider("airplay")
     chromecast = await scenario.add_provider("chromecast")
     tv_airplay = airplay.protocol(

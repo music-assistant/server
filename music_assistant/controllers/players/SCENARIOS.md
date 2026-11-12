@@ -319,7 +319,7 @@ named by Home Assistant and with the twin as its output.
 
 The vendor protocol is away, and the user disables the vendor's provider or switches the vendor
 protocol off as an output. The twin stands for the speaker again, and the player is available
-through it, also after a restart. A provider that is only not loaded, as after a failed load,
+through it, also after a restart, and plays through it. A provider that is only not loaded, as after a failed load,
 leaves the twin a control until the user disables it. Once the user switches the vendor protocol
 on again, it ranks above the twin at once: the twin is a control again, and the player is
 unavailable while the vendor protocol is away.
@@ -331,8 +331,8 @@ unavailable while the vendor protocol is away.
 
 The user disables the player. A setting of the device then reads as the vendor protocol stores
 it, not as the twin does, also when the vendor protocol was first found while the player was
-already disabled. While the user has the vendor's provider disabled, the setting reads as the
-twin stores it.
+already disabled: it does not attach then, and the twin stays stored as the own protocol. While
+the user has the vendor's provider disabled, the setting reads as the twin stores it.
 
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by:
@@ -343,7 +343,7 @@ twin stores it.
 
 Only the twin is found, so it is the player. Then the vendor protocol is found, but its setup
 fails, or is called off halfway. The player stays as it was: available, under the same id and
-name, with the twin as its own protocol and only output.
+name, with the twin as its own protocol and only output, and it plays through the twin.
 
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native`
@@ -379,8 +379,9 @@ vendor protocol as its own protocol and the twin as a control.
 ### TWIN-11 · A speaker and a named twin stored as two players stay two
 
 An older version stored the speaker and its twin as two players, and the user named the twin's
-player Kitchen (HA). After the upgrade both are there, under their ids and names. An unused twin
-player is merged instead (MERGE-5).
+player Kitchen (HA). After the upgrade both are there, under their ids and names, each with its
+settings and its queue, and each with its protocol as its own protocol. An unused twin player is
+merged instead (MERGE-5).
 
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_a_speaker_and_its_twin_stored_as_two_players_stay_two_players`
@@ -510,7 +511,8 @@ itself, also not after a restart.
 The user merged the speaker and its twin, and took the AirPlay receiver off to a player of its
 own. Then the user disables the vendor's provider and enables it again. Both times there are
 exactly these two players, the twin stays on the speaker's player, and no player is added or
-removed.
+removed. While the provider is disabled the twin stands for the speaker; once it is enabled the
+twin is a control again.
 
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_a_role_change_neither_merges_nor_splits_players`
@@ -597,8 +599,8 @@ its queue and its settings go, and clients are told it is removed.
 ### REMOVE-3 · A removed player whose device is still there comes back with its defaults
 
 The user named the Living player Kitchen, then removes it. Clients are told it is removed for
-good. Its provider finds the device again, and clients are told about a player added, available,
-with the default name Living.
+good. Its provider finds the device again, and clients are told about a player added under a new
+id, available, with the default name Living.
 
 - End-to-end: **yes**. Remove a virtual player whose container keeps running.
 - Proven by:
@@ -633,7 +635,8 @@ stored. After a restart there is no player and no stored player.
 
 The user renames a browser player. The browser disconnects and the server restarts: there is no
 player, but the settings list it with its name. When the browser connects again, the player is
-back under the same id with that name.
+back under the same id with that name. When it disconnects again, the player is gone again and
+the settings still list it.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_customised_session_only_player_keeps_its_config`
@@ -798,8 +801,9 @@ and Kitchen lists no members.
 
 ### GROUP-8 · A playing leader that leaves hands its group to a member
 
-Kitchen leads Office and Den and plays its queue. The user ungroups Kitchen: Office plays and
-leads Den, and Kitchen is no longer part of the group.
+Kitchen leads Office and Den and plays its queue. The user ungroups Kitchen: Kitchen's queue
+moves to Office, which plays it as its own queue and leads Den. Kitchen's queue is empty, and
+Kitchen is no longer part of the group.
 
 - End-to-end: **possible with** a third player of one kind.
 - Proven by: `test_grouping.py::test_a_leader_that_leaves_its_playing_group_hands_it_to_a_member`
