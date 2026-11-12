@@ -2399,6 +2399,24 @@ class TestOwnerChangesWhileWaitingForTheLock:
 
         assert stops == [("member", frozenset({"playback_member"}))]
 
+    async def test_a_player_the_command_holds_that_joined_a_group_fails_at_once(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A command that already holds the player does not wait for the group it joined."""
+        controller, group, protocol, member, _stops = self._member(mock_mass, captured=False)
+
+        async with controller.get_player_lock("member"):
+            protocol._attr_group_members = ["member"]
+            _refresh(group, member)
+            async with _lock_held_elsewhere(controller, "g1"):
+                started = time.monotonic()
+                with pytest.raises(ResourceBusyError):
+                    async with controller.get_group_and_player_lock("member"):
+                        pytest.fail("the body ran without the group's lock")
+                waited = time.monotonic() - started
+
+        assert waited < 0.1
+
     async def test_a_player_whose_owner_keeps_changing_fails_as_busy(
         self, controller: PlayerController
     ) -> None:
@@ -2418,6 +2436,41 @@ class TestOwnerChangesWhileWaitingForTheLock:
         assert busy.value.translation_key == "player_busy"
         assert len(checks) == 2 * PLAYER_LOCK_OWNER_ATTEMPTS
         assert not controller._lock_holders
+
+
+class TestNestedGroupLockIsReentered:
+    """Taking a player out of its group takes the group's lock again, never for the first time."""
+
+    @pytest.mark.parametrize("name", ["select_source", "play_media", "cmd_ungroup"])
+    async def test_the_group_lock_is_never_awaited_while_the_member_is_held(
+        self, mock_mass: MagicMock, name: str
+    ) -> None:
+        """Every wait for the group's lock happens while the task holds no lock of the member."""
+        controller, _group, _protocol, _member = TestPlayMediaOverride._captured_member(
+            mock_mass, static=False
+        )
+        _set_play_media_override(mock_mass, True)
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_play_media = AsyncMock()  # type: ignore[method-assign]
+        waits: list[tuple[str, frozenset[str]]] = []
+        acquire = controller._acquire_player_lock
+
+        async def _record(
+            lock: asyncio.Lock, lock_key: str, purpose: PlayerLockPurpose, player_id: str
+        ) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            waits.append((lock_key, frozenset(controller._task_held_locks.get(task, set()))))
+            await acquire(lock, lock_key, purpose, player_id)
+
+        controller._acquire_player_lock = _record  # type: ignore[method-assign]
+        with patch.object(controller, "wait_for_player_update", _skip_player_update_wait):
+            await TestStaticGroupReleaseUnderTheGroupLock._command(controller, name)
+
+        controller._handle_set_members.assert_awaited_once()
+        assert ("playback_g1", frozenset()) in waits
+        assert all("playback_member" not in held for key, held in waits if key == "playback_g1")
 
 
 class TestReleaseWaitForPlayMedia:

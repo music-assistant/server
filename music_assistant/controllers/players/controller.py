@@ -359,11 +359,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         holds a player's lock while it waits for the lock of the player's owner.
 
         :param player_id: The player to lock.
+        A command that holds the player's lock already, and finds the player in a group whose
+        lock it does not hold, fails at once instead of waiting for that group's lock.
+
         :raises ResourceBusyError: When either lock is still held by another command at
             its timeout, or the player kept changing its group while the command waited.
         """
+        task = asyncio.current_task()
         for _attempt in range(PLAYER_LOCK_OWNER_ATTEMPTS):
             owner_id = self._playback_owner_id(player_id)
+            held = self._task_held_locks.get(task, set()) if task else set()
+            if (
+                owner_id != player_id
+                and f"{PlayerLockPurpose.PLAYBACK.value}_{player_id}" in held
+                and f"{PlayerLockPurpose.PLAYBACK.value}_{owner_id}" not in held
+            ):
+                # the task holds the player already, so it can not let go of it to wait for
+                # the owner the player got since
+                break
             async with contextlib.AsyncExitStack() as stack:
                 if owner_id != player_id:
                     await stack.enter_async_context(
@@ -380,7 +393,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player_id,
             )
         name = player.display_name if (player := self.get_player(player_id)) else player_id
-        msg = f"Player {name} kept changing its group while waiting for its playback lock"
+        msg = f"Player {name} changed its group while the command waited for its playback lock"
         raise ResourceBusyError(
             msg,
             translation_key="player_busy",
