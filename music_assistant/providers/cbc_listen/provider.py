@@ -332,7 +332,7 @@ class CBCListenProvider(MusicProvider):
                 continue
             seen.add(clip.clip_id)
             clips.append(clip)
-        positions = rank_episodes_by_date([clip.released_at for clip in clips])
+        positions = rank_episodes_by_date([clip.released_at or None for clip in clips])
         return [
             parse_podcast_episode(clip, podcast, position, self.instance_id, self.domain)
             for position, clip in zip(positions, clips, strict=True)
