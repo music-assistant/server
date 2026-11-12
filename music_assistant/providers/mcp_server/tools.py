@@ -325,8 +325,10 @@ def _players(mass: MusicAssistant) -> list[Player]:
 def _resolve_player(mass: MusicAssistant, player: str) -> Player:
     """Return the player the current user may use with the given id or name."""
     players = _players(mass)
+    # an id can be a legacy id of a player that answers to another id now
+    player_id = mass.players.resolve_player_id(player)
     for candidate in players:
-        if candidate.player_id == player:
+        if candidate.player_id == player_id:
             return candidate
     name = player.strip().lower()
     for candidate in players:
