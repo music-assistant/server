@@ -93,3 +93,8 @@ async def test_poll_restores_udp_for_reenabled_player(
     await player.poll()
 
     assert device.transport is not None
+
+
+def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) -> None:
+    """A MusicCast device only plays a track gapless once it holds a whole opening chunk of it."""
+    assert network.player("A___main").needs_gapless_burst

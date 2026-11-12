@@ -1682,7 +1682,7 @@ async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero
 async def test_check_ffmpeg_version_refuses_a_build_before_8(
     monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:
-    """A build before 8.0 lacks `-readrate_catchup`, which near-realtime pacing always passes."""
+    """A build before 8.0 lacks `-readrate_catchup`, which every pacing profile passes."""
     _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_ALLOWING_CMAF, version=version)
 
     with pytest.raises(AudioError, match="is not supported"):
