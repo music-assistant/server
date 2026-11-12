@@ -1713,11 +1713,6 @@ class SendspinProvider(PlayerProvider):
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale add event for %s", client_id)
                 return
-            if not self.mass.players.wants_protocol(client_id):
-                # nothing is set up for a client of a disabled player or a switched off output
-                self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
-                return
-            await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
             existing_player = self.get_protocol(client_id)
             preserved_identifiers = (
                 dict(existing_player.device_info.identifiers) if existing_player is not None else {}
@@ -1730,6 +1725,12 @@ class SendspinProvider(PlayerProvider):
             )
             for id_type, id_value in preserved_identifiers.items():
                 player.device_info.add_identifier(id_type, id_value)
+            # asked with the object: a browser is no output of the player its config names
+            if not self.mass.players.wants_protocol(client_id, player):
+                # nothing is set up for a client of a disabled player or a switched off output
+                self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
+                return
+            await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
             self.logger.debug("Client %s connected", client_id)
             await self._apply_hass_esphome_enrichment([player])
             if not self._is_current_client_event(client_id, event_version):

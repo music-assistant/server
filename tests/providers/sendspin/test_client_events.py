@@ -44,14 +44,21 @@ def _provider(*, wanted: bool = True) -> tuple[SendspinProvider, MagicMock]:
     return provider, mass
 
 
-async def test_nothing_is_created_for_the_client_of_a_disabled_player() -> None:
-    """A client the server does not want gets no protocol object, so nothing reaches it."""
+async def test_nothing_is_set_up_for_the_client_of_a_disabled_player() -> None:
+    """
+    Nothing reaches a client the server does not want: it is neither attached nor approved.
+
+    The server is asked with the protocol object the client would be, which decides whether
+    the stored config of the protocol applies to it.
+    """
     provider, mass = _provider(wanted=False)
-    provider._create_player = MagicMock()  # type: ignore[method-assign]
+    created = MagicMock(device_info=DeviceInfo())
+    provider._create_player = MagicMock(return_value=created)  # type: ignore[method-assign]
 
     await provider._handle_client_added(CLIENT_ID, provider._begin_client_event(CLIENT_ID))
 
-    provider._create_player.assert_not_called()
+    mass.players.wants_protocol.assert_called_once_with(CLIENT_ID, created)
+    provider._auto_trust_guest_access.assert_not_awaited()  # type: ignore[attr-defined]
     mass.players.attach.assert_not_awaited()
 
 
