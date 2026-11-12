@@ -465,17 +465,20 @@ async def test_volume_control_the_user_chose_stays_when_the_native_can_not_be_re
     assert "volume_set" not in _names(audio)
 
 
+@pytest.mark.parametrize("refused", ["volume_set", "volume_mute"])
 @pytest.mark.parametrize("action", ["play", "join"])
 async def test_output_that_refuses_the_level_of_the_player_is_activated_all_the_same(
-    scenario: Scenario, action: str
+    scenario: Scenario, action: str, refused: str
 ) -> None:
-    """A protocol that fails to take the level over still takes the audio of the player."""
+    """A protocol that fails to take the level or mute over still takes the audio of the player."""
     sonos = await scenario.add_provider("sonos")
     airplay = await scenario.add_provider("airplay")
     airplay_features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
     hall = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"}
     protocols = [
-        sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30),
+        sonos.protocol(
+            "RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30, volume_muted=False
+        ),
         airplay.protocol(
             "ap_kitchen",
             "Kitchen",
@@ -485,7 +488,9 @@ async def test_output_that_refuses_the_level_of_the_player_is_activated_all_the_
             supported_features=airplay_features,
             can_group_with={"ap_hall"},
         ),
-        sonos.protocol("RINCON_HALL", "Hall", identifiers=hall, volume_level=20),
+        sonos.protocol(
+            "RINCON_HALL", "Hall", identifiers=hall, volume_level=20, volume_muted=False
+        ),
         airplay.protocol(
             "ap_hall",
             "Hall",
@@ -503,11 +508,11 @@ async def test_output_that_refuses_the_level_of_the_player_is_activated_all_the_
     kitchen_id = scenario.single_player(kitchen_native, kitchen_airplay).player_id
     hall_id = scenario.single_player(hall_native, hall_airplay).player_id
 
-    async def _refuse(volume_level: int) -> None:  # noqa: ARG001
+    async def _refuse(*_args: Any) -> None:
         raise ConnectionError("no answer")
 
     refusing = kitchen_airplay if action == "play" else hall_airplay
-    refusing.volume_set = _refuse  # type: ignore[method-assign]
+    setattr(refusing, refused, _refuse)
     scenario.expect_log("Could not give ap_")
 
     if action == "play":

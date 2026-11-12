@@ -18,6 +18,7 @@ from music_assistant_models.errors import ActionUnavailable, PlayerUnavailableEr
 
 from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
 from music_assistant.controllers.players.controller import REMOVE_UNAVAILABLE_GRACE
+from tests.common import as_user
 from tests.scenarios.harness import DEFAULT_FEATURES, Event, FakeProtocol, Scenario
 
 if TYPE_CHECKING:
@@ -869,6 +870,26 @@ async def test_sync_member_that_is_removed_only_leaves_its_leader(scenario: Scen
     queue = scenario.queue(leader_id)
     assert queue is not None
     assert queue.state == PlaybackState.PLAYING
+
+
+async def test_removal_stops_a_player_also_when_its_user_can_not_control_it(
+    scenario: Scenario,
+) -> None:
+    """The stop before a removal is the server's own: it is no command of the user who removes."""
+    sonos = await scenario.add_provider("sonos")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(speaker)
+    player_id = scenario.single_player(speaker).player_id
+    await scenario.play(player_id)
+    speaker.commands.clear()
+    scenario.set_present("RINCON_KITCHEN", False)
+
+    # an administrator of the players whose own use is limited to another player
+    with as_user(["pl000000000000"]):
+        await scenario.remove(player_id)
+
+    assert speaker.commands == [("stop",)]
+    assert scenario.mass.players.get_player(player_id) is None
 
 
 @pytest.mark.parametrize("playing", [False, True])
