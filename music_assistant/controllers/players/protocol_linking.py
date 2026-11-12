@@ -49,6 +49,7 @@ from music_assistant.constants import (
     CONF_REPORTED_MAC,
     CONF_SESSION_ONLY,
     CONF_UNDERLYING_PLAYER_ID,
+    CONF_UNLINKED_FROM,
     CONF_VOLUME_CONTROL,
     VERBOSE_LOG_LEVEL,
 )
@@ -112,6 +113,8 @@ class ProtocolLinkingMixin:
         translation_owner: str
 
         def get_player(self, player_id: str) -> Player | None: ...  # noqa: D102
+
+        def resolve_player_id(self, player_id: str) -> str: ...  # noqa: D102
 
         def get_protocol(self, protocol_id: str) -> PlayerProtocol | None: ...  # noqa: D102
 
@@ -607,7 +610,8 @@ class ProtocolLinkingMixin:
         Return the ids of the other live players that turn out to stand for a player's device.
 
         That is every player the attach rules let take over the protocols of the player (or
-        the other way round) and whose identifiers it matches.
+        the other way round) and whose identifiers it matches, unless the user took a
+        protocol of one of the two off the other.
 
         :param player_id: Id of the player.
         """
@@ -618,7 +622,26 @@ class ProtocolLinkingMixin:
             if other_id != player_id
             and self._merge_refusal(other_id, player_id) is None
             and matches_device(identity, self._identity_parts(other_id))
+            and not self._taken_apart(player_id, other_id)
         ]
+
+    def _taken_apart(self, player_id: str, other_id: str) -> bool:
+        """
+        Return whether the user took a protocol of one of two players off the other one.
+
+        :param player_id: Id of one of the players.
+        :param other_id: Id of the other player.
+        """
+        for holder_id, from_id in ((player_id, other_id), (other_id, player_id)):
+            for protocol_id in self._get_protocol_ids(holder_id):
+                record = self.mass.config.get_protocol_record(protocol_id) or {}
+                unlinked_from = (record.get("values") or {}).get(CONF_UNLINKED_FROM)
+                if (
+                    isinstance(unlinked_from, str)
+                    and self.resolve_player_id(unlinked_from) == from_id
+                ):
+                    return True
+        return False
 
     def _merge_rank(self, player_id: str) -> tuple[int, bool, str]:
         """

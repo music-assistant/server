@@ -150,12 +150,14 @@ ones the one with an id from before the split. Otherwise both stay, for the user
 **Taking a protocol off its player.** A protocol that ended up on the wrong player gets a player of
 its own, and the protocols that ride on it go along: a new player (a minted id, the name of the
 protocol, default settings, an empty queue) that its stored edge names from then on. Its record
-keeps the id of the player it was taken off (`unlinked_from`), a value the user set, so the new
-player is never merged back by itself; a merge of the two that the user asks for forgets it. The
-old player keeps its id, name, settings and queue, and its output and control choices that named
-the protocol fall back to their default; without its own protocol it is a player of its audio
-protocols. A protocol that rides on another, the protocol of a group, a protocol that only exists
-while connected and the only protocol of a player are not taken off.
+keeps the id of the player it was taken off (`unlinked_from`): the two players are never merged
+by themselves again, also when either of them goes into another player later (the id resolves
+like any legacy id); a merge of the two that the user asks for forgets it. The old player keeps
+its id, name, settings and queue, and its output and control choices that named the protocol fall
+back to their default: the identity stays with the protocols that stay, whichever role the one
+taken off has, so without its own protocol the old player is a player of its audio protocols. A
+protocol that rides on another, the protocol of a group, a protocol that only exists while
+connected and the only protocol of a player are not taken off.
 
 ## Legacy Ids
 

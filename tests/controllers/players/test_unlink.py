@@ -307,3 +307,63 @@ async def test_unlink_command_follows_the_policy_of_removing_a_player(scenario: 
 
     assert error is None
     assert scenario.player_of(match.receiver) != match.player_id
+
+
+async def test_protocol_taken_off_a_player_is_not_merged_back_through_an_older_player(
+    scenario: Scenario,
+) -> None:
+    """
+    A player that holds an unlinked protocol never merges with the player it was taken off.
+
+    Also when the user merged it into a player that is older than that one, so that the
+    player it was taken off is the younger of the two.
+    """
+    chromecast = await scenario.add_provider("chromecast")
+    # an older player of the device the AirPlay receiver belongs to, first seen without identifiers
+    studio_cast = chromecast.protocol("cast_studio", "Studio", role="audio")
+    await scenario.attach(studio_cast)
+    await scenario.advance(15)
+    studio_id = scenario.single_player(studio_cast).player_id
+    match = await _wrong_match(scenario)
+    new_id = await _unlink(scenario, "ap_studio")
+    await scenario.mass.players.merge_players(studio_id, new_id)
+    await scenario.idle()
+
+    # either of the two may be the one whose protocol attaches again
+    for protocol in (match.receiver, match.speaker):
+        await scenario.detach(protocol)
+        await scenario.attach(protocol)
+        await scenario.idle()
+
+        assert scenario.player_of(match.receiver) == studio_id
+        assert scenario.player_of(match.speaker) == match.player_id
+
+
+async def test_protocol_taken_off_a_player_is_not_merged_back_into_the_player_that_took_it_in(
+    scenario: Scenario,
+) -> None:
+    """The player a protocol was taken off is followed into the player it is merged into."""
+    chromecast = await scenario.add_provider("chromecast")
+    dlna = await scenario.add_provider("dlna")
+    studio_cast = chromecast.protocol("cast_studio", "Studio", role="audio")
+    await scenario.attach(studio_cast)
+    await scenario.advance(15)
+    studio_id = scenario.single_player(studio_cast).player_id
+    # a renderer of the speaker, first seen without identifiers
+    kitchen_renderer = dlna.protocol("uuid:kitchen", "Kitchen", role="audio")
+    await scenario.attach(kitchen_renderer)
+    await scenario.advance(15)
+    kitchen_id = scenario.single_player(kitchen_renderer).player_id
+    match = await _wrong_match(scenario)
+    new_id = await _unlink(scenario, "ap_studio")
+    await scenario.mass.players.merge_players(studio_id, new_id)
+    # the speaker goes into the player of its renderer, which answers to its id from then on
+    await scenario.mass.players.merge_players(kitchen_id, match.player_id)
+    await scenario.idle()
+
+    await scenario.detach(match.receiver)
+    await scenario.attach(match.receiver)
+    await scenario.idle()
+
+    assert scenario.player_of(match.receiver) == studio_id
+    assert scenario.player_of(match.speaker) == kitchen_id
