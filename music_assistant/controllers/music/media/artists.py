@@ -104,6 +104,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
+            f"music/{api_base}/letter_index",
+            self.letter_index,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/artist_albums",
             self.albums,
             required_scope=Scope.LIBRARY_READ,
@@ -256,11 +262,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         if reachable_via is not None and not reachable_via:
             return []
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts: list[str] = []
-        if artist_type:
-            extra_query_parts = [f"artist_type = '{artist_type}'"]
-        if album_artists_only and artist_type in (None, ArtistType.SINGER):
-            extra_query_parts.append(self._album_artist_clause(extra_query_params))
+        extra_query_parts = self._library_filter_parts(
+            extra_query_params, album_artists_only, artist_type
+        )
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -277,6 +281,53 @@ class ArtistsController(MediaControllerBase[Artist]):
             summary=summary,
             reachable_via=reachable_via,
             random_seed=random_seed,
+        )
+
+    async def letter_index(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
+        played_only: bool = False,
+        album_artists_only: bool = False,
+        artist_type: ArtistType | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        reachable_via: list[str] | None = None,
+    ) -> list[dict[str, str | int]]:
+        """
+        Return where each starting letter begins in the in-database (album) artists listing.
+
+        Each entry holds a letter ("A" to "Z", or "#" for anything else) and the offset of
+        its first artist in ``library_items`` for the same arguments, in listing order.
+        Empty when sorted on anything but name or sort name, or when searching.
+
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
+        :param search: Filter by search query.
+        :param provider: Filter by provider instance ID (single string or list).
+        :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played artists.
+        :param album_artists_only: Only include artists credited on an album in the library.
+        :param artist_type: The artist's type
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids, see `library_items`.
+        """
+        query_params: dict[str, Any] = {}
+        return await self._library_letter_index(
+            self._library_filter_parts(query_params, album_artists_only, artist_type),
+            query_params,
+            favorite=favorite,
+            search=search,
+            provider=provider,
+            genre=genre,
+            played_only=played_only,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            reachable_via=reachable_via,
         )
 
     async def tracks(
@@ -2167,6 +2218,21 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"albums.item_id IN ({track_albums})",
             f"albums.item_id NOT IN ({own_albums})",
         ], query_params
+
+    def _library_filter_parts(
+        self,
+        query_params: dict[str, Any],
+        album_artists_only: bool,
+        artist_type: ArtistType | None,
+    ) -> list[str]:
+        """Return the WHERE conditions of the artist-specific library listing filters."""
+        query_parts: list[str] = []
+        if artist_type:
+            query_params["artist_type"] = artist_type.value
+            query_parts.append("artist_type = :artist_type")
+        if album_artists_only and artist_type in (None, ArtistType.SINGER):
+            query_parts.append(self._album_artist_clause(query_params))
+        return query_parts
 
     def _album_artist_clause(self, query_params: dict[str, Any]) -> str:
         """Return the condition that keeps artists credited on an album in the user's library."""
