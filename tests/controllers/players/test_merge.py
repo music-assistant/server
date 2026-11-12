@@ -267,6 +267,13 @@ async def test_merge_moves_group_memberships_and_user_filters(scenario: Scenario
     group = await scenario.mass.players.create_group_player(
         "universal_group", "Group Z", [tv.younger_id], False
     )
+    group_protocol = scenario.mass.players.get_player(group.player_id)
+    assert group_protocol is not None
+    assert group_protocol.own_protocol is not None
+    group_protocol_id = group_protocol.own_protocol.protocol_id
+    scenario.mass.config.set_protocol_value(
+        group_protocol_id, "allowed_members", [tv.younger_id, "pl_other"]
+    )
     auth = scenario.mass.webserver.auth
     user = await auth.create_user(username="guest", player_filter=[tv.younger_id])
     await scenario.idle()
@@ -276,11 +283,9 @@ async def test_merge_moves_group_memberships_and_user_filters(scenario: Scenario
     group_state = scenario.player(group.player_id)
     assert group_state is not None
     assert group_state.group_members == [tv.older_id]
-    group_protocol = scenario.mass.players.get_player(group.player_id)
-    assert group_protocol is not None
-    assert group_protocol.own_protocol is not None
-    stored_group = scenario.protocol_config(group_protocol.own_protocol.protocol_id) or {}
+    stored_group = scenario.protocol_config(group_protocol_id) or {}
     assert stored_group[CONF_GROUP_MEMBERS] == [tv.older_id]
+    assert stored_group["allowed_members"] == [tv.older_id, "pl_other"]
     stored_user = await auth.get_user(user.user_id)
     assert stored_user is not None
     assert stored_user.player_filter == [tv.older_id]
@@ -770,14 +775,15 @@ async def test_player_from_before_the_split_is_kept_of_two_equally_old_ones(
 ) -> None:
     """Of two players without a creation moment, the one with an id from before the split is kept."""
     config = scenario.mass.config
-    for player_id in ("pl0123456789ab", "RINCON_KITCHEN"):
+    # an id from before the split that sorts after a minted one
+    for player_id in ("pl0123456789ab", "up0123abcd"):
         config.create_player_record(
             player_id, provider="sonos", player_type=PlayerType.PLAYER, default_name="Kitchen"
         )
 
-    ranked = sorted(("pl0123456789ab", "RINCON_KITCHEN"), key=scenario.mass.players._merge_rank)
+    ranked = sorted(("pl0123456789ab", "up0123abcd"), key=scenario.mass.players._merge_rank)
 
-    assert ranked == ["RINCON_KITCHEN", "pl0123456789ab"]
+    assert ranked == ["up0123abcd", "pl0123456789ab"]
 
 
 async def test_duplicates_with_a_protocol_of_one_domain_stay_apart(scenario: Scenario) -> None:
