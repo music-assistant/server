@@ -2212,7 +2212,9 @@ def _single_item_handler(
 
         capture_ffmpeg.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
         capture_ffmpeg.setattr(
-            controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse)
+            controller_mod,
+            "web",
+            SimpleNamespace(StreamResponse=_FakeStreamResponse, HTTPNotFound=web.HTTPNotFound),
         )
     return controller, request, seen
 
@@ -2371,7 +2373,11 @@ def _flow_handler(
         raise _FfmpegArgsCaptured
 
     monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
-    monkeypatch.setattr(controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse))
+    monkeypatch.setattr(
+        controller_mod,
+        "web",
+        SimpleNamespace(StreamResponse=_FakeStreamResponse, HTTPNotFound=web.HTTPNotFound),
+    )
 
     request = MagicMock()
     request.method = "GET"

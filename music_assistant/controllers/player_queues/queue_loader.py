@@ -1244,28 +1244,29 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if option == QueueOption.REPLACE:
             # A replace is a fresh queue, so the pool takes the place of the old items rather than
             # being appended behind the one that is playing (as PLAY, which shares start_playing,
-            # deliberately does). Zeroed before the truncation below so the pool is sized against
-            # an empty queue and none of the discarded tracks are held back from it.
+            # deliberately does). Zeroed so the pool is sized against an empty queue and none of
+            # the discarded tracks are held back from it.
             insert_at = 0
-            # as on the linear path: end the prewarm of the old next track, release the outgoing
-            # audio while its items are still on the queue, and drop the stale position
-            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
-            await self._cleanup_queue_audio_data(queue_id)
-            queue.index_in_buffer = None
-            queue.ended = False
         # PLAY/REPLACE start playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT only stage it and
         # never start playback (an idle/empty queue stays idle on an add, just like the linear path)
         start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
-        # The tail is dropped before the pool is fetched, so the pool is sized and deduped against
-        # the kept head only (the tail we are discarding must not exclude its own tracks from it).
-        # That leaves the queue holding less than it plays - for a replace, nothing at all - across
-        # the fetch, so hold player reconciliation off until the new items are in: it would
-        # otherwise publish that half-built state, which is exactly the empty queue this avoids.
+        # The pool is sized and deduped against the kept head only (the tail we are discarding must
+        # not exclude its own tracks from it). The queue keeps its old items until the pool is in:
+        # players keep reading it during the fetch, which can take a while. Player reconciliation is
+        # held off meanwhile, so a track change does not start a refill of the tail being replaced.
         self._set_transitioning(queue_id, True)
         try:
-            queue_data.items = queue_data.items[:insert_at]
-            queue.items = len(queue_data.items)
-            pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+            pool_tracks = await self._managed_pool.fill(
+                queue_id, is_initial=False, preceding_items=queue_data.items[:insert_at]
+            )
+            if option != QueueOption.REPLACE:
+                # the player may have moved on into the old tail during the fetch: what it holds
+                # now stays, so the pool goes in behind it, without the tracks it already holds
+                fetched_at = insert_at
+                base_index = committed_index(queue)
+                insert_at = 0 if base_index is None else base_index + 1
+                held = {item.media_item for item in queue_data.items[fetched_at:insert_at]}
+                pool_tracks = [track for track in pool_tracks if track not in held]
             queue_items = [
                 build_queue_item(queue_id, track) for track in pool_tracks if track.available
             ]
@@ -1273,7 +1274,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 raise MediaNotFoundError(
                     "No playable items found", translation_key="no_playable_items"
                 )
-            # the managed pool already interleaved the sources in a recency-aware order; load as-is
+            if option == QueueOption.REPLACE:
+                # as on the linear path: end the prewarm of the old next track, release the
+                # outgoing audio while its items are still on the queue, and drop the stale position
+                self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
+                await self._cleanup_queue_audio_data(queue_id)
+                queue.index_in_buffer = None
+                queue.ended = False
+            # the managed pool already interleaved the sources in a recency-aware order; load as-is,
+            # in one swap of the items so no reader sees the queue without its tail
             await self.load(
                 queue_id,
                 queue_items,
