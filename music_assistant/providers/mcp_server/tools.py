@@ -300,6 +300,7 @@ async def group_players(mass: MusicAssistant, player: str, members: list[str]) -
     """
     target = _resolve_player(mass, player)
     member_ids = [_resolve_player(mass, member).player_id for member in members]
+    mass.players.check_grouping_access(target.player_id, player_ids_to_add=member_ids)
     await mass.players.cmd_set_members(target.player_id, player_ids_to_add=member_ids)
     return _compact_player(mass, target)
 

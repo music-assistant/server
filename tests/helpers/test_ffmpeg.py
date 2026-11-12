@@ -23,6 +23,7 @@ from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
     CACHE_ATTR_HLS_CMAF_BLOCKED,
+    CACHE_ATTR_READRATE_CATCHUP,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
@@ -1604,14 +1605,32 @@ _FFMPEG_VERSION_OUTPUT = (
 )
 
 
+# Trimmed `ffmpeg -h long` output before and from 8.0 on, which added -readrate_catchup.
+_LONG_HELP_WITHOUT_CATCHUP = b"""-re <>              read input at native frame rate; equivalent to -readrate 1
+-readrate <speed>   read input at specified rate
+-readrate_initial_burst <seconds>  The initial amount of input to burst read before imposing any readrate
+"""
+_LONG_HELP_WITH_CATCHUP = (
+    _LONG_HELP_WITHOUT_CATCHUP
+    + b"-readrate_catchup <speed>  Temporary readrate used to catch up if an input lags behind"
+    b" the specified readrate\n"
+)
+
+
 def _fake_ffmpeg_probes(
-    monkeypatch: pytest.MonkeyPatch, hls_options: bytes, hls_returncode: int = 0
+    monkeypatch: pytest.MonkeyPatch,
+    hls_options: bytes,
+    hls_returncode: int = 0,
+    long_help: bytes = _LONG_HELP_WITHOUT_CATCHUP,
+    long_help_returncode: int = 0,
 ) -> None:
-    """Answer the version and HLS demuxer probes with canned output."""
+    """Answer the version, HLS demuxer and option help probes with canned output."""
 
     async def _check_output(
         *args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
     ) -> tuple[int, bytes]:
+        if "long" in args:
+            return (long_help_returncode, long_help)
         if "-h" in args:
             return (hls_returncode, hls_options)
         return (0, _FFMPEG_VERSION_OUTPUT)
@@ -1672,6 +1691,31 @@ async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero
     await check_ffmpeg_version()
 
     assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
+
+
+@pytest.mark.parametrize(
+    ("long_help", "returncode", "expected"),
+    [
+        (_LONG_HELP_WITH_CATCHUP, 0, True),
+        (_LONG_HELP_WITHOUT_CATCHUP, 0, False),
+        (_LONG_HELP_WITH_CATCHUP, 1, False),
+    ],
+    ids=["from 8.0", "before 8.0", "failed probe"],
+)
+async def test_check_ffmpeg_version_finds_the_readrate_catchup_option(
+    monkeypatch: pytest.MonkeyPatch, long_help: bytes, returncode: int, expected: bool
+) -> None:
+    """Only a build that lists the option may be handed it: any other refuses to start."""
+    _fake_ffmpeg_probes(
+        monkeypatch,
+        _HLS_OPTIONS_ALLOWING_CMAF,
+        long_help=long_help,
+        long_help_returncode=returncode,
+    )
+
+    await check_ffmpeg_version()
+
+    assert get_global_cache_value(CACHE_ATTR_READRATE_CATCHUP) is expected
 
 
 # -- probe_audio_stream --

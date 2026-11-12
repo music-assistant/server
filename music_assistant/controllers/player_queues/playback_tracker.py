@@ -658,6 +658,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 self.mass.create_task(
                     _settle_or_resume_delayed(),
                     task_name=f"settle_or_resume_{queue.queue_id}",
+                    task_id=f"settle_or_resume_{queue.queue_id}",
+                    abort_existing=True,
                 )
             return
 
@@ -671,6 +673,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             self.mass.create_task(
                 _settle_or_resume_delayed(),
                 task_name=f"settle_or_resume_{queue.queue_id}",
+                task_id=f"settle_or_resume_{queue.queue_id}",
+                abort_existing=True,
             )
             return
 
@@ -683,6 +687,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             self.mass.create_task(
                 _settle_or_resume_delayed(),
                 task_name=f"settle_or_resume_{queue.queue_id}",
+                task_id=f"settle_or_resume_{queue.queue_id}",
+                abort_existing=True,
             )
 
     def _finish_queue(self, queue: PlayerQueue, prev_item: QueueItem | None) -> None:

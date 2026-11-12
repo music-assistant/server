@@ -12,6 +12,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_SETTINGS,
 )
+from music_assistant.helpers.ffmpeg import get_ffmpeg_readrate_catchup_args
 from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
 
 # What the volume normalization preference falls back to.
@@ -26,6 +27,9 @@ OUTCOME_ONLY_NORMALIZATION_MODES: Final = (
     VolumeNormalizationMode.SOURCE,
     VolumeNormalizationMode.UNKNOWN,
 )
+
+# Ceiling of the limiter that catches peaks a positive normalization gain pushes past full scale.
+NORMALIZATION_LIMITER_CEILING_DB: Final = -2.0
 
 
 class BufferMode(StrEnum):
@@ -114,6 +118,11 @@ _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 
+# Pace at which output that fell behind its schedule (a stall of the server or of the player's
+# reads) makes up the lag; it never runs past the burst plus the pace. ffmpeg's own
+# 1.05x the pace takes over a minute to refill a few seconds, so stalls in a row run a player dry.
+_CATCHUP: Final[dict[PacingProfile, str]] = {PacingProfile.NEAR_REALTIME: "2"}
+
 
 # A realtime source that allows a single stream (Spotify's soloist backend) delivers audio
 # at playback pace and holds that slot until the item ends, so the next item's session only
@@ -130,15 +139,18 @@ REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
 def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[str]:
     """Return the ffmpeg pacing arguments for a stream handed to a player."""
     readrate, burst = _PACING[profile]
-    return ["-readrate", readrate, "-readrate_initial_burst", burst]
+    args = ["-readrate", readrate, "-readrate_initial_burst", burst]
+    if catchup := _CATCHUP.get(profile):
+        args += get_ffmpeg_readrate_catchup_args(catchup)
+    return args
 
 
-# Time to keep the flow stream response open after the last audio byte of a queue.
-# Players buffer a few seconds ahead of what they actually render; some of them drop
-# that buffer the moment the connection is closed, cutting off the end of the queue.
-# Holding the (idle) connection open gives them time to play it out first. Kept below
-# the webserver shutdown timeout so a lead-out never stalls a restart of the server.
-FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
+# Longest time to keep the flow stream response open after the last audio byte of a queue.
+# Players buffer ahead of what they actually render; some of them drop that buffer the
+# moment the connection is closed, cutting off the end of the queue. Holding the (idle)
+# connection open until they played it out avoids that. The flow stream is paced slightly
+# faster than playback, so that buffer grows with the length of the session (about 2% of it).
+FLOW_STREAM_MAX_LEAD_OUT_SECONDS: Final[int] = 300
 
 # Write size for ICY-framed flow streams. Writes are sized independently of the
 # metadata interval, so the player buffer grows with the encoder's output instead
