@@ -700,6 +700,24 @@ async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switche
     }
 
 
+async def test_the_twin_object_attached_again_keeps_its_role_and_its_hooks_quiet(
+    scenario: Scenario,
+) -> None:
+    """A demoted twin whose provider attaches the same object again is refreshed, not re-attached."""
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.vendor)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+    roles = _roles(scenario, player_id)
+    on_attach = speaker.twin.on_attach = AsyncMock(wraps=speaker.twin.on_attach)  # type: ignore[method-assign]
+
+    await scenario.attach(speaker.twin)
+    await scenario.idle()
+
+    on_attach.assert_not_awaited()
+    assert _roles(scenario, player_id) == roles
+
+
 @pytest.mark.parametrize(
     "first", ["RINCON_5478C9E60DA001400", "media_player.kitchen"], ids=["vendor", "twin"]
 )
