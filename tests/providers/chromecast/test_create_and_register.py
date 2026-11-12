@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -32,6 +33,7 @@ async def test_a_discovered_device_connects_when_it_attaches(attaches: bool) -> 
     protocol_id = str(cast_info.uuid)
     provider = ChromecastProvider.__new__(ChromecastProvider)
     provider.mass = MagicMock()
+    provider.mass.create_task = MagicMock(side_effect=lambda coro, **_: asyncio.ensure_future(coro))
     provider.config = MagicMock()
     provider.logger = MagicMock()
     provider.mz_mgr = MagicMock()
@@ -46,6 +48,7 @@ async def test_a_discovered_device_connects_when_it_attaches(attaches: bool) -> 
 
     with patch("pychromecast.get_chromecast_from_cast_info") as connect:
         await provider._create_and_register_player(protocol_id, cast_info)
+        await asyncio.sleep(0)
 
     provider.mass.players.attach.assert_awaited_once()
     assert connect.call_count == (1 if attaches else 0)

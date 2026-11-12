@@ -107,6 +107,7 @@ class ChromecastPlayer(PlayerProtocol):
         self.cast_info = cast_info
         self.mz_controller: MultizoneController | None = None
         self.command_controller: MassCastCommandController | None = None
+        self._bridge_task: asyncio.Task[None] | None = None
         self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
         self.last_multichannel_check = 0.0
@@ -331,16 +332,27 @@ class ChromecastPlayer(PlayerProtocol):
         self.cc.register_handler(self.command_controller)
         # started without an await, so a detach never finds the client half set up
         self.cc.start()
-        await provider.bridge_manager.evaluate_bridge(self)
+        # not awaited: claiming the Sendspin client of the receiver app attaches that
+        # client, which waits for this attach to finish
+        self._bridge_task = self.mass.create_task(
+            provider.bridge_manager.evaluate_bridge(self), eager_start=False
+        )
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
+        if (bridge_task := self._bridge_task) is not None:
+            self._bridge_task = None
+            bridge_task.cancel()
         await super().on_detach()
         self.cancel_pending_app_quit()
         self.mz_controller = None
         if self.status_listener is not None:
             self.status_listener.invalidate()
         self.status_listener = None
+        if bridge_task is not None:
+            # waits for the evaluation to end without raising how it ended: a failed
+            # evaluation was logged when it failed
+            await asyncio.wait([bridge_task])
         if self.command_controller is None:
             # no client: on_attach did not run, or the detach ran already
             return
@@ -364,33 +376,28 @@ class ChromecastPlayer(PlayerProtocol):
     ### Callbacks from Chromecast Statuslistener
 
     def on_new_cast_status(self, status: CastStatus) -> None:
-        """Handle updated CastStatus (called from pychromecast socket thread)."""
+        """Handle updated CastStatus of the attached client (called on the event loop)."""
         if status is None or self.mass.closing:
             return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_cast_status, status)
+        self._handle_cast_status(status)
 
     def on_new_media_status(self, status: MediaStatus) -> None:
-        """Handle updated MediaStatus (called from pychromecast socket thread)."""
+        """Handle updated MediaStatus of the attached client (called on the event loop)."""
         if self.mass.closing:
             return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_media_status, status)
+        self._handle_media_status(status)
 
     def on_load_media_failed(self, queue_item_id: int, error_code: int) -> None:
-        """Handle a failed media load (called from pychromecast socket thread)."""
+        """Handle a failed media load of the attached client (called on the event loop)."""
         if self.mass.closing:
             return
-        self.mass.loop.call_soon_threadsafe(
-            self._handle_load_media_failed, queue_item_id, error_code
-        )
+        self._handle_load_media_failed(queue_item_id, error_code)
 
     def on_new_connection_status(self, status: ConnectionStatus) -> None:
-        """Handle updated ConnectionStatus (called from pychromecast socket thread)."""
+        """Handle updated ConnectionStatus of the attached client (called on the event loop)."""
         if self.mass.closing:
             return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_connection_status, status)
+        self._handle_connection_status(status)
 
     def on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
