@@ -71,7 +71,7 @@ on (`underlying_protocol_id`). While it is attached, `protocol.player` is its pl
 A `Player` ([player.py](../../models/player.py)) is created and owned by the controller, from its
 stored record or when a device is new, and is never subclassed by a provider. It holds:
 - the attached protocols, each with the role it attached in; the one that stands for the device
-  itself is its `own_protocol` (native, else control, else virtual), the others are its
+  itself is its `own_protocol` (native, else control, else virtual), the audio ones are its
   `audio_protocols`, most preferred first;
 - the ids of all protocols that belong to it, also those that are away;
 - its own config (name, controls, volume limits, announcements, icon, ...);
@@ -244,10 +244,20 @@ What a protocol is for its device is its role (`ProtocolRole`):
 - `AUDIO`: an audio protocol of the device (AirPlay, Chromecast, DLNA, Sendspin on a third-party device).
 - `VIRTUAL`: the protocol of a group player.
 
-A player has at most one protocol that stands for the device itself (native, control or virtual)
-and at most one protocol per domain. A role is fixed while the protocol is attached; a protocol that
-reports another role is detached and attached again, to the same player when it still has a place
-for it, else to a player of its own.
+A player has at most one protocol per domain, and one protocol that stands for the device itself
+(native, control or virtual). Two such protocols of one device share a player only when one ranks
+above the other (`NATIVE_PRIORITY`: the vendor's own protocol above a Home Assistant media player
+of the same device): the better ranked one is the own protocol, the other one attaches in the
+control role, as no output, and takes no command while the other one is there. The ranks of the
+protocol records decide, also of a protocol that is away, so the roles stay when the better one is
+away, reloads or its player is disabled; the other one stands for the device again only once the
+better one is removed (its provider forgets the device, or is removed). Two of one rank, such as
+the Squeezelite and Snapcast clients of one host, are two players.
+
+A role is fixed while the protocol is attached; a protocol that reports another role, or that
+attaches in another one because a protocol that ranks above it arrived or was removed, is
+detached and attached again, to the same player when it still has a place for it, else to a
+player of its own.
 
 ## Finding the Player of a Protocol
 

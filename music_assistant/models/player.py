@@ -116,8 +116,9 @@ MEDIA_IDENTITY_KEYS = frozenset(
 # every update_state call
 _CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha", "enabled"})
 
-# The roles a protocol can stand for the device itself in: at most one protocol of a
-# player has one of these, the others are its audio protocols.
+# The roles a protocol can stand for the device itself in: one protocol of a player does
+# so, a protocol another one of these ranks above is a control protocol of the player, and
+# the others are its audio protocols.
 OWN_PROTOCOL_ROLES = frozenset({ProtocolRole.NATIVE, ProtocolRole.CONTROL, ProtocolRole.VIRTUAL})
 
 # Audio protocols that take volume and mute commands without a stream running, in the
@@ -1679,7 +1680,10 @@ class Player:
             (
                 protocol
                 for protocol_id, protocol in self._protocols.items()
+                # one that reports another role was attached as control protocol under
+                # a protocol that ranks above it
                 if self._roles[protocol_id] in OWN_PROTOCOL_ROLES
+                and self._roles[protocol_id] == protocol.role
             ),
             None,
         )

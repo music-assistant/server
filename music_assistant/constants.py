@@ -1064,6 +1064,14 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
     "dlna": 50,
 }
 
+# How a provider whose native protocol stands for a device of another make ranks below the
+# vendor's own native protocol of that device (0, any domain not listed): of two native
+# protocols of one device, the better ranked one is its native protocol, the other one its
+# control protocol.
+NATIVE_PRIORITY: Final[dict[str, int]] = {
+    "hass_players": 1,
+}
+
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from (inactive) protocol implementations
     PlayerFeature.PLAY_ANNOUNCEMENT,

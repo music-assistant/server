@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import ANY
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType
+from music_assistant_models.enums import EventType, IdentifierType, ProtocolRole
+from music_assistant_models.errors import InsufficientPermissions, PlayerUnavailableError
 
 from music_assistant.constants import MAIN_ZONE
+from tests.common import as_user
 
 from .harness import FAKE_SETTING, Event, Role, Scenario, ScenarioError, VisiblePlayer
 
@@ -30,6 +32,11 @@ CHASSIS = {
 MAIN = {**CHASSIS, IdentifierType.ZONE: MAIN_ZONE}
 SECOND = {**CHASSIS, IdentifierType.ZONE: "zone2"}
 CHASSIS_AIRPLAY = {**CHASSIS, IdentifierType.AIRPLAY_ID: "00:1A:2B:3C:4D:5F"}
+# a speaker with a native provider of its vendor, which Home Assistant has as a media player
+SPEAKER = {
+    IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0",
+    IdentifierType.IP_ADDRESS: "192.168.1.90",
+}
 # an ESP32 speaker, identified by its MAC under any firmware
 ESP32 = {IdentifierType.MAC_ADDRESS: "A0:B7:65:00:11:22", IdentifierType.IP_ADDRESS: "192.168.1.70"}
 
@@ -352,6 +359,322 @@ async def test_a_receiver_stored_on_another_zone_stays_there(scenario: Scenario)
     ]
     assert [p.player_id for p in scenario.players_carrying(receiver.main)] == ["receiver_main"]
     assert len(scenario.visible_players()) == 2
+
+
+class _Speaker(NamedTuple):
+    """The protocols of a speaker: its vendor's, its Home Assistant twin's, its AirPlay receiver."""
+
+    vendor: FakeProtocol
+    twin: FakeProtocol
+    airplay: FakeProtocol
+
+
+async def _speaker(scenario: Scenario) -> _Speaker:
+    """Create the protocols of a speaker; attach them to use them."""
+    sonos = await scenario.add_provider("sonos")
+    hass_players = await scenario.add_provider("hass_players")
+    airplay = await scenario.add_provider("airplay")
+    return _Speaker(
+        vendor=sonos.protocol("RINCON_5478C9E60DA001400", "Kitchen", identifiers=SPEAKER),
+        twin=hass_players.protocol(
+            "media_player.kitchen",
+            "Kitchen speaker",
+            identifiers={IdentifierType.MAC_ADDRESS: SPEAKER[IdentifierType.MAC_ADDRESS]},
+        ),
+        airplay=airplay.protocol(
+            "airplay_kitchen",
+            "Kitchen",
+            role="audio",
+            identifiers={**SPEAKER, IdentifierType.AIRPLAY_ID: "54:78:C9:E6:0D:A1"},
+        ),
+    )
+
+
+def _roles(scenario: Scenario, player_id: str) -> dict[str, ProtocolRole]:
+    """Return the role of each protocol a player lists."""
+    state = scenario.player(player_id)
+    assert state is not None
+    return {protocol.protocol_id: protocol.role for protocol in state.protocols}
+
+
+def _current(scenario: Scenario, speaker: _Speaker) -> _Speaker:
+    """Return the current protocol objects of a speaker, after a restart or a reload."""
+    return _Speaker(*(scenario.protocol(protocol.protocol_id) for protocol in speaker))
+
+
+@pytest.mark.parametrize(
+    "order", list(itertools.permutations(("vendor", "twin", "airplay"))), ids="-".join
+)
+async def test_a_home_assistant_twin_is_a_control_of_the_vendor_player(
+    scenario: Scenario, order: tuple[str, ...]
+) -> None:
+    """
+    The media player Home Assistant has for a speaker joins the player of the speaker.
+
+    The vendor's protocol is its native protocol whichever of the two is found first; the
+    twin is a control protocol, no output of the player. After a restart every protocol has
+    the same place and role, found in the reverse order this time.
+    """
+    speaker = await _speaker(scenario)
+    for part in order:
+        await scenario.attach(getattr(speaker, part))
+    await scenario.idle()
+
+    player = scenario.single_player(*speaker)
+    assert (player.provider, player.outputs) == ("sonos", (("airplay", True), ("sonos", True)))
+    roles = {
+        speaker.vendor.protocol_id: ProtocolRole.NATIVE,
+        speaker.twin.protocol_id: ProtocolRole.CONTROL,
+        speaker.airplay.protocol_id: ProtocolRole.AUDIO,
+    }
+    assert _roles(scenario, player.player_id) == roles
+
+    for protocol in speaker:
+        scenario.set_present(protocol.protocol_id, False)
+    await scenario.restart()
+    for part in reversed(order):
+        await scenario.attach(scenario.protocol(getattr(speaker, part).protocol_id))
+    await scenario.idle()
+
+    assert scenario.single_player(*_current(scenario, speaker)).player_id == player.player_id
+    assert _roles(scenario, player.player_id) == roles
+    assert len(scenario.visible_players()) == 1
+
+
+async def test_a_vendor_protocol_joins_the_player_of_its_home_assistant_twin(
+    scenario: Scenario,
+) -> None:
+    """
+    A speaker that was a player through Home Assistant keeps it when its vendor protocol arrives.
+
+    Same id and name, now played through the vendor's protocol.
+    """
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.twin).player_id
+    await scenario.configure_player(player_id, name="Kitchen Speaker")
+
+    await scenario.attach(speaker.vendor)
+    await scenario.idle()
+
+    assert scenario.players_carrying(speaker.vendor, speaker.twin) == [
+        VisiblePlayer(
+            player_id=player_id,
+            name="Kitchen Speaker",
+            available=True,
+            powered=None,
+            provider="sonos",
+            outputs=(("sonos", True),),
+        )
+    ]
+    assert _roles(scenario, player_id)[speaker.twin.protocol_id] == ProtocolRole.CONTROL
+
+
+@pytest.mark.parametrize("gone", ["away", "reloaded", "disabled"])
+async def test_the_twin_stays_a_control_while_the_vendor_protocol_is_gone(
+    scenario: Scenario, gone: str
+) -> None:
+    """
+    A vendor protocol that is away, reloads or belongs to a disabled player keeps its rank.
+
+    The twin stays a control protocol meanwhile, so the player is unavailable while only the
+    twin reaches the speaker, and nothing changes once the vendor protocol is back.
+    """
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.vendor)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+    roles = _roles(scenario, player_id)
+
+    if gone == "away":
+        await scenario.detach(speaker.vendor)
+        assert [(p.player_id, p.available) for p in scenario.players_carrying(speaker.twin)] == [
+            (player_id, False)
+        ]
+        assert _roles(scenario, player_id) == roles
+        await scenario.attach(speaker.vendor)
+    elif gone == "reloaded":
+        await scenario.reload_provider(scenario.provider("sonos"))
+    else:
+        await scenario.disable(player_id)
+        await scenario.enable(player_id)
+    await scenario.idle()
+
+    speaker = _current(scenario, speaker)
+    assert scenario.single_player(speaker.vendor, speaker.twin).player_id == player_id
+    assert _roles(scenario, player_id) == roles
+
+
+@pytest.mark.parametrize("removal", ["protocol", "provider"])
+async def test_the_twin_is_the_native_protocol_once_the_vendor_protocol_is_removed(
+    scenario: Scenario, removal: str
+) -> None:
+    """
+    The twin stands for the speaker once the vendor protocol is gone for good: same player.
+
+    Gone for good is a protocol its provider forgets, or one of a provider that is removed.
+    """
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.vendor)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+    scenario.set_present(speaker.vendor.protocol_id, False)
+
+    if removal == "protocol":
+        await scenario.mass.players.remove_protocol(speaker.vendor.protocol_id)
+    else:
+        await scenario.remove_provider(scenario.provider("sonos"))
+    await scenario.idle()
+
+    assert scenario.players_carrying(speaker.twin) == [
+        VisiblePlayer(
+            player_id=player_id,
+            name="Kitchen speaker",
+            available=True,
+            powered=None,
+            provider="hass_players",
+            outputs=(("hass_players", True),),
+        )
+    ]
+    assert _roles(scenario, player_id) == {speaker.twin.protocol_id: ProtocolRole.NATIVE}
+
+
+async def test_the_settings_of_a_disabled_player_stay_those_of_its_vendor_protocol(
+    scenario: Scenario,
+) -> None:
+    """
+    A disabled player shows the settings of its vendor protocol, not of the twin.
+
+    The vendor protocol here controls the device without an audio path of its own, like
+    the twin does as control protocol, so only the rank tells the two apart.
+    """
+    wiim = await scenario.add_provider("wiim")
+    hass_players = await scenario.add_provider("hass_players")
+    twin = hass_players.protocol(
+        "media_player.kitchen",
+        "Kitchen speaker",
+        identifiers={IdentifierType.MAC_ADDRESS: SPEAKER[IdentifierType.MAC_ADDRESS]},
+    )
+    linkplay = wiim.protocol("linkplay_kitchen", "Kitchen", role="control", identifiers=SPEAKER)
+    await scenario.attach(twin)
+    await scenario.attach(linkplay)
+    player_id = scenario.single_player(twin, linkplay).player_id
+    await scenario.configure_player(player_id, **{FAKE_SETTING: "loud"})
+
+    await scenario.disable(player_id)
+
+    assert await scenario.mass.config.get_player_config_value(player_id, FAKE_SETTING) == "loud"
+
+
+async def test_a_removed_player_of_a_speaker_comes_back_with_the_same_roles(
+    scenario: Scenario,
+) -> None:
+    """A speaker whose player the user removed is found again as one player, the twin its control."""
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.vendor)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    speaker = _current(scenario, speaker)
+    new_player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+    assert new_player_id != player_id
+    assert _roles(scenario, new_player_id) == {
+        speaker.vendor.protocol_id: ProtocolRole.NATIVE,
+        speaker.twin.protocol_id: ProtocolRole.CONTROL,
+    }
+
+
+async def test_two_native_protocols_of_one_rank_on_one_host_stay_two_players(
+    scenario: Scenario,
+) -> None:
+    """A Squeezelite and a Snapcast client on one Raspberry Pi are two players, as before."""
+    squeezelite = await scenario.add_provider("squeezelite")
+    snapcast = await scenario.add_provider("snapcast")
+    kitchen = squeezelite.protocol("b8:27:eb:11:22:33", "Kitchen", identifiers=PI)
+    den = snapcast.protocol("snapcast_den", "Den", identifiers=PI)
+
+    await scenario.attach(kitchen)
+    await scenario.attach(den)
+    await scenario.idle()
+
+    assert [player.name for player in scenario.players_carrying(kitchen)] == ["Kitchen"]
+    assert [player.name for player in scenario.players_carrying(den)] == ["Den"]
+    assert len(scenario.visible_players()) == 2
+
+
+# a speaker and its Home Assistant twin as two players, as an install from before the split has them
+PRE_SPLIT_SPEAKER_AND_TWIN: dict[str, dict[str, Any]] = {
+    "RINCON_5478C9E60DA001400": {
+        "player_id": "RINCON_5478C9E60DA001400",
+        "provider": "sonos",
+        "player_type": "player",
+        "enabled": True,
+        "default_name": "Kitchen",
+        "values": {},
+    },
+    "media_player.kitchen": {
+        "player_id": "media_player.kitchen",
+        "provider": "hass_players",
+        "player_type": "player",
+        "enabled": True,
+        "name": "Kitchen (HA)",
+        "default_name": "Kitchen speaker",
+        "values": {},
+    },
+}
+
+
+async def test_a_speaker_and_its_twin_stored_as_two_players_stay_two_players(
+    scenario: Scenario,
+) -> None:
+    """
+    An install that has a speaker and its Home Assistant twin as two players keeps both.
+
+    Each has its own name, settings, queue and Home Assistant entity; making them one is a
+    merge, which the rank of a protocol never does by itself.
+    """
+    speaker = await _speaker(scenario)
+    for protocol in (speaker.vendor, speaker.twin):
+        scenario.set_present(protocol.protocol_id, True)
+
+    await scenario.seed_pre_split_config(PRE_SPLIT_SPEAKER_AND_TWIN)
+    await scenario.idle()
+
+    assert sorted((p.player_id, p.name) for p in scenario.visible_players()) == [
+        ("RINCON_5478C9E60DA001400", "Kitchen"),
+        ("media_player.kitchen", "Kitchen (HA)"),
+    ]
+
+
+async def test_a_command_to_the_player_never_reaches_the_twin(scenario: Scenario) -> None:
+    """
+    Commands go to the vendor protocol, and are checked on the access to the player.
+
+    The twin gets none of them, neither while the vendor protocol is there nor while it is
+    away, when the player is unavailable.
+    """
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.vendor)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+
+    with as_user([player_id]):
+        await scenario.mass.players.cmd_volume_set(player_id, 30)
+        await scenario.mass.players.cmd_power(player_id, True)
+    with as_user(["another_player"]), pytest.raises(InsufficientPermissions):
+        await scenario.mass.players.cmd_volume_set(player_id, 20)
+    await scenario.play(player_id)
+    await scenario.detach(speaker.vendor)
+    with pytest.raises(PlayerUnavailableError):
+        await scenario.mass.players.cmd_play(player_id)
+    await scenario.idle()
+
+    assert ("volume_set", 30) in speaker.vendor.commands
+    assert any(command[0] == "play_media" for command in speaker.vendor.commands)
+    assert speaker.twin.commands == []
 
 
 @pytest.mark.xfail(

@@ -69,6 +69,7 @@ from music_assistant.constants import (
     CONF_SESSION_ONLY,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
+    NATIVE_PRIORITY,
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
 )
@@ -973,14 +974,18 @@ class PlayerConfigMixin:
         player = self.mass.players.get_player(player_id, False)
         if player is not None and player.own_protocol is not None:
             return player.own_protocol.protocol_id
-        candidates: dict[str, str] = {}
+        candidates: dict[str, tuple[int, str]] = {}
         for protocol_id in self.get_protocol_ids_of_player(player_id):
-            role = (self.get_protocol_record(protocol_id) or {}).get("role")
-            if role in OWN_PROTOCOL_ROLES:
-                candidates.setdefault(str(role), protocol_id)
+            record = self.get_protocol_record(protocol_id) or {}
+            if (role := record.get("role")) not in OWN_PROTOCOL_ROLES:
+                continue
+            # a control protocol another one of the player ranks above is not its own
+            domain = str(record.get("provider")).split("--", maxsplit=1)[0]
+            candidate = (NATIVE_PRIORITY.get(domain, 0), protocol_id)
+            candidates[str(role)] = min(candidates.get(str(role), candidate), candidate)
         for role in (ProtocolRole.NATIVE, ProtocolRole.CONTROL, ProtocolRole.VIRTUAL):
             if role.value in candidates:
-                return candidates[role.value]
+                return candidates[role.value][1]
         return None
 
     def _get_stored_player_values(self, player_id: str) -> dict[str, Any]:
