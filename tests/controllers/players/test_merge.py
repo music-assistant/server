@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROTOCOL_KEY_SPLITTER,
 )
+from music_assistant.controllers.players.controller import REMOVE_UNAVAILABLE_GRACE
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from tests.scenarios.harness import (
@@ -1294,3 +1295,39 @@ async def test_playback_commands_by_the_id_of_a_merged_group_member_check_its_gr
     group_state = scenario.player(group.player_id)
     assert group_state is not None
     assert group_state.playback_state != PlaybackState.PLAYING
+
+
+async def test_remove_unavailable_right_after_a_merge_lists_the_kept_player_once(
+    scenario: Scenario,
+) -> None:
+    """A merged player whose devices are both gone is one leftover; the absorbed one is none."""
+    tv = await _two_players_for_one_tv(scenario)
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+    await scenario.report(tv.airplay, available=False)
+    await scenario.report(tv.cast, available=False)
+    assert sorted(await scenario.mass.players.remove_unavailable(dry_run=True)) == sorted(
+        [tv.older_id, tv.younger_id]
+    )
+    await _merge(scenario, tv.older_id, tv.younger_id)
+
+    assert await scenario.mass.players.remove_unavailable(dry_run=True) == [tv.older_id]
+    assert await scenario.mass.players.remove_unavailable() == [tv.older_id]
+    await scenario.idle()
+
+    stored = scenario.mass.config.get(CONF_PLAYERS, {})
+    assert tv.older_id not in stored
+    assert tv.younger_id not in stored
+    assert await scenario.mass.players.remove_unavailable() == []
+
+
+async def test_remove_unavailable_counts_the_protocol_a_merge_moved(scenario: Scenario) -> None:
+    """A merged player whose own device is gone stays while the moved protocol reaches its device."""
+    tv = await _two_players_for_one_tv(scenario)
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+    await scenario.report(tv.airplay, available=False)
+    assert await scenario.mass.players.remove_unavailable(dry_run=True) == [tv.older_id]
+    await _merge(scenario, tv.older_id, tv.younger_id)
+
+    assert await scenario.mass.players.remove_unavailable(dry_run=True) == []
+    assert await scenario.mass.players.remove_unavailable() == []
+    assert scenario.player_of(tv.cast) == tv.older_id
