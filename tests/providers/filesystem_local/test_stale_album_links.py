@@ -76,9 +76,18 @@ async def _linked_albums(mass: MusicAssistant, track: Track) -> set[str]:
     return {(await mass.music.albums.get_library_item(row["album_id"])).name for row in rows}
 
 
+async def _rescan(mass: MusicAssistant, rescanned: Track) -> None:
+    """Write a changed file's parsed track to the library the way a sync does."""
+    prior = await mass.music.tracks.get_library_item_by_prov_id(TRACK_FILE, FS_INSTANCE)
+    assert prior is not None
+    await mass.music.tracks.add_item_to_library(rescanned, overwrite_existing=True)
+    await _provider(mass)._unlink_stale_albums(rescanned, prior)
+
+
 @pytest.fixture(name="mass")
 def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
     """Run on a library-only instance with a real database."""
+    music_mass.cache.delete = AsyncMock()  # type: ignore[method-assign]
     return music_mass
 
 
@@ -87,9 +96,7 @@ async def test_removed_album_tag_unlinks_the_old_album(mass: MusicAssistant) -> 
     db_track = await mass.music.tracks.add_item_to_library(_track(_album("Salute")))
     assert await _linked_albums(mass, db_track) == {"Salute"}
 
-    rescanned = _track(None)
-    await mass.music.tracks.add_item_to_library(rescanned, overwrite_existing=True)
-    await _provider(mass)._unlink_stale_albums(rescanned)
+    await _rescan(mass, _track(None))
 
     assert await _linked_albums(mass, db_track) == set()
 
@@ -98,24 +105,22 @@ async def test_changed_album_tag_keeps_only_the_new_album(mass: MusicAssistant) 
     """A file whose album tag changed is listed on its new album only."""
     db_track = await mass.music.tracks.add_item_to_library(_track(_album("Salute")))
 
-    rescanned = _track(_album("Black Beauty"))
-    await mass.music.tracks.add_item_to_library(rescanned, overwrite_existing=True)
-    await _provider(mass)._unlink_stale_albums(rescanned)
+    await _rescan(mass, _track(_album("Black Beauty")))
 
     assert await _linked_albums(mass, db_track) == {"Black Beauty"}
 
 
-async def test_an_album_shared_with_another_source_is_kept(mass: MusicAssistant) -> None:
-    """A track and album also on a streaming service may still be linked through it."""
+@pytest.mark.parametrize("track_on_other_source", [True, False])
+async def test_an_album_shared_with_another_source_is_kept(
+    mass: MusicAssistant, track_on_other_source: bool
+) -> None:
+    """An album also on a streaming service is not unlinked, so it is never removed as orphan."""
+    extra = (_mapping("sp", STREAM_INSTANCE),) if track_on_other_source else ()
     db_track = await mass.music.tracks.add_item_to_library(
-        _track(
-            _album("Salute", _mapping("sp-album", STREAM_INSTANCE)), _mapping("sp", STREAM_INSTANCE)
-        )
+        _track(_album("Salute", _mapping("sp-album", STREAM_INSTANCE)), *extra)
     )
 
-    rescanned = _track(None)
-    await mass.music.tracks.add_item_to_library(rescanned, overwrite_existing=True)
-    await _provider(mass)._unlink_stale_albums(rescanned)
+    await _rescan(mass, _track(None))
 
     assert await _linked_albums(mass, db_track) == {"Salute"}
 
@@ -126,9 +131,7 @@ async def test_a_track_with_two_files_keeps_its_albums(mass: MusicAssistant) -> 
         _track(_album("Salute"), _mapping("Compilations/Salute/26 Black Beauty.mp3"))
     )
 
-    rescanned = _track(None)
-    await mass.music.tracks.add_item_to_library(rescanned, overwrite_existing=True)
-    await _provider(mass)._unlink_stale_albums(rescanned)
+    await _rescan(mass, _track(None))
 
     assert await _linked_albums(mass, db_track) == {"Salute"}
 
@@ -148,7 +151,7 @@ async def test_get_album_of_a_file_without_album_tag_is_not_found() -> None:
             provider_mappings={_mapping(TRACK_FILE)},
         )
 
-    provider._iter_album_tracks = _tracks  # type: ignore[method-assign]
+    provider._iter_album_tracks = _tracks  # type: ignore[method-assign, assignment]
     provider.resolve = AsyncMock()  # type: ignore[method-assign]
     provider._parse_tags = AsyncMock()  # type: ignore[method-assign]
     provider._parse_track = AsyncMock(return_value=_track(None))  # type: ignore[method-assign]
