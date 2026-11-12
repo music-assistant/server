@@ -8,7 +8,7 @@ from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from aiohttp import web
+from aiohttp import HttpVersion11, web
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -20,6 +20,8 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
+    CONF_ENTRY_HTTP_PROFILE,
+    CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
@@ -65,6 +67,8 @@ _SUBSCRIBER_QUEUE_SIZE: int = 32
 # ICY "no-change" frame: a zero length byte with no payload.
 _ICY_NO_CHANGE_FRAME: bytes = b"\x00"
 _PRODUCER_READY_TIMEOUT: float = 10.0
+# How long the producer waits for the play_media of the next queue session.
+_NEXT_SESSION_TIMEOUT: float = 5.0
 
 
 @dataclass(eq=False)
@@ -94,10 +98,14 @@ class _Station:
     # mid-pipeline (avoids the _UnixReadPipeTransport race on Python 3.14).
     stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     # Latest PlayerMedia the queue asked us to broadcast (set by play_media,
-    # cleared by stop). The producer reads this instead of queue.current_item
-    # so it cannot race the queue controller's mid-skip mutations.
+    # cleared by stop and at the end of the queue). Right after play_media the
+    # producer reads this instead of queue.current_item so it cannot race the
+    # queue controller's mid-skip mutations.
     pending_media: PlayerMedia | None = None
     pending_media_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set when the broadcast ended because the last listener left: the queue has moved on
+    # from pending_media by then, so the next broadcast starts from the queue's current item.
+    resume_from_queue: bool = False
     # Populated by the producer once output config is known.
     output_format: AudioFormat | None = None
     icy_preference: str = "disabled"
@@ -181,6 +189,7 @@ class WebRadioProvider(PlayerProvider):
         if station is None:
             return
         station.pending_media = media
+        station.resume_from_queue = False
         station.pending_media_event.set()
 
     def clear_pending_media(self, slug: str) -> None:
@@ -337,6 +346,11 @@ class WebRadioProvider(PlayerProvider):
         if request.method == "HEAD":
             return _head_response(self._station_codec(station.player_id))
 
+        if station.pending_media is None:
+            # Answered right away, so a listener that keeps retrying does not start a
+            # producer each time only for it to find nothing to broadcast.
+            raise web.HTTPServiceUnavailable(reason=f"Station {station.slug!r} has nothing playing")
+
         subscriber = _Subscriber(
             queue=asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_SIZE),
             want_icy=request.headers.get("Icy-MetaData", "") == "1",
@@ -377,8 +391,6 @@ class WebRadioProvider(PlayerProvider):
         """
         clean_exit = False
         try:
-            # Source from the latest PlayerMedia handed to play_media;
-            # queue.current_item races queue.session_id during PLAY_NOW/seek.
             queue, start_item = self._resolve_pending_media(station)
             if queue is None or start_item is None:
                 station.producer_ready.set()
@@ -445,6 +457,7 @@ class WebRadioProvider(PlayerProvider):
                 if exit_reason == "stopped":
                     break
                 if exit_reason == "no_subscribers":
+                    station.resume_from_queue = True
                     async with station.lock:
                         if not station.subscribers:
                             station.producer_task = None
@@ -452,18 +465,37 @@ class WebRadioProvider(PlayerProvider):
                             clean_exit = True
                             return
                     # A subscriber raced back in while we were exiting.
+                    first_iteration = True
                     continue
 
                 # exit_reason == "ended". If the queue's session_id moved on we
-                # were skipped past; otherwise the queue actually ran out.
+                # were skipped past.
                 queue_data = self.mass.player_queues.queue_data_or_none(station.player_id)
                 if queue_data is None:
                     break
                 if queue_data.session_id == session_id_at_start:
-                    break
+                    # The queue ran out, or core ended the flow early (a format change or
+                    # a live item) and plays the next item once the player reports idle.
+                    exhausted = session_id_at_start is not None and (
+                        self.mass.player_queues.flow_queue_exhausted(
+                            queue.queue_id, session_id_at_start
+                        )
+                    )
+                    if exhausted:
+                        # A listener that reconnects on its own must not start the queue over.
+                        self.clear_pending_media(station.slug)
+                    station.player.mark_idle()
+                    if exhausted:
+                        break
                 # Wait for the new play_media that owns the new session.
                 with suppress(TimeoutError):
-                    await asyncio.wait_for(station.pending_media_event.wait(), timeout=5.0)
+                    await asyncio.wait_for(
+                        station.pending_media_event.wait(), timeout=_NEXT_SESSION_TIMEOUT
+                    )
+                if station.player.playback_state != PlaybackState.PLAYING:
+                    # No next item arrived, so there is nothing to carry on with.
+                    self.clear_pending_media(station.slug)
+                    break
                 self.logger.debug(
                     "Producer for station %s restarting on new queue session",
                     station.slug,
@@ -517,8 +549,13 @@ class WebRadioProvider(PlayerProvider):
             extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "2"],
             chunk_size=chunk_size,
         )
+        session_started = False
         async with aclosing(stream):
             async for chunk in stream:
+                if not session_started:
+                    # The queue measures its position against the audio of this session.
+                    station.player.restart_elapsed_time()
+                    session_started = True
                 # iter_chunked yields a short chunk only at ffmpeg EOF. Emitting
                 # one would desync the client's icy-metaint counter for the rest
                 # of the connection, so drop it (we lose <1s of audio at session
@@ -567,6 +604,10 @@ class WebRadioProvider(PlayerProvider):
         queue = self.mass.player_queues.get(station.player_id)
         if queue is None:
             return None, None
+        if station.resume_from_queue and queue.current_item is not None:
+            return queue, queue.current_item
+        # Right after play_media the PlayerMedia is the source of truth:
+        # queue.current_item races queue.session_id during PLAY_NOW/seek.
         return queue, self.mass.player_queues.get_item(queue.queue_id, media.queue_item_id)
 
     def _broadcast_chunk(self, station: _Station, chunk: bytes) -> list[_Subscriber]:
@@ -636,10 +677,23 @@ class WebRadioProvider(PlayerProvider):
         if enable_icy:
             headers["icy-metaint"] = str(station.icy_chunk_size)
 
-        # Shoutcast/Icecast-style framing: no Content-Length, no chunked
-        # transfer encoding. DEFAULT_STREAM_HEADERS sets Connection: close.
+        # Without a Content-Length an HTTP/1.1 listener gets chunked transfer encoding
+        # and an HTTP/1.0 one a plain stream until the connection closes. The HTTP
+        # profile can force a (very high) Content-Length for clients that need one.
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+        http_profile = self.mass.config.get_raw_player_config_value(
+            station.player_id, CONF_HTTP_PROFILE, CONF_ENTRY_HTTP_PROFILE.default_value
+        )
+        if http_profile == "forced_content_length":
+            resp.content_length = calculate_content_length(output_format, 12 * 3600)
+        elif http_profile == "chunked" and request.version >= HttpVersion11:
+            # Chunked transfer encoding does not exist in HTTP/1.0.
+            resp.enable_chunked_encoding()
+        # Closing the connection is what tells every kind of listener the broadcast ended.
+        resp.force_close()
         await resp.prepare(request)
+        # A forced Content-Length runs out at some point on an endless broadcast.
+        bytes_left = resp.content_length
 
         self.logger.debug(
             "Listener subscribed: station=%s output=%s icy=%s",
@@ -658,19 +712,24 @@ class WebRadioProvider(PlayerProvider):
                 except BrokenPipeError, ConnectionResetError, ConnectionError:
                     break
 
-                if not enable_icy:
-                    continue
+                frame = b""
+                if enable_icy:
+                    current = station.current_metadata
+                    if current and current != subscriber.last_metadata_seen:
+                        frame = current
+                        subscriber.last_metadata_seen = current
+                    else:
+                        frame = _ICY_NO_CHANGE_FRAME
+                    try:
+                        await resp.write(frame)
+                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                        break
 
-                current = station.current_metadata
-                if current and current != subscriber.last_metadata_seen:
-                    frame = current
-                    subscriber.last_metadata_seen = current
-                else:
-                    frame = _ICY_NO_CHANGE_FRAME
-                try:
-                    await resp.write(frame)
-                except BrokenPipeError, ConnectionResetError, ConnectionError:
-                    break
+                if bytes_left is not None:
+                    bytes_left -= len(chunk) + len(frame)
+                    if bytes_left <= 0:
+                        # End the response, so the listener reconnects for a new one.
+                        break
         finally:
             self.logger.debug("Listener unsubscribed: station=%s", station.slug)
 
@@ -785,17 +844,25 @@ class WebRadioPlayer(Player):
             model="Web Radio Station",
             manufacturer="Music Assistant",
         )
+
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return the Music Assistant queue as the only source of this station."""
         # Override the auto-injected queue source so the UI gates seek and
         # pause off: seek is meaningless on a live broadcast (and was
         # observed to confuse some clients), and pause has no real meaning
-        # on a broadcast either - the UI shows stop instead. Next/previous
-        # remain available.
-        self._attr_source_list = [
+        # on a broadcast either - the UI shows stop instead. A station that
+        # is not playing can be started. Next/previous remain available.
+        queue = self.mass.player_queues.get(self.player_id)
+        return [
             PlayerSource(
-                id=player_id,
+                id=self.player_id,
                 name="Music Assistant Queue",
                 passive=False,
-                can_play_pause=False,
+                can_play_pause=(
+                    self._attr_playback_state != PlaybackState.PLAYING
+                    and bool(queue and queue.items)
+                ),
                 can_seek=False,
                 can_next_previous=True,
             ),
@@ -825,6 +892,7 @@ class WebRadioPlayer(Player):
         return [
             CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
             CONF_ENTRY_ENABLE_ICY_METADATA_BASIC,
+            CONF_ENTRY_HTTP_PROFILE,
             ConfigEntry(
                 key=CONF_STREAM_URL_LABEL,
                 type=ConfigEntryType.LABEL,
@@ -837,6 +905,22 @@ class WebRadioPlayer(Player):
         provider = self.provider
         if isinstance(provider, WebRadioProvider):
             provider.refresh_station_route(self._station_slug)
+
+    def restart_elapsed_time(self) -> None:
+        """Restart the elapsed time, called when a broadcast session starts sending audio."""
+        if self._attr_playback_state != PlaybackState.PLAYING:
+            return
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
+
+    def mark_idle(self) -> None:
+        """Report the station as idle, with nothing being broadcast."""
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_current_media = None
+        self._attr_elapsed_time = None
+        self._attr_elapsed_time_last_updated = None
+        self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Mark the station as playing and queue the media for its broadcast."""
@@ -870,11 +954,7 @@ class WebRadioPlayer(Player):
 
     async def stop(self) -> None:
         """Stop playback and terminate the active broadcast, if any."""
-        self._attr_playback_state = PlaybackState.IDLE
-        self._attr_current_media = None
-        self._attr_elapsed_time = None
-        self._attr_elapsed_time_last_updated = None
-        self.update_state()
+        self.mark_idle()
         provider = self.provider
         if isinstance(provider, WebRadioProvider):
             provider.clear_pending_media(self._station_slug)
