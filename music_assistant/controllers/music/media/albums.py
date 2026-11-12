@@ -260,7 +260,10 @@ class AlbumsController(MediaControllerBase[Album]):
         if reachable_via is not None and not reachable_via:
             return []
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts = self._library_filter_parts(extra_query_params, album_types)
+        extra_query_parts = [
+            *self.listing_filter(extra_query_params),
+            *self._library_filter_parts(extra_query_params, album_types),
+        ]
         extra_join_parts: list[str] = []
         artist_table_joined = False
         if field == SortField.ARTIST_NAME:

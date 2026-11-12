@@ -87,7 +87,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 PREF_SIDEBAR_SHORTCUTS = "sidebar.shortcuts"
 
 # Database schema version
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
@@ -360,6 +360,7 @@ class AuthenticationManager:
             avatar_url=user_row["avatar_url"],
             preferences=json_loads(user_row["preferences"]),
             player_filter=json_loads(user_row["player_filter"]),
+            allow_explicit=bool(user_row["allow_explicit"]),
         )
 
     async def get_user_by_username(
@@ -414,6 +415,7 @@ class AuthenticationManager:
         avatar_url: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
+        allow_explicit: bool = True,
     ) -> User:
         """
         Create a new user.
@@ -424,6 +426,7 @@ class AuthenticationManager:
         :param avatar_url: Optional avatar URL.
         :param preferences: Optional user preferences dict.
         :param player_filter: Optional list of player IDs user has access to.
+        :param allow_explicit: Whether the user may see and play explicit content.
         """
         normalized_username = normalize_username(username)
 
@@ -448,6 +451,7 @@ class AuthenticationManager:
             "preferences": json_dumps(preferences),
             "player_filter": json_dumps(player_filter),
             "provider_filter": "[]",
+            "allow_explicit": allow_explicit,
         }
 
         await self.database.insert("users", user_data)
@@ -462,6 +466,7 @@ class AuthenticationManager:
             avatar_url=avatar_url,
             preferences=preferences,
             player_filter=player_filter,
+            allow_explicit=allow_explicit,
         )
 
         # If this is the first non-system user, migrate playlog entries to them
@@ -881,6 +886,7 @@ class AuthenticationManager:
                     avatar_url=row["avatar_url"],
                     preferences=json_loads(row["preferences"]),
                     player_filter=json_loads(row["player_filter"]),
+                    allow_explicit=bool(row["allow_explicit"]),
                 )
             )
         return [with_derived_provider_filter(self.mass, user) for user in users]
@@ -1364,6 +1370,7 @@ class AuthenticationManager:
         display_name: str | None = None,
         avatar_url: str | None = None,
         player_filter: list[str] | None = None,
+        allow_explicit: bool = True,
     ) -> User:
         """
         Create a new user with built-in authentication (admin only).
@@ -1374,6 +1381,7 @@ class AuthenticationManager:
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param player_filter: Optional list of player IDs user has access to.
+        :param allow_explicit: Whether the user may see and play explicit content (default: True).
         :return: Created user object.
         """
         # Validation
@@ -1395,6 +1403,7 @@ class AuthenticationManager:
             password,
             role=role,
             player_filter=player_filter,
+            allow_explicit=allow_explicit,
         )
 
         # Update optional fields if provided
@@ -1604,6 +1613,26 @@ class AuthenticationManager:
             raise InvalidDataError("Failed to refresh user after filter update")
         return refreshed_user
 
+    async def update_user_allow_explicit(self, target_user: User, allow_explicit: bool) -> User:
+        """
+        Update whether a user may see and play explicit content (helper method).
+
+        :param target_user: The user to update.
+        :param allow_explicit: Whether the user may see and play explicit content.
+        """
+        await self.database.update(
+            "users",
+            {"user_id": target_user.user_id},
+            {"allow_explicit": allow_explicit},
+        )
+        self.webserver.update_active_user_filters(
+            target_user.user_id, allow_explicit=allow_explicit
+        )
+        refreshed_user = await self.get_user(target_user.user_id)
+        if not refreshed_user:
+            raise InvalidDataError("Failed to refresh user after explicit content update")
+        return refreshed_user
+
     async def remove_from_user_filters(self, player_ids: Collection[str] = ()) -> None:
         """
         Remove the given players from the access filters of all users.
@@ -1701,6 +1730,7 @@ class AuthenticationManager:
         role: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
+        allow_explicit: bool | None = None,
     ) -> User:
         """
         Update user profile information.
@@ -1716,6 +1746,8 @@ class AuthenticationManager:
         :param role: The id of the (builtin or custom) role to assign (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
+        :param allow_explicit: Whether the user may see and play explicit content (set by admin
+            only, optional).
         :return: Updated user object.
         """
         current_user_obj = get_current_user()
@@ -1782,6 +1814,14 @@ class AuthenticationManager:
                     "The users.manage scope is required to update player filters"
                 )
             target_user = await self.update_user_filters(target_user, player_filter)
+
+        # Update allow_explicit (requires the users.manage scope)
+        if allow_explicit is not None:
+            if not may_manage_users:
+                raise InsufficientPermissions(
+                    "The users.manage scope is required to update the explicit content setting"
+                )
+            target_user = await self.update_user_allow_explicit(target_user, allow_explicit)
 
         # Update password if provided
         if password:
@@ -2109,7 +2149,8 @@ class AuthenticationManager:
                 preferences json NOT NULL DEFAULT '{}',
                 player_filter json NOT NULL DEFAULT '[]',
                 -- no longer read, kept only to avoid a schema bump
-                provider_filter json NOT NULL DEFAULT '[]'
+                provider_filter json NOT NULL DEFAULT '[]',
+                allow_explicit INTEGER NOT NULL DEFAULT 1
             )
             """
         )
@@ -2248,6 +2289,15 @@ class AuthenticationManager:
                 )
                 """
             )
+            await self.database.commit()
+
+        # Migration to version 6: Add allow_explicit, letting every existing user keep explicit content
+        if from_version < 6:
+            with contextlib.suppress(OperationalError):
+                # Column may already exist
+                await self.database.execute(
+                    "ALTER TABLE users ADD COLUMN allow_explicit INTEGER NOT NULL DEFAULT 1"
+                )
             await self.database.commit()
 
     async def _get_or_create_jwt_secret(self) -> str:

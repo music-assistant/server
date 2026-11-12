@@ -46,6 +46,8 @@ from music_assistant.controllers.player_queues.helpers import (
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.smart_fade_ordering import order_tracks
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.provider_access import without_disallowed_explicit
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
@@ -276,6 +278,8 @@ class ManagedPool:
             # the batch is music picked for the user, so their dislikes stay out of it;
             # the finite sources they added themselves are never filtered
             tracks = await without_disliked_tracks(self.mass, userid, tracks)
+            # the refill runs as the queue owner, who may be kept from explicit tracks
+            tracks = await without_disallowed_explicit(self.mass, tracks, get_current_user())
             return [track for track in tracks if track.available]
         return []
 
@@ -283,6 +287,7 @@ class ManagedPool:
         """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""
         with suppress(MusicAssistantError):
             tracks = await self.queues.get_tracks_for_playback(media_item)
+            tracks = await without_disallowed_explicit(self.mass, tracks, get_current_user())
             return [track for track in tracks if isinstance(track, Track) and track.available]
         return []
 

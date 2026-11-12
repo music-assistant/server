@@ -538,6 +538,7 @@ class WebserverController(CoreController):
         self,
         user_id: str,
         player_filter: list[str] | None = None,
+        allow_explicit: bool | None = None,
     ) -> None:
         """
         Apply updated access filters to the live sessions of a user.
@@ -547,6 +548,7 @@ class WebserverController(CoreController):
 
         :param user_id: ID of the user whose sessions must be updated.
         :param player_filter: The new player filter, or None to leave it untouched.
+        :param allow_explicit: The new explicit content setting, or None to leave it untouched.
         """
         for client in list(self.clients):
             user = client.authenticated_user
@@ -555,6 +557,8 @@ class WebserverController(CoreController):
             # updated in place: the connection's context holds this very object
             if player_filter is not None:
                 user.player_filter[:] = player_filter
+            if allow_explicit is not None:
+                user.allow_explicit = allow_explicit
             self.logger.debug("Updated the access filters of a live session of %s", user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:

@@ -1211,6 +1211,7 @@
     "provider_unavailable": "The provider is currently unavailable.",
     "media_not_found": "The requested media item could not be found.",
     "media_not_available_for_user": "This is not available on any of your music sources.",
+    "media_explicit_not_allowed": "This is explicit content, which you may not play.",
     "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
     "invalid_config_value": "The value for {0} is not valid.",
