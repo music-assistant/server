@@ -386,11 +386,8 @@ async def move_playlist_entries(
     """
     Async wrapper around moving entries of a playlist.
 
-    :param headers: The authentication headers.
-    :param prov_playlist_id: The playlist id on YouTube Music.
     :param set_video_ids: The setVideoIds of the entries to move, in the order they end up in.
     :param successor: The setVideoId of the entry they are placed in front of, None for the end.
-    :param user: The brand account id, if any.
     """
 
     def _move_playlist_entries() -> None:
