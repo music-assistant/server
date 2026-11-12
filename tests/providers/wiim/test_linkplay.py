@@ -610,52 +610,32 @@ class TestProviderRouting:
         mock_provider.mass.players.attach.assert_not_called()
         mock_provider.mass.players.wants_protocol.assert_called_once_with(EDIFIER_PLAYER_ID)
 
-    async def test_official_device_of_a_disabled_player_gets_no_connection(
-        self, mock_provider: MagicMock
+    @pytest.mark.parametrize("wanted", [True, False], ids=["skipped", "disabled"])
+    async def test_official_device_the_attach_does_not_take_gets_no_connection(
+        self, mock_provider: MagicMock, wanted: bool
     ) -> None:
-        """No SDK connection is set up for an official device the server does not want."""
-        mock_provider.mass.players.wants_protocol = MagicMock(return_value=False)
-        mock_provider.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.2")
-        mock_provider.wiim_controller.add_device = AsyncMock()
+        """
+        An official device sets up its SDK connection only once it is attached.
+
+        :param wanted: Whether the server wants the protocol; when it does, the attach
+            skips it (its player got disabled meanwhile).
+        """
+        mock_provider.mass.players.wants_protocol = MagicMock(return_value=wanted)
+        mock_provider.mass.players.attach = AsyncMock()
+        # nothing is attached under the id: the controller kept the object for itself
+        mock_provider.get_protocol = MagicMock(return_value=None)
         with patch(
-            "music_assistant.providers.wiim.provider.async_create_wiim_device", AsyncMock()
+            "music_assistant.providers.wiim.player.async_create_wiim_device", AsyncMock()
         ) as create_device:
             await WiimProvider.try_add_player(
                 mock_provider,
                 "wiim_uuid:official",
                 "192.168.1.60",
-                "WiiM Pro",
+                MagicMock(udn="uuid:official", friendly_name="WiiM Pro"),
                 "http://192.168.1.60:49152/description.xml",
             )
+        assert mock_provider.mass.players.attach.await_count == (1 if wanted else 0)
         create_device.assert_not_awaited()
-
-    async def test_official_device_the_controller_did_not_take_lets_go(
-        self, mock_provider: MagicMock
-    ) -> None:
-        """An official device whose player got disabled during the attach releases the SDK."""
-        device = MagicMock(udn="uuid:official", ip_address="192.168.1.60", available=True)
-        device.supported_input_modes = ()
-        device.disconnect = AsyncMock()
-        mock_provider.wiim_controller.add_device = AsyncMock()
-        mock_provider.wiim_controller.remove_device = AsyncMock()
-        mock_provider.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.2")
-        mock_provider.mass.players.attach = AsyncMock()
-        # nothing is attached under the id: the controller kept the object for itself
-        mock_provider.get_protocol = MagicMock(return_value=None)
-        with patch(
-            "music_assistant.providers.wiim.provider.async_create_wiim_device",
-            AsyncMock(return_value=device),
-        ):
-            await WiimProvider.try_add_player(
-                mock_provider,
-                "wiim_uuid:official",
-                "192.168.1.60",
-                "WiiM Pro",
-                "http://192.168.1.60:49152/description.xml",
-            )
-        mock_provider.mass.players.attach.assert_awaited_once()
-        mock_provider.wiim_controller.remove_device.assert_awaited_once_with("uuid:official")
-        device.disconnect.assert_awaited_once()
         mock_provider.native_groups.refresh_leader.assert_not_awaited()
 
     async def test_discovery_offers_the_manually_added_addresses(

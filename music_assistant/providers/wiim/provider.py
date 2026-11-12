@@ -11,8 +11,6 @@ from async_upnp_client.exceptions import UpnpError
 from music_assistant_models.enums import IdentifierType
 from pywiim import WiiMClient, WiiMError
 from wiim import WiimController
-from wiim.discovery import async_create_wiim_device
-from wiim.exceptions import WiimDeviceException, WiimRequestException
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
@@ -78,7 +76,7 @@ class WiimProvider(PlayerProvider):
         for ip_address in manual_ip_config:
             stripped_ip_address = ip_address.strip()
             await self._discover_device(
-                stripped_ip_address, "Unknown", self._candidate_locations(stripped_ip_address)
+                stripped_ip_address, self._candidate_locations(stripped_ip_address)
             )
 
     async def on_mdns_service_state_change(
@@ -112,7 +110,6 @@ class WiimProvider(PlayerProvider):
             5,
             self._discover_device,
             cur_address,
-            name,
             locations,
             mac_address,
             task_id=f"setup_wiim_{cur_address}",
@@ -122,53 +119,35 @@ class WiimProvider(PlayerProvider):
         self,
         protocol_id: str,
         ip_address: str,
-        name: str,
+        upnp_device: UpnpDevice,
         upnp_location: str,
         mac_address: str | None = None,
     ) -> None:
-        """Add an official WiiM/Audio Pro device via the official SDK."""
+        """Add an official WiiM/Audio Pro device; it connects through the official SDK."""
         if not self.mass.players.wants_protocol(protocol_id):
             return
-        try:
-            wiim_dev = await async_create_wiim_device(
-                upnp_location,
-                self.mass.http_session_no_ssl,
-                host=ip_address,
-                local_host=await self.mass.streams.get_source_ip(ip_address),
-                polling_interval=60,
-            )
-        except (WiimRequestException, WiimDeviceException) as err:
-            self.logger.warning("Failed to initialize WiiM device at %s: %s", ip_address, err)
-            return
-        except Exception:
-            self.logger.exception("Unexpected error initializing WiiM device at %s", ip_address)
-            return
-
-        await self.wiim_controller.add_device(wiim_dev)
         try:
             player = WiimPlayer(
                 provider=self,
                 protocol_id=protocol_id,
-                device=wiim_dev,
+                upnp_device=upnp_device,
+                description_url=upnp_location,
+                ip_address=ip_address,
                 mac_address=mac_address,
             )
-            await player.setup()
             await self.mass.players.attach(player)
             if self.get_protocol(protocol_id) is not player:
-                # the user disabled the player meanwhile: release the SDK device again
-                await player.on_detach()
+                # the user disabled the player meanwhile
                 return
-            # read the live topology now the protocol is attached (setup runs before the
-            # attach, so the coordinator would discard a read taken there), then
+            # read the live topology now the protocol is attached (the coordinator would
+            # discard a read taken before the attach), then
             # reconcile so any leader that already lists this device, or that it leads,
             # self-heals regardless of discovery order.
             await self.native_groups.refresh_leader(player, force=True)
             self.native_groups.schedule_reconcile()
-            self.logger.info("WiiM player attached: %s (%s)", wiim_dev.name, protocol_id)
+            self.logger.info("WiiM player attached: %s (%s)", player.name, protocol_id)
         except Exception:
-            self.logger.exception("Failed to attach WiiM player %s", wiim_dev.name)
-            await self.wiim_controller.remove_device(wiim_dev.udn)
-            await wiim_dev.disconnect()
+            self.logger.exception("Failed to attach WiiM player %s", protocol_id)
 
     async def try_add_linkplay_player(
         self,
@@ -246,7 +225,6 @@ class WiimProvider(PlayerProvider):
     async def _discover_device(
         self,
         ip_address: str,
-        name: str,
         locations: tuple[str, ...],
         mac_address: str | None = None,
     ) -> None:
@@ -266,7 +244,9 @@ class WiimProvider(PlayerProvider):
             return
 
         if is_official_device(upnp_device.manufacturer, upnp_device.model_name):
-            await self.try_add_player(protocol_id, ip_address, name, matched_location, mac_address)
+            await self.try_add_player(
+                protocol_id, ip_address, upnp_device, matched_location, mac_address
+            )
         else:
             await self.try_add_linkplay_player(
                 protocol_id, ip_address, upnp_device, matched_location, mac_address
