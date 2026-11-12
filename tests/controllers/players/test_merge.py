@@ -126,7 +126,12 @@ async def test_merged_player_carries_both_protocols_and_answers_to_the_absorbed_
     tv = await _two_players_for_one_tv(scenario)
     scenario.clear_events()
 
-    await _merge(scenario, tv.older_id, tv.younger_id)
+    await scenario.mass.players.merge_players(tv.older_id, tv.younger_id)
+    await scenario.settle()
+
+    # the protocols are attached to the kept player at once
+    assert scenario.player_of(tv.cast) == tv.older_id
+    await scenario.idle()
 
     assert scenario.players_carrying(tv.airplay, tv.cast) == [
         VisiblePlayer(
