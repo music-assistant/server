@@ -1,0 +1,599 @@
+{
+ "categories": [
+  {
+   "name": "Natural Noises",
+   "machines": [
+    {
+     "id": "THUNDER",
+     "name": "Distant Thunder",
+     "url": "/NoiseMachines/thunderNoiseGenerator.php"
+    },
+    {
+     "id": "RAIN3",
+     "name": "Rain on a Tent",
+     "url": "/NoiseMachines/campingRainNoiseGenerator.php"
+    },
+    {
+     "id": "STORM",
+     "name": "Stormy Weather",
+     "url": "/NoiseMachines/stormSoundGenerator.php"
+    },
+    {
+     "id": "FIRE",
+     "name": "Fireplace",
+     "url": "/NoiseMachines/fireNoiseGenerator.php"
+    },
+    {
+     "id": "RAIN4",
+     "name": "Tin Roof Rain",
+     "url": "/NoiseMachines/tinRoofRainNoiseGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Synthetic Noises",
+   "machines": [
+    {
+     "id": "WHITE",
+     "name": "White Noise & Co",
+     "url": "/NoiseMachines/whiteNoiseGenerator.php"
+    },
+    {
+     "id": "NOTWHITE",
+     "name": "Brownish White",
+     "url": "/NoiseMachines/notWhiteNoisePlayer.php"
+    },
+    {
+     "id": "XENOBIOTA",
+     "name": "Xenobiota",
+     "url": "/NoiseMachines/xenobiotaGenerativeNoise.php"
+    },
+    {
+     "id": "BAO",
+     "name": "Sound Horizon",
+     "url": "/NoiseMachines/baryonAcousticOscillationsNoisePlayer.php"
+    },
+    {
+     "id": "GREY",
+     "name": "Grey Noise",
+     "url": "/NoiseMachines/greyNoiseGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Experimental",
+   "machines": [
+    {
+     "id": "BINAURAL",
+     "name": "Binaural Beats",
+     "url": "/NoiseMachines/binauralBrainwaveGenerator.php"
+    },
+    {
+     "id": "FORTYHZ",
+     "name": "40 Hertz",
+     "url": "/NoiseMachines/forty40HzBrainwaveGenerator.php"
+    },
+    {
+     "id": "BINAURALPURE",
+     "name": "Binaural Harmonics",
+     "url": "/NoiseMachines/pureBinauralBrainwaveGenerator.php"
+    },
+    {
+     "id": "ISOCHRONIC",
+     "name": "Isochronic Tones",
+     "url": "/NoiseMachines/isochronicBrainwaveGenerator.php"
+    },
+    {
+     "id": "SOLFEGGIO",
+     "name": "Solfeggio Tones",
+     "url": "/NoiseMachines/solfeggioTonesGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Landscapes",
+   "machines": [
+    {
+     "id": "JAPANGARDEN",
+     "name": "Japanese Garden",
+     "url": "/NoiseMachines/japaneseGardenSoundscapeGenerator.php"
+    },
+    {
+     "id": "IRISHCOAST",
+     "name": "Irish Coast",
+     "url": "/NoiseMachines/windSeaRainNoiseGenerator.php"
+    },
+    {
+     "id": "FOREST",
+     "name": "Primeval Forest",
+     "url": "/NoiseMachines/primevalEuropeanForestSoundscapeGenerator.php"
+    },
+    {
+     "id": "SUNIKWATER",
+     "name": "Healing Water",
+     "url": "/NoiseMachines/healingWaterSoundscapeGenerator.php"
+    },
+    {
+     "id": "ICELANDICSHORE",
+     "name": "Icelandic Shores",
+     "url": "/NoiseMachines/oceanWavesSeaShoreNoiseGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Ambiences",
+   "machines": [
+    {
+     "id": "AUTUMNWALK",
+     "name": "Autumn Walk",
+     "url": "/NoiseMachines/autumnWalkSoundscapeGenerator.php"
+    },
+    {
+     "id": "CUSTOM_WINDOWRAIN",
+     "name": "Cosy Rain",
+     "url": "/NoiseMachines/customRainOnWindow.php"
+    },
+    {
+     "id": "FINWHALE",
+     "name": "Underwater",
+     "url": "/NoiseMachines/finWhaleUnderwaterSoundscapeGenerator.php"
+    },
+    {
+     "id": "CUSTOM_STORMY",
+     "name": "Bad Weather",
+     "url": "/NoiseMachines/customStormy.php"
+    },
+    {
+     "id": "SPRINGWALK",
+     "name": "Spring Walk",
+     "url": "/NoiseMachines/springWalkSoundscapeGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Fantasy",
+   "machines": [
+    {
+     "id": "CUSTOM_LIBRARY",
+     "name": "Medieval Library",
+     "url": "/NoiseMachines/customMedievalLibrary.php"
+    },
+    {
+     "id": "RPGVILLAGE",
+     "name": "Medieval Village",
+     "url": "/NoiseMachines/medievalVillageSoundscapeGenerator.php"
+    },
+    {
+     "id": "MINSTREL",
+     "name": "Sad Minstrel",
+     "url": "/NoiseMachines/medievalMinstrelSoundscapeGenerator.php"
+    },
+    {
+     "id": "CUSTOM_NAMEOFTHEROSE",
+     "name": "Name of the Rose",
+     "url": "/NoiseMachines/customTheNameOfTheRose.php"
+    },
+    {
+     "id": "RPGFOREST",
+     "name": "Dark Forest",
+     "url": "/NoiseMachines/enchantedForestSoundscapeGenerator.php"
+    },
+    {
+     "id": "MAGIC_ARRAKIS",
+     "name": "Dunes Of Arrakis",
+     "url": "/NoiseMachines/magicDuneArrakisGenerator.php"
+    },
+    {
+     "id": "MAGIC_MEDITATION",
+     "name": "Zen Garden",
+     "url": "/NoiseMachines/magicMeditationGenerator.php"
+    },
+    {
+     "id": "MAGIC_SIRENSONG",
+     "name": "Mermaids Calling",
+     "url": "/NoiseMachines/magicSirenSongGenerator.php"
+    },
+    {
+     "id": "MAGIC_RAIN",
+     "name": "Rainy Days",
+     "url": "/NoiseMachines/magicRainyDaysGenerator.php"
+    },
+    {
+     "id": "MAGIC_JAPAN",
+     "name": "日本",
+     "url": "/NoiseMachines/magicJapanGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Vocal",
+   "machines": [
+    {
+     "id": "GREGORIAN",
+     "name": "Gregorian Chants",
+     "url": "/NoiseMachines/gregorianChoirGenerator.php"
+    },
+    {
+     "id": "CORINNE",
+     "name": "Forest Voice",
+     "url": "/NoiseMachines/voiceInTheWoods.php"
+    },
+    {
+     "id": "DECOCK2",
+     "name": "Silk and Hopes",
+     "url": "/NoiseMachines/raphaelAlongTheSilkRoad.php"
+    },
+    {
+     "id": "RIIKKA",
+     "name": "Oak Song",
+     "url": "/NoiseMachines/riikkaVocalSoundscape.php"
+    },
+    {
+     "id": "DEEPCHANT",
+     "name": "Deep Chant",
+     "url": "/NoiseMachines/deepVoiceSoundscape.php"
+    }
+   ]
+  },
+  {
+   "name": "Acoustic",
+   "machines": [
+    {
+     "id": "RAVVAST",
+     "name": "The Pilgrim",
+     "url": "/NoiseMachines/tongueDrumSoundscapeGenerator.php"
+    },
+    {
+     "id": "DUDUK",
+     "name": "Duduk Song",
+     "url": "/NoiseMachines/dudukSoundGenerator.php"
+    },
+    {
+     "id": "PIANO",
+     "name": "88 Keys",
+     "url": "/NoiseMachines/acousticPianoSoundscapeGenerator.php"
+    },
+    {
+     "id": "MARIMBA",
+     "name": "Marimbas",
+     "url": "/NoiseMachines/benClarkMarimbaGenerator.php"
+    },
+    {
+     "id": "VIBRAPHONE2",
+     "name": "Silver Drift",
+     "url": "/NoiseMachines/benClarkVibraphoneSoundscapeGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Cinematic",
+   "machines": [
+    {
+     "id": "PURI",
+     "name": "Home Again",
+     "url": "/NoiseMachines/meditationMusicGenerator.php"
+    },
+    {
+     "id": "OUDUK",
+     "name": "Solomon's Dream",
+     "url": "/NoiseMachines/middleEasternMusicGenerator.php"
+    },
+    {
+     "id": "JAPANESEOASE",
+     "name": "Japanese Oase",
+     "url": "/NoiseMachines/japaneseSuikinkutsuSoundscapeGenerator.php"
+    },
+    {
+     "id": "CINEMATIC",
+     "name": "Cinematic East",
+     "url": "/NoiseMachines/cinematicEasternSoundscapeGenerator.php"
+    },
+    {
+     "id": "CUSTOM_DARKWATERS",
+     "name": "Dark Seas",
+     "url": "/NoiseMachines/customDarkWaters.php"
+    }
+   ]
+  },
+  {
+   "name": "Electric",
+   "machines": [
+    {
+     "id": "BLUE",
+     "name": "Night Blue",
+     "url": "/NoiseMachines/blueJazzGenerator.php"
+    },
+    {
+     "id": "VINTAGEVIBE",
+     "name": "Walking Through",
+     "url": "/NoiseMachines/downtempoBackgroundMusicGenerator.php"
+    },
+    {
+     "id": "RHODES",
+     "name": "Mr. Rhodes",
+     "url": "/NoiseMachines/rhodesSoundscapeGenerator.php"
+    },
+    {
+     "id": "HANSHROOM",
+     "name": "Shroom With a View",
+     "url": "/NoiseMachines/hanShroomMusicGenerator.php"
+    },
+    {
+     "id": "TAPE",
+     "name": "Tape Memories",
+     "url": "/NoiseMachines/oldTapeSoundscapeGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Synthesizers",
+   "machines": [
+    {
+     "id": "IONSTREAM",
+     "name": "The Architect's Eclipse",
+     "url": "/NoiseMachines/ionStreamSpaceAmbientGenerativeMusic.php"
+    },
+    {
+     "id": "NAGLE",
+     "name": "Take It Easy",
+     "url": "/NoiseMachines/paulNagleSequenceGenerator.php"
+    },
+    {
+     "id": "DISSOTRANCE",
+     "name": "Dissociative Trance",
+     "url": "/NoiseMachines/dissociativeTranceMusicGenerator.php"
+    },
+    {
+     "id": "PSYNESTHESIA",
+     "name": "Psynesthesia",
+     "url": "/NoiseMachines/ambientPsytranceMusicGenerator.php"
+    },
+    {
+     "id": "TORLEY4",
+     "name": "Now Loading...",
+     "url": "/NoiseMachines/loadingScreenSoundscapeGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Ambient",
+   "machines": [
+    {
+     "id": "FLOATING",
+     "name": "Floating",
+     "url": "/NoiseMachines/deepRelaxingAmbientSoundscapeGenerator.php"
+    },
+    {
+     "id": "SLEEPINGDRAGON",
+     "name": "Sleeping Dragon",
+     "url": "/NoiseMachines/sleepingDragonToneGenerator.php"
+    },
+    {
+     "id": "OSMOSIS",
+     "name": "Osmosis",
+     "url": "/NoiseMachines/osmosisDroneGenerator.php"
+    },
+    {
+     "id": "NAUTILUS",
+     "name": "Dreaming Nautilus",
+     "url": "/NoiseMachines/dreamingNautilusGenerativeSoundscape.php"
+    },
+    {
+     "id": "ANAMNESIS",
+     "name": "Anamnesis",
+     "url": "/NoiseMachines/anamnesisSoundscapeGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Traditional",
+   "machines": [
+    {
+     "id": "TIBET",
+     "name": "Tibetan Spirit",
+     "url": "/NoiseMachines/tibetSoundscapeGenerator.php"
+    },
+    {
+     "id": "BERBER",
+     "name": "Berber Tent",
+     "url": "/NoiseMachines/berberTentSoundscapeGenerator.php"
+    },
+    {
+     "id": "BUDDHIST",
+     "name": "Buddhist Chants",
+     "url": "/NoiseMachines/buddhistTempleCeremonySoundscapeGenerator.php"
+    },
+    {
+     "id": "JAPANSHRINE",
+     "name": "Japanese Heritage",
+     "url": "/NoiseMachines/japaneseShrineSoundscapeGenerator.php"
+    },
+    {
+     "id": "RAMASUNDAR",
+     "name": "From India",
+     "url": "/NoiseMachines/ramaSundarIndianSongGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Spaces",
+   "machines": [
+    {
+     "id": "CAFE",
+     "name": "Cafe Restaurant",
+     "url": "/NoiseMachines/cafeRestaurantNoiseGenerator.php"
+    },
+    {
+     "id": "OFFICE",
+     "name": "Calm Office",
+     "url": "/NoiseMachines/openOfficeNoiseGenerator.php"
+    },
+    {
+     "id": "CARINTERIOR",
+     "name": "Car Interior",
+     "url": "/NoiseMachines/carInteriorSoundscapeGenerator.php"
+    },
+    {
+     "id": "OFFICE2",
+     "name": "Vintage Office",
+     "url": "/NoiseMachines/vintageOfficeNoiseGenerator.php"
+    },
+    {
+     "id": "CHURCH",
+     "name": "Church",
+     "url": "/NoiseMachines/churchAtmosphereSoundGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Industrial",
+   "machines": [
+    {
+     "id": "DATACENTER",
+     "name": "Data Center",
+     "url": "/NoiseMachines/dataCenterNoiseGenerator.php"
+    },
+    {
+     "id": "FAN",
+     "name": "Fan Noise",
+     "url": "/NoiseMachines/fanNoiseGenerator.php"
+    },
+    {
+     "id": "STEELMILL",
+     "name": "Steel Mill",
+     "url": "/NoiseMachines/steelMillNoiseGenerator.php"
+    },
+    {
+     "id": "VINYL",
+     "name": "Vinyl Groove",
+     "url": "/NoiseMachines/dustyScratchedVinylNoiseGenerator.php"
+    },
+    {
+     "id": "FACTORY",
+     "name": "Factory",
+     "url": "/NoiseMachines/industrialRevolutionNoiseGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Transports",
+   "machines": [
+    {
+     "id": "RAILROAD",
+     "name": "Railroads",
+     "url": "/NoiseMachines/railroadNoiseGenerator.php"
+    },
+    {
+     "id": "SPACESHIP",
+     "name": "Spaceship",
+     "url": "/NoiseMachines/spaceshipNoiseGenerator.php"
+    },
+    {
+     "id": "PROPELLER",
+     "name": "Flying Fortress",
+     "url": "/NoiseMachines/propellerNoiseGenerator.php"
+    },
+    {
+     "id": "SAILBOAT",
+     "name": "Sailboat",
+     "url": "/NoiseMachines/squeakingSailboatSoundscapeGenerator.php"
+    },
+    {
+     "id": "CABIN",
+     "name": "Aircraft Cabin",
+     "url": "/NoiseMachines/cabinNoiseGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Urban",
+   "machines": [
+    {
+     "id": "WET",
+     "name": "Wet Asphalt",
+     "url": "/NoiseMachines/urbanRainSoundGenerator.php"
+    },
+    {
+     "id": "CUSTOM_CITYRAIN",
+     "name": "City Rain",
+     "url": "/NoiseMachines/customRainInTheCity.php"
+    },
+    {
+     "id": "SENEGAL",
+     "name": "Senegal Town",
+     "url": "/NoiseMachines/senegalUrbanLifeAmbienceGenerator.php"
+    },
+    {
+     "id": "HARBOR",
+     "name": "Port Town",
+     "url": "/NoiseMachines/harborSoundscapeGenerator.php"
+    },
+    {
+     "id": "SHERBROOKE",
+     "name": "Sherbrooke Str",
+     "url": "/NoiseMachines/sherbrookeStreetAmbienceGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Tonal Drones",
+   "machines": [
+    {
+     "id": "BOWLS",
+     "name": "Singing Bowls",
+     "url": "/NoiseMachines/singingBowlsDroneGenerator.php"
+    },
+    {
+     "id": "THROAT",
+     "name": "Tibetan Choir",
+     "url": "/NoiseMachines/throatSingingDroneGenerator.php"
+    },
+    {
+     "id": "GONGBARRY",
+     "name": "Bronze Sanctuary",
+     "url": "/NoiseMachines/nippleGongMeditationSoundscape.php"
+    },
+    {
+     "id": "ORCHESTRON",
+     "name": "Orchestron",
+     "url": "/NoiseMachines/orchestronDroneGenerator.php"
+    },
+    {
+     "id": "ICEDRONE",
+     "name": "Ice World",
+     "url": "/NoiseMachines/iceDroneGenerator.php"
+    }
+   ]
+  },
+  {
+   "name": "Patterns",
+   "machines": [
+    {
+     "id": "POLYRHYTHM",
+     "name": "Polyrhythms",
+     "url": "/NoiseMachines/polyrhythmBeatGenerator.php"
+    },
+    {
+     "id": "TUNEDCAVE",
+     "name": "Tuned Cave",
+     "url": "/NoiseMachines/contemplationCaveGenerator.php"
+    },
+    {
+     "id": "WINDCHIMES",
+     "name": "Temple Bells",
+     "url": "/NoiseMachines/windchimesGenerator.php"
+    },
+    {
+     "id": "CLOCK",
+     "name": "Clockwork",
+     "url": "/NoiseMachines/clockTickTockNoiseGenerator.php"
+    },
+    {
+     "id": "STALACTITES",
+     "name": "Cave Chime",
+     "url": "/NoiseMachines/stalactitesCaveChimeSoundscapeGenerator.php"
+    }
+   ]
+  }
+ ]
+}

@@ -86,11 +86,12 @@ mass = "music_assistant.__main__:main"
 # "childrens" is the normalized form of the "Children's" audiobook genre (apostrophe stripped)
 # "speaches" is the name of a self-hostable OpenAI-compatible speech server
 # "overal" is a Dutch word ("everywhere") in a VRT MAX station tagline
+# "anull" is the ffmpeg passthrough audio filter name
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
 # tidal fixtures are captured API responses; foreign album/track titles aren't typos
 # dr_lyd fixtures are captured API responses, in Danish
 # instructions/*.instructions.md quotes reviewer comments verbatim (incl. their original typos)
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,overal,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,overal,anull,"
 skip = """*.js,*.svg,\
 .github/instructions/music-assistant-standards.instructions.md,\
 music_assistant/helpers/resources/countries.json,\
