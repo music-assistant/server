@@ -9,6 +9,10 @@ from typing import Final
 # loads a large playlist, an announcement), so only a holder that is stuck makes it fail.
 PLAYER_LOCK_SLOW_THRESHOLD: Final = 5
 PLAYER_LOCK_TIMEOUT: Final = 120
+# How many times a command takes the locks of a player and its owner (the group or sync
+# leader holding it) again when the owner changed while it waited; a player whose owner keeps
+# changing makes it fail as busy instead of waiting on.
+PLAYER_LOCK_OWNER_ATTEMPTS: Final = 3
 
 
 class PlayerLockPurpose(StrEnum):

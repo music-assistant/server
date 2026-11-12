@@ -137,6 +137,7 @@ from music_assistant.models.plugin import PluginProvider, SourceControlValue
 from .announcements import AnnouncementsMixin
 from .audio_sources import AudioSourceMixin, AudioSourceSession
 from .constants import (
+    PLAYER_LOCK_OWNER_ATTEMPTS,
     PLAYER_LOCK_SLOW_THRESHOLD,
     PLAYER_LOCK_TIMEOUT,
     PlayerLockPurpose,
@@ -352,21 +353,40 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         that is not part of a group only takes its own lock. Each lock has its own
         timeout, so a player held by a group waits for both in turn.
 
+        The body runs once both locks are held and the group still holds the player. A
+        player that joined or left a group while the command waited has both locks
+        released and taken again, in the order of its new owner, so a command never
+        holds a player's lock while it waits for the lock of the player's owner.
+
         :param player_id: The player to lock.
         :raises ResourceBusyError: When either lock is still held by another command at
-            its timeout.
+            its timeout, or the player kept changing its group while the command waited.
         """
-        async with contextlib.AsyncExitStack() as stack:
-            if (player := self.get_player(player_id)) and (
-                owner := self._resolve_playback_owner(player)
-            ) is not player:
+        for _attempt in range(PLAYER_LOCK_OWNER_ATTEMPTS):
+            owner_id = self._playback_owner_id(player_id)
+            async with contextlib.AsyncExitStack() as stack:
+                if owner_id != player_id:
+                    await stack.enter_async_context(
+                        self.get_player_lock(owner_id, PlayerLockPurpose.PLAYBACK)
+                    )
                 await stack.enter_async_context(
-                    self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK)
+                    self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
                 )
-            await stack.enter_async_context(
-                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+                if self._playback_owner_id(player_id) == owner_id:
+                    yield
+                    return
+            self.logger.debug(
+                "Player %s changed its group while waiting for its lock, taking it again",
+                player_id,
             )
-            yield
+        name = player.display_name if (player := self.get_player(player_id)) else player_id
+        msg = f"Player {name} kept changing its group while waiting for its playback lock"
+        raise ResourceBusyError(
+            msg,
+            translation_key="player_busy",
+            translation_owner=self.translation_owner,
+            translation_args=[name],
+        )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
@@ -877,8 +897,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         - player_id: player_id of the player to handle the command.
         """
-        player = self._get_player_with_redirect(player_id)
-        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+        async with self.get_group_and_player_lock(player_id):
+            player = self._get_player_with_redirect(player_id)
             # Redirect to queue controller if it is active (skip if already in queue command context)
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues.stop(active_queue.queue_id)
@@ -894,8 +914,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         - player_id: player_id of the player to handle the command.
         """
-        player = self._get_player_with_redirect(player_id)
-        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+        async with self.get_group_and_player_lock(player_id):
+            player = self._get_player_with_redirect(player_id)
             # the player can have joined a group while waiting for the lock
             self.check_player_access(self._resolve_playback_owner(player).player_id)
             if player.state.playback_state == PlaybackState.PLAYING:
@@ -960,8 +980,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param source: Optional source to resume.
         :param media: Optional media to resume.
         """
-        player = self._get_player_with_redirect(player_id)
-        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+        async with self.get_group_and_player_lock(player_id):
+            player = self._get_player_with_redirect(player_id)
             # the player can have joined a group while waiting for the lock
             self.check_player_access(self._resolve_playback_owner(player).player_id)
             await self._handle_cmd_resume(player.player_id, source, media)
@@ -1356,24 +1376,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # The release acts on the group, so the group's lock is taken before this
         # player's own and both are held across the release and the play (see
         # get_group_and_player_lock); a queue action calling in holds them already.
-        target_player = self.get_player(player_id, True)
-        if target_player is not None and (
-            target_player.state.synced_to or target_player.state.active_group
-        ):
-            override = bool(
-                self.mass.config.get_player_value(
-                    target_player.player_id,
-                    CONF_PLAY_MEDIA_OVERRIDES_GROUP,
-                    True,
+        async with self.get_group_and_player_lock(player_id):
+            target_player = self.get_player(player_id, True)
+            if target_player is not None and (
+                target_player.state.synced_to or target_player.state.active_group
+            ):
+                override = bool(
+                    self.mass.config.get_player_value(
+                        target_player.player_id,
+                        CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+                        True,
+                    )
                 )
-            )
-            if override:
-                async with self.get_group_and_player_lock(target_player.player_id):
+                if override:
                     await self._release_player_for_play_media(target_player)
                     await self._handle_play_media(target_player.player_id, media)
-                return
-        player = self._get_player_with_redirect(player_id)
-        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+                    return
+            player = self._get_player_with_redirect(player_id)
             await self._handle_play_media(player.player_id, media)
 
     @api_command("players/cmd/select_sound_mode", required_scope=Scope.PLAYERS_CONTROL)
@@ -4433,6 +4452,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if owner.state.active_group and (group := self.get_player(owner.state.active_group)):
             owner = group
         return owner
+
+    def _playback_owner_id(self, player_id: str) -> str:
+        """
+        Return the id of the player that owns the playback of the given player.
+
+        :param player_id: The player to resolve the playback owner for; a player that is
+            not known owns its own playback.
+        """
+        if (player := self.get_player(player_id)) is None:
+            return player_id
+        return self._resolve_playback_owner(player).player_id
 
     def _get_active_audio_source(self, player: Player) -> tuple[AudioSource, PluginProvider] | None:
         """

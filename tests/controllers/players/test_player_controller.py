@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import itertools
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
@@ -71,7 +72,10 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
-from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.constants import (
+    PLAYER_LOCK_OWNER_ATTEMPTS,
+    PlayerLockPurpose,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     get_current_user,
@@ -2329,6 +2333,91 @@ class TestStaticGroupReleaseUnderTheGroupLock:
             "select_source member hdmi" if name == "select_source" else "play_media member",
         ]
         assert all(locks == both for _action, locks in done)
+
+
+class TestOwnerChangesWhileWaitingForTheLock:
+    """A command takes its locks in the order of the owner its player has once it holds them."""
+
+    @pytest.fixture(autouse=True)
+    def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.5)
+
+    @staticmethod
+    def _member(
+        mock_mass: MagicMock, *, captured: bool
+    ) -> tuple[PlayerController, Player, MockProtocol, Player, list[tuple[str, frozenset[str]]]]:
+        """
+        Build a group and a player that is its member or not; record the stops and their locks.
+
+        :param captured: Whether the group holds the player to begin with.
+        :return: The controller, the group, its protocol, the player and the record of stops.
+        """
+        controller, group, protocol, member = TestPlayMediaOverride._captured_member(mock_mass)
+        if not captured:
+            protocol._attr_group_members = []
+            _refresh(group, member)
+            assert member.state.active_group is None
+        stops: list[tuple[str, frozenset[str]]] = []
+
+        async def _stop(player_id: str) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            stops.append((player_id, frozenset(controller._task_held_locks.get(task, set()))))
+
+        controller._handle_cmd_stop = _stop  # type: ignore[method-assign]
+        controller.get_active_queue = MagicMock(return_value=None)  # type: ignore[method-assign]
+        return controller, group, protocol, member, stops
+
+    async def test_a_player_that_joins_a_group_meanwhile_is_stopped_through_it(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The command lets go of the player's lock and takes the group's first."""
+        controller, group, protocol, member, stops = self._member(mock_mass, captured=False)
+
+        async with _lock_held_elsewhere(controller, "member"):
+            stop = asyncio.create_task(controller.cmd_stop("member"))
+            await asyncio.sleep(0.05)
+            protocol._attr_group_members = ["member"]
+            _refresh(group, member)
+        await stop
+
+        assert stops == [("g1", frozenset({"playback_g1", "playback_member"}))]
+
+    async def test_a_player_whose_group_ends_meanwhile_is_stopped_on_its_own(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The command lets go of the group's lock and runs with the player's lock alone."""
+        controller, group, protocol, member, stops = self._member(mock_mass, captured=True)
+
+        async with _lock_held_elsewhere(controller, "g1"):
+            stop = asyncio.create_task(controller.cmd_stop("member"))
+            await asyncio.sleep(0.05)
+            protocol._attr_group_members = []
+            _refresh(group, member)
+        await stop
+
+        assert stops == [("member", frozenset({"playback_member"}))]
+
+    async def test_a_player_whose_owner_keeps_changing_fails_as_busy(
+        self, controller: PlayerController
+    ) -> None:
+        """The locks are taken again a bounded number of times, then the command fails."""
+        owners = itertools.cycle(["g1", "p1"])
+        checks: list[str] = []
+
+        def _owner(_player_id: str) -> str:
+            checks.append(owner := next(owners))
+            return owner
+
+        controller._playback_owner_id = _owner  # type: ignore[assignment]
+        with pytest.raises(ResourceBusyError) as busy:
+            async with controller.get_group_and_player_lock("p1"):
+                pytest.fail("the body ran with an owner that changed")
+
+        assert busy.value.translation_key == "player_busy"
+        assert len(checks) == 2 * PLAYER_LOCK_OWNER_ATTEMPTS
+        assert not controller._lock_holders
 
 
 class TestReleaseWaitForPlayMedia:

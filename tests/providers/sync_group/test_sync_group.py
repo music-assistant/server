@@ -32,6 +32,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
@@ -1160,6 +1161,73 @@ class TestSetMembersDoesNotRegisterIncompatible:
         await sgp.set_members(player_ids_to_add=[_group_id(sgp), sgp.protocol_id])
 
         assert sgp._attr_group_members == []
+
+
+class TestFormationAndACommandOnItsLeader:
+    """A group that forms around a player and a command queued on that player both complete."""
+
+    async def test_a_source_selection_queued_on_the_leader_and_a_play_on_the_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        A source selection waiting for a standalone speaker and a play on its group both run.
+
+        The play forms the group around the speaker while the selection still waits for the
+        speaker's lock; neither may then hold one lock while it waits for the other's.
+        """
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.25)
+        mass = mock_player_mass()
+        mass.config.get_raw_core_config_value.return_value = "GLOBAL"
+        mass.test_providers = {}
+
+        def _discard_background(target: Any, *_args: Any, **_kwargs: Any) -> MagicMock:
+            if asyncio.iscoroutine(target):
+                target.close()
+            return MagicMock()
+
+        mass.create_task = MagicMock(side_effect=_discard_background)
+        players = PlayerController(mass)
+        mass.players = players
+        mass.loop = asyncio.get_running_loop()
+        group = _make_sync_group(mass, members=["L", "B"])
+        leader = _make_member(mass, "L")
+        member = _make_member(mass, "B")
+        leader.state.can_group_with = {"B"}
+        member.state.can_group_with = {"L"}
+        group._attr_group_members = ["L", "B"]
+        leader.own_protocol._attr_can_group_with = {"sonos_B"}  # type: ignore[union-attr]
+        member.own_protocol._attr_can_group_with = {"sonos_L"}  # type: ignore[union-attr]
+        leader.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
+        member.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
+        for player in (group.player, leader, member):
+            assert player is not None
+            player.refresh_state(signal_event=False)
+        players.wait_for_player_update = MagicMock(return_value=_noop_context())  # type: ignore[method-assign]
+        players.trigger_player_update = MagicMock()  # type: ignore[method-assign]
+        players.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
+        players._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+        players._release_audio_source = AsyncMock()  # type: ignore[method-assign]
+        group.update_state = MagicMock()  # type: ignore[method-assign,misc]
+        group_id = _group_id(group)
+
+        async with players.get_player_lock("L"):
+            selecting = asyncio.create_task(players.select_source("L", "line_in"))
+            await asyncio.sleep(0)
+            forming = asyncio.create_task(
+                players.play_media(group_id, PlayerMedia(uri="x", source_id=group_id))
+            )
+            for _ in range(10):
+                await asyncio.sleep(0)
+            # a device report refreshes the members while both commands wait
+            for player in (group.player, leader, member):
+                assert player is not None
+                player.refresh_state(signal_event=False)
+        results = await asyncio.gather(selecting, forming, return_exceptions=True)
+
+        assert list(results) == [None, None]
+        players._handle_select_source.assert_awaited_once()
+        assert not players._lock_holders
 
 
 class TestSetMembersWithABusyLeader:
