@@ -200,6 +200,32 @@ EXTERNAL_POWER_OFF_STOP_DELAY = 15
 # its devices again before players/remove_unavailable may remove the players it did not find.
 REMOVE_UNAVAILABLE_GRACE = 60.0
 
+# How long a triggered player update waits, so the triggers of one change (a related player,
+# a config change) lead to a single state calculation.
+PLAYER_UPDATE_DEBOUNCE = 0.25
+
+# How long the players wait to recalculate what they can group with after a protocol attached
+# or left, or a grouping changed: these come in bursts (a provider that finds its devices, a
+# group that forms member by member), which are then recalculated once.
+GROUPING_UPDATE_DELAY = 2.0
+
+# How long the queue of a player waits to follow the player's state, so it follows a burst of
+# updates (and the poll ticks while the player plays) once.
+QUEUE_UPDATE_DEBOUNCE = 0.5
+
+# How long a new active source of a player that plays over a grouped output protocol has to
+# stay before it counts as an external source taking the player over: a device can report a
+# passing source while a stream starts or ends.
+EXTERNAL_SOURCE_TAKEOVER_DELAY = 5
+
+# How long the active output protocol of a stopped player waits for the player to report idle
+# before it is cleared anyway: a device may keep reporting playing for a while after a stop.
+ACTIVE_OUTPUT_CLEAR_TIMEOUT = 10
+
+# How long a queue that is restarted for a changed setting waits after its stop before it
+# resumes, so the stop has reached the device before the new stream starts.
+CONFIG_CHANGE_RESUME_DELAY = 1
+
 # Player types that must be detached from their (sync)group when they power off.
 # A stereo pair joins a group and leads a sync session exactly like a single speaker does.
 # A GROUP player has no group of its own to leave: its members are released by its own
@@ -1941,7 +1967,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             await self._run_attach(protocol)
         # Schedule debounced update of all players since can_group_with values may change
         # when a protocol is attached (provider IDs expand to include it)
-        self._schedule_update_all_players(2)
+        self._schedule_update_all_players()
 
     async def detach(self, protocol_id: str) -> None:
         """
@@ -2178,7 +2204,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         )
 
     def trigger_player_update(
-        self, player_id: str, force_update: bool = False, debounce_delay: float = 0.25
+        self,
+        player_id: str,
+        force_update: bool = False,
+        debounce_delay: float = PLAYER_UPDATE_DEBOUNCE,
     ) -> None:
         """Trigger a (debounced) update for the given player."""
         if self.mass.closing:
@@ -2284,7 +2313,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # signal update to the playerqueue
         self.mass.call_later(
-            0.5,
+            QUEUE_UPDATE_DEBOUNCE,
             self.mass.player_queues.on_player_update,
             player,
             changed_values,
@@ -2322,7 +2351,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if ATTR_ACTIVE_SOURCE in changed_values:
             task_id = f"external_source_takeover_{player_id}"
             self.mass.call_later(
-                5,
+                EXTERNAL_SOURCE_TAKEOVER_DELAY,
                 self._check_external_source_takeover,
                 player,
                 task_id=task_id,
@@ -3869,7 +3898,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
-            self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
+            self.mass.call_later(
+                CONFIG_CHANGE_RESUME_DELAY,
+                self.mass.player_queues.resume,
+                resume_queue.queue_id,
+                False,
+            )
 
     def _get_transport_protocol(self, player: Player) -> PlayerProtocol:
         """
@@ -4187,7 +4221,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         for protocol in player.protocols.values():
             for related in self.iter_protocols(protocol.provider.instance_id):
                 if related.player is not None and related.player is not player:
-                    self.trigger_player_update(related.player.player_id, debounce_delay=2)
+                    self.trigger_player_update(
+                        related.player.player_id, debounce_delay=GROUPING_UPDATE_DELAY
+                    )
 
     def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
         """Clear the cached group volume snapshot for all groups this player belongs to."""
@@ -4279,7 +4315,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     async def _clear_active_output_protocol_when_idle(self, player: Player) -> None:
         """Wait for the player to stop playing, then clear its active output protocol."""
-        await self._wait_for_playback_state(player, PlaybackState.IDLE, timeout=10)
+        await self._wait_for_playback_state(
+            player, PlaybackState.IDLE, timeout=ACTIVE_OUTPUT_CLEAR_TIMEOUT
+        )
         player.set_active_output_protocol(None)
 
     def _handle_membership_cleanup_on_state_change(
@@ -4517,7 +4555,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 # to ensure the queue has accurate details
                 if player.state.playback_state == PlaybackState.PLAYING:
                     self.mass.call_later(
-                        0.5,
+                        QUEUE_UPDATE_DEBOUNCE,
                         self.mass.player_queues.on_player_update,
                         player,
                         {"corrected_elapsed_time": (None, player.state.corrected_elapsed_time)},
@@ -4799,20 +4837,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Check if it's a known queue ID
         return self.mass.player_queues.get(source) is not None
 
-    def _schedule_update_all_players(self, delay: float = 2.0) -> None:
+    def _schedule_update_all_players(self) -> None:
         """
         Schedule a debounced update of all players' state.
 
         Used when a new player is registered to ensure all existing players
         update their dynamic properties (like can_group_with) that may have changed.
-
-        :param delay: Delay in seconds before triggering updates (default 2.0).
         """
         if self.mass.closing:
             return
 
         for player in self.iter_players(return_unavailable=True, return_disabled=False):
-            self.trigger_player_update(player.player_id, debounce_delay=delay)
+            self.trigger_player_update(player.player_id, debounce_delay=GROUPING_UPDATE_DELAY)
 
     async def _auto_ungroup_if_synced(self, player: Player, log_context: str) -> None:
         """

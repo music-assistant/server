@@ -111,6 +111,14 @@ MEDIA_IDENTITY_KEYS = frozenset(
     }
 )
 
+# How long the media updated callback waits, so a burst of state updates of one media change
+# fires it once.
+MEDIA_UPDATED_DEBOUNCE = 1
+
+# How long a player that went idle keeps naming the Music Assistant source it played: a device
+# that stops for a moment while its playback is replaced must not lose the queue it plays.
+MASS_SOURCE_IDLE_MEMORY = 5
+
 # config-derived cached properties (propcache keys in Player._cache); these are
 # only invalidated by set_config, all other cached properties are invalidated on
 # every update_state call
@@ -1392,7 +1400,10 @@ class Player:
             # this is done using a timer which gets reset if the player starts playing again
             # before the timer is up, using the task_id
             self.mass.call_later(
-                5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
+                MASS_SOURCE_IDLE_MEMORY,
+                self.set_active_mass_source,
+                None,
+                task_id=f"set_mass_source_{self.player_id}",
             )
         changed_values = self._diff_state(prev_state, reachable)
         if not MEDIA_IDENTITY_KEYS.isdisjoint(changed_values.keys()):
@@ -1400,7 +1411,9 @@ class Player:
             # debounce the callback to avoid multiple calls when multiple
             # state updates happen in a short time
             self.mass.call_later(
-                1, self._on_media_updated, task_id=f"player_media_updated_{self.player_id}"
+                MEDIA_UPDATED_DEBOUNCE,
+                self._on_media_updated,
+                task_id=f"player_media_updated_{self.player_id}",
             )
         # persist the default name if it changed
         if effects.default_name:
