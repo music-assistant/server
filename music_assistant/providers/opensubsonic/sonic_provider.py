@@ -55,7 +55,6 @@ from music_assistant.constants import (
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.playlists import move_playlist_block
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
-from music_assistant.helpers.security import has_control_chars
 from music_assistant.models.music_provider import MusicProvider
 
 from .parsers import (
@@ -358,13 +357,12 @@ class OpenSonicProvider(MusicProvider):
 
     def accepts_stored_image_path(self, path: str) -> bool:
         """
-        Return whether path is shaped like a cover art id of the Subsonic server.
+        Return whether path can be a cover art id of the Subsonic server.
 
         :param path: The stored image path.
         """
-        return bool(path) and not (
-            "/" in path or "\\" in path or path.startswith(".") or has_control_chars(path)
-        )
+        # a cover art id is opaque and only ever sent to the server, which decides if it exists
+        return bool(path)
 
     @use_cache(3600 * 3)  # cache for 3 hours
     async def search(

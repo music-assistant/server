@@ -2170,11 +2170,11 @@ def test_construct_media_item_remote_image_of_another_provider(loaded: bool) -> 
 @pytest.mark.parametrize(
     ("path", "provider", "kept"),
     [
-        ("al-0a1b2c_5f3e", "opensubsonic--abc", True),
-        ("https://example.com/cover.jpg", "opensubsonic--abc", True),
-        ("/data/x.png", "opensubsonic--abc", False),
+        ("al-0a1b2c_5f3e", "coverprov--abc", True),
+        ("https://example.com/cover.jpg", "coverprov--abc", True),
+        ("/data/x.png", "coverprov--abc", False),
         ("al-0a1b2c_5f3e", "spotify_1", False),
-        ("al-0a1b2c_5f3e", "opensubsonic--gone", False),
+        ("al-0a1b2c_5f3e", "coverprov--gone", False),
     ],
     ids=["accepted-id", "remote", "refused-path", "not-opted-in", "unloaded"],
 )
@@ -2183,11 +2183,11 @@ def test_construct_media_item_stored_image_path_needs_provider_opt_in(
 ) -> None:
     """A non-URL image path is imported only when its loaded provider accepts it."""
     mass = _spotify_mass()
-    subsonic = MagicMock(domain="opensubsonic", instance_id="opensubsonic--abc")
-    subsonic.accepts_stored_image_path.side_effect = lambda p: "/" not in p
+    cover_provider = MagicMock(domain="coverprov", instance_id="coverprov--abc")
+    cover_provider.accepts_stored_image_path.side_effect = lambda p: "/" not in p
     spotify_lookup = mass.get_provider.side_effect
     mass.get_provider.side_effect = lambda ref: (
-        subsonic if ref == "opensubsonic--abc" else spotify_lookup(ref)
+        cover_provider if ref == "coverprov--abc" else spotify_lookup(ref)
     )
     item = _spotify_item(
         [ImageInfo(type="thumb", path=path, provider=provider, remotely_accessible=True)]
