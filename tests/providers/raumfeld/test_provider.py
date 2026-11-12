@@ -1718,7 +1718,7 @@ async def test_a_next_item_waiting_for_the_lock_is_dropped_when_the_room_follows
     play.assert_not_awaited()
 
 
-async def test_the_next_item_takes_the_lock_strictly() -> None:
+async def test_the_next_item_takes_the_lock() -> None:
     """The next item never starts without its player's lock, as the queue's own actions do."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._advance_armed = True
@@ -1732,12 +1732,12 @@ async def test_the_next_item_takes_the_lock_strictly() -> None:
     mass.players.get_group_and_player_lock = player_lock
     with patch.object(bar, "play_media", AsyncMock()) as play:
         await bar._play_next(PlayerMedia(uri="library://track/2"))
-    assert taken == [((_player_id(bar),), {"strict": True})]
+    assert taken == [((_player_id(bar),), {})]
     play.assert_awaited_once()
 
 
 async def test_a_next_item_that_never_gets_the_lock_is_not_started() -> None:
-    """A player kept busy past the strict timeout leaves the next item to that action."""
+    """A player kept busy past the lock timeout leaves the next item to that action."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._advance_armed = True
 
@@ -1749,7 +1749,7 @@ async def test_a_next_item_that_never_gets_the_lock_is_not_started() -> None:
     play.assert_not_awaited()
 
 
-async def test_the_rate_check_takes_the_lock_strictly() -> None:
+async def test_the_rate_check_takes_the_lock() -> None:
     """The check never looks at playback without the lock, and gives up if it stays taken."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     taken: list[dict[str, Any]] = []
@@ -1761,7 +1761,7 @@ async def test_the_rate_check_takes_the_lock_strictly() -> None:
 
     mass.players.get_group_and_player_lock = player_lock
     await bar._restart_for_group_rates()
-    assert taken == [{"strict": True}]
+    assert taken == [{}]
     mass.player_queues.seek.assert_awaited_once()
 
     busy = MagicMock()

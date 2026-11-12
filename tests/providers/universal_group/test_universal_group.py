@@ -10,10 +10,12 @@ idle grace window; these tests pin that behavior in place.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,17 +36,26 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
 
-from music_assistant.constants import CONF_GROUP_MEMBERS
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAY_MEDIA_OVERRIDES_GROUP
+from music_assistant.controllers.player_queues.helpers import handle_play_action
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 from tests.common import MockProvider, attach_mock, make_player_state, mock_player_mass
 
 GROUP_PROTOCOL_ID = "ugp_test"
+
+# the lock budget of the tests that wait for a real player lock, in seconds
+LOCK_BUDGET = 0.25
 # a group created after the player split: its player has an id of its own
 GROUP_PLAYER_ID = "pl_ugp_test"
 
@@ -799,3 +810,131 @@ class TestMemberStream:
             await ugp._serve_ugp_stream(request)
 
         assert [plan.output_details.source_channel for plan in plans] == [AudioChannel.FL]
+
+
+class _MemberQueue:
+    """Queue controller stand-in with one queue, whose play action is the real decorated one."""
+
+    mass: MusicAssistant
+    _queue_data: dict[str, PlayerQueueData]
+
+    def __init__(self, mass: MagicMock, queue_id: str) -> None:
+        """Initialize the stand-in with the queue of one player."""
+        self.mass = mass
+        queue = PlayerQueue(
+            queue_id=queue_id, active=True, display_name=queue_id, available=True, items=0
+        )
+        self._queue_data = {queue_id: PlayerQueueData(queue=queue)}
+
+    @handle_play_action
+    async def play_index(self, queue_id: str) -> None:
+        """Play the queue's next item on its player, the way play_index does."""
+        await self.mass.players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
+        """Ignore the queue updates."""
+
+    def on_player_update(self, player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
+        """Ignore the player updates."""
+
+
+class TestCommandOnAMemberOfAHeldGroup:
+    """A playback command addressed to a member of a group that holds it plays on every member."""
+
+    @staticmethod
+    def _held_group(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[PlayerController, UniversalGroupPlayer, list[str]]:
+        """
+        Build a powered universal group holding two members, on a real players controller.
+
+        :return: The controller, the group and the record of the members asked to play.
+        """
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", LOCK_BUDGET)
+        mass = mock_player_mass()
+        mass.config.get_raw_core_config_value.return_value = "GLOBAL"
+        players = PlayerController(mass)
+        mass.players = players
+        mass.loop = asyncio.get_running_loop()
+
+        def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> Any:
+            # the plays the group hands its members run, background work is left out
+            if inspect.iscoroutine(target) and target.__qualname__.endswith(
+                "_play_media_on_member"
+            ):
+                return asyncio.ensure_future(target)
+            if asyncio.iscoroutine(target):
+                target.close()
+            return MagicMock()
+
+        mass.create_task = MagicMock(side_effect=_create_task)
+        mass.streams = MagicMock()
+        mass.streams.base_url = "http://test"
+        mass.streams.register_dynamic_route = MagicMock(return_value=lambda: None)
+        mass.streams.get_stream = MagicMock(return_value=MagicMock())
+        ugp = _make_ugp(mass, members=["m1", "m2"])
+        provider = MockProvider("sonos", instance_id="sonos", mass=mass)
+        members = [
+            attach_mock(provider, f"sonos_{pid}", pid, player_id=pid)[0] for pid in ("m1", "m2")
+        ]
+        ugp._attr_static_group_members = ["m1", "m2"]
+        ugp._attr_group_members = ["m1", "m2"]
+        ugp._attr_powered = True
+        assert ugp.player is not None
+        for player in (ugp.player, *members):
+            player.refresh_state(signal_event=False)
+        assert members[0].state.active_group == GROUP_PLAYER_ID
+        played_on: list[str] = []
+        route_play_media = players._handle_play_media
+
+        async def _handle_play_media(player_id: str, media: PlayerMedia) -> None:
+            # the group plays through its own protocol, a member is only recorded
+            if player_id == GROUP_PLAYER_ID:
+                await route_play_media(player_id, media)
+                return
+            played_on.append(player_id)
+
+        players._handle_play_media = _handle_play_media  # type: ignore[method-assign]
+
+        async def _resume(queue_id: str, fade_in: bool | None = None) -> None:  # noqa: ARG001
+            # a queue play action: the group's lock, then the play of the queue's next item
+            async with players.get_group_and_player_lock(queue_id):
+                await players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+        mass.player_queues.get = MagicMock(
+            side_effect=lambda queue_id: MagicMock(queue_id=queue_id)
+        )
+        mass.player_queues.has_lost_paused_stream = MagicMock(return_value=False)
+        mass.player_queues.resume = AsyncMock(side_effect=_resume)
+        return players, ugp, played_on
+
+    @pytest.mark.parametrize(
+        "command", ["cmd_play", "cmd_resume", "play_media", "play action on its queue"]
+    )
+    async def test_every_member_plays_and_the_command_returns_at_once(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        """The member the command was addressed to is played on like the others."""
+        players, _ugp, played_on = self._held_group(monkeypatch)
+        if command in ("play_media", "play action on its queue"):
+            # the member's play follows its group rather than taking it out of it
+            cast("MagicMock", players.mass).config.get_player_value = MagicMock(
+                side_effect=lambda _player_id, key, default=None: (
+                    False if key == CONF_PLAY_MEDIA_OVERRIDES_GROUP else default
+                )
+            )
+        if command == "play_media":
+            call = players.play_media("m1", PlayerMedia(uri="x"))
+        elif command == "play action on its queue":
+            # a play action holds the member's own queue, and with it the member's lock
+            call = _MemberQueue(cast("MagicMock", players.mass), "m1").play_index("m1")
+        else:
+            call = getattr(players, command)("m1")
+
+        started = time.monotonic()
+        await call
+        took = time.monotonic() - started
+
+        assert sorted(played_on) == ["m1", "m2"]
+        assert took < LOCK_BUDGET

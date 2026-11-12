@@ -118,14 +118,11 @@ class AnnouncementsMixin:
         ) -> Iterator[Player]: ...
 
         def get_player_lock(  # noqa: D102
-            self,
-            player_id: str,
-            purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-            strict: bool = False,
+            self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
         ) -> AbstractAsyncContextManager[None]: ...
 
         def get_group_and_player_lock(  # noqa: D102
-            self, player_id: str, strict: bool = False
+            self, player_id: str
         ) -> AbstractAsyncContextManager[None]: ...
 
         def _get_control_target(

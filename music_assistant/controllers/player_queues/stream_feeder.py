@@ -397,9 +397,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # so they only run once this holds the lock too. A handover that cannot get it
             # in time is dropped: a changed queue schedules a fresh one, replacing this one.
             try:
-                async with self.mass.players.get_player_lock(
-                    queue_id, PlayerLockPurpose.PLAYBACK, strict=True
-                ):
+                async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
                     await _hand_over_to_player(next_item)
             except ResourceBusyError:
                 self.logger.debug(

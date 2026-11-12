@@ -339,26 +339,37 @@ class UniversalGroupPlayer(PlayerProtocol):
         self.update_state()
 
         # forward to downstream play_media commands
+        held_members: list[tuple[str, PlayerMedia]] = []
         async with TaskManager(self.mass) as tg:
             for member in self.mass.players.iter_group_members(
                 self._group_player, only_powered=True
             ):
-                # Use internal handler to get protocol selection and avoid redirect
-                tg.create_task(
-                    self._play_media_on_member(
-                        member.player_id,
-                        PlayerMedia(
-                            uri=f"{base_url}?player_id={member.player_id}",
-                            media_type=MediaType.FLOW_STREAM,
-                            title=self.display_name,
-                            source_id=group_player_id,
-                            queue_session_id=self.stream.session_id,
-                            custom_data={
-                                "ugp_player_id": group_player_id,
-                            },
-                        ),
-                    )
+                member_media = PlayerMedia(
+                    uri=f"{base_url}?player_id={member.player_id}",
+                    media_type=MediaType.FLOW_STREAM,
+                    title=self.display_name,
+                    source_id=group_player_id,
+                    queue_session_id=self.stream.session_id,
+                    custom_data={
+                        "ugp_player_id": group_player_id,
+                    },
                 )
+                if self.mass.players.holds_player_lock(member.player_id):
+                    # the command that plays the group holds this member (a play action on
+                    # the member's own queue): a task of its own would wait for that lock
+                    held_members.append((member.player_id, member_media))
+                    continue
+                # Use internal handler to get protocol selection and avoid redirect
+                tg.create_task(self._play_media_on_member(member.player_id, member_media))
+            for member_id, member_media in held_members:
+                try:
+                    await self._play_media_on_member(member_id, member_media)
+                except Exception as err:
+                    # like a member played in a task of its own: one that fails does not stop
+                    # the others
+                    self.logger.warning(
+                        "Could not play %s on member %s: %s", self.display_name, member_id, err
+                    )
 
     def get_shared_stream(
         self, media: PlayerMedia, pcm_format: AudioFormat

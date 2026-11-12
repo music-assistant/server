@@ -22,13 +22,27 @@ from music_assistant_models.enums import (
     ProtocolRole,
     RepeatMode,
 )
-from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
+from music_assistant_models.errors import (
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    ResourceBusyError,
+)
 from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
+from music_assistant.constants import (
+    CONF_AUTO_PLAY,
+    CONF_GROUP_MEMBERS,
+    CONF_MUTE_CONTROL,
+    CONF_VOLUME_CONTROL,
+)
+from music_assistant.controllers.player_queues.helpers import handle_play_action
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sync_group.constants import REFORM_DEBOUNCE_SECONDS
@@ -40,6 +54,9 @@ from tests.common import (
     make_player_state,
     mock_player_mass,
 )
+
+# the lock budget of the tests that wait for a real player lock, in seconds
+LOCK_BUDGET = 0.25
 
 # what a member that can be (sync) grouped reports
 MEMBER_FEATURES = frozenset({PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS})
@@ -66,6 +83,14 @@ def _noop_context() -> AsyncMock:
     return ctx
 
 
+def _busy_lock() -> MagicMock:
+    """Build a get_player_lock mock whose lock stays taken for the whole wait."""
+    ctx = AsyncMock()
+    ctx.__aenter__.side_effect = ResourceBusyError("still busy")
+    ctx.__aexit__.return_value = False
+    return MagicMock(return_value=ctx)
+
+
 def _make_mock_mass() -> MagicMock:
     """Create a mocked MusicAssistant whose players controller looks players up for real."""
     mass = mock_player_mass()
@@ -76,6 +101,10 @@ def _make_mock_mass() -> MagicMock:
     players.cmd_set_members = AsyncMock()
     players._handle_set_members = AsyncMock()
     players.get_player_lock = MagicMock(return_value=_noop_context())
+    # a member's lock is free unless a test says otherwise
+    free = _noop_context()
+    free.__aenter__.return_value = True
+    players.get_player_lock_if_free = MagicMock(return_value=free)
     players.wait_for_player_update = MagicMock(return_value=_noop_context())
     players.trigger_player_update = MagicMock()
     # the real routing: through the sync leader, or from the member's own side
@@ -634,6 +663,60 @@ class TestActiveProtocolDomain:
         mass.players.schedule_active_output_protocol_clear.assert_any_call(leader)
         mass.players.trigger_player_update.assert_any_call("m2")
 
+    async def test_a_dissolve_holds_the_leader_and_the_player_holding_its_members(
+        self,
+    ) -> None:
+        """Both players whose group changes are locked before the members are released."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        living_room = _make_member(mass, "living_room", "sendspin")
+        bathroom = _make_member(mass, "bathroom", "sendspin")
+        _make_member(mass, "kitchen", "sendspin")
+        bathroom.state.group_members = UniqueList(["bathroom", "living_room", "kitchen"])
+        sgp.sync_leader = living_room
+        sgp._attr_group_members = ["living_room", "bathroom", "kitchen"]
+        events: list[str] = []
+        mass.players.get_player_lock = _recording_lock(events)
+        mass.players._handle_set_members.side_effect = lambda *_args, **_kwargs: events.append(
+            "ungroup"
+        )
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        assert events == [
+            "lock:living_room",
+            "lock:bathroom",
+            "ungroup",
+            "unlock:bathroom",
+            "unlock:living_room",
+        ]
+
+    async def test_a_busy_leader_leaves_the_group_and_its_session_as_they_were(self) -> None:
+        """A dissolve that cannot get the leader's lock fails and changes nothing."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader", "sendspin")
+        _make_member(mass, "member", "sendspin")
+        leader.state.group_members = UniqueList(["leader", "member"])
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+        mass.players.get_player_lock = _busy_lock()
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_cancel_idle_grace_timer") as cancel_idle_grace,
+            patch.object(sgp, "_cancel_reform_timer") as cancel_reform,
+            pytest.raises(ResourceBusyError),
+        ):
+            await sgp._dissolve_syncgroup()
+
+        assert sgp.sync_leader is leader
+        mass.players._handle_set_members.assert_not_awaited()
+        cancel_idle_grace.assert_not_called()
+        cancel_reform.assert_not_called()
+        mass.players.schedule_active_output_protocol_clear.assert_not_called()
+
 
 class TestDynamicLeaderSwitch:
     """Test dynamic leader switching behaviour."""
@@ -1123,6 +1206,345 @@ class TestSetMembersDoesNotRegisterIncompatible:
         await sgp.set_members(player_ids_to_add=[_group_id(sgp), sgp.protocol_id])
 
         assert sgp._attr_group_members == []
+
+
+def _controller_with_a_sync_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[PlayerController, SyncGroupPlayer, Player, Player]:
+    """
+    Build a sync group of the speakers L and B, not formed, on a real players controller.
+
+    The lock budget is short and background tasks are left out.
+
+    :return: The controller, the group, speaker L and speaker B.
+    """
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", LOCK_BUDGET)
+    mass = mock_player_mass()
+    mass.config.get_raw_core_config_value.return_value = "GLOBAL"
+    mass.test_providers = {}
+
+    def _discard_background(target: Any, *_args: Any, **_kwargs: Any) -> MagicMock:
+        if asyncio.iscoroutine(target):
+            target.close()
+        return MagicMock()
+
+    mass.create_task = MagicMock(side_effect=_discard_background)
+    players = PlayerController(mass)
+    mass.players = players
+    mass.loop = asyncio.get_running_loop()
+    group = _make_sync_group(mass, members=["L", "B"])
+    leader = _make_member(mass, "L")
+    member = _make_member(mass, "B")
+    leader.state.can_group_with = {"B"}
+    member.state.can_group_with = {"L"}
+    group._attr_group_members = ["L", "B"]
+    leader.own_protocol._attr_can_group_with = {"sonos_B"}  # type: ignore[union-attr]
+    member.own_protocol._attr_can_group_with = {"sonos_L"}  # type: ignore[union-attr]
+    leader.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
+    member.own_protocol.play_media = AsyncMock()  # type: ignore[method-assign,union-attr]
+    for player in (group.player, leader, member):
+        assert player is not None
+        player.refresh_state(signal_event=False)
+    players.wait_for_player_update = MagicMock(return_value=_noop_context())  # type: ignore[method-assign]
+    players.trigger_player_update = MagicMock()  # type: ignore[method-assign]
+    players.schedule_active_output_protocol_clear = MagicMock()  # type: ignore[method-assign]
+    players._release_audio_source = AsyncMock()  # type: ignore[method-assign]
+    group.update_state = MagicMock()  # type: ignore[method-assign,misc]
+    return players, group, leader, member
+
+
+class TestFormationAndACommandOnItsLeader:
+    """A group that forms around a player and a command queued on that player both complete."""
+
+    async def test_a_source_selection_queued_on_the_leader_and_a_play_on_the_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        A source selection waiting for a standalone speaker and a play on its group both run.
+
+        The play forms the group around the speaker while the selection still waits for the
+        speaker's lock; neither may then hold one lock while it waits for the other's.
+        """
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        players._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+        group_id = _group_id(group)
+
+        async with players.get_player_lock("L"):
+            selecting = asyncio.create_task(players.select_source("L", "line_in"))
+            await asyncio.sleep(0)
+            forming = asyncio.create_task(
+                players.play_media(group_id, PlayerMedia(uri="x", source_id=group_id))
+            )
+            for _ in range(10):
+                await asyncio.sleep(0)
+            # a device report refreshes the members while both commands wait
+            for player in (group.player, leader, member):
+                assert player is not None
+                player.refresh_state(signal_event=False)
+        results = await asyncio.gather(selecting, forming, return_exceptions=True)
+
+        assert list(results) == [None, None]
+        players._handle_select_source.assert_awaited_once()
+        assert not players._lock_holders
+
+
+def _queue_resume_plays(players: PlayerController) -> None:
+    """Let a queue resume play the queue's next item on its player, as a play action does."""
+
+    async def _resume(queue_id: str, fade_in: bool | None = None) -> None:  # noqa: ARG001
+        async with players.get_group_and_player_lock(queue_id):
+            await players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    mass = cast("MagicMock", players.mass)
+    mass.player_queues.get = MagicMock(side_effect=lambda queue_id: MagicMock(queue_id=queue_id))
+    mass.player_queues.has_lost_paused_stream = MagicMock(return_value=False)
+    mass.player_queues.resume = AsyncMock(side_effect=_resume)
+
+
+class TestCommandOnAMemberOfASyncGroup:
+    """A play addressed to a player that follows another one plays on whatever leads it."""
+
+    @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume"])
+    async def test_a_member_of_a_formed_sync_group_plays_through_the_group(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        """The group's leader plays, and the command returns at once."""
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        _queue_resume_plays(players)
+        # formed: the leader holds the member natively
+        group.sync_leader = leader
+        leader.own_protocol._attr_group_members = ["sonos_L", "sonos_B"]  # type: ignore[union-attr]
+        member.own_protocol._attr_synced_to = "sonos_L"  # type: ignore[union-attr]
+        # the group follows its leader, the member follows both
+        for player in (leader, group.player, member):
+            assert player is not None
+            player.refresh_state(signal_event=False)
+        assert member.state.active_group == _group_id(group)
+
+        started = time.monotonic()
+        await getattr(players, command)("B")
+
+        assert time.monotonic() - started < LOCK_BUDGET
+        leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
+
+    @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume"])
+    async def test_a_native_sync_child_plays_through_its_leader(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        """The child's own leader plays, and the command returns at once."""
+        players, _group, leader, child = _controller_with_a_sync_group(monkeypatch)
+        _queue_resume_plays(players)
+        leader.own_protocol._attr_group_members = ["sonos_L", "sonos_B"]  # type: ignore[union-attr]
+        child.own_protocol._attr_synced_to = "sonos_L"  # type: ignore[union-attr]
+        for player in (leader, child):
+            player.refresh_state(signal_event=False)
+        assert child.state.synced_to == "L"
+
+        started = time.monotonic()
+        await getattr(players, command)("B")
+
+        assert time.monotonic() - started < LOCK_BUDGET
+        leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
+        child.own_protocol.play_media.assert_not_awaited()  # type: ignore[union-attr]
+
+
+class _LoadingQueue:
+    """Queue controller stand-in with one queue, whose play actions are the real decorated ones."""
+
+    mass: MusicAssistant
+    _queue_data: dict[str, PlayerQueueData]
+
+    def __init__(self, mass: MagicMock, queue_id: str) -> None:
+        """Initialize the stand-in with the queue of one player."""
+        self.mass = mass
+        queue = PlayerQueue(
+            queue_id=queue_id, active=True, display_name=queue_id, available=True, items=0
+        )
+        self._queue_data = {queue_id: PlayerQueueData(queue=queue)}
+        # set once the item to play is loaded
+        self.loaded = asyncio.Event()
+
+    @handle_play_action
+    async def play_index(self, queue_id: str) -> None:
+        """Load the queue's next item, then play it on the queue's player."""
+        await self.loaded.wait()
+        await self.mass.players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    @handle_play_action
+    async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
+        """Resume the queue by playing its item."""
+        await self.mass.players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
+        """Ignore the queue updates."""
+
+    def on_player_update(self, player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
+        """Ignore the player updates."""
+
+
+class TestRejoinLeavesABusyMemberAlone:
+    """A static group re-adds a returned member only when no command is busy on it."""
+
+    @staticmethod
+    def _group_playing_without_a_member(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[PlayerController, SyncGroupPlayer, Player, Player, AsyncMock]:
+        """
+        Build a static group that plays on its leader L while its member B is back on its own.
+
+        :return: The controller, the group, L, B and the leader's (native) set members, which
+            reports the join of B the way the device does.
+        """
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        group._attr_static_group_members = ["L", "B"]
+        group.sync_leader = leader
+        leader_protocol = cast("MockProtocol", leader.own_protocol)
+        member_protocol = cast("MockProtocol", member.own_protocol)
+        member_protocol._attr_supported_features.add(PlayerFeature.POWER)
+
+        async def _join(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,  # noqa: ARG001
+        ) -> None:
+            leader_protocol._attr_group_members = ["sonos_L", *(player_ids_to_add or [])]
+            member_protocol._attr_synced_to = "sonos_L"  # type: ignore[attr-defined]
+            for player in (leader, group.player, member):
+                assert player is not None
+                player.refresh_state(signal_event=False)
+
+        join = AsyncMock(side_effect=_join)
+        leader_protocol.set_members = join  # type: ignore[method-assign]
+        for player in (leader, group.player, member):
+            assert player is not None
+            player.refresh_state(signal_event=False)
+        assert group._missing_members(leader) == ["B"]
+        return players, group, leader, member, join
+
+    async def test_a_play_on_the_member_queue_plays_while_the_member_is_left_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The play reaches the member; the member is re-added at the leader's next report."""
+        players, group, _leader, member, join = self._group_playing_without_a_member(monkeypatch)
+        queue = _LoadingQueue(cast("MagicMock", players.mass), "B")
+
+        play = asyncio.create_task(queue.play_index("B"))
+        await asyncio.sleep(0)
+        await group._rejoin_members()
+        queue.loaded.set()
+        await play
+
+        member.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
+        join.assert_not_awaited()
+        await group._rejoin_members()
+        join.assert_awaited_once()
+
+    async def test_a_power_on_that_plays_plays_while_the_member_is_left_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A power on of the member with auto play plays on it, and the re-add waits its turn."""
+        players, group, leader, member, join = self._group_playing_without_a_member(monkeypatch)
+        queue = _LoadingQueue(cast("MagicMock", players.mass), "B")
+        cast("MagicMock", players.mass).player_queues.resume = queue.resume
+        member_protocol = cast("MockProtocol", member.own_protocol)
+        member_protocol._attr_powered = False
+        member.refresh_state(signal_event=False)
+        assert group._missing_members(leader) == ["B"]
+        powered_on = asyncio.Event()
+
+        async def _power(powered: bool) -> None:
+            await powered_on.wait()
+            member_protocol._attr_powered = powered
+            member.refresh_state(signal_event=False)
+
+        member_protocol.power = _power  # type: ignore[method-assign]
+        config_get_value = member.config.get_value
+        member.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *args, **kwargs: (
+                True if key == CONF_AUTO_PLAY else config_get_value(key, *args, **kwargs)
+            )
+        )
+
+        power_on = asyncio.create_task(players.cmd_power("B", True))
+        await asyncio.sleep(0)
+        # the leader reports while the member powers on; a re-add would power it on as well
+        rejoin = asyncio.create_task(group._rejoin_members())
+        await asyncio.sleep(0)
+        powered_on.set()
+        await asyncio.gather(power_on, rejoin)
+
+        member_protocol.play_media.assert_awaited_once()  # type: ignore[attr-defined]
+        join.assert_not_awaited()
+
+    async def test_a_member_nobody_commands_is_re_added(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A returned member that is not busy joins the leader again at once."""
+        _players, group, _leader, member, join = self._group_playing_without_a_member(monkeypatch)
+
+        await group._rejoin_members()
+
+        join.assert_awaited_once()
+        assert member.state.active_group == _group_id(group)
+
+
+class TestFormationTakesTheLeaderFirst:
+    """A group that forms records its leader only once it holds the leader's lock."""
+
+    async def test_a_busy_leader_is_not_recorded(self) -> None:
+        """A formation that cannot get the leader's lock leaves the group and its timers be."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+        leader.state.can_group_with = {"member"}
+        _make_member(mass, "member")
+        sgp.sync_leader = None
+        sgp._attr_group_members = ["leader", "member"]
+        mass.players.get_player_lock = _busy_lock()
+
+        with (
+            patch.object(sgp, "_cancel_idle_grace_timer") as cancel_idle_grace,
+            patch.object(sgp, "_cancel_reform_timer") as cancel_reform,
+            pytest.raises(ResourceBusyError),
+        ):
+            await sgp._form_syncgroup()
+
+        assert sgp.sync_leader is None
+        mass.players.get_player_lock.assert_called_once_with("leader", PlayerLockPurpose.PLAYBACK)
+        mass.players._handle_set_members.assert_not_awaited()
+        cancel_idle_grace.assert_not_called()
+        cancel_reform.assert_not_called()
+
+
+class TestSetMembersWithABusyLeader:
+    """A member change that cannot get the leader's lock leaves the recorded members as they were."""
+
+    @pytest.mark.parametrize(
+        ("add", "remove"),
+        [(["new"], None), (None, ["member"]), (None, ["leader"]), (None, ["leader", "member"])],
+    )
+    async def test_the_member_list_stays_as_it_was(
+        self, add: list[str] | None, remove: list[str] | None
+    ) -> None:
+        """Adding, removing, and removing the leader all fail before the list changes."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader")
+        leader.state.can_group_with = {"member", "new"}
+        _make_member(mass, "member")
+        _make_member(mass, "new")
+        leader.state.group_members = UniqueList(["leader", "member"])
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+        mass.players.get_player_lock = _busy_lock()
+
+        with patch.object(sgp, "update_state"), pytest.raises(ResourceBusyError):
+            await sgp.set_members(player_ids_to_add=add, player_ids_to_remove=remove)
+
+        assert sgp._attr_group_members == ["leader", "member"]
+        assert sgp.sync_leader is leader
+        mass.players._handle_set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_not_awaited()
 
 
 class TestSetMembersRemovesExternalJoiner:
@@ -1808,7 +2230,6 @@ def _recording_lock(events: list[str]) -> MagicMock:
     def _make(
         player_id: str,
         _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-        strict: bool = False,  # noqa: ARG001
     ) -> AsyncMock:
         ctx = AsyncMock()
 
@@ -1834,7 +2255,6 @@ def _group_lock(group_id: str) -> tuple[MagicMock, asyncio.Lock]:
     async def _ctx(
         player_id: str,
         _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-        strict: bool = False,  # noqa: ARG001
     ) -> AsyncIterator[None]:
         if player_id != group_id:
             yield
@@ -3492,10 +3912,7 @@ class TestNextTrackHandoverLocksTheLeader:
 
         mass.players._handle_enqueue_next_media.assert_awaited_once_with("leader", media)
         assert events == ["lock:leader", "enqueue", "unlock:leader"]
-        # strict, so a busy leader fails the handover instead of running without the lock
-        mass.players.get_player_lock.assert_called_once_with(
-            "leader", PlayerLockPurpose.PLAYBACK, strict=True
-        )
+        mass.players.get_player_lock.assert_called_once_with("leader", PlayerLockPurpose.PLAYBACK)
 
     async def test_a_leader_swapped_while_waiting_is_not_enqueued(self) -> None:
         """A handover meant for a leader that was replaced while waiting is dropped."""

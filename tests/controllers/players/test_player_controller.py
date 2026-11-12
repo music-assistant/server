@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import itertools
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -69,7 +70,10 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
-from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.constants import (
+    PLAYER_LOCK_OWNER_ATTEMPTS,
+    PlayerLockPurpose,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     get_current_user,
@@ -2232,6 +2236,267 @@ class TestPlayMediaOverride:
         assert played_on == ["member"]
 
 
+class TestStaticGroupReleaseUnderTheGroupLock:
+    """A command that first ends what a member's static group plays holds the group's lock."""
+
+    @pytest.fixture(autouse=True)
+    def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+
+    @staticmethod
+    def _static_member(
+        mock_mass: MagicMock,
+    ) -> tuple[PlayerController, list[tuple[str, frozenset[str]]]]:
+        """
+        Build a static group with one member; record what is done and under which locks.
+
+        :return: The controller and the record: per action the locks its task held.
+        """
+        controller, _group, _protocol, _member = TestPlayMediaOverride._captured_member(
+            mock_mass, static=True
+        )
+        _set_play_media_override(mock_mass, True)
+        done: list[tuple[str, frozenset[str]]] = []
+
+        def _record(action: str) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            done.append((action, frozenset(controller._task_held_locks.get(task, set()))))
+
+        async def _stop(player_id: str) -> None:
+            _record(f"stop {player_id}")
+
+        async def _power(player_id: str, powered: bool, skip_auto_play: bool = False) -> None:  # noqa: ARG001
+            _record(f"power {player_id} {powered}")
+
+        async def _select_source(player_id: str, source: str | None) -> None:
+            _record(f"select_source {player_id} {source}")
+
+        async def _play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            _record(f"play_media {player_id}")
+
+        controller._handle_cmd_stop = _stop  # type: ignore[method-assign]
+        controller._handle_cmd_power = _power  # type: ignore[method-assign]
+        controller._handle_select_source = _select_source  # type: ignore[method-assign]
+        controller._handle_play_media = _play_media  # type: ignore[method-assign]
+        return controller, done
+
+    @staticmethod
+    def _command(controller: PlayerController, name: str) -> Coroutine[Any, Any, None]:
+        """Return the command that releases the member from its static group."""
+        if name == "select_source":
+            return controller.select_source("member", "hdmi")
+        if name == "play_media":
+            return controller.play_media("member", MagicMock(uri="x", source_id="src"))
+        return controller.cmd_ungroup("member")
+
+    @pytest.mark.parametrize(
+        ("name", "busy"),
+        [
+            ("select_source", "g1"),
+            ("select_source", "member"),
+            ("play_media", "g1"),
+            ("play_media", "member"),
+            # the ungroup acts on the group only
+            ("cmd_ungroup", "g1"),
+        ],
+    )
+    async def test_a_busy_group_or_member_leaves_the_group_playing(
+        self, mock_mass: MagicMock, name: str, busy: str
+    ) -> None:
+        """A command that cannot get its locks fails before it stops the group."""
+        controller, done = self._static_member(mock_mass)
+
+        with patch.object(controller, "wait_for_player_update", _skip_player_update_wait):
+            async with _lock_held_elsewhere(controller, busy):
+                with pytest.raises(ResourceBusyError):
+                    await self._command(controller, name)
+
+        assert done == []
+
+    @pytest.mark.parametrize("name", ["select_source", "play_media"])
+    async def test_the_group_is_stopped_and_the_member_commanded_under_both_locks(
+        self, mock_mass: MagicMock, name: str
+    ) -> None:
+        """The group's lock and the member's are held from the stop until the command."""
+        controller, done = self._static_member(mock_mass)
+
+        with patch.object(controller, "wait_for_player_update", _skip_player_update_wait):
+            await self._command(controller, name)
+
+        both = frozenset({"playback_g1", "playback_member"})
+        assert [action for action, _locks in done] == [
+            "stop g1",
+            "select_source member hdmi" if name == "select_source" else "play_media member",
+        ]
+        assert all(locks == both for _action, locks in done)
+
+
+class TestOwnerChangesWhileWaitingForTheLock:
+    """A command takes its locks in the order of the owner its player has once it holds them."""
+
+    @pytest.fixture(autouse=True)
+    def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.5)
+
+    @staticmethod
+    def _member(
+        mock_mass: MagicMock, *, captured: bool
+    ) -> tuple[PlayerController, Player, MockProtocol, Player, list[tuple[str, frozenset[str]]]]:
+        """
+        Build a group and a player that is its member or not; record the stops and their locks.
+
+        :param captured: Whether the group holds the player to begin with.
+        :return: The controller, the group, its protocol, the player and the record of stops.
+        """
+        controller, group, protocol, member = TestPlayMediaOverride._captured_member(mock_mass)
+        if not captured:
+            protocol._attr_group_members = []
+            _refresh(group, member)
+            assert member.state.active_group is None
+        stops: list[tuple[str, frozenset[str]]] = []
+
+        async def _stop(player_id: str) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            stops.append((player_id, frozenset(controller._task_held_locks.get(task, set()))))
+
+        controller._handle_cmd_stop = _stop  # type: ignore[method-assign]
+        controller.get_active_queue = MagicMock(return_value=None)  # type: ignore[method-assign]
+        return controller, group, protocol, member, stops
+
+    async def test_a_player_that_joins_a_group_meanwhile_is_stopped_through_it(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The command lets go of the player's lock and stops the group under the group's alone."""
+        controller, group, protocol, member, stops = self._member(mock_mass, captured=False)
+
+        async with _lock_held_elsewhere(controller, "member"):
+            stop = asyncio.create_task(controller.cmd_stop("member"))
+            await asyncio.sleep(0.05)
+            protocol._attr_group_members = ["member"]
+            _refresh(group, member)
+        await stop
+
+        assert stops == [("g1", frozenset({"playback_g1"}))]
+
+    async def test_a_stop_is_refused_for_a_group_the_user_may_not_use(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A user who may use the player only is refused once it joined a group meanwhile."""
+        controller, group, protocol, member, stops = self._member(mock_mass, captured=False)
+
+        with _restricted_user(["member"]):
+            async with _lock_held_elsewhere(controller, "member"):
+                stop = asyncio.create_task(controller.cmd_stop("member"))
+                await asyncio.sleep(0.05)
+                protocol._attr_group_members = ["member"]
+                _refresh(group, member)
+            with pytest.raises(InsufficientPermissions):
+                await stop
+
+        assert stops == []
+
+    async def test_a_stop_on_a_player_the_user_may_use_stops_it(self, mock_mass: MagicMock) -> None:
+        """A user who may use the player stops it when its group did not change."""
+        controller, _group, _protocol, _member, stops = self._member(mock_mass, captured=False)
+
+        with _restricted_user(["member"]):
+            await controller.cmd_stop("member")
+
+        assert stops == [("member", frozenset({"playback_member"}))]
+
+    async def test_a_player_whose_group_ends_meanwhile_is_stopped_on_its_own(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The command lets go of the group's lock and runs with the player's lock alone."""
+        controller, group, protocol, member, stops = self._member(mock_mass, captured=True)
+
+        async with _lock_held_elsewhere(controller, "g1"):
+            stop = asyncio.create_task(controller.cmd_stop("member"))
+            await asyncio.sleep(0.05)
+            protocol._attr_group_members = []
+            _refresh(group, member)
+        await stop
+
+        assert stops == [("member", frozenset({"playback_member"}))]
+
+    async def test_a_player_the_command_holds_that_joined_a_group_fails_at_once(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A command that already holds the player does not wait for the group it joined."""
+        controller, group, protocol, member, _stops = self._member(mock_mass, captured=False)
+
+        async with controller.get_player_lock("member"):
+            protocol._attr_group_members = ["member"]
+            _refresh(group, member)
+            async with _lock_held_elsewhere(controller, "g1"):
+                started = time.monotonic()
+                with pytest.raises(ResourceBusyError):
+                    async with controller.get_group_and_player_lock("member"):
+                        pytest.fail("the body ran without the group's lock")
+                waited = time.monotonic() - started
+
+        assert waited < 0.1
+
+    async def test_a_player_whose_owner_keeps_changing_fails_as_busy(
+        self, controller: PlayerController
+    ) -> None:
+        """The locks are taken again a bounded number of times, then the command fails."""
+        owners = itertools.cycle(["g1", "p1"])
+        checks: list[str] = []
+
+        def _owner(_player_id: str) -> str:
+            checks.append(owner := next(owners))
+            return owner
+
+        controller._playback_owner_id = _owner  # type: ignore[assignment]
+        with pytest.raises(ResourceBusyError) as busy:
+            async with controller.get_group_and_player_lock("p1"):
+                pytest.fail("the body ran with an owner that changed")
+
+        assert busy.value.translation_key == "player_busy"
+        assert len(checks) == 2 * PLAYER_LOCK_OWNER_ATTEMPTS
+        assert not controller._lock_holders
+
+
+class TestNestedGroupLockIsReentered:
+    """Taking a player out of its group takes the group's lock again, never for the first time."""
+
+    @pytest.mark.parametrize("name", ["select_source", "play_media", "cmd_ungroup"])
+    async def test_the_group_lock_is_never_awaited_while_the_member_is_held(
+        self, mock_mass: MagicMock, name: str
+    ) -> None:
+        """Every wait for the group's lock happens while the task holds no lock of the member."""
+        controller, _group, _protocol, _member = TestPlayMediaOverride._captured_member(
+            mock_mass, static=False
+        )
+        _set_play_media_override(mock_mass, True)
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_play_media = AsyncMock()  # type: ignore[method-assign]
+        waits: list[tuple[str, frozenset[str]]] = []
+        acquire = controller._acquire_player_lock
+
+        async def _record(
+            lock: asyncio.Lock, lock_key: str, purpose: PlayerLockPurpose, player_id: str
+        ) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            waits.append((lock_key, frozenset(controller._task_held_locks.get(task, set()))))
+            await acquire(lock, lock_key, purpose, player_id)
+
+        controller._acquire_player_lock = _record  # type: ignore[method-assign]
+        with patch.object(controller, "wait_for_player_update", _skip_player_update_wait):
+            await TestStaticGroupReleaseUnderTheGroupLock._command(controller, name)
+
+        controller._handle_set_members.assert_awaited_once()
+        assert ("playback_g1", frozenset()) in waits
+        assert all("playback_member" not in held for key, held in waits if key == "playback_g1")
+
+
 class TestReleaseWaitForPlayMedia:
     """
     The release of a captured player for an explicit play_media waits for its confirmation.
@@ -3592,7 +3857,6 @@ class TestIdlePowerOff:
         """A power off that can't get the player lock in time gives up and keeps the count."""
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.05)
         controller, player, _protocol, power_off = self._setup(mock_mass)
         player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
         controller._check_idle_power_off(player)
@@ -4021,86 +4285,79 @@ class TestAddCurrentlyPlayingToFavorites:
 
 
 class TestPlayerLockTimeouts:
-    """A command gives up on a lock it cannot get in time, unless it asked for it strictly."""
+    """A command that cannot get a player lock in time fails; the warning names the holder."""
 
     @pytest.fixture(autouse=True)
     def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
         monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_STRICT_TIMEOUT", 0.3)
 
-    async def test_a_command_runs_without_the_lock_once_the_timeout_is_over(
+    async def test_a_nested_acquisition_keeps_its_holder_named(
         self, controller: PlayerController, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A stuck holder must not keep the player from responding to the next command."""
-        ran = False
-        async with _lock_held_elsewhere(controller, "p1"):
-            with caplog.at_level(logging.WARNING):
-                async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK):
-                    ran = True
+        """A holder that took its lock a second time is still the one a waiter names."""
+        held = asyncio.Event()
+        release = asyncio.Event()
 
-        assert ran
-        assert "proceeding without lock" in caplog.text
+        async def _holder_waiting_for_its_device() -> None:
+            async with controller.get_player_lock("p1"):
+                async with controller.get_player_lock("p1"):
+                    pass
+                held.set()
+                await release.wait()
 
-    async def test_a_strict_command_fails_instead_of_running_without_the_lock(
-        self, controller: PlayerController, caplog: pytest.LogCaptureFixture
+        holder = asyncio.create_task(_holder_waiting_for_its_device())
+        await held.wait()
+        with caplog.at_level(logging.WARNING), pytest.raises(ResourceBusyError):
+            async with controller.get_player_lock("p1"):
+                pytest.fail("the body ran without the lock")
+        release.set()
+        await holder
+
+        assert "_holder_waiting_for_its_device" in caplog.text
+
+    @pytest.mark.parametrize("holder_state", ["unknown", "done"])
+    async def test_a_lock_without_a_live_holder_still_fails_as_busy(
+        self,
+        controller: PlayerController,
+        caplog: pytest.LogCaptureFixture,
+        holder_state: str,
     ) -> None:
-        """A strict command that would overlap with the holder is refused as busy."""
-        ran = False
-        async with _lock_held_elsewhere(controller, "p1"):
-            with caplog.at_level(logging.INFO), pytest.raises(ResourceBusyError):
-                async with controller.get_player_lock(
-                    "p1", PlayerLockPurpose.PLAYBACK, strict=True
-                ):
-                    ran = True
+        """The warning of a wait that times out never fails on the holder it describes."""
+        lock = controller._player_command_locks.setdefault("playback_p1", asyncio.Lock())
+        await lock.acquire()
+        if holder_state == "done":
+            finished = asyncio.create_task(asyncio.sleep(0))
+            await finished
+            controller._lock_holders["playback_p1"] = finished
+        try:
+            with caplog.at_level(logging.WARNING), pytest.raises(ResourceBusyError):
+                async with controller.get_player_lock("p1"):
+                    pytest.fail("the body ran without the lock")
+        finally:
+            lock.release()
 
-        assert not ran
-        assert "still busy" in caplog.text
-        # the lock itself is left intact for the next command
-        async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
-            ran = True
-        assert ran
+        assert "held by a task that is gone" in caplog.text
 
-    async def test_a_strict_command_keeps_waiting_past_the_timeout(
-        self, controller: PlayerController
-    ) -> None:
-        """A strict command runs once the holder is done, however long that takes."""
-        ran = asyncio.Event()
-
-        async def _strict_command() -> None:
-            async with controller.get_player_lock("p1", PlayerLockPurpose.PLAYBACK, strict=True):
-                ran.set()
-
-        async with _lock_held_elsewhere(controller, "p1"):
-            command = asyncio.create_task(_strict_command())
-            # well past the point where a non-strict command would have given up
-            await asyncio.sleep(0.1)
-            assert not ran.is_set()
-
-        await command
-        assert ran.is_set()
-
-    async def test_a_strict_group_and_player_lock_takes_both_strictly(
+    async def test_a_group_and_player_lock_takes_the_group_lock_first(
         self, mock_mass: MagicMock
     ) -> None:
-        """The group's lock, taken before the member's, is waited for just as strictly."""
+        """A grouped player waits for the group's lock, then for its own."""
         controller, _group, _member = _group_with_member(mock_mass)
-        acquisitions: list[tuple[str, bool]] = []
+        acquisitions: list[str] = []
         acquire_lock = controller.get_player_lock
 
         def _record(
-            player_id: str,
-            purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-            strict: bool = False,
+            player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
         ) -> contextlib.AbstractAsyncContextManager[None]:
-            acquisitions.append((player_id, strict))
-            return acquire_lock(player_id, purpose, strict=strict)
+            acquisitions.append(player_id)
+            return acquire_lock(player_id, purpose)
 
         controller.get_player_lock = _record  # type: ignore[assignment]
-        async with controller.get_group_and_player_lock("member", strict=True):
+        async with controller.get_group_and_player_lock("member"):
             pass
 
-        assert acquisitions == [("group", True), ("member", True)]
+        assert acquisitions == ["group", "member"]
 
 
 def test_state_update_during_attach_is_not_published(mock_mass: MagicMock) -> None:

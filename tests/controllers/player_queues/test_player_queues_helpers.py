@@ -281,9 +281,7 @@ class _FakePlayers:
         self.powered_on: list[tuple[str, bool]] = []
 
     @contextlib.asynccontextmanager
-    async def get_group_and_player_lock(
-        self, queue_id: str, strict: bool = False
-    ) -> AsyncIterator[None]:
+    async def get_group_and_player_lock(self, queue_id: str) -> AsyncIterator[None]:
         self.locks_held += 1
         try:
             yield
