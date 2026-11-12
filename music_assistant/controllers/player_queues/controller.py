@@ -78,6 +78,7 @@ from music_assistant.controllers.player_queues.constants import (
     DEFAULT_AUTOPLAY_ENABLED,
     DEFAULT_CROSSFADE_ENABLED,
     DEFAULT_PAUSE_TIMEOUT,
+    FLOW_PLAYED_OUT_MARGIN,
     PAUSE_TIMEOUT_RANGE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
@@ -1814,6 +1815,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_data is None or queue_data.session_id != session_id:
             return False
         return queue_data.flow_queue_exhausted == session_id
+
+    def flow_stream_played_out(self, queue_id: str, session_id: str, player: Player) -> bool:
+        """
+        Return whether a player is done with the audio of the given flow stream session.
+
+        True once the player has played everything the session streamed, and as soon as the
+        queue no longer plays that session: a newer session took over, or the queue is no
+        longer playing.
+
+        :param queue_id: The queue ID.
+        :param session_id: The stream session to check.
+        :param player: The player the session streams to.
+        """
+        queue_data = self.queue_data_or_none(queue_id)
+        if (
+            queue_data is None
+            or queue_data.session_id != session_id
+            or queue_data.queue.state != PlaybackState.PLAYING
+        ):
+            return True
+        streamed = sum(entry.seconds_streamed or 0 for entry in queue_data.flow_mode_stream_log)
+        played = player.state.corrected_elapsed_time or 0
+        return played >= streamed - FLOW_PLAYED_OUT_MARGIN
 
     # Main queue manipulation methods
 

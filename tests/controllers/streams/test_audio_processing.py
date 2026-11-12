@@ -1288,6 +1288,28 @@ async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
     controller.audio.select_flow_pcm_format.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_flow_stream_handler_ends_a_range_continuation_of_a_finished_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A player resuming a finished flow stream with a Range request is told the stream ends there.
+
+    Cast receivers reconnect with a Range request when the stream closes short of its
+    declared length; a 404 makes them drop their buffer, a 416 lets them play it out.
+    """
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.flow_stream_finished.return_value = True
+    request.headers = {"Range": "bytes=2401175-"}
+    request.http_range = slice(2401175, None)
+
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as exc_info:
+        await controller.serve_queue_flow_stream(request)
+
+    assert exc_info.value.headers["Content-Range"] == "bytes */2401175"
+    controller.audio.select_flow_pcm_format.assert_not_awaited()
+
+
 def test_flow_get_stream_continues_a_repeat_call_at_the_current_item(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -8,14 +8,21 @@ underruns the LIVE flow stream at EOF and keeps reporting buffering/playing).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
+
+import pytest
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
+
+    from music_assistant.models.player import Player
 
 
 def _fake_controller(queue: MagicMock) -> MagicMock:
@@ -138,3 +145,53 @@ def test_flow_queue_exhausted_false_for_unknown_queue() -> None:
     fake = _fake_controller(queue)
 
     assert _exhausted(fake, "other", "sess-1") is False
+
+
+def _streamed_session(state: PlaybackState = PlaybackState.PLAYING) -> MagicMock:
+    """Return a fake controller whose queue streamed 150 seconds in session sess-1."""
+    queue = MagicMock(queue_id="q", session_id="sess-1", state=state)
+    fake = _fake_controller(queue)
+    fake._queue_data["q"].flow_mode_stream_log = [
+        PlayLogEntry("first", seconds_streamed=100),
+        PlayLogEntry("last", seconds_streamed=50),
+    ]
+    return fake
+
+
+def _played_out(
+    fake: MagicMock, elapsed: float | None, queue_id: str = "q", session_id: str = "sess-1"
+) -> bool:
+    player = SimpleNamespace(state=SimpleNamespace(corrected_elapsed_time=elapsed))
+    return PlayerQueuesController.flow_stream_played_out(
+        cast("PlayerQueuesController", fake), queue_id, session_id, cast("Player", player)
+    )
+
+
+@pytest.mark.parametrize("elapsed", [140.0, None])
+def test_flow_stream_not_played_out_while_the_player_holds_audio(elapsed: float | None) -> None:
+    """A player that has not reached the end of what the session streamed still needs it."""
+    assert _played_out(_streamed_session(), elapsed) is False
+
+
+def test_flow_stream_played_out_once_the_player_reached_its_end() -> None:
+    """A player that played everything the session streamed is done with it."""
+    assert _played_out(_streamed_session(), 149.6) is True
+
+
+@pytest.mark.parametrize("state", [PlaybackState.IDLE, PlaybackState.PAUSED])
+def test_flow_stream_played_out_when_the_queue_stopped_playing(state: PlaybackState) -> None:
+    """A queue that no longer plays needs nothing more of the session."""
+    assert _played_out(_streamed_session(state), 10.0) is True
+
+
+def test_flow_stream_played_out_when_a_newer_session_took_over() -> None:
+    """The audio of a superseded session is no longer played."""
+    fake = _streamed_session()
+    fake._queue_data["q"].session_id = "sess-2"
+
+    assert _played_out(fake, 10.0) is True
+
+
+def test_flow_stream_played_out_for_unknown_queue() -> None:
+    """There is nothing to hold for a queue that does not exist."""
+    assert _played_out(_streamed_session(), 10.0, queue_id="other") is True
