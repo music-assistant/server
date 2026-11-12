@@ -525,7 +525,7 @@ def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
     prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
     player = MagicMock(player_id="p1", display_name="Player A")
 
-    AirPlayReceiverProvider._start_receiver(prov, player, "Player A | Music Assistant")
+    AirPlayReceiverProvider._start_receiver(prov, "p1", player, "Player A | Music Assistant")
 
     daemon = prov._daemons["p1"]
     assert {
@@ -537,6 +537,37 @@ def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
         "/ma-runtime/ma_airplay_metadata_airplay_receiver_p1",
         "/ma-runtime/ma_shairport_sync_airplay_receiver_p1.conf",
     }
+
+
+def test_receiver_of_a_merged_player_keeps_the_port_and_pipes_of_its_stored_id() -> None:
+    """A connected player merged into another keeps its port, pipes and config file."""
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Player A"}, legacy_ids={"p_old": "p_new"}
+    )
+    mocks.mass.runtime_path = "/ma-runtime"
+    prov.config.instance_id = "airplay_receiver"
+    prov.config.name = "AirPlay Receiver"
+    prov.manifest = MagicMock(domain="airplay_receiver")
+    prov._ports = {"p_old": 7000}
+    prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
+    prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
+
+    AirPlayReceiverProvider._start_receiver(
+        prov, "p_old", mocks.mass.players.get_player("p_old"), "Player A | Music Assistant"
+    )
+
+    daemon = prov._daemons["p_old"]
+    assert daemon.port == 7000
+    assert {
+        daemon.audio_pipe.path,
+        daemon.metadata_pipe.path,
+        daemon.config_file,
+    } == {
+        "/ma-runtime/ma_airplay_audio_airplay_receiver_p_old",
+        "/ma-runtime/ma_airplay_metadata_airplay_receiver_p_old",
+        "/ma-runtime/ma_shairport_sync_airplay_receiver_p_old.conf",
+    }
+    assert daemon.audio_source.name == "AirPlay Receiver (Player A)"
 
 
 async def test_session_hooks_reach_a_metadata_pipe_whose_path_has_spaces(tmp_path: Path) -> None:
@@ -553,7 +584,7 @@ async def test_session_hooks_reach_a_metadata_pipe_whose_path_has_spaces(tmp_pat
     prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
     prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
     AirPlayReceiverProvider._start_receiver(
-        prov, MagicMock(player_id="p1"), "Player A | Music Assistant"
+        prov, "p1", MagicMock(player_id="p1"), "Player A | Music Assistant"
     )
     daemon = prov._daemons["p1"]
 
