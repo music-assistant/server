@@ -1014,6 +1014,46 @@ async def test_protocol_that_waits_takes_no_place_on_a_player_that_is_removed(
     assert _stored(scenario) == ([], [])
 
 
+async def test_derived_protocol_that_connects_while_its_player_is_removed_waits(
+    scenario: Scenario,
+) -> None:
+    """A bridge that connects again while the player of its carrier is removed gets no place."""
+    chromecast = await scenario.add_provider("chromecast")
+    sendspin = await scenario.add_provider("sendspin")
+    carrier = chromecast.protocol("cast_kitchen", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(carrier)
+    player_id = scenario.single_player(carrier).player_id
+    bridge = sendspin.protocol(
+        "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="cast_kitchen"
+    )
+    await scenario.attach(bridge)
+    assert scenario.player_of(bridge) == player_id
+    await scenario.detach(bridge)
+    for protocol_id in ("cast_kitchen", "sendspin_bridge_kitchen"):
+        scenario.set_present(protocol_id, False)
+    players = scenario.mass.players
+    dropping = asyncio.Event()
+    drop_player = players._drop_player
+
+    async def _drop_slowly(player: Player, *, permanent: bool) -> None:
+        # releasing what the player played takes a while
+        await dropping.wait()
+        await drop_player(player, permanent=permanent)
+
+    with patch.object(players, "_drop_player", _drop_slowly):
+        removal = await scenario.command(players.remove(player_id))
+        # the receiver app on the speaker connects again
+        await players.attach(bridge)
+        dropping.set()
+        await scenario.settle()
+        await removal
+    await scenario.idle()
+
+    assert bridge.player is None
+    assert players.get_player(player_id) is None
+    assert _stored(scenario) == ([], [])
+
+
 async def test_device_found_again_while_its_player_is_removed_becomes_a_new_player(
     scenario: Scenario,
 ) -> None:
