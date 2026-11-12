@@ -480,35 +480,35 @@ class ProtocolLinkingMixin:
                 isinstance(values, dict) and values.get(CONF_SESSION_ONLY)
             ):
                 msg = f"{name} only exists while it is connected and can not be merged"
-                return self._merge_refused(msg, "merge_session_only", name)
+                return self._refused(msg, "merge_session_only", name)
             if not isinstance(stored, dict):
                 return InvalidDataError(f"No player with id {player_id}")
             if player_id in self._removing:
                 return InvalidCommand(f"{name} is being removed")
             player_type = player.type if player else stored.get("player_type")
             if player_type == PlayerType.GROUP or ProtocolRole.VIRTUAL in self._roles_of(player_id):
-                return self._merge_refused(
+                return self._refused(
                     f"{name} is a group and can not be merged", "merge_group", name
                 )
         if not self._roles_of(keep_id).isdisjoint(OWN_PROTOCOL_ROLES) and not self._roles_of(
             absorb_id
         ).isdisjoint(OWN_PROTOCOL_ROLES):
             msg = f"{names[0]} and {names[1]} each stand for a device of their own"
-            return self._merge_refused(msg, "merge_two_own_protocols", *names)
+            return self._refused(msg, "merge_two_own_protocols", *names)
         if shared := self._domains_of(keep_id) & self._domains_of(absorb_id):
             domain = min(shared)
             with suppress(KeyError):
                 domain = self.mass.get_provider_manifest(domain).name
             msg = f"{names[0]} and {names[1]} both have a {domain} output"
-            return self._merge_refused(msg, "merge_shared_domain", *names, domain)
+            return self._refused(msg, "merge_shared_domain", *names, domain)
         if vetoes_device(self._merged_identity(absorb_id), self._identity_parts(keep_id)):
             msg = f"{names[0]} and {names[1]} report different devices"
-            return self._merge_refused(msg, "merge_identifiers_differ", *names)
+            return self._refused(msg, "merge_identifiers_differ", *names)
         return None
 
-    def _merge_refused(self, msg: str, translation_key: str, *args: str) -> InvalidCommand:
+    def _refused(self, msg: str, translation_key: str, *args: str) -> InvalidCommand:
         """
-        Return the error of a merge the attach rules do not allow.
+        Return the error of a merge or an unlink the attach rules do not allow.
 
         :param msg: What stands in the way.
         :param translation_key: Key of the translated message.
@@ -581,24 +581,25 @@ class ProtocolLinkingMixin:
         name = str(
             (protocol.name if protocol else None) or record.get("default_name") or protocol_id
         )
-        player_id = self._get_player_id_of_protocol(protocol_id)
-        if (protocol and protocol.session_only) or not record or not player_id:
+        if (protocol and protocol.session_only) or not record:
             msg = f"{name} only exists while it is connected and can not stand on its own"
-            raise self._merge_refused(msg, "unlink_session_only", name)
+            raise self._refused(msg, "unlink_session_only", name)
+        if not (player_id := self._get_player_id_of_protocol(protocol_id)):
+            raise InvalidDataError(f"Protocol {protocol_id} belongs to no player")
         if (protocol and protocol.underlying_protocol_id) or (record.get("values") or {}).get(
             CONF_UNDERLYING_PLAYER_ID
         ):
             msg = f"{name} rides on another protocol and follows it"
-            raise self._merge_refused(msg, "unlink_derived", name)
+            raise self._refused(msg, "unlink_derived", name)
         if (protocol.role if protocol else record.get("role")) == ProtocolRole.VIRTUAL:
             msg = f"{name} is the protocol of a group"
-            raise self._merge_refused(msg, "unlink_group", name)
+            raise self._refused(msg, "unlink_group", name)
         if player_id in self._removing:
             raise InvalidCommand(f"{self._stored_player_name(player_id)} is being removed")
         moved = {protocol_id, *self.mass.config.get_protocol_ids_derived_from(protocol_id)}
         if not self._get_protocol_ids(player_id) - moved:
             msg = f"{name} is the only protocol of its player"
-            raise self._merge_refused(msg, "unlink_only_protocol", name)
+            raise self._refused(msg, "unlink_only_protocol", name)
         return player_id
 
     def _duplicates_of(self, player_id: str) -> list[str]:

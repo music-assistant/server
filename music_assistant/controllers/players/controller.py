@@ -3272,7 +3272,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self._player_command_locks.pop(f"{prefix}_{player_id}", None)
         self._clear_sleep_timer(player)
         self.mass.cancel_timer(f"player_update_state_{player_id}")
-        # a legacy id of another player once the player is gone, whose queue it must not update
+        # once the player is gone its id can be a legacy id of another player, whose queue
+        # this update must not reach
         self.mass.cancel_timer(f"queue_on_player_update_{player_id}")
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         if player.initialized.is_set() and not self.mass.closing:

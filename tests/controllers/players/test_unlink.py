@@ -11,7 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import EventType, IdentifierType, PlayerType
+from music_assistant_models.enums import EventType, IdentifierType, PlayerType, ProtocolRole
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidCommand,
@@ -252,6 +252,16 @@ async def test_unknown_protocol_is_not_unlinked(scenario: Scenario) -> None:
     """An id no protocol has is refused."""
     with pytest.raises(InvalidDataError):
         await scenario.mass.players.unlink_protocol("ap_unknown")
+
+
+async def test_protocol_that_belongs_to_no_player_is_not_unlinked(scenario: Scenario) -> None:
+    """A stored protocol that waits to be matched to a player has no player to leave."""
+    scenario.mass.config.create_protocol_record(
+        "ap_unbound", provider="airplay", player_id=None, role=ProtocolRole.AUDIO, default_name="X"
+    )
+
+    with pytest.raises(InvalidDataError, match="belongs to no player"):
+        await scenario.mass.players.unlink_protocol("ap_unbound")
 
 
 async def _call_as(scenario: Scenario, user: User, command: str, **args: Any) -> int | None:
