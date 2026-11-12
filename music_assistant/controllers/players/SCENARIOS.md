@@ -42,6 +42,7 @@ once and that every test it names exists.
 - [What a stopped player keeps for a moment](#what-a-stopped-player-keeps-for-a-moment) (KEEP)
 - [Grouping](#grouping) (GROUP)
 - [Where playback goes](#where-playback-goes) (OUTPUT)
+- [Volume](#volume) (VOLUME)
 
 ## A device appears
 
@@ -98,6 +99,40 @@ off leaves the device free: once its provider finds it again, it is the player K
 - Proven by:
   - `test_attach_detach.py::test_a_new_device_whose_setup_is_called_off_leaves_nothing_behind`
   - `tests/controllers/players/test_attach_detach.py::test_failed_attach_of_a_new_device_leaves_nothing_behind`
+
+### APPEAR-6 · A protocol that rides on another belongs to that protocol's player
+
+A Sendspin bridge rides on the AirPlay receiver of the Kitchen speaker and reports nothing else
+about the device. It joins the player of that receiver, however late the receiver is found: while
+there is none, it has no player. On the player, the bridge's output names the receiver as the
+output it rides on. While the player has a Sendspin output already, a second bridge waits, and
+it joins once the provider forgets the first. When the provider forgets the receiver, the bridge
+goes with it, and the player goes with its last protocol.
+
+- End-to-end: **possible with** a Sendspin bridge on a Cast or AirPlay receiver of the lab.
+- Proven by:
+  - `tests/controllers/players/test_identity.py::test_protocol_that_rides_on_another_waits_for_it`
+  - `tests/controllers/players/test_protocol_linking.py::test_derived_protocol_attaches_to_the_player_of_the_protocol_it_rides_on`
+  - `tests/controllers/players/test_protocol_linking.py::test_derived_protocol_waits_while_its_player_has_a_protocol_of_its_domain`
+  - `tests/controllers/players/test_protocol_linking.py::test_waiting_derived_protocol_attaches_once_its_domain_is_free`
+  - `tests/controllers/players/test_attach_detach.py::test_removed_protocol_takes_the_protocols_that_ride_on_it_along`
+
+### APPEAR-7 · An AirPlay receiver without a hardware address waits up to 15 s for its device
+
+The AirPlay provider finds the Kitchen receiver, which reports only the address of its host.
+For 14 s it is no player and nothing is stored for it; at 15 s it gets a player of its own, and
+clients are told about that one player. When the receiver reports the hardware address of its
+device during the wait, it gets its player before the 15 s are up. When the Sonos provider finds
+the device's own protocol during the wait, the receiver joins the player that protocol gets. The
+own protocol of a device never waits.
+
+- End-to-end: **possible with** an AirPlay receiver whose host has no hardware MAC address the
+  server can resolve.
+- Proven by:
+  - `tests/controllers/players/test_identity.py::test_audio_protocol_without_a_hardware_address_waits_for_its_device`
+  - `tests/controllers/players/test_identity.py::test_waiting_protocol_gets_its_player_once_its_hardware_address_is_known`
+  - `tests/controllers/players/test_identity.py::test_waiting_protocol_joins_the_player_its_native_protocol_creates`
+  - `tests/controllers/players/test_identity.py::test_native_protocol_never_waits`
 
 ## A device goes away and comes back
 
@@ -343,10 +378,10 @@ named by Home Assistant and with the twin as its output.
 
 The vendor protocol is away, and the user disables the vendor's provider or switches the vendor
 protocol off as an output. The twin stands for the speaker again, and the player is available
-through it, also after a restart, and plays through it. A provider that is only not loaded, as after a failed load,
-leaves the twin a control until the user disables it. Once the user switches the vendor protocol
-on again, it ranks above the twin at once: the twin is a control again, and the player is
-unavailable while the vendor protocol is away.
+through it, also after a restart, and plays through it. A provider that is only not loaded, as
+after a failed load, leaves the twin a control until the user disables it. Once the user switches
+the vendor protocol on again, it ranks above the twin at once: the twin is a control again, and
+the player is unavailable while the vendor protocol is away.
 
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switched_off`
@@ -541,6 +576,61 @@ twin is a control again.
 - End-to-end: **no**: the lab has no Home Assistant.
 - Proven by: `test_identity.py::test_a_role_change_neither_merges_nor_splits_players`
 
+### MERGE-8 · The user merges two players of one device
+
+A TV's AirPlay and Cast receivers ended up as two players, and the user merges the Cast one into
+the AirPlay one. The kept player carries both receivers, also after a restart. Where both
+players have a name or a setting, the kept player's stays; a name, a setting, DSP and queue
+settings only the other one had are carried over, and nothing of it is stored under its own id
+any more. A group that listed it, and a user limited to it, name the kept player from then on.
+When it played, its device is stopped and its saved queue goes.
+
+- End-to-end: **possible with** two players that may be one, such as an AirPlay and a DLNA
+  receiver.
+- Proven by:
+  - `tests/controllers/players/test_merge.py::test_merged_player_stays_one_player_after_a_restart`
+  - `tests/controllers/players/test_merge.py::test_merge_keeps_the_name_and_settings_of_the_kept_player`
+  - `tests/controllers/players/test_merge.py::test_merge_carries_over_what_only_the_absorbed_player_has`
+  - `tests/controllers/players/test_merge.py::test_merge_moves_group_memberships_and_user_filters`
+  - `tests/controllers/players/test_merge.py::test_merge_of_a_player_that_plays_stops_its_queue`
+
+### MERGE-9 · A merged player's old id keeps working for clients
+
+After the merge of MERGE-8 the kept player lists the id of the player that went as a legacy id.
+Reading the player or its queue by that id gives the kept player, also after a further merge
+into a third player, and a later merge can name either player by such an id. Player and queue
+commands by the old id reach the kept player. Through the websocket and the HTTP API, a user
+limited to a player reads it by its legacy id and moves its queue by it; a user without access
+to it is refused by that id too.
+
+- End-to-end: **possible with** two players that may be one, such as an AirPlay and a DLNA
+  receiver.
+- Proven by:
+  - `tests/controllers/players/test_merge.py::test_merged_player_carries_both_protocols_and_answers_to_the_absorbed_id`
+  - `tests/controllers/players/test_merge.py::test_chain_of_merges_keeps_every_absorbed_id_resolving`
+  - `tests/controllers/players/test_merge.py::test_merge_takes_legacy_ids`
+  - `tests/controllers/players/test_merge.py::test_queue_commands_take_the_id_of_a_merged_player`
+  - `tests/controllers/players/test_merge.py::test_player_commands_take_the_id_of_a_merged_player`
+  - `tests/controllers/webserver/test_legacy_player_ids.py::test_player_is_read_by_its_legacy_id`
+  - `tests/controllers/webserver/test_legacy_player_ids.py::test_queue_is_transferred_from_a_legacy_id`
+  - `tests/controllers/webserver/test_legacy_player_ids.py::test_transfer_from_a_legacy_id_needs_access_to_its_player`
+
+### MERGE-10 · A receiver taken off a player gets one of its own, and can be merged back
+
+An AirPlay receiver that reports only the address of its host joined the Kitchen speaker's
+player. The user takes it off: it gets a new player, Studio, available with its AirPlay output,
+and clients are told about it and its queue. Kitchen keeps its id, name and own output, and an
+output choice that named the receiver falls back to its default. Found again, also after a
+restart, the receiver goes to its new player. When the user merges the two players, the receiver
+is back on Kitchen.
+
+- End-to-end: **possible with** an AirPlay receiver on the host of a native player, such as
+  shairport-sync next to Squeezelite.
+- Proven by:
+  - `tests/controllers/players/test_unlink.py::test_unlinked_protocol_gets_a_player_of_its_own`
+  - `tests/controllers/players/test_unlink.py::test_unlinked_protocol_stays_on_its_player`
+  - `tests/controllers/players/test_unlink.py::test_unlink_then_merge_back_puts_the_protocol_back`
+
 ## Restart and upgrade
 
 Players are stored. After a restart a player is back with its id, name and settings, unavailable
@@ -648,6 +738,35 @@ not for good, and then that it is added again under the same id.
 
 - End-to-end: **yes**. Disable a virtual player and enable it again.
 - Proven by: `test_lifecycle.py::test_a_disabled_player_is_gone_for_now_and_comes_back_with_its_id`
+
+### REMOVE-5 · "Remove all unavailable players" removes only players nothing finds
+
+The user asks the settings to remove all unavailable players. Removed, and named in the answer,
+are the players no running provider finds a device of, and a stored player without protocols.
+Kept are a player whose device is there but awaits its setup, and a player of a provider that is
+not loaded. Right after a start, or after a provider loaded, the request is refused while the
+providers still find their devices; a provider that loaded a moment ago holds back only its own
+players. A dry run names what would go and changes nothing.
+
+- End-to-end: **yes**. Stop the container of a virtual player, wait past the start, and remove
+  all unavailable players.
+- Proven by:
+  - `tests/controllers/players/test_attach_detach.py::test_remove_unavailable_removes_the_players_whose_devices_are_gone`
+  - `tests/controllers/players/test_attach_detach.py::test_remove_unavailable_keeps_a_player_whose_device_needs_setup`
+  - `tests/controllers/players/test_attach_detach.py::test_remove_unavailable_is_refused_while_the_providers_find_their_devices`
+  - `tests/controllers/players/test_attach_detach.py::test_remove_unavailable_waits_only_for_the_players_of_a_provider_that_just_loaded`
+  - `tests/controllers/players/test_attach_detach.py::test_dry_run_of_remove_unavailable_names_what_the_command_removes`
+
+### REMOVE-6 · A removed group is gone for good
+
+The user removes the sync group or the universal group Group Z. Its player, its stored records
+and, for a universal group, its stream routes go, and it does not come back when its provider
+looks for groups again.
+
+- End-to-end: **yes**. Remove a sync group of two Squeezelite players.
+- Proven by:
+  - `tests/providers/sync_group/test_lifecycle.py::test_removing_a_group_forgets_it`
+  - `tests/providers/universal_group/test_lifecycle.py::test_removing_a_group_forgets_it`
 
 ## Browser and app players
 
@@ -963,6 +1082,17 @@ ungroups it: Kitchen lets Office go, and Office is synced to nothing.
 - End-to-end: **possible with** two Squeezelite players and a user limited to one of them.
 - Proven by: `test_grouping.py::test_a_member_is_paused_through_its_leader_and_leaves_on_its_own_access`
 
+### GROUP-21 · A group comes back after a restart with its members
+
+The user created the sync group or the universal group Group Z of Player A and Player B, with a
+power control. After a restart it is the same player again: available, named Group Z, with its
+members and its power.
+
+- End-to-end: **yes**. A sync group of two Squeezelite players; restart the server.
+- Proven by:
+  - `tests/providers/sync_group/test_lifecycle.py::test_a_new_group_comes_back_with_its_members_after_a_restart`
+  - `tests/providers/universal_group/test_lifecycle.py::test_a_new_group_comes_back_with_its_members_after_a_restart`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
@@ -992,3 +1122,51 @@ that order, and the player shows paused after the pause.
 - End-to-end: **possible with** the WiiM bench device, with a Spotify Connect session started on
   it.
 - Proven by: `tests/providers/wiim/test_linkplay_control.py::test_transport_commands_reach_an_app_playing_on_the_renderer`
+
+## Volume
+
+The level and mute of a player are its own. A volume or mute command goes to the output that
+renders, else to the own protocol, and an output that takes over gets the player's level first.
+The examples use the Kitchen speaker with its own protocol at level 30 and its AirPlay receiver at
+level 80.
+
+### VOLUME-1 · An output that takes over gets the player's level before it plays
+
+The user prefers the AirPlay receiver as Kitchen's output and plays. The receiver gets level 30
+once, before the media, and the player never shows 80. When Kitchen and Hall group over AirPlay,
+each receiver gets the level and mute of its own player.
+
+- End-to-end: **possible with** a host that runs a native player and an AirPlay receiver at
+  different levels, such as Squeezelite and shairport-sync.
+- Proven by:
+  - `tests/controllers/players/test_routing.py::test_audio_protocol_that_takes_over_gets_the_level_of_the_player_first`
+  - `tests/controllers/players/test_routing.py::test_players_grouped_through_an_audio_protocol_hand_it_their_level_and_mute`
+
+### VOLUME-2 · A volume command goes to the output that renders, and only it reports back
+
+While Kitchen plays through its AirPlay receiver, a volume command goes to the receiver, not to
+the own protocol. A level the idle own protocol reports does not move the player's level; one the
+receiver reports does. While nothing else renders, a volume command goes to the own protocol.
+
+- End-to-end: **possible with** the setup of VOLUME-1.
+- Proven by:
+  - `tests/controllers/players/test_routing.py::test_volume_goes_to_the_output_that_renders_and_only_it_reports_back`
+  - `tests/controllers/players/test_routing.py::test_native_protocol_owns_the_volume_while_nothing_else_renders`
+
+### VOLUME-3 · A player whose own protocol can not be reached keeps its level
+
+Kitchen's own protocol can no longer be reached. The player stays available, controlled through
+its AirPlay receiver, and keeps level 30 and its mute, whatever takes the control meanwhile.
+Nothing is sent to the receiver until it plays: then it gets the player's level first, and never
+a level above what the device was left at. Volume and mute commands go to the receiver. Once the
+own protocol can be reached again, it has the controls back at its own level, and gets no
+command.
+
+- End-to-end: **possible with** a native player whose control connection the lab can cut while
+  its AirPlay receiver stays up.
+- Proven by:
+  - `tests/controllers/players/test_routing.py::test_native_protocol_that_can_not_be_reached_leaves_the_controls_to_the_others`
+  - `tests/controllers/players/test_routing.py::test_audio_protocol_that_takes_over_from_an_unreachable_native_gets_the_level_to_play`
+  - `tests/controllers/players/test_routing.py::test_level_the_player_had_is_kept_while_its_native_can_not_be_reached`
+  - `tests/controllers/players/test_routing.py::test_output_that_takes_over_is_never_made_louder_than_the_device_was_left`
+  - `tests/controllers/players/test_routing.py::test_native_that_can_be_reached_again_takes_the_controls_back_at_its_own_level`
