@@ -644,6 +644,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 if isinstance(existing, RaumfeldPlayer):
                     existing.set_room(room)
                     existing.set_software_version(self.room_software_version(room))
+                    # a room keeps its player when the speaker it plays through changes
+                    existing.set_model(self.room_model(room))
+                    existing.set_line_in(self.line_in(self.resolve_room_renderer(room)[0]))
                     existing.set_available(True)
                 self._ensure_icy_default(player_id)
                 continue
@@ -1135,6 +1138,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         if previous is not None:
             # read again from the renderer the room goes through now
             self._forget_room(room)
+            self._versions_read.discard(room)
 
     async def _renderer_of_room_player(self, room: str, renderers: list[str]) -> str | None:
         """

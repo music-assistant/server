@@ -12,15 +12,16 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import aiohttp
 import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
-from music_assistant_models.enums import MediaType, PlaybackState
-from music_assistant_models.errors import ResourceBusyError
-from music_assistant_models.player import PlayerMedia
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
+from music_assistant_models.errors import PlayerCommandFailed, ResourceBusyError
+from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_IP_ADDRESS
 from music_assistant.providers.raumfeld.constants import (
     CONF_RESTART_ON_JOIN,
     GROUP_SETTLE_TIME,
     PLAYER_CONFIG_ENTRIES,
+    SOURCE_LINE_IN,
 )
 from music_assistant.providers.raumfeld.host import Devices, RaumfeldHost, Room, ZoneConfig
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
@@ -92,6 +93,8 @@ def _provider(description: str) -> tuple[RaumfeldPlayerProvider, MagicMock]:
     provider._renderer_descriptions = {}
     provider._room_ids = {}
     provider._shared_serial_warned = set()
+    provider._versions_read = set()
+    provider._line_in = {}
     provider.host = _host({"Bar": ("uuid:room", "uuid:renderer")}, {"uuid:renderer": _LOCATION})
     response = MagicMock()
     response.text = AsyncMock(return_value=description)
@@ -2492,6 +2495,8 @@ def _registered(room: str, player_id: str) -> RaumfeldPlayer:
     player._attr_name = room
     player._attr_available = True
     player._playback_generation = 0
+    player._attr_device_info = DeviceInfo(model="Raumfeld One S", manufacturer="Teufel")
+    player._line_in = None
     return player
 
 
@@ -2523,6 +2528,116 @@ async def test_a_known_room_is_available_again_under_its_new_name() -> None:
     assert marshall.room == "Werkplaats"
     assert marshall._attr_name == "Werkplaats"
     assert marshall.available
+
+
+# a speaker's renderer UUID -> (stream url, title) of its Line-In
+_LINE_INS = {
+    "pi4": ("http://192.168.1.31:8888/linein.wav", "Line-in"),
+    "pi3": ("http://192.168.1.44:8888/linein.wav", "Line-in"),
+}
+
+
+def _room_with(provider: RaumfeldPlayerProvider, renderers: list[str]) -> None:
+    """Have the host list room Marshall with the given speakers, in that order."""
+    provider.host._zone_config.rooms["Marshall"] = Room(
+        "Marshall",
+        "uuid:5e1d",
+        renderers[0],
+        "ACTIVE",
+        spotify_active=False,
+        renderer_udns=tuple(renderers),
+    )
+
+
+async def _line_in_selected(player: RaumfeldPlayer) -> str:
+    """Select the Line-In of a room's player and return the stream its zone is given."""
+    zone_command = AsyncMock()
+    with (
+        patch.object(player, "_ensure_playable_zone", AsyncMock(return_value=[player.room])),
+        patch.object(player, "_wake_rooms", AsyncMock()),
+        patch.object(player, "_stop_before_switching", AsyncMock()),
+        patch.object(player, "_zone_command", zone_command),
+    ):
+        await player.select_source(SOURCE_LINE_IN)
+    return cast("str", zone_command.await_args_list[0].kwargs["CurrentURI"])
+
+
+async def test_a_room_whose_speaker_is_swapped_plays_the_line_in_of_its_new_speaker() -> None:
+    """The player a room keeps selects the Line-In of the speaker it plays through now."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    provider._line_in = dict(_LINE_INS)
+    await provider._sync_rooms()
+    marshall = registry["raumfeld_d83addda8e62"]
+
+    _place_speakers(provider, {"Marshall": ("uuid:5e1d", "uuid:pi3")})
+    await provider._sync_rooms()
+
+    assert list(registry) == ["raumfeld_d83addda8e62"]
+    assert await _line_in_selected(marshall) == _LINE_INS["pi3"][0]
+
+
+async def test_a_room_whose_speaker_is_swapped_shows_its_new_speaker() -> None:
+    """The player a room keeps shows the model and software version of its new speaker."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    await provider._sync_rooms()
+    marshall = registry["raumfeld_d83addda8e62"]
+    location, serial = _SPEAKERS["uuid:pi3"]
+    one_m = _DEVICE_DESCRIPTION.replace("04:a3:16:f3:b6:c4", serial).replace("One S", "One M")
+    get = cast("MagicMock", provider.mass).http_session.get
+    read = get.side_effect
+
+    def answer(url: str, **kwargs: Any) -> MagicMock:
+        request = cast("MagicMock", read(url, **kwargs))
+        if url == location:
+            request.__aenter__.return_value.text = AsyncMock(return_value=one_m)
+        return request
+
+    get.side_effect = answer
+    version = AsyncMock(return_value="2.22.0")
+
+    _place_speakers(provider, {"Marshall": ("uuid:5e1d", "uuid:pi3")})
+    with patch.object(provider, "_read_software_version", version):
+        await provider._sync_rooms()
+
+    assert marshall.device_info.model == "Raumfeld One M"
+    version.assert_awaited_once_with("Marshall")
+    assert marshall.device_info.software_version == "2.22.0"
+
+
+async def test_a_room_read_through_another_speaker_offers_that_speakers_line_in() -> None:
+    """While its own speaker is away a room offers the other's Line-In, and its own once back."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    provider._line_in = dict(_LINE_INS)
+    _room_with(provider, ["uuid:pi4", "uuid:pi3"])
+    await provider._sync_rooms()
+    marshall = registry["raumfeld_d83addda8e62"]
+    assert await _line_in_selected(marshall) == _LINE_INS["pi4"][0]
+
+    _room_with(provider, ["uuid:pi3"])
+    await provider._sync_rooms()
+    assert await _line_in_selected(marshall) == _LINE_INS["pi3"][0]
+
+    _room_with(provider, ["uuid:pi3", "uuid:pi4"])
+    await provider._sync_rooms()
+    assert list(registry) == ["raumfeld_d83addda8e62"]
+    assert await _line_in_selected(marshall) == _LINE_INS["pi4"][0]
+
+
+async def test_a_room_whose_new_speaker_has_no_line_in_offers_none() -> None:
+    """A room that now plays through a speaker without a Line-In no longer offers one."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    provider._line_in = {"pi4": _LINE_INS["pi4"]}
+    await provider._sync_rooms()
+    marshall = registry["raumfeld_d83addda8e62"]
+    assert [source.id for source in marshall._attr_source_list] == [SOURCE_LINE_IN]
+
+    _place_speakers(provider, {"Marshall": ("uuid:5e1d", "uuid:pi3")})
+    await provider._sync_rooms()
+
+    assert marshall._attr_source_list == []
+    assert PlayerFeature.SELECT_SOURCE not in marshall.supported_features
+    with pytest.raises(PlayerCommandFailed):
+        await _line_in_selected(marshall)
 
 
 async def test_a_room_the_host_no_longer_lists_is_unavailable() -> None:
