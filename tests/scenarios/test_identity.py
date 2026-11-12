@@ -652,7 +652,7 @@ async def test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native
     assert _roles(scenario, player_id) == {speaker.twin.protocol_id: ProtocolRole.NATIVE}
 
 
-@pytest.mark.parametrize("switch", ["provider", "protocol"])
+@pytest.mark.parametrize("switch", ["provider", "unloaded_provider", "protocol"])
 async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switched_off(
     scenario: Scenario, switch: str
 ) -> None:
@@ -661,7 +661,8 @@ async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switche
 
     The twin stands for the speaker meanwhile, also after a restart, and the player plays
     through it. Switched on again, the vendor protocol ranks above it again at once, also
-    while it is away.
+    while it is away. A provider that is not loaded, as after a failed load, is disabled the
+    same way.
     """
     speaker = await _speaker(scenario)
     sonos = scenario.provider("sonos")
@@ -669,9 +670,13 @@ async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switche
     await scenario.attach(speaker.vendor)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
     scenario.set_present(speaker.vendor.protocol_id, False)
+    if switch == "unloaded_provider":
+        await scenario.mass.unload_provider(sonos.instance_id)
+        await scenario.idle()
+        assert _roles(scenario, player_id)[speaker.twin.protocol_id] == ProtocolRole.CONTROL
 
     async def _switch(enabled: bool) -> None:
-        if switch == "provider":
+        if switch != "protocol":
             await scenario.mass.config.save_provider_config(
                 "sonos", {"enabled": enabled}, instance_id=sonos.instance_id
             )

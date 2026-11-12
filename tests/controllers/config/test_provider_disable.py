@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.config_entries import ProviderConfig
@@ -53,14 +53,16 @@ async def test_disable_rejected_when_not_allowed(mass_minimal: MusicAssistant) -
 
 
 async def test_disable_stores_and_unloads_when_allowed(mass_minimal: MusicAssistant) -> None:
-    """A provider that may be disabled is stored as disabled and unloaded."""
+    """A provider that may be disabled is stored as disabled, unloaded and its roles settled."""
     config = mass_minimal.config
     prov_conf = _setup_provider(mass_minimal, allow_disable=True)
     with (
         patch.object(config, "get_provider_config", AsyncMock(return_value=prov_conf)),
         patch.object(mass_minimal, "unload_provider", AsyncMock()) as mock_unload,
+        patch.object(mass_minimal, "players", Mock(), create=True) as players,
     ):
         await config.save_provider_config(DOMAIN, {"enabled": False}, instance_id=INSTANCE)
 
     assert config.get(CONF_KEY)["enabled"] is False
     mock_unload.assert_awaited_once_with(INSTANCE)
+    players.schedule_protocol_roles_of_provider.assert_called_once_with(INSTANCE)
