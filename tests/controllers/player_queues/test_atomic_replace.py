@@ -257,11 +257,10 @@ async def test_replace_starting_at_a_chosen_track_never_advertises_a_partial_que
 
 async def test_replacing_a_dynamic_queue_hides_the_rebuild_from_clients() -> None:
     """
-    The pool is fetched over the network with the queue already emptied, so updates are held off.
+    Player updates are held off while the pool is fetched over the network.
 
-    Player updates would otherwise reconcile against the half-built queue and publish it as empty
-    with nothing playing - the very state this is meant to remove, and on the dynamic path the
-    fetch is the slowest part of the whole operation.
+    A track change picked up during the fetch, the slowest part of the whole operation, would
+    otherwise start a refill of the tail the rebuild is about to replace.
     """
     ctrl = _controller(is_dynamic=True, shuffle_enabled=True)
     _load_playing_queue(ctrl)
