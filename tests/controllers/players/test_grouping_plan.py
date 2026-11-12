@@ -1194,3 +1194,117 @@ def test_h9_the_old_members_leave_out_the_protocol_unknown_ids_and_the_leader() 
     assert stop.progress is not None
     assert stop.progress.join is not None
     assert stop.progress.join.old_members == (("airplay_x", "x"),)
+
+
+def test_rp15_the_old_members_are_the_ones_frozen_before_the_stop() -> None:
+    """RP15, H4: the stopped protocol's members are removed as they were before its stop."""
+    world, progress = _joined(PLAYING)
+    leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
+    world.players["l"] = replace(world.players["l"], active_output="sendspin_l")
+    stop = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=leader.progress)
+    # the stopped protocol already reports a group without its member
+    world.protocols["airplay_l"] = replace(
+        world.protocols["airplay_l"], group_members=("airplay_l",)
+    )
+    removal = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=stop.progress)
+    assert _calls(removal) == [SetMembers(protocol_id="airplay_l", remove=("airplay_x",))]
+
+
+def test_m28_the_native_add_keeps_only_what_the_own_protocol_can_group() -> None:
+    """N1, RP19: a native member the own protocol does not offer is left out of its call."""
+    world = _World()
+    _mixed(world)
+    progress = GroupProgress(join=_join(JoinPhase.NATIVE, None, native_add=("sonos_b", "wiim_w")))
+    change = GroupChange(kind=ChangeKind.MEMBERS, target_id="s")
+    assert _calls(plan_group_change(world.snapshot(), change, progress)) == [
+        SetMembers(protocol_id="sonos_s", add=("sonos_b",))
+    ]
+
+
+def test_m29b_a_native_only_join_opens_no_takeover_while_the_group_is_on_a_protocol() -> None:
+    """K3: new content, the group on AirPlay, a member that joins natively: no takeover."""
+    world = _World()
+    _mixed(world, active_output="airplay_s")
+    world.protocol("sonos_c", "c", "sonos", role=ProtocolRole.NATIVE)
+    world.player("c", "sonos_c")
+    world.protocols["sonos_s"] = replace(
+        world.protocols["sonos_s"], can_group_with=frozenset({"sonos_b", "sonos_c"})
+    )
+    world.players["s"] = replace(world.players["s"], can_group_with=frozenset({"b", "w", "c"}))
+    plan = _all_plans(world, ChangeKind.MEMBERS, "s", ("c",), new_content=True)
+    assert _members(plan, "sonos_s") == [(("sonos_c",), ())]
+    assert [step for step in plan.steps if isinstance(step, OpenTakeover)] == []
+
+
+def test_m43_a_regroup_that_can_not_place_every_member_leaves_the_group_alone() -> None:
+    """S2: a member the fresh grouping can not place keeps the group on its protocol."""
+    world = _World()
+    _left_on_bridge(world)
+    # z rides the bridge too, but its AirPlay output went away and it has no native way
+    world.protocol("wiim_z", "z", "wiim", role=ProtocolRole.NATIVE, features=PLAYS)
+    world.protocol("airplay_z", "z", "airplay", available=False)
+    world.player("z", "wiim_z", "airplay_z")
+    world.protocols["airplay_a"] = replace(
+        world.protocols["airplay_a"], group_members=("airplay_a", "airplay_b", "airplay_z")
+    )
+    assert _calls(_plan(world, ChangeKind.REGROUP_FOR_START, "a")) == []
+
+
+def test_m49_the_ungroup_scan_passes_over_a_leader_that_holds_the_player_as_static() -> None:
+    """U9: a leader that lists the player as a static member is not asked to let it go."""
+    world = _World()
+    _sonos(world, "x", "free")
+    world.players["x"] = replace(
+        world.players["x"], group_members=("x", "free"), static_group_members=("free",)
+    )
+    assert _calls(_plan(world, ChangeKind.UNGROUP, "free")) == []
+
+
+def test_m54_the_cleanup_of_a_player_that_went_away_only_logs_its_failure() -> None:
+    """J8: the removal from the group fails into a debug line, never an error."""
+    world = _World()
+    _sonos(world, "a", "b")
+    world.players["b"] = replace(world.players["b"], synced_to="a")
+    assert _calls(_plan(world, ChangeKind.LEAVE, "b")) == [
+        MemberChange(
+            target_id="a",
+            remove=("b",),
+            failure=_fail("debug"),
+            message="Could not detach player %s from its group: %s",
+            args=("Player b",),
+        )
+    ]
+
+
+def test_m68_a_dissolve_removes_the_members_that_are_away_too() -> None:
+    """L6: every member but the leader is removed, also one that can not play now."""
+    world = _World()
+    _leader_with_members(world, None)
+    world.players["c"] = replace(world.players["c"], available_for_playback=False)
+    plan = _plan(world, ChangeKind.MEMBERS, "a", None, ("a",))
+    assert _calls(plan) == [
+        SetMembers(protocol_id="sonos_a", remove=("sonos_b", "sonos_c")),
+        StopLeader(player_id="a"),
+    ]
+
+
+def test_m69_only_members_that_can_play_now_take_the_group_over() -> None:
+    """L1: a member that can not play now is no heir and does not go along."""
+    world = _World()
+    _leader_with_members(world, QueueView(queue_id="a", state=PLAYING))
+    world.players["b"] = replace(world.players["b"], available_for_playback=False)
+    plan = _plan(world, ChangeKind.MEMBERS, "a", None, ("a",))
+    assert plan.steps == (TransferLeadership(leader_id="a", remaining=("c",)),)
+
+
+def test_m75_an_output_of_the_leader_that_can_not_play_is_no_common_output() -> None:
+    """T9: the leader's AirPlay output is away, so a member only on AirPlay can not join."""
+    world = _World()
+    world.protocol("sonos_p", "p", "sonos", role=ProtocolRole.NATIVE)
+    world.protocol("airplay_p", "p", "airplay", available=False)
+    world.player("p", "sonos_p", "airplay_p", can_group_with=frozenset({"x"}))
+    world.protocol("airplay_x", "x", "airplay")
+    world.player("x", "airplay_x")
+    plan = _all_plans(world, ChangeKind.MEMBERS, "p", ("x",))
+    assert _members(plan, "airplay_p") == []
+    assert any("no compatible grouping method found" in n for n in _notes(plan, logging.WARNING))

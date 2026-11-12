@@ -50,6 +50,7 @@ class _Players:
         self.protocols: dict[str, Any] = {}
         self.player_objects: dict[str, Any] = {}
         self._handle_set_members = AsyncMock()
+        self.waits: list[tuple[str, float]] = []
         self._detach_member = AsyncMock()
         self.cmd_set_members = AsyncMock()
 
@@ -65,7 +66,8 @@ class _Players:
     async def wait_for_player_update(
         self, player_id: str, timeout: float = 5
     ) -> AsyncIterator[None]:
-        """Run the body; no update is waited for."""
+        """Run the body; the wait is recorded, no update is waited for."""
+        self.waits.append((player_id, timeout))
         yield
 
 
@@ -289,3 +291,22 @@ async def test_a_refusal_raises_with_its_translation() -> None:
     with _plans(GroupPlan((refusal,))), pytest.raises(PlayerCommandFailed) as err:
         await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
     assert err.value.translation_key == "member_cannot_follow_protocol"
+
+
+async def test_x06_a_release_waits_up_to_5_s_for_the_member_to_report_it() -> None:
+    """E6, M7: a release from another leader is waited for, up to 5 seconds."""
+    players = _Players()
+    release = Detach(member_id="m", wait_for_update=True, failure=Failure.WARN, message="w")
+    with _plans(GroupPlan((release,))):
+        await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
+    assert players.waits == [("m", 5)]
+    players._detach_member.assert_awaited_once_with(players.get_player("m"))
+
+
+async def test_x09_the_change_calls_the_target_object_it_holds() -> None:
+    """The target a change is about is the object the entry passed, not a lookup by id."""
+    players = _Players()
+    held = MagicMock(player_id="leader")
+    with _plans(GroupPlan((MemberChange(target_id="leader", add=("m",)),))):
+        await grouping.apply_group_change(players, CHANGE, held)  # type: ignore[arg-type]
+    players._handle_set_members.assert_awaited_once_with(held, player_ids_to_add=["m"])
