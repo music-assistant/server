@@ -2048,6 +2048,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             raise ActionUnavailable(msg)
         return removed
 
+    @api_command("players/merge", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def merge(self, player_id: str, target_player: str) -> None:
+        """
+        Merge a player into another one: the two turn out to be one device.
+
+        The player goes and its outputs move to the target player, which answers to its
+        id from then on. A name or setting only the player that goes has is kept, its
+        queue is dropped.
+
+        :param player_id: ID of the player that goes.
+        :param target_player: ID of the player it is merged into, which stays.
+        """
+        await self.merge_players(target_player, player_id)
+
     async def merge_players(self, keep_player_id: str, absorb_player_id: str) -> None:
         """
         Merge a player into another one: the two turn out to be one device.

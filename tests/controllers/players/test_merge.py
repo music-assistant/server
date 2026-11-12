@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
+from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
+from music_assistant_models.api import CommandMessage, ErrorResultMessage
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.dsp import DSPConfig
 from music_assistant_models.enums import (
     EventType,
@@ -12,7 +17,11 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
 )
-from music_assistant_models.errors import InvalidCommand, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidCommand,
+    InvalidDataError,
+)
 
 from music_assistant.constants import (
     CONF_DEVICE_IDENTIFIERS,
@@ -23,6 +32,7 @@ from music_assistant.constants import (
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
 )
+from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from tests.scenarios.harness import (
     DEFAULT_FEATURES,
     FAKE_SETTING,
@@ -72,6 +82,27 @@ async def _merge(scenario: Scenario, keep_id: str, absorb_id: str) -> None:
     """Merge a player into another one and let the server settle."""
     await scenario.mass.players.merge_players(keep_id, absorb_id)
     await scenario.idle()
+
+
+async def _call_as(scenario: Scenario, user: User, command: str, **args: Any) -> int | None:
+    """
+    Run an API command the way a client of the user does, and return its error code, if any.
+
+    :param scenario: The scenario.
+    :param user: The user the client signed in as.
+    :param command: The API command.
+    :param args: The arguments of the command.
+    """
+    request = make_mocked_request("GET", "/ws", app=web.Application())
+    client: Any = WebsocketClientHandler(scenario.mass.webserver, request)
+    client._authenticated_user = user
+    sent = client._send_message = AsyncMock()
+    await client._handle_command(CommandMessage(message_id="1", command=command, args=args))
+    await scenario.idle()
+    for call in sent.await_args_list:
+        if isinstance(message := call.args[0], ErrorResultMessage):
+            return message.error_code
+    return None
 
 
 async def test_merged_player_carries_both_protocols_and_answers_to_the_absorbed_id(
@@ -503,3 +534,61 @@ async def test_merge_needs_two_existing_players(scenario: Scenario, absorb_id: s
         await scenario.mass.players.merge_players(
             tv.older_id, tv.older_id if absorb_id == "itself" else absorb_id
         )
+
+
+async def test_merge_command_needs_the_player_config_scope(scenario: Scenario) -> None:
+    """A user without the scope to configure players can not merge them."""
+    tv = await _two_players_for_one_tv(scenario)
+    user = await scenario.mass.webserver.auth.create_user(username="member", role=UserRole.USER)
+
+    error = await _call_as(
+        scenario, user, "players/merge", player_id=tv.younger_id, target_player=tv.older_id
+    )
+
+    assert error == InsufficientPermissions.error_code
+    assert scenario.player_of(tv.cast) == tv.younger_id
+
+
+async def test_merge_command_follows_the_policy_of_removing_a_player(scenario: Scenario) -> None:
+    """
+    With the scope to configure players, a player filter does not limit a merge.
+
+    Removing a player demands only that scope, also for a player outside the filter of the
+    user, and merging demands the same.
+    """
+    tv = await _two_players_for_one_tv(scenario)
+    dlna = await scenario.add_provider("dlna")
+    speaker = dlna.protocol("uuid:speaker", "Speaker", role="audio", identifiers=HALL)
+    await scenario.attach(speaker)
+    speaker_id = scenario.single_player(speaker).player_id
+    scenario.set_present("uuid:speaker", False)
+    user = await scenario.mass.webserver.auth.create_user(
+        username="service", role=UserRole.SERVICE, player_filter=[tv.older_id]
+    )
+
+    removed = await _call_as(scenario, user, "players/remove", player_id=speaker_id)
+    merged = await _call_as(
+        scenario, user, "players/merge", player_id=tv.younger_id, target_player=tv.older_id
+    )
+
+    assert (removed, merged) == (None, None)
+    assert scenario.player_of(tv.cast) == tv.older_id
+
+
+async def test_merge_command_takes_legacy_ids(scenario: Scenario) -> None:
+    """The ids the command is given are resolved like those of every other command."""
+    tv = await _two_players_for_one_tv(scenario)
+    dlna = await scenario.add_provider("dlna")
+    tv_dlna = dlna.protocol("uuid:tv", "Living TV", role="audio")
+    await scenario.attach(tv_dlna)
+    await scenario.advance(15)
+    dlna_id = scenario.single_player(tv_dlna).player_id
+    await _merge(scenario, dlna_id, tv.younger_id)
+    admin = await scenario.mass.webserver.auth.create_user(username="admin", role=UserRole.ADMIN)
+
+    error = await _call_as(
+        scenario, admin, "players/merge", player_id=tv.older_id, target_player=tv.younger_id
+    )
+
+    assert error is None
+    assert [player.player_id for player in scenario.players_carrying(tv.airplay)] == [dlna_id]
