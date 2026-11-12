@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -1663,16 +1663,34 @@ class SyncGroupPlayer(PlayerProtocol):
         ]
 
     async def _rejoin_members(self) -> None:
-        """Re-add the configured members that returned to the live leader, playback untouched."""
+        """
+        Re-add the configured members that returned to the live leader, playback untouched.
+
+        A member that is busy with a command of its own is left out this time: the next
+        report of the leader tries again.
+        """
         if (leader := self.sync_leader) is None:
             return
-        async with self.mass.players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK):
+        async with (
+            self.mass.players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK),
+            AsyncExitStack() as member_locks,
+        ):
             # judged again now rather than when scheduled: in the meantime a member may
             # have joined another group, which the controller's add would take it from,
             # or the group may have been saved without it
             if self.sync_leader is not leader:
                 return
-            if not (member_ids := self._missing_members(leader)):
+            # nobody asked for this re-add, so it never takes a member a command is busy
+            # with, and never waits for one under the leader's lock: each member's lock is
+            # taken only when it is free, and held until the member is added
+            member_ids = [
+                member_id
+                for member_id in self._missing_members(leader)
+                if await member_locks.enter_async_context(
+                    self.mass.players.get_player_lock_if_free(member_id)
+                )
+            ]
+            if not member_ids:
                 return
             self.logger.info("Re-adding %s to syncgroup %s", member_ids, self.display_name)
             try:

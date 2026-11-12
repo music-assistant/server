@@ -28,12 +28,21 @@ from music_assistant_models.errors import (
     ResourceBusyError,
 )
 from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
+from music_assistant.constants import (
+    CONF_AUTO_PLAY,
+    CONF_GROUP_MEMBERS,
+    CONF_MUTE_CONTROL,
+    CONF_VOLUME_CONTROL,
+)
+from music_assistant.controllers.player_queues.helpers import handle_play_action
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sync_group.constants import REFORM_DEBOUNCE_SECONDS
@@ -92,6 +101,10 @@ def _make_mock_mass() -> MagicMock:
     players.cmd_set_members = AsyncMock()
     players._handle_set_members = AsyncMock()
     players.get_player_lock = MagicMock(return_value=_noop_context())
+    # a member's lock is free unless a test says otherwise
+    free = _noop_context()
+    free.__aenter__.return_value = True
+    players.get_player_lock_if_free = MagicMock(return_value=free)
     players.wait_for_player_update = MagicMock(return_value=_noop_context())
     players.trigger_player_update = MagicMock()
     # the real routing: through the sync leader, or from the member's own side
@@ -1334,6 +1347,145 @@ class TestCommandOnAMemberOfASyncGroup:
         assert time.monotonic() - started < LOCK_BUDGET
         leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
         child.own_protocol.play_media.assert_not_awaited()  # type: ignore[union-attr]
+
+
+class _LoadingQueue:
+    """Queue controller stand-in with one queue, whose play actions are the real decorated ones."""
+
+    mass: MusicAssistant
+    _queue_data: dict[str, PlayerQueueData]
+
+    def __init__(self, mass: MagicMock, queue_id: str) -> None:
+        """Initialize the stand-in with the queue of one player."""
+        self.mass = mass
+        queue = PlayerQueue(
+            queue_id=queue_id, active=True, display_name=queue_id, available=True, items=0
+        )
+        self._queue_data = {queue_id: PlayerQueueData(queue=queue)}
+        # set once the item to play is loaded
+        self.loaded = asyncio.Event()
+
+    @handle_play_action
+    async def play_index(self, queue_id: str) -> None:
+        """Load the queue's next item, then play it on the queue's player."""
+        await self.loaded.wait()
+        await self.mass.players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    @handle_play_action
+    async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
+        """Resume the queue by playing its item."""
+        await self.mass.players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
+        """Ignore the queue updates."""
+
+    def on_player_update(self, player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
+        """Ignore the player updates."""
+
+
+class TestRejoinLeavesABusyMemberAlone:
+    """A static group re-adds a returned member only when no command is busy on it."""
+
+    @staticmethod
+    def _group_playing_without_a_member(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[PlayerController, SyncGroupPlayer, Player, Player, AsyncMock]:
+        """
+        Build a static group that plays on its leader L while its member B is back on its own.
+
+        :return: The controller, the group, L, B and the leader's (native) set members, which
+            reports the join of B the way the device does.
+        """
+        players, group, leader, member = _controller_with_a_sync_group(monkeypatch)
+        group._attr_static_group_members = ["L", "B"]
+        group.sync_leader = leader
+        leader_protocol = cast("MockProtocol", leader.own_protocol)
+        member_protocol = cast("MockProtocol", member.own_protocol)
+        member_protocol._attr_supported_features.add(PlayerFeature.POWER)
+
+        async def _join(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,  # noqa: ARG001
+        ) -> None:
+            leader_protocol._attr_group_members = ["sonos_L", *(player_ids_to_add or [])]
+            member_protocol._attr_synced_to = "sonos_L"  # type: ignore[attr-defined]
+            for player in (leader, group.player, member):
+                assert player is not None
+                player.refresh_state(signal_event=False)
+
+        join = AsyncMock(side_effect=_join)
+        leader_protocol.set_members = join  # type: ignore[method-assign]
+        for player in (leader, group.player, member):
+            assert player is not None
+            player.refresh_state(signal_event=False)
+        assert group._missing_members(leader) == ["B"]
+        return players, group, leader, member, join
+
+    async def test_a_play_on_the_member_queue_plays_while_the_member_is_left_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The play reaches the member; the member is re-added at the leader's next report."""
+        players, group, _leader, member, join = self._group_playing_without_a_member(monkeypatch)
+        queue = _LoadingQueue(cast("MagicMock", players.mass), "B")
+
+        play = asyncio.create_task(queue.play_index("B"))
+        await asyncio.sleep(0)
+        await group._rejoin_members()
+        queue.loaded.set()
+        await play
+
+        member.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
+        join.assert_not_awaited()
+        await group._rejoin_members()
+        join.assert_awaited_once()
+
+    async def test_a_power_on_that_plays_plays_while_the_member_is_left_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A power on of the member with auto play plays on it, and the re-add waits its turn."""
+        players, group, leader, member, join = self._group_playing_without_a_member(monkeypatch)
+        queue = _LoadingQueue(cast("MagicMock", players.mass), "B")
+        cast("MagicMock", players.mass).player_queues.resume = queue.resume
+        member_protocol = cast("MockProtocol", member.own_protocol)
+        member_protocol._attr_powered = False
+        member.refresh_state(signal_event=False)
+        assert group._missing_members(leader) == ["B"]
+        powered_on = asyncio.Event()
+
+        async def _power(powered: bool) -> None:
+            await powered_on.wait()
+            member_protocol._attr_powered = powered
+            member.refresh_state(signal_event=False)
+
+        member_protocol.power = _power  # type: ignore[method-assign]
+        config_get_value = member.config.get_value
+        member.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, *args, **kwargs: (
+                True if key == CONF_AUTO_PLAY else config_get_value(key, *args, **kwargs)
+            )
+        )
+
+        power_on = asyncio.create_task(players.cmd_power("B", True))
+        await asyncio.sleep(0)
+        # the leader reports while the member powers on; a re-add would power it on as well
+        rejoin = asyncio.create_task(group._rejoin_members())
+        await asyncio.sleep(0)
+        powered_on.set()
+        await asyncio.gather(power_on, rejoin)
+
+        member_protocol.play_media.assert_awaited_once()  # type: ignore[attr-defined]
+        join.assert_not_awaited()
+
+    async def test_a_member_nobody_commands_is_re_added(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A returned member that is not busy joins the leader again at once."""
+        _players, group, _leader, member, join = self._group_playing_without_a_member(monkeypatch)
+
+        await group._rejoin_members()
+
+        join.assert_awaited_once()
+        assert member.state.active_group == _group_id(group)
 
 
 class TestFormationTakesTheLeaderFirst:

@@ -318,29 +318,28 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :raises ResourceBusyError: When the lock is still held by another command at the
             timeout.
         """
-        lock_key = f"{purpose.value}_{player_id}"
-        task = asyncio.current_task()
-
-        if task is not None and lock_key in self._task_held_locks.get(task, set()):
+        async with self._player_lock(player_id, purpose, wait=True):
             yield
-            return
 
-        lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
-        await self._acquire_player_lock(lock, lock_key, purpose, player_id)
-        if task is not None:
-            self._task_held_locks.setdefault(task, set()).add(lock_key)
-            self._lock_holders[lock_key] = task
-        try:
-            yield
-        finally:
-            if task is not None:
-                if (held := self._task_held_locks.get(task)) is not None:
-                    held.discard(lock_key)
-                    if not held:
-                        del self._task_held_locks[task]
-                if self._lock_holders.get(lock_key) is task:
-                    del self._lock_holders[lock_key]
-            lock.release()
+    @contextlib.asynccontextmanager
+    async def get_player_lock_if_free(
+        self,
+        player_id: str,
+        purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+    ) -> AsyncIterator[bool]:
+        """
+        Acquire a player's lock only when no other command holds it or waits for it.
+
+        For work nobody asked for at this moment, such as an automatic re-add of a group
+        member: it never makes a command on the player wait or fail, and leaves the player
+        alone when that player is busy. Re-entrant like get_player_lock.
+
+        :param player_id: The player to lock.
+        :param purpose: Lock category.
+        :return: Whether the lock is held in the body.
+        """
+        async with self._player_lock(player_id, purpose, wait=False) as acquired:
+            yield acquired
 
     def holds_player_lock(
         self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
@@ -2884,6 +2883,54 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             translation_owner=self.translation_owner,
             translation_args=[name],
         )
+
+    @contextlib.asynccontextmanager
+    async def _player_lock(
+        self, player_id: str, purpose: PlayerLockPurpose, *, wait: bool
+    ) -> AsyncIterator[bool]:
+        """
+        Hold a player's lock, re-entrant within one task.
+
+        :param player_id: The player to lock.
+        :param purpose: Lock category.
+        :param wait: Wait for the lock up to the timeout; otherwise take it only when it is
+            free right now.
+        :return: Whether the lock is held in the body; always True when waiting.
+        :raises ResourceBusyError: When a wait for the lock times out.
+        """
+        lock_key = f"{purpose.value}_{player_id}"
+        task = asyncio.current_task()
+
+        if task is not None and lock_key in self._task_held_locks.get(task, set()):
+            yield True
+            return
+
+        lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
+        if wait:
+            await self._acquire_player_lock(lock, lock_key, purpose, player_id)
+        else:
+            try:
+                # a free lock is taken without suspending, so only a held one (or one others
+                # wait for) reaches the timeout
+                async with asyncio.timeout(0):
+                    await lock.acquire()
+            except TimeoutError:
+                yield False
+                return
+        if task is not None:
+            self._task_held_locks.setdefault(task, set()).add(lock_key)
+            self._lock_holders[lock_key] = task
+        try:
+            yield True
+        finally:
+            if task is not None:
+                if (held := self._task_held_locks.get(task)) is not None:
+                    held.discard(lock_key)
+                    if not held:
+                        del self._task_held_locks[task]
+                if self._lock_holders.get(lock_key) is task:
+                    del self._lock_holders[lock_key]
+            lock.release()
 
     async def _acquire_player_lock(
         self, lock: asyncio.Lock, lock_key: str, purpose: PlayerLockPurpose, player_id: str
