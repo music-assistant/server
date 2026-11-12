@@ -19,7 +19,7 @@ from music_assistant.controllers.players.grouping_plan import (
     ChangeKind,
     GroupChange,
     GroupStep,
-    MemberLists,
+    JoinPhase,
     Note,
     SetMembers,
     plan_group_change,
@@ -141,9 +141,12 @@ def _planned(
     parent: Player,
     add: Iterable[str] = (),
     remove: Iterable[str] = (),
-) -> list[GroupStep]:
+) -> tuple[list[GroupStep], SetMembers | None]:
     """
     Return every step of a member change on a parent, planned to its end on the state as it is.
+
+    Together with the join call of its protocol group: the set_members that ends the plan in
+    which the join reaches its JOINED phase.
 
     :param controller: The players controller.
     :param parent: The leader.
@@ -158,15 +161,21 @@ def _planned(
         remove=tuple(remove),
     )
     plan = plan_group_change(snapshot, change)
-    steps = list(plan.steps)
-    while plan.progress is not None:
-        plan = plan_group_change(snapshot, change, plan.progress)
+    steps: list[GroupStep] = []
+    join_call: SetMembers | None = None
+    while True:
         steps += plan.steps
+        join = plan.progress.join if plan.progress is not None else None
+        if join_call is None and join is not None and join.phase == JoinPhase.JOINED:
+            join_call = next(step for step in reversed(plan.steps) if isinstance(step, SetMembers))
+        if plan.progress is None:
+            break
+        plan = plan_group_change(snapshot, change, plan.progress)
     for step in steps:
         # the log lines of the plan, as the executor writes them
         if isinstance(step, Note):
             controller.logger.log(step.level, step.message, *step.args)
-    return steps
+    return steps, join_call
 
 
 def _grouping(
@@ -196,21 +205,20 @@ def _grouping(
         _refresh(controller)
     member_ids = list(member_ids)
     parent.state.can_group_with = set(parent.state.can_group_with) | set(member_ids)
+    steps, join_call = _planned(controller, parent, member_ids, remove)
     protocol_members: list[str] = []
-    native_members: list[str] = []
     protocol: PlayerProtocol | None = None
+    if join_call is not None:
+        protocol_members = list(join_call.add if member_ids else join_call.remove)
+        protocol = controller.get_protocol(join_call.protocol_id)
+    native_members: list[str] = []
     native_next = False
-    for step in _planned(controller, parent, member_ids, remove):
+    for step in steps:
         if isinstance(step, Note):
             native_next = step.message.startswith("Calling set_members on native player")
             continue
-        if isinstance(step, SetMembers):
-            ids = list(step.add or step.remove)
-            if native_next:
-                native_members += ids
-            elif step.lists != MemberLists.REMOVE_ONLY:
-                protocol_members += ids
-                protocol = controller.get_protocol(step.protocol_id)
+        if isinstance(step, SetMembers) and native_next:
+            native_members += list(step.add if member_ids else step.remove)
         native_next = False
     return (
         protocol_members,

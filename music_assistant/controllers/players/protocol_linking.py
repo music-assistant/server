@@ -55,7 +55,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.config.constants import AUTOMATIC_VALUE_KEYS, GROUP_MEMBER_KEYS
-from music_assistant.controllers.players.grouping_plan import protocol_is_grouped
+from music_assistant.controllers.players.grouping_plan import first_grouped_protocol
 from music_assistant.controllers.players.matching import (
     DeviceIdentity,
     has_hardware_mac,
@@ -1207,10 +1207,7 @@ class ProtocolLinkingMixin:
 
         :param player: The player to check the audio protocols of.
         """
-        for protocol in player.audio_protocols:
-            if protocol.available_for_playback and self._is_protocol_grouped(protocol):
-                return protocol
-        return None
+        return first_grouped_protocol(player.audio_protocols)
 
     def _get_control_target(
         self,
@@ -1280,22 +1277,6 @@ class ProtocolLinkingMixin:
                 return protocol
 
         return None
-
-    def _is_protocol_grouped(self, protocol: PlayerProtocol) -> bool:
-        """
-        Check if a protocol is currently grouped/synced with other protocols.
-
-        Used to prefer protocols that are actively participating in a group,
-        ensuring consistent playback across grouped players.
-        """
-        is_grouped = protocol_is_grouped(protocol.synced_to, protocol.group_members)
-        if is_grouped:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Protocol %s is grouped",
-                protocol.protocol_id,
-            )
-        return is_grouped
 
 
 def _native_rank(provider_id: str) -> int:

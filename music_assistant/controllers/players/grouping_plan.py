@@ -13,7 +13,7 @@ import contextlib
 import logging
 from dataclasses import dataclass, field, replace
 from enum import IntEnum, StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, ProtocolRole
@@ -643,14 +643,37 @@ def elect_ad_hoc_leader(
     return candidates[0]
 
 
-def protocol_is_grouped(synced_to: str | None, group_members: Sequence[str]) -> bool:
-    """
-    Return whether a protocol is grouped: synced to another, or leading members.
+class GroupedProtocol(Protocol):
+    """What tells whether a protocol is grouped: a live protocol, or its view."""
 
-    :param synced_to: The protocol it reports to be synced to.
-    :param group_members: The group members it reports.
+    @property
+    def available_for_playback(self) -> bool:
+        """Return whether it can play now."""
+        ...
+
+    @property
+    def synced_to(self) -> str | None:
+        """Return the id of the protocol it is synced to."""
+        ...
+
+    @property
+    def group_members(self) -> Sequence[str]:
+        """Return the ids it reports as its group, itself first."""
+        ...
+
+
+def first_grouped_protocol[T: GroupedProtocol](protocols: Iterable[T]) -> T | None:
     """
-    return bool(synced_to or len(group_members) > 1)
+    Return the first protocol that can play and is grouped: synced, or leading members.
+
+    :param protocols: Audio protocols of a player, most preferred first.
+    """
+    for protocol in protocols:
+        if protocol.available_for_playback and (
+            protocol.synced_to or len(protocol.group_members) > 1
+        ):
+            return protocol
+    return None
 
 
 class _Boundary(Exception):
@@ -2017,15 +2040,11 @@ class _Planner:
 
         :param player: The player.
         """
-        for protocol_id in player.audio_protocols:
-            protocol = self.snapshot.protocols.get(protocol_id)
-            if (
-                protocol is not None
-                and protocol.available_for_playback
-                and protocol_is_grouped(protocol.synced_to, protocol.group_members)
-            ):
-                return protocol
-        return None
+        return first_grouped_protocol(
+            protocol
+            for protocol_id in player.audio_protocols
+            if (protocol := self.snapshot.protocols.get(protocol_id)) is not None
+        )
 
     def _active_output(self, player: PlayerView) -> str | None:
         """
