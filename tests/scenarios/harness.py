@@ -283,8 +283,8 @@ class FakeProtocol(PlayerProtocol):
                     values = (
                         list(identifier) if isinstance(identifier, list | tuple) else [identifier]
                     )
-                    # a device info keeps one identifier per type today, so of several values
-                    # the server sees the last one; None (or no value) drops the identifier
+                    # a device info keeps one identifier per type, so of several values the
+                    # server sees the last one; None (or no value) drops the identifier
                     for one in values or [None]:
                         self._attr_device_info.add_identifier(identifier_type, one)
                     if identifier:
@@ -345,8 +345,7 @@ class FakePlayerProvider(PlayerProvider):
             protocol of a device (AirPlay, Cast, DLNA, ...), ``"control"`` for control without
             an audio path (LinkPlay), ``"virtual"`` for a group (with ``type=PlayerType.GROUP``).
         :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...); a list of
-            values reports several identifiers of one type, for a device that stands for
-            several (sub)devices.
+            values reports them one after the other, of which the device info keeps the last.
         :param session_only: Whether the protocol reports that it exists only while attached,
             like a browser session.
         :param state: Other reported state, as taken by Scenario.report().

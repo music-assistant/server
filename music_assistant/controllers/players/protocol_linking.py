@@ -51,6 +51,7 @@ from music_assistant.constants import (
     CONF_UNDERLYING_PLAYER_ID,
     CONF_UNLINKED_FROM,
     CONF_VOLUME_CONTROL,
+    NATIVE_PRIORITY,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.config.constants import AUTOMATIC_VALUE_KEYS, GROUP_MEMBER_KEYS
@@ -165,7 +166,13 @@ class ProtocolLinkingMixin:
         if protocol.session_only:
             # what only exists while it is connected stands for no device
             return None
-        for player_id in self._get_candidate_player_ids():
+        candidates = sorted(
+            self._get_candidate_player_ids(),
+            # a player holding a protocol of its provider that is away is where the device
+            # came back to under another id
+            key=lambda player_id: self._get_replaced_protocol_id(protocol, player_id) is None,
+        )
+        for player_id in candidates:
             if not self._can_attach_to(protocol, identity, player_id):
                 continue
             if not matches_device(identity, self._identity_parts(player_id)):
@@ -221,10 +228,11 @@ class ProtocolLinkingMixin:
         """
         Return whether the attach rules allow a protocol on a player.
 
-        A player has at most one protocol per domain and at most one that stands for the
-        device itself, and no identifier of its device may rule the protocol out. A player
-        that only exists while its device is connected takes only such a protocol, and such
-        a protocol only such a player. Nothing attaches to a player that is being removed.
+        A player has at most one protocol per domain, and two protocols that stand for the
+        device itself only when one ranks above the other (see _attach_role); no identifier
+        of its device may rule the protocol out. A player that only exists while its device
+        is connected takes only such a protocol, and such a protocol only such a player.
+        Nothing attaches to a player that is being removed.
 
         :param protocol: The protocol that attaches.
         :param identity: What the protocol reports about its device.
@@ -260,11 +268,68 @@ class ProtocolLinkingMixin:
             # a protocol that is away makes room for the one its provider now offers
             # for the same device (see _get_replaced_protocol_id)
             replaceable = other is None and other_provider == protocol.provider_id
-            if is_own and other_role in OWN_PROTOCOL_ROLES and not replaceable:
+            if (
+                is_own
+                and other_role in OWN_PROTOCOL_ROLES
+                and not replaceable
+                and _native_rank(other_provider) == _native_rank(protocol.provider_id)
+            ):
                 return False
         return not vetoes_device(
             identity, self._identity_parts(player_id, protocol_id, attached_only=attached_only)
         )
+
+    def _attach_role(self, protocol: PlayerProtocol, player_id: str) -> ProtocolRole:
+        """
+        Return the role a protocol is attached to a player in.
+
+        That is the role it reports, unless it stands for the device itself while another
+        protocol of the player that does so ranks above it (NATIVE_PRIORITY), attached or
+        away, and the user has that one switched on: then it is a control protocol of the
+        player.
+
+        :param protocol: The protocol.
+        :param player_id: Id of the player it is attached to.
+        """
+        if protocol.role not in OWN_PROTOCOL_ROLES:
+            return protocol.role
+        rank = _native_rank(protocol.provider_id)
+        for other_id in self._get_protocol_ids(player_id) - {protocol.protocol_id}:
+            if other := self._protocols.get(other_id):
+                stands_for_device = other.role in OWN_PROTOCOL_ROLES
+                other_provider = other.provider_id
+            else:
+                record = self.mass.config.get_protocol_record(other_id) or {}
+                stands_for_device = record.get("role") in OWN_PROTOCOL_ROLES
+                other_provider = str(record.get("provider"))
+            if (
+                stands_for_device
+                and _native_rank(other_provider) < rank
+                and self.mass.config.is_protocol_switched_on(other_id)
+            ):
+                return ProtocolRole.CONTROL
+        return protocol.role
+
+    async def _attach_in_changed_roles(self, player: Player) -> None:
+        """
+        Attach the protocols of a player again whose role changed with its other protocols.
+
+        A protocol that stands for the device itself becomes a control protocol when a
+        protocol that ranks above it arrives, and stands for it again once that one is
+        removed. The caller holds the attach lock.
+
+        :param player: The player.
+        """
+        for protocol in list(player.protocols.values()):
+            if self._attach_role(protocol, player.player_id) != player.get_role(
+                protocol.protocol_id
+            ):
+                self.logger.info(
+                    "Protocol %s of player %s attaches again in another role",
+                    protocol.protocol_id,
+                    player.display_name,
+                )
+                await self._run_attach(protocol)
 
     def _get_replaced_protocol_id(self, protocol: PlayerProtocol, player_id: str) -> str | None:
         """
@@ -493,9 +558,8 @@ class ProtocolLinkingMixin:
                 return self._refused(
                     f"{name} is a group and can not be merged", "merge_group", name
                 )
-        if not self._roles_of(keep_id).isdisjoint(OWN_PROTOCOL_ROLES) and not self._roles_of(
-            absorb_id
-        ).isdisjoint(OWN_PROTOCOL_ROLES):
+        if self._own_ranks(keep_id) & self._own_ranks(absorb_id):
+            # of two protocols that stand for the device, one has to rank above the other
             msg = f"{names[0]} and {names[1]} each stand for a device of their own"
             return self._refused(msg, "merge_two_own_protocols", *names)
         if shared := self._domains_of(keep_id) & self._domains_of(absorb_id):
@@ -540,6 +604,25 @@ class ProtocolLinkingMixin:
             ):
                 roles.add(ProtocolRole(stored_role))
         return roles
+
+    def _own_ranks(self, player_id: str) -> set[int]:
+        """
+        Return the ranks of the protocols of a player that stand for the device, attached or not.
+
+        :param player_id: Id of the player.
+        """
+        ranks: set[int] = set()
+        for protocol_id in self._get_protocol_ids(player_id):
+            if protocol := self._protocols.get(protocol_id):
+                stands_for_device = protocol.role in OWN_PROTOCOL_ROLES
+                provider_id = protocol.provider_id
+            else:
+                record = self.mass.config.get_protocol_record(protocol_id) or {}
+                stands_for_device = record.get("role") in OWN_PROTOCOL_ROLES
+                provider_id = str(record.get("provider"))
+            if stands_for_device:
+                ranks.add(_native_rank(provider_id))
+        return ranks
 
     def _domains_of(self, player_id: str) -> set[str]:
         """
@@ -862,7 +945,7 @@ class ProtocolLinkingMixin:
         for key, value in (
             ("player_id", player_id),
             ("provider", protocol.provider_id),
-            ("role", protocol.role.value),
+            ("role", self._attach_role(protocol, player_id).value),
             ("default_name", protocol.name or stored.get("default_name")),
         ):
             if stored.get(key) != value:
@@ -2337,3 +2420,12 @@ class ProtocolLinkingMixin:
             if member_player.player_id != parent_player.player_id:
                 members.append((member_id, member_player.player_id))
         return members
+
+
+def _native_rank(provider_id: str) -> int:
+    """
+    Return how a provider ranks among the providers whose protocols stand for one device.
+
+    :param provider_id: Instance id of the provider.
+    """
+    return NATIVE_PRIORITY.get(provider_id.split("--", maxsplit=1)[0], 0)

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from music_assistant_models.enums import IdentifierType
 
+from music_assistant.constants import MAIN_ZONE
 from music_assistant.helpers.util import (
     is_locally_administered_mac,
     is_valid_mac_address,
@@ -48,10 +49,10 @@ def identifiers_match(a: DeviceIdentity, b: DeviceIdentity) -> bool:
     """
     Return whether two identities stand for the same physical device.
 
-    A differing strong identifier rules a match out first. After that any shared
-    identifier is a match. A shared IP address alone is the last resort, and never ties
-    two native devices that each have a hardware MAC address, as one host can carry
-    several of them.
+    A differing strong identifier rules a match out first, and a side that reports no
+    zone is in the main zone of its chassis. After that any shared identifier is a match.
+    A shared IP address alone is the last resort, and never ties two native devices that
+    each have a hardware MAC address, as one host can carry several of them.
 
     :param a: What one side reports about its device.
     :param b: What the other side reports about its device.
@@ -72,9 +73,9 @@ def matches_device(candidate: DeviceIdentity, parts: Iterable[DeviceIdentity]) -
     :param parts: What each protocol of a player reported about the device of that player.
     """
     parts = tuple(parts)
-    values = _comparable_values(candidate)
+    values = _with_missing(_comparable_values(candidate))
     merged, same_domain = _merged_values(candidate, parts)
-    if _vetoed(values, merged, same_domain):
+    if _vetoed(values, _with_missing(merged), same_domain):
         return False
     for identifier_type, rule in _RULES.items():
         if rule.identifies and values[identifier_type] & merged[identifier_type]:
@@ -92,6 +93,9 @@ def matches_device(candidate: DeviceIdentity, parts: Iterable[DeviceIdentity]) -
 def vetoes_device(candidate: DeviceIdentity, parts: Iterable[DeviceIdentity]) -> bool:
     """
     Return whether a differing strong identifier rules out that an identity is a device.
+
+    Only what both sides report is compared: a protocol that reports no zone is not ruled
+    out by the zone of the player it was attached to.
 
     :param candidate: What one protocol reports about its device.
     :param parts: What each protocol of a player reported about the device of that player.
@@ -123,6 +127,9 @@ class _Rule(NamedTuple):
 
     veto: _Veto
     identifies: bool  # a shared value is a match on its own
+    # what a side that reports none of the type counts as when a player is chosen for a
+    # protocol, for a type that vetoes across domains
+    missing: str | None = None
 
 
 # In order of reliability. Every veto is checked before any shared value may match.
@@ -130,7 +137,8 @@ class _Rule(NamedTuple):
 # as UUID, DLNA the UDN, MusicCast and Bose their device id, so one device has several.
 # An AirPlay or Cast id is unique per receiver, whichever protocol reports it.
 # A zone tells the outputs of one chassis apart, which share its MAC address and IP. It
-# identifies nothing on its own: every chassis has a first zone.
+# identifies nothing on its own: every chassis has a first zone. A side that reports no
+# zone is in the main zone, where the protocols of the chassis without a zone play.
 # A MAC address never vetoes: a device has one per network interface, and some protocols
 # report a variant of it.
 # An IP address is no row: it ties two sides only as the last resort, see identifiers_match.
@@ -140,7 +148,7 @@ _RULES: dict[IdentifierType, _Rule] = {
     IdentifierType.UUID: _Rule(_Veto.SAME_DOMAIN, identifies=True),
     IdentifierType.CAST_UUID: _Rule(_Veto.ANY_DOMAIN, identifies=True),
     IdentifierType.AIRPLAY_ID: _Rule(_Veto.ANY_DOMAIN, identifies=True),
-    IdentifierType.ZONE: _Rule(_Veto.ANY_DOMAIN, identifies=False),
+    IdentifierType.ZONE: _Rule(_Veto.ANY_DOMAIN, identifies=False, missing=MAIN_ZONE),
 }
 
 
@@ -159,6 +167,16 @@ def _comparable_values(identity: DeviceIdentity) -> defaultdict[IdentifierType, 
             values[identifier_type].add(value)
         else:
             values[identifier_type].add(value.lower().replace(":", "").replace("-", ""))
+    return values
+
+
+def _with_missing(
+    values: defaultdict[IdentifierType, set[str]],
+) -> defaultdict[IdentifierType, set[str]]:
+    """Return values with what a side that reports none of an identifier type counts as."""
+    for identifier_type, rule in _RULES.items():
+        if rule.missing is not None and not values[identifier_type]:
+            values[identifier_type] = {rule.missing}
     return values
 
 

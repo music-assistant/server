@@ -66,9 +66,11 @@ from music_assistant.constants import (
     CONF_PROTOCOL_CATEGORY_PREFIX,
     CONF_PROTOCOL_EXPERIMENTAL_NOTE,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_PROVIDERS,
     CONF_SESSION_ONLY,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
+    NATIVE_PRIORITY,
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
 )
@@ -570,6 +572,22 @@ class PlayerConfigMixin:
         record = self.get(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}")
         return record if isinstance(record, dict) else None
 
+    def is_protocol_switched_on(self, protocol_id: str) -> bool:
+        """
+        Return whether the user has a protocol switched on.
+
+        That is while its provider instance is enabled and the user did not switch the
+        protocol off as an output of its player. A protocol without a stored config is.
+
+        :param protocol_id: ID of the protocol object.
+        """
+        if (record := self.get_protocol_record(protocol_id)) is None:
+            return True
+        if not record.get(CONF_ENABLED, True):
+            return False
+        provider = self.get(f"{CONF_PROVIDERS}/{record.get('provider')}")
+        return isinstance(provider, dict) and bool(provider.get(CONF_ENABLED, True))
+
     def get_protocol_ids_of_player(self, player_id: str) -> list[str]:
         """
         Return the ids of the protocols that are stored as belonging to a player.
@@ -973,15 +991,24 @@ class PlayerConfigMixin:
         player = self.mass.players.get_player(player_id, False)
         if player is not None and player.own_protocol is not None:
             return player.own_protocol.protocol_id
-        candidates: dict[str, str] = {}
+        roles = [ProtocolRole.NATIVE.value, ProtocolRole.CONTROL.value, ProtocolRole.VIRTUAL.value]
+        candidates: list[tuple[bool, int, int, str]] = []
         for protocol_id in self.get_protocol_ids_of_player(player_id):
-            role = (self.get_protocol_record(protocol_id) or {}).get("role")
-            if role in OWN_PROTOCOL_ROLES:
-                candidates.setdefault(str(role), protocol_id)
-        for role in (ProtocolRole.NATIVE, ProtocolRole.CONTROL, ProtocolRole.VIRTUAL):
-            if role.value in candidates:
-                return candidates[role.value]
-        return None
+            record = self.get_protocol_record(protocol_id) or {}
+            if (role := record.get("role")) not in OWN_PROTOCOL_ROLES:
+                continue
+            # the best ranked protocol the user has switched on is the own one: what is
+            # stored for a player that is not attached may hold the role of before
+            domain = str(record.get("provider")).split("--", maxsplit=1)[0]
+            candidates.append(
+                (
+                    not self.is_protocol_switched_on(protocol_id),
+                    NATIVE_PRIORITY.get(domain, 0),
+                    roles.index(str(role)),
+                    protocol_id,
+                )
+            )
+        return min(candidates)[3] if candidates else None
 
     def _get_stored_player_values(self, player_id: str) -> dict[str, Any]:
         """

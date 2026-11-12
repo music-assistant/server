@@ -213,6 +213,9 @@ CONF_DEVICE_INFO: Final[str] = "device_info"
 CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
 # the identifiers a protocol reported for its device, as [type, value] pairs
 CONF_PROTOCOL_IDENTIFIERS: Final[str] = "identifiers"
+# the ZONE identifier of the main zone of a chassis, where its protocols that report no
+# zone (AirPlay, DLNA, ...) play
+MAIN_ZONE: Final[str] = "main"
 # the moment a player was created, as a nanosecond timestamp so players created in
 # the same second still order
 CONF_CREATED_AT: Final[str] = "created_at"
@@ -1059,6 +1062,14 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
     "chromecast": 30,
     "sendspin": 40,
     "dlna": 50,
+}
+
+# How a provider whose native protocol stands for a device of another make ranks below the
+# vendor's own native protocol of that device (0, any domain not listed): of two native
+# protocols of one device, the better ranked one is its native protocol, the other one its
+# control protocol.
+NATIVE_PRIORITY: Final[dict[str, int]] = {
+    "hass_players": 1,
 }
 
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {

@@ -71,7 +71,7 @@ on (`underlying_protocol_id`). While it is attached, `protocol.player` is its pl
 A `Player` ([player.py](../../models/player.py)) is created and owned by the controller, from its
 stored record or when a device is new, and is never subclassed by a provider. It holds:
 - the attached protocols, each with the role it attached in; the one that stands for the device
-  itself is its `own_protocol` (native, else control, else virtual), the others are its
+  itself is its `own_protocol` (native, else control, else virtual), the audio ones are its
   `audio_protocols`, most preferred first;
 - the ids of all protocols that belong to it, also those that are away;
 - its own config (name, controls, volume limits, announcements, icon, ...);
@@ -244,10 +244,23 @@ What a protocol is for its device is its role (`ProtocolRole`):
 - `AUDIO`: an audio protocol of the device (AirPlay, Chromecast, DLNA, Sendspin on a third-party device).
 - `VIRTUAL`: the protocol of a group player.
 
-A player has at most one protocol that stands for the device itself (native, control or virtual)
-and at most one protocol per domain. A role is fixed while the protocol is attached; a protocol that
-reports another role is detached and attached again, to the same player when it still has a place
-for it, else to a player of its own.
+A player has at most one protocol per domain, and one protocol that stands for the device itself
+(native, control or virtual). Two such protocols of one device share a player only when one ranks
+above the other (`NATIVE_PRIORITY`: the vendor's own protocol above a Home Assistant media player
+of the same device): the better ranked one is the own protocol, the other one attaches in the
+control role. That is a reservation, never a fallback: it takes no command, is no output and does
+not make the player available, also while the better one is away. A protocol ranks above another
+one while the user has it switched on, as the config stores it: its provider is enabled and the
+protocol is not switched off as an output. So the roles stay while the better one is away, reloads
+or its provider fails to load, after a restart in any order and while the player is disabled. The
+other one stands for the device again while the user has the better one's provider disabled or the
+better one switched off, and once the better one is removed (its provider forgets the device, or is
+removed). Two of one rank, such as the Squeezelite and Snapcast clients of one host, are two players.
+
+A role is fixed while the protocol is attached; a protocol that reports another role, or that
+attaches in another one because a protocol that ranks above it arrived or was removed, is
+detached and attached again, to the same player when it still has a place for it, else to a
+player of its own.
 
 ## Finding the Player of a Protocol
 
@@ -296,7 +309,7 @@ The rules are one table. Two sides *differ* in a type when both report it and sh
 Every veto is checked before any shared value may match, so two sides that differ in their AirPlay id or zone never match, even when they share an IP and MAC address.
 
 - A UUID or serial number only vetoes within one domain: a Chromecast reports its cast uuid as UUID, DLNA its UDN, MusicCast and Bose their device id, so one device has several of them.
-- A zone tells the outputs of one chassis apart, which share its MAC address and IP. It identifies nothing on its own, as every chassis has a first zone.
+- A zone tells the outputs of one chassis apart, which share its MAC address and IP. It identifies nothing on its own, as every chassis has a first zone. A side that reports no zone is in the main zone (`MAIN_ZONE`) when a player is chosen for it, so the AirPlay or DLNA receiver of an AV receiver lands on its main zone and never on another one; a protocol that was attached to another zone before stays there. A chassis whose every zone has a receiver of its own (a BluOS multi-zone streamer) can not tell those receivers apart: the first one seen joins the main zone, the others are players of their own, never outputs of a wrong zone.
 - A MAC address never vetoes, as a device has one per network interface. Null and broadcast addresses identify nothing, and the locally-administered bit is ignored because some protocols report the hardware address with that bit set.
 - A shared IP address alone is the last resort. It never ties two native devices that each have a hardware MAC address, as one host can carry several of them.
 

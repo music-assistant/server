@@ -17,6 +17,7 @@ from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_3,
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
+    MAIN_ZONE,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.util import is_valid_mac_address
@@ -75,8 +76,12 @@ class BluesoundPlayer(PlayerProtocol):
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
         # the zones of a multi-zone device share its MAC and IP: the id of the zone tells
-        # them apart
-        self._attr_device_info.add_identifier(IdentifierType.ZONE, protocol_id)
+        # them apart, and the primary streamer is the main zone (a secondary zone has the
+        # port of its zone in its id)
+        self._attr_device_info.add_identifier(
+            IdentifierType.ZONE,
+            MAIN_ZONE if protocol_id == discovery_info.get("mac") else protocol_id,
+        )
         # Only add MAC address if it's valid (not 00:00:00:00:00:00)
         if mac_address := discovery_info.get("mac"):
             if is_valid_mac_address(mac_address):

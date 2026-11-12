@@ -1998,6 +1998,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if player:
                 player.refresh_state()
                 self._store_player_base(player)
+                # a protocol it ranked above stands for the device again
+                self._schedule_protocol_roles(player_id)
             # a protocol that waits for the place of its domain may get it now
             self._schedule_held_protocols()
             return
@@ -2125,6 +2127,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         async with self._register_lock:
             player_id = self._check_unlink(protocol_id)
             return await self._unlink_protocol(protocol_id, player_id)
+
+    def schedule_protocol_roles_of_provider(self, provider_id: str) -> None:
+        """
+        Attach the protocols again whose role changed now that a provider is enabled or disabled.
+
+        A protocol of a provider the user disabled ranks above no other protocol of its player,
+        one of a provider the user enabled again does; that holds whether the provider is
+        loaded or not.
+
+        :param provider_id: Instance id of the provider.
+        """
+        if self.mass.closing:
+            return
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(provider_id):
+            record = self.mass.config.get_protocol_record(protocol_id) or {}
+            if (player_id := record.get("player_id")) in self._players:
+                self._schedule_protocol_roles(str(player_id))
 
     def wants_protocol(self, protocol_id: str, protocol: PlayerProtocol | None = None) -> bool:
         """
@@ -2689,12 +2708,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         protocol = self._protocols.get(protocol_id)
         if ATTR_ENABLED in changed_keys:
+            player_id = self.get_player_id_of_protocol(protocol_id)
             if not self.wants_protocol(protocol_id):
                 # the user switched this output of the player off
                 await self.detach(protocol_id)
                 # a protocol that waits for the place of its domain may take it now
                 self._schedule_held_protocols()
+                if player_id:
+                    # and one it ranked above stands for the device again
+                    self._schedule_protocol_roles(player_id)
                 return
+            if player_id:
+                # a protocol switched on again ranks above others again
+                self._schedule_protocol_roles(player_id)
             await self._hold_derived_protocols_without_place(protocol_id)
             if protocol is None or protocol.player is None:
                 # its provider attaches it when it looks for its devices again
@@ -2946,13 +2972,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if (player := self._players.get(player_id)) is None:
             # a new player, or one that only exists while its device is connected
             player = attach.new_player = self._create_player(player_id, protocol)
+        else:
+            # a protocol it ranks above stands for the device no more
+            await self._attach_in_changed_roles(player)
+            if self._attach_aborted(protocol, attach):
+                return
         self._unattached.pop(protocol_id, None)
         self._release_held_protocol(protocol)
         # The protocol is bound before it is fully ready (config not loaded), so it can
         # be found during the rest of the attach, such as when fetching its config.
         # A player that is new stays unpublished until the end.
         self._protocols[protocol_id] = protocol
-        player.add_protocol(protocol, protocol.role)
+        role = self._attach_role(protocol, player_id)
+        player.add_protocol(protocol, role)
         protocol.set_player(player)
         protocol.set_config(await self._get_protocol_config(protocol))
         # call hooks after the protocol is bound and its config is set
@@ -2981,12 +3013,34 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self.logger.info(
             "Protocol %s (%s) attached to player %s/%s",
             protocol_id,
-            protocol.role.value,
+            role.value,
             player_id,
             player.display_name,
         )
         self._schedule_held_protocols()
         self._schedule_duplicate_merge(player_id)
+
+    def _schedule_protocol_roles(self, player_id: str) -> None:
+        """
+        Attach the protocols of a player again whose role changed with its other protocols.
+
+        Runs once the attach lock is free.
+
+        :param player_id: Id of the player.
+        """
+        self.mass.create_task(
+            self._settle_protocol_roles(player_id), task_id=f"protocol_roles_{player_id}"
+        )
+
+    async def _settle_protocol_roles(self, player_id: str) -> None:
+        """
+        Attach the protocols of a player again whose role changed with its other protocols.
+
+        :param player_id: Id of the player.
+        """
+        async with self._register_lock:
+            if player := self._players.get(player_id):
+                await self._attach_in_changed_roles(player)
 
     async def _refresh_protocol(self, protocol: PlayerProtocol) -> None:
         """
@@ -2999,7 +3053,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # it waits for its player: match it again on what it reports now
             self.on_unattached_protocol_update(protocol)
             return
-        if protocol.role != player.get_role(protocol_id):
+        if self._attach_role(protocol, player.player_id) != player.get_role(protocol_id):
             # a protocol in another role leaves its player and attaches again: to the
             # same player, unless that has no place for it in its new role
             await self._run_attach(protocol)
@@ -3050,6 +3104,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.remove_protocol(protocol_id, forget=True)
                 if player.initialized.is_set():
                     player.refresh_state()
+                # a protocol the dropped one ranked above stands for the device again
+                self._schedule_protocol_roles(player.player_id)
         player = attach.new_player
         if player is not None and player.initialized.is_set():
             return
@@ -3486,6 +3542,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     protocol.protocol_id,
                     self._stored_player_name(keep_id),
                 )
+        if keeper := self._players.get(keep_id):
+            # a protocol that moved here while away may rank above one that is attached
+            await self._attach_in_changed_roles(keeper)
         if (keeper := self._players.get(keep_id)) and keeper.initialized.is_set():
             # the player caches its legacy ids with its config
             keeper.set_config(await self.mass.config.get_player_object_config(keeper))
@@ -3632,6 +3691,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             ):
                 provider.schedule_discovery()
         if player is not None:
+            # a protocol the moved one ranked above stands for the device again
+            await self._attach_in_changed_roles(player)
             await self._settle_player(player)
         self._schedule_update_all_players()
         return new_id
