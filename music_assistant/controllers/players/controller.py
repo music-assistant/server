@@ -24,6 +24,7 @@ import time
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope, UserRole
@@ -90,6 +91,7 @@ from music_assistant.constants import (
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_AUTO_PLAY,
     CONF_CACHED_ARP_MAC,
+    CONF_DEVICE_IDENTIFIERS,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_IDLE_POWER_OFF,
@@ -108,6 +110,7 @@ from music_assistant.constants import (
     CONF_VOLUME_STEP,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.config.constants import AUTOMATIC_VALUE_KEYS
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
@@ -2045,6 +2048,33 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             raise ActionUnavailable(msg)
         return removed
 
+    async def merge_players(self, keep_player_id: str, absorb_player_id: str) -> None:
+        """
+        Merge a player into another one: the two turn out to be one device.
+
+        The absorbed player goes and its protocols move to the kept player. Its id, and
+        the ids it answered to, become legacy ids of the kept player, so what still names
+        it reaches the kept player. A name or setting only the absorbed player has is
+        carried over; where both have one, that of the kept player stays. The queue of
+        the absorbed player is dropped, and stopped first when it plays.
+
+        :param keep_player_id: Id of the player that stays, or one of its legacy ids.
+        :param absorb_player_id: Id of the player that goes, or one of its legacy ids.
+        :raises InvalidDataError: When a player does not exist, or both ids name one player.
+        :raises InvalidCommand: When the two can not be one player: both have a protocol
+            that stands for the device, or a protocol of the same domain, their identifiers
+            tell them apart, or one of them is a group or only exists while connected.
+        """
+        keep_id = self.resolve_player_id(keep_player_id)
+        absorb_id = self.resolve_player_id(absorb_player_id)
+        self._check_merge(keep_id, absorb_id)
+        if absorbed := self._players.get(absorb_id):
+            await self._stop_player_that_is_merged(absorbed)
+        async with self._register_lock:
+            # either player may have changed while the playback stopped
+            self._check_merge(keep_id, absorb_id)
+            await self._merge_players(keep_id, absorb_id)
+
     def wants_protocol(self, protocol_id: str, protocol: PlayerProtocol | None = None) -> bool:
         """
         Return whether the server wants a protocol attached now.
@@ -3204,6 +3234,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self._player_command_locks.pop(f"{prefix}_{player_id}", None)
         self._clear_sleep_timer(player)
         self.mass.cancel_timer(f"player_update_state_{player_id}")
+        # a legacy id of another player once the player is gone, whose queue it must not update
+        self.mass.cancel_timer(f"queue_on_player_update_{player_id}")
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         if player.initialized.is_set() and not self.mass.closing:
             self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
@@ -3310,6 +3342,174 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self.mass.create_task(
             self.mass.webserver.auth.remove_from_user_filters(player_ids=[player_id])
         )
+
+    async def _stop_player_that_is_merged(self, player: Player) -> None:
+        """
+        Stop the queue a player plays before it is merged into another one, best effort.
+
+        Its queue goes with it. A member of a group or of a sync leader plays on: its
+        membership moves with its protocols.
+
+        :param player: The player that is merged into another one.
+        """
+        player_id = player.player_id
+        if (
+            self._resolve_playback_owner(player) is not player
+            or player.state.active_source != player_id
+            or player.state.playback_state == PlaybackState.IDLE
+        ):
+            return
+        try:
+            await self.mass.player_queues.stop(player_id)
+        except Exception:
+            self.logger.exception("Error stopping %s before it is merged", player.display_name)
+
+    async def _merge_players(self, keep_id: str, absorb_id: str) -> None:
+        """
+        Merge a player into another one, as the attach rules allow it.
+
+        What is stored changes in one step, without an await, so it is saved as a whole; the
+        protocols of the absorbed player then attach to the kept one. One that fails to
+        attach again is logged, and attaches to the kept player when its provider finds it
+        again.
+
+        :param keep_id: Id of the player that stays.
+        :param absorb_id: Id of the player that goes.
+        """
+        absorbed = self._players.get(absorb_id)
+        protocol_ids = set(self.mass.config.get_protocol_ids_of_player(absorb_id))
+        if absorbed is not None:
+            protocol_ids.update(absorbed.protocol_ids)
+        attached = [
+            protocol
+            for protocol_id in protocol_ids
+            if (protocol := self._protocols.get(protocol_id))
+            and absorbed is not None
+            and protocol.player is absorbed
+        ]
+        # a protocol that plays for the absorbed player, e.g. in a group, plays on for the kept one
+        playing_through = (
+            absorbed.resolve_output_protocol()
+            if absorbed is not None and absorbed.state.playback_state != PlaybackState.IDLE
+            else None
+        )
+        # the providers of the protocols that are not attached look for their devices again
+        provider_ids = {
+            str(record.get("provider"))
+            for protocol_id in protocol_ids - {protocol.protocol_id for protocol in attached}
+            if (record := self.mass.config.get_protocol_record(protocol_id))
+        }
+        self.logger.info(
+            "Merging player %s into %s",
+            self._stored_player_name(absorb_id),
+            self._stored_player_name(keep_id),
+        )
+        # a user restricted to the absorbed player keeps its device
+        await self.mass.webserver.auth.replace_player_in_user_filters(
+            absorb_id, keep_id, removed_player_ids=[absorb_id]
+        )
+        self._merge_player_config(keep_id, absorb_id, protocol_ids)
+        for protocol in attached:
+            self._attaching.pop(protocol.protocol_id, None)
+            await self._unbind(protocol)
+        if absorbed is not None:
+            await self._drop_player(absorbed, permanent=True)
+        else:
+            self.mass.player_queues.purge_saved_queue(absorb_id)
+        for protocol in attached:
+            try:
+                await self._run_attach(protocol)
+            except Exception:
+                self.logger.exception(
+                    "Protocol %s did not attach to %s after the merge",
+                    protocol.protocol_id,
+                    self._stored_player_name(keep_id),
+                )
+        if (keeper := self._players.get(keep_id)) and keeper.initialized.is_set():
+            # the player caches its legacy ids with its config
+            keeper.set_config(await self.mass.config.get_player_object_config(keeper))
+            keeper.update_state()
+            if (
+                playing_through is not None
+                and keeper.protocols.get(playing_through.protocol_id) is playing_through
+                and keeper.active_output_protocol is None
+            ):
+                keeper.set_active_output_protocol(playing_through.protocol_id)
+        for provider_id in provider_ids:
+            if isinstance(provider := self.mass.get_provider(provider_id), PlayerProvider):
+                provider.schedule_discovery()
+        self._schedule_held_protocols()
+        self._schedule_update_all_players()
+
+    def _merge_player_config(self, keep_id: str, absorb_id: str, protocol_ids: set[str]) -> None:
+        """
+        Move what is stored about a player to the player it is merged into.
+
+        Its protocols, its group memberships and its ids follow; its name, its values and
+        its DSP and queue settings where the kept player has none. Its own config is
+        deleted last.
+
+        :param keep_id: Id of the player that stays.
+        :param absorb_id: Id of the player that goes.
+        :param protocol_ids: Ids of the protocols of the player that goes.
+        """
+        config = self.mass.config
+        keep_key = f"{CONF_PLAYERS}/{keep_id}"
+        kept = config.get(keep_key) or {}
+        absorbed = config.get(f"{CONF_PLAYERS}/{absorb_id}") or {}
+        kept_values = kept.get("values") or {}
+        absorbed_values = absorbed.get("values") or {}
+        if absorbed.get("name") and not kept.get("name"):
+            config.set(f"{keep_key}/name", absorbed["name"])
+        for key, value in absorbed_values.items():
+            if key not in kept_values and key not in AUTOMATIC_VALUE_KEYS:
+                config.set(f"{keep_key}/values/{key}", deepcopy(value))
+        stored_identifiers = absorbed_values.get(CONF_DEVICE_IDENTIFIERS)
+        if isinstance(stored_identifiers, dict) and stored_identifiers:
+            config.set(
+                f"{keep_key}/values/{CONF_DEVICE_IDENTIFIERS}",
+                {**stored_identifiers, **(kept_values.get(CONF_DEVICE_IDENTIFIERS) or {})},
+            )
+        legacy_ids = [
+            *(kept_values.get(CONF_LEGACY_IDS) or []),
+            absorb_id,
+            *(absorbed_values.get(CONF_LEGACY_IDS) or []),
+        ]
+        config.set(
+            f"{keep_key}/values/{CONF_LEGACY_IDS}",
+            list(
+                dict.fromkeys(
+                    legacy_id
+                    for legacy_id in legacy_ids
+                    if isinstance(legacy_id, str) and legacy_id != keep_id
+                )
+            ),
+        )
+        for protocol_id in protocol_ids:
+            if config.get_protocol_record(protocol_id) is not None:
+                config.set_protocol_value(protocol_id, "player_id", keep_id)
+        if keeper := self._players.get(keep_id):
+            keeper.protocol_ids.update(protocol_ids)
+        absorbed_dsp = config.get(f"{CONF_PLAYER_DSP}/{absorb_id}")
+        if absorbed_dsp and not config.get(f"{CONF_PLAYER_DSP}/{keep_id}"):
+            config.set(f"{CONF_PLAYER_DSP}/{keep_id}", deepcopy(absorbed_dsp))
+        absorbed_queue = config.get(f"{CONF_PLAYER_QUEUES}/{absorb_id}")
+        if isinstance(absorbed_queue, dict) and absorbed_queue.get("values"):
+            kept_queue = deepcopy(config.get(f"{CONF_PLAYER_QUEUES}/{keep_id}") or {})
+            kept_queue["queue_id"] = keep_id
+            kept_queue["values"] = {
+                **deepcopy(absorbed_queue["values"]),
+                **(kept_queue.get("values") or {}),
+            }
+            config.set(f"{CONF_PLAYER_QUEUES}/{keep_id}", kept_queue)
+        self._update_group_memberships(absorb_id, keep_id)
+        for key in (
+            f"{CONF_PLAYERS}/{absorb_id}",
+            f"{CONF_PLAYER_DSP}/{absorb_id}",
+            f"{CONF_PLAYER_QUEUES}/{absorb_id}",
+        ):
+            config.remove(key)
+        self._build_legacy_id_index()
 
     def _store_player_base(self, player: Player) -> None:
         """

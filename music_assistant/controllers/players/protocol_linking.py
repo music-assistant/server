@@ -15,6 +15,7 @@ import asyncio
 import logging
 import secrets
 import time
+from contextlib import suppress
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +26,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProtocolRole,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import InvalidCommand, InvalidDataError, PlayerCommandFailed
 
 from music_assistant.constants import (
     CONF_CACHED_ARP_MAC,
@@ -43,6 +44,7 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.config.constants import GROUP_MEMBER_KEYS
 from music_assistant.controllers.players.matching import (
     DeviceIdentity,
     has_hardware_mac,
@@ -421,6 +423,125 @@ class ProtocolLinkingMixin:
                 )
         return parts
 
+    def _merged_identity(self, player_id: str) -> DeviceIdentity:
+        """
+        Return what the protocols of a player report about its device, as one identity.
+
+        :param player_id: Id of the player.
+        """
+        parts = self._identity_parts(player_id)
+        return DeviceIdentity(
+            identifiers=frozenset().union(*(part.identifiers for part in parts)),
+            domains=frozenset().union(*(part.domains for part in parts)),
+            native=any(part.native for part in parts),
+        )
+
+    def _check_merge(self, keep_id: str, absorb_id: str) -> None:
+        """
+        Check that one player can take over the protocols of another by the attach rules.
+
+        :param keep_id: Id of the player that stays.
+        :param absorb_id: Id of the player that goes.
+        :raises InvalidDataError: When a player does not exist, or both ids are the same.
+        :raises InvalidCommand: When the two can not be one player.
+        """
+        if keep_id == absorb_id:
+            msg = f"Player {keep_id} can not be merged into itself"
+            raise InvalidDataError(msg)
+        names = [self._stored_player_name(player_id) for player_id in (keep_id, absorb_id)]
+        for player_id, name in zip((keep_id, absorb_id), names, strict=True):
+            player = self._players.get(player_id)
+            stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+            values = stored.get("values") if isinstance(stored, dict) else None
+            if (player and player.session_only) or (
+                isinstance(values, dict) and values.get(CONF_SESSION_ONLY)
+            ):
+                msg = f"{name} only exists while it is connected and can not be merged"
+                self._raise_merge_refused(msg, "merge_session_only", name)
+            if not isinstance(stored, dict):
+                msg = f"No player with id {player_id}"
+                raise InvalidDataError(msg)
+            if player_id in self._removing:
+                msg = f"{name} is being removed"
+                raise InvalidCommand(msg)
+            player_type = player.type if player else stored.get("player_type")
+            if player_type == PlayerType.GROUP or ProtocolRole.VIRTUAL in self._roles_of(player_id):
+                msg = f"{name} is a group and can not be merged"
+                self._raise_merge_refused(msg, "merge_group", name)
+        if not self._roles_of(keep_id).isdisjoint(OWN_PROTOCOL_ROLES) and not self._roles_of(
+            absorb_id
+        ).isdisjoint(OWN_PROTOCOL_ROLES):
+            msg = f"{names[0]} and {names[1]} each stand for a device of their own"
+            self._raise_merge_refused(msg, "merge_two_own_protocols", *names)
+        if shared := self._domains_of(keep_id) & self._domains_of(absorb_id):
+            domain = min(shared)
+            with suppress(KeyError):
+                domain = self.mass.get_provider_manifest(domain).name
+            msg = f"{names[0]} and {names[1]} both have a {domain} output"
+            self._raise_merge_refused(msg, "merge_shared_domain", *names, domain)
+        if vetoes_device(self._merged_identity(absorb_id), self._identity_parts(keep_id)):
+            msg = f"{names[0]} and {names[1]} report different devices"
+            self._raise_merge_refused(msg, "merge_identifiers_differ", *names)
+
+    def _raise_merge_refused(self, msg: str, translation_key: str, *args: str) -> None:
+        """
+        Raise the error of a merge the attach rules do not allow.
+
+        :param msg: What stands in the way.
+        :param translation_key: Key of the translated message.
+        :param args: The arguments of the translated message.
+        """
+        raise InvalidCommand(
+            msg,
+            translation_key=translation_key,
+            translation_owner=self.translation_owner,
+            translation_args=list(args),
+        )
+
+    def _roles_of(self, player_id: str) -> set[ProtocolRole]:
+        """
+        Return the roles of the protocols of a player, attached or not.
+
+        :param player_id: Id of the player.
+        """
+        player = self._players.get(player_id)
+        roles: set[ProtocolRole] = set()
+        for protocol_id in self._get_protocol_ids(player_id):
+            if player and (role := player.get_role(protocol_id)):
+                roles.add(role)
+            elif (record := self.mass.config.get_protocol_record(protocol_id)) and (
+                stored_role := record.get("role")
+            ):
+                roles.add(ProtocolRole(stored_role))
+        return roles
+
+    def _domains_of(self, player_id: str) -> set[str]:
+        """
+        Return the domains of the protocols of a player, attached or not.
+
+        :param player_id: Id of the player.
+        """
+        domains: set[str] = set()
+        for protocol_id in self._get_protocol_ids(player_id):
+            if protocol := self._protocols.get(protocol_id):
+                domains.add(protocol.provider.domain)
+            elif record := self.mass.config.get_protocol_record(protocol_id):
+                domains.add(str(record.get("provider") or "").split("--", maxsplit=1)[0])
+        return domains
+
+    def _stored_player_name(self, player_id: str) -> str:
+        """
+        Return the name of a player, also of one that is not live.
+
+        :param player_id: Id of the player.
+        """
+        if player := self._players.get(player_id):
+            return player.display_name
+        stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        if isinstance(stored, dict):
+            return str(stored.get("name") or stored.get("default_name") or player_id)
+        return player_id
+
     def _awaits_identity(self, protocol: PlayerProtocol) -> bool:
         """
         Return whether a protocol that matches no player has to wait before it gets its own.
@@ -651,17 +772,19 @@ class ProtocolLinkingMixin:
             else:
                 config.set_player_value(player_id, key, replacement_id)
 
-    def _update_group_memberships(self, player_id: str) -> None:
+    def _update_group_memberships(self, player_id: str, replacement_id: str | None = None) -> None:
         """
-        Drop a removed player from the groups that list it as a member.
+        Drop a removed player from the groups that list it, or let them name its replacement.
 
-        The player is gone for good, so it must not linger in a group and pull a device
-        that returns under the same id back in. Its allow-list entry is left alone, since
-        an allow-list that runs empty stops restricting at all.
+        A removed player is gone for good, so it must not linger in a group and pull a
+        device that returns under the same id back in. Its allow-list entry is left alone,
+        since an allow-list that runs empty stops restricting at all. A player that is
+        merged into another one is replaced by it in both lists.
         Updates the persisted config and keeps any attached group whose membership
         changed in sync.
 
         :param player_id: Player id that is being removed.
+        :param replacement_id: Id of the player it is merged into, None for a removal.
         """
         all_protocol_configs = self.mass.config.get(CONF_PLAYER_PROTOCOLS, {})
         if not isinstance(all_protocol_configs, dict):
@@ -672,14 +795,29 @@ class ProtocolLinkingMixin:
             other_values = other_cfg.get("values")
             if not isinstance(other_values, dict):
                 continue
-            members = other_values.get(CONF_GROUP_MEMBERS)
-            if not isinstance(members, list) or player_id not in members:
-                continue
-            # its entry in an allow-list of a group stays: a list that runs empty reads as
-            # "everyone may join", and a removed player can never join again anyway
-            new_members = [member_id for member_id in members if member_id != player_id]
-            self.mass.config.set_protocol_value(other_id, CONF_GROUP_MEMBERS, new_members)
-            if group_protocol := self._protocols.get(other_id):
+            changed = False
+            for key in GROUP_MEMBER_KEYS:
+                members = other_values.get(key)
+                if not isinstance(members, list) or player_id not in members:
+                    continue
+                if replacement_id is None and key != CONF_GROUP_MEMBERS:
+                    # its entry in an allow-list of a group stays: a list that runs empty
+                    # reads as "everyone may join", and a removed player can never join
+                    # again anyway
+                    continue
+                new_members = list(
+                    dict.fromkeys(
+                        [
+                            replacement_id if member_id == player_id else member_id
+                            for member_id in members
+                        ]
+                        if replacement_id
+                        else [member_id for member_id in members if member_id != player_id]
+                    )
+                )
+                self.mass.config.set_protocol_value(other_id, key, new_members)
+                changed = True
+            if changed and (group_protocol := self._protocols.get(other_id)):
                 self.mass.create_task(self._reload_group_members(group_protocol))
 
     async def _reload_group_members(self, protocol: PlayerProtocol) -> None:

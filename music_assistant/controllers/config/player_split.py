@@ -29,26 +29,22 @@ from typing import Any
 from music_assistant_models.enums import PlayerType, ProtocolRole
 
 from music_assistant.constants import (
-    CONF_CACHED_ARP_MAC,
     CONF_CREATED_AT,
     CONF_DEVICE_IDENTIFIERS,
-    CONF_DEVICE_INFO,
-    CONF_GROUP_MEMBERS,
-    CONF_LAST_SEEN,
-    CONF_LEGACY_IDS,
     CONF_PLAYER_DSP,
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYER_SPLIT_SESSION_ONLY,
     CONF_PLAYER_SPLIT_TREE,
     CONF_PLAYERS,
-    CONF_PROTOCOL_EXPERIMENTAL_NOTE,
-    CONF_REPORTED_MAC,
     CONF_SESSION_ONLY,
-    CONF_UNDERLYING_PLAYER_ID,
     PROTOCOL_PRIORITY,
 )
-from music_assistant.controllers.config.constants import PLAYER_VALUE_KEYS
+from music_assistant.controllers.config.constants import (
+    AUTOMATIC_VALUE_KEYS,
+    GROUP_MEMBER_KEYS,
+    PLAYER_VALUE_KEYS,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,31 +62,9 @@ LEGACY_UNIVERSAL_PLAYER = "universal_player"
 # the domains whose players are no device: their protocol has the virtual role
 VIRTUAL_DOMAINS = frozenset({"sync_group", "universal_group"})
 
-# the lists of player ids a group stores: its members and the players it allows as one
-GROUP_MEMBER_KEYS = (CONF_GROUP_MEMBERS, "allowed_members")
-
 # values the server or a provider stores by itself, which do not make a record one the
 # user customised
-AUTOMATIC_KEYS = frozenset(
-    {
-        CONF_CACHED_ARP_MAC,
-        CONF_REPORTED_MAC,
-        LEGACY_LINKED_PROTOCOL_IDS,
-        LEGACY_PROTOCOL_PARENT_ID,
-        CONF_CREATED_AT,
-        CONF_DEVICE_IDENTIFIERS,
-        CONF_DEVICE_INFO,
-        CONF_LAST_SEEN,
-        CONF_LEGACY_IDS,
-        CONF_SESSION_ONLY,
-        "sendspin_static_delay",
-        "sendspin_opt_out_pending",
-        "sendspin_unsupported",
-        "stored_volume",
-        CONF_PROTOCOL_EXPERIMENTAL_NOTE,
-        CONF_UNDERLYING_PLAYER_ID,
-    }
-)
+AUTOMATIC_KEYS = AUTOMATIC_VALUE_KEYS | {LEGACY_LINKED_PROTOCOL_IDS, LEGACY_PROTOCOL_PARENT_ID}
 
 
 def needs_player_split(data: dict[str, Any]) -> bool:
