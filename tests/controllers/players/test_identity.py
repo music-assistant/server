@@ -678,6 +678,13 @@ async def test_session_only_session_of_a_client_of_a_device_leaves_its_link_alon
     assert [player.player_id for player in scenario.visible_players()] == [player_id]
 
 
+def _playable(scenario: Scenario, player_id: str) -> bool:
+    """Return whether every protocol a player lists can play."""
+    state = scenario.player(player_id)
+    assert state is not None
+    return all(info.available for info in state.protocols)
+
+
 async def _web_session_of_a_device_client(
     scenario: Scenario, carrier_domain: str = "sonos"
 ) -> tuple[str, FakeProtocol]:
@@ -762,10 +769,12 @@ async def test_switch_of_the_output_a_stale_record_lists_leaves_the_web_player_a
     if stored == "switched_off_live":
         assert scenario.player_of(web) == "sendspin_kitchen"
         assert scenario.events(*PLAYER_EVENTS) == []
+        assert _playable(scenario, "sendspin_kitchen")
         await scenario.detach(web)
     await scenario.attach(web)
 
     assert scenario.player_of(web) == "sendspin_kitchen"
+    assert _playable(scenario, "sendspin_kitchen")
 
 
 @pytest.mark.parametrize("web_client", ["connected", "gone"])

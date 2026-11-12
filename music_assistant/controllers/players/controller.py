@@ -2574,7 +2574,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player.set_config(await self.mass.config.get_player_object_config(player))
         if (own := player.own_protocol) is not None:
             # the settings of its own protocol are part of the config of the player
-            own.set_config(await self.mass.config.get_protocol_config(own))
+            own.set_config(await self._get_protocol_config(own))
             await own.on_config_updated()
         player.update_state()
         await self._restart_playback_after_config_change(
@@ -2613,7 +2613,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 return
         if protocol is None or (player := protocol.player) is None:
             return
-        config = await self.mass.config.get_protocol_config(protocol)
+        config = await self._get_protocol_config(protocol)
         protocol.set_config(config)
         await protocol.on_config_updated()
         player.update_state()
@@ -2862,7 +2862,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self._protocols[protocol_id] = protocol
         player.add_protocol(protocol, protocol.role)
         protocol.set_player(player)
-        protocol.set_config(await self.mass.config.get_protocol_config(protocol))
+        protocol.set_config(await self._get_protocol_config(protocol))
         # call hooks after the protocol is bound and its config is set
         if not self._attach_aborted(protocol, attach):
             await protocol.on_config_updated()
@@ -2977,6 +2977,19 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             handle.cancel()
         if protocol.player is None and self._protocols.get(protocol_id) is protocol:
             del self._protocols[protocol_id]
+
+    async def _get_protocol_config(self, protocol: PlayerProtocol) -> PlayerConfig:
+        """
+        Return the config of a protocol, switched on or off as it applies to the protocol.
+
+        :param protocol: The protocol object, attached to its player.
+        """
+        config = await self.mass.config.get_protocol_config(protocol)
+        record = self.mass.config.get_protocol_record(protocol.protocol_id) or {}
+        if not self._link_applies(protocol, record.get("player_id")):
+            # the switch of an output that another player lists is that player's business
+            config.enabled = True
+        return config
 
     def _wants_protocol(self, protocol_id: str, protocol: PlayerProtocol | None) -> bool:
         """
