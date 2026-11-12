@@ -139,6 +139,14 @@ async def test_native_device_attaches_as_available_player(scenario: Scenario) ->
 Take player ids from the observations rather than from the protocol ids: a new player gets an
 id of its own.
 
+## The scenarios document
+
+Every scenario is written out in plain words in the players controller's
+[SCENARIOS.md](../../music_assistant/controllers/players/SCENARIOS.md). A new test goes into exactly
+one entry there: the entry whose rule it proves, or a new entry. A renamed test is renamed there
+too. `tests/controllers/players/test_scenarios_document.py` fails when a test is named by no entry
+or by two, or when an entry names a test that does not exist.
+
 ## One xfail marker per phase
 
 A scenario states one behaviour. When it asserts today's behaviour that the target changes, its
