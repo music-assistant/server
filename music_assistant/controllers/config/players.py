@@ -789,14 +789,28 @@ class PlayerConfigMixin:
             return await self._save_player_config(player_id, values)
         # the first save of a player that only exists while its device is connected
         # stores its config, of which nothing may be left when the save is rejected
-        protocol_ids = self._promote_session_player(player_id)
+        previous = self._promote_session_player(player_id)
         try:
-            return await self._save_player_config(player_id, values)
+            saved = await self._save_player_config(player_id, values)
         except Exception:
             self.remove(f"{CONF_PLAYERS}/{player_id}")
-            for protocol_id in protocol_ids:
-                self.remove_protocol_record(protocol_id)
+            for protocol_id, record in previous.items():
+                if record is None:
+                    self.remove_protocol_record(protocol_id)
+                else:
+                    self.set(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", record)
             raise
+        for protocol_id, record in previous.items():
+            if (
+                record
+                and (other_id := record.get("player_id"))
+                and other_id != player_id
+                and (other := self.mass.players.get_player(other_id))
+            ):
+                # the config of the protocol names this player now, no longer the other one
+                other.protocol_ids.discard(protocol_id)
+                other.refresh_state()
+        return saved
 
     async def save_protocol_config(
         self, protocol_id: str, values: dict[str, ConfigValueType]
@@ -1052,13 +1066,13 @@ class PlayerConfigMixin:
             "setup_data": deepcopy(setup_data) if isinstance(setup_data, dict) else {},
         }
 
-    def _promote_session_player(self, player_id: str) -> list[str]:
+    def _promote_session_player(self, player_id: str) -> dict[str, dict[str, Any] | None]:
         """
         Store the config of a player that only existed while its device is connected.
 
         Its config is kept from now on, while the player itself still goes when its
-        device disconnects. Returns the ids of the protocols whose config was stored
-        with it.
+        device disconnects. Returns the config each protocol stored with it had before,
+        by protocol id: None for a protocol that had none.
 
         :param player_id: ID of the player, which has no stored config.
         :raises KeyError: If there is no such player.
@@ -1074,7 +1088,11 @@ class PlayerConfigMixin:
             default_name=player.name,
             values={CONF_SESSION_ONLY: True, CONF_CREATED_AT: time.time_ns()},
         )
+        previous: dict[str, dict[str, Any] | None] = {}
         for protocol in player.protocols.values():
+            previous[protocol.protocol_id] = deepcopy(
+                self.get_protocol_record(protocol.protocol_id)
+            )
             in_memory = protocol.config.to_raw()
             self.set(
                 f"{CONF_PLAYER_PROTOCOLS}/{protocol.protocol_id}",
@@ -1090,7 +1108,7 @@ class PlayerConfigMixin:
                 },
             )
         player.protocol_ids.update(player.protocols)
-        return list(player.protocols)
+        return previous
 
     def _get_stored_value(
         self, conf_key: str, key: str, default: ConfigValueType

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
@@ -15,6 +16,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProtocolRole,
 )
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
     CONF_CACHED_ARP_MAC,
@@ -22,6 +24,8 @@ from music_assistant.constants import (
     CONF_ENABLED,
     CONF_HIDE_IN_UI,
     CONF_LAST_SEEN,
+    CONF_MAX_VOLUME,
+    CONF_MIN_VOLUME,
     CONF_OUTPUT_CHANNELS,
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYERS,
@@ -49,6 +53,7 @@ PROTOCOL_ID = "protocol_1"
 PROVIDER = "test_instance"
 # an entry the protocol object of a player declares
 PROTOCOL_SETTING = "protocol_setting"
+KITCHEN = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"}
 
 
 @pytest.fixture
@@ -409,3 +414,93 @@ async def test_saving_a_player_kept_without_protocols_keeps_its_default_name(
 
     stored = scenario.mass.config.get(f"{CONF_PLAYERS}/up0001")
     assert (stored["name"], stored["default_name"]) == ("Study", "Den TV")
+
+
+async def _session_of_a_device_client(scenario: Scenario) -> str:  # noqa: F811
+    """
+    Connect a client of a device as a player of its own, while its config names the device.
+
+    Returns the id of the player of the device.
+    """
+    sonos = await scenario.add_provider("sonos")
+    sendspin = await scenario.add_provider("sendspin")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    await scenario.attach(native)
+    player_id = scenario.single_player(native).player_id
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(client)
+    assert scenario.player_of(client) == player_id
+    await scenario.detach(client)
+    session = sendspin.protocol("sendspin_kitchen", "Kitchen", role="native", session_only=True)
+    await scenario.attach(session)
+    assert scenario.player_of(session) == "sendspin_kitchen"
+    return player_id
+
+
+def _listed_protocols(scenario: Scenario, player_id: str) -> list[str]:  # noqa: F811
+    """Return the ids of the protocols a player lists."""
+    state = scenario.player(player_id)
+    assert state is not None
+    return [info.protocol_id for info in state.protocols]
+
+
+async def test_customised_session_only_player_takes_its_protocol_config_from_the_device(
+    scenario: Scenario,  # noqa: F811
+) -> None:
+    """
+    The first save of a web player moves the config of its protocol from the device to it.
+
+    The player of the device stops listing the protocol at once. When the client connects as
+    an output of the device again, it is found by the identifiers of the device.
+    """
+    player_id = await _session_of_a_device_client(scenario)
+    assert _listed_protocols(scenario, player_id) == ["RINCON_KITCHEN", "sendspin_kitchen"]
+
+    await scenario.configure_player("sendspin_kitchen", name="Kitchen browser")
+
+    config = scenario.mass.config
+    assert config.get(f"{CONF_PLAYERS}/sendspin_kitchen/name") == "Kitchen browser"
+    assert (config.get_protocol_record("sendspin_kitchen") or {}).get("player_id") == (
+        "sendspin_kitchen"
+    )
+    assert _listed_protocols(scenario, player_id) == ["RINCON_KITCHEN"]
+
+    session = scenario.protocol("sendspin_kitchen")
+    await scenario.detach(session)
+    client = scenario.provider("sendspin").protocol(
+        "sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN
+    )
+    await scenario.attach(client)
+    await scenario.idle()
+
+    assert scenario.player_of(client) == player_id
+    assert _listed_protocols(scenario, player_id) == ["RINCON_KITCHEN", "sendspin_kitchen"]
+
+
+async def test_rejected_first_save_of_a_session_only_player_leaves_the_config_of_the_device(
+    scenario: Scenario,  # noqa: F811
+) -> None:
+    """A web player whose first save is refused leaves the config its protocol had untouched."""
+    player_id = await _session_of_a_device_client(scenario)
+    config = scenario.mass.config
+    stored = deepcopy(config.get(CONF_PLAYER_PROTOCOLS))
+    stored_players = deepcopy(config.get(CONF_PLAYERS))
+
+    with pytest.raises(InvalidDataError):
+        await config.save_player_config(
+            "sendspin_kitchen", {CONF_MIN_VOLUME: 80, CONF_MAX_VOLUME: 20}
+        )
+    await scenario.settle()
+
+    assert config.get(CONF_PLAYER_PROTOCOLS) == stored
+    assert config.get(CONF_PLAYERS) == stored_players
+    assert _listed_protocols(scenario, player_id) == ["RINCON_KITCHEN", "sendspin_kitchen"]
+
+    await scenario.detach(scenario.protocol("sendspin_kitchen"))
+    client = scenario.provider("sendspin").protocol(
+        "sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN
+    )
+    await scenario.attach(client)
+    await scenario.idle()
+
+    assert scenario.player_of(client) == player_id
