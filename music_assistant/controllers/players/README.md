@@ -336,6 +336,12 @@ config it stored for it. A failing attach is rolled back the same way.
 Disabling a player detaches its protocols and announces it as removed; its config stays. Enabling
 it creates it from its record and lets its providers look for its devices.
 
+`PLAYER_REMOVED` says whether the player is removed for good (`data={"permanent": True}`, read
+with `helpers.player.player_removed_for_good`): after `remove`, and for the player that goes in a
+merge. A disabled player and a player that only exists while connected whose client disconnected
+are gone for now: they come back with the same id and their saved queue, so a subscriber keeps
+what it stores about them.
+
 ### Startup
 
 1. The config controller loads the settings and runs the migrations, the player split last.

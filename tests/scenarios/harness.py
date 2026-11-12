@@ -414,6 +414,7 @@ class Scenario:
         self._tmp_path = tmp_path
         self._clock = _VirtualClock()
         self._events: list[Event] = []
+        self._removals: list[tuple[str | None, Any]] = []
         self._unsubscribe: Callable[[], None] | None = None
         self._devices: dict[str, _Device] = {}
         self._power_controls: dict[str, FakePowerControl] = {}
@@ -922,9 +923,18 @@ class Scenario:
             result.append(event)
         return result
 
+    def removals(self) -> list[tuple[str | None, Any]]:
+        """
+        Return the player id and the data of every PLAYER_REMOVED event, in order.
+
+        Since the start or the last clear_events(), the events of each boot included.
+        """
+        return list(self._removals)
+
     def clear_events(self) -> None:
         """Forget the events emitted so far."""
         self._events.clear()
+        self._removals.clear()
 
     @property
     def _settings_file(self) -> pathlib.Path:
@@ -1044,6 +1054,8 @@ class Scenario:
     def _on_event(self, event: MassEvent) -> None:
         """Capture an event the server emitted."""
         self._events.append(Event(event.event, event.object_id))
+        if event.event == EventType.PLAYER_REMOVED:
+            self._removals.append((event.object_id, event.data))
 
     def _visible(self, state: PlayerState) -> VisiblePlayer:
         """Return the visible record of a player state."""

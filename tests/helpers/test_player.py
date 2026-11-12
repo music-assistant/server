@@ -9,7 +9,11 @@ from unittest.mock import MagicMock
 from music_assistant_models.enums import EventType
 from music_assistant_models.event import MassEvent
 
-from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
+from music_assistant.helpers.player import (
+    PlayerAvailabilityTracker,
+    get_available_player,
+    player_removed_for_good,
+)
 
 
 def _make_mass(players: dict[str, bool]) -> Any:
@@ -110,3 +114,12 @@ def test_tracker_ignores_an_event_without_player() -> None:
     tracker = PlayerAvailabilityTracker(mass)
 
     assert not tracker.became_available(_event(EventType.PLAYER_ADDED, player_id=None))
+
+
+def test_player_removed_for_good_reads_the_removal_of_the_event() -> None:
+    """A removal for good reads as such, a player that is only gone for now does not."""
+    for_good = MassEvent(EventType.PLAYER_REMOVED, "p1", data={"permanent": True})
+    for_now = MassEvent(EventType.PLAYER_REMOVED, "p1", data={"permanent": False})
+
+    assert player_removed_for_good(for_good)
+    assert not player_removed_for_good(for_now)

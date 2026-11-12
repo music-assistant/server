@@ -272,6 +272,93 @@ async def test_session_only_player_has_the_same_id_in_every_session(scenario: Sc
     )
 
 
+async def test_a_disabled_player_is_gone_for_now_and_comes_back_with_its_id(
+    scenario: Scenario,
+) -> None:
+    """Disabling a player removes it for now: enabling it brings it back under the same id."""
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    scenario.clear_events()
+
+    await scenario.disable(player_id)
+    await scenario.enable(player_id)
+    await scenario.idle()
+
+    assert scenario.removals() == [(player_id, {"permanent": False})]
+    assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
+        Event(EventType.PLAYER_REMOVED, player_id),
+        Event(EventType.PLAYER_ADDED, player_id),
+    ]
+
+
+@pytest.mark.parametrize("customised", [False, True], ids=["uncustomised", "customised"])
+async def test_a_session_only_player_whose_client_disconnects_is_gone_for_now(
+    scenario: Scenario, customised: bool
+) -> None:
+    """
+    A web player whose client disconnects is removed for now: it returns under the same id.
+
+    Also when nothing of it is stored, as it was never customised.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+    if customised:
+        await scenario.configure_player("sendspin_web_3f2a", name="Study browser")
+    scenario.clear_events()
+
+    await scenario.detach(browser)
+    await scenario.attach(browser)
+    await scenario.idle()
+
+    assert scenario.removals() == [("sendspin_web_3f2a", {"permanent": False})]
+    assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
+        Event(EventType.PLAYER_REMOVED, "sendspin_web_3f2a"),
+        Event(EventType.PLAYER_ADDED, "sendspin_web_3f2a"),
+    ]
+
+
+async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario) -> None:
+    """A removed player is announced as removed for good; its device comes back as a new player."""
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    scenario.clear_events()
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert scenario.removals() == [(player_id, {"permanent": True})]
+
+
+async def test_a_player_merged_into_another_one_is_removed_for_good(scenario: Scenario) -> None:
+    """The player that goes in a merge is announced as removed for good: its queue goes with it."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    tv_airplay = airplay.protocol(
+        "ap_tv", "Living TV", role="audio", identifiers={IdentifierType.AIRPLAY_ID: "C0:FF:EE:01"}
+    )
+    tv_cast = chromecast.protocol(
+        "cast_tv", "Living TV", role="audio", identifiers={IdentifierType.CAST_UUID: "6f0c1a2b"}
+    )
+    await scenario.attach(tv_airplay)
+    await scenario.advance(15)
+    await scenario.attach(tv_cast)
+    await scenario.advance(15)
+    await scenario.idle()
+    keep_id = scenario.single_player(tv_airplay).player_id
+    absorb_id = scenario.single_player(tv_cast).player_id
+    scenario.clear_events()
+
+    await scenario.mass.players.merge(absorb_id, keep_id)
+    await scenario.idle()
+
+    assert scenario.removals() == [(absorb_id, {"permanent": True})]
+
+
 # the stored config of a web player as written before the split, where every player was stored
 PRE_SPLIT_WEB_PLAYER: dict[str, Any] = {
     "player_id": "sendspin_web_3f2a",
