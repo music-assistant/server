@@ -203,3 +203,22 @@ async def test_instance_plays_on_the_player_the_stored_one_was_merged_into() -> 
         await provider._setup_player_instance()
 
     assert instance.call_args.kwargs["ma_player_id"] == "player2"
+    assert provider._instance_player_id == "player2"
+
+
+async def test_plex_connect_follows_its_player_through_a_chain_of_merges() -> None:
+    """The instance moves on when the player it went into is merged into a third one."""
+    legacy_ids: dict[str, str] = {}
+    players = {PLAYER_ID: _make_player(available=True)}
+    provider = _make_provider(players, legacy_ids=legacy_ids)
+    await provider.handle_async_init()
+    restart = provider._restart_player_instance = AsyncMock()
+    legacy_ids[PLAYER_ID] = "player2"
+    provider._on_mass_player_event(_event(EventType.PLAYER_REMOVED))
+    # the instance runs on the player the configured one went into
+    provider._instance_player_id = "player2"
+
+    legacy_ids.update({PLAYER_ID: "player3", "player2": "player3"})
+    provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="player2"))
+
+    assert restart.call_count == 2

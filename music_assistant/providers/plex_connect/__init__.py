@@ -99,6 +99,8 @@ class PlexConnectProvider(PluginProvider):
 
         self._plex_provider: PlexProvider | None = None
         self._player_instance: PlayerRemoteInstance | None = None
+        # the player the instance was set up for, which a later merge may take in
+        self._instance_player_id: str | None = None
         self._allocated_port: int | None = None
         self._plextv_pin: PlexPin | None = None
         self._plextv_device_id: str | None = None
@@ -515,6 +517,7 @@ class PlexConnectProvider(PluginProvider):
         player_name = self.custom_player_name or player.display_name
 
         # Create remote control instance
+        self._instance_player_id = player.player_id
         self._player_instance = PlayerRemoteInstance(
             plex_provider=self._plex_provider,
             ma_player_id=player.player_id,
@@ -557,7 +560,7 @@ class PlexConnectProvider(PluginProvider):
         :param event: The event that occurred.
         """
         player_id = self._player_id
-        if event.object_id not in (self.mass_player_id, player_id):
+        if event.object_id not in (self.mass_player_id, player_id, self._instance_player_id):
             return
 
         # a removal passes the tracker too, so the player's return is recognized
