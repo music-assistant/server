@@ -1179,3 +1179,18 @@ def test_t9_d10_the_common_output_can_be_the_leaders_own_protocol() -> None:
     world.player("b", "sonos_b")
     plan = _all_plans(world, ChangeKind.MEMBERS, "a", ("b",))
     assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
+
+
+def test_h9_the_old_members_leave_out_the_protocol_unknown_ids_and_the_leader() -> None:
+    """H9: the frozen old members skip the protocol itself, unknown ids and the leader."""
+    world, progress = _joined(PLAYING)
+    world.protocols["airplay_l"] = replace(
+        world.protocols["airplay_l"],
+        group_members=("airplay_l", "ghost", "sendspin_l", "airplay_x"),
+    )
+    leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
+    world.players["l"] = replace(world.players["l"], active_output="sendspin_l")
+    stop = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=leader.progress)
+    assert stop.progress is not None
+    assert stop.progress.join is not None
+    assert stop.progress.join.old_members == (("airplay_x", "x"),)
