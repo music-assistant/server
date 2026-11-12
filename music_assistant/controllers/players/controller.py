@@ -3405,27 +3405,29 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
     async def _merge_players(self, keep_id: str, absorb_id: str) -> None:
         """
-        Merge a player into another one, as the attach rules allow it.
+        Merge a player into another one, right after the attach rules allowed it.
 
-        What is stored changes in one step, without an await, so it is saved as a whole; the
-        protocols of the absorbed player then attach to the kept one. One that fails to
-        attach again is logged, and attaches to the kept player when its provider finds it
-        again.
+        Called under the attach lock. What is stored changes before the first await and is
+        saved before anything else of the absorbed player is deleted; the user filters follow
+        once its removal went out, so a user limited to it still learns that it went. A
+        protocol that fails to attach again, or that its provider detached meanwhile,
+        attaches to the kept player when its provider finds it again.
 
         :param keep_id: Id of the player that stays.
         :param absorb_id: Id of the player that goes.
         """
-        absorbed = self._players.get(absorb_id)
         protocol_ids = set(self.mass.config.get_protocol_ids_of_player(absorb_id))
-        if absorbed is not None:
+        if absorbed := self._players.get(absorb_id):
             protocol_ids.update(absorbed.protocol_ids)
-        attached = [
-            protocol
-            for protocol_id in protocol_ids
-            if (protocol := self._protocols.get(protocol_id))
-            and absorbed is not None
-            and protocol.player is absorbed
-        ]
+        self.logger.info(
+            "Merging player %s into %s",
+            self._stored_player_name(absorb_id),
+            self._stored_player_name(keep_id),
+        )
+        self._merge_player_config(keep_id, absorb_id, protocol_ids)
+        await self.mass.config.async_save()
+        absorbed = self._players.get(absorb_id)
+        moving = list(absorbed.protocols.values()) if absorbed is not None else []
         # a protocol that plays for the absorbed player, e.g. in a group, plays on for the kept one
         playing_through = (
             absorbed.resolve_output_protocol()
@@ -3435,27 +3437,31 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # the providers of the protocols that are not attached look for their devices again
         provider_ids = {
             str(record.get("provider"))
-            for protocol_id in protocol_ids - {protocol.protocol_id for protocol in attached}
+            for protocol_id in protocol_ids - {protocol.protocol_id for protocol in moving}
             if (record := self.mass.config.get_protocol_record(protocol_id))
         }
-        self.logger.info(
-            "Merging player %s into %s",
-            self._stored_player_name(absorb_id),
-            self._stored_player_name(keep_id),
-        )
-        # a user restricted to the absorbed player keeps its device
-        await self.mass.webserver.auth.replace_player_in_user_filters(
-            absorb_id, keep_id, removed_player_ids=[absorb_id]
-        )
-        self._merge_player_config(keep_id, absorb_id, protocol_ids)
-        for protocol in attached:
-            self._attaching.pop(protocol.protocol_id, None)
-            await self._unbind(protocol)
+        # a moving protocol is attaching: a detach by its provider meanwhile takes this away
+        moves = {protocol.protocol_id: _Attach() for protocol in moving}
+        self._attaching.update(moves)
+        for protocol in moving:
+            if protocol.player is absorbed:
+                await self._unbind(protocol)
         if absorbed is not None:
             await self._drop_player(absorbed, permanent=True)
         else:
             self.mass.player_queues.purge_saved_queue(absorb_id)
-        for protocol in attached:
+        try:
+            await self.mass.webserver.auth.replace_player_in_user_filters(
+                absorb_id, keep_id, removed_player_ids=[absorb_id]
+            )
+        except Exception:
+            self.logger.exception("Could not move the user filters of %s", absorb_id)
+        for protocol in moving:
+            if self._attaching.get(protocol.protocol_id) is not moves[protocol.protocol_id]:
+                # its provider detached it while it moved, and keeps the object
+                if not protocol.provider.unloading:
+                    self._unattached[protocol.protocol_id] = protocol
+                continue
             try:
                 await self._run_attach(protocol)
             except Exception:

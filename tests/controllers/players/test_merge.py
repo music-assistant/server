@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import pathlib
 from typing import TYPE_CHECKING, Any, NamedTuple
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -25,6 +28,7 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidDataError,
 )
+from music_assistant_models.event import MassEvent
 
 from music_assistant.constants import (
     CONF_CREATED_AT,
@@ -999,3 +1003,172 @@ async def test_queue_is_transferred_by_the_id_of_a_merged_player(scenario: Scena
     kept_queue = scenario.queue(tv.older_id)
     assert kept_queue is not None
     assert kept_queue.state == PlaybackState.PLAYING
+
+
+async def test_merge_and_a_removal_of_the_kept_player_leave_no_partial_player(
+    scenario: Scenario,
+) -> None:
+    """A removal of the kept player that runs while the merge saves removes the merged player."""
+    tv = await _two_players_for_one_tv(scenario)
+    players = scenario.mass.players
+
+    merge = asyncio.create_task(players.merge_players(tv.older_id, tv.younger_id))
+    removal = asyncio.create_task(players.remove(tv.older_id))
+    await scenario.settle()
+    await merge
+    await removal
+    await scenario.advance(20)
+    await scenario.idle()
+
+    stored = scenario.mass.config.get(CONF_PLAYERS, {})
+    assert tv.older_id not in stored
+    assert tv.younger_id not in stored
+    # every stored player is a whole one: the devices that are still there came back as new
+    assert all(CONF_CREATED_AT in record["values"] for record in stored.values())
+    assert {scenario.player_of(tv.airplay), scenario.player_of(tv.cast)}.isdisjoint(
+        {tv.older_id, tv.younger_id, None}
+    )
+
+
+async def test_a_protocol_its_provider_detaches_during_the_merge_is_not_attached_again(
+    scenario: Scenario,
+) -> None:
+    """A device that goes while the merge saves stays detached, on the kept player."""
+    tv = await _two_players_for_one_tv(scenario)
+    players = scenario.mass.players
+    scenario.set_present("cast_tv", False)
+
+    merge = asyncio.create_task(players.merge_players(tv.older_id, tv.younger_id))
+    detach = asyncio.create_task(players.detach("cast_tv"))
+    await scenario.settle()
+    await merge
+    await detach
+    await scenario.idle()
+
+    assert scenario.player_of(tv.cast) is None
+    assert [player.outputs for player in scenario.players_carrying(tv.cast)] == [
+        (("airplay", True), ("chromecast", False))
+    ]
+
+
+async def test_a_protocol_detached_while_it_moves_is_not_attached_again(
+    scenario: Scenario,
+) -> None:
+    """A device that goes after it left the absorbed player is not put on the kept one."""
+    tv = await _two_players_for_one_tv(scenario)
+    auth = scenario.mass.webserver.auth
+    rewrite_filters = auth.replace_player_in_user_filters
+    scenario.set_present("cast_tv", False)
+
+    async def detach_then_rewrite(*args: Any, **kwargs: Any) -> None:
+        await scenario.mass.players.detach("cast_tv")
+        await rewrite_filters(*args, **kwargs)
+
+    with patch.object(auth, "replace_player_in_user_filters", new=detach_then_rewrite):
+        await _merge(scenario, tv.older_id, tv.younger_id)
+
+    assert scenario.player_of(tv.cast) is None
+    await scenario.attach(tv.cast)
+    assert scenario.player_of(tv.cast) == tv.older_id
+
+
+async def test_merge_is_stored_before_the_queue_of_the_absorbed_player_is_deleted(
+    scenario: Scenario,
+) -> None:
+    """When the saved queue of the absorbed player goes, the settings file holds the merge."""
+    tv = await _two_players_for_one_tv(scenario)
+    await scenario.play(tv.younger_id)
+    assert await scenario.saved_queue(tv.younger_id)
+    await scenario.mass.config.async_save()
+    cache = scenario.mass.cache
+    delete = cache.delete
+    # whether the settings file still held the absorbed player, at each delete of its queue
+    stored_at_delete: list[bool] = []
+
+    async def record_and_delete(key: str, *args: Any, **kwargs: Any) -> None:
+        if key == tv.younger_id:
+            on_disk = json.loads(pathlib.Path(scenario.mass.config.filename).read_text())
+            stored_at_delete.append(tv.younger_id in on_disk.get(CONF_PLAYERS, {}))
+        await delete(key, *args, **kwargs)
+
+    with patch.object(cache, "delete", new=record_and_delete):
+        await _merge(scenario, tv.older_id, tv.younger_id)
+
+    assert stored_at_delete
+    assert not any(stored_at_delete)
+    assert await scenario.saved_queue(tv.younger_id) is None
+
+
+async def test_a_user_limited_to_the_absorbed_player_learns_that_it_went(
+    scenario: Scenario,
+) -> None:
+    """A client of a user limited to the absorbed player gets its removal, then the kept player."""
+    tv = await _two_players_for_one_tv(scenario)
+    user = await scenario.mass.webserver.auth.create_user(
+        username="guest", player_filter=[tv.younger_id]
+    )
+    request = make_mocked_request("GET", "/ws", app=web.Application())
+    client: Any = WebsocketClientHandler(scenario.mass.webserver, request)
+    client._authenticated_user = user
+    client._send_message_sync = MagicMock()
+    scenario.mass.webserver.register_websocket_client(client)
+    client._subscribe_to_events()
+
+    try:
+        await _merge(scenario, tv.older_id, tv.younger_id)
+    finally:
+        client._events_unsub_callback()
+        scenario.mass.webserver.unregister_websocket_client(client)
+
+    sent = [
+        (message.event, message.object_id)
+        for call in client._send_message_sync.call_args_list
+        if isinstance(message := call.args[0], MassEvent)
+    ]
+    removal = sent.index((EventType.PLAYER_REMOVED, tv.younger_id))
+    assert (EventType.PLAYER_UPDATED, tv.older_id) in sent[removal:]
+    assert client._authenticated_user.player_filter == [tv.older_id]
+
+
+async def test_merge_is_checked_again_once_the_playback_stopped(scenario: Scenario) -> None:
+    """A kept player removed while the absorbed one stops ends the merge before it changes anything."""
+    tv = await _two_players_for_one_tv(scenario)
+    await scenario.play(tv.younger_id)
+    queues = scenario.mass.player_queues
+    stop = queues.stop
+
+    async def stop_and_remove_the_kept_player(queue_id: str) -> None:
+        await stop(queue_id)
+        await scenario.mass.players.remove(tv.older_id)
+
+    with (
+        patch.object(queues, "stop", new=stop_and_remove_the_kept_player),
+        pytest.raises(InvalidDataError),
+    ):
+        await scenario.mass.players.merge_players(tv.older_id, tv.younger_id)
+    await scenario.advance(20)
+    await scenario.idle()
+
+    assert await scenario.player_config(tv.younger_id) is not None
+    assert scenario.player_of(tv.cast) == tv.younger_id
+
+
+async def test_merge_and_a_removal_of_the_absorbed_player_announce_it_gone_once(
+    scenario: Scenario,
+) -> None:
+    """A removal of the absorbed player while the merge saves leaves one removal event."""
+    tv = await _two_players_for_one_tv(scenario)
+    players = scenario.mass.players
+    scenario.clear_events()
+
+    merge = asyncio.create_task(players.merge_players(tv.older_id, tv.younger_id))
+    removal = asyncio.create_task(players.remove(tv.younger_id))
+    await scenario.settle()
+    await merge
+    await removal
+    await scenario.advance(20)
+    await scenario.idle()
+
+    assert scenario.events(EventType.PLAYER_REMOVED, object_id=tv.younger_id) == [
+        Event(EventType.PLAYER_REMOVED, tv.younger_id)
+    ]

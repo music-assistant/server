@@ -132,7 +132,11 @@ dropped, and stopped first when it plays its own queue; what it plays for a grou
 plays on, for the kept player. The attach rules decide whether two players can be one: not when
 both have a protocol that stands for the device, or a protocol of the same domain, when a strong
 identifier of one rules the other out, and never for a group or a player that only exists while
-connected. What is stored changes in one step, so a merge is stored entirely or not at all.
+connected. What is stored changes in one step, right after that check, and is saved before
+anything else of the player that goes is deleted, so after a crash either both players are as
+they were or the merge is stored. The user filters are rewritten once the removal of the player
+that goes reached the users limited to it; a crash in between leaves such a user limited to an id
+that no player has anymore.
 
 Two players also merge by themselves: when a protocol attaches, or is attached again, and the
 identifiers of its player match another live player, while the attach rules allow it and the
