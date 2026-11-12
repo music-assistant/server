@@ -144,6 +144,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
+        listing_params: dict[str, Any] = {}
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -153,6 +154,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
             sort_field=field,
             sort_direction=direction,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
+            extra_query_parts=self.listing_filter(listing_params) or None,
+            extra_query_params=listing_params,
             played_only=played_only,
             in_library_only=True,
             summary=summary,
@@ -161,12 +164,13 @@ class PodcastsController(MediaControllerBase[Podcast]):
         )
         if search and len(result) < 25 and not offset:
             # append publisher items to result
-            extra_query_parts: list[str] = [
-                "WHERE podcasts.publisher LIKE :search",
-            ]
             extra_query_params: dict[str, Any] = {
                 "search": f"%{search}%",
             }
+            extra_query_parts: list[str] = [
+                "WHERE podcasts.publisher LIKE :search",
+                *self.listing_filter(extra_query_params),
+            ]
             return result + await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,

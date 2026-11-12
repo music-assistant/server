@@ -85,9 +85,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.provider_access import (
+    ensure_explicit_allowed,
     playback_sources,
     resolve_playback_user,
     resolve_playback_user_or_stand_in,
+    without_disallowed_explicit,
 )
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
@@ -1272,6 +1274,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # never enqueue what this user has no music source for; failing here keeps
         # the caller from finding out only when the item is about to be streamed
         self.mass.music.check_item_playable_for_user(media_item, user)
+        await ensure_explicit_allowed(self.mass, media_item, user)
         return media_item
 
     @guard_single_request
@@ -1536,6 +1539,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Drop anything already queued/played, also when queued as another provider's copy
         queued_keys = {key for item in queue_track_items for key in _track_keys(item)}
         tracks = [track for track in dynamic_tracks if queued_keys.isdisjoint(_track_keys(track))]
+        # the refill runs as the queue owner, who may be kept from explicit tracks
+        tracks = await without_disallowed_explicit(self.mass, tracks, get_current_user())
         if allowed is None:
             return tracks
         # steering is only a preference, so drop what the user has no music source for
