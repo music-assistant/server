@@ -61,7 +61,7 @@ tests of the harness itself.
 |---|---|
 | `add_provider(domain)`, `reload_provider(provider)`, `remove_provider(provider)` | load a new fake provider instance, reload one, remove one as a user does |
 | `attach(protocol, role=None)`, `detach(protocol)` | the provider found the device (again, possibly in a new role), or lost it |
-| `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...); a list of identifier values reports several of one type |
+| `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...); a None identifier value drops it |
 | `remove(player_id)`, `enable(id)`, `disable(id)`, `configure_player(id, **values)` | what a user does with a player |
 | `add_power_control(id, name)`, `switch(control, powered)` | an external power control (select it with `configure_player(id, power_control=...)`), switched by hand |
 | `play(player_id)` | play a track on the player through its queue, as a client does; returns once the player reports playing |

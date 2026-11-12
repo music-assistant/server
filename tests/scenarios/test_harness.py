@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType, PlaybackState
-from music_assistant_models.player import DeviceInfo
 
 from music_assistant.controllers.players.controller import PlayerController
 from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
@@ -423,35 +422,21 @@ async def test_player_configs_lists_the_settings_page(scenario: Scenario) -> Non
     ]
 
 
-async def test_identifier_list_reports_every_value(scenario: Scenario) -> None:
-    """A list of identifier values is reported value by value, an empty one drops the identifier."""
+async def test_a_none_identifier_value_drops_the_identifier(scenario: Scenario) -> None:
+    """An identifier reported as None is dropped, also from the device after a restart."""
     sonos = await scenario.add_provider("sonos")
-    identifiers: dict[IdentifierType, str | list[str]] = {
-        IdentifierType.UUID: ["RINCON_A", "RINCON_B"],
-        IdentifierType.IP_ADDRESS: "1.2.3.4",
-    }
+    speaker = sonos.protocol(
+        "RINCON_KITCHEN",
+        "Kitchen",
+        identifiers={IdentifierType.UUID: "RINCON_A", IdentifierType.IP_ADDRESS: "1.2.3.4"},
+    )
+    await scenario.attach(speaker)
+    assert speaker.device_info.identifiers[IdentifierType.UUID] == "RINCON_A"
 
-    def _uuids_reported_to(device_info: DeviceInfo, add_identifier: Any) -> list[str]:
-        return [
-            call.args[2]
-            for call in add_identifier.call_args_list
-            if call.args[0] is device_info and call.args[1] == IdentifierType.UUID
-        ]
-
-    with patch.object(
-        DeviceInfo, "add_identifier", autospec=True, side_effect=DeviceInfo.add_identifier
-    ) as add_identifier:
-        speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=identifiers)
-        assert _uuids_reported_to(speaker.device_info, add_identifier) == ["RINCON_A", "RINCON_B"]
-        await scenario.attach(speaker)
-        await scenario.restart()
-        restored = scenario.protocol("RINCON_KITCHEN")
-        assert _uuids_reported_to(restored.device_info, add_identifier) == ["RINCON_A", "RINCON_B"]
-
-    await scenario.report(restored, identifiers={IdentifierType.UUID: []})
+    await scenario.report(speaker, identifiers={IdentifierType.UUID: None})
     await scenario.restart()
 
-    assert IdentifierType.UUID not in restored.device_info.identifiers
+    assert IdentifierType.UUID not in speaker.device_info.identifiers
     assert IdentifierType.UUID not in scenario.protocol("RINCON_KITCHEN").device_info.identifiers
 
 
