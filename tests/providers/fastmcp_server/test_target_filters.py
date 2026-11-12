@@ -43,6 +43,8 @@ def _user(
         ("players/cmd/set_members", "player_ids_to_add", TargetKind.PLAYERS),
         ("players/cmd/set_members", "player_ids_to_remove", TargetKind.PLAYERS),
         ("players/create_group_player", "members", TargetKind.PLAYERS),
+        ("players/merge", "player_id", TargetKind.PLAYER),
+        ("players/merge", "target_player", TargetKind.PLAYER),
         (
             "audio_analysis/wave_form",
             "provider_instance_id_or_domain",
