@@ -342,7 +342,11 @@ async def test_merge_leaves_alone_what_the_device_plays_by_itself(scenario: Scen
 
 
 async def test_merge_of_a_group_member_keeps_it_in_its_group(scenario: Scenario) -> None:
-    """A member of a group that plays is merged without leaving it: the kept player is a member."""
+    """
+    A member of a group that plays is merged without leaving it: the kept player is a member.
+
+    Its protocol is detached to move, and nothing starts it again by itself.
+    """
     tv = await _two_players_for_one_tv(scenario)
     sonos = await scenario.add_provider("sonos")
     hall = sonos.protocol("RINCON_HALL", "Hall", identifiers=HALL)
@@ -355,6 +359,14 @@ async def test_merge_of_a_group_member_keeps_it_in_its_group(scenario: Scenario)
     await scenario.settle()
     await scenario.play(group.player_id)
     tv.cast.commands.clear()
+    detached: list[str] = []
+    on_detach = tv.cast.on_detach
+
+    async def _on_detach() -> None:
+        detached.append(tv.cast.protocol_id)
+        await on_detach()
+
+    tv.cast.on_detach = _on_detach  # type: ignore[method-assign]
 
     await _merge(scenario, tv.older_id, tv.younger_id)
 
@@ -363,6 +375,8 @@ async def test_merge_of_a_group_member_keeps_it_in_its_group(scenario: Scenario)
     assert group_state.group_members == [tv.older_id, hall_id]
     assert group_state.playback_state == PlaybackState.PLAYING
     assert ("stop",) not in tv.cast.commands
+    assert detached == ["cast_tv"]
+    assert "play_media" not in [command[0] for command in tv.cast.commands]
 
 
 async def test_merge_of_a_sync_leader_keeps_its_members(scenario: Scenario) -> None:

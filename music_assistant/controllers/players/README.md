@@ -128,8 +128,11 @@ its id from then on: that id and the legacy ids of the player that goes become l
 kept player. Group member lists and allow-lists, the player filters of users and the edges of the
 protocols name the kept player. A name, a setting, DSP or queue settings only the player that goes
 has are kept; where both have one, the kept player's stays. The queue of the player that goes is
-dropped, and stopped first when it plays its own queue; what it plays for a group or a sync leader
-plays on, for the kept player. The attach rules decide whether two players can be one: not when
+dropped, and stopped first when it plays its own queue. A group it plays for keeps playing and
+keeps it as a member, as the kept player. Whether its own audio goes on depends on its protocol,
+which is detached to move: one that leaves its stream when it is detached, as AirPlay does, is
+silent until it joins the playback again, at the latest when the group or the player is started
+again. The attach rules decide whether two players can be one: not when
 both have a protocol that stands for the device, or a protocol of the same domain, when a strong
 identifier of one rules the other out, and never for a group or a player that only exists while
 connected. What is stored changes in one step, right after that check, and is saved before

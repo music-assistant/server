@@ -3386,7 +3386,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         Stop the queue a player plays before it is merged into another one, best effort.
 
-        Its queue goes with it. A member of a group or of a sync leader plays on: its
+        Its queue goes with it. A member of a group or of a sync leader is not stopped: its
         membership moves with its protocols.
 
         :param player: The player that is merged into another one.
@@ -3428,7 +3428,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self.mass.config.async_save()
         absorbed = self._players.get(absorb_id)
         moving = list(absorbed.protocols.values()) if absorbed is not None else []
-        # a protocol that plays for the absorbed player, e.g. in a group, plays on for the kept one
+        # the output that plays for the absorbed player, e.g. in a group, stays the active output
+        # of the kept one, so the group keeps its member
         playing_through = (
             absorbed.resolve_output_protocol()
             if absorbed is not None and absorbed.state.playback_state != PlaybackState.IDLE
