@@ -87,7 +87,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
-    FLOW_STREAM_LEAD_OUT_SECONDS,
+    FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
     PacingProfile,
@@ -1253,6 +1253,12 @@ class StreamsController(CoreController):
                 "Denying flow stream request from %s: its session already streamed to the end",
                 player.display_name,
             )
+            if request.headers.get("Range") and (range_start := request.http_range.start):
+                # a Cast receiver resumes a stream that closed short of its declared length;
+                # a 404 makes it drop its buffer, a 416 lets it play out and finish
+                raise web.HTTPRequestRangeNotSatisfiable(
+                    headers={"Content-Range": f"bytes */{range_start}"}
+                )
             raise web.HTTPNotFound(reason=f"Flow stream already finished: {session_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
         start_queue_item = self._get_flow_start_item(queue, start_queue_item_id)
@@ -1433,7 +1439,7 @@ class StreamsController(CoreController):
                     del self._open_item_streams[queue_id]
 
         if not client_disconnected and http_profile == "forced_content_length":
-            await self._finish_flow_stream(resp, queue_id, session_id)
+            await self._finish_flow_stream(request, resp, queue_id, session_id, player)
 
         return resp
 
@@ -2222,27 +2228,39 @@ class StreamsController(CoreController):
         return self.mass.player_queues.get_item(queue.queue_id, queue_item_id)
 
     async def _finish_flow_stream(
-        self, resp: web.StreamResponse, queue_id: str, session_id: str
+        self,
+        request: web.Request,
+        resp: web.StreamResponse,
+        queue_id: str,
+        session_id: str,
+        player: Player,
     ) -> None:
         """
         Close a fully served flow stream, giving the player time to drain when it ends the queue.
 
+        :param request: The flow stream request.
         :param resp: The flow stream response, already fully written.
         :param queue_id: Id of the queue the flow stream belongs to.
         :param session_id: Stream session this response was opened for.
+        :param player: The player that requested the flow stream.
         """
         if self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
-            # the player is still holding a few seconds of audio it has not rendered yet
-            # and drops that as soon as the stream ends, so let it play out first.
+            # the player is still holding audio it has not rendered yet and drops that as
+            # soon as the stream ends, so let it play out first.
             # a flow that ends to be restarted right away gets no such grace: there the
             # player should go idle as soon as possible so the next stream can start.
             self.logger.debug(
                 "Flow stream for queue %s reached the end of the queue - holding the "
-                "connection open for %ss so the player can play out its buffer",
+                "connection open (at most %ss) until the player played out its buffer",
                 queue_id,
-                FLOW_STREAM_LEAD_OUT_SECONDS,
+                FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
             )
-            await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
+            for _ in range(FLOW_STREAM_MAX_LEAD_OUT_SECONDS):
+                if request.transport is None or self.mass.player_queues.flow_stream_played_out(
+                    queue_id, session_id, player
+                ):
+                    break
+                await asyncio.sleep(1)
         # aiohttp derives keep-alive from the request, so the 'Connection: close' we
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
