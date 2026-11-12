@@ -2329,6 +2329,8 @@ async def test_hue_pairing_flow_retry_then_success(
 ) -> None:
     """The real Hue flow: a missed button press re-forms, then pairing succeeds."""
     from music_assistant.providers.hue_entertainment.constants import (  # noqa: PLC0415
+        BACKEND_HUE_BRIDGE,
+        CONF_BACKEND,
         CONF_BRIDGE_HOST,
         CONF_BRIDGE_ID,
         CONF_CLIENTKEY,
@@ -2353,6 +2355,10 @@ async def test_hue_pairing_flow_retry_then_success(
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.type == FlowStepType.FORM
+        assert step.step_id == "backend"
+        step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_BACKEND: BACKEND_HUE_BRIDGE}
+        )
         assert step.step_id == "user"
         session = flow_mass.config._setup_flows[step.flow_id].session
         await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_BRIDGE_HOST: "1.2.3.4"})
