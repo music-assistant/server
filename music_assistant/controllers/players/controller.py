@@ -91,6 +91,7 @@ from music_assistant.constants import (
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_AUTO_PLAY,
     CONF_CACHED_ARP_MAC,
+    CONF_CREATED_AT,
     CONF_DEVICE_IDENTIFIERS,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
@@ -101,11 +102,13 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_REPORTED_MAC,
     CONF_SESSION_ONLY,
+    CONF_UNLINKED_FROM,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_STEP,
     VERBOSE_LOG_LEVEL,
@@ -2089,6 +2092,25 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             self._check_merge(keep_id, absorb_id)
             await self._merge_players(keep_id, absorb_id)
 
+    @api_command("players/unlink_protocol", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def unlink_protocol(self, protocol_id: str) -> str:
+        """
+        Take a protocol off its player and give it a player of its own.
+
+        For a protocol that ended up on the player of another device. It stays on its new
+        player, also after a restart, and is not merged back by itself; the protocols that
+        ride on it move with it. Returns the id of the new player.
+
+        :param protocol_id: ID of the protocol.
+        :raises InvalidDataError: When no protocol has the id.
+        :raises InvalidCommand: When the protocol can not stand on its own: it rides on another
+            protocol, it is the protocol of a group, it only exists while connected, or it is
+            the only protocol of its player.
+        """
+        async with self._register_lock:
+            player_id = self._check_unlink(protocol_id)
+            return await self._unlink_protocol(protocol_id, player_id)
+
     def wants_protocol(self, protocol_id: str, protocol: PlayerProtocol | None = None) -> bool:
         """
         Return whether the server wants a protocol attached now.
@@ -3501,9 +3523,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 )
             ),
         )
-        for protocol_id in protocol_ids:
-            if config.get_protocol_record(protocol_id) is not None:
+        merged = {keep_id, absorb_id}
+        for protocol_id in protocol_ids | set(config.get_protocol_ids_of_player(keep_id)):
+            if (record := config.get_protocol_record(protocol_id)) is None:
+                continue
+            if record.get("player_id") != keep_id:
                 config.set_protocol_value(protocol_id, "player_id", keep_id)
+            unlinked_from = (record.get("values") or {}).get(CONF_UNLINKED_FROM)
+            if isinstance(unlinked_from, str) and self.resolve_player_id(unlinked_from) in merged:
+                # the user puts the protocol back together with the player it was taken off
+                config.remove(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}/values/{CONF_UNLINKED_FROM}")
         if keeper := self._players.get(keep_id):
             keeper.protocol_ids.update(protocol_ids)
         absorbed_dsp = config.get(f"{CONF_PLAYER_DSP}/{absorb_id}")
@@ -3526,6 +3555,58 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         ):
             config.remove(key)
         self._build_legacy_id_index()
+
+    async def _unlink_protocol(self, protocol_id: str, player_id: str) -> str:
+        """
+        Move a protocol, with the protocols riding on it, to a new player of its own.
+
+        :param protocol_id: Id of the protocol, which the unlink rules allow to move.
+        :param player_id: Id of the player it is taken off.
+        """
+        config = self.mass.config
+        protocol = self._protocols.get(protocol_id)
+        record = config.get_protocol_record(protocol_id) or {}
+        moved = [protocol_id, *config.get_protocol_ids_derived_from(protocol_id)]
+        new_id = self._new_player_id()
+        config.create_player_record(
+            new_id,
+            provider=str(record.get("provider")),
+            player_type=protocol.type if protocol else PlayerType.PLAYER,
+            default_name=(protocol.name if protocol else None) or record.get("default_name"),
+            values={CONF_CREATED_AT: time.time_ns()},
+        )
+        for moved_id in moved:
+            config.set_protocol_value(moved_id, "player_id", new_id)
+            self._replace_protocol_references(player_id, moved_id, None)
+        config.set_protocol_value(protocol_id, CONF_UNLINKED_FROM, player_id)
+        if player := self._players.get(player_id):
+            player.protocol_ids.difference_update(moved)
+        self.logger.info(
+            "Protocol %s taken off player %s", protocol_id, self._stored_player_name(player_id)
+        )
+        attached = [
+            attached_protocol
+            for moved_id in moved
+            if (attached_protocol := self._protocols.get(moved_id))
+            and attached_protocol.player is not None
+        ]
+        for attached_protocol in attached:
+            self._attaching.pop(attached_protocol.protocol_id, None)
+            await self._unbind(attached_protocol)
+        for attached_protocol in attached:
+            try:
+                await self._run_attach(attached_protocol)
+            except Exception:
+                self.logger.exception(
+                    "Protocol %s did not attach to its new player", attached_protocol.protocol_id
+                )
+        if new_id not in self._players:
+            # its device is away: the player waits for it, like a stored one at startup
+            await self._publish_player(self._create_player(new_id))
+        if player is not None:
+            await self._settle_player(player)
+        self._schedule_update_all_players()
+        return new_id
 
     def _schedule_duplicate_merge(self, player_id: str) -> None:
         """

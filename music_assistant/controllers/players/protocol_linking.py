@@ -123,6 +123,8 @@ class ProtocolLinkingMixin:
 
         async def _run_attach(self, protocol: PlayerProtocol, final: bool = False) -> None: ...
 
+        def _get_player_id_of_protocol(self, protocol_id: str) -> str | None: ...
+
     def _resolve_player_id(self, protocol: PlayerProtocol) -> str | None:
         """
         Return the id of the player a protocol belongs to, None when it matches none.
@@ -563,6 +565,42 @@ class ProtocolLinkingMixin:
             return str(stored.get("name") or stored.get("default_name") or player_id)
         return player_id
 
+    def _check_unlink(self, protocol_id: str) -> str:
+        """
+        Check that a protocol can be taken off its player, and return the id of that player.
+
+        :param protocol_id: Id of the protocol.
+        :raises InvalidDataError: When no protocol has the id.
+        :raises InvalidCommand: When the protocol can not stand on its own.
+        """
+        protocol = self._protocols.get(protocol_id)
+        record = self.mass.config.get_protocol_record(protocol_id)
+        if protocol is None and record is None:
+            raise InvalidDataError(f"No protocol with id {protocol_id}")
+        record = record or {}
+        name = str(
+            (protocol.name if protocol else None) or record.get("default_name") or protocol_id
+        )
+        player_id = self._get_player_id_of_protocol(protocol_id)
+        if (protocol and protocol.session_only) or not record or not player_id:
+            msg = f"{name} only exists while it is connected and can not stand on its own"
+            raise self._merge_refused(msg, "unlink_session_only", name)
+        if (protocol and protocol.underlying_protocol_id) or (record.get("values") or {}).get(
+            CONF_UNDERLYING_PLAYER_ID
+        ):
+            msg = f"{name} rides on another protocol and follows it"
+            raise self._merge_refused(msg, "unlink_derived", name)
+        if (protocol.role if protocol else record.get("role")) == ProtocolRole.VIRTUAL:
+            msg = f"{name} is the protocol of a group"
+            raise self._merge_refused(msg, "unlink_group", name)
+        if player_id in self._removing:
+            raise InvalidCommand(f"{self._stored_player_name(player_id)} is being removed")
+        moved = {protocol_id, *self.mass.config.get_protocol_ids_derived_from(protocol_id)}
+        if not self._get_protocol_ids(player_id) - moved:
+            msg = f"{name} is the only protocol of its player"
+            raise self._merge_refused(msg, "unlink_only_protocol", name)
+        return player_id
+
     def _duplicates_of(self, player_id: str) -> list[str]:
         """
         Return the ids of the other live players that turn out to stand for a player's device.
@@ -732,10 +770,13 @@ class ProtocolLinkingMixin:
 
         :param protocol: The protocol of a device that is no player yet.
         """
-        stored_players = self.mass.config.get(CONF_PLAYERS, {})
         player_id = protocol.protocol_id if protocol.session_only else ""
-        while not player_id or player_id in stored_players or player_id in self._players:
-            player_id = f"{PLAYER_ID_PREFIX}{secrets.token_hex(6)}"
+        if (
+            not player_id
+            or player_id in self.mass.config.get(CONF_PLAYERS, {})
+            or player_id in self._players
+        ):
+            player_id = self._new_player_id()
         if protocol.session_only:
             return player_id
         own = protocol if protocol.role in OWN_PROTOCOL_ROLES else None
@@ -755,6 +796,14 @@ class ProtocolLinkingMixin:
                 role=protocol.role,
                 default_name=protocol.name,
             )
+        return player_id
+
+    def _new_player_id(self) -> str:
+        """Return a new player id, which no stored or live player has."""
+        stored_players = self.mass.config.get(CONF_PLAYERS, {})
+        player_id = ""
+        while not player_id or player_id in stored_players or player_id in self._players:
+            player_id = f"{PLAYER_ID_PREFIX}{secrets.token_hex(6)}"
         return player_id
 
     def _store_protocol(self, protocol: PlayerProtocol, player_id: str) -> None:

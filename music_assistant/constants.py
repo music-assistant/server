@@ -202,6 +202,8 @@ CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
+# the player the user took a protocol off, which it is not merged back into by itself
+CONF_UNLINKED_FROM: Final[str] = "unlinked_from"
 CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available protocol
 # a player that only exists while its device is connected (a browser tab, an app)
 CONF_SESSION_ONLY: Final[str] = "session_only"
