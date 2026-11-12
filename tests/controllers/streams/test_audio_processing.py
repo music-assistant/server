@@ -2195,7 +2195,7 @@ def _native_stream_handler_context(
     player.state.group_members = group_members
     player.state.supported_features = set()
     player.state.name = "Player"
-    player.get_config_value.return_value = "default"
+    player.get_config_value.return_value = False
     mass.players.get_player.return_value = player
 
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)

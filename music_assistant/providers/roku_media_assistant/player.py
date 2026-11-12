@@ -9,13 +9,11 @@ from urllib.parse import urlencode
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import CONF_ROKU_APP_ID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
     from rokuecp import Device, Roku
 
     from .provider import MediaAssistantprovider
@@ -81,14 +79,6 @@ class MediaAssistantPlayer(Player):
     def app_ids(self) -> list[str]:
         """Return the IDs of the Roku apps to play in, in order of preference."""
         return parse_app_ids(self.provider.config.get_value(CONF_ROKU_APP_ID))
-
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries()
-        return [
-            *default_entries,
-            CONF_ENTRY_HTTP_PROFILE,
-        ]
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""

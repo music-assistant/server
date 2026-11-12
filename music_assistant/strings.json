@@ -104,20 +104,6 @@
         "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
       }
     },
-    "http_profile": {
-      "label": "HTTP Profile used for sending audio",
-      "description": "This is considered to be a very advanced setting, only adjust this if needed, for example if your player stops playing halfway streams or if you experience other playback related issues. In most cases the default setting is fine.",
-      "options": {
-        "chunked": "Profile 1 - chunked",
-        "no_content_length": "Profile 2 - no content length",
-        "forced_content_length": "Profile 3 - forced content length"
-      },
-      "option_descriptions": {
-        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
-        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
-        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
-      }
-    },
     "icon": {
       "label": "Icon",
       "description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons."
@@ -248,6 +234,10 @@
     },
     "preview_note": {
       "label": "Please note that this feature/provider is still in early stages. \n\nFunctionality may still be limited and/or bugs may occur!"
+    },
+    "requires_fixed_content_length": {
+      "label": "Requires a fixed content length",
+      "description": "Only enable this if the player stops or loops during playback. Most players play fine without it."
     },
     "sample_rates": {
       "label": "Sample rates supported by this player",

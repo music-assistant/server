@@ -53,7 +53,6 @@ from .helpers import (
     CastStatusListener,
     ChromecastInfo,
     disconnect_cast,
-    http_profile_entry,
     is_google_device,
 )
 from .receiver_commands import MassCastCommandController
@@ -170,13 +169,11 @@ class ChromecastPlayer(Player):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
-                http_profile_entry(self.cast_info),
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
-            http_profile_entry(self.cast_info),
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
