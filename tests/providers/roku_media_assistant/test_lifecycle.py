@@ -7,8 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import IdentifierType, ProtocolRole
+from rokuecp.models import Info
 
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, CONF_FLOW_MODE
+from music_assistant.constants import (
+    CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+    CONF_FLOW_MODE,
+    CONF_PLAYERS,
+)
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.roku_media_assistant.constants import (
     CONF_AUTO_DISCOVER,
@@ -47,10 +52,18 @@ async def scenario(tmp_path: pathlib.Path) -> AsyncGenerator[Scenario]:
 def roku() -> MagicMock:
     """Return the Roku at the manual address, as rokuecp reports it, without a network."""
     device = MagicMock()
-    device.info.serial_number = PROTOCOL_ID.removeprefix("ROKU_")
-    device.info.name = "Roku A"
-    device.info.model_name = "Roku Ultra"
-    device.info.ethernet_mac = "AA:BB:CC:00:00:01"
+    # the real model: what the provider copies from it ends up in the stored config
+    device.info = Info(
+        name="Roku A",
+        brand="Roku",
+        device_type="box",
+        device_location=None,
+        model_name="Roku Ultra",
+        model_number="4800X",
+        serial_number=PROTOCOL_ID.removeprefix("ROKU_"),
+        version="11.5.0",
+        ethernet_mac="AA:BB:CC:00:00:01",
+    )
     device.app = None
     client = MagicMock()
     client.update = AsyncMock(return_value=device)
@@ -99,6 +112,10 @@ async def test_a_roku_at_a_manual_address_is_the_native_protocol_of_a_minted_pla
     assert protocol.player.get_role(PROTOCOL_ID) == ProtocolRole.NATIVE
     assert (IdentifierType.SERIAL_NUMBER, "X00000000001") in protocol.identifiers
     assert (IdentifierType.MAC_ADDRESS, "AA:BB:CC:00:00:01") in protocol.identifiers
+    stored = scenario.mass.config.get(
+        f"{CONF_PLAYERS}/{protocol.player.player_id}/values/device_info"
+    )
+    assert stored == {"model": "Roku Ultra", "manufacturer": "Roku", "model_id": "4800X"}
 
 
 async def test_discovery_leaves_an_attached_roku_alone(scenario: Scenario, roku: MagicMock) -> None:
