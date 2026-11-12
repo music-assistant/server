@@ -75,8 +75,9 @@ stored record or when a device is new, and is never subclassed by a provider. It
   `audio_protocols`, most preferred first;
 - the ids of all protocols that belong to it, also those that are away;
 - its own config (name, controls, volume limits, announcements, icon, ...);
-- what it keeps for itself while it lives: the active output, the active MA source, the sleep
-  timer, the stop flag, the external-pause bookkeeping, the palette, `extra_data`;
+- what it keeps for itself while it lives: the active output, the active MA source and when an
+  idle player forgets it, the sleep timer, the stop flag, the external-pause bookkeeping, a power
+  on or power off under way, the palette, `extra_data`;
 - the resolution of its power, volume and mute control and of the output that renders.
 
 What a player reports for its device (name, device info, extra attributes, provider) comes from its

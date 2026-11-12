@@ -23,7 +23,6 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
-    ATTR_POWER_ON_IN_PROGRESS,
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
@@ -274,12 +273,27 @@ class TestOfflineByPowerControl:
     def test_power_on_in_progress_keeps_it_available(self, mock_mass: MagicMock) -> None:
         """While Music Assistant powers it on, the booting device stays available."""
         player = self._offline_player(mock_mass, power_state=True)
-        player.extra_data[ATTR_POWER_ON_IN_PROGRESS] = True
+        player.set_power_on_in_progress(True)
         player.refresh_state(signal_event=False)
 
         assert player.offline_by_power_control is True
         assert player.state.available is True
         assert player.state.powered is True
+
+    def test_a_called_off_power_on_shows_at_the_next_state_calculation(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A power on that is called off changes the player's state at its next update."""
+        player = self._offline_player(mock_mass, power_state=True)
+        player.set_power_on_in_progress(True)
+        player.update_state(signal_event=False)
+        assert player.state.available is True
+
+        player.set_power_on_in_progress(False)
+        player.update_state(signal_event=False)
+
+        assert player.offline_by_power_control is False
+        assert player.state.available is False
 
     def test_reachable_device_is_not_offline(self, mock_mass: MagicMock) -> None:
         """A device that is online is never offline by its power control."""

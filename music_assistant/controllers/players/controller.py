@@ -80,8 +80,6 @@ from music_assistant.constants import (
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
     ATTR_POWER_CONTROL,
-    ATTR_POWER_OFF_IN_PROGRESS,
-    ATTR_POWER_ON_IN_PROGRESS,
     ATTR_POWERED,
     ATTR_PREVIOUS_VOLUME,
     ATTR_REACHABLE,
@@ -4349,7 +4347,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # (Sonos does), so the transition it causes would ungroup a second time. The
         # marker expires: a command whose device never reported off must not claim the
         # next external power off.
-        issued_at = player.extra_data.pop(ATTR_POWER_OFF_IN_PROGRESS, None)
+        issued_at = player.power_off_issued_at
+        player.set_power_off_issued_at(None)
         if issued_at is not None and time.monotonic() - issued_at < POWER_OFF_IN_PROGRESS_EXPIRY:
             return
         if player.offline_by_power_control:
@@ -5535,7 +5534,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # a power on that still waits for the device is waited for (power on) or called off
         # (power off) below, whatever its control reports by now
-        if player_state.powered == powered and ATTR_POWER_ON_IN_PROGRESS not in player.extra_data:
+        if player_state.powered == powered and not player.power_on_in_progress:
             self.logger.debug(
                 "Ignoring power %s command for player %s: already in state %s",
                 "ON" if powered else "OFF",
@@ -5548,7 +5547,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # the power off the player reports back must not ungroup it a second time: a
             # device that powers itself off when stopped reports it before the power
             # command below even reaches it
-            player.extra_data[ATTR_POWER_OFF_IN_PROGRESS] = time.monotonic()
+            player.set_power_off_issued_at(time.monotonic())
 
         # ungroup player at power off
         player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
@@ -5613,7 +5612,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     f"Player control {control_name} is not available"
                 )
             if powered and player.offline_by_power_control:
-                if ATTR_POWER_ON_IN_PROGRESS in player.extra_data:
+                if player.power_on_in_progress:
                     # joins a power on under way: the request that started it runs auto play
                     skip_auto_play = True
                 player = await self._power_on_switched_off_player(player_id)
@@ -5685,9 +5684,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player_control = self._controls[control_id]
         # a power on that is already under way is only waited for: switching the control
         # once more could switch a device behind a toggling control off again
-        owns_power_on = ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        owns_power_on = not player.power_on_in_progress
         if owns_power_on:
-            player.extra_data[ATTR_POWER_ON_IN_PROGRESS] = True
+            player.set_power_on_in_progress(True)
         try:
             if owns_power_on:
                 assert player_control.power_on is not None  # for type checking
@@ -5708,7 +5707,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                             if (control := self._controls.get(control_id)) is not None:
                                 await wait_for_power_on(self.logger, player, control)
                             return player
-                        if ATTR_POWER_ON_IN_PROGRESS not in player.extra_data or (
+                        if not player.power_on_in_progress or (
                             self._players.get(player_id) is not player
                         ):
                             # a power off called it off, or the power on waited for has ended
@@ -5726,7 +5725,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 raise PlayerUnavailableError(msg) from None
         finally:
             if owns_power_on:
-                player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None)
+                player.set_power_on_in_progress(False)
                 if refreshed := self.get_player(player_id):
                     refreshed.refresh_state()
 
@@ -5738,7 +5737,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player: The player whose power on to call off.
         """
-        if player.extra_data.pop(ATTR_POWER_ON_IN_PROGRESS, None) is not None:
+        if player.power_on_in_progress:
+            player.set_power_on_in_progress(False)
             self.logger.debug("Called off the power on of player %s", player.display_name)
 
     def _resolve_group_volume_player(self, player: Player) -> Player | None:

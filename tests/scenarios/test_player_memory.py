@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
 from .harness import FakeProtocol, Scenario
@@ -11,6 +13,10 @@ DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRES
 KITCHEN = {
     IdentifierType.MAC_ADDRESS: "00:11:22:33:44:66",
     IdentifierType.IP_ADDRESS: "192.168.1.31",
+}
+BATHROOM = {
+    IdentifierType.MAC_ADDRESS: "B8:27:EB:AA:BB:CC",
+    IdentifierType.IP_ADDRESS: "192.168.1.32",
 }
 
 # media of a Music Assistant source that is not the player's own queue (a group's queue)
@@ -88,3 +94,37 @@ async def test_a_source_selected_while_stopped_is_kept(scenario: Scenario) -> No
     await scenario.idle()
 
     assert _active_source(scenario, player_id) == other_queue
+
+
+async def test_a_stop_calls_off_a_power_on_that_waits_for_the_device(scenario: Scenario) -> None:
+    """
+    A stop while a switched-off player is being powered on calls the power on off.
+
+    While the power on waits for the device the player shows available and powered on; the
+    stop makes the waiting power on fail as switched off, after which the player, whose
+    device never came, shows unavailable.
+    """
+    squeezelite = await scenario.add_provider("squeezelite")
+    pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
+    await scenario.attach(pi)
+    player_id = scenario.single_player(pi).player_id
+    plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
+    await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.switch(plug, False)
+    await scenario.detach(pi)
+    await scenario.idle()
+
+    power_on = await scenario.command(scenario.mass.players.cmd_power(player_id, True))
+    player = scenario.player(player_id)
+    assert player is not None
+    assert (player.available, player.powered) == (True, True)
+
+    await scenario.mass.players.cmd_stop(player_id)
+    # the power on looks for the device every 0.5 s
+    await scenario.advance(1)
+    with pytest.raises(PlayerUnavailableError):
+        await power_on
+
+    player = scenario.player(player_id)
+    assert player is not None
+    assert player.available is False

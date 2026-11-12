@@ -57,8 +57,6 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_POWER,
     ATTR_IDLE_SINCE,
-    ATTR_POWER_OFF_IN_PROGRESS,
-    ATTR_POWER_ON_IN_PROGRESS,
     CONF_AUTO_PLAY,
     CONF_ICON,
     CONF_IDLE_POWER_OFF,
@@ -1660,14 +1658,14 @@ class TestSyncLeaderPowerOffUngroup:
         """A power off reported long after an MA power command counts as an external one."""
         controller, leader, _protocol = self._sync_leader(mock_mass, PlayerType.PLAYER)
         controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
-        leader.extra_data[ATTR_POWER_OFF_IN_PROGRESS] = (
+        leader.set_power_off_issued_at(
             time.monotonic() - players_controller.POWER_OFF_IN_PROGRESS_EXPIRY - 1
         )
 
         controller.signal_player_state_update(leader, {"powered": (True, False)})
 
         controller.cmd_ungroup.assert_called_once_with("leader")
-        assert ATTR_POWER_OFF_IN_PROGRESS not in leader.extra_data
+        assert leader.power_off_issued_at is None
 
     @pytest.mark.parametrize("player_type", [PlayerType.PLAYER, PlayerType.STEREO_PAIR])
     @pytest.mark.asyncio
@@ -2841,7 +2839,7 @@ class TestOfflinePowerControl:
         # it does not drop out of sight while it starts up
         assert state_while_starting == [(True, True)]
         assert player.available is True
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
         assert player.state.available is True
         assert player.state.powered is True
 
@@ -2896,7 +2894,7 @@ class TestOfflinePowerControl:
 
         await controller.cmd_power("player_1", True)
 
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
         assert player.protocols[_proto("player_1")] is not protocol
         assert player.state.available is True
         assert player.state.powered is True
@@ -2913,7 +2911,7 @@ class TestOfflinePowerControl:
         ):
             await controller.cmd_power("player_1", True)
 
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
         # its control is on while the device is still unreachable: a real fault
         assert player.state.available is False
 
@@ -3104,7 +3102,7 @@ class TestOfflinePowerControl:
         }
         pending = asyncio.create_task(getattr(controller, command)("player_1", *arguments[command]))
         await asyncio.sleep(0.1)
-        assert ATTR_POWER_ON_IN_PROGRESS in player.extra_data
+        assert player.power_on_in_progress
 
         async with asyncio.timeout(0.2), controller.get_group_and_player_lock("player_1"):
             pass
@@ -3139,7 +3137,7 @@ class TestOfflinePowerControl:
         cast("AsyncMock", control.power_off).assert_awaited_once()
         assert time.monotonic() - started < 1.5
         controller._handle_play_media.assert_not_awaited()
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
         assert player.state.available is True
         assert player.state.powered is False
 
@@ -3165,7 +3163,7 @@ class TestOfflinePowerControl:
         cast("AsyncMock", control.power_off).assert_awaited_once()
         assert time.monotonic() - started < 1.5
         controller._handle_play_media.assert_not_awaited()
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
 
     @pytest.mark.parametrize("command", ["cmd_stop", "cmd_pause"])
     async def test_stop_or_pause_while_starting_up_aborts_the_pending_play(
@@ -3178,7 +3176,7 @@ class TestOfflinePowerControl:
             controller.play_media("player_1", PlayerMedia(uri="http://ma/stream.flac"))
         )
         await asyncio.sleep(0.1)
-        assert ATTR_POWER_ON_IN_PROGRESS in player.extra_data
+        assert player.power_on_in_progress
 
         await getattr(controller, command)("player_1")
         async with asyncio.timeout(1.5):
@@ -3189,7 +3187,7 @@ class TestOfflinePowerControl:
         # the control is left on, unlike with a power off
         cast("AsyncMock", control.power_off).assert_not_awaited()
         assert control.power_state is True
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
 
     async def test_a_user_without_access_can_not_switch_it_on(self, mock_mass: MagicMock) -> None:
         """Only a user with access to the player can switch it on."""
@@ -3231,7 +3229,7 @@ class TestOfflinePowerControl:
         queues.play_index = AsyncMock()
         pending = asyncio.create_task(queues.resume("player_1"))
         await asyncio.sleep(0.1)
-        assert ATTR_POWER_ON_IN_PROGRESS in player.extra_data
+        assert player.power_on_in_progress
 
         await getattr(queues, action)("player_1")
         async with asyncio.timeout(1.5):
@@ -3241,7 +3239,7 @@ class TestOfflinePowerControl:
         queues.play_index.assert_not_awaited()
         cast("AsyncMock", control.power_off).assert_not_awaited()
         assert control.power_state is True
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
 
     async def test_a_control_reporting_off_after_the_call_keeps_waiting(
         self, mock_mass: MagicMock
@@ -3356,7 +3354,7 @@ class TestOfflinePowerControl:
 
         # the default flow restores the power state it found, which is on by then
         assert steps == ["switch on", "play (online: True)"]
-        assert ATTR_POWER_ON_IN_PROGRESS not in player.extra_data
+        assert not player.power_on_in_progress
         assert player.state.powered is True
 
     async def test_announcement_power_on_timeout_leaves_the_control_alone(
@@ -3576,7 +3574,7 @@ class TestIdlePowerOff:
         """A device that is switched on but not online yet does not count down."""
         controller, player, protocol, _power_off = self._setup(mock_mass, minutes=1)
         protocol._attr_available = False
-        player.extra_data[ATTR_POWER_ON_IN_PROGRESS] = True
+        player.set_power_on_in_progress(True)
         player.refresh_state(signal_event=False)
         assert player.state.available is True
         assert player.state.powered is True

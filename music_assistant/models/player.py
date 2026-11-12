@@ -51,7 +51,6 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
-    ATTR_POWER_ON_IN_PROGRESS,
     ATTR_REACHABLE,
     CONF_DEVICE_INFO,
     CONF_ENTRY_PLAYER_ICON,
@@ -580,6 +579,10 @@ class Player:
         self._active_mass_source_expires_at: float | None = None
         self._sleep_timer_expires_at: float | None = None
         self._sleep_timer_mode: SleepTimerMode | None = None
+        # a power on through the power control that waits for the device to come online
+        self._power_on_in_progress: bool = False
+        # when (monotonic) Music Assistant issued a power off the player has not reported yet
+        self._power_off_issued_at: float | None = None
         self._stop_called: bool = False
         self._external_pause_since: float | None = None
         self._ended_external_source: str | None = None
@@ -1651,6 +1654,38 @@ class Player:
         """Return the point at which the active sleep timer stops playback."""
         return self._sleep_timer_mode
 
+    @property
+    def power_on_in_progress(self) -> bool:
+        """Return if a power on through the power control waits for the device to come online."""
+        return self._power_on_in_progress
+
+    def set_power_on_in_progress(self, value: bool) -> None:
+        """
+        Set whether a power on through the power control waits for the device to come online.
+
+        May only be called by the PlayerController.
+
+        :param value: True while the power on waits for the device, False once it ended or
+            was called off.
+        """
+        self._power_on_in_progress = value
+        self.mark_state_dirty()
+
+    @property
+    def power_off_issued_at(self) -> float | None:
+        """Return when (monotonic) Music Assistant issued a power off that is not reported yet."""
+        return self._power_off_issued_at
+
+    def set_power_off_issued_at(self, value: float | None) -> None:
+        """
+        Set when (monotonic) Music Assistant issued a power off of the player.
+
+        May only be called by the PlayerController.
+
+        :param value: The time the power off was issued, None once the player reported it.
+        """
+        self._power_off_issued_at = value
+
     def mark_stop_called(self) -> None:
         """Mark that the STOP command was called on the player."""
         self._stop_called = True
@@ -1829,7 +1864,7 @@ class Player:
         control = self.mass.players.get_player_control(self.power_control)
         if control is None or not control.supports_power:
             return False
-        return not control.power_state or ATTR_POWER_ON_IN_PROGRESS in self._extra_data
+        return not control.power_state or self._power_on_in_progress
 
     def _missing_provider_reason(self) -> str | None:
         """Return why the player has no protocol at all, when its provider is not installed."""
