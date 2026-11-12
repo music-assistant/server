@@ -1808,7 +1808,6 @@ def _recording_lock(events: list[str]) -> MagicMock:
     def _make(
         player_id: str,
         _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-        strict: bool = False,  # noqa: ARG001
     ) -> AsyncMock:
         ctx = AsyncMock()
 
@@ -1834,7 +1833,6 @@ def _group_lock(group_id: str) -> tuple[MagicMock, asyncio.Lock]:
     async def _ctx(
         player_id: str,
         _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
-        strict: bool = False,  # noqa: ARG001
     ) -> AsyncIterator[None]:
         if player_id != group_id:
             yield
