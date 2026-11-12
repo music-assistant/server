@@ -62,6 +62,8 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         # the player of each entity, also one that is not attached (its player is disabled):
         # the controller only remembers that one weakly, and a removal must still reach it
         self._entity_players: dict[str, HomeAssistantPlayer] = {}
+        # the entities whose player is being set up, by discovery or by a state event
+        self._entities_in_setup: set[str] = set()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -120,17 +122,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Attach every configured entity that has no attached player."""
-        player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS))
-        if all(self.get_protocol(entity_id) for entity_id in player_ids):
-            return
-        # prefetch the device- and entity registry
-        device_registry = await self.hass_prov.get_device_registry()
-        entity_registry = await get_media_player_entity_registry(self.hass_prov)
-        async for state, _ in get_hass_media_players(self.hass_prov, entity_registry):
-            entity_id = state["entity_id"]
-            if entity_id not in player_ids or self.get_protocol(entity_id):
-                continue
-            await self._setup_player(state, entity_registry, device_registry)
+        await self._setup_players(cast("list[str]", self.config.get_value(CONF_PLAYERS)))
 
     def forget_entity(self, entity_id: str) -> None:
         """
@@ -219,17 +211,18 @@ class HomeAssistantPlayerProvider(PlayerProvider):
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""
+        new_entity_ids: list[str] = []
 
         def update_player_from_state_msg(entity_id: str, state: CompressedState) -> None:
             """Handle updating MA player with updated info in a HA CompressedState."""
             player = self._entity_players.get(entity_id)
             if player is None:
-                # edge case - one of our subscribed entities was not available at startup
-                # and now came available - we should still set it up
+                # discovery has not set it up (yet), or one of our subscribed entities was
+                # not available at startup and now came available - we should still set it up
                 player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS))
                 if entity_id not in player_ids:
                     return  # should not happen, but guard just in case
-                self.mass.create_task(self._late_add_player(entity_id))
+                new_entity_ids.append(entity_id)
                 return
             player.update_from_compressed_state(state)
 
@@ -241,16 +234,32 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                 if "+" not in state_diff:
                     continue
                 update_player_from_state_msg(entity_id, state_diff["+"])
+        if new_entity_ids:
+            self.mass.create_task(self._setup_players(new_entity_ids))
 
-    async def _late_add_player(self, entity_id: str) -> None:
-        """Handle setup of Player from HA entity that became available after startup."""
-        # prefetch the device- and entity registry
-        device_registry = await self.hass_prov.get_device_registry()
-        entity_registry = await get_media_player_entity_registry(self.hass_prov)
-        async for state, _ in get_hass_media_players(self.hass_prov, entity_registry):
-            if state["entity_id"] != entity_id:
-                continue
-            await self._setup_player(state, entity_registry, device_registry)
+    async def _setup_players(self, entity_ids: list[str]) -> None:
+        """
+        Set up and attach the players of the entities that have none attached or in setup.
+
+        :param entity_ids: The entity ids of the media players.
+        """
+        todo = {
+            entity_id
+            for entity_id in entity_ids
+            if entity_id not in self._entities_in_setup and not self.get_protocol(entity_id)
+        }
+        if not todo:
+            return
+        self._entities_in_setup |= todo
+        try:
+            # prefetch the device- and entity registry
+            device_registry = await self.hass_prov.get_device_registry()
+            entity_registry = await get_media_player_entity_registry(self.hass_prov)
+            async for state, _ in get_hass_media_players(self.hass_prov, entity_registry):
+                if state["entity_id"] in todo:
+                    await self._setup_player(state, entity_registry, device_registry)
+        finally:
+            self._entities_in_setup -= todo
 
     def _selected_players(self) -> set[str]:
         """Return the entity ids currently selected as players (stored config)."""

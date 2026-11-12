@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -59,16 +60,35 @@ def _hass_prov() -> HomeAssistantProvider:
     )
 
 
-async def _load(scenario: Scenario, instance_id: str) -> HomeAssistantPlayerProvider:
-    """Load a real provider in place of the fake one of its instance, as the server does."""
+def _first_event() -> dict[str, Any]:
+    """Return the first event of an entity subscription, which lists every entity as added."""
+    attributes = {"supported_features": PLAY_MEDIA}
+    return {
+        "a": {
+            entity_id: {"s": "idle", "a": {"friendly_name": entity_id, **attributes}}
+            for entity_id in (BEDROOM, KITCHEN)
+        }
+    }
+
+
+def _register(
+    scenario: Scenario, instance_id: str, hass_prov: HomeAssistantProvider
+) -> HomeAssistantPlayerProvider:
+    """Put a real provider in place of the fake one of its instance, before it is loaded."""
     manifest = scenario.mass.get_provider_manifest("hass_players")
     entry = ConfigEntry(key=CONF_PLAYERS, type=ConfigEntryType.STRING, multi_value=True)
     raw = scenario.mass.config.get(f"providers/{instance_id}")
     config = cast("ProviderConfig", ProviderConfig.parse([entry], raw))
-    provider = HomeAssistantPlayerProvider(scenario.mass, manifest, config, _hass_prov())
+    provider = HomeAssistantPlayerProvider(scenario.mass, manifest, config, hass_prov)
     provider.available = True
     provider.initialized.set()
     scenario.mass._providers[instance_id] = provider
+    return provider
+
+
+async def _load(scenario: Scenario, instance_id: str) -> HomeAssistantPlayerProvider:
+    """Load a real provider in place of the fake one of its instance, as the server does."""
+    provider = _register(scenario, instance_id, _hass_prov())
     await provider.loaded_in_mass()
     await scenario.mass.run_provider_discovery(instance_id)
     await scenario.settle()
@@ -123,6 +143,51 @@ async def test_discovery_leaves_an_attached_entity_alone(
 
     assert provider.get_protocol(BEDROOM) is protocol
     provider.hass_prov.get_states.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("first", ["discovery", "event"])
+async def test_an_entity_is_set_up_once_by_discovery_and_its_first_state_event(
+    scenario: Scenario, first: str
+) -> None:
+    """
+    An entity gets one player object, whichever of discovery and the first state event starts first.
+
+    The other one starts while the first still reads the states from Home Assistant.
+    """
+    fake = await scenario.add_provider("hass_players")
+    scenario.mass.config.set_raw_provider_config_value(
+        fake.instance_id, CONF_PLAYERS, [BEDROOM, KITCHEN]
+    )
+    hass_prov = _hass_prov()
+    states = hass_prov.get_states.return_value  # type: ignore[attr-defined]
+    states_read = asyncio.Event()
+
+    async def _get_states(**_kwargs: Any) -> list[dict[str, Any]]:
+        await states_read.wait()
+        return cast("list[dict[str, Any]]", states)
+
+    hass_prov.get_states = AsyncMock(side_effect=_get_states)  # type: ignore[method-assign]
+    provider = _register(scenario, fake.instance_id, hass_prov)
+    await provider.loaded_in_mass()
+    on_event = hass_prov.hass.subscribe_entities.await_args.args[0]
+    attach = AsyncMock(wraps=scenario.mass.players.attach)
+
+    with patch.object(scenario.mass.players, "attach", attach):
+        if first == "event":
+            on_event(_first_event())
+            await scenario.settle()
+        discovery = asyncio.create_task(scenario.mass.run_provider_discovery(fake.instance_id))
+        await scenario.settle()
+        if first == "discovery":
+            on_event(_first_event())
+            await scenario.settle()
+        states_read.set()
+        await discovery
+        await scenario.settle()
+
+    assert sorted(call.args[0].protocol_id for call in attach.await_args_list) == [BEDROOM, KITCHEN]
+    hass_prov.get_states.assert_awaited_once()
+    hass_prov.get_device_registry.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 async def test_discovery_offers_only_the_entities_without_an_attached_player(
