@@ -95,6 +95,20 @@ async def test_a_position_past_the_end_of_the_queue_is_refused() -> None:
     ctrl.mass.players.get_player.return_value.on_queue_position_served.assert_not_called()
 
 
+async def test_a_refused_request_is_logged_with_its_reason() -> None:
+    """A 404 tells in the log why the player was refused."""
+    ctrl = _make_controller()
+    request = _make_request(queue_index="7")
+
+    with pytest.raises(web.HTTPNotFound):
+        await StreamsController.serve_queue_item_stream(ctrl, request)
+
+    ctrl.logger.debug.assert_called_once()
+    log_args = ctrl.logger.debug.call_args.args
+    assert request.path in log_args
+    assert "No queue item at position 7" in log_args
+
+
 async def test_an_item_addressed_by_id_is_served_without_a_position_check() -> None:
     """Any item the queue holds is served when asked for by id, wherever it sits."""
     ctrl = _make_controller()
