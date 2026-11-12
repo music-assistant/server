@@ -201,7 +201,7 @@ Will follow soon™
 ## 🔌 Building your own Plugin Provider
 Will follow soon™
 
-A provider that stores the id of a player (in its config or setup data) can find it turned into a legacy id: the user merged that player into another one, which answers to the stored id from then on. Resolve a stored id with `mass.players.resolve_player_id()` where it is read, and compare the ids of events and live players with the resolved id.
+A provider that stores the id of a player (in its config or setup data) can find it turned into a legacy id: the user merged that player into another one, which answers to the stored id from then on. Resolve a stored id with `mass.players.resolve_player_id()` where it is read, and compare the ids of events and live players with the resolved id. `PLAYER_REMOVED` is also sent for a player that is only gone for now (disabled, or a browser or app client that disconnected), which comes back with the same id: drop what you store about a player only when `player_removed_for_good(event)` (`music_assistant.helpers.player`) says so.
 
 ## ⚙️ Manifest file
 The manifest file contains metadata and configuration about a provider. The supported properties are:

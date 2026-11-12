@@ -90,6 +90,19 @@ def get_default_player_icon(
     return "speaker"
 
 
+def player_removed_for_good(event: MassEvent) -> bool:
+    """
+    Return whether a PLAYER_REMOVED event removes its player for good.
+
+    False for a player that is only gone for now: the user disabled it, or the client of
+    a player that only exists while connected disconnected. Such a player comes back with
+    the same id, so keep what is stored about it.
+
+    :param event: A PLAYER_REMOVED event.
+    """
+    return bool(event.data and event.data.get("permanent"))
+
+
 def get_available_player(mass: MusicAssistant, player_id: str) -> Player | None:
     """
     Return the player if it is available, else None (also for an unknown player).
