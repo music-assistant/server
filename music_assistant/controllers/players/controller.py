@@ -2044,13 +2044,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param protocol_id: Id of the protocol.
         """
-        if (record := self.mass.config.get_protocol_record(protocol_id)) is None:
-            return True
-        if not record.get("enabled", True):
-            return False
-        if not (player_id := record.get("player_id")):
-            return True
-        return bool(self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True))
+        return self._wants_protocol(
+            protocol_id, self._protocols.get(protocol_id) or self._unattached.get(protocol_id)
+        )
 
     def on_unattached_protocol_update(self, protocol: PlayerProtocol) -> None:
         """
@@ -2792,7 +2788,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player_id: str | None = None
         existing = self._protocols.get(protocol_id)
         held = existing is protocol and protocol.player is None
-        if not self.wants_protocol(protocol_id):
+        if not self._wants_protocol(protocol_id, protocol):
             # switched off, or its player is disabled: it keeps its player and its place. Its
             # provider keeps the object, which a removal of the player still has to reach
             if held:
@@ -2833,7 +2829,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         elif self.mass.config.get_protocol_record(protocol_id) is None:
             attach.new_protocol_record = protocol_id
         self._store_protocol(protocol, player_id)
-        if not self.wants_protocol(protocol_id):
+        if not self._wants_protocol(protocol_id, protocol):
             # no player for a device the user does not want: its provider keeps the
             # object, which a removal of the player still has to reach
             if held:
@@ -2977,6 +2973,25 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             handle.cancel()
         if protocol.player is None and self._protocols.get(protocol_id) is protocol:
             del self._protocols[protocol_id]
+
+    def _wants_protocol(self, protocol_id: str, protocol: PlayerProtocol | None) -> bool:
+        """
+        Return whether the server wants a protocol attached now, see wants_protocol.
+
+        :param protocol_id: Id of the protocol.
+        :param protocol: The protocol object, None when it is not known.
+        """
+        if (record := self.mass.config.get_protocol_record(protocol_id)) is None:
+            return True
+        player_id = record.get("player_id")
+        if not self._link_applies(protocol, player_id):
+            # the record names another player than the one the protocol stands for
+            return True
+        if not record.get("enabled", True):
+            return False
+        if not player_id:
+            return True
+        return bool(self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True))
 
     async def _hold_derived_protocols_without_place(self, protocol_id: str) -> None:
         """

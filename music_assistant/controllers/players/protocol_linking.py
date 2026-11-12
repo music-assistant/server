@@ -219,12 +219,7 @@ class ProtocolLinkingMixin:
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if player is None and not isinstance(stored, dict):
             return False
-        if player is not None:
-            session_only = player.session_only
-        else:
-            values = (stored or {}).get("values")
-            session_only = isinstance(values, dict) and bool(values.get(CONF_SESSION_ONLY))
-        if session_only != protocol.session_only:
+        if self._is_session_only_player(player_id) != protocol.session_only:
             return False
         player_type = player.type if player else (stored or {}).get("player_type")
         is_own = protocol.role in OWN_PROTOCOL_ROLES
@@ -270,6 +265,34 @@ class ProtocolLinkingMixin:
                 return other_id
         return None
 
+    def _link_applies(self, protocol: PlayerProtocol | None, player_id: str | None) -> bool:
+        """
+        Return whether the stored link of a protocol to a player governs the protocol.
+
+        Not for a protocol that attaches as one that only exists while it is connected,
+        while that player is no such player: what the link and its record say is the
+        business of that player then. The link stays, for when the protocol connects as an
+        output of that player again.
+
+        :param protocol: The protocol object, None when it is not known.
+        :param player_id: Id of the player the record of the protocol names.
+        """
+        if protocol is None or not player_id or not protocol.session_only:
+            return True
+        return self._is_session_only_player(player_id)
+
+    def _is_session_only_player(self, player_id: str) -> bool:
+        """
+        Return whether a player only exists while its device is connected.
+
+        :param player_id: Id of the player, live or stored.
+        """
+        if player := self._players.get(player_id):
+            return player.session_only
+        stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+        values = stored.get("values") if isinstance(stored, dict) else None
+        return isinstance(values, dict) and bool(values.get(CONF_SESSION_ONLY))
+
     def _has_other_protocol_of_domain(
         self, protocol: PlayerProtocol, player_id: str, include_away: bool = False
     ) -> bool:
@@ -287,6 +310,9 @@ class ProtocolLinkingMixin:
         domain = protocol.provider.domain
         if include_away:
             for other_id in self._get_protocol_ids(player_id) - {protocol.protocol_id}:
+                known = self._protocols.get(other_id) or self._unattached.get(other_id)
+                if not self._link_applies(known, player_id):
+                    continue
                 if other := self._protocols.get(other_id):
                     other_domain = other.provider.domain
                 else:

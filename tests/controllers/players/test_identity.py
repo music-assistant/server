@@ -19,7 +19,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
 )
 from music_assistant.controllers.players.controller import PlayerController
-from tests.scenarios.harness import FAKE_SETTING, Event, Scenario
+from tests.scenarios.harness import FAKE_SETTING, Event, FakeProtocol, Scenario
 
 KITCHEN = {
     IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0",
@@ -676,6 +676,114 @@ async def test_session_only_session_of_a_client_of_a_device_leaves_its_link_alon
 
     assert scenario.player_of(client) == player_id
     assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+
+async def _web_session_of_a_device_client(
+    scenario: Scenario, carrier_domain: str = "sonos"
+) -> tuple[str, FakeProtocol]:
+    """
+    Connect a client of a device as a web player, while its record still names the device.
+
+    Returns the id of the player of the device and the web client.
+    """
+    carrier_provider = await scenario.add_provider(carrier_domain)
+    sendspin = await scenario.add_provider("sendspin")
+    carrier = carrier_provider.protocol(
+        "carrier_kitchen",
+        "Kitchen",
+        role="audio" if carrier_domain == "airplay" else "native",
+        identifiers=KITCHEN,
+    )
+    await scenario.attach(carrier)
+    player_id = scenario.single_player(carrier).player_id
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    await scenario.attach(client)
+    await scenario.detach(client)
+    web = sendspin.protocol("sendspin_kitchen", "Kitchen", role="native", session_only=True)
+    await scenario.attach(web)
+    assert scenario.player_of(web) == "sendspin_kitchen"
+    assert _edge(scenario, "sendspin_kitchen") == player_id
+    return player_id, web
+
+
+async def test_web_player_reconnects_while_the_player_its_record_names_is_disabled(
+    scenario: Scenario,
+) -> None:
+    """The player a stale record of a web client names is no player of that web client."""
+    player_id, web = await _web_session_of_a_device_client(scenario)
+    await scenario.disable(player_id)
+    await scenario.detach(web)
+
+    await scenario.attach(web)
+
+    assert scenario.player_of(web) == "sendspin_kitchen"
+
+
+async def test_web_player_the_user_disabled_stays_away_until_it_is_enabled(
+    scenario: Scenario,
+) -> None:
+    """The config a customised web player has of its own governs it, unlike a stale one."""
+    sendspin = await scenario.add_provider("sendspin")
+    web = sendspin.protocol("sendspin_web_1", "Web Browser", session_only=True)
+    await scenario.attach(web)
+    await scenario.configure_player("sendspin_web_1", name="Study browser")
+    await scenario.disable("sendspin_web_1")
+    await scenario.detach(web)
+
+    await scenario.attach(web)
+
+    assert scenario.player_of(web) is None
+
+    await scenario.enable("sendspin_web_1")
+    await scenario.idle()
+
+    assert scenario.player_of(web) == "sendspin_web_1"
+
+
+@pytest.mark.parametrize("stored", ["switched_off_live", "switched_off_before"])
+async def test_switch_of_the_output_a_stale_record_lists_leaves_the_web_player_alone(
+    scenario: Scenario, stored: str
+) -> None:
+    """
+    Switching off the output the player of a device lists for a web client is its own business.
+
+    The web player stays, and connects again; one that connects while that output is switched
+    off is a player of its own as well.
+    """
+    player_id, web = await _web_session_of_a_device_client(scenario)
+    if stored == "switched_off_before":
+        await scenario.detach(web)
+    scenario.clear_events()
+
+    await scenario.configure_player(player_id, **{"sendspin_kitchen||protocol||enabled": False})
+    await scenario.idle()
+
+    assert (scenario.mass.config.get_protocol_record("sendspin_kitchen") or {})["enabled"] is False
+    if stored == "switched_off_live":
+        assert scenario.player_of(web) == "sendspin_kitchen"
+        assert scenario.events(*PLAYER_EVENTS) == []
+        await scenario.detach(web)
+    await scenario.attach(web)
+
+    assert scenario.player_of(web) == "sendspin_kitchen"
+
+
+@pytest.mark.parametrize("web_client", ["connected", "gone"])
+async def test_web_client_whose_record_names_a_device_holds_no_place_of_a_bridge(
+    scenario: Scenario, web_client: str
+) -> None:
+    """A bridge of the device takes the place of its domain that the web client does not use."""
+    player_id, web = await _web_session_of_a_device_client(scenario, carrier_domain="airplay")
+    if web_client == "gone":
+        await scenario.detach(web)
+    bridge = scenario.provider("sendspin").protocol(
+        "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="carrier_kitchen"
+    )
+
+    await scenario.attach(bridge)
+    await scenario.idle()
+
+    assert scenario.player_of(bridge) == player_id
 
 
 async def test_removing_the_player_of_a_device_leaves_a_session_of_its_client_alone(
