@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import random
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from music_assistant_models.enums import QueueOption
 
@@ -125,6 +125,52 @@ async def test_an_add_goes_behind_the_items_the_player_moved_on_to_during_the_fe
     ids = _track_ids(ctrl)
     assert len(ids) == len(set(ids)), f"a track is queued twice: {ids}"
     assert "added" in ids[3:]
+
+
+async def test_an_add_keeps_an_item_the_player_asked_for_before_its_audio_came() -> None:
+    """An item with an open stream request stays, though the player has no audio of it yet."""
+    random.seed(4)
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    before = _playing_queue_with_tail(ctrl)
+    ctrl._queue_data["q1"].session_id = "s1"
+    started, release = _hold_fetch(ctrl, FRESH)
+
+    add = asyncio.create_task(
+        ctrl._handle_play_media("q1", _track("added", artist="Add"), QueueOption.ADD)
+    )
+    await asyncio.wait_for(started.wait(), 1)
+    # the player asks for the item after the buffered one; its first audio is still being prepared
+    requested = Mock(return_value={before[2].queue_item_id})
+    ctrl.mass.streams.requested_item_ids = requested  # type: ignore[method-assign]
+
+    release.set()
+    await add
+    requested.assert_called_with("q1", "s1")
+    assert ctrl._queue_data["q1"].items[:3] == before[:3]
+    assert "added" in _track_ids(ctrl)[3:]
+
+
+async def test_an_add_leaves_out_another_release_of_a_song_the_player_moved_on_to() -> None:
+    """A pool track that is another release of a song the player took during the fetch is dropped."""
+    random.seed(4)
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    before = _playing_queue_with_tail(ctrl)
+    # the old tail's second item, which the player buffers during the fetch below
+    taken = UPCOMING[1]
+    other_release = _track("other-release", artist=taken.artists[0].name)
+    other_release.name = taken.name
+    started, release = _hold_fetch(ctrl, [other_release, *FRESH])
+
+    add = asyncio.create_task(
+        ctrl._handle_play_media("q1", _track("added", artist="Add"), QueueOption.ADD)
+    )
+    await asyncio.wait_for(started.wait(), 1)
+    ctrl._queue_data["q1"].queue.index_in_buffer = 2
+
+    release.set()
+    await add
+    assert ctrl._queue_data["q1"].items[:3] == before[:3]
+    assert "other-release" not in _track_ids(ctrl)
 
 
 async def test_a_replace_keeps_the_old_queue_playing_until_the_pool_is_in() -> None:

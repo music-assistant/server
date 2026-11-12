@@ -46,6 +46,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.music.favorites import without_disliked_tracks
+from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.autoplay import (
     AUTOPLAY_EXCLUDED_MEDIA_TYPES,
     AUTOPLAY_SERIES_MEDIA_TYPES,
@@ -1260,13 +1261,29 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 queue_id, is_initial=False, preceding_items=queue_data.items[:insert_at]
             )
             if option != QueueOption.REPLACE:
-                # the player may have moved on into the old tail during the fetch: what it holds
-                # now stays, so the pool goes in behind it, without the tracks it already holds
+                # the player may have moved on into the old tail during the fetch: what it holds,
+                # or has asked for and not received audio of yet, stays, so the pool goes in behind
+                # it, without the songs it already holds
                 fetched_at = insert_at
                 base_index = committed_index(queue)
                 insert_at = 0 if base_index is None else base_index + 1
-                held = {item.media_item for item in queue_data.items[fetched_at:insert_at]}
-                pool_tracks = [track for track in pool_tracks if track not in held]
+                if queue_data.session_id is not None:
+                    requested = self.mass.streams.requested_item_ids(
+                        queue_id, queue_data.session_id
+                    )
+                    for index in range(len(queue_data.items) - 1, insert_at - 1, -1):
+                        if queue_data.items[index].queue_item_id in requested:
+                            insert_at = index + 1
+                            break
+                held = [item.media_item for item in queue_data.items[fetched_at:insert_at]]
+                held_songs = {
+                    key for media_item in held if media_item for key in song_keys(media_item)
+                }
+                pool_tracks = [
+                    track
+                    for track in pool_tracks
+                    if track not in held and held_songs.isdisjoint(song_keys(track))
+                ]
             queue_items = [
                 build_queue_item(queue_id, track) for track in pool_tracks if track.available
             ]
