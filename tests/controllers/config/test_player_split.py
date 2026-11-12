@@ -921,6 +921,34 @@ def test_records_an_older_version_stored_for_a_split_config_are_removed() -> Non
     assert records == []
 
 
+@pytest.mark.parametrize(
+    "new_player",
+    [
+        # the user unlinked it, which gives it a player of its own
+        _record("plaabbccddeeff", SONOS, values={"created_at": 2}),
+        # its stored link was dropped at an attach, and it was matched to another player
+        None,
+    ],
+    ids=["unlinked", "matched_elsewhere"],
+)
+def test_a_player_whose_own_protocol_went_to_another_player_stays(
+    new_player: dict[str, Any] | None,
+) -> None:
+    """A player from before the split keeps its record while any protocol still names it."""
+    data = _split_settings()
+    if new_player is not None:
+        data[CONF_PLAYERS][new_player["player_id"]] = new_player
+    owner = new_player["player_id"] if new_player is not None else "pl0123456789ab"
+    data[CONF_PLAYER_PROTOCOLS]["sonos_1"]["player_id"] = owner
+    data[CONF_PLAYER_QUEUES]["sonos_1"] = {"values": {"crossfade": True}}
+    expected = deepcopy(data)
+
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == expected
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == expected
+
+
 def test_an_unsplit_config_is_left_to_the_split() -> None:
     """Before the split, the records of the old shape are the ones the split converts."""
     data = _settings(_record("up0040", UNIVERSAL_PLAYER), _protocol("ap_40", AIRPLAY, "up0040"))

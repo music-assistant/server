@@ -170,8 +170,8 @@ def remove_player_records_of_older_versions(data: dict[str, Any]) -> bool:
 
     Those are the records of its protocol players and universal players, whose devices are
     found again, and of browser and app players without the session-only marker, which are
-    kept and marked when the user customised them. The records of the split are left as
-    they are.
+    kept and marked when the user customised them. A player that a protocol belongs to is
+    never removed.
 
     :param data: The persistent settings data.
     """
@@ -179,11 +179,13 @@ def remove_player_records_of_older_versions(data: dict[str, Any]) -> bool:
     # without a readable tree of the protocols, no record can be told apart
     if needs_player_split(data) or not isinstance(players, dict) or not isinstance(protocols, dict):
         return False
+    # a player a protocol belongs to is never removed, whatever else its record holds
+    owners = _player_ids_with_protocols(data)
     removed: list[str] = []
     for player_id, record in list(players.items()):
         if not isinstance(record, dict):
             LOGGER.info("Can not check the stored player %s (not a mapping)", player_id)
-        elif _is_older_version_record(player_id, record, protocols):
+        elif player_id not in owners and _is_older_version_record(player_id, record, protocols):
             _drop_player(data, player_id)
             removed.append(player_id)
     deleted, marked = _migrate_session_only_players(data)
@@ -307,10 +309,9 @@ def _is_older_version_record(
         return True
     if _values(record).get(LEGACY_PROTOCOL_PARENT_ID):
         return True
+    # the id of a protocol that belongs to a player
     protocol = protocols.get(player_id)
-    owner = protocol.get("player_id") if isinstance(protocol, dict) else None
-    # a player from before the split shares its id with its own protocol
-    return bool(owner) and owner != player_id
+    return isinstance(protocol, dict) and bool(protocol.get("player_id"))
 
 
 def _migrate_player_tree(data: dict[str, Any]) -> None:

@@ -10,7 +10,7 @@ import pytest
 from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYER_QUEUES, CONF_PLAYERS
 
 from .harness import Event, Role, Scenario, VisiblePlayer
 
@@ -440,6 +440,77 @@ async def test_protocol_only_player_is_restored_with_its_id_after_a_restart(
     await scenario.settle()
     den_airplay, den_cast = scenario.protocol("airplay_den"), scenario.protocol("cast_den")
     assert ("play_media", MEDIA) in den_airplay.commands + den_cast.commands
+
+
+async def test_a_player_whose_own_protocol_was_unlinked_stays_at_the_next_start(
+    scenario: Scenario,
+) -> None:
+    """
+    A player from before the split whose own protocol got a player of its own starts as it was.
+
+    It keeps its id, name and queue settings, and its other protocol attaches to it.
+    """
+    wiim = await scenario.add_provider("wiim")
+    airplay = await scenario.add_provider("airplay")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    living_airplay = airplay.protocol("airplay_living", "Living", role="audio", identifiers=LIVING)
+    scenario.set_present("wiim_living", True)
+    scenario.set_present("airplay_living", True)
+    queue_values = {"crossfade": True}
+
+    await scenario.seed_config(
+        {
+            CONF_PLAYERS: {
+                "wiim_living": {
+                    "player_id": "wiim_living",
+                    "provider": "wiim",
+                    "player_type": "player",
+                    "enabled": True,
+                    "name": "Living Room",
+                    "default_name": "Living",
+                    "values": {},
+                },
+                "pl0a1b2c3d4e5f": {
+                    "player_id": "pl0a1b2c3d4e5f",
+                    "provider": "wiim",
+                    "player_type": "player",
+                    "enabled": True,
+                    "default_name": "Living",
+                    "values": {},
+                },
+            },
+            CONF_PLAYER_PROTOCOLS: {
+                "wiim_living": {
+                    "protocol_id": "wiim_living",
+                    "provider": "wiim",
+                    "player_id": "pl0a1b2c3d4e5f",
+                    "role": "native",
+                    "enabled": True,
+                    "default_name": "Living",
+                    "values": {},
+                },
+                "airplay_living": {
+                    "protocol_id": "airplay_living",
+                    "provider": "airplay",
+                    "player_id": "wiim_living",
+                    "role": "audio",
+                    "enabled": True,
+                    "default_name": "Living",
+                    "values": {},
+                },
+            },
+            CONF_PLAYER_QUEUES: {"wiim_living": {"values": queue_values}},
+        }
+    )
+    await scenario.advance(15)
+    await scenario.idle()
+
+    assert scenario.player_of(living_airplay) == "wiim_living"
+    assert scenario.player_of(living) == "pl0a1b2c3d4e5f"
+    assert ("wiim_living", "Living Room") in [
+        (player.player_id, player.name) for player in scenario.visible_players()
+    ]
+    assert scenario.mass.config.get(f"{CONF_PLAYER_QUEUES}/wiim_living/values") == queue_values
 
 
 def _older_version_record(
