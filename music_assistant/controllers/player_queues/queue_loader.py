@@ -1298,6 +1298,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 await self._cleanup_queue_audio_data(queue_id)
                 queue.index_in_buffer = None
                 queue.ended = False
+            discarded = [] if option == QueueOption.REPLACE else queue_data.items[insert_at:]
+            if queue_data.next_item_id_preparing in {item.queue_item_id for item in discarded}:
+                # a prewarm of an item the swap drops would hold its source for nothing
+                self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             # the managed pool already interleaved the sources in a recency-aware order; load as-is,
             # in one swap of the items so no reader sees the queue without its tail
             await self.load(
@@ -1307,6 +1311,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_remaining=False,
                 keep_played=option != QueueOption.REPLACE,
             )
+            for item in discarded:
+                # off the queue now, so no cleanup reaches its audio any more; detached before
+                # releasing, as everywhere a buffer is cleared
+                if (details := item.streamdetails) and (buffer := details.buffer):
+                    details.buffer = None
+                    await buffer.clear()
             if start_playing:
                 await self.play_index(queue_id, insert_at)
             else:

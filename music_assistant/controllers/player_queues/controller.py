@@ -1645,6 +1645,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     await self._get_resume_position(queue_item) if next_index > cur_index else 0
                 )
                 await self._load_item(queue_item, seek_position=seek_position)
+                if (
+                    self.index_by_id(queue_id, queue_item.queue_item_id) is None
+                    and (rebuilt_index := self.index_by_id(queue_id, current_item_id)) is not None
+                ):
+                    # the upcoming items were replaced while this one loaded (a mix that
+                    # refilled), so go on with the item that took its place
+                    cur_index, idx = rebuilt_index, 0
+                    continue
                 # we're all set, this is our next item
                 next_item = queue_item
                 break

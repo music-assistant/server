@@ -199,3 +199,51 @@ async def test_a_replace_keeps_the_old_queue_playing_until_the_pool_is_in() -> N
     assert len(ids) == MANAGED_POOL_TARGET
     assert set(ids) <= {track.item_id for track in FRESH}
     play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_an_add_releases_the_audio_of_the_items_it_drops() -> None:
+    """A dropped item's warmed audio is released and its prewarm ended; kept items keep theirs."""
+    random.seed(4)
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    before = _playing_queue_with_tail(ctrl)
+    kept_buffer, dropped_buffer = Mock(clear=AsyncMock()), Mock(clear=AsyncMock())
+    before[1].streamdetails = Mock(buffer=kept_buffer)
+    before[2].streamdetails = Mock(buffer=dropped_buffer)
+    # the next old tail item was warmed up while the pool was being fetched
+    ctrl._queue_data["q1"].next_item_id_preparing = before[2].queue_item_id
+    cancel_task = Mock()
+    ctrl.mass.cancel_task = cancel_task  # type: ignore[method-assign]
+    _hold_fetch(ctrl, FRESH)[1].set()
+
+    await ctrl._handle_play_media("q1", _track("added", artist="Add"), QueueOption.ADD)
+
+    assert before[2] not in ctrl._queue_data["q1"].items
+    dropped_buffer.clear.assert_awaited_once()
+    assert before[2].streamdetails.buffer is None
+    cancel_task.assert_any_call("prepare_next_audio_buffer_q1")
+    kept_buffer.clear.assert_not_awaited()
+    assert before[1].streamdetails.buffer is kept_buffer
+
+
+async def test_the_next_item_is_the_one_that_replaced_an_item_dropped_while_it_loaded() -> None:
+    """An item the queue drops while it loads as the next one gives way to its replacement."""
+    ctrl = _controller(RecencySnapshot(now=NOW))
+    before = _playing_queue_with_tail(ctrl)
+    queue_data = ctrl._queue_data["q1"]
+    replacement = _queue_item("q1", FRESH[0])
+    loaded: list[str] = []
+
+    async def _load(queue_item: QueueItem, **_kwargs: object) -> None:
+        loaded.append(queue_item.queue_item_id)
+        if queue_item is before[1]:
+            # a refill swaps the upcoming items while this one loads
+            ctrl.update_items("q1", [before[0], replacement])
+
+    ctrl._load_item = AsyncMock(side_effect=_load)  # type: ignore[method-assign]
+    ctrl._get_resume_position = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    queue_data.queue.index_in_buffer = 0
+
+    next_item = await ctrl.load_next_queue_item("q1", before[0].queue_item_id)
+
+    assert next_item is replacement
+    assert loaded == [before[1].queue_item_id, replacement.queue_item_id]
