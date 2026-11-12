@@ -8,8 +8,13 @@ from typing import Final
 WEBSITE_URL: Final[str] = "https://mynoise.net"
 # the CDN that actually serves the (loopable) audio files for each machine
 CDN_URL: Final[str] = "https://mynoise.world"
-# index page listing all (public) noise machines, grouped by category
+# the index page listing all (public) noise machines, grouped by category
 INDEX_URL: Final[str] = f"{WEBSITE_URL}/noiseMachines.php"
+# where the patron (privileged access) login form posts the email to; a
+# successful login redirects to AUTH_OK_PATH and sets a session cookie, which
+# unlocks the patron-only generator pages (the CDN itself is public)
+AUTH_URL: Final[str] = f"{WEBSITE_URL}/authentication_script.php"
+AUTH_OK_PATH: Final[str] = "/authentication_OK.php"
 
 USER_AGENT: Final[str] = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -18,6 +23,7 @@ USER_AGENT: Final[str] = (
 
 # config entry keys
 CONF_REFRESH_CATALOG: Final[str] = "refresh_catalog"
+CONF_PATRON_EMAIL: Final[str] = "patron_email"
 CONF_MASTER_GAIN_DB: Final[str] = "master_gain_db"
 CONF_USE_VARIANT_B: Final[str] = "use_variant_b"
 

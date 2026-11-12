@@ -16,12 +16,16 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from html import unescape
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from music_assistant_models.errors import MediaNotFoundError
 
 from .constants import (
     AUDIO_EXTENSION,
+    AUTH_OK_PATH,
+    AUTH_URL,
     CACHE_CATEGORY_CATALOG,
     CACHE_CATEGORY_MACHINE,
     CATALOG_REFRESH_INTERVAL,
@@ -80,6 +84,16 @@ def _require_machines(machines: dict[str, Machine]) -> None:
         raise MediaNotFoundError("myNoise index page parse returned no machines")
 
 
+def _heading_title(raw: str) -> str:
+    """Return an h1 heading's display title, ignoring inner markup (patron links)."""
+    # drop the patron donation link whole: its title attribute contains '>'-ish
+    # markup that would confuse a plain tag-strip
+    title = re.sub(r"<a\b.*?</a>", "", raw, flags=re.DOTALL)
+    title = unescape(re.sub(r"<[^>]+>", "", title)).strip()
+    # the patron-only marker icon (\u2117) decorates patron headings, it is not a name
+    return title.replace("\u2117", "").strip()
+
+
 def _slugify(name: str) -> str:
     """Create a browse-safe slug from a display name."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -99,11 +113,20 @@ def parse_cfg_blob(html: str) -> dict[str, Any] | None:
         return None
 
 
-def parse_index_page(html: str) -> tuple[list[Category], dict[str, Machine]]:
-    """Parse the myNoise index page into categories and (lightweight) machines."""
+def parse_index_page(
+    html: str, include_patron: bool = False
+) -> tuple[list[Category], dict[str, Machine]]:
+    """
+    Parse the myNoise index page into categories and (lightweight) machines.
+
+    Patron-only MAGIC machines are skipped unless ``include_patron`` is set (the
+    index lists them anonymously; only their generator pages need a login).
+    """
     markers: list[tuple[int, str, Any]] = []
-    for match in re.finditer(r"<h1>([^<]+)</h1>", html):
-        markers.append((match.start(), "cat", match.group(1).strip()))
+    # patron category headings embed a donation link inside the h1, so inner
+    # tags must be stripped rather than excluded from the match
+    for match in re.finditer(r"<h1>(.*?)</h1>", html):
+        markers.append((match.start(), "cat", _heading_title(match.group(1))))
     anchor_pattern = re.compile(
         r"<a href='(/NoiseMachines/[^']+\.php)'[^>]*class='([^']*)'[^>]*>([^<]+)</a>"
     )
@@ -129,7 +152,7 @@ def parse_index_page(html: str) -> tuple[list[Category], dict[str, Machine]]:
         if not tokens or not name:
             continue
         machine_id = tokens[0]
-        if machine_id.startswith("MAGIC_"):
+        if machine_id.startswith("MAGIC_") and not include_patron:
             # the 'Magic' category is patron-only (login required), skip it
             continue
         if machine_id in machines:
@@ -184,10 +207,37 @@ class Catalog:
         self.machines = machines
 
 
-async def fetch_catalog(mass: MusicAssistant, force_refresh: bool = False) -> Catalog:
+async def patron_login(mass: MusicAssistant, email: str) -> bool:
+    """
+    Authenticate as a myNoise patron (donor) with the email from the settings.
+
+    The site's login form only posts an email address (no password) and answers
+    with a 302 to authentication_OK.php (accepted) or authentication_KO.php
+    (rejected). The redirect is deliberately *not* followed: the OK page itself
+    redirects onward to /404.php, so the Location header is the only reliable
+    outcome marker. The session cookie from the response is picked up by the
+    shared http session's cookie jar and replayed on the patron-gated generator
+    pages. Returns True when the email was accepted.
+    """
+    async with mass.http_session.post(
+        AUTH_URL,
+        data={"email": email, "pwd": ""},
+        headers={"User-Agent": USER_AGENT},
+        allow_redirects=False,
+    ) as response:
+        location = response.headers.get("Location", "")
+        return urlparse(location).path == AUTH_OK_PATH
+
+
+async def fetch_catalog(
+    mass: MusicAssistant, force_refresh: bool = False, patron: bool = False
+) -> Catalog:
     """Return the machine catalog, refreshing from the website when needed."""
+    # keep patron and anonymous catalogs apart so MAGIC machines never leak
+    # into (or disappear from) the wrong view
+    cache_key = "catalog_patron" if patron else "catalog"
     cached = await mass.cache.get(
-        "catalog",
+        cache_key,
         provider="mynoise",
         category=CACHE_CATEGORY_CATALOG,
     )
@@ -196,11 +246,11 @@ async def fetch_catalog(mass: MusicAssistant, force_refresh: bool = False) -> Ca
     try:
         async with mass.http_session.get(INDEX_URL, headers={"User-Agent": USER_AGENT}) as response:
             html = await response.text()
-        categories, machines = parse_index_page(html)
+        categories, machines = parse_index_page(html, include_patron=patron)
         _require_machines(machines)
         catalog = Catalog(categories, machines)
         await mass.cache.set(
-            "catalog",
+            cache_key,
             _catalog_to_dict(catalog),
             provider="mynoise",
             category=CACHE_CATEGORY_CATALOG,

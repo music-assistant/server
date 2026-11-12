@@ -15,6 +15,7 @@ from music_assistant.providers.mynoise.catalog import (
     fetch_machine_details,
     parse_cfg_blob,
     parse_index_page,
+    patron_login,
 )
 from music_assistant.providers.mynoise.constants import (
     CACHE_CATEGORY_MACHINE,
@@ -26,7 +27,7 @@ INDEX_HTML = """
 <h1>Landscapes</h1>
 <a href='/NoiseMachines/japaneseGardenNoiseGenerator.php' class='JAPANGARDEN'>Japanese Garden</a>
 <a href='/NoiseMachines/rainNoiseGenerator.php' class='RAIN'>Rain&nbsp;&nbsp;</a>
-<h1>Magic</h1>
+<h1><a href='/donate.php' class='powertip' title='For &#8471;atrons only.<br><br>Thanks!'>&#8471;</a> Magic</h1>
 <a href='/NoiseMachines/magicX.php' class='MAGIC_ONE'>Magic One</a>
 <h1>Empty</h1>
 <h1>Deep Focus</h1>
@@ -46,10 +47,17 @@ var CFG = {"title":"Thunder","mediaTitle":"Thunderstorm",
 class _FakeResponse:
     """Minimal aiohttp response stand-in (async context manager)."""
 
-    def __init__(self, html: str = "", body: bytes = b"", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        html: str = "",
+        body: bytes = b"",
+        error: Exception | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._html = html
         self._body = body
         self._error = error
+        self.headers = headers or {}
 
     async def __aenter__(self) -> Self:
         if self._error:
@@ -76,6 +84,7 @@ def _mass(http_response: _FakeResponse | None = None, cached: Any = None) -> Mag
     mass.cache.get = AsyncMock(return_value=cached)
     mass.cache.set = AsyncMock()
     mass.http_session.get = MagicMock(return_value=http_response or _FakeResponse())
+    mass.http_session.post = MagicMock(return_value=http_response or _FakeResponse())
     return mass
 
 
@@ -131,6 +140,16 @@ def test_parse_index_page_skips_magic_and_entities() -> None:
     assert machines["RAIN"].name == "Rain"
 
 
+def test_parse_index_page_patron_includes_magic() -> None:
+    """With include_patron the MAGIC machines and their own category are kept."""
+    categories, machines = parse_index_page(INDEX_HTML, include_patron=True)
+    assert "MAGIC_ONE" in machines
+    magic_cat = next(cat for cat in categories if cat.id == "magic")
+    # the patron marker icon inside the heading is stripped from the display name
+    assert magic_cat.name == "Magic"
+    assert magic_cat.machine_ids == ["MAGIC_ONE"]
+
+
 def test_parse_index_page_dedupes_across_categories() -> None:
     """A machine listed in two categories is one item, referenced by both."""
     categories, machines = parse_index_page(INDEX_HTML)
@@ -183,6 +202,29 @@ async def test_fetch_catalog_prefers_stale_cache() -> None:
     )
     catalog = await fetch_catalog(mass)
     assert set(catalog.machines) == {"ONE"}
+
+
+async def test_fetch_catalog_patron_includes_magic_in_own_cache() -> None:
+    """The patron catalog keeps MAGIC machines and caches under a separate key."""
+    mass = _mass(http_response=_FakeResponse(html=INDEX_HTML))
+    catalog = await fetch_catalog(mass, patron=True)
+    assert "MAGIC_ONE" in catalog.machines
+    assert mass.cache.set.await_args.args[0] == "catalog_patron"
+
+
+# ------------------------------------------------------------- patron_login
+
+
+async def test_patron_login_success() -> None:
+    """Login succeeds when the auth script 302s to authentication_OK."""
+    mass = _mass(http_response=_FakeResponse(headers={"Location": "/authentication_OK.php"}))
+    assert await patron_login(mass, "me@example.com") is True
+
+
+async def test_patron_login_rejected() -> None:
+    """An email unknown to myNoise 302s to authentication_KO."""
+    mass = _mass(http_response=_FakeResponse(headers={"Location": "/authentication_KO.php"}))
+    assert await patron_login(mass, "nobody@example.com") is False
 
 
 # ---------------------------------------------------- fetch_machine_details

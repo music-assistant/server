@@ -9,7 +9,7 @@
     "@eyecreate"
   ],
   "requirements": [],
-  "documentation": "https://music-assistant.io/music-providers/my-noise",
+  "documentation": "https://music-assistant.io/music-providers/mynoise",
   "multi_instance": false,
   "builtin": false,
   "icon": "mdi-waves"

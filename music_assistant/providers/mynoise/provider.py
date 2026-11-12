@@ -10,7 +10,11 @@ them through the WebAudio API with looping enabled and a mixer per band.
 This provider recreates that model server-side: the layer files are fetched
 from the myNoise CDN and looped/mixed on the fly by ffmpeg, producing one
 endless stream per machine - so a machine plays forever, just like in the
-browser, without any (re)download or login.
+browser, without any (re)download.
+
+myNoise grants lifetime privileged access to donors, validated by posting the
+donor email address (no password). Setting the optional 'Patron email' option
+logs in with that address and also unlocks the patron-only 'Magic' machines.
 
 No official API exists, so the catalog is scraped from the public index page
 (with a bundled fallback) and each machine's layer files are parsed from the
@@ -55,11 +59,18 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.models.music_provider import MusicProvider
 
-from .catalog import Machine, MachineLayer, fetch_catalog, fetch_machine_details
+from .catalog import (
+    Machine,
+    MachineLayer,
+    fetch_catalog,
+    fetch_machine_details,
+    patron_login,
+)
 from .constants import (
     AUDIO_CACHE_SUBDIR,
     AUDIO_EXTENSION,
     CONF_MASTER_GAIN_DB,
+    CONF_PATRON_EMAIL,
     CONF_REFRESH_CATALOG,
     CONF_USE_VARIANT_B,
     USER_AGENT,
@@ -104,6 +115,9 @@ async def setup(
 class MyNoiseProvider(MusicProvider):
     """Music provider that streams myNoise.net machines on endless loop."""
 
+    # cached outcome of the patron login (None = not attempted yet)
+    _patron_logged_in: bool | None = None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the (options) config entries for this provider instance."""
         return (
@@ -112,6 +126,12 @@ class MyNoiseProvider(MusicProvider):
                 type=ConfigEntryType.ACTION,
                 required=False,
                 action="refresh_catalog",
+            ),
+            ConfigEntry(
+                key=CONF_PATRON_EMAIL,
+                type=ConfigEntryType.STRING,
+                value=self.get_config_value(CONF_PATRON_EMAIL, ""),
+                required=False,
             ),
             ConfigEntry(
                 key=CONF_MASTER_GAIN_DB,
@@ -134,7 +154,9 @@ class MyNoiseProvider(MusicProvider):
         if action != CONF_REFRESH_CATALOG:
             await super().handle_config_action(action)
             return
-        await fetch_catalog(self.mass, force_refresh=True)
+        # retry the patron login too, so a corrected email takes effect here
+        self._patron_logged_in = None
+        await fetch_catalog(self.mass, force_refresh=True, patron=await self._patron_enabled())
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -157,7 +179,7 @@ class MyNoiseProvider(MusicProvider):
         """Search the myNoise machine catalog by name."""
         if MediaType.RADIO not in media_types:
             return SearchResults()
-        catalog = await fetch_catalog(self.mass)
+        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
         query = search_query.casefold()
         results = [
             self._radio_from_machine(machine)
@@ -172,7 +194,7 @@ class MyNoiseProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio (noise machine) details by id."""
-        catalog = await fetch_catalog(self.mass)
+        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
         machine = catalog.machines.get(prov_radio_id)
         if not machine:
             raise MediaNotFoundError(f"Unknown myNoise machine: {prov_radio_id}")
@@ -182,7 +204,7 @@ class MyNoiseProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse the myNoise catalog: categories and their machines."""
-        catalog = await fetch_catalog(self.mass)
+        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
         path_no_schema = path.split("://", 1)[1] if "://" in path else path
         parts = [part for part in path_no_schema.split("/") if part]
         # strip generic leading segments (mynoise://, root, libraries, radios)
@@ -226,7 +248,7 @@ class MyNoiseProvider(MusicProvider):
         self, item_id: str, media_type: MediaType = MediaType.RADIO
     ) -> StreamDetails:
         """Return streamdetails for the given machine: an endless custom mix."""
-        catalog = await fetch_catalog(self.mass)
+        catalog = await fetch_catalog(self.mass, patron=await self._patron_enabled())
         machine = catalog.machines.get(item_id)
         if not machine:
             raise MediaNotFoundError(f"Unknown myNoise machine: {item_id}")
@@ -300,6 +322,24 @@ class MyNoiseProvider(MusicProvider):
         return path
 
     # -------------------------------------------------------------- helpers
+
+    async def _patron_enabled(self) -> bool:
+        """Return True when a patron email is configured and the login succeeded."""
+        email = str(self.get_config_value(CONF_PATRON_EMAIL, "") or "").strip()
+        if not email:
+            return False
+        if self._patron_logged_in is None:
+            try:
+                self._patron_logged_in = await patron_login(self.mass, email)
+            except Exception:
+                self.logger.warning("myNoise patron login failed", exc_info=True)
+                self._patron_logged_in = False
+            if not self._patron_logged_in:
+                self.logger.warning(
+                    "myNoise rejected the configured patron email; patron-only machines "
+                    "stay locked (the email must match the one of your donation)"
+                )
+        return self._patron_logged_in
 
     async def _resolve_layer_sources(
         self, layers: list[MachineLayer], gains: list[float], use_variant_b: bool

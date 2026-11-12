@@ -19,6 +19,7 @@ from music_assistant.providers.mynoise.catalog import (
     MachineLayer,
 )
 from music_assistant.providers.mynoise.constants import (
+    CONF_PATRON_EMAIL,
     CONF_REFRESH_CATALOG,
     CONF_USE_VARIANT_B,
 )
@@ -319,7 +320,58 @@ async def test_handle_config_action_refreshes_catalog(
     monkeypatch.setattr(provider_module, "fetch_catalog", fetch_mock)
     provider = _create_provider(tmp_path)
     await provider.handle_config_action(CONF_REFRESH_CATALOG)
-    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True)
+    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True, patron=False)
+
+
+def _provider_with_patron_email(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MyNoiseProvider:
+    """Create a provider configured with a patron email."""
+    provider = _create_provider(tmp_path)
+    monkeypatch.setattr(
+        provider,
+        "get_config_value",
+        lambda key, default=None: "me@example.com" if key == CONF_PATRON_EMAIL else default,
+    )
+    return provider
+
+
+async def test_patron_email_unlocks_patron_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured patron email logs in once and requests the patron catalog."""
+    provider = _provider_with_patron_email(tmp_path, monkeypatch)
+    login = AsyncMock(return_value=True)
+    monkeypatch.setattr(provider_module, "patron_login", login)
+    fetch_mock = AsyncMock()
+    monkeypatch.setattr(provider_module, "fetch_catalog", fetch_mock)
+
+    await provider.handle_config_action(CONF_REFRESH_CATALOG)
+    login.assert_awaited_once_with(provider.mass, "me@example.com")
+    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True, patron=True)
+
+    # the login outcome is cached: browsing does not re-authenticate
+    await provider._patron_enabled()
+    login.assert_awaited_once()
+
+
+async def test_patron_login_failure_stays_anonymous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected patron email warns and keeps the anonymous catalog."""
+    provider = _provider_with_patron_email(tmp_path, monkeypatch)
+    monkeypatch.setattr(provider_module, "patron_login", AsyncMock(return_value=False))
+    fetch_mock = AsyncMock()
+    monkeypatch.setattr(provider_module, "fetch_catalog", fetch_mock)
+
+    await provider.handle_config_action(CONF_REFRESH_CATALOG)
+    fetch_mock.assert_awaited_once_with(provider.mass, force_refresh=True, patron=False)
+    cast("MagicMock", provider.logger.warning).assert_called()
+
+
+async def test_get_config_entries_include_patron_email(tmp_path: Path) -> None:
+    """The options expose a patron email field next to the other settings."""
+    provider = _create_provider(tmp_path)
+    entries = await provider.get_config_entries()
+    assert CONF_PATRON_EMAIL in [entry.key for entry in entries]
 
 
 def test_supported_features() -> None:

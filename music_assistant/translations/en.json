@@ -1891,6 +1891,8 @@
   "provider.musicme.media.recommendations.top_artists.name": "Top artists",
   "provider.mynoise.config_entries.master_gain_db.description": "Extra gain applied to the final mix of every machine. Use this if machines play too loud/quiet (start with -6).",
   "provider.mynoise.config_entries.master_gain_db.label": "Master gain (dB)",
+  "provider.mynoise.config_entries.patron_email.description": "Email address associated with your myNoise donation. Fill in to unlock the patron-only Magic machines. Leave empty to use the free catalog only.",
+  "provider.mynoise.config_entries.patron_email.label": "Patron email",
   "provider.mynoise.config_entries.refresh_catalog.action_label": "Refresh",
   "provider.mynoise.config_entries.refresh_catalog.description": "Re-download the list of noise machines from mynoise.net. Normally refreshed automatically every 30 days.",
   "provider.mynoise.config_entries.refresh_catalog.label": "Refresh machine catalog",
