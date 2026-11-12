@@ -1787,7 +1787,8 @@ class PlayerConfigMixin:
 
         Each loaded plugin that binds its AudioSources to individual players (e.g.
         Spotify Connect) renders as a single boolean toggle whose value reflects
-        whether the player is in that plugin's connected players.
+        whether the player is in that plugin's connected players, also by the id of a
+        player that was merged into it.
 
         :param player: The player to create the plugin toggle entries for.
         """
@@ -1816,7 +1817,10 @@ class PlayerConfigMixin:
                     # the key is per-plugin (dynamic), so pin a static catalog key
                     translation_key="plugin_enable",
                     translation_params=[provider.name],
-                    value=player.player_id in connected_players,
+                    value=any(
+                        self.mass.players.resolve_player_id(connected_id) == player.player_id
+                        for connected_id in connected_players
+                    ),
                     default_value=False,
                     category="plugins",
                     requires_reload=False,
@@ -1848,12 +1852,14 @@ class PlayerConfigMixin:
                 self.mass.config.get_raw_provider_config_value(instance_id, CONF_CONNECTED_PLAYERS)
                 or [],
             )
-            if enabled == (player_id in connected_players):
+            # a connected player that was merged into this one counts as this one
+            resolve = self.mass.players.resolve_player_id
+            if enabled == any(resolve(x) == player_id for x in connected_players):
                 continue
             if enabled:
                 connected_players = [*connected_players, player_id]
             else:
-                connected_players = [x for x in connected_players if x != player_id]
+                connected_players = [x for x in connected_players if resolve(x) != player_id]
             # the plugin provider's config is the canonical store; updating it also
             # reloads the plugin so it picks up the new player set
             await self.mass.config._update_provider_config(
