@@ -576,6 +576,8 @@ class Player:
         self._active_output_protocol: str | None = None
         self._extra_data: dict[str, Any] = {}
         self._active_mass_source: str | None = None
+        # when a player that went idle forgets its active mass source (monotonic)
+        self._active_mass_source_expires_at: float | None = None
         self._sleep_timer_expires_at: float | None = None
         self._sleep_timer_mode: SleepTimerMode | None = None
         self._stop_called: bool = False
@@ -1360,6 +1362,7 @@ class Player:
         for protocol in self._protocols.values():
             protocol.invalidate_cache()
         self._expire_stale_external_pause()
+        self._expire_idle_mass_source()
         new_snapshot = self._collect_input_snapshot()
         if (
             not force_update
@@ -1392,19 +1395,19 @@ class Player:
         # track stop called state
         if effects.left_idle:
             self._stop_called = False
+            self._active_mass_source_expires_at = None
             self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
         elif effects.went_idle:
             self._stop_called = True
-            # when we're going to idle,
-            # we want to reset the active mass source after a short delay
-            # this is done using a timer which gets reset if the player starts playing again
-            # before the timer is up, using the task_id
-            self.mass.call_later(
-                MASS_SOURCE_IDLE_MEMORY,
-                self.set_active_mass_source,
-                None,
-                task_id=f"set_mass_source_{self.player_id}",
-            )
+            # when we're going to idle, the active mass source is forgotten after a short
+            # delay, unless the player starts playing again before that
+            if self._active_mass_source is not None:
+                self._active_mass_source_expires_at = time.monotonic() + MASS_SOURCE_IDLE_MEMORY
+                self.mass.call_later(
+                    MASS_SOURCE_IDLE_MEMORY,
+                    self.update_state,
+                    task_id=f"set_mass_source_{self.player_id}",
+                )
         changed_values = self._diff_state(prev_state, reachable)
         if not MEDIA_IDENTITY_KEYS.isdisjoint(changed_values.keys()):
             # current media changed, call the media updated callback
@@ -1618,6 +1621,7 @@ class Player:
         so we can restore it when needed (e.g. after switching to a plugin source).
         """
         self.mass.cancel_timer(f"set_mass_source_{self.player_id}")
+        self._active_mass_source_expires_at = None
         self._active_mass_source = value
         self.update_state()
 
@@ -2477,6 +2481,19 @@ class Player:
         if source is None or source in (self.player_id, own.protocol_id):
             return False
         return self.mass.player_queues.get(source) is None
+
+    def _expire_idle_mass_source(self) -> None:
+        """Forget the active mass source of a player that has been idle for long enough."""
+        if (expires_at := self._active_mass_source_expires_at) is None:
+            return
+        if (remaining := expires_at - time.monotonic()) > 0:
+            # a wake-up that runs a hair early would otherwise leave the source remembered
+            self.mass.call_later(
+                remaining, self.update_state, task_id=f"set_mass_source_{self.player_id}"
+            )
+            return
+        self._active_mass_source = None
+        self._active_mass_source_expires_at = None
 
     def _expire_stale_external_pause(self) -> None:
         """Report an external source that has been paused for a while as no longer active."""
