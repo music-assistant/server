@@ -22,7 +22,11 @@ from music_assistant_models.enums import (
     ProtocolRole,
     RepeatMode,
 )
-from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
+from music_assistant_models.errors import (
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    ResourceBusyError,
+)
 from music_assistant_models.player import PlayerMedia, PlayerSource
 from music_assistant_models.unique_list import UniqueList
 
@@ -64,6 +68,14 @@ def _noop_context() -> AsyncMock:
     # an unconfigured AsyncMock returns a truthy MagicMock and would swallow exceptions
     ctx.__aexit__.return_value = False
     return ctx
+
+
+def _busy_lock() -> MagicMock:
+    """Build a get_player_lock mock whose lock stays taken for the whole wait."""
+    ctx = AsyncMock()
+    ctx.__aenter__.side_effect = ResourceBusyError("still busy")
+    ctx.__aexit__.return_value = False
+    return MagicMock(return_value=ctx)
 
 
 def _make_mock_mass() -> MagicMock:
@@ -633,6 +645,31 @@ class TestActiveProtocolDomain:
         mass.players.schedule_active_output_protocol_clear.assert_any_call(promoted)
         mass.players.schedule_active_output_protocol_clear.assert_any_call(leader)
         mass.players.trigger_player_update.assert_any_call("m2")
+
+    async def test_a_busy_leader_leaves_the_group_and_its_session_as_they_were(self) -> None:
+        """A dissolve that cannot get the leader's lock fails and changes nothing."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_member(mass, "leader", "sendspin")
+        _make_member(mass, "member", "sendspin")
+        leader.state.group_members = UniqueList(["leader", "member"])
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+        mass.players.get_player_lock = _busy_lock()
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_cancel_idle_grace_timer") as cancel_idle_grace,
+            patch.object(sgp, "_cancel_reform_timer") as cancel_reform,
+            pytest.raises(ResourceBusyError),
+        ):
+            await sgp._dissolve_syncgroup()
+
+        assert sgp.sync_leader is leader
+        mass.players._handle_set_members.assert_not_awaited()
+        cancel_idle_grace.assert_not_called()
+        cancel_reform.assert_not_called()
+        mass.players.schedule_active_output_protocol_clear.assert_not_called()
 
 
 class TestDynamicLeaderSwitch:

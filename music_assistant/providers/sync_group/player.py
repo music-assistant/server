@@ -982,61 +982,73 @@ class SyncGroupPlayer(PlayerProtocol):
                 self._schedule_idle_grace_timer()
 
     async def _dissolve_syncgroup(self) -> None:
-        """Dissolve the current syncgroup by ungrouping all members."""
-        # a dissolve is happening now — any pending grace or re-form timer is no
-        # longer needed (_dissolve_and_reform re-arms the re-form right after)
-        # and the session whose start the marker tracked is gone
-        self._cancel_idle_grace_timer()
-        self._cancel_reform_timer()
-        self._playback_start_at = float("-inf")
-        if sync_leader := self.sync_leader:
-            # dissolve the temporary syncgroup from the player that holds the members:
-            # ungrouping from a leader that no longer holds them is a no-op and would
-            # leave the members grouped and streaming with no way back
-            group_leader = self._protocol_group_leader(sync_leader)
-            sync_children = [
-                x for x in group_leader.state.group_members if x != group_leader.player_id
-            ]
-            if sync_children:
-                # a leader that dropped off the network can't ungroup its members; the provider
-                # (or a later form) releases them, so the dissolve carries on
-                try:
-                    # wait for the leader's state to reflect the ungroup
-                    # use _handle_set_members directly to avoid the redirect loop
-                    # (cmd_set_members redirects sync-leader targets back to this syncgroup)
-                    async with (
-                        self.mass.players.wait_for_player_update(group_leader.player_id, timeout=5),
-                        self.mass.players.get_player_lock(
-                            group_leader.player_id, PlayerLockPurpose.PLAYBACK
-                        ),
-                    ):
-                        await self.mass.players._handle_set_members(
-                            group_leader, player_ids_to_remove=sync_children
+        """
+        Dissolve the current syncgroup by ungrouping all members.
+
+        :raises ResourceBusyError: When the leader stays busy; the group then keeps its
+            session as it was.
+        """
+        sync_leader = self.sync_leader
+        # dissolve the temporary syncgroup from the player that holds the members:
+        # ungrouping from a leader that no longer holds them is a no-op and would
+        # leave the members grouped and streaming with no way back
+        group_leader = self._protocol_group_leader(sync_leader) if sync_leader else None
+        # the leader's lock comes before anything of the dissolve, so one that cannot get
+        # it leaves the group with the session it can still dissolve later
+        async with (
+            self.mass.players.get_player_lock(group_leader.player_id, PlayerLockPurpose.PLAYBACK)
+            if group_leader
+            else nullcontext()
+        ):
+            # a dissolve is happening now — any pending grace or re-form timer is no
+            # longer needed (_dissolve_and_reform re-arms the re-form right after)
+            # and the session whose start the marker tracked is gone
+            self._cancel_idle_grace_timer()
+            self._cancel_reform_timer()
+            self._playback_start_at = float("-inf")
+            if group_leader:
+                sync_children = [
+                    x for x in group_leader.state.group_members if x != group_leader.player_id
+                ]
+                if sync_children:
+                    # a leader that dropped off the network can't ungroup its members; the
+                    # provider (or a later form) releases them, so the dissolve carries on
+                    try:
+                        # wait for the leader's state to reflect the ungroup
+                        # use _handle_set_members directly to avoid the redirect loop
+                        # (cmd_set_members redirects sync-leader targets back to this syncgroup)
+                        async with self.mass.players.wait_for_player_update(
+                            group_leader.player_id, timeout=5
+                        ):
+                            await self.mass.players._handle_set_members(
+                                group_leader, player_ids_to_remove=sync_children
+                            )
+                    except Exception as err:
+                        self.logger.log(
+                            logging.WARNING
+                            if group_leader.available_for_playback
+                            else logging.DEBUG,
+                            "Could not ungroup the members of %s while dissolving group %s: %s",
+                            group_leader.display_name,
+                            self.display_name,
+                            err,
                         )
-                except Exception as err:
-                    self.logger.log(
-                        logging.WARNING if group_leader.available_for_playback else logging.DEBUG,
-                        "Could not ungroup the members of %s while dissolving group %s: %s",
-                        group_leader.display_name,
-                        self.display_name,
-                        err,
-                    )
-            if group_leader is not sync_leader:
-                # our callers only ever stop the leader we track, so a provider-promoted
-                # one would keep streaming on its own once the members are released
-                await self._stop_departing_leader(group_leader, wait_for_update=False)
-                self.mass.players.schedule_active_output_protocol_clear(group_leader)
-        # Clear the leader's active protocol once it stops playing; the controller's
-        # clearing in _handle_cmd_stop is skipped for a still-grouped protocol player.
-        if sync_leader:
-            self.mass.players.schedule_active_output_protocol_clear(sync_leader)
-        self.sync_leader = None
-        self._update_attributes()
-        self.update_state()
-        # members derive active_group from our session; when the dissolve leaves our own
-        # state unchanged (idle grace after the queue ended) no event would refresh them
-        for member_id in self._attr_group_members:
-            self.mass.players.trigger_player_update(member_id)
+                if group_leader is not sync_leader:
+                    # our callers only ever stop the leader we track, so a provider-promoted
+                    # one would keep streaming on its own once the members are released
+                    await self._stop_departing_leader(group_leader, wait_for_update=False)
+                    self.mass.players.schedule_active_output_protocol_clear(group_leader)
+            # Clear the leader's active protocol once it stops playing; the controller's
+            # clearing in _handle_cmd_stop is skipped for a still-grouped protocol player.
+            if sync_leader:
+                self.mass.players.schedule_active_output_protocol_clear(sync_leader)
+            self.sync_leader = None
+            self._update_attributes()
+            self.update_state()
+            # members derive active_group from our session; when the dissolve leaves our own
+            # state unchanged (idle grace after the queue ended) no event would refresh them
+            for member_id in self._attr_group_members:
+                self.mass.players.trigger_player_update(member_id)
 
     def _select_sync_leader(
         self,
