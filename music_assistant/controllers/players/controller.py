@@ -342,6 +342,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     del self._lock_holders[lock_key]
             lock.release()
 
+    def holds_player_lock(
+        self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+    ) -> bool:
+        """
+        Return whether the running task holds a player's lock.
+
+        Work that the holder hands to tasks of their own and waits for must not wait for a
+        lock the holder has: the work on such a player runs in the holder's task instead.
+
+        :param player_id: The player whose lock to check.
+        :param purpose: The lock's category.
+        """
+        task = asyncio.current_task()
+        return task is not None and f"{purpose.value}_{player_id}" in self._task_held_locks.get(
+            task, set()
+        )
+
     @contextlib.asynccontextmanager
     async def get_group_and_player_lock(self, player_id: str) -> AsyncIterator[None]:
         """

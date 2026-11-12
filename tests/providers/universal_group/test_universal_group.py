@@ -37,13 +37,17 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAY_MEDIA_OVERRIDES_GROUP
+from music_assistant.controllers.player_queues.helpers import handle_play_action
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 from tests.common import MockProvider, attach_mock, make_player_state, mock_player_mass
@@ -808,6 +812,32 @@ class TestMemberStream:
         assert [plan.output_details.source_channel for plan in plans] == [AudioChannel.FL]
 
 
+class _MemberQueue:
+    """Queue controller stand-in with one queue, whose play action is the real decorated one."""
+
+    mass: MusicAssistant
+    _queue_data: dict[str, PlayerQueueData]
+
+    def __init__(self, mass: MagicMock, queue_id: str) -> None:
+        """Initialize the stand-in with the queue of one player."""
+        self.mass = mass
+        queue = PlayerQueue(
+            queue_id=queue_id, active=True, display_name=queue_id, available=True, items=0
+        )
+        self._queue_data = {queue_id: PlayerQueueData(queue=queue)}
+
+    @handle_play_action
+    async def play_index(self, queue_id: str) -> None:
+        """Play the queue's next item on its player, the way play_index does."""
+        await self.mass.players.play_media(queue_id, PlayerMedia(uri="x", source_id=queue_id))
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
+        """Ignore the queue updates."""
+
+    def on_player_update(self, player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
+        """Ignore the player updates."""
+
+
 class TestCommandOnAMemberOfAHeldGroup:
     """A playback command addressed to a member of a group that holds it plays on every member."""
 
@@ -879,20 +909,26 @@ class TestCommandOnAMemberOfAHeldGroup:
         mass.player_queues.resume = AsyncMock(side_effect=_resume)
         return players, ugp, played_on
 
-    @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume", "play_media"])
+    @pytest.mark.parametrize(
+        "command", ["cmd_play", "cmd_resume", "play_media", "play action on its queue"]
+    )
     async def test_every_member_plays_and_the_command_returns_at_once(
         self, monkeypatch: pytest.MonkeyPatch, command: str
     ) -> None:
         """The member the command was addressed to is played on like the others."""
         players, _ugp, played_on = self._held_group(monkeypatch)
-        if command == "play_media":
+        if command in ("play_media", "play action on its queue"):
             # the member's play follows its group rather than taking it out of it
             cast("MagicMock", players.mass).config.get_player_value = MagicMock(
                 side_effect=lambda _player_id, key, default=None: (
                     False if key == CONF_PLAY_MEDIA_OVERRIDES_GROUP else default
                 )
             )
+        if command == "play_media":
             call = players.play_media("m1", PlayerMedia(uri="x"))
+        elif command == "play action on its queue":
+            # a play action holds the member's own queue, and with it the member's lock
+            call = _MemberQueue(cast("MagicMock", players.mass), "m1").play_index("m1")
         else:
             call = getattr(players, command)("m1")
 
