@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import UUID, uuid4
@@ -9,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 from music_assistant_models.enums import IdentifierType, PlayerType, ProtocolRole
 from pychromecast.const import CAST_TYPE_AUDIO, CAST_TYPE_GROUP
+from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.chromecast.constants import CONF_DEFER_IDLE_VOLUME
@@ -67,9 +69,15 @@ def _cast_info(
 
 
 def _cast_player(provider: Any, cast_info: ChromecastInfo) -> ChromecastPlayer:
-    """Construct the protocol of a Cast device without connecting to it."""
-    with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-        return ChromecastPlayer(provider, str(cast_info.uuid), cast_info, MagicMock())
+    """Construct the protocol of a Cast device; it connects when it is attached."""
+    return ChromecastPlayer(provider, str(cast_info.uuid), cast_info)
+
+
+def _connect_client(*_args: object) -> MagicMock:
+    """Return a fake client of an idle receiver, as pychromecast connects one."""
+    client = MagicMock()
+    client.app_id = None
+    return client
 
 
 @pytest.mark.parametrize(
@@ -172,9 +180,11 @@ async def _attach_cast(scenario: Scenario, cast_info: ChromecastInfo) -> Chromec
         "chromecast"
     )
     provider.mz_mgr = MagicMock()
+    provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
     protocol = _cast_player(provider, cast_info)
-    await scenario.mass.players.attach(protocol)
-    await scenario.settle()
+    with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client):
+        await scenario.mass.players.attach(protocol)
+        await scenario.settle()
     return protocol
 
 
@@ -227,3 +237,160 @@ async def test_a_new_device_reads_its_settings_from_its_own_record(scenario: Sce
     # an idle receiver keeps the volume back until playback starts
     cast_device.set_volume.assert_not_called()
     assert protocol._pending_volume == 30
+
+
+def _mocked_provider() -> MagicMock:
+    """Return a provider for a protocol driven by hand, whose tasks and callbacks run."""
+    provider = MagicMock()
+    provider.mass.closing = False
+    provider.mass.loop = asyncio.get_running_loop()
+    provider.mass.create_task = MagicMock(side_effect=lambda coro, **_: asyncio.ensure_future(coro))
+    provider.bridge_manager.evaluate_bridge = AsyncMock()
+    return provider
+
+
+def _report_status(client: MagicMock, volume_level: float) -> None:
+    """
+    Let a receiver report its connection and its status to the listeners of its client.
+
+    :param client: The client the receiver reports through.
+    :param volume_level: The volume level (0..1) the receiver reports.
+    """
+    client.register_connection_listener.call_args.args[0].new_connection_status(
+        MagicMock(status=CONNECTION_STATUS_CONNECTED)
+    )
+    client.register_status_listener.call_args.args[0].new_cast_status(
+        MagicMock(app_id=None, volume_level=volume_level, volume_muted=False)
+    )
+
+
+@pytest.mark.parametrize("move", ["attach_again", "unlink"])
+async def test_a_cast_device_attached_again_follows_its_status_and_takes_commands(
+    scenario: Scenario, move: str
+) -> None:
+    """A Cast device attached again reports its status to its player and takes its commands."""
+    provider: Any = await scenario.add_provider("chromecast")
+    provider.mz_mgr = MagicMock()
+    provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+    if move == "unlink":
+        speaker = (await scenario.add_provider("sonos")).protocol(
+            "RINCON_001122334466",
+            "Speaker A",
+            identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS},
+        )
+        await scenario.attach(speaker)
+    cast_info = _cast_info(manufacturer="Sonos" if move == "unlink" else "Google Inc.")
+    protocol_id = str(cast_info.uuid)
+
+    with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client):
+        protocol = _cast_player(provider, cast_info)
+        await scenario.mass.players.attach(protocol)
+        await scenario.settle()
+        if move == "unlink":
+            await scenario.mass.players.unlink_protocol(protocol_id)
+        else:
+            await scenario.mass.players.detach(protocol_id)
+            await scenario.settle()
+            await scenario.mass.players.attach(protocol)
+        await scenario.settle()
+
+    client = cast("MagicMock", protocol.cc)
+    _report_status(client, volume_level=0.42)
+    await scenario.settle()
+    player = protocol.player
+    assert player is not None
+    assert player.state.available is True
+    assert player.state.volume_level == 42
+    await scenario.mass.players.cmd_volume_set(player.player_id, 30)
+    client.set_volume.assert_called_once_with(0.3)
+    client.disconnect.assert_not_called()
+    # its Sendspin bridge is set up again with it
+    assert provider.bridge_manager.evaluate_bridge.await_args_list == [call(protocol)] * 2
+
+
+async def test_a_detach_during_the_bridge_evaluation_leaves_no_connection() -> None:
+    """A detach while the bridge of an attach is evaluated ends both, once."""
+    provider = _mocked_provider()
+    evaluating = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _evaluate_bridge(_protocol: ChromecastPlayer) -> None:
+        evaluating.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    provider.bridge_manager.evaluate_bridge = AsyncMock(side_effect=_evaluate_bridge)
+    protocol = _cast_player(provider, _cast_info())
+    # an object the attach never reached has nothing to end
+    await protocol.on_detach()
+
+    with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client):
+        await protocol.on_attach(MagicMock())
+        await evaluating.wait()
+        await protocol.on_detach()
+        # the controller detaches again when a detach overtook the attach
+        await protocol.on_detach()
+
+    assert cancelled.is_set()
+    client = cast("MagicMock", protocol.cc)
+    client.start.assert_called_once_with()
+    client.disconnect.assert_called_once_with(10)
+    assert client.unregister_handler.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "callback",
+    ["group_status", "speaker_status", "connection_status", "multizone_status", "group_left"],
+)
+async def test_a_status_of_a_detached_client_is_dropped(callback: str) -> None:
+    """
+    What the socket thread reports around a detach never reaches the detached protocol.
+
+    A status or connection change queued just before the detach is delivered after it; a
+    multizone status can still come in once the detach invalidated the listener.
+    """
+    loop = asyncio.get_running_loop()
+    errors: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+    provider = _mocked_provider()
+    cast_type = CAST_TYPE_GROUP if callback == "group_status" else CAST_TYPE_AUDIO
+    protocol = _cast_player(provider, _cast_info(cast_type=cast_type))
+    updates = patch.object(protocol, "update_state")
+    try:
+        with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client):
+            await protocol.on_attach(MagicMock())
+        listener = protocol.status_listener
+        assert listener is not None
+        client = cast("MagicMock", protocol.cc)
+        client.status = MagicMock(app_id=None, volume_level=0.42, volume_muted=False)
+        volume_level = protocol.volume_level
+        update_state = updates.start()
+        if callback == "connection_status":
+            listener.new_connection_status(MagicMock(status=CONNECTION_STATUS_CONNECTED))
+        elif callback == "group_left":
+            protocol.active_cast_group = "group-uuid"
+            listener.removed_from_multizone("group-uuid")
+        elif callback != "multizone_status":
+            listener.new_cast_status(client.status)
+        await protocol.on_detach()
+        if callback == "group_left":
+            protocol.active_cast_group = None
+        if callback == "multizone_status":
+            provider.get_protocol.return_value = MagicMock(
+                cc=MagicMock(media_controller=MagicMock(is_active=True))
+            )
+            listener.multizone_new_cast_status("group-uuid", client.status)
+        for _ in range(3):
+            await asyncio.sleep(0)
+    finally:
+        updates.stop()
+        loop.set_exception_handler(None)
+
+    assert errors == []
+    update_state.assert_not_called()
+    assert protocol.volume_level == volume_level
+    assert protocol.available is False
+    assert protocol.active_cast_group is None

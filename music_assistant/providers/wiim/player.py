@@ -3,24 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import typing
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+)
 from music_assistant_models.player import DeviceInfo
 from pywiim import WiiMClient
 from wiim import PlayingStatus, WiimDevice
-from wiim.exceptions import WiimException
+from wiim.discovery import async_create_wiim_device
+from wiim.exceptions import WiimDeviceException, WiimException, WiimRequestException
 
 from music_assistant.constants import (
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
@@ -36,7 +42,7 @@ from .constants import (
 from .grouping import NativeGroupRole
 
 if TYPE_CHECKING:
-    from async_upnp_client.client import UpnpService, UpnpStateVariable
+    from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
     from music_assistant_models.config_entries import ConfigEntry
 
     from .grouping import NativeGroupCoordinator
@@ -51,6 +57,9 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
 
 # seconds to wait after a first follower join for the firmware to restart the leader's stream
 JOIN_RESTART_TIMEOUT = 2
+# seconds between attempts to set up the SDK device of a speaker that is not reachable
+CONNECT_RETRY_INITIAL_DELAY = 30
+CONNECT_RETRY_MAX_DELAY = 600
 
 
 @dataclass
@@ -82,13 +91,24 @@ class WiimPlayer(PlayerProtocol):
         self,
         provider: WiimProvider,
         protocol_id: str,
-        device: WiimDevice,
+        upnp_device: UpnpDevice,
+        description_url: str,
+        ip_address: str,
         mac_address: str | None = None,
     ) -> None:
-        """Initialize the Player."""
+        """
+        Initialize the Player.
+
+        :param provider: The WiiM provider.
+        :param protocol_id: Id of the protocol.
+        :param upnp_device: The UPnP description of the device, as discovery probed it.
+        :param description_url: The URL of that description.
+        :param ip_address: The address the device was discovered at.
+        :param mac_address: The MAC address the device advertises, if any.
+        """
         super().__init__(provider, protocol_id)
 
-        self._attr_name = device.name
+        self._attr_name = upnp_device.friendly_name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -101,24 +121,24 @@ class WiimPlayer(PlayerProtocol):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.SELECT_SOURCE,
         }
-        self.device = device
+        self._attr_available = False
+        self._attr_needs_poll = True
+        # the SDK device, set up at every attach
+        self._device: WiimDevice | None = None
+        self._connect_task: asyncio.Task[None] | None = None
+        self._location_changed = asyncio.Event()
+        self._udn = upnp_device.udn
+        self._description_url = description_url
         self._wiim_controller = provider.wiim_controller
 
         self._attr_device_info = DeviceInfo(
-            model=device.model_name,
-            manufacturer=device.manufacturer or "WiiM",
-            software_version=device.firmware_version,
+            model=upnp_device.model_name,
+            manufacturer=upnp_device.manufacturer or "WiiM",
         )
-        self._attr_device_info.add_identifier(IdentifierType.UUID, device.udn.removeprefix("uuid:"))
-        if device.ip_address:
-            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, device.ip_address)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self._udn.removeprefix("uuid:"))
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
-
-        device.general_event_callback = self._handle_sdk_general_device_update
-        device.rendering_control_event_callback = self._handle_sdk_rendering_control_event
-        device.av_transport_event_callback = self._handle_sdk_av_transport_event
-        device.play_queue_event_callback = self._handle_sdk_play_queue_event
 
         self._last_logged_sdk_uri: str | None = None
         self._last_logged_sdk_status: PlayingStatus | None = None
@@ -131,6 +151,17 @@ class WiimPlayer(PlayerProtocol):
         self._command_capabilities: dict[str, Any] | None = None
 
     @property
+    def device(self) -> WiimDevice:
+        """
+        Return the SDK device of the speaker.
+
+        :raises PlayerUnavailableError: While the SDK device is not set up.
+        """
+        if self._device is None:
+            raise PlayerUnavailableError(f"{self.display_name} is not connected")
+        return self._device
+
+    @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
         return self._attr_supported_features
@@ -138,17 +169,19 @@ class WiimPlayer(PlayerProtocol):
     @property
     def native_available(self) -> bool:
         """Return whether the device is currently reachable for grouping commands."""
-        return self.device.available
+        return self._device is not None and self._device.available
 
     @property
     def native_ip(self) -> str | None:
         """Return the device's current IP address, if known."""
-        return self.device.ip_address
+        if self._device is not None:
+            return self._device.ip_address
+        return self.device_info.ip_address
 
     @property
     def native_device_udn(self) -> str:
         """Return the device UDN used for official SDK grouping commands."""
-        return self.device.udn
+        return self._udn
 
     @property
     def can_group_with(self) -> set[str]:
@@ -172,6 +205,17 @@ class WiimPlayer(PlayerProtocol):
         """Only reachable coordinator-approved peers of either backend group natively."""
         return other.protocol_id in self.can_group_with
 
+    def set_location(self, ip_address: str, description_url: str) -> None:
+        """
+        Follow the speaker to the address discovery found it at.
+
+        :param ip_address: The address of the speaker.
+        :param description_url: The URL of its UPnP description at that address.
+        """
+        self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+        self._description_url = description_url
+        self._location_changed.set()
+
     def make_command_client(self) -> WiiMClient:
         """
         Return a command-only LinkPlay client bound to this device's current address.
@@ -181,7 +225,7 @@ class WiimPlayer(PlayerProtocol):
         commands, borrows the shared session and is never closed. Any capabilities detected
         by an earlier client are passed on so a fresh client does not re-probe the device.
         """
-        if not (ip := self.device.ip_address):
+        if not (ip := self.native_ip):
             raise PlayerCommandFailed(f"Cannot command {self.protocol_id}: device address unknown")
         capabilities = dict(self._command_capabilities) if self._command_capabilities else None
         return WiiMClient(ip, session=self.mass.http_session, capabilities=capabilities)
@@ -205,18 +249,19 @@ class WiimPlayer(PlayerProtocol):
 
     # --- Lifecycle ---
 
-    async def setup(self) -> None:
-        """Handle logic when the player is set up in the Player controller."""
-        for mode_name in self.device.supported_input_modes:
-            if mode_name in INPUT_MODE_SOURCES and mode_name != SOURCE_NETWORK:
-                self._attr_source_list.append(INPUT_MODE_SOURCES[mode_name])
-        self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_AIRPLAY])
-        self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
-        self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
-        self._attr_needs_poll = True
+    async def on_attach(self, player: Player) -> None:
+        """
+        Set up the SDK device and follow its events while the protocol is attached.
+
+        :param player: The player the protocol is attached to.
+        """
+        self._connect_task = self.mass.create_task(self._connect())
 
     async def poll(self) -> None:
         """Poll player for transport state and position updates."""
+        if self._device is None:
+            # the SDK device is still being set up
+            return
         await self._sync_position()
         await self._refresh_device_status()
         # slow, TTL-gated re-read of the native slave list (no busy polling loop)
@@ -225,15 +270,25 @@ class WiimPlayer(PlayerProtocol):
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
         await super().on_detach()
+        if (connect_task := self._connect_task) is not None:
+            self._connect_task = None
+            connect_task.cancel()
+            # waits for the setup to end without raising how it ended: a failed setup was
+            # logged when it failed
+            await asyncio.wait([connect_task])
         self._native_groups.unregister(self.protocol_id)
         self._native_groups.schedule_reconcile()
-        self.device.general_event_callback = None
-        self.device.av_transport_event_callback = None
-        self.device.rendering_control_event_callback = None
-        self.device.play_queue_event_callback = None
+        if (device := self._device) is None:
+            return
+        self._device = None
+        self._attr_available = False
+        device.general_event_callback = None
+        device.av_transport_event_callback = None
+        device.rendering_control_event_callback = None
+        device.play_queue_event_callback = None
         try:
-            await self._wiim_controller.remove_device(self.device.udn)
-            await self.device.disconnect()
+            await self._wiim_controller.remove_device(device.udn)
+            await device.disconnect()
         except Exception:
             self.logger.exception("Error tearing down WiiM device %s", self.name)
         self.logger.debug("Player %s detached, SDK resources released", self.name)
@@ -480,6 +535,69 @@ class WiimPlayer(PlayerProtocol):
         """Return the id of the queue of the player this protocol is attached to."""
         return self.player.player_id if self.player is not None else None
 
+    async def _connect(self) -> None:
+        """Set up the SDK device and follow its events."""
+        self._device = device = await self._create_device()
+        device.general_event_callback = self._handle_sdk_general_device_update
+        device.rendering_control_event_callback = self._handle_sdk_rendering_control_event
+        device.av_transport_event_callback = self._handle_sdk_av_transport_event
+        device.play_queue_event_callback = self._handle_sdk_play_queue_event
+        await self._wiim_controller.add_device(device)
+        self._attr_device_info.model = device.model_name
+        self._attr_device_info.manufacturer = device.manufacturer or "WiiM"
+        self._attr_device_info.software_version = device.firmware_version
+        self._attr_source_list = [
+            INPUT_MODE_SOURCES[mode_name]
+            for mode_name in device.supported_input_modes
+            if mode_name in INPUT_MODE_SOURCES and mode_name != SOURCE_NETWORK
+        ]
+        self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_AIRPLAY])
+        self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_SPOTIFY])
+        self._attr_source_list.append(PASSIVE_SOURCES[SOURCE_UNKNOWN])
+        # read the live topology before the availability goes out, then reconcile so any
+        # leader that already lists this device, or that it leads, self-heals regardless
+        # of discovery order.
+        await self._native_groups.refresh_leader(self, force=True)
+        self._native_groups.schedule_reconcile()
+        self._update_ma_state_from_sdk_cache()
+
+    async def _create_device(self) -> WiimDevice:
+        """Create the SDK device, retrying with a growing delay while it is not reachable."""
+        delay = CONNECT_RETRY_INITIAL_DELAY
+        while True:
+            self._location_changed.clear()
+            ip_address = self.native_ip
+            create = asyncio.ensure_future(
+                async_create_wiim_device(
+                    self._description_url,
+                    self.mass.http_session_no_ssl,
+                    host=ip_address,
+                    local_host=await self.mass.streams.get_source_ip(ip_address),
+                    polling_interval=60,
+                )
+            )
+            try:
+                return await asyncio.shield(create)
+            except asyncio.CancelledError:
+                # a detach cancelled the setup: release the device it still creates
+                create.add_done_callback(self._disconnect_abandoned_device)
+                raise
+            except (WiimRequestException, WiimDeviceException) as err:
+                self.logger.warning("Failed to initialize WiiM device at %s: %s", ip_address, err)
+            with contextlib.suppress(TimeoutError):
+                # a new location is tried at once
+                await asyncio.wait_for(self._location_changed.wait(), delay)
+            delay = min(delay * 2, CONNECT_RETRY_MAX_DELAY)
+
+    def _disconnect_abandoned_device(self, create: asyncio.Future[WiimDevice]) -> None:
+        """
+        Disconnect an SDK device whose setup finished after the protocol was detached.
+
+        :param create: The finished setup of the device.
+        """
+        if not create.cancelled() and create.exception() is None:
+            self.mass.create_task(create.result().disconnect())
+
     def _update_ma_state_from_sdk_cache(self, force_update: bool = False) -> None:
         """
         Update MA state from SDK's cache/HTTP poll attributes.
@@ -487,10 +605,10 @@ class WiimPlayer(PlayerProtocol):
         :param force_update: Recalculate the player state even when nothing reported changed.
         """
         was_available = self._attr_available
-        self._attr_available = self.device.available
+        self._attr_available = self.native_available
         self._republish_peers_if_availability_changed(was_available)
-        if self.device.name != self._attr_name:
-            self._attr_name = self.device.name
+        if self._device is not None and self._device.name != self._attr_name:
+            self._attr_name = self._device.name
 
         if not self._attr_available:
             self._attr_current_media = None

@@ -116,3 +116,35 @@ async def test_a_speaker_of_a_disabled_player_releases_its_subscriptions(
 
     assert protocol.player is None
     unsubscribe.assert_awaited_once_with()
+
+
+async def test_a_speaker_taken_off_its_player_follows_its_events_again(
+    scenario: Scenario,
+) -> None:
+    """A speaker moved to a player of its own subscribes to its events and reports again."""
+    protocol = await _attach_speaker(scenario)
+    audio = (await scenario.add_provider("airplay")).protocol(
+        "ap000e58aaaaaa",
+        "Speaker A",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "00:0E:58:AA:AA:AA"},
+    )
+    await scenario.attach(audio)
+    assert protocol.player is not None
+    old_player_id = protocol.player.player_id
+    assert scenario.player_of(audio) == old_player_id
+    subscribe = AsyncMock()
+
+    with (
+        patch.object(protocol, "subscribe", subscribe),
+        patch.object(protocol, "unsubscribe", AsyncMock()),
+    ):
+        new_player_id = await scenario.mass.players.unlink_protocol(UID)
+        await scenario.settle()
+
+    assert protocol.player is not None
+    assert protocol.player.player_id == new_player_id != old_player_id
+    subscribe.assert_awaited_once_with()
+    with patch.object(protocol, "_update_attributes") as update_attributes:
+        protocol.update_player(signal_update=False)
+    update_attributes.assert_called_once_with()

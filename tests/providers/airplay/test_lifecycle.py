@@ -13,6 +13,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.airplay.constants import AIRPLAY_DISCOVERY_TYPE, CONF_STORED_VOLUME
+from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
 from music_assistant.providers.airplay.player import AirPlayPlayer, GenericAirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
 from music_assistant.providers.airplay.stream import AirPlayStream
@@ -325,3 +326,29 @@ async def test_a_member_whose_stream_dies_leaves_the_airplay_group_for_its_own_p
     native.commands.clear()
     await scenario.mass.players.cmd_volume_set(member.player_id, 25)
     assert ("volume_set", 25) in native.commands
+
+
+async def test_an_apple_device_taken_off_its_player_connects_its_controls_again(
+    scenario: Scenario, provider: AirPlayProvider
+) -> None:
+    """The control protocol of an Apple device reconnects its services on its new player."""
+    connect = AsyncMock(return_value=False)
+    with patch.object(AirPlayControlPlayer, "_connect_control_services", connect):
+        protocol = await _announce(
+            scenario, provider, _service("Apple TV", manufacturer="Apple", model="Apple TV 4K")
+        )
+        cast_receiver = (await scenario.add_provider("chromecast")).protocol(
+            "cast_tv", "Apple TV", role="audio", identifiers={IdentifierType.MAC_ADDRESS: DEVICE_ID}
+        )
+        await scenario.attach(cast_receiver)
+        assert isinstance(protocol, AirPlayControlPlayer)
+        old_player_id = _player_of(protocol).player_id
+        assert scenario.player_of(cast_receiver) == old_player_id
+        connect.assert_awaited()
+        connect.reset_mock()
+
+        new_player_id = await scenario.mass.players.unlink_protocol(PROTOCOL_ID)
+        await scenario.idle()
+
+        assert _player_of(protocol).player_id == new_player_id != old_player_id
+        connect.assert_awaited()

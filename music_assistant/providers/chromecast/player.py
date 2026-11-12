@@ -11,6 +11,7 @@ from uuid import UUID
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
 
+import pychromecast
 from music_assistant_models.enums import (
     IdentifierType,
     MediaType,
@@ -34,7 +35,7 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
@@ -81,13 +82,14 @@ class ChromecastPlayer(PlayerProtocol):
     app_quit_sent: bool = False
     # Cast reports the running app accurately, and only a foreign app is listed as source
     _attr_trusts_reported_source = True
+    # the client of the device, connected at every attach
+    cc: Chromecast
 
     def __init__(
         self,
         provider: ChromecastProvider,
         protocol_id: str,
         cast_info: ChromecastInfo,
-        chromecast: Chromecast,
     ) -> None:
         """Init."""
         super().__init__(provider, protocol_id)
@@ -101,11 +103,11 @@ class ChromecastPlayer(PlayerProtocol):
             # Non-Google devices are generic Chromecast receivers: Cast is an output of
             # the device, next to its own protocol (a TV, a speaker of another brand)
             self._attr_role = ProtocolRole.AUDIO
-        self.cc = chromecast
-        self.status_listener: CastStatusListener | None
+        self.status_listener: CastStatusListener | None = None
         self.cast_info = cast_info
         self.mz_controller: MultizoneController | None = None
         self.command_controller: MassCastCommandController | None = None
+        self._bridge_task: asyncio.Task[None] | None = None
         self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
         self.last_multichannel_check = 0.0
@@ -153,20 +155,6 @@ class ChromecastPlayer(PlayerProtocol):
                 )
         self._attr_device_info.add_identifier(IdentifierType.UUID, str(self.cast_info.uuid))
         self._attr_device_info.add_identifier(IdentifierType.CAST_UUID, str(self.cast_info.uuid))
-        assert provider.mz_mgr is not None  # for type checking
-        status_listener = CastStatusListener(self, provider.mz_mgr)
-        self.status_listener = status_listener
-        if player_type == PlayerType.GROUP:
-            mz_controller = MultizoneController(cast_info.uuid)
-            self.cc.register_handler(mz_controller)
-            self.mz_controller = mz_controller
-        command_controller = MassCastCommandController(self._handle_receiver_command)
-        self.cc.register_handler(command_controller)
-        self.command_controller = command_controller
-
-    async def async_setup(self) -> None:
-        """Start the chromecast socket client (must be called after __init__)."""
-        await asyncio.to_thread(self.cc.start)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -325,17 +313,51 @@ class ChromecastPlayer(PlayerProtocol):
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
+    async def on_attach(self, player: Player) -> None:
+        """
+        Connect to the device and follow its status while the protocol is attached.
+
+        :param player: The player the protocol is attached to.
+        """
+        provider = cast("ChromecastProvider", self.provider)
+        assert provider.mz_mgr is not None  # for type checking
+        self.cc = pychromecast.get_chromecast_from_cast_info(
+            self.cast_info.to_cast_info(), self.mass.discovery.aiozc.zeroconf
+        )
+        self.status_listener = CastStatusListener(self, provider.mz_mgr)
+        if self.type == PlayerType.GROUP:
+            self.mz_controller = MultizoneController(self.cast_info.uuid)
+            self.cc.register_handler(self.mz_controller)
+        self.command_controller = MassCastCommandController(self._handle_receiver_command)
+        self.cc.register_handler(self.command_controller)
+        # started without an await, so a detach never finds the client half set up
+        self.cc.start()
+        # not awaited: claiming the Sendspin client of the receiver app attaches that
+        # client, which waits for this attach to finish
+        self._bridge_task = self.mass.create_task(
+            provider.bridge_manager.evaluate_bridge(self), eager_start=False
+        )
+
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
+        if (bridge_task := self._bridge_task) is not None:
+            self._bridge_task = None
+            bridge_task.cancel()
         await super().on_detach()
         self.cancel_pending_app_quit()
         self.mz_controller = None
         if self.status_listener is not None:
             self.status_listener.invalidate()
         self.status_listener = None
-        if self.command_controller is not None:
-            self.cc.unregister_handler(self.command_controller)
-            self.command_controller = None
+        if bridge_task is not None:
+            # waits for the evaluation to end without raising how it ended: a failed
+            # evaluation was logged when it failed
+            await asyncio.wait([bridge_task])
+        if self.command_controller is None:
+            # no client: on_attach did not run, or the detach ran already
+            return
+        self.cc.unregister_handler(self.command_controller)
+        self.command_controller = None
         self.logger.debug("Disconnecting from chromecast socket %s", self.display_name)
         if self.mass.closing:
             # Non-blocking disconnect: close socket, don't wait for thread.
@@ -354,33 +376,28 @@ class ChromecastPlayer(PlayerProtocol):
     ### Callbacks from Chromecast Statuslistener
 
     def on_new_cast_status(self, status: CastStatus) -> None:
-        """Handle updated CastStatus (called from pychromecast socket thread)."""
+        """Handle updated CastStatus of the attached client (called on the event loop)."""
         if status is None or self.mass.closing:
             return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_cast_status, status)
+        self._handle_cast_status(status)
 
     def on_new_media_status(self, status: MediaStatus) -> None:
-        """Handle updated MediaStatus (called from pychromecast socket thread)."""
+        """Handle updated MediaStatus of the attached client (called on the event loop)."""
         if self.mass.closing:
             return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_media_status, status)
+        self._handle_media_status(status)
 
     def on_load_media_failed(self, queue_item_id: int, error_code: int) -> None:
-        """Handle a failed media load (called from pychromecast socket thread)."""
+        """Handle a failed media load of the attached client (called on the event loop)."""
         if self.mass.closing:
             return
-        self.mass.loop.call_soon_threadsafe(
-            self._handle_load_media_failed, queue_item_id, error_code
-        )
+        self._handle_load_media_failed(queue_item_id, error_code)
 
     def on_new_connection_status(self, status: ConnectionStatus) -> None:
-        """Handle updated ConnectionStatus (called from pychromecast socket thread)."""
+        """Handle updated ConnectionStatus of the attached client (called on the event loop)."""
         if self.mass.closing:
             return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_connection_status, status)
+        self._handle_connection_status(status)
 
     def on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""

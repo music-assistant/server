@@ -31,7 +31,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
@@ -155,6 +155,16 @@ class SonosPlayer(PlayerProtocol):
         """Handle removal of speaker when unavailable."""
         async with self._subscription_lock:
             await self._offline()
+
+    async def on_attach(self, player: Player) -> None:
+        """
+        Follow the speaker's events again when the object attaches after a detach.
+
+        :param player: The player the protocol is attached to.
+        """
+        if self._unloaded:
+            self._unloaded = False
+            await self.subscribe()
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""

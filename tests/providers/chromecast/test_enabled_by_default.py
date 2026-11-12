@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -36,7 +36,6 @@ def test_only_video_devices_are_disabled_by_their_name(
         cast_type=cast_type,
         manufacturer="Test Manufacturer",
     )
-    with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-        player = ChromecastPlayer(MagicMock(), str(cast_info.uuid), cast_info, MagicMock())
+    player = ChromecastPlayer(MagicMock(), str(cast_info.uuid), cast_info)
 
     assert player.enabled_by_default is expected

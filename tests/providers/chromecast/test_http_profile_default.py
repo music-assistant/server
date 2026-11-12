@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -59,8 +59,7 @@ def test_http_profile_default_follows_model(cast_info: ChromecastInfo, expected:
 async def test_group_config_entries_default_to_no_content_length() -> None:
     """A Cast group defaults to no Content-Length whatever its members are."""
     group_info = _info("Google Cast Group", CAST_TYPE_GROUP)
-    with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-        group = ChromecastPlayer(MagicMock(), str(group_info.uuid), group_info, MagicMock())
+    group = ChromecastPlayer(MagicMock(), str(group_info.uuid), group_info)
 
     entries = await group.get_config_entries()
 

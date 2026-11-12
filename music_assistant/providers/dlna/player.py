@@ -21,7 +21,7 @@ from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import DeviceInfo
+from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import COMMAND_REFRESH_DELAYS, PLAYER_CONFIG_ENTRIES
@@ -416,6 +416,15 @@ class DLNAPlayer(PlayerProtocol):
             raise PlayerUnavailableError from err
         finally:
             self.force_poll = False
+
+    async def on_attach(self, player: Player) -> None:
+        """
+        Connect to the device again at the next poll when the object attaches after a detach.
+
+        :param player: The player the protocol is attached to.
+        """
+        if not self.device:
+            self.force_poll = True
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""

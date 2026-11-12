@@ -75,6 +75,7 @@ from .player import AirPlayPlayer
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
+    from music_assistant.models.player import Player
     from music_assistant.models.setup_flow import SetupSession
 
     from .provider import AirPlayProvider
@@ -468,6 +469,17 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Reconnect control services when player configuration changes."""
         await super().on_config_updated()
         self._schedule_connection(force=True)
+
+    async def on_attach(self, player: Player) -> None:
+        """
+        Connect the control services again when the object attaches after a detach.
+
+        :param player: The player the protocol is attached to.
+        """
+        await super().on_attach(player)
+        if self._unloading:
+            self._unloading = False
+            self._schedule_connection(force=True)
 
     async def on_detach(self) -> None:
         """Close control connections and pairing resources."""

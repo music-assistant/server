@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -18,6 +19,7 @@ from pychromecast.const import CAST_TYPE_AUDIO
 from music_assistant.providers.airplay.player import GenericAirPlayPlayer
 from music_assistant.providers.chromecast.helpers import ChromecastInfo
 from music_assistant.providers.chromecast.player import ChromecastPlayer
+from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
 from music_assistant.providers.sendspin.player import SendspinPlayer
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
@@ -41,12 +43,19 @@ _CLIENT_CODE = (
     "apply_bridge_claim",
     "register_bridge_identifiers",
     "register_bridge_underlying_protocol",
+    "register_bridge_static_delay_default",
     "_begin_client_event",
     "_finish_client_event",
     "_is_current_client_event",
     "_await_client_hello",
     "_apply_hass_esphome_enrichment",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_cast_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep an attached Cast protocol from connecting to its device."""
+    monkeypatch.setattr("pychromecast.get_chromecast_from_cast_info", MagicMock())
 
 
 @pytest.fixture(autouse=True)
@@ -160,8 +169,8 @@ def _carrier(scenario: Scenario, domain: str) -> PlayerProtocol:
             is_dynamic_group=False,
             is_multichannel_group=False,
         )
-        with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-            return ChromecastPlayer(provider, str(CAST_UUID), cast_info, MagicMock())
+        provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
+        return ChromecastPlayer(provider, str(CAST_UUID), cast_info)
     provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock(), remove_bridge=AsyncMock())
     provider.get_players = lambda: list(provider.protocols)
     return GenericAirPlayPlayer(
@@ -202,6 +211,22 @@ async def _claim(scenario: Scenario, sendspin: Any, carrier: PlayerProtocol) -> 
         underlying_protocol_id=carrier.protocol_id,
     )
     await scenario.settle()
+
+
+async def _attach_or_fail(scenario: Scenario, protocol: PlayerProtocol) -> None:
+    """
+    Attach a protocol and let the server settle; fail when the attach does not finish.
+
+    :param scenario: The running server.
+    :param protocol: The protocol to attach.
+    """
+    attach = asyncio.create_task(scenario.mass.players.attach(protocol))
+    await scenario.settle()
+    if not attach.done():
+        attach.cancel()
+        await asyncio.wait([attach])
+        pytest.fail(f"the attach of {protocol.protocol_id} never finished")
+    attach.result()
 
 
 def _assert_the_only_player(scenario: Scenario, player_id: str, *, available: bool) -> None:
@@ -304,3 +329,36 @@ async def test_a_bridged_device_keeps_its_player_whichever_connects_first(
     await scenario.settle()
 
     _assert_the_only_player(scenario, player_id, available=False)
+
+
+async def test_a_cast_device_claims_the_receiver_app_that_connected_before_it(
+    scenario: Scenario,
+) -> None:
+    """
+    A Cast device claims the Sendspin client its receiver app already runs, at its attach.
+
+    The claim attaches that client, so the attach of the Cast device must not hold the
+    attach of other protocols up: it completes, and a later device still attaches.
+    """
+    await scenario.add_provider("chromecast")
+    await scenario.add_provider("sendspin")
+    sendspin = _sendspin(scenario)
+    # the receiver app connected by itself: no bridge registered it
+    sendspin.server_api.is_external_player = lambda _client_id: False
+    sendspin.server_api.add_event_listener = MagicMock()
+    # a Cast receiver app reports as a browser
+    await _connect(scenario, sendspin, _hello("Web Browser"))
+    carrier = _carrier(scenario, "chromecast")
+    provider: Any = carrier.provider
+    provider.bridge_manager = SendspinBridgeManager(provider)
+
+    await _attach_or_fail(scenario, carrier)
+
+    # the claimed client is an output of the Cast device's player (switched off for now:
+    # Sendspin over Cast is only offered once the user enables it)
+    assert carrier.player is not None
+    record = scenario.mass.config.get_protocol_record(BRIDGE_ID) or {}
+    assert record.get("player_id") == carrier.player.player_id
+    other = (await scenario.add_provider("sonos")).protocol("RINCON_OTHER", "Speaker B")
+    await _attach_or_fail(scenario, other)
+    assert scenario.player_of(other) is not None

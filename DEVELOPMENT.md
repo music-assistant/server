@@ -187,6 +187,7 @@ A player provider implements one `PlayerProtocol` (`music_assistant/models/playe
 * The grouping as users see it (`group_members`, `synced_to`, `active_group`) comes from `self.player.state`; what a protocol reports about grouping names the protocol ids of its own provider.
 * Data that only lives while the server runs (`extra_data`, the stop and external source markers) stays on `self.player`.
 * `self.player` is already `None` when `on_detach()` runs: a protocol releases what it holds itself.
+* The same object can be attached again after a detach, when the server moves it to another player or changes its role: whatever `on_detach()` ends, `on_attach()` starts again.
 * `on_remove()` also reaches a protocol that is not attached, as long as its provider holds the object: the server keeps those only weakly, so a provider with a configured device list keeps the object of every device on it.
 * The config of a protocol has no name: the name the user gave the device is `self.player.config.name`.
 * Software players that share a host report an id of their own instance as `UUID` or `SERIAL_NUMBER` identifier.
