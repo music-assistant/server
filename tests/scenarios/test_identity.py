@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, NamedTuple
 from unittest.mock import ANY, AsyncMock
 
@@ -16,7 +17,10 @@ from music_assistant_models.errors import (
     PlayerUnavailableError,
 )
 
-from music_assistant.constants import CONF_PLAYERS, MAIN_ZONE
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS, MAIN_ZONE
+from music_assistant.controllers.config.player_split import (
+    remove_player_records_of_older_versions,
+)
 from tests.common import as_user
 
 from .harness import FAKE_SETTING, Event, Role, Scenario, ScenarioError, VisiblePlayer
@@ -1010,6 +1014,75 @@ async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(scenario: Scena
             "airplay_patio": second_id,
         }
         assert len(scenario.visible_players()) == 2
+
+
+async def _twin_found_first(scenario: Scenario) -> None:
+    """Find the twin of a speaker before its vendor protocol."""
+    speaker = await _speaker(scenario)
+    for protocol in (speaker.twin, speaker.vendor):
+        await scenario.attach(protocol)
+
+
+async def _twin_kept_by_a_merge(scenario: Scenario) -> None:
+    """Merge the player of a speaker into that of its twin, both stored before the split."""
+    speaker = await _speaker(scenario)
+    for protocol in (speaker.vendor, speaker.twin):
+        scenario.set_present(protocol.protocol_id, True)
+    await scenario.seed_pre_split_config(PRE_SPLIT_SPEAKER_AND_TWIN)
+    await scenario.idle()
+    await scenario.mass.players.merge("RINCON_5478C9E60DA001400", "media_player.kitchen")
+
+
+async def _zones(scenario: Scenario) -> None:
+    """Find both zones of a receiver and its AirPlay receiver."""
+    for protocol in await _receiver(scenario):
+        await scenario.attach(protocol)
+
+
+async def _zone_put_right_by_hand(scenario: Scenario) -> None:
+    """Unlink the receiver of the main zone and merge its player into the second zone."""
+    receiver = await _receiver(scenario)
+    for protocol in receiver:
+        await scenario.attach(protocol)
+    await scenario.idle()
+    second_id = scenario.single_player(receiver.second).player_id
+    unlinked_id = await scenario.mass.players.unlink_protocol(receiver.airplay.protocol_id)
+    await scenario.mass.players.merge(unlinked_id, second_id)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [_twin_found_first, _twin_kept_by_a_merge, _zones, _zone_put_right_by_hand],
+    ids=lambda build: build.__name__.strip("_"),
+)
+async def test_the_cleanup_at_start_keeps_every_player_of_this_version(
+    scenario: Scenario, build: Callable[[Scenario], Awaitable[None]]
+) -> None:
+    """
+    The players of a demoted twin, of zones and of a hand repair keep their records at a start.
+
+    The start removes the player records an older version stored; none of these is one.
+    """
+    await build(scenario)
+    await scenario.idle()
+    stored = scenario.mass.config._data
+    created = {
+        player_id: record["values"].get("created_at")
+        for player_id, record in stored[CONF_PLAYERS].items()
+    }
+    if build is _twin_kept_by_a_merge:
+        assert stored[CONF_PLAYER_PROTOCOLS]["media_player.kitchen"]["role"] == "control"
+
+    data = deepcopy(stored)
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == stored
+
+    await scenario.restart()
+    await scenario.idle()
+    assert {
+        player_id: record["values"].get("created_at")
+        for player_id, record in scenario.mass.config._data[CONF_PLAYERS].items()
+    } == created
 
 
 @pytest.mark.parametrize(
