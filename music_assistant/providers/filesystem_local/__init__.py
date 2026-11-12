@@ -950,8 +950,9 @@ class LocalFileSystemProvider(MusicProvider):
                         continue
                     tags = await self._parse_tags(file_item)
                     full_track = await self._parse_track(file_item, tags)
-                    assert isinstance(full_track.album, Album)
-                    return full_track.album
+                    # a file whose album tag was removed since the last sync names no album
+                    if isinstance(full_track.album, Album):
+                        return full_track.album
         if missing_file_error:
             raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
@@ -2627,6 +2628,8 @@ class LocalFileSystemProvider(MusicProvider):
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
+                    if prev_checksum is not None:
+                        await self._unlink_stale_albums(track)
                     if cur_filenames is not None:
                         cur_filenames.add(track.item_id)
                 return True
@@ -2643,6 +2646,8 @@ class LocalFileSystemProvider(MusicProvider):
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )
+                if prev_checksum is not None:
+                    await self._unlink_stale_albums(track)
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -2716,6 +2721,59 @@ class LocalFileSystemProvider(MusicProvider):
             for item_id in prev_filenames
             if (parsed := parse_cue_track_id(item_id)) and parsed[0] == item.relative_path
         )
+
+    async def _unlink_stale_albums(self, track: Track) -> None:
+        """
+        Unlink a changed file's library track from albums of this source its tags no longer name.
+
+        Albums left without tracks are removed by the orphan cleanup at the end of the sync.
+
+        :param track: The track as just parsed from the changed file.
+        """
+        db_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+            track.item_id, self.instance_id
+        )
+        if db_track is None:
+            return
+        # with more than one file of this source on the library track, it can not be told
+        # which of those files placed the track on which album
+        if sum(x.provider_instance == self.instance_id for x in db_track.provider_mappings) > 1:
+            return
+        keep_album_id: int | None = None
+        if track.album and (
+            db_album := await self.mass.music.albums.get_library_item_by_prov_id(
+                track.album.item_id, self.instance_id
+            )
+        ):
+            keep_album_id = int(db_album.item_id)
+        on_other_sources = any(
+            x.provider_instance != self.instance_id for x in db_track.provider_mappings
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE track_id = :track_id",
+            {"track_id": int(db_track.item_id)},
+            limit=0,
+        ):
+            album_id = int(db_row["album_id"])
+            if album_id == keep_album_id:
+                continue
+            try:
+                linked_album = await self.mass.music.albums.get_library_item(album_id)
+            except MediaNotFoundError:
+                continue
+            own_mappings = [
+                x for x in linked_album.provider_mappings if x.provider_instance == self.instance_id
+            ]
+            if not own_mappings:
+                continue
+            # an album this source shares with another one may still hold the track through
+            # that other source
+            if on_other_sources and len(own_mappings) < len(linked_album.provider_mappings):
+                continue
+            self.logger.debug(
+                "%s no longer names album %s, unlinking it", track.item_id, linked_album.name
+            )
+            await self.mass.music.tracks.remove_album_link(db_track.item_id, album_id)
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""
