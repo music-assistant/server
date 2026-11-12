@@ -483,13 +483,13 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Start or restart the Apple service connection loop."""
         if self._unloading:
             return
-        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
         if self._connection_task and not self._connection_task.done():
             if not force:
                 # a dropped channel must not wait out another channel's backoff
                 self._reconnect_wakeup.set()
                 return
             self._connection_task.cancel()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
         self._restart_connections = self._restart_connections or force
         self._connection_task = self.mass.create_task(
             self._connection_loop(),

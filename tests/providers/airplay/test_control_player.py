@@ -1528,3 +1528,5 @@ async def test_dropped_control_channel_wakes_backoff_wait() -> None:
         await asyncio.wait_for(task, 1)
 
     assert calls == 2
+    # waking the loop keeps the failing channel's backoff
+    assert player._reconnect_delay == 60
