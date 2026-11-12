@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import aiohttp
 import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
+from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import ResourceBusyError
 from music_assistant_models.player import PlayerMedia
 
@@ -25,7 +25,6 @@ from music_assistant.providers.raumfeld.constants import (
 from music_assistant.providers.raumfeld.host import Devices, RaumfeldHost, Room, ZoneConfig
 from music_assistant.providers.raumfeld.player import RaumfeldPlayer
 from music_assistant.providers.raumfeld.provider import RaumfeldPlayerProvider
-from music_assistant.providers.raumfeld.speaker import RaumfeldSpeaker
 
 _LOCATION = "http://192.168.1.42:54730/renderer.xml"
 _ZONE_LOCATION = "http://192.168.1.41:56766/zone-1.xml"
@@ -285,98 +284,6 @@ def test_a_room_whose_serial_another_room_holds_uses_its_room_udn() -> None:
     provider._assign_room_ids(["Sofa", "Bar"])
 
     assert provider._room_ids == {"Bar": "raumfeld_04a316f3b6c4", "Sofa": "raumfeld_sofa"}
-
-
-def _with_registry(mass: MagicMock) -> dict[str, Any]:
-    """Keep the players the provider registers, as the player controller would."""
-    registry: dict[str, Any] = {}
-
-    async def register(player: Any) -> None:
-        registry[player.player_id] = player
-
-    async def unregister(player_id: str, **_: Any) -> None:
-        registry.pop(player_id, None)
-
-    mass.players.register = AsyncMock(side_effect=register)
-    mass.players.unregister = AsyncMock(side_effect=unregister)
-    mass.players.get_player.side_effect = registry.get
-    mass.config.create_default_player_config = MagicMock()
-    return registry
-
-
-async def _sync_speakers(provider: RaumfeldPlayerProvider, registry: dict[str, Any]) -> None:
-    """Run a speaker sync for room Bar, with the provider seeing the registered players."""
-    await _sync_ids(provider)
-    with patch.object(
-        RaumfeldPlayerProvider,
-        "players",
-        new_callable=lambda: property(lambda _: list(registry.values())),
-    ):
-        await provider._sync_speakers(["Bar"])
-
-
-async def test_the_other_speaker_of_a_room_gets_a_hidden_player() -> None:
-    """A room of two speakers holds the other speaker's outputs in a hidden player."""
-    provider, mass = _room_of_two()
-    registry = _with_registry(mass)
-
-    await _sync_speakers(provider, registry)
-
-    speaker = registry["raumfeld_speaker_d83addda8e62"]
-    assert isinstance(speaker, RaumfeldSpeaker)
-    assert speaker.room == "Bar"
-    assert speaker.name == "Speaker Bar"
-    assert speaker.hidden_by_default
-    assert not speaker.expose_to_ha_by_default
-    assert speaker.device_info.identifiers == {
-        IdentifierType.UUID: "second",
-        IdentifierType.IP_ADDRESS: "192.168.1.31",
-    }
-    assert list(registry) == ["raumfeld_speaker_d83addda8e62"]
-
-
-async def test_a_speaker_that_left_the_room_gives_its_outputs_back() -> None:
-    """The hidden player goes once its speaker is no longer one of the room's others."""
-    provider, mass = _room_of_two()
-    registry = _with_registry(mass)
-    await _sync_speakers(provider, registry)
-
-    _list_renderers(provider, ["uuid:renderer"])
-    await _sync_speakers(provider, registry)
-
-    assert registry == {}
-    mass.players.unregister.assert_awaited_once_with(
-        "raumfeld_speaker_d83addda8e62", permanent=True
-    )
-
-
-async def test_the_speaker_a_room_is_linked_by_gets_no_hidden_player() -> None:
-    """The room's own player keeps the outputs of the speaker it is linked by."""
-    provider, mass = _room_of_two()
-    registry = _with_registry(mass)
-    room = MagicMock(spec=RaumfeldPlayer)
-    room.device_info.identifiers = {IdentifierType.UUID: "second"}
-    registry["raumfeld_04a316f3b6c4"] = room
-
-    await _sync_speakers(provider, registry)
-
-    assert "raumfeld_speaker_04a316f3b6c4" in registry
-    assert "raumfeld_speaker_d83addda8e62" not in registry
-
-
-def test_a_room_groups_with_the_other_rooms_only() -> None:
-    """The hidden speakers of a room are not offered for grouping."""
-    provider, players = _zone_provider([])
-    speaker = MagicMock(spec=RaumfeldSpeaker)
-    speaker.player_id = "raumfeld_speaker_d83addda8e62"
-    with patch.object(
-        RaumfeldPlayerProvider,
-        "players",
-        new_callable=lambda: property(lambda _: [*players.values(), speaker]),
-    ):
-        bar = players["Bar"]
-        bar._provider = provider
-        assert bar.can_group_with == {"raumfeld_sofa", "raumfeld_kitchen", "raumfeld_office"}
 
 
 # a speaker's renderer UDN -> (description url, serial) on its own hardware

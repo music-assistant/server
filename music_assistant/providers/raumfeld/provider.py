@@ -26,7 +26,6 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from async_upnp_client.exceptions import UpnpError
-from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import (
     CONF_ENABLE_ICY_METADATA,
@@ -67,18 +66,15 @@ from .helpers import (
     discover_hosts,
     host_is_valid,
     parse_control_url,
-    parse_friendly_name,
     parse_library_items,
     parse_line_in,
     parse_model_name,
     parse_serial_number,
     room_udn_to_player_id,
     serial_to_player_id,
-    speaker_to_player_id,
 )
 from .host import RaumfeldHost
 from .player import RaumfeldPlayer
-from .speaker import RaumfeldSpeaker
 from .upnp import (
     SERVICE_AV_TRANSPORT,
     SERVICE_CONTENT_DIRECTORY,
@@ -511,7 +507,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._update_task = None
         self._zone_watch_task = None
         for player in self.players:
-            if isinstance(player, RaumfeldPlayer | RaumfeldSpeaker):
+            if isinstance(player, RaumfeldPlayer):
                 player.set_available(False)
 
     async def _resync(self) -> None:
@@ -661,66 +657,6 @@ class RaumfeldPlayerProvider(PlayerProvider):
         for known in self.players:
             if isinstance(known, RaumfeldPlayer) and known.player_id not in present:
                 known.set_available(False)
-        await self._sync_speakers(rooms)
-
-    async def _sync_speakers(self, rooms: list[str]) -> None:
-        """
-        Register a hidden player for every speaker a room has besides the one it is linked to.
-
-        :param rooms: The rooms the host lists now.
-        """
-        # A room of several speakers plays on all of them through the host, but Music
-        # Assistant links a player to only one output per protocol. Without these, the other
-        # speakers' DLNA/Chromecast/Sendspin outputs show up as players of their own, which
-        # play on that one speaker only, outside the room.
-        wanted: dict[str, tuple[str, str]] = {}
-        for room in rooms:
-            if (room_udn := self._room_udn(room)) is None:
-                continue
-            if (player_id := self._room_player_id(room)) is None:
-                continue
-            renderers = self._room_renderer_list(room_udn)
-            if len(renderers) < 2:
-                continue
-            linked = self._linked_renderer_udn(player_id) or self._room_renderer_udn(room)
-            for rend_udn in renderers:
-                if rend_udn == linked:
-                    continue
-                if (serial := await self._renderer_serial(rend_udn)) is not None:
-                    wanted[speaker_to_player_id(serial)] = (room, rend_udn)
-        # a speaker that left its room, or is now the one a room is linked to, gives its
-        # outputs back, so they can be linked to the player that has the speaker now
-        for known in list(self.players):
-            if isinstance(known, RaumfeldSpeaker) and known.player_id not in wanted:
-                await self.mass.players.unregister(known.player_id, permanent=True)
-        for player_id, (room, rend_udn) in wanted.items():
-            if isinstance(existing := self.mass.players.get_player(player_id), RaumfeldSpeaker):
-                existing.set_room(room)
-                continue
-            description = self._renderer_descriptions.get(rend_udn)
-            location = self._renderer_location(rend_udn)
-            speaker = RaumfeldSpeaker(
-                provider=self,
-                player_id=player_id,
-                room=room,
-                name=parse_friendly_name(description) or f"{room} ({rend_udn})",
-                model=parse_model_name(description),
-                renderer_uuid=rend_udn.removeprefix("uuid:"),
-                renderer_ip=urlparse(location).hostname if location else None,
-            )
-            await self.mass.players.register(speaker)
-            self.logger.debug("Registered speaker %s of room '%s'", player_id, room)
-
-    def _linked_renderer_udn(self, player_id: str) -> str | None:
-        """
-        Return the UDN of the renderer a room's registered player is linked by, or ``None``.
-
-        :param player_id: The room's player id.
-        """
-        if not isinstance(player := self.mass.players.get_player(player_id), RaumfeldPlayer):
-            return None
-        uuid = player.device_info.identifiers.get(IdentifierType.UUID)
-        return f"uuid:{uuid}" if uuid else None
 
     async def _refresh_room_events(self) -> None:
         """Follow the events of every room's own renderer, and tell each room which come in."""

@@ -75,17 +75,6 @@ def room_udn_to_player_id(room_udn: str) -> str:
     return f"{PLAYER_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
 
 
-def speaker_to_player_id(serial: str) -> str:
-    """
-    Derive the player_id of a speaker that plays as part of a room of several speakers.
-
-    :param serial: The speaker's serialNumber.
-    """
-    # apart from the room ids, which can take a speaker's serial themselves
-    cleaned = "".join(char for char in serial if char.isalnum()).lower()
-    return f"{PLAYER_ID_PREFIX}_speaker_{cleaned}"
-
-
 def parse_serial_number(description_xml: str | None) -> str | None:
     """
     Return the ``serialNumber`` from a UPnP device description, or ``None``.
@@ -106,15 +95,6 @@ def parse_model_name(description_xml: str | None) -> str | None:
     :param description_xml: The renderer's device description XML.
     """
     return _parse_description_field(description_xml, "modelName")
-
-
-def parse_friendly_name(description_xml: str | None) -> str | None:
-    """
-    Return the ``friendlyName`` from a UPnP device description, or ``None``.
-
-    :param description_xml: The renderer's device description XML.
-    """
-    return _parse_description_field(description_xml, "friendlyName")
 
 
 def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
