@@ -775,7 +775,14 @@ async def test_a_twin_under_a_new_entity_id_returns_to_its_own_player(
     assert [
         p.outputs for p in scenario.players_carrying(scenario.protocol(speaker.vendor.protocol_id))
     ] == [(("sonos", True),)]
-    assert await scenario.stored_config_mentioning('"media_player.kitchen"') == []
+    # of the old entity only the id of its player is left, as the player of the new one
+    assert scenario.protocol_config("media_player.kitchen") is None
+    record = scenario.mass.config.get_protocol_record("media_player.kitchen_2")
+    assert record is not None
+    assert record["player_id"] == "media_player.kitchen"
+    player_config = await scenario.player_config("media_player.kitchen")
+    assert player_config is not None
+    assert player_config.name == "Kitchen (HA)"
 
 
 async def test_a_removed_player_of_a_speaker_comes_back_with_the_same_roles(
@@ -955,14 +962,26 @@ async def test_unused_zone_players_are_never_merged_by_themselves(
     assert scenario.events(EventType.PLAYER_REMOVED) == []
 
 
-async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(scenario: Scenario) -> None:
+@pytest.mark.parametrize(
+    "order",
+    [
+        order
+        for order in itertools.permutations(("main", "second", "patio", "living"))
+        if order.index("patio") < order.index("living")
+    ],
+    ids="-".join,
+)
+async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(
+    scenario: Scenario, order: tuple[str, ...]
+) -> None:
     """
     The receiver of a secondary zone that joined the main zone is moved there by the user.
 
     On a chassis whose every zone has a receiver of its own the first one seen joins the
-    main zone. The user unlinks it and merges its player into the zone it belongs to; the
-    main zone's own receiver is merged into the main zone. That stays so after a restart in
-    either order, and the automatic merge does not undo it.
+    main zone, in every discovery order, and the other one is a player of its own. The user
+    unlinks the first one and merges its player into the zone it belongs to; the main zone's
+    own receiver is merged into the main zone. That stays so after a restart in either
+    order, and the automatic merge does not undo it.
     """
     bluesound = await scenario.add_provider("bluesound")
     airplay = await scenario.add_provider("airplay")
@@ -980,33 +999,36 @@ async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(scenario: Scena
             ("airplay_living", "Living", "00:1A:2B:3C:4D:01"),
         )
     ]
-    for protocol in (main, second, *receivers):
-        await scenario.attach(protocol)
+    parts = {"main": main, "second": second, "patio": receivers[0], "living": receivers[1]}
+    for part in order:
+        await scenario.attach(parts[part])
     await scenario.idle()
     main_id = scenario.single_player(main).player_id
     second_id = scenario.single_player(second).player_id
-    if scenario.player_of(receivers[0]) != main_id:
-        msg = "the receiver of the second zone did not join the main zone"
-        raise ScenarioError(msg)
+    assert scenario.player_of(receivers[0]) == main_id
+    living = scenario.players_carrying(receivers[1])
+    assert [player.outputs for player in living] == [(("airplay", True),)]
+    living_id = living[0].player_id
+    assert living_id not in (main_id, second_id)
 
     patio_id = await scenario.mass.players.unlink_protocol("airplay_patio")
     await scenario.mass.players.merge(patio_id, second_id)
-    if (living_id := scenario.player_of(receivers[1])) != main_id:
-        await scenario.mass.players.merge(str(living_id), main_id)
+    await scenario.mass.players.merge(living_id, main_id)
     await scenario.idle()
 
-    for order in (
+    for restart_order in (
         ("airplay_patio", "airplay_living", "chassis_zone2", "chassis_main"),
         ("chassis_main", "chassis_zone2", "airplay_living", "airplay_patio"),
     ):
-        for protocol_id in order:
+        for protocol_id in restart_order:
             scenario.set_present(protocol_id, False)
         await scenario.restart()
-        for protocol_id in order:
+        for protocol_id in restart_order:
             await scenario.attach(scenario.protocol(protocol_id))
         await scenario.idle()
         assert {
-            protocol_id: scenario.player_of(scenario.protocol(protocol_id)) for protocol_id in order
+            protocol_id: scenario.player_of(scenario.protocol(protocol_id))
+            for protocol_id in restart_order
         } == {
             "chassis_main": main_id,
             "airplay_living": main_id,
