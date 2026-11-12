@@ -1331,3 +1331,44 @@ async def test_remove_unavailable_counts_the_protocol_a_merge_moved(scenario: Sc
     assert await scenario.mass.players.remove_unavailable(dry_run=True) == []
     assert await scenario.mass.players.remove_unavailable() == []
     assert scenario.player_of(tv.cast) == tv.older_id
+
+
+async def test_duplicate_merged_while_the_native_is_unreachable_plays_at_the_held_level(
+    scenario: Scenario,
+) -> None:
+    """
+    The native of the older player can not be reached when its AirPlay duplicate merges in.
+
+    The player keeps the level it had: the moved protocol is never shown louder, and is given
+    that level before it plays.
+    """
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30)
+    audio = airplay.protocol(
+        "ap_kitchen", "Kitchen", role="audio", identifiers=TV_AIRPLAY, volume_level=80
+    )
+    await scenario.attach(native)
+    await scenario.advance(15)
+    await scenario.attach(audio)
+    await scenario.advance(15)
+    await scenario.idle()
+    older_id = scenario.single_player(native).player_id
+    assert scenario.single_player(audio).player_id != older_id
+    await scenario.report(native, available=False)
+
+    await scenario.report(audio, identifiers=KITCHEN)
+    await scenario.detach(audio)
+    await scenario.attach(audio)
+    await scenario.idle()
+
+    assert [player.player_id for player in scenario.players_carrying(native, audio)] == [older_id]
+    state = scenario.player(older_id)
+    assert state is not None
+    assert (state.volume_control, state.volume_level) == ("ap_kitchen", 30)
+    audio.commands.clear()
+
+    await scenario.play(older_id)
+
+    assert audio.commands[0] == ("volume_set", 30)
+    assert "play_media" in [command[0] for command in audio.commands]
