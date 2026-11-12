@@ -70,6 +70,31 @@ def _queue_with_items(provider: WebRadioProvider, current_item_id: str | None) -
     return queue
 
 
+async def test_a_station_with_the_url_of_another_is_renamed() -> None:
+    """A station whose name gives the URL of an earlier one is stored under a numbered name."""
+    provider = _make_provider()
+    provider._stations = {}
+    names = ["Rock", "rock!", "Rock 2", "Rock", "Jazz"]
+    provider.config = MagicMock()
+    provider.config.get_value.side_effect = lambda _key: names
+    provider.__dict__["_update_config_value"] = lambda _key, value: names.__setitem__(
+        slice(None), value
+    )
+    register_station = AsyncMock()
+    provider.__dict__["_register_station"] = register_station
+
+    await provider._sync_stations()
+
+    assert names == ["Rock", "rock! (2)", "Rock 2 (2)", "Rock (3)", "Jazz"]
+    assert [call.args for call in register_station.await_args_list] == [
+        ("rock", "Rock"),
+        ("rock-2", "rock! (2)"),
+        ("rock-2-2", "Rock 2 (2)"),
+        ("rock-3", "Rock (3)"),
+        ("jazz", "Jazz"),
+    ]
+
+
 def test_broadcast_starts_from_the_item_handed_to_play_media() -> None:
     """After play_media the broadcast starts from that item, not the queue's current one."""
     provider = _make_provider()

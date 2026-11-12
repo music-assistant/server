@@ -16,7 +16,6 @@ from music_assistant_models.enums import (
     PlayerFeature,
     ProviderFeature,
 )
-from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
@@ -239,6 +238,23 @@ class WebRadioProvider(PlayerProvider):
             return []
         return [str(name) for name in value if str(name).strip()]
 
+    def _rename_stations_sharing_a_url(self) -> None:
+        """Give a station whose name yields the URL of an earlier one a numbered name."""
+        raw_names = self._raw_station_names()
+        names: list[str] = []
+        taken: set[str] = set()
+        for raw_name in raw_names:
+            name, number = raw_name, 1
+            while (slug := slugify_station_name(name)) in taken:
+                number += 1
+                name = f"{raw_name} ({number})"
+            if slug:
+                taken.add(slug)
+            names.append(name)
+        if names != raw_names:
+            # Stored, so the name in the settings, the player and the URL all agree.
+            self._update_config_value(CONF_STATIONS, names)
+
     async def _sync_stations(self) -> None:
         """
         Reconcile registered stations with the provider config.
@@ -246,6 +262,7 @@ class WebRadioProvider(PlayerProvider):
         Stations whose slug disappears from config are unregistered; new
         stations are created. Existing stations are left untouched.
         """
+        self._rename_stations_sharing_a_url()
         configured: dict[str, str] = {}
         for name in self._raw_station_names():
             slug = slugify_station_name(name)
@@ -254,11 +271,6 @@ class WebRadioProvider(PlayerProvider):
                     "Ignoring station %r: name has no alphanumeric characters", name
                 )
                 continue
-            if slug in configured:
-                raise SetupFailedError(
-                    f"Duplicate station slug {slug!r} from name {name!r}; "
-                    "rename one of the stations so each has a unique URL."
-                )
             configured[slug] = name
 
         for slug in list(self._stations):
