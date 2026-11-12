@@ -80,20 +80,23 @@ def _reset_image_caches() -> Iterator[None]:
 
 def _fake_image_provider(instance_id: str, resolved_path: str) -> LocalFileSystemProvider:
     """
-    Build a bare filesystem provider that resolves any image path to `resolved_path`.
+    Build a bare filesystem provider that resolves any image path to the file at `resolved_path`.
 
     A real provider instance is used rather than a mock so the image helpers resolve the
     path through the provider's own `resolve_image`.
 
     :param instance_id: Instance id to register the provider under.
-    :param resolved_path: Absolute path every image path resolves to.
+    :param resolved_path: Absolute path of the file every image path resolves to.
     """
     provider = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
     provider.config = MagicMock(instance_id=instance_id)
     provider.manifest = MagicMock(domain="filesystem_local")
     provider.logger = MagicMock()
     provider.available = True
-    provider.resolve_image = AsyncMock(return_value=resolved_path)  # type: ignore[method-assign]
+    # the image data itself, like the provider's own resolve_image returns
+    provider.resolve_image = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _path: Path(resolved_path).read_bytes()
+    )
     return provider
 
 
