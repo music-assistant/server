@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import PropertyMock, patch
 
@@ -1242,6 +1243,86 @@ async def test_remove_unavailable_waits_only_for_the_players_of_a_provider_that_
     assert sorted(await scenario.mass.players.remove_unavailable()) == sorted(
         [reloading_id, "up0a1b2c3d"]
     )
+
+
+async def test_dry_run_of_remove_unavailable_names_what_the_command_removes(
+    scenario: Scenario,
+) -> None:
+    """
+    The dry run applies the rules of the command and changes nothing, its refusal included.
+
+    Kept are a reachable player that needs setup and the player of a provider that is not
+    loaded; a player of a provider that was just loaded and one without protocols wait.
+    """
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    dlna = await scenario.add_provider("dlna")
+    gone = sonos.protocol(
+        "RINCON_DEN", "Den", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B1"}
+    )
+    in_setup = sonos.protocol(
+        "RINCON_HALL", "Hall", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B2"}
+    )
+    reloading = airplay.protocol(
+        "ap_office",
+        "Office",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C1"},
+    )
+    unloaded = dlna.protocol(
+        "uuid:study",
+        "Study",
+        role="audio",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:D1"},
+    )
+    for protocol in (gone, in_setup, reloading, unloaded):
+        await scenario.attach(protocol)
+    await scenario.report(in_setup, needs_setup=True, setup_reason="pairing_required")
+    gone_id, reloading_id = (
+        scenario.single_player(protocol).player_id for protocol in (gone, reloading)
+    )
+    # a player with nothing but a config of its own, as the migration keeps a customised one
+    scenario.mass.config.create_player_record(
+        "up0a1b2c3d", provider="", player_type=PlayerType.PLAYER, default_name="Kitchen"
+    )
+    scenario.mass.config.set_player_value("up0a1b2c3d", "name", "Kitchen radio")
+    for protocol_id in ("RINCON_DEN", "ap_office", "uuid:study"):
+        scenario.set_present(protocol_id, False)
+    await scenario.restart()
+    await scenario.mass.unload_provider(scenario.provider("dlna").instance_id)
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+    await scenario.reload_provider(scenario.provider("airplay"))
+    players = scenario.mass.players
+
+    async def _dry_run() -> list[str]:
+        stored = (
+            deepcopy(scenario.mass.config.get(CONF_PLAYERS)),
+            deepcopy(scenario.mass.config.get(CONF_PLAYER_PROTOCOLS)),
+        )
+        live = sorted(players._players)
+        scenario.clear_events()
+        would_remove = await players.remove_unavailable(dry_run=True)
+        assert scenario.events(*LIFECYCLE_EVENTS) == []
+        assert (
+            deepcopy(scenario.mass.config.get(CONF_PLAYERS)),
+            deepcopy(scenario.mass.config.get(CONF_PLAYER_PROTOCOLS)),
+        ) == stored
+        assert sorted(players._players) == live
+        return would_remove
+
+    assert await _dry_run() == [gone_id]
+    assert await players.remove_unavailable() == [gone_id]
+    await scenario.settle()
+
+    with pytest.raises(ActionUnavailable):
+        await players.remove_unavailable(dry_run=True)
+    with pytest.raises(ActionUnavailable):
+        await players.remove_unavailable()
+
+    await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+    would_remove = sorted(await _dry_run())
+    assert would_remove == sorted([reloading_id, "up0a1b2c3d"])
+    assert sorted(await players.remove_unavailable()) == would_remove
 
 
 async def test_discovery_after_a_removal_is_dropped_when_its_provider_unloads(

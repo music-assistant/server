@@ -1987,17 +1987,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         await self._remove_player(self.resolve_player_id(player_id), rediscover=True)
 
     @api_command("players/remove_unavailable", required_scope=Scope.CONFIG_PLAYERS_WRITE)
-    async def remove_unavailable(self) -> list[str]:
+    async def remove_unavailable(self, dry_run: bool = False) -> list[str]:
         """
         Remove every player that is unavailable while its providers are running.
 
         A player is left alone while one of its protocols reaches its device (also one
         that still needs setup), while a provider of its protocols is not loaded or was
         loaded shortly ago and still finds its devices, and when it is disabled. Returns
-        the ids of the players that were removed.
+        the ids of the players that were removed, or with dry_run of those that would be.
 
+        :param dry_run: Only return the ids of the players that would be removed, by the
+            same rules: nothing is removed and nothing changes.
         :raises ActionUnavailable: When every player to remove was left alone because its
             providers are still finding their devices, shortly after the start or a load.
+            Also with dry_run, so a client learns that before it asks the user to confirm.
         """
         now = time.monotonic()
         removed: list[str] = []
@@ -2027,7 +2030,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if (wait := loaded_at + REMOVE_UNAVAILABLE_GRACE - now) > 0:
                 waits.append(wait)
                 continue
-            await self._remove_player(player.player_id, rediscover=False)
+            if not dry_run:
+                await self._remove_player(player.player_id, rediscover=False)
             removed.append(player.player_id)
         if waits and not removed:
             msg = f"Players are still being found, try again in {math.ceil(max(waits))} seconds"
