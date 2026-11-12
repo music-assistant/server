@@ -2970,7 +2970,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # be found during the rest of the attach, such as when fetching its config.
         # A player that is new stays unpublished until the end.
         self._protocols[protocol_id] = protocol
-        player.add_protocol(protocol, self._attach_role(protocol, player_id))
+        role = self._attach_role(protocol, player_id)
+        player.add_protocol(protocol, role)
         protocol.set_player(player)
         protocol.set_config(await self._get_protocol_config(protocol))
         # call hooks after the protocol is bound and its config is set
@@ -2999,7 +3000,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         self.logger.info(
             "Protocol %s (%s) attached to player %s/%s",
             protocol_id,
-            protocol.role.value,
+            role.value,
             player_id,
             player.display_name,
         )
