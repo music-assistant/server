@@ -352,6 +352,91 @@ async def test_volume_commands_after_the_native_dropped_start_from_the_level_of_
     assert audio.commands == [("volume_set", state.volume_level), ("volume_mute", False)]
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        "second_output_drops",
+        "output_flaps",
+        "output_blinks",
+        "native_detaches",
+        "pinned_and_back",
+        "pinned_output",
+    ],
+)
+async def test_level_the_player_had_is_kept_while_its_native_can_not_be_reached(
+    scenario: Scenario, change: str
+) -> None:
+    """
+    Whatever takes or keeps the volume control meanwhile, the player stays at its level.
+
+    The native is at 30 when it drops. The next play starts at that level, also through an
+    output whose own level is higher.
+    """
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=30)
+    audio = airplay.protocol(
+        "ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN, volume_level=80
+    )
+    protocols = [native, audio]
+    if change == "second_output_drops":
+        chromecast = await scenario.add_provider("chromecast")
+        protocols.append(
+            chromecast.protocol(
+                "cast_kitchen", "Kitchen", role="audio", identifiers=KITCHEN, volume_level=40
+            )
+        )
+    for protocol in protocols:
+        await scenario.attach(protocol)
+    await scenario.idle()
+    player_id = scenario.single_player(*protocols).player_id
+    player = scenario.mass.players.get_player(player_id)
+    assert player is not None
+    published = _published_levels(scenario, player_id)
+
+    await scenario.report(native, available=False)
+    if change == "second_output_drops":
+        # the output that took the control drops as well, the other one takes it
+        state = scenario.player(player_id)
+        assert state is not None
+        assert state.volume_control == "cast_kitchen"
+        await scenario.report(protocols[2], available=False)
+    elif change == "output_flaps":
+        await scenario.detach(audio)
+        await scenario.attach(audio)
+    elif change == "output_blinks":
+        await scenario.report(audio, available=False)
+        await scenario.report(audio, available=True)
+    elif change == "native_detaches":
+        # a reload of its provider
+        await scenario.detach(native)
+    elif change == "pinned_and_back":
+        # the user picks the fake control and goes back to the automatic one
+        scenario.mass.config.set_player_value(player_id, CONF_VOLUME_CONTROL, "fake")
+        player.update_state(force_update=True)
+        scenario.mass.config.set_player_value(player_id, CONF_VOLUME_CONTROL, None)
+        player.update_state(force_update=True)
+    else:
+        # the user picks the output as the volume control
+        scenario.mass.config.set_player_value(player_id, CONF_VOLUME_CONTROL, "ap_kitchen")
+        player.update_state(force_update=True)
+    await scenario.idle()
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_control, state.volume_level) == ("ap_kitchen", 30)
+    assert 80 not in published
+
+    audio.commands.clear()
+    await scenario.play(player_id)
+
+    assert audio.commands[0] == ("volume_set", 30)
+    assert "play_media" in _names(audio)
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_level == 30
+
+
 async def test_native_that_drops_again_leaves_the_level_it_had_the_second_time(
     scenario: Scenario,
 ) -> None:
@@ -556,6 +641,10 @@ async def test_output_without_a_volume_of_its_own_gets_none_while_the_native_is_
 
     assert player.volume_control_for_output("ap_kitchen") == "none"
     assert player.mute_control_for_output("ap_kitchen") == "none"
+    # without a volume control the player shows no level, also not the one it keeps
+    state = scenario.player(player.player_id)
+    assert state is not None
+    assert (state.volume_control, state.volume_level) == ("none", None)
 
 
 async def test_detach_of_the_idle_native_leaves_the_playing_output_alone(

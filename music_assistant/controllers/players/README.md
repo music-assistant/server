@@ -310,6 +310,12 @@ protocol with the feature; level reports are only taken from that protocol. When
 the protocol that becomes the control gets the level and mute of the player before it is made the
 active output and before the stream starts.
 
+While its own protocol is attached but can not be reached, a player keeps the level and mute it had
+when that began: what any of its protocols reports may be stale then. It is shown as the quieter of
+that and what the protocol in control reports, nothing is sent when the control moves, and the
+output that is activated for playback is given it. A volume or mute command, an output given it, or
+the own protocol back in reach ends that; the own protocol's level counts again then.
+
 ## Configuration Storage
 
 Every player has a record under `players/{player_id}` (base keys, its name, and the values of the

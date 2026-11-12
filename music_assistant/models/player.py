@@ -575,9 +575,9 @@ class Player:
         self._foreign_protocol_id: str | None = None
         # the protocols the state lists, with what they were built from
         self._protocol_infos_cache: tuple[Any, list[PlayerProtocolInfo]] | None = None
-        # the level and mute the player keeps, by feature, for the protocol that took their
-        # control from the own protocol while that could not be reached
-        self._held_volume: dict[PlayerFeature, tuple[str, Any]] = {}
+        # the level and mute the player had, by feature, when its own protocol became
+        # unreachable; None once a command or an output it was given took over
+        self._held_volume: dict[PlayerFeature, Any] = {}
         # Palette for the image currently shown, resolved asynchronously from the
         # cache controller and carried here so the (synchronous) state serialization
         # can read it back without blocking. See set_resolved_palette.
@@ -1374,7 +1374,7 @@ class Player:
         self._track_availability(reachable)
         # calculate the new state
         prev_state = self._state
-        self._hold_volume_for_takeover()
+        self._track_held_volume()
         self._state, effects = derive_player_state(self._collect_state_inputs(reachable))
         self._foreign_protocol_id = effects.foreign_protocol_id
         if effects.clear_active_output:
@@ -1570,19 +1570,19 @@ class Player:
             return self._own_protocol
         return self._protocols.get(control)
 
-    def held_volume_control(self, feature: PlayerFeature) -> str | None:
+    def holds_volume(self, feature: PlayerFeature) -> bool:
         """
-        Return the protocol the player keeps its level or mute for, None when it keeps none.
+        Return whether the player keeps the level or mute it had when its own protocol dropped.
 
-        That is a protocol that took the volume or mute control from the own protocol while
-        that could not be reached. Until it is given them, when it is activated for playback,
-        or a command goes to it, the player keeps the level and mute it had, and is never
-        shown louder than that protocol reports.
+        While its own protocol is attached but can not be reached, the player keeps the level
+        and mute it had, whichever protocol has the automatic control meanwhile: it is never
+        shown louder than that protocol reports, and the output activated for playback is
+        given them. That ends when a command goes to the control, when an output was given
+        them, or when the own protocol can be reached again.
 
         :param feature: VOLUME_SET for the level, VOLUME_MUTE for the mute.
         """
-        held = self._held_volume.get(feature)
-        return held[0] if held else None
+        return self._held_volume.get(feature) is not None
 
     def release_held_volume(self, *features: PlayerFeature) -> None:
         """
@@ -1592,7 +1592,8 @@ class Player:
             is given.
         """
         for feature in features or (PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE):
-            if self._held_volume.pop(feature, None) is not None:
+            if self._held_volume.get(feature) is not None:
+                self._held_volume[feature] = None
                 self.mark_state_dirty()
 
     def set_active_mass_source(self, value: str | None) -> None:
@@ -1724,40 +1725,29 @@ class Player:
         own = self._own_protocol
         return own is not None and own.available and feature in own.supported_features
 
-    def _hold_volume_for_takeover(self) -> None:
+    def _track_held_volume(self) -> None:
         """
-        Keep the level and mute of the player for a protocol that takes their control.
+        Keep the level and mute the player had when its own protocol became unreachable.
 
-        That is a protocol that takes the control from the own protocol while that is
-        attached but can not be reached: the player keeps the level and mute it had. What
-        the own protocol reported last may be stale, and so may what the other protocol
-        reports, so the device is shown as the quieter of the two.
+        What the own protocol reported last may be stale then, and so may what the other
+        protocols report: the player is shown as the quieter of what it had and what the
+        protocol in control reports, until it is reachable again (see holds_volume).
         """
+        if (own := self._own_protocol) is None:
+            # it may come back reachable, or as it went
+            return
+        if own.available:
+            self._held_volume.clear()
+            return
         # the state is still the one published last
         previous = self._state
-        for feature, control, previous_control in (
-            (PlayerFeature.VOLUME_SET, self.volume_control, previous.volume_control),
-            (PlayerFeature.VOLUME_MUTE, self.mute_control, previous.mute_control),
-        ):
-            if (held := self._held_volume.get(feature)) is not None:
-                if held[0] != control:
-                    del self._held_volume[feature]
-                continue
-            own = self._own_protocol
-            if not (
-                previous_control == PLAYER_CONTROL_NATIVE
-                and control in self._protocols
-                and own is not None
-                and not own.available
-            ):
-                continue
-            value = (
-                previous.volume_level
-                if feature == PlayerFeature.VOLUME_SET
-                else previous.volume_muted
-            )
-            if value is not None:
-                self._held_volume[feature] = (control, value)
+        self._held_volume.setdefault(PlayerFeature.VOLUME_SET, previous.volume_level)
+        self._held_volume.setdefault(PlayerFeature.VOLUME_MUTE, previous.volume_muted)
+
+    def _applies_held_volume(self, feature: PlayerFeature, control: str) -> bool:
+        """Return whether a held level or mute applies to the control resolved for it."""
+        # what a protocol reports can be stale; a fake control is the player's own level
+        return self._held_volume.get(feature) is not None and control in self._protocols
 
     def _stored_protocol_name(self) -> str | None:
         """Return the name a protocol of the player was last seen with, its own protocol first."""
@@ -2404,8 +2394,8 @@ class Player:
         """Return the volume level based on the playercontrol which may have been set-up."""
         volume_control = self.volume_control
         level = self._reported_volume_level(volume_control)
-        if (held := self._held_volume.get(PlayerFeature.VOLUME_SET)) and held[0] == volume_control:
-            return _quieter_level(held[1], level)
+        if self._applies_held_volume(PlayerFeature.VOLUME_SET, volume_control):
+            return _quieter_level(self._held_volume[PlayerFeature.VOLUME_SET], level)
         return level
 
     def _reported_volume_level(self, volume_control: str) -> int | None:
@@ -2431,8 +2421,8 @@ class Player:
         """Return the mute state based on any playercontrol which may have been set-up."""
         mute_control = self.mute_control
         muted = self._reported_mute_state(mute_control)
-        if (held := self._held_volume.get(PlayerFeature.VOLUME_MUTE)) and held[0] == mute_control:
-            return _quieter_mute(held[1], muted)
+        if self._applies_held_volume(PlayerFeature.VOLUME_MUTE, mute_control):
+            return _quieter_mute(self._held_volume[PlayerFeature.VOLUME_MUTE], muted)
         return muted
 
     def _reported_mute_state(self, mute_control: str) -> bool | None:

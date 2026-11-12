@@ -5594,16 +5594,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         volume_control = player.volume_control_for_output(output_protocol_id)
         mute_control = player.mute_control_for_output(output_protocol_id)
-        # a control that takes over, or one the player still keeps its level or mute for
+        # a control that takes over, or any while the player keeps the level or mute it had
         await self._hand_over_volume(
             player,
             volume_control
-            if volume_control == player.held_volume_control(PlayerFeature.VOLUME_SET)
+            if player.holds_volume(PlayerFeature.VOLUME_SET)
             or volume_control != player.volume_control
             else None,
             mute_control
-            if mute_control == player.held_volume_control(PlayerFeature.VOLUME_MUTE)
-            or mute_control != player.mute_control
+            if player.holds_volume(PlayerFeature.VOLUME_MUTE) or mute_control != player.mute_control
             else None,
         )
         player.release_held_volume()
