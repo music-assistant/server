@@ -341,7 +341,10 @@ prefixed with their id. Saving it stores each value with whoever declared its en
 
 The player configs were split into these two trees by a migration that keeps a copy of the
 settings file from before it (`settings.json.pre-player-split`); see
-[player_split.py](../config/player_split.py).
+[player_split.py](../config/player_split.py). Restoring that copy is the way back to an older
+version. An older version that runs on the split settings stores the players it finds in the old
+shape; without the copy, the next start on this version removes what the older version stored for
+players.
 
 ## Development Guide
 

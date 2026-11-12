@@ -10,6 +10,8 @@ import pytest
 from music_assistant_models.enums import EventType, IdentifierType
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import CONF_PLAYERS
+
 from .harness import Event, Role, Scenario, VisiblePlayer
 
 LIVING = {
@@ -438,3 +440,88 @@ async def test_protocol_only_player_is_restored_with_its_id_after_a_restart(
     await scenario.settle()
     den_airplay, den_cast = scenario.protocol("airplay_den"), scenario.protocol("cast_den")
     assert ("play_media", MEDIA) in den_airplay.commands + den_cast.commands
+
+
+def _older_version_record(
+    player_id: str, provider: str, player_type: str = "protocol", **values: Any
+) -> dict[str, Any]:
+    """Return a player config as a version from before the split stores it."""
+    return {
+        "player_id": player_id,
+        "provider": provider,
+        "player_type": player_type,
+        "enabled": True,
+        "default_name": player_id,
+        "values": values,
+    }
+
+
+async def test_what_an_older_version_stored_goes_at_the_next_start(scenario: Scenario) -> None:
+    """
+    A split config that an older version ran on again starts with exactly its own players.
+
+    A device the older version saw first is found again, and a browser that connects
+    afterwards has its client id as player id.
+    """
+    wiim = await scenario.add_provider("wiim")
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    sendspin = await scenario.add_provider("sendspin")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    living_airplay = airplay.protocol("airplay_living", "Living", role="audio", identifiers=LIVING)
+    den_airplay = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
+    den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
+    for protocol in (living, living_airplay, den_airplay, den_cast):
+        await scenario.attach(protocol)
+    await scenario.advance(15)
+    await scenario.idle()
+    living_id = scenario.single_player(living, living_airplay).player_id
+    den_id = scenario.single_player(den_airplay, den_cast).player_id
+    tv = airplay.protocol("airplay_tv", "TV", role="audio", identifiers=TV)
+    scenario.set_present("airplay_tv", True)
+    sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    scenario.expect_log("player records that an older version of Music Assistant stored")
+
+    await scenario.seed_config(
+        {
+            CONF_PLAYERS: {
+                "airplay_living": _older_version_record(
+                    "airplay_living", "airplay", protocol_parent_id=living_id
+                ),
+                "airplay_den": _older_version_record(
+                    "airplay_den", "airplay", protocol_parent_id="upa1b2c3d4"
+                ),
+                "cast_den": _older_version_record("cast_den", "chromecast", "player"),
+                "upa1b2c3d4": _older_version_record(
+                    "upa1b2c3d4",
+                    "universal_player",
+                    "player",
+                    linked_protocol_ids=["airplay_den", "cast_den"],
+                ),
+                "airplay_tv": _older_version_record(
+                    "airplay_tv", "airplay", protocol_parent_id="upb2c3d4e5"
+                ),
+                "upb2c3d4e5": _older_version_record(
+                    "upb2c3d4e5", "universal_player", "player", linked_protocol_ids=["airplay_tv"]
+                ),
+                "sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER,
+            }
+        }
+    )
+    await scenario.advance(15)
+    await scenario.idle()
+
+    tv_id = scenario.single_player(tv).player_id
+    assert sorted((player.player_id, player.name) for player in scenario.visible_players()) == (
+        sorted([(living_id, "Living"), (den_id, "Den"), (tv_id, "TV")])
+    )
+    assert scenario.player_of(scenario.protocol("airplay_living")) == living_id
+    assert scenario.player_of(scenario.protocol("cast_den")) == den_id
+    assert sorted(config.player_id for config in await scenario.player_configs()) == sorted(
+        [living_id, den_id, tv_id]
+    )
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert scenario.player_of(scenario.protocol("sendspin_web_3f2a")) == "sendspin_web_3f2a"

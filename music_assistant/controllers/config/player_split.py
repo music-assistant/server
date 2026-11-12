@@ -11,6 +11,11 @@ its player.
 Both steps run once, each behind its own flag in the data. A record that cannot be
 converted is logged and left alone; a step that fails as a whole raises, which stops
 the startup before anything is saved, so the next start tries again.
+
+An older version that runs on a split config stores the players it finds in the shape
+from before the split. Every start of a split config removes those records: the split
+records are what holds. The copy of the settings from before the split is the way back
+to an older version.
 """
 
 from __future__ import annotations
@@ -159,6 +164,41 @@ def migrate_player_split(data: dict[str, Any]) -> bool:
     return changed
 
 
+def remove_player_records_of_older_versions(data: dict[str, Any]) -> bool:
+    """
+    Remove the player records an older version stored in a split config; return True if any.
+
+    Those are the records of its protocol players and universal players, whose devices are
+    found again, and of browser and app players without the session-only marker, which are
+    kept and marked when the user customised them. The records of the split are left as
+    they are.
+
+    :param data: The persistent settings data.
+    """
+    players, protocols = data.get(CONF_PLAYERS), data.get(CONF_PLAYER_PROTOCOLS, {})
+    # without a readable tree of the protocols, no record can be told apart
+    if needs_player_split(data) or not isinstance(players, dict) or not isinstance(protocols, dict):
+        return False
+    removed: list[str] = []
+    for player_id, record in list(players.items()):
+        if not isinstance(record, dict):
+            LOGGER.info("Can not check the stored player %s (not a mapping)", player_id)
+        elif _is_older_version_record(player_id, record, protocols):
+            _drop_player(data, player_id)
+            removed.append(player_id)
+    deleted, marked = _migrate_session_only_players(data)
+    removed += deleted
+    for player_id in removed:
+        LOGGER.info("Removed the stored player %s, which an older version stored", player_id)
+    if removed:
+        LOGGER.warning(
+            "Removed %s player records that an older version of Music Assistant stored "
+            "after the player settings were migrated",
+            len(removed),
+        )
+    return bool(removed or marked)
+
+
 def _domain(record: dict[str, Any]) -> str:
     """Return the provider domain a stored record names."""
     return str(record.get("provider") or "").split("--", maxsplit=1)[0]
@@ -197,15 +237,18 @@ def _player_ids_with_protocols(data: dict[str, Any]) -> set[str]:
     }
 
 
-def _migrate_session_only_players(data: dict[str, Any]) -> None:
+def _migrate_session_only_players(data: dict[str, Any]) -> tuple[list[str], list[str]]:
     """
     Delete or mark the players that only exist while their device is connected.
 
     Those are the Sendspin players that are no protocol of a device: browser and app
     players, virtual players, displays, visualizers, lights and sources. One the user
     customised is kept and marked; of the others only the player record is deleted:
-    they come back by themselves, with the same id, when they connect.
+    they come back by themselves, with the same id, when they connect. Returns the ids
+    of the deleted and of the marked players.
     """
+    deleted: list[str] = []
+    marked: list[str] = []
     players = _records(data, CONF_PLAYERS)
     # a player that has protocols was split before, and is no candidate anymore
     pointed_at = _player_ids_with_protocols(data)
@@ -224,6 +267,7 @@ def _migrate_session_only_players(data: dict[str, Any]) -> None:
                 or _domain(record) != "sendspin"
                 or record.get("player_type") == PlayerType.PROTOCOL
                 or _values(record).get(LEGACY_PROTOCOL_PARENT_ID)
+                or _values(record).get(CONF_SESSION_ONLY)
                 or player_id in pointed_at
             ):
                 continue
@@ -231,10 +275,13 @@ def _migrate_session_only_players(data: dict[str, Any]) -> None:
                 if not isinstance(record.get("values"), dict):
                     record["values"] = {}
                 record["values"][CONF_SESSION_ONLY] = True
+                marked.append(player_id)
             else:
                 del players[player_id]
+                deleted.append(player_id)
         except Exception:
             LOGGER.exception("Could not migrate the stored player %s, skipping it", player_id)
+    return deleted, marked
 
 
 def _is_customised(data: dict[str, Any], player_id: str, record: dict[str, Any]) -> bool:
@@ -248,6 +295,22 @@ def _is_customised(data: dict[str, Any], player_id: str, record: dict[str, Any])
     if isinstance(dsp_config, dict) and dsp_config.get("enabled"):
         return True
     return isinstance(queue_configs, dict) and player_id in queue_configs
+
+
+def _is_older_version_record(
+    player_id: str, record: dict[str, Any], protocols: dict[str, Any]
+) -> bool:
+    """Return whether a record of a split config is one of a protocol or universal player."""
+    if record.get("provider") == LEGACY_UNIVERSAL_PLAYER:
+        return True
+    if record.get("player_type") == PlayerType.PROTOCOL:
+        return True
+    if _values(record).get(LEGACY_PROTOCOL_PARENT_ID):
+        return True
+    protocol = protocols.get(player_id)
+    owner = protocol.get("player_id") if isinstance(protocol, dict) else None
+    # a player from before the split shares its id with its own protocol
+    return bool(owner) and owner != player_id
 
 
 def _migrate_player_tree(data: dict[str, Any]) -> None:

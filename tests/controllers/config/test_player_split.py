@@ -28,6 +28,7 @@ from music_assistant.controllers.config.player_split import (
     mark_player_split_done,
     migrate_player_split,
     needs_player_split,
+    remove_player_records_of_older_versions,
 )
 from tests.common import capture_log_records
 
@@ -100,6 +101,10 @@ def _migrated(data: dict[str, Any]) -> dict[str, Any]:
     unflagged = {key: value for key, value in deepcopy(result).items() if key not in FLAGS}
     migrate_player_split(unflagged)
     assert unflagged == result
+    # nothing the split stores is taken for a record of an older version
+    cleaned = deepcopy(result)
+    assert remove_player_records_of_older_versions(cleaned) is False
+    assert cleaned == result
     return result
 
 
@@ -820,6 +825,134 @@ def test_new_installation_is_marked_as_split() -> None:
     assert data == FLAGS
     assert needs_player_split(data) is False
     assert migrate_player_split(data) is False
+
+
+def _split_settings() -> dict[str, Any]:
+    """Return a split config with the kinds of player records this version stores."""
+    players = [
+        _record("sonos_1", SONOS, values={"icon": "speaker"}),
+        # a converted wrapper, which names the provider of its best protocol
+        _record("up0032", AIRPLAY, name="Den TV", values={"device_info": {"model": "M"}}),
+        _record("pl0123456789ab", CAST, values={"created_at": 1}),
+        # a wrapper the user customised, kept without any protocol
+        _record("up0007", "", name="Kitchen"),
+        _record("ss_speaker", SENDSPIN),
+        # a browser player the user customised, of which nothing else is stored anymore
+        _record("ss_marked", SENDSPIN, values={"session_only": True, "created_at": 1}),
+    ]
+    protocols = [
+        _protocol_record("sonos_1", SONOS, "sonos_1", role="native"),
+        _protocol_record("airplay_sonos", AIRPLAY, "sonos_1"),
+        _protocol_record("airplay_den", AIRPLAY, "up0032"),
+        _protocol_record("cast_den", CAST, "up0032"),
+        _protocol_record("cast_new", CAST, "pl0123456789ab"),
+        _protocol_record("ss_speaker", SENDSPIN, "ss_speaker", role="native"),
+    ]
+    return _settings(
+        *players,
+        player_protocols={record["protocol_id"]: record for record in protocols},
+        player_dsp={"sonos_1": {"enabled": True}},
+        player_queues={"up0032": {"values": {"crossfade": True}}},
+        **FLAGS,
+    )
+
+
+# what an older version stores for the players of a split config, by player id
+OLDER_VERSION_PLAYERS: dict[str, dict[str, Any]] = {
+    record["player_id"]: record
+    for record in (
+        # the protocols of the players it finds, stored as protocol players again
+        _protocol("airplay_den", AIRPLAY, "upa1b2c3d4"),
+        _protocol("airplay_sonos", AIRPLAY, "sonos_1"),
+        # one whose type was not updated yet
+        _record("cast_den", CAST),
+        # the new wrapper of a device without a native provider
+        _record(
+            "upa1b2c3d4",
+            UNIVERSAL_PLAYER,
+            values={"linked_protocol_ids": ["airplay_den", "cast_den"]},
+        ),
+        # a device it saw first, with a wrapper and protocols the split never saw
+        _protocol("airplay_tv", AIRPLAY, "upb2c3d4e5"),
+        _record("dlna_tv", DLNA, values={"protocol_parent_id": "upb2c3d4e5"}),
+        # a protocol player whose wrapper was removed, which drops its link
+        _protocol("airplay_gone", AIRPLAY, None),
+        _record("upb2c3d4e5", UNIVERSAL_PLAYER, values={"linked_protocol_ids": ["airplay_tv"]}),
+        # browser players, without the marker of a player that only exists while connected
+        _record("ss_web_1", SENDSPIN, values={"sendspin_static_delay": 30}),
+        _record("ss_web_2", SENDSPIN, name="Tablet"),
+    )
+}
+
+
+def test_records_an_older_version_stored_for_a_split_config_are_removed() -> None:
+    """Only the players of the split stay, with their records and protocols as they are."""
+    expected = _split_settings()
+    # what the older version adds to the record of a player the split kept is left there
+    expected[CONF_PLAYERS]["sonos_1"]["values"] |= {
+        "linked_protocol_ids": ["airplay_sonos"],
+        "output_codec": "mp3",
+    }
+    data = deepcopy(expected)
+    data[CONF_PLAYERS] |= deepcopy(OLDER_VERSION_PLAYERS)
+    data[CONF_PLAYER_DSP] |= {"upa1b2c3d4": {"enabled": True}, "ss_web_1": {"enabled": False}}
+    data[CONF_PLAYER_QUEUES] |= {"upa1b2c3d4": {"values": {}}}
+    expected[CONF_PLAYERS]["ss_web_2"] = _record(
+        "ss_web_2", SENDSPIN, name="Tablet", values={"session_only": True}
+    )
+    # a browser player keeps what is stored next to it: its id comes back when it connects
+    expected[CONF_PLAYER_DSP]["ss_web_1"] = {"enabled": False}
+
+    with capture_log_records(player_split.LOGGER) as records:
+        assert remove_player_records_of_older_versions(data) is True
+
+    assert data == expected
+    removed = set(OLDER_VERSION_PLAYERS) - {"ss_web_2"}
+    assert sorted(record.getMessage() for record in records if record.levelno == logging.INFO) == (
+        sorted(f"Removed the stored player {pid}, which an older version stored" for pid in removed)
+    )
+    assert [record.levelno for record in records if record.levelno > logging.INFO] == [
+        logging.WARNING
+    ]
+    again = deepcopy(data)
+    with capture_log_records(player_split.LOGGER) as records:
+        assert remove_player_records_of_older_versions(again) is False
+    assert again == data
+    assert records == []
+
+
+def test_an_unsplit_config_is_left_to_the_split() -> None:
+    """Before the split, the records of the old shape are the ones the split converts."""
+    data = _settings(_record("up0040", UNIVERSAL_PLAYER), _protocol("ap_40", AIRPLAY, "up0040"))
+    expected = deepcopy(data)
+
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == expected
+
+
+@pytest.mark.parametrize(
+    "trees",
+    [
+        {CONF_PLAYERS: {"broken": "not a dict"}},
+        {CONF_PLAYERS: {"odd": _record("odd", SONOS, values="not a dict")}},
+        {CONF_PLAYERS: "not a dict"},
+        {CONF_PLAYER_PROTOCOLS: "not a dict"},
+        {CONF_PLAYER_PROTOCOLS: {"sonos_1": "not a dict"}},
+    ],
+    ids=["record", "values", "players", "protocols", "protocol_record"],
+)
+def test_records_that_can_not_be_read_are_left_alone(trees: dict[str, Any]) -> None:
+    """What can not be read stays as it is, and the cleanup does not raise for it."""
+    data = _split_settings()
+    for key, tree in trees.items():
+        if isinstance(tree, dict) and isinstance(data.get(key), dict):
+            data[key] |= deepcopy(tree)
+        else:
+            data[key] = deepcopy(tree)
+    expected = deepcopy(data)
+
+    assert remove_player_records_of_older_versions(data) is False
+    assert data == expected
 
 
 def _make_controller(tmp_path: Path) -> ConfigController:

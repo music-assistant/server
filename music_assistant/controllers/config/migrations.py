@@ -33,6 +33,7 @@ from music_assistant.controllers.config.player_split import (
     LEGACY_LINKED_PROTOCOL_IDS,
     LEGACY_PROTOCOL_PARENT_ID,
     migrate_player_split,
+    remove_player_records_of_older_versions,
 )
 from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
@@ -590,6 +591,10 @@ async def migrate(data: dict[str, Any]) -> bool:
     # Split the player configs into one record per player and one per protocol. This runs
     # last: the steps above work on the records as they were before the split.
     if migrate_player_split(data):
+        changed = True
+
+    # Remove the player records an older version stored in the old shape after the split.
+    if remove_player_records_of_older_versions(data):
         changed = True
 
     return changed
