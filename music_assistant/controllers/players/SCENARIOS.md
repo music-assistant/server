@@ -17,6 +17,8 @@ Each entry has an id, the rule in one line, the journey in a few sentences, and 
 - **Proven by** names the tests, as `file::test` within
   [tests/scenarios](../../../tests/scenarios), or with their full path when they live elsewhere.
 
+"The lab" in the end-to-end lines is the end-to-end test lab, music-assistant/end-to-end-test-lab.
+
 The devices and rooms in the examples are made up: Kitchen, Office, Den, Living, Patio, and so on.
 
 ## Adding a scenario
