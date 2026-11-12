@@ -73,9 +73,7 @@ async def _linked_albums(mass: MusicAssistant, track: Track) -> set[str]:
     rows = await mass.music.database.get_rows(
         DB_TABLE_ALBUM_TRACKS, {"track_id": int(track.item_id)}
     )
-    return {
-        (await mass.music.albums.get_library_item(row["album_id"])).name for row in rows
-    }
+    return {(await mass.music.albums.get_library_item(row["album_id"])).name for row in rows}
 
 
 @pytest.fixture(name="mass")
@@ -110,7 +108,9 @@ async def test_changed_album_tag_keeps_only_the_new_album(mass: MusicAssistant) 
 async def test_an_album_shared_with_another_source_is_kept(mass: MusicAssistant) -> None:
     """A track and album also on a streaming service may still be linked through it."""
     db_track = await mass.music.tracks.add_item_to_library(
-        _track(_album("Salute", _mapping("sp-album", STREAM_INSTANCE)), _mapping("sp", STREAM_INSTANCE))
+        _track(
+            _album("Salute", _mapping("sp-album", STREAM_INSTANCE)), _mapping("sp", STREAM_INSTANCE)
+        )
     )
 
     rescanned = _track(None)
