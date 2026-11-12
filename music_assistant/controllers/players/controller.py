@@ -2792,6 +2792,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         player_id: str | None = None
         existing = self._protocols.get(protocol_id)
         held = existing is protocol and protocol.player is None
+        if not self.wants_protocol(protocol_id):
+            # switched off, or its player is disabled: it keeps its player and its place. Its
+            # provider keeps the object, which a removal of the player still has to reach
+            if held:
+                self._release_held_protocol(protocol)
+            self._unattached[protocol_id] = protocol
+            return
         if not held:
             # the attached object goes without anything being published: another object
             # of the protocol takes its place, or it attaches again in another role

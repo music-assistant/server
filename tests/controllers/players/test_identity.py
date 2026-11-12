@@ -275,6 +275,54 @@ async def test_protocol_switched_on_again_gets_its_place_back_from_the_bridge(
     assert scenario.player_of(bridge) == player_id
 
 
+@pytest.mark.parametrize("seen_again", ["while_running", "after_a_restart"])
+async def test_protocol_switched_off_keeps_its_player_when_it_is_seen_again(
+    scenario: Scenario, seen_again: str
+) -> None:
+    """
+    The own client of a device the user switched off is no player of its own when it is seen again.
+
+    A bridge holds the place of its domain meanwhile; the client keeps its link and its switch,
+    and takes its place back when the user switches it on again.
+    """
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    carrier = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    bridge = sendspin.protocol(
+        "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+    )
+    for protocol in (carrier, client, bridge):
+        await scenario.attach(protocol)
+    player_id = scenario.single_player(carrier, client).player_id
+    await scenario.mass.config.save_protocol_config("sendspin_kitchen", {"enabled": False})
+    await scenario.idle()
+    assert scenario.player_of(bridge) == player_id
+    if seen_again == "after_a_restart":
+        await scenario.restart()
+        for protocol_id in ("ap_kitchen", "sendspin_bridge_kitchen"):
+            await scenario.attach(scenario.protocol(protocol_id))
+    scenario.clear_events()
+
+    # its provider looks for its devices again and offers the client that is still there
+    await scenario.provider("sendspin").discover_players()
+    await scenario.idle()
+
+    assert scenario.player_of(scenario.protocol("sendspin_kitchen")) is None
+    assert scenario.events(*PLAYER_EVENTS) == []
+    assert sorted(scenario.mass.config.get(CONF_PLAYERS)) == [player_id]
+    assert _edge(scenario, "sendspin_kitchen") == player_id
+    assert (scenario.mass.config.get_protocol_record("sendspin_kitchen") or {})["enabled"] is False
+    assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+    await scenario.mass.config.save_protocol_config("sendspin_kitchen", {"enabled": True})
+    await scenario.idle()
+
+    assert scenario.player_of(scenario.protocol("sendspin_kitchen")) == player_id
+    assert scenario.player_of(scenario.protocol("sendspin_bridge_kitchen")) is None
+    assert [player.player_id for player in scenario.visible_players()] == [player_id]
+
+
 @pytest.mark.parametrize(
     ("away_domain", "domain", "role", "own_identifiers"),
     [
