@@ -42,7 +42,10 @@ class _DSPConfigStore(DSPConfigMixin):
         self.mass = cast(
             "MusicAssistant",
             SimpleNamespace(
-                players=SimpleNamespace(on_player_dsp_change=self.on_player_dsp_change),
+                players=SimpleNamespace(
+                    on_player_dsp_change=self.on_player_dsp_change,
+                    raise_if_managed_externally=MagicMock(),
+                ),
                 streams=SimpleNamespace(
                     audio_processing=SimpleNamespace(
                         update_player_dsp_preset=self.update_player_dsp_preset

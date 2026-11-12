@@ -79,6 +79,7 @@ class DSPConfigMixin:
 
         This method will validate the config and apply it to the player.
         """
+        self.mass.players.raise_if_managed_externally(player_id)
         config = deepcopy(config)
         # switching DSP on/off keeps the preset selection, any other change clears it
         preset = self._get_dsp_preset(config.preset_id)
@@ -94,6 +95,7 @@ class DSPConfigMixin:
         :param player_id: Player that should use the preset.
         :param preset_id: Preset identifier to apply.
         """
+        self.mass.players.raise_if_managed_externally(player_id)
         if (preset := self._get_dsp_preset(preset_id)) is None:
             msg = f"DSP preset {preset_id} not found"
             raise KeyError(msg)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
@@ -182,21 +182,13 @@ class AirPlayStreamSession:
             self._shared_ptp_resolved = True
         position_ms = int((self.media.elapsed_time or 0) * 1000)
         try:
-            async with asyncio.TaskGroup() as task_group:
-                for player in self.sync_clients:
-                    task_group.create_task(
-                        self._member_start_step(
-                            player, "spawn its cli", self._start_client(player, self.use_shared_ptp)
-                        )
-                    )
-            await asyncio.gather(
-                *[
-                    self._member_start_step(
-                        player, "connect to its device", player.stream.wait_for_connection()
-                    )
-                    for player in self.sync_clients
-                    if player.stream
-                ]
+            await self._start_step_dropping_failures(
+                "spawn its cli", lambda player: self._start_client(player, self.use_shared_ptp)
+            )
+            await self._start_step_dropping_failures(
+                "connect to its device",
+                lambda player: player.stream.wait_for_connection(),
+                members=[player for player in self.sync_clients if player.stream],
             )
             # The binary buffers stdin into its ring from process start; feed
             # audio first and wait for every member to confirm it flowing, then
@@ -232,7 +224,7 @@ class AirPlayStreamSession:
             # A member can fail for a specific, user-actionable reason (a device
             # that needs its password configured, for example). That error must
             # reach the caller intact instead of being flattened into the generic
-            # message; the TaskGroup above nests it inside an exception group.
+            # message; a later start step can still nest it inside an exception group.
             if (specific := _first_music_assistant_error(err)) is not None:
                 raise specific from err
             raise PlayerCommandFailed("Playback failed to start") from err
@@ -1092,6 +1084,80 @@ class AirPlayStreamSession:
                 ],
                 return_exceptions=True,
             )
+
+    async def _start_step_dropping_failures(
+        self,
+        step: str,
+        make_step: Callable[[AirPlayPlayer], Coroutine[Any, Any, None]],
+        members: list[AirPlayPlayer] | None = None,
+    ) -> None:
+        """
+        Run one start step on every member, leaving out the members that fail it.
+
+        A member refusing the stream (an Apple TV busy in an app, for example) must
+        not take the rest of the group down with it. A failed member is dropped
+        from the session and ungrouped with its re-join scheduled, and the start
+        goes on with the others. The start still fails as a whole, at once, when
+        the group leader fails, or when every member does.
+
+        :param step: What the members are doing, for the failure message.
+        :param make_step: Returns the step to run for a member.
+        :param members: The members to run it on (default: all sync clients).
+        """
+        members = list(self.sync_clients) if members is None else members
+        tasks = {
+            asyncio.create_task(self._member_start_step(player, step, make_step(player))): player
+            for player in members
+        }
+        failed: list[AirPlayPlayer] = []
+        try:
+            pending = set(tasks)
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_EXCEPTION)
+                for task in done:
+                    if (err := task.exception()) is None:
+                        continue
+                    player = tasks[task]
+                    # the leader owns the session: without it there is nothing to go on
+                    # with, so the others are not waited out
+                    if player.group_members or len(failed) + 1 == len(members):
+                        raise err
+                    failed.append(player)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for player in failed:
+            self.prov.logger.warning(
+                "AirPlay group start: going on without %s", player.display_name
+            )
+            leader_id = player.synced_to
+            await self.remove_client(player, reason=f"failed to {step} at group start")
+            self._release_dropped_member(player, leader_id)
+
+    def _release_dropped_member(self, player: AirPlayPlayer, leader_id: str | None) -> None:
+        """
+        Ungroup a member dropped at the group start and schedule its re-join.
+
+        :param player: The member that was dropped from the session.
+        :param leader_id: The leader the member was synced to when it was dropped.
+        """
+        # stopping the member marks its exit as expected, so the unexpected-exit handler
+        # that would do this stays quiet; without it the member would stay grouped
+        # with no audio, and every track change would take the cold path
+        if leader_id is None:
+            return
+        self.mass.create_task(
+            self.mass.players.cmd_set_members(leader_id, player_ids_to_remove=[player.player_id])
+        )
+        candidates = [leader_id]
+        if leader := self.mass.players.get_player(leader_id):
+            candidates += [
+                member_id
+                for member_id in leader.group_members
+                if member_id not in (player.player_id, leader_id)
+            ]
+        player.schedule_group_rejoin(candidates)
 
     async def _member_start_step(
         self, airplay_player: AirPlayPlayer, step: str, awaitable: Coroutine[Any, Any, None]
