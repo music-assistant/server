@@ -395,11 +395,17 @@ async def move_playlist_entries(
         # YouTube drops moves on a playlist sorted by date, and only honours the manual
         # order when it is set in a call of its own
         ytm.edit_playlist(prov_playlist_id, sortOrder=PlaylistSortOrder.MANUAL)
-        for set_video_id in set_video_ids:
-            ytm.edit_playlist(
-                prov_playlist_id,
-                moveItem=set_video_id if successor is None else (set_video_id, successor),
-            )
+        move = {"action": "ACTION_MOVE_VIDEO_BEFORE"}
+        if successor is not None:
+            move["movedSetVideoIdSuccessor"] = successor
+        # edit_playlist takes one move per call, so the request is made directly to send all
+        ytm._send_request(
+            "browse/edit_playlist",
+            {
+                "playlistId": prov_playlist_id,
+                "actions": [{**move, "setVideoId": set_video_id} for set_video_id in set_video_ids],
+            },
+        )
 
     await _run_ytmusic(_move_playlist_entries)
 

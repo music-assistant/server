@@ -192,23 +192,32 @@ async def test_get_episode_start_seconds_reads_the_player_response(
 
 
 @pytest.mark.parametrize(
-    ("successor", "move_items"),
+    ("successor", "placement"),
     [
-        ("D", [("A", "D"), ("C", "D")]),
-        (None, ["A", "C"]),
+        ("D", {"movedSetVideoIdSuccessor": "D"}),
+        (None, {}),
     ],
 )
-async def test_move_playlist_entries_orders_manually_then_moves_each_entry(
-    successor: str | None, move_items: list[Any]
+async def test_move_playlist_entries_orders_manually_then_moves_in_one_request(
+    successor: str | None, placement: dict[str, str]
 ) -> None:
-    """The playlist is ordered manually first, then each entry moves in order."""
+    """The playlist is ordered manually first, then all entries move in one request."""
     mock_ytm = MagicMock()
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
         await helpers.move_playlist_entries(
             headers={}, prov_playlist_id="PL1", set_video_ids=["A", "C"], successor=successor
         )
 
-    assert mock_ytm.edit_playlist.call_args_list == [
-        call("PL1", sortOrder=PlaylistSortOrder.MANUAL),
-        *(call("PL1", moveItem=item) for item in move_items),
+    assert mock_ytm.mock_calls == [
+        call.edit_playlist("PL1", sortOrder=PlaylistSortOrder.MANUAL),
+        call._send_request(
+            "browse/edit_playlist",
+            {
+                "playlistId": "PL1",
+                "actions": [
+                    {"action": "ACTION_MOVE_VIDEO_BEFORE", "setVideoId": svid, **placement}
+                    for svid in ("A", "C")
+                ],
+            },
+        ),
     ]
