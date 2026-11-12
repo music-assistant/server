@@ -1353,10 +1353,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # player is released from its group/sync first, then plays the media
         # standalone. With the preference off, behavior falls back to the
         # legacy "redirect to group leader" path below.
-        # The release reaches the group (and takes its lock through cmd_set_members
-        # for a dynamic member), so it runs before this player's own lock is taken
-        # here. A queue action calling in with that lock already held took the
-        # group's lock first as well (see get_group_and_player_lock).
+        # The release acts on the group, so the group's lock is taken before this
+        # player's own and both are held across the release and the play (see
+        # get_group_and_player_lock); a queue action calling in holds them already.
         target_player = self.get_player(player_id, True)
         if target_player is not None and (
             target_player.state.synced_to or target_player.state.active_group
@@ -1369,10 +1368,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 )
             )
             if override:
-                await self._release_player_for_play_media(target_player)
-                async with self.get_player_lock(
-                    target_player.player_id, PlayerLockPurpose.PLAYBACK
-                ):
+                async with self.get_group_and_player_lock(target_player.player_id):
+                    await self._release_player_for_play_media(target_player)
                     await self._handle_play_media(target_player.player_id, media)
                 return
         player = self._get_player_with_redirect(player_id)
@@ -1458,23 +1455,26 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             source = player_id  # default to MA queue source
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
-        # If player is currently grouped, handle it so the source switch can proceed.
-        # This allows external sources (e.g. Spotify Connect, AirPlay) to take over a grouped player.
-        if player.state.active_group and (
-            group_player := self.get_player(player.state.active_group)
-        ):
-            if player_id in group_player.state.static_group_members:
-                # player is a static member of a permanent group - stop the group
-                # and power it off if supported, rather than removing the member
-                await self._handle_cmd_stop(group_player.player_id)
-                if group_player.state.power_control != PLAYER_CONTROL_NONE:
-                    await self._handle_cmd_power(group_player.player_id, False)
-            else:
+        # taking the player out of its group acts on the group, so the group's lock is
+        # taken before the player's own and both are held until the source is selected
+        async with self.get_group_and_player_lock(player_id):
+            # If player is currently grouped, handle it so the source switch can proceed.
+            # This allows external sources (e.g. Spotify Connect, AirPlay) to take over a
+            # grouped player.
+            if player.state.active_group and (
+                group_player := self.get_player(player.state.active_group)
+            ):
+                if player_id in group_player.state.static_group_members:
+                    # player is a static member of a permanent group - stop the group
+                    # and power it off if supported, rather than removing the member
+                    await self._handle_cmd_stop(group_player.player_id)
+                    if group_player.state.power_control != PLAYER_CONTROL_NONE:
+                        await self._handle_cmd_power(group_player.player_id, False)
+                else:
+                    await self.cmd_ungroup(player_id)
+            elif player.state.synced_to:
                 await self.cmd_ungroup(player_id)
-        elif player.state.synced_to:
-            await self.cmd_ungroup(player_id)
-        # Delegate to internal handler for actual implementation
-        async with self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+            # Delegate to internal handler for actual implementation
             await self._handle_select_source(player_id, source)
 
     async def deselect_source(
@@ -6445,10 +6445,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         group = self.get_player(group_id, raise_unavailable=True)
         assert group is not None  # for type checking
-        if group.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(group.player_id, False)
-        else:
-            await self._handle_cmd_stop(group.player_id)
+        async with self.get_player_lock(group.player_id, PlayerLockPurpose.PLAYBACK):
+            if group.state.power_control != PLAYER_CONTROL_NONE:
+                await self._handle_cmd_power(group.player_id, False)
+            else:
+                await self._handle_cmd_stop(group.player_id)
 
     async def _handle_cmd_stop(self, player_id: str) -> None:
         """

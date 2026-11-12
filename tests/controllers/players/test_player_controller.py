@@ -18,7 +18,7 @@ import contextlib
 import inspect
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2232,6 +2232,103 @@ class TestPlayMediaOverride:
         assert power_calls == []
         # ... and play_media was issued directly on the member
         assert played_on == ["member"]
+
+
+class TestStaticGroupReleaseUnderTheGroupLock:
+    """A command that first ends what a member's static group plays holds the group's lock."""
+
+    @pytest.fixture(autouse=True)
+    def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+
+    @staticmethod
+    def _static_member(
+        mock_mass: MagicMock,
+    ) -> tuple[PlayerController, list[tuple[str, frozenset[str]]]]:
+        """
+        Build a static group with one member; record what is done and under which locks.
+
+        :return: The controller and the record: per action the locks its task held.
+        """
+        controller, _group, _protocol, _member = TestPlayMediaOverride._captured_member(
+            mock_mass, static=True
+        )
+        _set_play_media_override(mock_mass, True)
+        done: list[tuple[str, frozenset[str]]] = []
+
+        def _record(action: str) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            done.append((action, frozenset(controller._task_held_locks.get(task, set()))))
+
+        async def _stop(player_id: str) -> None:
+            _record(f"stop {player_id}")
+
+        async def _power(player_id: str, powered: bool, skip_auto_play: bool = False) -> None:  # noqa: ARG001
+            _record(f"power {player_id} {powered}")
+
+        async def _select_source(player_id: str, source: str | None) -> None:
+            _record(f"select_source {player_id} {source}")
+
+        async def _play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            _record(f"play_media {player_id}")
+
+        controller._handle_cmd_stop = _stop  # type: ignore[method-assign]
+        controller._handle_cmd_power = _power  # type: ignore[method-assign]
+        controller._handle_select_source = _select_source  # type: ignore[method-assign]
+        controller._handle_play_media = _play_media  # type: ignore[method-assign]
+        return controller, done
+
+    @staticmethod
+    def _command(controller: PlayerController, name: str) -> Coroutine[Any, Any, None]:
+        """Return the command that releases the member from its static group."""
+        if name == "select_source":
+            return controller.select_source("member", "hdmi")
+        if name == "play_media":
+            return controller.play_media("member", MagicMock(uri="x", source_id="src"))
+        return controller.cmd_ungroup("member")
+
+    @pytest.mark.parametrize(
+        ("name", "busy"),
+        [
+            ("select_source", "g1"),
+            ("select_source", "member"),
+            ("play_media", "g1"),
+            ("play_media", "member"),
+            # the ungroup acts on the group only
+            ("cmd_ungroup", "g1"),
+        ],
+    )
+    async def test_a_busy_group_or_member_leaves_the_group_playing(
+        self, mock_mass: MagicMock, name: str, busy: str
+    ) -> None:
+        """A command that cannot get its locks fails before it stops the group."""
+        controller, done = self._static_member(mock_mass)
+
+        with patch.object(controller, "wait_for_player_update", _skip_player_update_wait):
+            async with _lock_held_elsewhere(controller, busy):
+                with pytest.raises(ResourceBusyError):
+                    await self._command(controller, name)
+
+        assert done == []
+
+    @pytest.mark.parametrize("name", ["select_source", "play_media"])
+    async def test_the_group_is_stopped_and_the_member_commanded_under_both_locks(
+        self, mock_mass: MagicMock, name: str
+    ) -> None:
+        """The group's lock and the member's are held from the stop until the command."""
+        controller, done = self._static_member(mock_mass)
+
+        with patch.object(controller, "wait_for_player_update", _skip_player_update_wait):
+            await self._command(controller, name)
+
+        both = frozenset({"playback_g1", "playback_member"})
+        assert [action for action, _locks in done] == [
+            "stop g1",
+            "select_source member hdmi" if name == "select_source" else "play_media member",
+        ]
+        assert all(locks == both for _action, locks in done)
 
 
 class TestReleaseWaitForPlayMedia:
