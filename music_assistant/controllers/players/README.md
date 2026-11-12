@@ -142,7 +142,7 @@ Two players also merge by themselves: when a protocol attaches, or is attached a
 identifiers of its player match another live player, while the attach rules allow it and the
 younger of the two is unused. Unused means nothing about it is the user's own yet: no custom name,
 no value the user set on it or on one of its protocols, no DSP switched on, no queue settings, no
-queue items, no place in the member list of a group, no sync leader or members, no group that
+queue items, nothing playing right now, no place in the member list of a group, no sync leader or members, no group that
 holds it. Values the server or a provider stores by itself never count. The older player stays:
 by the moment it was created, a player without one counting as the oldest, and of two equally old
 ones the one with an id from before the split. Otherwise both stay, for the user to merge.

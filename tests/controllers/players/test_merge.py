@@ -1172,3 +1172,26 @@ async def test_merge_and_a_removal_of_the_absorbed_player_announce_it_gone_once(
     assert scenario.events(EventType.PLAYER_REMOVED, object_id=tv.younger_id) == [
         Event(EventType.PLAYER_REMOVED, tv.younger_id)
     ]
+
+
+async def test_duplicate_that_plays_is_merged_only_once_it_stopped(scenario: Scenario) -> None:
+    """A younger duplicate that plays (from a plugin: no queue items) merges at a later attach."""
+    tv = await _duplicates(scenario)
+    younger = scenario.mass.players.get_player(tv.younger_id)
+    assert younger is not None
+    younger.set_active_output_protocol("cast_tv")
+    await scenario.report(tv.cast, playback_state=PlaybackState.PLAYING)
+    if (state := scenario.player(tv.younger_id)) is None or (
+        state.playback_state != PlaybackState.PLAYING
+    ):
+        msg = f"{tv.younger_id} does not play"
+        raise ScenarioError(msg)
+
+    await _seen_again_with_its_address(scenario, tv.airplay)
+    assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.younger_id]
+
+    await scenario.report(tv.cast, playback_state=PlaybackState.IDLE)
+    await scenario.detach(tv.airplay)
+    await scenario.attach(tv.airplay)
+    await scenario.idle()
+    assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.older_id]

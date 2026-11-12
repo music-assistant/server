@@ -664,7 +664,8 @@ class ProtocolLinkingMixin:
         A player is used once it has any of:
         - a custom name, or a value the user set on it or on one of its protocols;
         - DSP that is switched on, or settings of its queue;
-        - items in its queue (restored from the saved queue, if any);
+        - items in its queue (restored from the saved queue, if any), or playback right now,
+          which a plugin source starts without queue items;
         - a place in the member list of a group, a sync leader or members synced to it, or
           a group that holds it.
 
@@ -689,6 +690,7 @@ class ProtocolLinkingMixin:
             or (isinstance(dsp, dict) and dsp.get("enabled"))
             or config.get(f"{CONF_PLAYER_QUEUES}/{player_id}") is not None
             or self.mass.player_queues.items(player_id, limit=1)
+            or state.playback_state != PlaybackState.IDLE
             or self._is_group_member(player_id)
             or state.synced_to
             or state.group_members
