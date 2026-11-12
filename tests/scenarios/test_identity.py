@@ -16,11 +16,24 @@ from music_assistant_models.errors import (
     InvalidCommand,
     PlayerUnavailableError,
 )
+from music_assistant_models.media_items import ProviderMapping, Track
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS, MAIN_ZONE
+from music_assistant.constants import (
+    CONF_MAX_VOLUME,
+    CONF_PLAYER_PROTOCOLS,
+    CONF_PLAYERS,
+    MAIN_ZONE,
+)
 from music_assistant.controllers.config.player_split import (
     remove_player_records_of_older_versions,
 )
+from music_assistant.controllers.player_queues.constants import (
+    CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+    CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+)
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from tests.common import as_user
 
 from .harness import FAKE_SETTING, Event, Role, Scenario, ScenarioError, VisiblePlayer
@@ -860,20 +873,62 @@ PRE_SPLIT_SPEAKER_AND_TWIN: dict[str, dict[str, Any]] = {
 }
 
 
+async def _save_queue(scenario: Scenario, queue_id: str, song: str) -> None:
+    """Store a saved queue of one track for a player, as the server saves one."""
+    item_id = song.lower().replace(" ", "_")
+    track = Track(
+        item_id=item_id,
+        provider="test",
+        name=song,
+        duration=60,
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+    item = QueueItem(queue_id=queue_id, queue_item_id=f"{queue_id}_1", name=song, duration=60)
+    item.media_item = track
+    saved = PlayerQueueData(
+        queue=PlayerQueue(
+            queue_id=queue_id, active=False, display_name=song, available=False, items=1
+        ),
+        items=[item],
+    )
+    for category, data in (
+        (CACHE_CATEGORY_PLAYER_QUEUE_STATE, saved.to_cache()),
+        (CACHE_CATEGORY_PLAYER_QUEUE_ITEMS, saved.items_to_cache()),
+    ):
+        await scenario.mass.cache.set(
+            key=queue_id,
+            data=data,
+            provider=scenario.mass.player_queues.domain,
+            category=category,
+            persistent=True,
+        )
+
+
 async def test_a_speaker_and_its_twin_stored_as_two_players_stay_two_players(
     scenario: Scenario,
 ) -> None:
     """
     An install that has a speaker and its Home Assistant twin as two players keeps both.
 
-    Each keeps its name, its settings, its queue and its protocol as its own protocol; making
-    them one is a merge, which the rank of a protocol never does by itself.
+    Each keeps its name, its settings, its saved queue and its protocol as its own protocol;
+    making them one is a merge, which the rank of a protocol never does by itself.
     """
     speaker = await _speaker(scenario)
     for protocol in (speaker.vendor, speaker.twin):
         scenario.set_present(protocol.protocol_id, True)
+    own = {
+        "RINCON_5478C9E60DA001400": (60, "Kitchen Song"),
+        "media_player.kitchen": (80, "Kitchen (HA) Song"),
+    }
+    stored = deepcopy(PRE_SPLIT_SPEAKER_AND_TWIN)
+    for player_id, (max_volume, song) in own.items():
+        stored[player_id]["values"][CONF_MAX_VOLUME] = max_volume
+        # the queue the older version saved for the player
+        await _save_queue(scenario, player_id, song)
 
-    await scenario.seed_pre_split_config(PRE_SPLIT_SPEAKER_AND_TWIN)
+    await scenario.seed_pre_split_config(stored)
     await scenario.idle()
 
     assert sorted((p.player_id, p.name) for p in scenario.visible_players()) == [
@@ -883,9 +938,12 @@ async def test_a_speaker_and_its_twin_stored_as_two_players_stay_two_players(
     speaker = _current(scenario, speaker)
     for protocol in (speaker.vendor, speaker.twin):
         player_id = protocol.protocol_id
+        max_volume, song = own[player_id]
         assert _roles(scenario, player_id) == {protocol.protocol_id: ProtocolRole.NATIVE}
-        assert await scenario.player_config(player_id) is not None
-        assert scenario.queue(player_id) is not None
+        config = await scenario.player_config(player_id)
+        assert config is not None
+        assert config.get_value(CONF_MAX_VOLUME) == max_volume
+        assert [item.name for item in scenario.mass.player_queues.items(player_id)] == [song]
 
 
 @pytest.mark.parametrize("choice", ["volume_and_mute", "preferred_output"])

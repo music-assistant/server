@@ -325,7 +325,7 @@ async def test_a_leader_paused_during_the_join_moves_its_output_without_resuming
     scenario: Scenario,
 ) -> None:
     """
-    A leader the device pauses while the member joins hands its output over, paused.
+    A leader paused at the device during the join hands its output over without starting playback.
 
     The playback moves to the leader's AirPlay protocol for the new member as it does while it
     plays, but nothing resumes it there.
@@ -354,11 +354,11 @@ async def test_a_leader_paused_during_the_join_moves_its_output_without_resuming
     assert _state(scenario, lounge_id).playback_state != PlaybackState.PLAYING
 
 
-async def test_a_member_is_paused_through_its_leader_and_leaves_on_its_own_access(
+async def test_a_member_is_controlled_through_its_leader_and_leaves_on_its_own_access(
     scenario: Scenario,
 ) -> None:
     """
-    A pause on a member reaches its leader and needs access to the leader too.
+    A pause, resume or stop on a member reaches its leader and needs access to the leader too.
 
     Leaving the group needs access to the member only.
     """
@@ -367,21 +367,32 @@ async def test_a_member_is_paused_through_its_leader_and_leaves_on_its_own_acces
     await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[office_id])
     await scenario.idle()
     await scenario.play(kitchen_id)
+    office.commands.clear()
+    players = scenario.mass.players
 
-    with as_user([office_id]), pytest.raises(InsufficientPermissions):
-        await scenario.mass.players.cmd_pause(office_id)
-    await scenario.idle()
-    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+    # resume follows pause before the queue's pause timeout stops a paused player
+    for command, reaches_leader, state in (
+        (players.cmd_pause, "pause", PlaybackState.PAUSED),
+        (players.cmd_resume, "play_media", PlaybackState.PLAYING),
+        (players.cmd_stop, "stop", PlaybackState.IDLE),
+    ):
+        sent = len(kitchen.commands)
+        with as_user([office_id]), pytest.raises(InsufficientPermissions):
+            await command(office_id)
+        await scenario.settle()
+        assert kitchen.commands[sent:] == []
 
-    with as_user([office_id, kitchen_id]):
-        await scenario.mass.players.cmd_pause(office_id)
+        with as_user([office_id, kitchen_id]):
+            await command(office_id)
+        await scenario.settle()
+        assert [received[0] for received in kitchen.commands[sent:]] == [reaches_leader]
+        assert _state(scenario, kitchen_id).playback_state == state
+        assert _state(scenario, office_id).synced_to == kitchen_id
     await scenario.idle()
-    assert "pause" in [command[0] for command in kitchen.commands]
-    assert "pause" not in [command[0] for command in office.commands]
-    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PAUSED
+    assert office.commands == []
 
     with as_user([office_id]):
-        await scenario.mass.players.cmd_ungroup(office_id)
+        await players.cmd_ungroup(office_id)
     await scenario.idle()
     assert _grouping_commands(kitchen)[-1] == ("set_members", None, ["sonos_office"])
     assert _state(scenario, office_id).synced_to is None

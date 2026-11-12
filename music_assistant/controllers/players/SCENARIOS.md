@@ -440,8 +440,9 @@ vendor protocol as its own protocol and the twin as a control.
 ### TWIN-11 · A speaker and a named twin stored as two players stay two
 
 An older version stored the speaker and its twin as two players, and the user named the twin's
-player Kitchen (HA). After the upgrade both are there, under their ids and names, each with its
-settings and its queue, and each with its protocol as its own protocol. An unused twin player is
+player Kitchen (HA), and each player has a setting and a saved queue of its own. After the upgrade
+both are there, under their ids and names, each with its own setting and saved queue, and each
+with its protocol as its own protocol. An unused twin player is
 merged instead (MERGE-5).
 
 - End-to-end: **no**: the lab has no Home Assistant.
@@ -600,10 +601,11 @@ When it played, its device is stopped and its saved queue goes.
 
 After the merge of MERGE-8 the kept player lists the id of the player that went as a legacy id.
 Reading the player or its queue by that id gives the kept player, also after a further merge
-into a third player, and a later merge can name either player by such an id. Player and queue
-commands by the old id reach the kept player. Through the websocket and the HTTP API, a user
-limited to a player reads it by its legacy id and moves its queue by it; a user without access
-to it is refused by that id too.
+into a third player, and a later merge can name either player, the one that goes or the one that
+stays, by such an id, also through the API command. Player and queue commands by the old id
+reach the kept player. Through the websocket and the HTTP API, a user limited to a player reads
+it by its legacy id and moves its queue by it; a user without access to it is refused by that id
+too.
 
 - End-to-end: **possible with** two players that may be one, such as an AirPlay and a DLNA
   receiver.
@@ -611,6 +613,7 @@ to it is refused by that id too.
   - `tests/controllers/players/test_merge.py::test_merged_player_carries_both_protocols_and_answers_to_the_absorbed_id`
   - `tests/controllers/players/test_merge.py::test_chain_of_merges_keeps_every_absorbed_id_resolving`
   - `tests/controllers/players/test_merge.py::test_merge_takes_legacy_ids`
+  - `tests/controllers/players/test_merge.py::test_merge_command_takes_legacy_ids`
   - `tests/controllers/players/test_merge.py::test_queue_commands_take_the_id_of_a_merged_player`
   - `tests/controllers/players/test_merge.py::test_player_commands_take_the_id_of_a_merged_player`
   - `tests/controllers/webserver/test_legacy_player_ids.py::test_player_is_read_by_its_legacy_id`
@@ -747,8 +750,10 @@ The user asks the settings to remove all unavailable players. Removed, and named
 are the players no running provider finds a device of, and a stored player without protocols.
 Kept are a player whose device is there but awaits its setup, and a player of a provider that is
 not loaded. Right after a start, or after a provider loaded, the request is refused while the
-providers still find their devices; a provider that loaded a moment ago holds back only its own
-players. A dry run names what would go and changes nothing.
+providers still find their devices. A provider that loaded a moment ago holds back its own
+players and the stored players without protocols, which any provider may find again, until its
+grace ends; the players of the other providers can be removed meanwhile. A dry run names what
+would go and changes nothing.
 
 - End-to-end: **yes**. Stop the container of a virtual player, wait past the start, and remove
   all unavailable players.
@@ -1074,15 +1079,16 @@ the playback there: the receiver gets no play, and Lounge does not play.
 - End-to-end: **no**: the pause has to fall within the group change.
 - Proven by: `test_grouping.py::test_a_leader_paused_during_the_join_moves_its_output_without_resuming`
 
-### GROUP-20 · A member is paused through its leader, and leaves on its own access
+### GROUP-20 · A member is controlled through its leader, and leaves on its own access
 
-Kitchen leads Office and plays. A user who may only use Office pauses Office: that is refused,
-as Kitchen owns the playback, and Kitchen plays on. A user who may use both pauses Office: the
-pause reaches Kitchen, not Office, and Kitchen is paused. The user who may only use Office
-ungroups it: Kitchen lets Office go, and Office is synced to nothing.
+Kitchen leads Office and plays. A user who may only use Office pauses Office, resumes it and
+stops it: each is refused, as Kitchen owns the playback, and nothing reaches Kitchen. A user who
+may use both does the same: the pause, the resume and the stop each reach Kitchen, not Office,
+and Kitchen is paused, plays again and stops, with Office still synced to it. The user who may
+only use Office ungroups it: Kitchen lets Office go, and Office is synced to nothing.
 
 - End-to-end: **possible with** two Squeezelite players and a user limited to one of them.
-- Proven by: `test_grouping.py::test_a_member_is_paused_through_its_leader_and_leaves_on_its_own_access`
+- Proven by: `test_grouping.py::test_a_member_is_controlled_through_its_leader_and_leaves_on_its_own_access`
 
 ### GROUP-21 · A group comes back after a restart with its members
 
@@ -1110,7 +1116,8 @@ its own, plays through its DLNA renderer, the output LinkPlay prefers, and not t
 AirPlay receiver, which otherwise ranks higher.
 
 - End-to-end: **possible with** a host that runs a native player and an AirPlay receiver, such as
-  Squeezelite and shairport-sync.
+  Squeezelite and shairport-sync; for the LinkPlay part, a LinkPlay device that is no WiiM, with
+  its DLNA renderer and an AirPlay receiver.
 - Proven by:
   - `test_outputs.py::test_playback_goes_to_the_output_the_user_prefers`
   - `tests/providers/wiim/test_linkplay_control.py::test_playback_goes_to_dlna_before_a_higher_priority_output`
@@ -1121,8 +1128,8 @@ A Spotify Connect session plays on the DLNA renderer of a LinkPlay device. The p
 Spotify as its source and offers next and previous. Pause, play and next reach the renderer, in
 that order, and the player shows paused after the pause.
 
-- End-to-end: **possible with** the WiiM bench device, with a Spotify Connect session started on
-  it.
+- End-to-end: **possible with** a LinkPlay device that is no WiiM (the server controls a WiiM
+  through its own protocol), with its DLNA renderer and a Spotify Connect session started on it.
 - Proven by: `tests/providers/wiim/test_linkplay_control.py::test_transport_commands_reach_an_app_playing_on_the_renderer`
 
 ## Volume

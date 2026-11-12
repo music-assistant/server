@@ -183,19 +183,28 @@ async def test_merged_player_stays_one_player_after_a_restart(scenario: Scenario
     assert resolved.player_id == tv.older_id
 
 
-async def test_merge_takes_legacy_ids(scenario: Scenario) -> None:
-    """Either player can be named by one of its legacy ids."""
+@pytest.mark.parametrize("named_by_legacy_id", ["absorbed", "kept"])
+async def test_merge_takes_legacy_ids(scenario: Scenario, named_by_legacy_id: str) -> None:
+    """Either player, the one that goes or the one that stays, can be named by a legacy id."""
     tv = await _two_players_for_one_tv(scenario)
     dlna = await scenario.add_provider("dlna")
     tv_dlna = dlna.protocol("uuid:tv", "Living TV", role="audio")
     await scenario.attach(tv_dlna)
     await scenario.advance(15)
     dlna_id = scenario.single_player(tv_dlna).player_id
+    # the Cast receiver's player goes into the DLNA one: its id is a legacy id from now on
     await _merge(scenario, dlna_id, tv.younger_id)
 
-    await _merge(scenario, tv.older_id, tv.younger_id)
+    if named_by_legacy_id == "absorbed":
+        await _merge(scenario, tv.older_id, tv.younger_id)
+        kept_id = tv.older_id
+    else:
+        await _merge(scenario, tv.younger_id, tv.older_id)
+        kept_id = dlna_id
 
-    assert [player.player_id for player in scenario.players_carrying(tv_dlna)] == [tv.older_id]
+    assert [player.player_id for player in scenario.players_carrying(tv.airplay, tv_dlna)] == [
+        kept_id
+    ]
 
 
 async def test_chain_of_merges_keeps_every_absorbed_id_resolving(scenario: Scenario) -> None:
