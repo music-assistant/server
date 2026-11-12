@@ -28,6 +28,8 @@ from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.grouping import grouping_snapshot
+from music_assistant.controllers.players.grouping_plan import elect_ad_hoc_leader
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
@@ -1072,13 +1074,13 @@ def _ad_hoc_leader(
     mock_mass.players = controller
     provider = MockProvider("test", instance_id="test", mass=mock_mass)
 
-    _sync_leader(provider, "member")
+    leader_protocol = _sync_leader(provider, "member")
     _attach(provider, "member", "Member", player_type=member_type)
 
     # refresh each player's state snapshot so it reflects the mocked player type
     _refresh(*controller._players.values())
 
-    controller._handle_set_members_with_protocols = AsyncMock()  # type: ignore[method-assign]
+    leader_protocol.set_members = AsyncMock()  # type: ignore[method-assign]
     device_stop = AsyncMock()
     controller._handle_cmd_stop = device_stop  # type: ignore[method-assign]
     queue_stop = AsyncMock()
@@ -1098,7 +1100,9 @@ class TestAdHocLeadershipTransfer:
         leader = controller.get_player("leader")
         assert leader is not None
 
-        assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "b"
+        assert (
+            elect_ad_hoc_leader(grouping_snapshot(controller), leader.player_id, ["a", "b"]) == "b"
+        )
 
     def test_select_ad_hoc_leader_skips_offline_protocol(
         self, controller: PlayerController, mock_mass: MagicMock
@@ -1109,7 +1113,9 @@ class TestAdHocLeadershipTransfer:
         leader = controller.get_player("leader")
         assert leader is not None
 
-        assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
+        assert (
+            elect_ad_hoc_leader(grouping_snapshot(controller), leader.player_id, ["a", "b"]) == "a"
+        )
 
     def test_select_ad_hoc_leader_accepts_native_member_on_active_domain(
         self, controller: PlayerController, mock_mass: MagicMock
@@ -1133,19 +1139,21 @@ class TestAdHocLeadershipTransfer:
             native._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
         _refresh(*controller._players.values())
 
-        assert controller._select_ad_hoc_leader(leader, ["a", "c"]) == "c"
+        assert (
+            elect_ad_hoc_leader(grouping_snapshot(controller), leader.player_id, ["a", "c"]) == "c"
+        )
 
     def test_select_ad_hoc_leader_falls_back_to_first(self, controller: PlayerController) -> None:
         """Without an active protocol to match, fall back to the first remaining member."""
-        leader = MagicMock()
-        leader.active_output_protocol = None
-        member_a = MagicMock()
-        member_a.state.type = PlayerType.PLAYER
-        member_b = MagicMock()
-        member_b.state.type = PlayerType.PLAYER
-        controller._players = {"a": member_a, "b": member_b}
+        provider = MockProvider("test", instance_id="test", mass=cast("MagicMock", controller.mass))
+        for player_id in ("leader", "a", "b"):
+            _attach(provider, player_id, player_id.title())
+        _refresh(*controller._players.values())
+        leader = controller._players["leader"]
 
-        assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
+        assert (
+            elect_ad_hoc_leader(grouping_snapshot(controller), leader.player_id, ["a", "b"]) == "a"
+        )
 
     def test_select_ad_hoc_leader_never_picks_non_audio_member(
         self, controller: PlayerController, mock_mass: MagicMock
@@ -1155,11 +1163,14 @@ class TestAdHocLeadershipTransfer:
         _attach(provider, "viz", "Visualizer", player_type=PlayerType.VISUALIZER)
         _attach(provider, "b", "Member B")
         # refresh each player's state snapshot so it reflects the mocked player type
+        _attach(provider, "leader", "Leader")
         _refresh(*controller._players.values())
-        leader = MagicMock()
-        leader.active_output_protocol = None
+        leader = controller._players["leader"]
 
-        assert controller._select_ad_hoc_leader(leader, ["viz", "b"]) == "b"
+        assert (
+            elect_ad_hoc_leader(grouping_snapshot(controller), leader.player_id, ["viz", "b"])
+            == "b"
+        )
 
     async def test_handle_set_members_transfers_leader_when_playing(
         self, controller: PlayerController
@@ -1210,7 +1221,7 @@ class TestAdHocLeadershipTransfer:
     ) -> None:
         """With only non-audio members left there is no heir: dissolve and stop."""
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
-        _sync_leader(provider, "visualizer")
+        leader_protocol = _sync_leader(provider, "visualizer")
         _attach(provider, "visualizer", "Visualizer", player_type=PlayerType.VISUALIZER)
         # refresh each player's state snapshot so it reflects the mocked player type
         _refresh(*controller._players.values())
@@ -1218,7 +1229,7 @@ class TestAdHocLeadershipTransfer:
 
         controller.get_active_queue = MagicMock(return_value=_queue_stub("leader"))  # type: ignore[method-assign]
         controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
-        controller._handle_set_members_with_protocols = AsyncMock()  # type: ignore[method-assign]
+        leader_protocol.set_members = AsyncMock()  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
         queue_stop = AsyncMock()
         mock_mass.player_queues._handle_stop = queue_stop
@@ -1227,8 +1238,8 @@ class TestAdHocLeadershipTransfer:
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         # the dissolve removes the visualizer from the group and ends the leader's queue
-        controller._handle_set_members_with_protocols.assert_awaited_once_with(
-            leader, [], ["visualizer"], new_content=False
+        leader_protocol.set_members.assert_awaited_once_with(
+            player_ids_to_add=None, player_ids_to_remove=[_device("visualizer")]
         )
         queue_stop.assert_awaited_once_with("leader")
         controller._handle_cmd_stop.assert_not_awaited()
@@ -1238,7 +1249,7 @@ class TestAdHocLeadershipTransfer:
     ) -> None:
         """Removing the leader from itself while idle dissolves the group and stops."""
         provider = MockProvider("test", instance_id="test", mass=mock_mass)
-        _sync_leader(provider, "member_a")
+        leader_protocol = _sync_leader(provider, "member_a")
         _attach(provider, "member_a", "Member A")
         _refresh(*controller._players.values())
         leader = controller._players["leader"]
@@ -1247,7 +1258,7 @@ class TestAdHocLeadershipTransfer:
             return_value=_queue_stub("leader", state=PlaybackState.IDLE)
         )
         controller._transfer_ad_hoc_leadership = AsyncMock()  # type: ignore[method-assign]
-        controller._handle_set_members_with_protocols = AsyncMock()  # type: ignore[method-assign]
+        leader_protocol.set_members = AsyncMock()  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
         queue_stop = AsyncMock()
         mock_mass.player_queues._handle_stop = queue_stop
@@ -1296,9 +1307,12 @@ class TestAdHocLeadershipTransfer:
         await controller._handle_set_members(leader, player_ids_to_remove=["leader"])
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
-        protocol_set_members = cast("AsyncMock", controller._handle_set_members_with_protocols)
-        # dissolving what is left publishes no new content, so no takeover is opened
-        protocol_set_members.assert_awaited_once_with(leader, [], ["member"], new_content=False)
+        own = leader.own_protocol
+        assert own is not None
+        # dissolving what is left removes the follower from the leader's own group
+        cast("AsyncMock", own.set_members).assert_awaited_once_with(
+            player_ids_to_add=None, player_ids_to_remove=[_device("member")]
+        )
         # the group's queue is not the leader's to end, so only the device is stopped
         device_stop.assert_awaited_once_with("leader")
         queue_stop.assert_not_awaited()

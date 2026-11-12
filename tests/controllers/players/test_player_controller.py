@@ -478,6 +478,24 @@ def _make_takeover_players(
     return controller, parent, native, audio
 
 
+def _protocol_child(audio_provider: MockProvider, audio: MockProtocol) -> Player:
+    """
+    Attach player "protocol_child", reachable only over the audio protocol of a takeover parent.
+
+    :param audio_provider: The provider of the parent's audio protocol.
+    :param audio: The parent's audio protocol, which offers the child.
+    """
+    child, _ = attach_mock(
+        audio_provider,
+        "protocol_child",
+        "Protocol child",
+        role=ProtocolRole.AUDIO,
+        player_id="protocol_child",
+    )
+    audio._attr_can_group_with = {"protocol_child"}
+    return child
+
+
 class TestContentTakeover:
     """Test content ownership of an audio protocol around group membership changes."""
 
@@ -489,24 +507,15 @@ class TestContentTakeover:
         provider = cast("MockProvider", native.provider)
         native._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         native.set_members = AsyncMock()  # type: ignore[method-assign]
-        native_child, _ = _attach(provider, "native_child", "Native child")
-        _refresh(parent, native_child)
+        native_child, native_child_protocol = _attach(provider, "native_child", "Native child")
+        native._attr_group_members = [native.protocol_id, native_child_protocol.protocol_id]
+        protocol_child = _protocol_child(cast("MockProvider", audio.provider), audio)
+        _refresh(parent, native_child, protocol_child)
 
-        with (
-            patch.object(
-                controller,
-                "_translate_members_for_protocols",
-                return_value=(["protocol_child"], ["native_child"], audio, "sendspin"),
-            ),
-            patch.object(
-                controller,
-                "_translate_members_to_remove_for_protocols",
-                return_value=([], []),
-            ),
-        ):
-            takeover = await controller._handle_set_members_with_protocols(
-                parent, [], ["native_child"], new_content=True
-            )
+        # the protocol child joins over the audio protocol, the native child leaves natively
+        takeover = await controller._handle_set_members(
+            parent, ["protocol_child"], ["native_child"], new_content=True
+        )
 
         assert takeover == (audio, 7)
         native.set_members.assert_not_awaited()
@@ -518,28 +527,13 @@ class TestContentTakeover:
         """A protocol forwarding failure releases the owner that started the token."""
         controller, parent, _native, audio = _make_takeover_players(mock_mass, 11)
         audio.on_group_content_takeover_aborted = AsyncMock()  # type: ignore[method-assign]
+        protocol_child = _protocol_child(cast("MockProvider", audio.provider), audio)
+        _refresh(parent, protocol_child)
+        # the forward fails at the protocol that carries the group
+        audio.set_members = AsyncMock(side_effect=RuntimeError("forward failed"))  # type: ignore[method-assign]
 
-        with (
-            patch.object(
-                controller,
-                "_translate_members_for_protocols",
-                return_value=(["protocol_child"], [], audio, "sendspin"),
-            ),
-            patch.object(
-                controller,
-                "_translate_members_to_remove_for_protocols",
-                return_value=([], []),
-            ),
-            patch.object(
-                controller,
-                "_forward_protocol_set_members",
-                side_effect=RuntimeError("forward failed"),
-            ),
-            pytest.raises(RuntimeError, match="forward failed"),
-        ):
-            await controller._handle_set_members_with_protocols(
-                parent, ["protocol_child"], [], new_content=True
-            )
+        with pytest.raises(RuntimeError, match="forward failed"):
+            await controller._handle_set_members(parent, ["protocol_child"], new_content=True)
 
         audio.on_group_content_takeover_aborted.assert_awaited_once_with(11)
         cast("AsyncMock", audio.on_group_content_takeover_finished).assert_not_awaited()
@@ -574,9 +568,7 @@ class TestNativeSetMembersGuard:
         assert parent.state.group_members == ["cast_group", "member"]
 
         # must complete without raising NotImplementedError
-        await controller._handle_set_members_with_protocols(
-            parent, player_ids_to_add=[], player_ids_to_remove=["member"]
-        )
+        await controller._handle_set_members(parent, player_ids_to_remove=["member"])
         parent_protocol.set_members.assert_not_called()
 
 

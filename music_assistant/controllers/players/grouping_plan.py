@@ -877,6 +877,7 @@ class _Planner:
             return
         if not (parent_id := player.active_group or player.synced_to):
             return
+        # the player is part of a (permanent) groupplayer or synced to a leader
         if (parent := self.snapshot.player(parent_id)) is None:
             return
         self.steps.append(
@@ -898,6 +899,7 @@ class _Planner:
             and group.own_protocol
             and self.snapshot.own(group)
         ):
+            # try to remove from the group: a static group refuses to let one member go
             self.steps.append(
                 SetMembers(
                     protocol_id=group.own_protocol,

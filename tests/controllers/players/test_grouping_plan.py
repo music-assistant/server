@@ -1164,3 +1164,18 @@ def test_s1_s3_a_group_that_still_needs_its_protocol_stays(why: str) -> None:
     if why == "synced":
         world.protocols["airplay_a"] = replace(world.protocols["airplay_a"], synced_to="airplay_z")
     assert _calls(_plan(world, ChangeKind.REGROUP_FOR_START, "a")) == []
+
+
+def test_t9_d10_the_common_output_can_be_the_leaders_own_protocol() -> None:
+    """T9, D10 (kept): P4 matches the leader's native output for a member P3 ruled out."""
+    world = _World()
+    world.protocol("sonos_a", "a", "sonos", role=ProtocolRole.NATIVE)
+    world.player("a", "sonos_a", can_group_with=frozenset({"b"}))
+    # a speaker of another household of the same make: no native peer of the leader
+    world.protocols["sonos_b"] = replace(
+        world.protocol("sonos_b", "b", "sonos", role=ProtocolRole.NATIVE),
+        provider_id="sonos_other_household",
+    )
+    world.player("b", "sonos_b")
+    plan = _all_plans(world, ChangeKind.MEMBERS, "a", ("b",))
+    assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
