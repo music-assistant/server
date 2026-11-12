@@ -25,9 +25,9 @@ LightTarget (targets.py)   ← this provider
           Ziggurat (ZHA's Zigbee stack) → Hue lamps
 ```
 
-The bridge registers with the local Sendspin server as an **in-process external visualizer client** (`register_external_player`) — no WebSocket is involved. Its bridge visualizer and color roles subscribe directly to the playing group's visualizer/color roles and receive extracted features (spectrum, onset peaks, beat schedule, colour palette) through callbacks. Because in-process delivery follows the audio push, features arrive **ahead of the playhead** (audio is buffered seconds in advance); the analyzer queues them by playback timestamp and drains them at render time. A fixed-rate 30 Hz render loop samples the analyzer at the current server clock plus a configurable Hue-latency lead and sends one DTLS frame per tick.
+The bridge registers with the local Sendspin server as an **in-process external visualizer client** (`register_external_player`) — no WebSocket is involved. Its bridge visualizer and color roles subscribe directly to the playing group's visualizer/color roles and receive extracted features (spectrum, onset peaks, beat schedule, colour palette) through callbacks. Because in-process delivery follows the audio push, features arrive **ahead of the playhead** (audio is buffered seconds in advance); the analyzer queues them by playback timestamp and drains them at render time. A fixed-rate 30 Hz render loop samples the analyzer at the current server clock plus a configurable Hue-latency lead and sends one frame per tick to the light target.
 
-Entertainment areas are discovered at plugin (re)load from the Hue bridge REST API. Each area gets its own in-process Sendspin client and `EntertainmentSession`.
+On the Hue bridge backend, entertainment areas are discovered at plugin (re)load from the Hue bridge REST API. Each area gets its own in-process Sendspin client and `EntertainmentSession`. A ZHA instance has one in-process Sendspin client for its chosen lamps.
 
 ## Light targets
 
@@ -79,7 +79,7 @@ hue_entertainment/
 ├── zigbee.py                  ZHA lookups through the Home Assistant plugin
 ├── analyzer.py                Bass beat detection, color cycling, effect modes
 ├── constants.py               MA config keys + Sendspin spectrum request config
-└── manifest.json              Experimental plugin manifest (requires hue-entertainment)
+└── manifest.json              Plugin manifest (requires hue-entertainment)
 ```
 
 The Hue REST API, DTLS streamer, `EntertainmentSession`, `ZigbeeEntertainmentSession` and
@@ -88,25 +88,25 @@ imported from the `hue-entertainment` library.
 
 ## Configuration
 
+The setup flow asks for the backend (`backend`: `hue_bridge` or `zha`), then pairs the Hue bridge (`bridge_host`, auto-discovered via mDNS, plus the credentials it returns) or takes the ZHA lamps (`zigbee_lights`) and an optional player name (`zigbee_name`). These are stored as setup data. The settings:
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `bridge_host` | String | — | Bridge IP (auto-discovered via mDNS) |
 | `brightness` | Integer | 100 | Overall light brightness (0-100) |
 | `color_mode` | String | smooth | Visualization mode (smooth / ambient / flashing / energetic) |
 | `hue_latency_ms` | Integer | 20 | Lead time lights render ahead of the playhead (0-3000) |
 
 ## Quick Setup
 
-1. Create an Entertainment Area in the Philips Hue app (Settings → Entertainment Areas)
-2. In Music Assistant, go to Settings → Providers → Add Provider → Hue Lights Sync
-3. Enter your Hue bridge IP address (or let mDNS discover it)
-4. Press the physical button on your Hue bridge, then click "Pair"
-5. Click Save — the entertainment area(s) appear as Light players
-6. Join a Hue light player to any playing group — the lights start reacting to music
+1. In Music Assistant, go to Settings → Plugins → Add a plugin → Hue Lights Sync
+2. Choose the backend: Hue Bridge, or ZHA via Ziggurat (greyed out unless the Home Assistant plugin is connected and ZHA runs on Ziggurat)
+3. Hue Bridge: create an Entertainment Area in the Philips Hue app first. Enter the bridge IP (filled in when mDNS found it), press the link button on the bridge and continue within 30 seconds. Each entertainment area appears as a Light player
+4. ZHA: tick the Hue lamps (only lamps that support Zigbee entertainment are listed) and optionally a name. The lamps appear together as one Light player
+5. Join a Hue light player to any playing group — the lights start reacting to music
 
 ## Status
 
-Working and tested on Hue Bridge V2 and Hue Bridge Pro. The current implementation provides a solid foundation with four effect modes and bass-driven beat detection. There is room for future improvements:
+Working and tested on Hue Bridge V2, Hue Bridge Pro and Hue lamps in ZHA via Ziggurat. The current implementation provides a solid foundation with four effect modes and bass-driven beat detection. There is room for future improvements:
 
 - More precise beat detection using the MA audio analyzer controller
 - Genre/mood-aware effects using track metadata
