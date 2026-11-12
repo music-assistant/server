@@ -168,15 +168,16 @@ def test_a_type_only_one_side_reports_never_vetoes() -> None:
 
 
 def test_a_shared_value_among_several_never_vetoes() -> None:
-    """A room reporting the UUIDs of its renderers shares one with each of them."""
-    renderers = ["renderer-1", "renderer-2", "renderer-3"]
+    """A player whose protocols report a UUID each shares one with each of those protocols."""
+    # a Cast device reports its cast uuid as UUID, its DLNA renderer the UDN
+    uuids = ["cast-uuid-1", "renderer-1"]
     assert same_device(
-        identity(("raumfeld", "dlna"), {UUID: renderers}), identity("dlna", {UUID: "renderer-2"})
+        identity(("chromecast", "dlna"), {UUID: uuids}), identity("dlna", {UUID: "renderer-1"})
     )
-    # a renderer of another room is vetoed although it shares the IP
+    # the renderer of another device on that host is vetoed although it shares the IP
     assert not same_device(
-        identity(("raumfeld", "dlna"), {UUID: renderers, IP: HOST}),
-        identity("dlna", {UUID: "renderer-4", IP: HOST}),
+        identity(("chromecast", "dlna"), {UUID: uuids, IP: HOST}),
+        identity("dlna", {UUID: "renderer-2", IP: HOST}),
     )
 
 

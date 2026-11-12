@@ -1,4 +1,4 @@
-"""Which protocols end up on which player: identifiers, zones, claimed instances, roles."""
+"""Which protocols end up on which player: identifiers, zones, rooms, roles."""
 
 from __future__ import annotations
 
@@ -1236,79 +1236,77 @@ async def test_a_role_change_neither_merges_nor_splits_players(scenario: Scenari
     assert scenario.events(EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="phase 2 (#416): a room of several speakers comes in a pull request after #7551",
+@pytest.mark.parametrize(
+    "order", list(itertools.permutations(("room", "connector", "one_m", "one_s"))), ids="-".join
 )
-async def test_room_of_several_renderers_is_one_player(scenario: Scenario) -> None:
+async def test_a_room_is_the_player_of_its_own_renderer_only(
+    scenario: Scenario, order: tuple[str, ...]
+) -> None:
     """
-    A native room standing for three DLNA renderers is one visible player with one DLNA output.
+    A Raumfeld room joins the player of the renderer it reports; its other speakers stay apart.
 
-    The room reports the UUIDs of its renderers among its identifiers; that it claims them by
-    those is the assumed contract. The renderers are attached hidden, so none of them is a
-    player of its own.
+    That renderer is the DLNA output of the room's player. The renderer of every other
+    speaker of the room is a player of its own, which the room neither takes nor changes.
+    That holds in every discovery order, and after a restart in the reverse order.
     """
     dlna = await scenario.add_provider("dlna")
     raumfeld = await scenario.add_provider("raumfeld")
-    connector = dlna.protocol(
-        CONNECTOR_UDN,
-        "Connector Living",
-        role="audio",
-        identifiers={
-            IdentifierType.UUID: CONNECTOR_UDN,
-            IdentifierType.MAC_ADDRESS: "00:1E:C0:00:00:01",
-            IdentifierType.IP_ADDRESS: HOST_IP,
-        },
-    )
-    one_m = dlna.protocol(
-        ONE_M_UDN,
-        "Speaker Living",
-        role="audio",
-        identifiers={
-            IdentifierType.UUID: ONE_M_UDN,
-            IdentifierType.MAC_ADDRESS: "00:1E:C0:00:00:02",
-            IdentifierType.IP_ADDRESS: "192.168.1.81",
-        },
-    )
-    one_s = dlna.protocol(
-        ONE_S_UDN,
-        "Speaker Living",
-        role="audio",
-        identifiers={
-            IdentifierType.UUID: ONE_S_UDN,
-            IdentifierType.MAC_ADDRESS: "00:1E:C0:00:00:03",
-            IdentifierType.IP_ADDRESS: "192.168.1.82",
-        },
-    )
-    # the room is controlled through the host and stands for every renderer in it
-    living = raumfeld.protocol(
+    parts = {
+        part: dlna.protocol(
+            udn,
+            name,
+            role="audio",
+            identifiers={
+                IdentifierType.UUID: udn,
+                IdentifierType.MAC_ADDRESS: mac_address,
+                IdentifierType.IP_ADDRESS: ip_address,
+            },
+        )
+        for part, udn, name, mac_address, ip_address in (
+            ("connector", CONNECTOR_UDN, "Connector Living", "00:1E:C0:00:00:01", HOST_IP),
+            ("one_m", ONE_M_UDN, "One M Living", "00:1E:C0:00:00:02", "192.168.1.81"),
+            ("one_s", ONE_S_UDN, "One S Living", "00:1E:C0:00:00:03", "192.168.1.82"),
+        )
+    }
+    # the room is controlled through the host and reports the renderer that runs on it
+    parts["room"] = raumfeld.protocol(
         "raumfeld_living",
         "Living",
-        identifiers={
-            IdentifierType.UUID: [CONNECTOR_UDN, ONE_M_UDN, ONE_S_UDN],
-            IdentifierType.IP_ADDRESS: HOST_IP,
-        },
+        identifiers={IdentifierType.UUID: CONNECTOR_UDN, IdentifierType.IP_ADDRESS: HOST_IP},
     )
-    for renderer in (connector, one_m, one_s):
-        await scenario.attach(renderer)
-
-    await scenario.attach(living)
-    await scenario.advance(15)
-    await scenario.idle()
-
-    assert scenario.visible_players() == [
-        VisiblePlayer(
-            player_id=ANY,
-            name="Living",
-            available=True,
-            powered=None,
-            provider="raumfeld",
-            outputs=(("dlna", True), ("raumfeld", True)),
-        )
+    found_on: dict[str, str | None] = {}
+    for part in order:
+        await scenario.attach(parts[part])
+        await scenario.idle()
+        found_on[part] = scenario.player_of(parts[part])
+    room_id = found_on[next(part for part in order if part in ("room", "connector"))]
+    placement = {
+        "room": room_id,
+        "connector": room_id,
+        "one_m": found_on["one_m"],
+        "one_s": found_on["one_s"],
+    }
+    players = [
+        ("Living", "raumfeld", (("dlna", True), ("raumfeld", True))),
+        ("One M Living", "dlna", (("dlna", True),)),
+        ("One S Living", "dlna", (("dlna", True),)),
     ]
-    room_id = scenario.player_of(living)
-    assert {scenario.player_of(renderer) for renderer in (connector, one_m, one_s)} == {room_id}
+
+    for restarted in (False, True):
+        if restarted:
+            for protocol in parts.values():
+                scenario.set_present(protocol.protocol_id, False)
+            await scenario.restart()
+            for part in reversed(order):
+                await scenario.attach(scenario.protocol(parts[part].protocol_id))
+            await scenario.idle()
+        assert {
+            part: scenario.player_of(scenario.protocol(protocol.protocol_id))
+            for part, protocol in parts.items()
+        } == placement
+        assert sorted((p.name, p.provider, p.outputs) for p in scenario.visible_players()) == (
+            players
+        )
 
 
 async def test_reflashed_device_keeps_its_player(scenario: Scenario) -> None:
