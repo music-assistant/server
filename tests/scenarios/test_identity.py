@@ -9,7 +9,11 @@ from unittest.mock import ANY, AsyncMock
 
 import pytest
 from music_assistant_models.enums import EventType, IdentifierType, ProtocolRole
-from music_assistant_models.errors import InsufficientPermissions, PlayerUnavailableError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidCommand,
+    PlayerUnavailableError,
+)
 
 from music_assistant.constants import MAIN_ZONE
 from tests.common import as_user
@@ -873,6 +877,239 @@ async def test_a_command_to_the_player_never_reaches_the_twin(scenario: Scenario
     assert ("volume_set", 30) in speaker.vendor.commands
     assert any(command[0] == "play_media" for command in speaker.vendor.commands)
     assert speaker.twin.commands == []
+
+
+@pytest.mark.parametrize(
+    "order", list(itertools.permutations(("main", "second", "airplay"))), ids="-".join
+)
+async def test_unused_zone_players_are_never_merged_by_themselves(
+    scenario: Scenario, order: tuple[str, ...]
+) -> None:
+    """
+    The players of the zones of one chassis stay apart while nobody has used them yet.
+
+    No zone player is merged into another zone, nor into the player of the receiver of the
+    chassis unless it is the main zone, whatever is found first.
+    """
+    receiver = await _receiver(scenario)
+    for part in order:
+        await scenario.attach(getattr(receiver, part))
+    await scenario.idle()
+
+    _receiver_players(scenario, receiver)
+    assert scenario.events(EventType.PLAYER_REMOVED) == []
+
+
+async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(scenario: Scenario) -> None:
+    """
+    The receiver of a secondary zone that joined the main zone is moved there by the user.
+
+    On a chassis whose every zone has a receiver of its own the first one seen joins the
+    main zone. The user unlinks it and merges its player into the zone it belongs to; the
+    main zone's own receiver is merged into the main zone. That stays so after a restart in
+    either order, and the automatic merge does not undo it.
+    """
+    bluesound = await scenario.add_provider("bluesound")
+    airplay = await scenario.add_provider("airplay")
+    main = bluesound.protocol("chassis_main", "Living", identifiers=MAIN)
+    second = bluesound.protocol("chassis_zone2", "Patio", identifiers=SECOND)
+    receivers = [
+        airplay.protocol(
+            protocol_id,
+            name,
+            role="audio",
+            identifiers={**CHASSIS, IdentifierType.AIRPLAY_ID: airplay_id},
+        )
+        for protocol_id, name, airplay_id in (
+            ("airplay_patio", "Patio", "00:1A:2B:3C:4D:02"),
+            ("airplay_living", "Living", "00:1A:2B:3C:4D:01"),
+        )
+    ]
+    for protocol in (main, second, *receivers):
+        await scenario.attach(protocol)
+    await scenario.idle()
+    main_id = scenario.single_player(main).player_id
+    second_id = scenario.single_player(second).player_id
+    if scenario.player_of(receivers[0]) != main_id:
+        msg = "the receiver of the second zone did not join the main zone"
+        raise ScenarioError(msg)
+
+    patio_id = await scenario.mass.players.unlink_protocol("airplay_patio")
+    await scenario.mass.players.merge(patio_id, second_id)
+    if (living_id := scenario.player_of(receivers[1])) != main_id:
+        await scenario.mass.players.merge(str(living_id), main_id)
+    await scenario.idle()
+
+    for order in (
+        ("airplay_patio", "airplay_living", "chassis_zone2", "chassis_main"),
+        ("chassis_main", "chassis_zone2", "airplay_living", "airplay_patio"),
+    ):
+        for protocol_id in order:
+            scenario.set_present(protocol_id, False)
+        await scenario.restart()
+        for protocol_id in order:
+            await scenario.attach(scenario.protocol(protocol_id))
+        await scenario.idle()
+        assert {
+            protocol_id: scenario.player_of(scenario.protocol(protocol_id)) for protocol_id in order
+        } == {
+            "chassis_main": main_id,
+            "airplay_living": main_id,
+            "chassis_zone2": second_id,
+            "airplay_patio": second_id,
+        }
+        assert len(scenario.visible_players()) == 2
+
+
+@pytest.mark.parametrize(
+    ("keep", "vendor_present"),
+    [("vendor", True), ("twin", True), ("twin", False)],
+    ids=["vendor", "twin", "twin_while_vendor_away"],
+)
+async def test_a_speaker_and_its_twin_stored_apart_can_be_merged_by_hand(
+    scenario: Scenario, keep: str, vendor_present: bool
+) -> None:
+    """
+    The user merges the player of a speaker and that of its twin: the twin is its control.
+
+    Whichever of the two is kept, the vendor protocol is the native one on it, also while
+    it is away, and the id of the other answers for it.
+    """
+    speaker = await _speaker(scenario)
+    for protocol in (speaker.vendor, speaker.twin):
+        scenario.set_present(protocol.protocol_id, True)
+    await scenario.seed_pre_split_config(PRE_SPLIT_SPEAKER_AND_TWIN)
+    await scenario.idle()
+    ids = {"vendor": "RINCON_5478C9E60DA001400", "twin": "media_player.kitchen"}
+    kept_id = ids[keep]
+    absorbed_id = ids["twin" if keep == "vendor" else "vendor"]
+    if not vendor_present:
+        await scenario.detach(scenario.protocol(speaker.vendor.protocol_id))
+
+    await scenario.mass.players.merge(absorbed_id, kept_id)
+    await scenario.idle()
+
+    twin = scenario.protocol(speaker.twin.protocol_id)
+    assert scenario.player_of(twin) == kept_id
+    assert _roles(scenario, kept_id) == {
+        speaker.vendor.protocol_id: ProtocolRole.NATIVE,
+        speaker.twin.protocol_id: ProtocolRole.CONTROL,
+    }
+    resolved = scenario.player(absorbed_id)
+    assert resolved is not None
+    assert resolved.player_id == kept_id
+    assert len(scenario.visible_players()) == 1
+
+
+@pytest.mark.parametrize("twin", ["unused", "renamed"])
+async def test_a_twin_stored_apart_is_merged_by_itself_only_while_unused(
+    scenario: Scenario, twin: str
+) -> None:
+    """
+    An unused player of the twin goes into the speaker's player by itself, a used one stays.
+
+    The twin's player is the younger one here; once merged, the twin is a control protocol.
+    """
+    speaker = await _speaker(scenario)
+    for protocol in (speaker.vendor, speaker.twin):
+        scenario.set_present(protocol.protocol_id, True)
+    stored = {player_id: dict(record) for player_id, record in PRE_SPLIT_SPEAKER_AND_TWIN.items()}
+    if twin == "unused":
+        del stored["media_player.kitchen"]["name"]
+
+    await scenario.seed_pre_split_config(stored)
+    await scenario.idle()
+
+    speaker = _current(scenario, speaker)
+    if twin == "unused":
+        assert scenario.single_player(speaker.vendor, speaker.twin).player_id == (
+            "RINCON_5478C9E60DA001400"
+        )
+        assert _roles(scenario, "RINCON_5478C9E60DA001400")[speaker.twin.protocol_id] == (
+            ProtocolRole.CONTROL
+        )
+    else:
+        assert [scenario.player_of(protocol) for protocol in (speaker.vendor, speaker.twin)] == [
+            "RINCON_5478C9E60DA001400",
+            "media_player.kitchen",
+        ]
+
+
+async def test_two_players_of_one_rank_on_one_host_can_not_be_merged(scenario: Scenario) -> None:
+    """A Squeezelite and a Snapcast client of one host are refused as one player."""
+    squeezelite = await scenario.add_provider("squeezelite")
+    snapcast = await scenario.add_provider("snapcast")
+    kitchen = squeezelite.protocol("b8:27:eb:11:22:33", "Kitchen", identifiers=PI)
+    den = snapcast.protocol("snapcast_den", "Den", identifiers=PI)
+    await scenario.attach(kitchen)
+    await scenario.attach(den)
+
+    with pytest.raises(InvalidCommand):
+        await scenario.mass.players.merge(
+            scenario.single_player(den).player_id, scenario.single_player(kitchen).player_id
+        )
+
+
+@pytest.mark.parametrize("unlinked", ["vendor", "twin"])
+async def test_a_protocol_unlinked_from_a_speaker_stands_on_its_own(
+    scenario: Scenario, unlinked: str
+) -> None:
+    """
+    The vendor protocol or the twin taken off the speaker's player gets one of its own.
+
+    The one that stays stands for the speaker in the role it reports, the one taken off in
+    its own role too, and neither is merged back by itself, also after a restart.
+    """
+    speaker = await _speaker(scenario)
+    await scenario.attach(speaker.vendor)
+    await scenario.attach(speaker.twin)
+    player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
+    taken_off = speaker.vendor if unlinked == "vendor" else speaker.twin
+    staying = speaker.twin if unlinked == "vendor" else speaker.vendor
+
+    new_id = await scenario.mass.players.unlink_protocol(taken_off.protocol_id)
+    await scenario.idle()
+
+    for _ in range(2):
+        assert _roles(scenario, player_id) == {staying.protocol_id: ProtocolRole.NATIVE}
+        assert _roles(scenario, new_id) == {taken_off.protocol_id: ProtocolRole.NATIVE}
+        assert [p.available for p in scenario.visible_players()] == [True, True]
+        await scenario.restart()
+        await scenario.idle()
+
+
+async def test_a_role_change_neither_merges_nor_splits_players(scenario: Scenario) -> None:
+    """
+    Disabling the vendor's provider and enabling it again changes roles, never players.
+
+    The speaker and its twin, merged by hand, stay one player; the AirPlay receiver the
+    user took off it stays a player of its own.
+    """
+    speaker = await _speaker(scenario)
+    for protocol in (speaker.vendor, speaker.twin, speaker.airplay):
+        scenario.set_present(protocol.protocol_id, True)
+    await scenario.seed_pre_split_config(PRE_SPLIT_SPEAKER_AND_TWIN)
+    await scenario.idle()
+    await scenario.mass.players.merge("media_player.kitchen", "RINCON_5478C9E60DA001400")
+    await scenario.idle()
+    speaker = _current(scenario, speaker)
+    airplay_id = await scenario.mass.players.unlink_protocol(speaker.airplay.protocol_id)
+    await scenario.idle()
+    scenario.clear_events()
+
+    sonos = scenario.provider("sonos")
+    for enabled in (False, True):
+        await scenario.mass.config.save_provider_config(
+            "sonos", {"enabled": enabled}, instance_id=sonos.instance_id
+        )
+        await scenario.idle()
+        assert sorted(p.player_id for p in scenario.visible_players()) == sorted(
+            ["RINCON_5478C9E60DA001400", airplay_id]
+        )
+        twin = scenario.protocol(speaker.twin.protocol_id)
+        assert scenario.player_of(twin) == "RINCON_5478C9E60DA001400"
+
+    assert scenario.events(EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED) == []
 
 
 @pytest.mark.xfail(

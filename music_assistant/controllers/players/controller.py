@@ -3542,6 +3542,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     protocol.protocol_id,
                     self._stored_player_name(keep_id),
                 )
+        if keeper := self._players.get(keep_id):
+            # a protocol that moved here while away may rank above one that is attached
+            await self._attach_in_changed_roles(keeper)
         if (keeper := self._players.get(keep_id)) and keeper.initialized.is_set():
             # the player caches its legacy ids with its config
             keeper.set_config(await self.mass.config.get_player_object_config(keeper))
@@ -3688,6 +3691,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             ):
                 provider.schedule_discovery()
         if player is not None:
+            # a protocol the moved one ranked above stands for the device again
+            await self._attach_in_changed_roles(player)
             await self._settle_player(player)
         self._schedule_update_all_players()
         return new_id

@@ -558,9 +558,8 @@ class ProtocolLinkingMixin:
                 return self._refused(
                     f"{name} is a group and can not be merged", "merge_group", name
                 )
-        if not self._roles_of(keep_id).isdisjoint(OWN_PROTOCOL_ROLES) and not self._roles_of(
-            absorb_id
-        ).isdisjoint(OWN_PROTOCOL_ROLES):
+        if self._own_ranks(keep_id) & self._own_ranks(absorb_id):
+            # of two protocols that stand for the device, one has to rank above the other
             msg = f"{names[0]} and {names[1]} each stand for a device of their own"
             return self._refused(msg, "merge_two_own_protocols", *names)
         if shared := self._domains_of(keep_id) & self._domains_of(absorb_id):
@@ -605,6 +604,25 @@ class ProtocolLinkingMixin:
             ):
                 roles.add(ProtocolRole(stored_role))
         return roles
+
+    def _own_ranks(self, player_id: str) -> set[int]:
+        """
+        Return the ranks of the protocols of a player that stand for the device, attached or not.
+
+        :param player_id: Id of the player.
+        """
+        ranks: set[int] = set()
+        for protocol_id in self._get_protocol_ids(player_id):
+            if protocol := self._protocols.get(protocol_id):
+                stands_for_device = protocol.role in OWN_PROTOCOL_ROLES
+                provider_id = protocol.provider_id
+            else:
+                record = self.mass.config.get_protocol_record(protocol_id) or {}
+                stands_for_device = record.get("role") in OWN_PROTOCOL_ROLES
+                provider_id = str(record.get("provider"))
+            if stands_for_device:
+                ranks.add(_native_rank(provider_id))
+        return ranks
 
     def _domains_of(self, player_id: str) -> set[str]:
         """
