@@ -466,6 +466,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     )
     async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the queue."""
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         if queue.shuffle_enabled == shuffle_enabled:
@@ -497,6 +498,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     )
     def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
         """Configure Autoplay setting on the queue."""
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
@@ -524,6 +526,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     )
     async def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the queue."""
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
@@ -549,6 +552,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     )
     def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
         """Enable or disable crossfade on the queue."""
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
@@ -589,6 +593,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param volume: Overlay loudness relative to the music in percent
             (0-200, 100 = equally loud). Omit to leave unchanged.
         """
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         changed = audible_change = False
@@ -686,6 +691,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to configure.
         :param speed: playback speed multiplier (0.5 to 3.0). 1.0 = normal speed.
         """
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         if not (0.5 <= speed <= 3.0):
             raise InvalidDataError(f"Playback speed must be between 0.5 and 3.0, got {speed}")
@@ -819,6 +825,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - pos_shift: move item x positions up if negative value
         - pos_shift: move item to the front of the upcoming items if 0
         """
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
@@ -861,6 +868,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_id: id of the queue to process this request.
         - queue_item_id: the item_id of the queueitem that needs to be moved.
         """
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
@@ -889,6 +897,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     )
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         if isinstance(item_id_or_index, str):
             item_index = self.index_by_id(queue_id, item_id_or_index)
@@ -914,6 +923,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     )
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue, switching shuffle off with them."""
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         self._clear(queue_id, skip_stop)
         # clearing is an explicit "start over" gesture by the user, so a shuffle that belonged to
@@ -963,6 +973,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param db_playlist_id: Library playlist id to add the items to.
         :return: Managed background task for the playlist update.
         """
+        queue_id = self._resolve_queue_id(queue_id)
         uris = self._playlist_uris(queue_id)
         return await self.mass.music.playlists.add_playlist_tracks(db_playlist_id, uris)
 
@@ -979,6 +990,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param name: The name for the new playlist.
         :return: Managed background task that fills the new playlist.
         """
+        queue_id = self._resolve_queue_id(queue_id)
         uris = self._playlist_uris(queue_id)
         playlist = await self.mass.music.playlists.create_playlist(name)
         return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
@@ -1024,6 +1036,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
@@ -1189,6 +1202,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: queue_id of the queue to handle the command.
         :param seconds: number of seconds to skip in the current item, negative to skip back.
         """
+        queue_id = self._resolve_queue_id(queue_id)
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
@@ -1337,6 +1351,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         auto_play: bool | None = None,
     ) -> None:
         """Transfer queue to another queue."""
+        source_queue_id = self._resolve_queue_id(source_queue_id)
+        target_queue_id = self._resolve_queue_id(target_queue_id)
         self._check_player_permission(source_queue_id)
         self._check_player_permission(target_queue_id)
         if not (source_queue := self.get(source_queue_id)):
@@ -2954,6 +2970,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+
+    def _resolve_queue_id(self, queue_id: str) -> str:
+        """
+        Return the id of the queue an id finds: its own id, also for a legacy id of its player.
+
+        :param queue_id: The id of the queue, or a legacy id of its player.
+        """
+        if queue_id in self._queue_data:
+            return queue_id
+        return self.mass.players.resolve_player_id(queue_id)
 
     def _playlist_uris(self, queue_id: str) -> list[str]:
         """Return the URIs of the queue's playlist-compatible items, checking player access."""

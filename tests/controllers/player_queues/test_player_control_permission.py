@@ -81,6 +81,9 @@ class _Players:
     def get_player(self, player_id: str) -> SimpleNamespace | None:
         return self._players.get(player_id)
 
+    def resolve_player_id(self, player_id: str) -> str:
+        return player_id
+
     def get_active_queue(self, player: SimpleNamespace) -> SimpleNamespace:
         return SimpleNamespace(queue_id=self._leaders.get(player.player_id, player.player_id))
 

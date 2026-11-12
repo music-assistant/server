@@ -84,6 +84,7 @@ def _controller(*, global_autoplay: bool = True) -> tuple[Any, dict[str, bool]]:
     """Build a queue-controller stand-in with the real toggle resolver bound."""
     queues = MagicMock(spec=PlayerQueuesController)
     queues._queue_data = {}
+    queues._resolve_queue_id = lambda queue_id: queue_id
     queues.mass = MagicMock()
     defaults = {"autoplay_enabled": global_autoplay, "crossfade_enabled": False}
     queues.mass.config.get_raw_core_config_value = MagicMock(

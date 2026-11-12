@@ -17,6 +17,8 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    QueueOption,
+    RepeatMode,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -897,3 +899,103 @@ async def test_every_unused_duplicate_of_a_device_is_merged_at_once(scenario: Sc
     assert [
         player.player_id for player in scenario.players_carrying(tv_airplay, tv_cast, tv_dlna)
     ] == [older_id]
+
+
+def _queue_state(scenario: Scenario, queue_id: str) -> PlaybackState | None:
+    """Return the playback state of a queue, None for a queue that does not exist."""
+    queue = scenario.queue(queue_id)
+    return queue.state if queue else None
+
+
+async def test_queue_commands_take_the_id_of_a_merged_player(scenario: Scenario) -> None:
+    """
+    A queue command called inside the server with a legacy id works on the queue it names.
+
+    A plugin setting can still name a player that was merged into another one.
+    """
+    tv = await _two_players_for_one_tv(scenario)
+    await _merge(scenario, tv.older_id, tv.younger_id)
+    queues = scenario.mass.player_queues
+    legacy_id = tv.younger_id
+    queue = scenario.queue(tv.older_id)
+    assert queue is not None
+
+    await scenario.play(legacy_id)
+    assert _queue_state(scenario, tv.older_id) == PlaybackState.PLAYING
+    await queues.set_shuffle(legacy_id, True)
+    queues.set_autoplay(legacy_id, not queue.autoplay_enabled)
+    queues.set_crossfade(legacy_id, not queue.crossfade_enabled)
+    await queues.set_repeat(legacy_id, RepeatMode.ALL)
+    await queues.set_overlay(legacy_id, enabled=False)
+    await scenario.command(queues.skip(legacy_id, 10))
+    await queues.pause(legacy_id)
+    await scenario.idle()
+    assert _queue_state(scenario, tv.older_id) == PlaybackState.PAUSED
+    await queues.stop(legacy_id)
+    await scenario.idle()
+    assert _queue_state(scenario, tv.older_id) == PlaybackState.IDLE
+    await scenario.command(queues.resume(legacy_id))
+    await scenario.idle()
+    assert _queue_state(scenario, tv.older_id) == PlaybackState.PLAYING
+    await queues.stop(legacy_id)
+    await scenario.idle()
+    for track in ("0_0_1", "0_0_2"):
+        await queues.play_media(legacy_id, f"test://track/{track}", option=QueueOption.ADD)
+    current, second, third = (item.queue_item_id for item in queues.items(tv.older_id))
+    queues.move_item_end(legacy_id, second)
+    queues.move_item(legacy_id, second, -1)
+    queues.delete_item(legacy_id, third)
+    assert [item.queue_item_id for item in queues.items(tv.older_id)] == [current, second]
+    queues.clear(legacy_id)
+    assert queue.items == 0
+
+
+async def test_pause_by_the_id_of_a_merged_player_calls_off_a_pending_skip(
+    scenario: Scenario,
+) -> None:
+    """A pause right after a skip to the next track keeps the queue paused."""
+    tv = await _two_players_for_one_tv(scenario)
+    await _merge(scenario, tv.older_id, tv.younger_id)
+    for receiver in (tv.airplay, tv.cast):
+        await scenario.report(
+            receiver, supported_features={*DEFAULT_FEATURES, PlayerFeature.ENQUEUE}
+        )
+    queues = scenario.mass.player_queues
+    await scenario.play(tv.younger_id)
+    await queues.play_media(tv.younger_id, "test://track/0_0_1", option=QueueOption.ADD)
+    await scenario.idle()
+
+    await queues.next(tv.younger_id)
+    await queues.pause(tv.younger_id)
+    await scenario.advance(2)
+    await scenario.idle()
+
+    queue = scenario.queue(tv.older_id)
+    assert queue is not None
+    assert queue.state == PlaybackState.PAUSED
+
+
+async def test_queue_is_transferred_by_the_id_of_a_merged_player(scenario: Scenario) -> None:
+    """A transfer takes legacy ids for both of its queues."""
+    tv = await _two_players_for_one_tv(scenario)
+    dlna = await scenario.add_provider("dlna")
+    speaker = dlna.protocol("uuid:speaker", "Speaker", role="audio", identifiers=HALL)
+    await scenario.attach(speaker)
+    speaker_id = scenario.single_player(speaker).player_id
+    await _merge(scenario, tv.older_id, tv.younger_id)
+    await scenario.play(tv.older_id)
+
+    await scenario.mass.player_queues.transfer_queue(tv.younger_id, speaker_id)
+    await scenario.idle()
+
+    speaker_queue = scenario.queue(speaker_id)
+    assert speaker_queue is not None
+    assert speaker_queue.state == PlaybackState.PLAYING
+    assert speaker_queue.items == 1
+
+    await scenario.mass.player_queues.transfer_queue(speaker_id, tv.younger_id)
+    await scenario.idle()
+
+    kept_queue = scenario.queue(tv.older_id)
+    assert kept_queue is not None
+    assert kept_queue.state == PlaybackState.PLAYING
