@@ -1239,7 +1239,7 @@ async def test_a_role_change_neither_merges_nor_splits_players(scenario: Scenari
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="phase 2 (#416): a native protocol claims the further instances of one domain",
+    reason="phase 2 (#416): a room of several speakers comes in a pull request after #7551",
 )
 async def test_room_of_several_renderers_is_one_player(scenario: Scenario) -> None:
     """
