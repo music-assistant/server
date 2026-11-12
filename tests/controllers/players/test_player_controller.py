@@ -2234,6 +2234,141 @@ class TestPlayMediaOverride:
         assert played_on == ["member"]
 
 
+class TestReleaseWaitForPlayMedia:
+    """
+    The release of a captured player for an explicit play_media waits for its confirmation.
+
+    The clock runs 50 times faster, so the waits are measured in the seconds real devices take.
+    """
+
+    @pytest.fixture(autouse=True)
+    async def _fast_clock(self) -> AsyncIterator[None]:
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        real_select = loop._selector.select  # type: ignore[attr-defined]
+        start = real_time()
+
+        def _select(timeout: float | None = None) -> Any:
+            return real_select(None if timeout is None else timeout / 50)
+
+        with (
+            patch.object(loop, "time", lambda: start + (real_time() - start) * 50),
+            patch.object(loop._selector, "select", _select),  # type: ignore[attr-defined]
+        ):
+            yield
+
+    @staticmethod
+    def _captured_member(
+        mock_mass: MagicMock, capture: str
+    ) -> tuple[PlayerController, MockProtocol, Player]:
+        """
+        Build a member synced to a leader, or a dynamic or static member of a group.
+
+        :return: The controller, the protocol of the leader or group, and the member.
+        """
+        controller = _controller(mock_mass)
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        member, _ = _attach(provider, "member", "Member")
+        if capture == "synced":
+            owner, owner_protocol = _attach(provider, "owner", "Leader")
+            owner_protocol._attr_group_members = [_proto("owner"), _proto("member")]
+        else:
+            group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+            owner, owner_protocol = _attach(
+                group_provider,
+                "owner",
+                "Group",
+                player_type=PlayerType.GROUP,
+                protocol_class=_SessionedGroup,
+            )
+            owner_protocol._attr_powered = None
+            owner_protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+            owner_protocol._attr_group_members = ["member"]
+            owner_protocol._attr_static_group_members = ["member"] if capture == "static" else []
+        controller._player_command_locks = {}
+        _refresh(owner, member)
+        _set_play_media_override(mock_mass, True)
+        return controller, owner_protocol, member
+
+    @staticmethod
+    def _confirm_release_after(
+        controller: PlayerController, owner: MockProtocol, member: Player, delay: float | None
+    ) -> None:
+        """Let the release command return at once and the player report its leave later."""
+
+        def _report_left() -> None:
+            owner._attr_group_members = [_proto("owner")] if owner.type == PlayerType.PLAYER else []
+            owner.update_state()
+            member.update_state()
+
+        async def _release(*_args: object, **_kwargs: object) -> None:
+            if delay is not None:
+                asyncio.get_running_loop().call_later(delay, _report_left)
+
+        controller.cmd_ungroup = _release  # type: ignore[method-assign]
+        controller.cmd_set_members = _release  # type: ignore[method-assign]
+        controller._handle_cmd_stop = _release  # type: ignore[method-assign]
+
+    @staticmethod
+    async def _play_media(controller: PlayerController) -> tuple[list[str], float]:
+        """Play on the member; return where play_media was sent and after how many seconds."""
+        loop = asyncio.get_running_loop()
+        played_on: list[str] = []
+
+        async def _handle_play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            played_on.append(player_id)
+
+        controller._handle_play_media = _handle_play_media  # type: ignore[method-assign]
+        start = loop.time()
+        await controller.play_media("member", MagicMock(uri="x", source_id="src"))
+        return played_on, loop.time() - start
+
+    @pytest.mark.parametrize("capture", ["synced", "dynamic", "static"])
+    async def test_plays_as_soon_as_the_player_reports_its_leave(
+        self, mock_mass: MagicMock, capture: str
+    ) -> None:
+        """A leave reported quickly lets the play go out right after it."""
+        controller, owner, member = self._captured_member(mock_mass, capture)
+        self._confirm_release_after(controller, owner, member, 0.5)
+
+        played_on, elapsed = await self._play_media(controller)
+
+        assert played_on == ["member"]
+        assert member.state.synced_to is None
+        assert member.state.active_group is None
+        assert elapsed < 2
+
+    @pytest.mark.parametrize("capture", ["synced", "dynamic", "static"])
+    async def test_a_leave_reported_late_still_plays_on_the_released_player(
+        self, mock_mass: MagicMock, capture: str
+    ) -> None:
+        """A leave reported as late as a Sonos speaker reports it through its own event."""
+        controller, owner, member = self._captured_member(mock_mass, capture)
+        self._confirm_release_after(controller, owner, member, 6.7)
+
+        played_on, elapsed = await self._play_media(controller)
+
+        assert played_on == ["member"]
+        assert member.state.synced_to is None
+        assert member.state.active_group is None
+        assert 6.7 <= elapsed < players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
+
+    async def test_a_leave_never_reported_plays_at_the_bound(self, mock_mass: MagicMock) -> None:
+        """Without a confirmation the play goes out once the wait ran out, for the player to judge."""
+        controller, owner, member = self._captured_member(mock_mass, "synced")
+        self._confirm_release_after(controller, owner, member, None)
+
+        played_on, elapsed = await self._play_media(controller)
+
+        assert played_on == ["member"]
+        assert member.state.synced_to == "owner"
+        assert (
+            players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
+            <= elapsed
+            < players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT + 1
+        )
+
+
 class TestExternalSourcePlayPause:
     """Pause/play handling for externally-initiated sources (no active output protocol)."""
 

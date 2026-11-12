@@ -44,6 +44,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    PlayerType,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -109,6 +110,7 @@ from music_assistant.controllers.streams.constants import (
     ICY_PLACEHOLDER_IMAGE_URLS,
     MIN_VOICE_OVER_DURATION,
     NO_TRACK_MATCH_EXPIRATION,
+    NORMALIZATION_LIMITER_CEILING_DB,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
@@ -1809,6 +1811,16 @@ class StreamsAudio:
             gain_correct = round(gain_correct, 2)
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
+        # a positive gain can push peaks past full scale; a player's DSP chain owns its limiting
+        if (
+            gain_correct is not None
+            and gain_correct > 0
+            and not self._is_dsp_active_for_queue(streamdetails.queue_id)
+        ):
+            filter_params.append(
+                f"alimiter=limit={NORMALIZATION_LIMITER_CEILING_DB}dB"
+                ":level=false:asc=true:latency=true"
+            )
 
         # handle playback speed
         if playback_speed != 1.0:
@@ -5564,6 +5576,32 @@ class StreamsAudio:
             assert child_player is not None
             dsp_player_id = child_player.player_id
         return dsp_player_id
+
+    def _is_dsp_active_for_queue(self, queue_id: str | None) -> bool:
+        """
+        Return whether DSP runs on the queue's player and on every member of its group.
+
+        :param queue_id: The queue to check; an unknown queue or player counts as no DSP.
+        """
+        if not queue_id or not (player := self.mass.players.get_player(queue_id)):
+            return False
+        output_players = [
+            member
+            for member_id in player.state.group_members
+            if (member := self.mass.players.get_player(member_id))
+        ]
+        # a group player that hands DSP to its members has no DSP config of its own
+        if not (
+            player.state.type == PlayerType.GROUP
+            and PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
+        ):
+            output_players.append(player)
+        # a player whose output is not selected yet has no DSP established, which keeps the limiter
+        return bool(output_players) and all(
+            (protocol := output_player.resolve_output_protocol()) is not None
+            and self._resolve_player_dsp_config(protocol).enabled
+            for output_player in output_players
+        )
 
     def _get_output_channels(self, player: PlayerProtocol | None, protocol_id: str) -> str:
         """

@@ -76,6 +76,7 @@ class _SetupSession(SetupSession):
         last_step: bool | None = None,
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
     ) -> dict[str, ConfigValueType]:
         """Capture the presented form and return the configured submission."""
         self.entries = entries
@@ -85,6 +86,7 @@ class _SetupSession(SetupSession):
             "last_step": last_step,
             "expires_in": expires_in,
             "translation_params": translation_params,
+            "copy_text": copy_text,
         }
         self.shown_errors.append(errors)
         return self._submitted

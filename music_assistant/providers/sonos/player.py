@@ -29,7 +29,13 @@ from aiosonos.api.models import (
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import CannotConnect, CommandTimeout, ConnectionFailed, FailedCommand
+from aiosonos.exceptions import (
+    CannotConnect,
+    CommandTimeout,
+    ConnectionFailed,
+    FailedCommand,
+    SonosException,
+)
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     EventType,
@@ -118,6 +124,9 @@ MOVED_GROUP_TIMEOUT = 5
 # seconds a queue released on a session eviction still counts for a coordinator move:
 # the speaker may send the eviction just before the move
 EVICTED_QUEUE_GRACE = 5
+# seconds a speaker gets to answer for its grouping after a group change; a healthy one
+# answers within 50 ms, one that lost power never does
+GROUPS_REFRESH_TIMEOUT = 2
 # seconds past an announcement's own duration to wait for the speaker to report it done
 ANNOUNCEMENT_STATUS_MARGIN = 5
 # clip states after which the speaker no longer plays the clip
@@ -901,6 +910,17 @@ class SonosPlayer(PlayerProtocol):
                 player_ids_to_remove=player_ids_to_remove,
             )
             await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
+            members = (
+                self.provider.get_protocol(protocol_id)
+                for protocol_id in {*player_ids_to_add, *player_ids_to_remove} - {self.protocol_id}
+            )
+            await asyncio.gather(
+                *(
+                    member._refresh_groups()
+                    for member in members
+                    if isinstance(member, SonosPlayer) and member.connected
+                )
+            )
 
     async def ungroup(self) -> None:
         """
@@ -1814,6 +1834,24 @@ class SonosPlayer(PlayerProtocol):
                 self.name,
                 player_ids_to_add,
             )
+
+    async def _refresh_groups(self) -> None:
+        """Update the grouping of this speaker from what the speaker reports right now."""
+        # a speaker knows its new group at once, but holds its groups event back for seconds,
+        # and sends none at all when its group is back to what it last reported by then
+        try:
+            async with asyncio.timeout(GROUPS_REFRESH_TIMEOUT):
+                groups = await self.client.api.groups.get_groups(self.client.household_id)
+        except asyncio.CancelledError:
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
+            # a reconnect cancels the replies it still waited on, the refresh among them
+            self.logger.debug("Could not refresh the groups of %s: connection closed", self.name)
+            return
+        except (SonosException, ClientError, OSError, TimeoutError) as err:
+            self.logger.debug("Could not refresh the groups of %s: %s", self.name, err)
+            return
+        self.client._handle_groups_event(groups)
 
     def _extract_mac_from_player_id(self) -> str | None:
         """

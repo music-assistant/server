@@ -59,7 +59,7 @@ LEGACY_PROTOCOL_PARENT_ID = "protocol_parent_id"
 LEGACY_UNIVERSAL_PLAYER = "universal_player"
 
 # the domains whose players are no device: their protocol has the virtual role
-VIRTUAL_DOMAINS = frozenset({"sync_group", "universal_group", "auracast"})
+VIRTUAL_DOMAINS = frozenset({"sync_group", "universal_group"})
 
 # the lists of player ids a group stores: its members and the players it allows as one
 GROUP_MEMBER_KEYS = (CONF_GROUP_MEMBERS, "allowed_members")
