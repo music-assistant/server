@@ -215,3 +215,25 @@ async def test_is_reachable_asks_the_server(monkeypatch: pytest.MonkeyPatch) -> 
     test_connection.side_effect = ProviderUnavailableError("server down")
     with pytest.raises(ProviderUnavailableError):
         await provider._is_reachable()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Artist/cover.jpg",
+        "@evil.com/cover.jpg",
+        "a//evil.com/song.flac",
+        "http:/evil.com/song.flac",
+        "Die drei ???/cover.jpg?cs=Wed, 21 Oct 2015 07:28:00 GMT",
+    ],
+)
+def test_accepted_stored_image_path_stays_inside_the_base_url(path: str) -> None:
+    """An image path the provider accepts always resolves below its own WebDAV folder."""
+    provider = _make_provider()
+    provider.username = "user"
+    provider.password = "secret"
+
+    assert provider.accepts_stored_image_path(path)
+    assert provider._build_authenticated_url(path).startswith(
+        "https://user:secret@host.example/dav/"
+    )

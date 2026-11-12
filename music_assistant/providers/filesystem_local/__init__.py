@@ -100,6 +100,7 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.process import open_in_thread
+from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.tags import (
     AudioTags,
     async_parse_tags,
@@ -150,6 +151,7 @@ from .constants import (
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
     SOUND_EFFECT_EXTENSIONS,
+    SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
     WALK_EXTENSIONS,
     IsChapterFile,
@@ -1367,6 +1369,24 @@ class LocalFileSystemProvider(MusicProvider):
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like a path relative to the folder of this source.
+
+        :param path: The stored image path.
+        """
+        # only cover files and audio files (for their embedded cover): the sources built on
+        # this one fetch any other path as a raw file from their share
+        file_path = path.split("?cs=", 1)[0]
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+        return ext in IMAGE_EXTENSIONS | SUPPORTED_EXTENSIONS and not (
+            path.startswith("/")
+            or "\\" in path
+            or "://" in path
+            or ".." in path.split("/")
+            or has_control_chars(path)
+        )
 
     async def check_write_access(self) -> None:
         """Perform check if we have write access."""

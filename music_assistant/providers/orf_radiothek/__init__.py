@@ -109,6 +109,7 @@ CONF_CATCHUP_STATIONS = "catchup_stations"  # optional comma-separated station i
 
 # local-image pseudo scheme (provider-owned)
 LOCAL_IMG_PREFIX = "radiothek://station/"
+LOCAL_LOGO_PATTERN = re.compile(re.escape(LOCAL_IMG_PREFIX) + r"[a-z0-9]+\.png")
 CATCHUP_DAYS = 30
 # recent days still change (live/upcoming broadcasts), older days are final
 CATCHUP_RECENT_DAYS_CACHE = 3600
@@ -269,6 +270,14 @@ class RadiothekProvider(MusicProvider):
                 resp.raise_for_status()
                 async for chunk in resp.content.iter_chunked(CATCHUP_AUDIO_CHUNK_SIZE):
                     yield chunk
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like a bundled station logo of this provider.
+
+        :param path: The stored image path.
+        """
+        return LOCAL_LOGO_PATTERN.fullmatch(path) is not None
 
     # ----------------------------
     # HTTP / caching helpers
@@ -482,7 +491,7 @@ class RadiothekProvider(MusicProvider):
         return None
 
     async def resolve_image(self, path: str) -> str | bytes:
-        """Resolve provider-local image paths to a file path."""
+        """Resolve provider-local image paths to the image data."""
         if not path.startswith(LOCAL_IMG_PREFIX):
             return path
 
@@ -494,7 +503,7 @@ class RadiothekProvider(MusicProvider):
         if not fpath.is_file():
             raise MediaNotFoundError("Image not found.")
 
-        return str(fpath)
+        return await asyncio.to_thread(fpath.read_bytes)
 
     # ----------------------------
     # Stream URL helpers (radio)

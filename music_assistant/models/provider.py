@@ -181,6 +181,17 @@ class Provider:
         """
         return path
 
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether a non-URL image path read back from stored data may be resolved.
+
+        Override only when resolve_image looks the path up strictly inside the provider's own
+        library or service, and returns image data or a remote URL for it.
+
+        :param path: The stored image path.
+        """
+        return False
+
     @property
     @final
     def type(self) -> ProviderType:
