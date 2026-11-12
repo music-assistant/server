@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import ProviderUnavailableError
@@ -237,3 +237,17 @@ def test_accepted_stored_image_path_stays_inside_the_base_url(path: str) -> None
     assert provider._build_authenticated_url(path).startswith(
         "https://user:secret@host.example/dav/"
     )
+
+
+async def test_resolve_image_drops_the_version_suffix() -> None:
+    """An embedded cover is read from the audio file itself, without its version suffix."""
+    provider = _make_provider()
+
+    with patch(
+        "music_assistant.providers.webdav.provider.get_embedded_image",
+        AsyncMock(return_value=b"cover"),
+    ) as get_embedded_image:
+        image = await provider.resolve_image("Book/01 Chapter.mp3?cs=Wed, 21 Oct 2015 07:28:00 GMT")
+
+    assert image == b"cover"
+    get_embedded_image.assert_awaited_once_with(f"{BASE_URL}/Book/01%20Chapter.mp3")
