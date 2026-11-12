@@ -396,40 +396,6 @@ class ChromecastPlayer(Player):
                     media_controller.send_message, data=queuedata, inc_session_id=True
                 )
 
-            if len(getattr(media_controller.status, "items", [])) < 2 and (
-                cmd_next_url := self.mass.streams.get_command_url(self.player_id, "next")
-            ):
-                # In flow mode, all queue tracks are sent to the player as continuous stream.
-                # add a special 'command' item to the queue
-                # this allows for on-player next buttons/commands to still work
-                msg = {
-                    "type": "QUEUE_INSERT",
-                    "mediaSessionId": media_controller.status.media_session_id,
-                    "items": [
-                        {
-                            "media": {
-                                "contentId": cmd_next_url,
-                                "customData": {
-                                    "uri": cmd_next_url,
-                                    "queue_item_id": cmd_next_url,
-                                },
-                                # must match the silence file the command url actually
-                                # serves: strict (vendor) cast stacks error out on a
-                                # contentType mismatch where Google's receiver is lenient
-                                "contentType": "audio/mpeg",
-                                "streamType": STREAM_TYPE_LIVE,
-                                "metadata": {},
-                            },
-                            "autoplay": True,
-                            "startTime": 0,
-                            "preloadTime": 0,
-                        }
-                    ],
-                }
-                await asyncio.to_thread(
-                    media_controller.send_message, data=msg, inc_session_id=True
-                )
-
         self.mass.create_task(update_flow_metadata())
 
     async def _launch_app(self) -> None:
