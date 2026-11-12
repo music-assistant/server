@@ -571,6 +571,7 @@ class BuiltinLoginProvider(LoginProvider):
         role: str = UserRole.USER,
         display_name: str | None = None,
         player_filter: list[str] | None = None,
+        allow_explicit: bool = True,
     ) -> User:
         """
         Create a new built-in user with password.
@@ -580,6 +581,7 @@ class BuiltinLoginProvider(LoginProvider):
         :param role: The id of the (builtin or custom) role to assign (default: user).
         :param display_name: Optional display name.
         :param player_filter: Optional list of player IDs user has access to.
+        :param allow_explicit: Whether the user may see and play explicit content.
         """
         # Create the user
         user = await self.auth_manager.create_user(
@@ -587,6 +589,7 @@ class BuiltinLoginProvider(LoginProvider):
             role=role,
             display_name=display_name,
             player_filter=player_filter,
+            allow_explicit=allow_explicit,
         )
 
         # Hash password using user_id for enhanced security
