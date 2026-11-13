@@ -140,8 +140,9 @@ own protocol of a device never waits.
 
 The Den device has an AirPlay and a Cast receiver and no protocol of its own, the Patio device an
 AirPlay receiver alone: both players show the speaker icon. The Office device, an Apple speaker
-with AirPlay as its own protocol and a Cast receiver, shows the AirPlay icon, also while its
-AirPlay protocol is away. An icon the user picks replaces the default.
+with AirPlay as its own protocol, a Cast receiver and a Home Assistant media player as a control,
+shows the AirPlay icon, also while its AirPlay protocol is away. An icon the user picks replaces
+the default.
 
 - End-to-end: **yes**. Two receivers of different kinds on one host, and one receiver alone.
 - Proven by: `test_identity.py::test_a_player_without_a_protocol_of_its_own_has_the_neutral_icon`

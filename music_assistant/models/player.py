@@ -1822,11 +1822,10 @@ class Player:
         """Return the provider domain of the own protocol of the player, also while it is away."""
         if (own := self._own_protocol) is not None:
             return own.provider.domain
-        for protocol_id in self._protocol_ids:
-            stored = self.mass.config.get_protocol_record(protocol_id) or {}
-            if stored.get("role") in OWN_PROTOCOL_ROLES:
-                return str(stored.get("provider") or "").split("--", maxsplit=1)[0]
-        return None
+        if (protocol_id := self.mass.config.get_primary_protocol_id(self.player_id)) is None:
+            return None
+        stored = self.mass.config.get_protocol_record(protocol_id) or {}
+        return str(stored.get("provider") or "").split("--", maxsplit=1)[0]
 
     def _stored_protocol_name(self) -> str | None:
         """Return the name a protocol of the player was last seen with, its own protocol first."""

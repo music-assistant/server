@@ -381,6 +381,7 @@ def mock_player_mass() -> MagicMock:
     )
     config.get_protocol_record = MagicMock(return_value=None)
     config.get_protocol_ids_of_player = MagicMock(return_value=[])
+    config.get_primary_protocol_id = MagicMock(return_value=None)
     mass.player_queues.get = MagicMock(return_value=None)
     use_player_registry(mass)
     return mass
