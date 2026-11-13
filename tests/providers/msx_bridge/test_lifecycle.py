@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import EventType, IdentifierType, PlaybackState
 
 from music_assistant.constants import CONF_OUTPUT_CODEC
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
@@ -166,3 +166,42 @@ async def test_a_setting_of_a_new_player_is_its_tv_s(
 
     assert protocol.config.get_value(CONF_OUTPUT_CODEC) == "aac"
     assert CONF_OUTPUT_CODEC not in (scenario.mass.config.get(f"players/{player_id}/values") or {})
+
+
+@pytest.mark.parametrize("away", [True, False], ids=["after-idle-timeout", "while-attached"])
+async def test_a_tv_under_a_new_address_reports_it(
+    scenario: Scenario, provider: MSXBridgeProvider, away: bool
+) -> None:
+    """
+    A TV that returns under another address reports that one.
+
+    The device that has its old address now has an audio output of its own player.
+    """
+    scenario.arp["10.0.0.20"] = "00:11:22:33:44:55"
+    protocol = await provider.get_or_register_player(TV, ip_address="10.0.0.20")
+    await scenario.settle()
+    player_id = _player(protocol).player_id
+    if away:
+        await provider._handle_player_detach(TV)
+        await scenario.settle()
+    scenario.arp["10.0.0.20"] = "00:11:22:33:44:66"
+    scenario.arp["10.0.0.21"] = "00:11:22:33:44:55"
+    scenario.clear_events()
+
+    returned = await provider.get_or_register_player(TV, ip_address="10.0.0.21")
+    await scenario.settle()
+    assert scenario.events(EventType.PLAYER_UPDATED, object_id=player_id)
+    other_device = (await scenario.add_provider("dlna")).protocol(
+        "uuid:device-b",
+        "Device B",
+        role="audio",
+        identifiers={
+            IdentifierType.IP_ADDRESS: "10.0.0.20",
+            IdentifierType.MAC_ADDRESS: "00:11:22:33:44:66",
+        },
+    )
+    await scenario.attach(other_device)
+
+    assert _player(returned).player_id == player_id
+    assert returned.device_info.ip_address == "10.0.0.21"
+    assert scenario.player_of(other_device) != player_id

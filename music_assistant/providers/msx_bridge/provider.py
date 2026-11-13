@@ -170,8 +170,10 @@ class MSXBridgeProvider(PlayerProvider):
             await pending_event.wait()
         existing = self.get_protocol(player_id)
         if existing and isinstance(existing, MSXPlayer):
-            if ip_address and not existing.device_info.ip_address:
+            if ip_address and existing.device_info.ip_address != ip_address:
                 existing.device_info.ip_address = ip_address
+                # publishes the identity of the TV under its new address
+                await self.mass.players.attach(existing)
             self.on_player_activity(player_id)
             return existing
         if (player := self._tvs.get(player_id)) is None:
@@ -183,7 +185,7 @@ class MSXBridgeProvider(PlayerProvider):
                 ip_address=ip_address,
             )
             self._tvs[player_id] = player
-        elif ip_address and not player.device_info.ip_address:
+        elif ip_address:
             player.device_info.ip_address = ip_address
         self._player_last_activity[player_id] = time.monotonic()
         if self.mass.players.wants_protocol(player_id):
