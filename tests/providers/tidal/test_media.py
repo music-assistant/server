@@ -816,6 +816,40 @@ async def test_get_artist_albums_skips_resource_with_null_attributes(
     provider_mock.logger.warning.assert_called_once()
 
 
+async def test_get_artist_albums_stops_paging_at_limit(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a large discography stops paging once the album limit is reached."""
+    pages_served = 0
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        nonlocal pages_served
+        for page in range(50):
+            pages_served += 1
+            ids = [str(page * 20 + idx) for idx in range(20)]
+            yield JsonApiDocument(
+                {
+                    "data": [{"id": album_id, "type": "albums"} for album_id in ids],
+                    "included": [
+                        {
+                            "id": album_id,
+                            "type": "albums",
+                            "attributes": {"title": f"Album {album_id}", "albumType": "ALBUM"},
+                        }
+                        for album_id in ids
+                    ],
+                }
+            )
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    albums = await media_manager.get_artist_albums("4184211")
+
+    assert len(albums) == 100
+    assert albums[-1].item_id == "99"
+    assert pages_served == 5
+
+
 async def test_get_artist_toptracks_falls_back_to_sibling_variant(
     media_manager: TidalMediaManager, provider_mock: Mock
 ) -> None:

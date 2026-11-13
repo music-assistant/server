@@ -13,6 +13,7 @@ from deezer_python_gql.generated.push_queue_state import (
     PushQueueStatePushQueueStatePushQueueStateOutput,
 )
 from music_assistant_models.enums import MediaType, RepeatMode
+from music_assistant_models.errors import RetriesExhausted
 from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.providers.deezer.streaming import DeezerStreamingManager
@@ -124,6 +125,15 @@ async def test_conflict_pushes_on_top_of_the_app_state(provider: Mock) -> None:
 
     states = [call.kwargs["input"] for call in provider.gql_client.push_queue_state.call_args_list]
     assert [s.previous_version for s in states] == [None, "app"]
+
+
+async def test_rate_limited_push_is_skipped(provider: Mock) -> None:
+    """Saving the queue gives way to Deezer's rate limit without failing the report."""
+    provider.gql_client.push_queue_state.side_effect = RetriesExhausted("rate limited")
+
+    await _report(provider, "10", 0, is_playing=True)
+
+    provider.gql_client.push_queue_state.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

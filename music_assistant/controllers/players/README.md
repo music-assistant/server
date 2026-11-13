@@ -397,7 +397,9 @@ output.
 2. The core controllers set up; `players.post_setup` creates a player for every stored player that
    is enabled, announces it with its queue, unavailable until a protocol attaches. A player without
    protocols whose provider is not installed says so in its `setup_reason`
-   (`provider_not_installed`).
+   (`provider_not_installed`). A provider is installed when its manifest is registered, whichever
+   folder it loads from; the reason follows a manifest that is registered or removed while the
+   server runs (`on_provider_manifests_changed`).
 3. The webserver starts: clients get one complete list, unavailable players included.
 4. The providers load and register their protocols.
 
@@ -634,9 +636,10 @@ command does not wait for a play command. A command that takes a lock never runs
 waits for the command that holds it, up to 120 seconds per lock (a grouped player's group lock
 first, then its own), and then fails with a `ResourceBusyError` ("still busy with a previous
 command"): two commands running at once on one player or queue corrupt it. That wait outlasts what
-most commands hold a player for, such as a play request that loads a large playlist. It can also
-turn away a command behind long work that is legitimate: an announcement holds the player for as
-long as it plays. The warning logged at the timeout shows where the holder waits.
+most commands hold a player for: a play request that loads a large playlist gives up after 60
+seconds of looking up what to play, and lets go of its locks before it has changed the queue. It
+can also turn away a command behind long work that is legitimate: an announcement holds the player
+for as long as it plays. The warning logged at the timeout shows where the holder waits.
 
 Attaching protocols is serialized by one lock of the controller, so an object that replaces
 another under the same protocol id waits for an attach of that id that is still running. A detach

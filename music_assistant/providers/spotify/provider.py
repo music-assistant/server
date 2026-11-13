@@ -72,7 +72,11 @@ from music_assistant.helpers.throttle_retry import (
     current_priority,
 )
 from music_assistant.helpers.util import lock
-from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from music_assistant.models.music_provider import (
+    ARTIST_ALBUMS_LIMIT,
+    MusicProvider,
+    ProviderStreamLimitError,
+)
 from music_assistant.providers.spotify_connect.base import (
     AUDIO_QUALITY_LOSSLESS,
     AUDIO_QUALITY_OPTIONS,
@@ -860,19 +864,22 @@ class SpotifyProvider(MusicProvider):
 
     @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
+        albums: list[Album] = []
         try:
-            return [
-                parse_album(item, self)
-                async for item in self._get_all_items(
-                    f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation",
-                    limit=10,
-                )
-                if (item and item["id"])
-            ]
+            async for item in self._get_all_items(
+                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation",
+                # Spotify's maximum page size for this endpoint
+                limit=10,
+            ):
+                if item and item["id"]:
+                    albums.append(parse_album(item, self))
+                if len(albums) >= ARTIST_ALBUMS_LIMIT:
+                    break
         except MediaNotFoundError:
             self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
             return []
+        return albums
 
     @use_cache(
         86400 * 14,  # 14 days

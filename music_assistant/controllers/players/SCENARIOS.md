@@ -774,6 +774,26 @@ gives no setup reason.
 - End-to-end: **no**: the lab boots fresh, without stored players.
 - Proven by: `test_lifecycle.py::test_a_stored_player_whose_provider_is_not_installed_says_so`
 
+### RESTART-7 · The settings of a player whose provider is not installed can be opened
+
+The settings hold the Patio player with two protocols, of two providers this install does not
+have. The settings of Patio open, and it is in the list of player settings. Its outputs are
+named after the domains of those providers, for lack of a name.
+
+- End-to-end: **no**: the lab boots fresh, without stored players.
+- Proven by: `test_lifecycle.py::test_the_settings_of_a_player_whose_provider_is_not_installed_can_be_read`
+
+### RESTART-8 · A provider installed while the server runs counts as installed
+
+The settings hold the Patio player of a provider this install does not have: Patio gives as its
+setup reason that its provider is not installed. The provider is installed from a second
+providers folder while the server runs. Without a restart Patio gives no setup reason any more,
+as the player of a shipped provider that is not set up, and its settings name the provider. Once
+the provider is removed again, Patio says again that its provider is not installed.
+
+- End-to-end: **no**: nothing installs a provider into a running server yet.
+- Proven by: `test_lifecycle.py::test_a_stored_player_follows_a_provider_installed_or_removed_while_the_server_runs`
+
 ## Removing and disabling
 
 What goes when the user removes a provider, removes a player or disables one. Clients are told
@@ -1129,6 +1149,25 @@ queue while it is listed as a member of Patio's group.
 
 - End-to-end: **no**: it needs a device that takes that long over a command.
 - Proven by: `test_commands.py::test_a_hand_over_whose_new_leader_joins_another_group_meanwhile_completes`
+
+### BUSY-11 · A play request that takes longer than a minute to look up is given up and changes nothing
+
+Kitchen is grouped to Den, which plays. A play on Kitchen never finds out what to play. It holds
+Kitchen and Den meanwhile, so a stop of Den sent behind it waits. After 60 s the play fails with
+an error that says the lookup took too long. Kitchen is still in the group of Den and its queue
+is still empty, neither queue shows an action in progress, and the stop reaches Den at once.
+
+- End-to-end: **no**: it needs a music provider that never answers a lookup.
+- Proven by: `test_commands.py::test_a_play_request_that_is_given_up_frees_the_player_and_its_leader`
+
+### BUSY-12 · The minute of a play request does not run while it waits for its turn
+
+A play takes 90 s at the Den speaker. A play of another track sent right behind it waits for it
+all that time, longer than the minute it has to look up what to play. It then looks its track up
+and plays it.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_play_request_that_waits_longer_than_a_minute_for_its_turn_still_plays`
 
 ## What a stopped player keeps for a moment
 

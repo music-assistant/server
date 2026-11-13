@@ -1808,9 +1808,11 @@ class PlayerConfigMixin:
 
     def _get_protocol_display_name(self, protocol_domain: str) -> str:
         """Return the display name for a protocol domain."""
-        if provider_manifest := self.mass.get_provider_manifest(protocol_domain):
-            return provider_manifest.name
-        return protocol_domain.upper()
+        try:
+            return self.mass.get_provider_manifest(protocol_domain).name
+        except KeyError:
+            # a stored protocol of a provider that is not installed
+            return protocol_domain.upper()
 
     def _stored_protocol_translation_owner(self, protocol_player_id: str) -> str | None:
         """

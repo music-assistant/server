@@ -1163,10 +1163,10 @@ class Scenario:
         ) -> FakePlayerProvider:
             return FakePlayerProvider(mass, manifest, config, self._devices, self.timeline)
 
-        async def _load_module(domain: str, requirements: list[str]) -> Any:
-            if domain in fake_domains:
+        async def _load_module(manifest: ProviderManifest) -> Any:
+            if manifest.domain in fake_domains:
                 return SimpleNamespace(setup=_setup_provider)
-            return await load_provider_module(domain, requirements)
+            return await load_provider_module(manifest)
 
         async def _arp_lookup(ip_address: str) -> str | None:
             return self.arp.get(ip_address)
