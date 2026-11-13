@@ -14,7 +14,10 @@ from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
-from music_assistant.providers.chromecast.constants import CONF_DEFER_IDLE_VOLUME
+from music_assistant.providers.chromecast.constants import (
+    APP_TRACK_CHANGE_TIME,
+    CONF_DEFER_IDLE_VOLUME,
+)
 from music_assistant.providers.chromecast.helpers import ChromecastInfo
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 from music_assistant.providers.chromecast.provider import ChromecastProvider
@@ -498,3 +501,38 @@ async def test_a_speaker_dropped_from_its_group_plays_its_own_media() -> None:
     assert speaker.active_cast_group is None
     assert speaker.current_media is not None
     assert speaker.current_media.uri == "http://mass/solo.flac"
+
+
+async def test_a_detached_device_ends_the_wait_for_an_app_s_next_track(
+    scenario: Scenario,
+) -> None:
+    """
+    A detach ends the wait for another party's app to start its next track.
+
+    The idle status between two tracks of that app is held back for a while; once the
+    protocol is detached, nothing of it reaches the players controller anymore.
+    """
+    protocol = await _attach_cast(scenario, _cast_info())
+    listener = protocol.status_listener
+    assert listener is not None
+    client = cast("MagicMock", protocol.cc)
+    client.app_id = "SPOTIFY"
+    protocol._attr_active_source = "spotify"
+    listener.new_media_status(_media_status(playing=True, content_id="http://elsewhere/one"))
+    await scenario.settle()
+    client.media_controller.status = _media_status()
+    listener.new_media_status(client.media_controller.status)
+    await scenario.settle()
+    timer_id = protocol._app_track_change_task_id
+    assert timer_id in scenario.mass._tracked_timers
+
+    await scenario.mass.players.detach(protocol.protocol_id)
+    with patch.object(
+        scenario.mass.players,
+        "on_unattached_protocol_update",
+        wraps=scenario.mass.players.on_unattached_protocol_update,
+    ) as unattached_update:
+        await scenario.advance(APP_TRACK_CHANGE_TIME + 1)
+
+    unattached_update.assert_not_called()
+    assert protocol._app_track_change_ends is None

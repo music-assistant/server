@@ -343,6 +343,8 @@ class ChromecastPlayer(PlayerProtocol):
             bridge_task.cancel()
         await super().on_detach()
         self.cancel_pending_app_quit()
+        self.mass.cancel_timer(self._app_track_change_task_id)
+        self._app_track_change_ends = None
         self.mz_controller = None
         self.active_cast_group = None
         if self.status_listener is not None:
