@@ -676,7 +676,12 @@ class _PlayerControllerBase(CoreController):
         # merging and unlinking
         def _schedule_duplicate_merge(self, player_id: str) -> None: ...
         # state updates
-        def trigger_player_update(self, player_id: str) -> None: ...
+        def trigger_player_update(
+            self,
+            player_id: str,
+            force_update: bool = False,
+            debounce_delay: float = ...,
+        ) -> None: ...
         def wait_for_player_update(
             self,
             player_id: str,
