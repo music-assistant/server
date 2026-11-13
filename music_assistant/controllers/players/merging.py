@@ -170,7 +170,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
             if protocol.player is absorbed:
                 await self._unbind(protocol)
         if absorbed is not None:
-            await self._drop_player(absorbed, permanent=True)
+            await self._drop_player(absorbed)
         else:
             self.mass.player_queues.purge_saved_queue(absorb_id)
         try:

@@ -474,18 +474,19 @@ that is published, the controller ([state_updates.py](state_updates.py)):
 | `PLAYER_SLEEP_TIMER_UPDATED` | the sleep timer of a player changed; the data is when it expires, `None` when it was cleared or waits for paused playback |
 | `PLAYER_CONFIG_UPDATED` | a config of the player was saved; also when its features or its power, volume or mute control change, for the Home Assistant integration, which only re-reads them on that event |
 
-`PLAYER_REMOVED` carries no data: the player is gone, and a subscriber drops what it keeps about
-it. A device that goes away is no removal: its player stays, unavailable. A disabled player comes
-back under the same id when the user enables it, and so does a player that only exists while
-connected when its client connects again; both are announced with `PLAYER_ADDED` then. A player
-that only exists while connected stays when its client disconnects, unavailable, once it has a
-record or its queue has items.
+`PLAYER_REMOVED` is only sent for a player that is gone for good, and carries no data: a
+subscriber drops what it keeps about it. A device that goes away is no removal: its player stays,
+unavailable. Neither is disabling a player: it leaves the registry with a last `PLAYER_UPDATED`,
+unavailable, and comes back under the same id when the user enables it, announced with
+`PLAYER_ADDED`. A player that only exists while connected stays when its client disconnects,
+unavailable, once it has a record or its queue has items; else it is removed, and a client that
+connects again is a new player under the same id, announced with `PLAYER_ADDED`.
 
 The queue of a player lives as long as the player object. It is created and restored from the
 saved queue right after `PLAYER_ADDED`, so a subscriber of that event can not count on the queue
 yet. When the protocol that rendered the audio of the player is detached, the queue releases its
 audio and pending work and keeps its items and position. It goes with the player object, and its
-saved state only when the player is removed (not when it is disabled or its client disconnects).
+saved state when the player is removed (not when it is disabled).
 
 ## Commands, Outputs, Volume and Power
 

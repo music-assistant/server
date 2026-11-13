@@ -573,7 +573,11 @@ async def test_a_browser_player_that_played_stays_listed_while_its_browser_is_aw
 async def test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_client_disconnects(
     scenario: Scenario,
 ) -> None:
-    """A web player that played, but whose queue was cleared, has nothing to keep."""
+    """
+    A web player that played, but whose queue was cleared, has nothing to keep.
+
+    It is removed for good when its client disconnects: nothing of its queue stays saved.
+    """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
@@ -589,6 +593,7 @@ async def test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_clie
     assert scenario.visible_players() == []
     assert await scenario.player_configs() == []
     assert scenario.removals() == [("sendspin_web_3f2a", None)]
+    assert await scenario.saved_queue("sendspin_web_3f2a") is None
 
 
 async def test_a_player_the_user_removes_is_announced_as_removed(scenario: Scenario) -> None:

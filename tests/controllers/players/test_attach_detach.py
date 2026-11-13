@@ -1057,10 +1057,10 @@ async def test_derived_protocol_that_connects_while_its_player_is_removed_waits(
     dropping = asyncio.Event()
     drop_player = players._drop_player
 
-    async def _drop_slowly(player: Player, *, permanent: bool) -> None:
+    async def _drop_slowly(player: Player) -> None:
         # releasing what the player played takes a while
         await dropping.wait()
-        await drop_player(player, permanent=permanent)
+        await drop_player(player)
 
     with patch.object(players, "_drop_player", _drop_slowly):
         removal = await scenario.command(players.remove(player_id))

@@ -640,7 +640,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             and not player.protocols
             and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}") is None
         ):
-            await self._drop_player(player, permanent=False)
+            await self._drop_player(player)
             self.logger.info("Player removed: %s", player.display_name)
             return
         player.set_config(await self.mass.config.get_player_object_config(player))
@@ -770,16 +770,15 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player_id, data=player)
         await self.mass.player_queues.on_player_register(player)
 
-    async def _drop_player(self, player: Player, *, permanent: bool) -> None:
+    async def _drop_player(self, player: Player) -> None:
         """
-        Take a player out of the registry and let clients know that it is gone.
+        Take a player out of the registry for good, with its saved queue, and let clients know.
 
         :param player: The player to drop, whose protocols are detached already.
-        :param permanent: The player is removed for good: also delete its saved queue.
         """
         player_id = player.player_id
         await self._unregister_player(player)
-        self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
+        self.mass.player_queues.on_player_remove(player_id, permanent=True)
         if player.initialized.is_set() and not self.mass.closing:
             self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
@@ -851,7 +850,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             # the registry, so it is filtered out of every group's live member list, and
             # its persisted membership is settled by the config cleanup below.
             if player is not None:
-                await self._drop_player(player, permanent=True)
+                await self._drop_player(player)
             # a protocol found again during the awaits above belongs to another player now
             self._delete_player_config(
                 player_id, set(self.mass.config.get_protocol_ids_of_player(player_id))

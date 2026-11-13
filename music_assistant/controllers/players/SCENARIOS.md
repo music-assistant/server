@@ -755,9 +755,9 @@ gives no setup reason.
 ## Removing and disabling
 
 What goes when the user removes a provider, removes a player or disables one. Clients are told
-a player is removed, with no data besides its id, when it is removed or merged into another
-player (MERGE-3); a device that goes away is no removal (AWAY-1), and neither is disabling a
-player (REMOVE-4).
+a player is removed, with no data besides its id, only when it is gone for good: removed or merged
+into another player (MERGE-3), or a browser player that was only seen (WEB-4); a device that goes
+away is no removal (AWAY-1), and neither is disabling a player (REMOVE-4).
 
 ### REMOVE-1 · A player outlives the removal of its vendor's provider on its other protocols
 
@@ -952,7 +952,8 @@ the browser connects again, the player is available under the same id, with its 
 ### WEB-13 · A browser player whose queue was cleared is removed when its browser disconnects
 
 A browser plays, and its queue is cleared. When the browser disconnects, there is nothing to keep:
-clients are told its player is removed, and the settings do not list it.
+clients are told its player is removed, the settings do not list it, and nothing of its queue
+stays saved.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_client_disconnects`
