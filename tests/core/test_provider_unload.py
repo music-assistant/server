@@ -376,7 +376,7 @@ async def test_unload_provider_rejects_late_protocol_attach(
     """A player provider on its way out can no longer attach protocols."""
     provider = await _setup_bare_player_provider(mass_minimal, monkeypatch)
     monkeypatch.setattr(
-        "music_assistant.controllers.players.controller.enrich_device_mac_address",
+        "music_assistant.controllers.players.lifecycle.enrich_device_mac_address",
         AsyncMock(),
     )
 
@@ -422,7 +422,7 @@ async def test_unload_provider_rejects_in_flight_protocol_attach(
         await resume_attach.wait()
 
     monkeypatch.setattr(
-        "music_assistant.controllers.players.controller.enrich_device_mac_address",
+        "music_assistant.controllers.players.lifecycle.enrich_device_mac_address",
         _blocked_enrich,
     )
 

@@ -46,7 +46,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.config.player_split import (
     remove_player_records_of_older_versions,
 )
-from music_assistant.controllers.players.controller import REMOVE_UNAVAILABLE_GRACE
+from music_assistant.controllers.players.lifecycle import REMOVE_UNAVAILABLE_GRACE
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from tests.scenarios.harness import (

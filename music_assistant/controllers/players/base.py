@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 
     from .audio_sources import AudioSourceSession
     from .constants import PlayerLockPurpose
-    from .controller import _Attach
+    from .lifecycle import _Attach
     from .matching import DeviceIdentity
 
 
