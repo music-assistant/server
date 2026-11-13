@@ -432,15 +432,29 @@ class TestLongWaits:
         assert await provider.api_call("ok") == "ok"
         assert fake_clock.now == pytest.approx(MAX_WAIT_TIME)
 
-    async def test_bypassing_caller_ignores_a_long_cooldown(
+    async def test_bypassing_caller_ignores_a_short_cooldown(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
-        """A caller that bypasses the gate still reaches the api during a long cooldown."""
-        provider.throttler.set_cooldown(3600)
+        """A caller that bypasses the gate reaches the api right away during a short cooldown."""
+        provider.throttler.set_cooldown(MAX_WAIT_TIME)
         async with provider.throttler.bypass():
             assert await provider.api_call("ok") == "ok"
         assert provider.call_count == 1
         assert fake_clock.now == 0
+
+    async def test_bypassing_caller_fails_fast_on_a_long_cooldown(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A caller that bypasses the gate fails right away during a long cooldown."""
+        provider.throttler.set_cooldown(3600)
+        provider.set_side_effects(["ok"])
+        async with provider.throttler.bypass():
+            with pytest.raises(RetriesExhausted) as exc_info:
+                await provider.api_call("ok")
+        assert provider.call_count == 0
+        assert fake_clock.now == 0
+        assert isinstance(exc_info.value.__cause__, RateLimited)
+        assert provider.throttler.cooldown_remaining == pytest.approx(3600)
 
     async def test_bypassing_caller_gives_up_on_a_long_retry_after(
         self, provider: FakeProvider, fake_clock: FakeClock
