@@ -74,17 +74,22 @@ def parse_playlist_last_modified(playlist_data: dict[str, Any]) -> str | None:
 def parse_track(track_data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:
     """Parse a JSPF playlist entry into an unavailable ListenBrainz track."""
     recording_mbid = track_data["identifier"][0].rsplit("/", 1)[-1]
+    album_name = track_data.get("album")
     return Track(
         item_id=recording_mbid,
         provider=provider_instance,
-        name=track_data["title"],
-        duration=track_data["duration"] // 1000,
+        name=track_data.get("title") or recording_mbid,
+        duration=(track_data.get("duration") or 0) // 1000,
         artists=UniqueList(parse_artists(track_data, provider_instance, provider_domain)),
-        album=ItemMapping(
-            item_id=track_data["album"],
-            provider=provider_instance,
-            name=track_data["album"],
-            media_type=MediaType.ALBUM,
+        album=(
+            ItemMapping(
+                item_id=album_name,
+                provider=provider_instance,
+                name=album_name,
+                media_type=MediaType.ALBUM,
+            )
+            if album_name
+            else None
         ),
         provider_mappings={
             ProviderMapping(

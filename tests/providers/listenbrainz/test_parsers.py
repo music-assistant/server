@@ -1,5 +1,8 @@
 """Tests for ListenBrainz response parsers."""
 
+from typing import Any
+
+import pytest
 from music_assistant_models.enums import ExternalID
 
 from music_assistant.providers.listenbrainz.parsers import (
@@ -103,6 +106,28 @@ def test_parse_artists_from_jspf_track_extension() -> None:
         "55555555-5555-4555-8555-555555555555"
     )
     assert all(artist.available is False for artist in artists)
+
+
+@pytest.mark.parametrize("explicit_null", [False, True])
+def test_parse_track_without_optional_metadata(explicit_null: bool) -> None:
+    """Missing display metadata does not discard a recording's resolvable identity."""
+    recording_mbid = "77777777-7777-4777-8777-777777777777"
+    track_data: dict[str, Any] = {
+        "identifier": [f"https://musicbrainz.org/recording/{recording_mbid}"],
+        "extension": {
+            "https://musicbrainz.org/doc/jspf#track": {"additional_metadata": {"artists": []}}
+        },
+    }
+    if explicit_null:
+        track_data.update(title=None, duration=None, album=None)
+
+    track = parse_track(track_data, "listenbrainz--test", "listenbrainz")
+
+    assert track.name == recording_mbid
+    assert track.duration == 0
+    assert track.album is None
+    assert track.get_external_id(ExternalID.MB_RECORDING) == recording_mbid
+    assert track.available is False
 
 
 def test_parse_track_from_jspf_playlist_entry() -> None:
