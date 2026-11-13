@@ -194,8 +194,7 @@ class PlayerConfigMixin:
             # optional provider filter
             if provider is not None and raw_conf.get("provider") != provider:
                 continue
-            # filter out the players that are not there: one that only exists while its
-            # device is connected and is away
+            # filter out unavailable players
             # (unless disabled, otherwise there is no way to re-enable them)
             # note that we only check for missing players in the player controller,
             # and we do allow players that are temporary unavailable

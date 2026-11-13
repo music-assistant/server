@@ -889,6 +889,14 @@ form keeps it.
   settings form of a plugin that uses these pickers.
 - Proven by: `test_lifecycle.py::test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choice`
 
+### WEB-8 · The settings list every stored player and every connected player without a record
+
+The settings list the Living speaker, a browser player the user named whose browser is away, and
+an app player that is connected and was never changed.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_the_settings_list_every_stored_player_and_every_connected_one`
+
 ## Commands to a busy player
 
 Commands to one player run one at a time: a command waits for the one before it.

@@ -274,6 +274,33 @@ async def test_a_customised_browser_player_stays_listed_while_its_browser_is_awa
     assert scenario.removals() == []
 
 
+async def test_the_settings_list_every_stored_player_and_every_connected_one(
+    scenario: Scenario,
+) -> None:
+    """
+    The settings list every player with a stored config and every connected player without one.
+
+    A customised web player whose client is away is listed like any other stored player.
+    """
+    wiim = await scenario.add_provider("wiim")
+    sendspin = await scenario.add_provider("sendspin")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    customised = sendspin.protocol(
+        "sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER
+    )
+    uncustomised = sendspin.protocol("sendspin_app_9c1d", "Phone app", session_only=True)
+    for protocol in (living, customised, uncustomised):
+        await scenario.attach(protocol)
+    living_id = scenario.single_player(living).player_id
+    await scenario.configure_player("sendspin_web_3f2a", name="Den browser")
+    await scenario.detach(customised)
+    await scenario.idle()
+
+    assert sorted((c.player_id, c.name) for c in await scenario.player_configs()) == sorted(
+        [(living_id, None), ("sendspin_web_3f2a", "Den browser"), ("sendspin_app_9c1d", None)]
+    )
+
+
 async def test_session_only_player_has_the_same_id_in_every_session(scenario: Scenario) -> None:
     """A web player is known by the id of its protocol, in every session and after a restart."""
     sendspin = await scenario.add_provider("sendspin")
