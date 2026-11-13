@@ -162,6 +162,34 @@ def test_stable_preserves_patch_versioning_across_diverged_branches(
     assert decision.should_release is True
 
 
+def test_stable_skips_when_source_matches_latest_tag(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """A stable release is skipped when nothing landed after the latest stable tag."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.9")
+
+    decision = determine_auto_release(git_repository, "stable", "HEAD")
+
+    assert decision.version == "2.10.10"
+    assert decision.previous_tag == "2.10.9"
+    assert decision.commits_since == 0
+    assert decision.should_release is False
+
+
+def test_beta_skips_when_source_matches_latest_tag(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """A beta release is skipped when nothing landed after the latest beta tag."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.0b1")
+
+    decision = determine_auto_release(git_repository, "beta", "HEAD")
+
+    assert decision.commits_since == 0
+    assert decision.should_release is False
+
+
 def test_stable_auto_release_fails_when_unreleased_rc_exists(
     repository: tuple[Path, GitRepository],
 ) -> None:

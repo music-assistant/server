@@ -36,6 +36,9 @@ jobs:
   resolve-release:
     name: Resolve release source and version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_release: ${{ steps.version.outputs.should_release }}
@@ -109,14 +112,33 @@ jobs:
         env:
           CHANNEL: ${{ steps.channel.outputs.channel }}
           COMMITS_SINCE: ${{ steps.version.outputs.commits_since }}
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
           SHOULD_RELEASE: ${{ steps.version.outputs.should_release }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           if [ "$SHOULD_RELEASE" = "true" ]; then
             echo "Will create $CHANNEL release $VERSION from $COMMITS_SINCE new commit(s)"
+          elif [ "$COMMITS_SINCE" = "0" ]; then
+            echo "Skipping $CHANNEL release: no new commits since $PREVIOUS_TAG"
           else
             echo "Skipping $CHANNEL release with only $COMMITS_SINCE new commit(s)"
           fi
+
+      # The backport workflow keeps one open backport/* PR per upcoming patch release.
+      # Releasing while it is open ships the previous commit under the new version.
+      - name: Require merged backport PR
+        if: steps.channel.outputs.channel == 'stable' && steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          open_backports=$(gh pr list --repo "$GITHUB_REPOSITORY" --base stable --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("backport/"))] | map("#\(.number) (\(.headRefName))") | join(", ")')
+          if [ -n "$open_backports" ]; then
+            echo "::error::Open backport PR into stable: $open_backports. Merge or close it before releasing."
+            exit 1
+          fi
+          echo "No open backport PR into stable"
 
   trigger-release:
     name: Create release
