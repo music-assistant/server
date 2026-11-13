@@ -30,6 +30,12 @@ _LOCK_FILE = "requirements.lock"
 _INPUTS_HASH_PREFIX = "# inputs: "
 # uv exits with 1 when the requirements cannot be resolved; any other failure is its own
 _EXIT_CONFLICT = 1
+# a package name with optional extras and version specifiers; never a URL or an option for uv
+_PLAIN_REQUIREMENT = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._, -]+\])?"
+    r"(\s*(==|>=|<=|~=|!=|<|>)\s*[A-Za-z0-9.*+!_-]+"
+    r"(\s*,\s*(==|>=|<=|~=|!=|<|>)\s*[A-Za-z0-9.*+!_-]+)*)?"
+)
 
 
 class DependencyConflict(MusicAssistantError):
@@ -44,7 +50,8 @@ class DependencyConflict(MusicAssistantError):
             provider's own domain when its requirements cannot be installed at all.
         :param cause: The explanation of the resolver.
         """
-        super().__init__(f"Requirements of {domain} clash with {culprit}: {cause}")
+        clash = "cannot be installed" if culprit == domain else f"clash with {culprit}"
+        super().__init__(f"Requirements of {domain} {clash}: {cause}")
         self.domain = domain
         self.culprit = culprit
 
@@ -87,6 +94,10 @@ class CommunityDependencies:
         :raises DependencyConflict: A provider's requirements cannot be installed.
         :raises DependenciesUnavailable: uv failed or the package index could not be reached.
         """
+        for domain, reqs in requirements.items():
+            for req in reqs:
+                if not _PLAIN_REQUIREMENT.fullmatch(req):
+                    raise DependencyConflict(domain, domain, f"{req!r} is not a package name")
         constraints = await asyncio.to_thread(_server_constraints)
         union = sorted({req for reqs in requirements.values() for req in reqs})
         inputs_hash = hashlib.sha256("\n".join([*constraints, "", *union]).encode()).hexdigest()
@@ -98,18 +109,18 @@ class CommunityDependencies:
         workdir = await asyncio.to_thread(tempfile.mkdtemp, prefix="community_deps_")
         try:
             output = os.path.join(workdir, _LOCK_FILE)
-            excludes = os.path.join(workdir, "excludes.txt")
             await asyncio.to_thread(_write_lines, os.path.join(workdir, "server.txt"), constraints)
-            await asyncio.to_thread(_write_lines, excludes, (c.split("==")[0] for c in constraints))
+            # the pins already in the output file are kept where possible
             await asyncio.to_thread(_write_lines, output, current.pins)
-            if (cause := await self._compile(workdir, union)) is not None:
+            if (cause := await self._compile(workdir, union, "-o", output)) is not None:
                 await self._raise_conflict(workdir, requirements, cause)
-            # once more with the server's packages left out, so the output is only what the server
-            # lacks; the pins already in the output file are kept where possible
-            args = ("--excludes", excludes, "-o", output)
-            if (cause := await self._compile(workdir, union, *args)) is not None:
-                raise DependenciesUnavailable(cause)
-            pins = _pins(await asyncio.to_thread(_read_lines, output))
+            server = {pin.split("==")[0] for pin in constraints}
+            # the server's own packages are part of the resolve, and are left out of the result
+            pins = tuple(
+                pin
+                for pin in _pins(await asyncio.to_thread(_read_lines, output))
+                if _canonical_name(pin.split("==")[0]) not in server
+            )
         finally:
             await asyncio.to_thread(shutil.rmtree, workdir, True)
         return ResolvedDependencies(pins, inputs_hash)

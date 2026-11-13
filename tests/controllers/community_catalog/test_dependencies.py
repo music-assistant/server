@@ -39,6 +39,8 @@ def wheels(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _build_wheel(folder, SERVER_PACKAGE, "1.0")
     _build_wheel(folder, "uses-server", "1.0", SERVER_PACKAGE)
     _build_wheel(folder, "needs-old-server", "1.0", f"{SERVER_PACKAGE}==1.0")
+    _build_wheel(folder, "picky", "1.0", SERVER_PACKAGE)
+    _build_wheel(folder, "picky", "2.0", f"{SERVER_PACKAGE}==1.0")
     _build_wheel(folder, "newdep", "1.0")
     _build_wheel(folder, "newdep", "2.0")
     (folder / "sdist_only-1.0.tar.gz").write_bytes(b"")
@@ -69,6 +71,28 @@ async def test_clash_with_server(deps: CommunityDependencies) -> None:
         await deps.resolve({"one": ["uses-server"], "two": ["needs-old-server"]})
     assert (err.value.domain, err.value.culprit) == ("two", "server")
     assert SERVER_PACKAGE in str(err.value)
+
+
+async def test_version_that_needs_another_server_package_is_passed_over(
+    deps: CommunityDependencies,
+) -> None:
+    """The newest version of a package is not chosen when it does not fit the server's packages."""
+    assert (await deps.resolve({"one": ["picky"]})).pins == ("picky==1.0",)
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "newdep @ https://example.com/newdep-1.0-py3-none-any.whl",
+        "--find-links /tmp",
+        "-r more.txt",
+    ],
+)
+async def test_only_plain_requirements(deps: CommunityDependencies, requirement: str) -> None:
+    """A requirement that is a URL or an option is refused and names the provider itself."""
+    with pytest.raises(DependencyConflict) as err:
+        await deps.resolve({"one": [requirement]})
+    assert (err.value.domain, err.value.culprit) == ("one", "one")
 
 
 async def test_clash_between_providers(deps: CommunityDependencies) -> None:
