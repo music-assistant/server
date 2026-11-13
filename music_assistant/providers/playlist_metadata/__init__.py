@@ -647,20 +647,18 @@ class PlaylistMetadataProvider(MetadataProvider):
                 smart_rules = None
 
         if not smart_rules or (len(artist_images) < 4 and len(album_image_map) < 4):
-            async for track in self.mass.music.playlists.iter_tracks(
+            async for item in self.mass.music.playlists.iter_tracks(
                 playlist.item_id, playlist.provider
             ):
-                if not isinstance(track, Track):
-                    continue
-
-                # Collect album image, counting how often each album appears
-                if track.image:
-                    _path = track.image.path
-                    album_image_map[_path] = track.image
+                # Collect the cover (a track's album, an audiobook's or episode's own),
+                # counting how often each cover appears
+                if item.image:
+                    _path = item.image.path
+                    album_image_map[_path] = item.image
                     album_count[_path] = album_count.get(_path, 0) + 1
 
                 # Collect artist images + count occurrences
-                for artist_or_mapping in track.artists:
+                for artist_or_mapping in item.artists if isinstance(item, Track) else []:
                     artist_name = artist_or_mapping.name
                     artist_count[artist_name] = artist_count.get(artist_name, 0) + 1
                     if artist_name in artist_images:

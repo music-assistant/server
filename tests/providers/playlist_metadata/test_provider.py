@@ -9,8 +9,16 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import ImageType
-from music_assistant_models.media_items import MediaItemImage, Playlist, ProviderMapping, Track
+from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.media_items import (
+    Audiobook,
+    ItemMapping,
+    MediaItemImage,
+    Playlist,
+    PodcastEpisode,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 from music_assistant_models.unique_list import UniqueList
 
@@ -185,6 +193,65 @@ async def test_get_playlist_metadata_returns_metadata_when_sufficient_images(
         assert fanart_image.provider == "playlist_metadata"
         assert Path(fanart_image.path).exists()
         assert "_fanart.jpg" in fanart_image.path
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_metadata_uses_audiobook_and_episode_covers(tmp_path: Any) -> None:
+    """Audiobooks and podcast episodes in a playlist add their covers to the collage."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    def _cover(url: str) -> MediaItemMetadata:
+        image = MediaItemImage(
+            type=ImageType.THUMB, path=url, provider="test_provider", remotely_accessible=True
+        )
+        return MediaItemMetadata(images=UniqueList([image]))
+
+    mapping = ProviderMapping(
+        item_id="item", provider_domain="test_provider", provider_instance="test"
+    )
+    items = [
+        _make_track_with_image("track_1", "http://example.com/album.jpg"),
+        Audiobook(
+            item_id="book_1",
+            provider="test_provider",
+            name="Book 1",
+            provider_mappings={mapping},
+            metadata=_cover("http://example.com/book.jpg"),
+        ),
+        PodcastEpisode(
+            item_id="episode_1",
+            provider="test_provider",
+            name="Episode 1",
+            position=1,
+            podcast=ItemMapping(
+                media_type=MediaType.PODCAST,
+                item_id="podcast_1",
+                provider="test_provider",
+                name="Podcast 1",
+            ),
+            provider_mappings={mapping},
+            metadata=_cover("http://example.com/episode.jpg"),
+        ),
+    ]
+
+    async def mock_tracks_iter(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any]:
+        for item in items:
+            yield item
+
+    with (
+        patch.object(provider.mass.music.playlists, "iter_tracks", side_effect=mock_tracks_iter),
+        patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
+    ):
+        mock_render.return_value = b"fake_image_data"
+        await provider.get_playlist_metadata(_make_playlist())
+
+    rendered_images = mock_render.call_args.args[1]
+    assert {img.path for img in rendered_images} == {
+        "http://example.com/album.jpg",
+        "http://example.com/book.jpg",
+        "http://example.com/episode.jpg",
+    }
 
 
 @pytest.mark.parametrize(
