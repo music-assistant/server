@@ -16,6 +16,10 @@ If the PR references an issue, read it before reviewing the diff. Then judge two
 
 Check whether `music_assistant/helpers/` already covers what new code does; providers are expected to use the shared helpers rather than reimplement. A music provider parsing PLS itself instead of calling `parse_pls` from `music_assistant.helpers.playlists` is a `[PROBLEM]`.
 
+## Requests to music services
+
+One user action or background job makes a small, fixed number of requests to a music service. A change that fans it out into requests per album, track, playlist or page of a catalogue, library or listing, so the count grows with an artist's discography, a library or a playlist, is `[CRITICAL]`. The same goes for building what a service has no endpoint for by walking its catalogue (an artist's tracks from all of its albums), a paginated listing without a cap, and bypassing a throttler or a server-imposed cooldown for anything but the single playback call. A provider without the endpoint does not offer the feature: `ProviderFeature.ARTIST_TRACKS` and `ProviderFeature.ARTIST_TOPTRACKS` are separate features. The usage policy in `AGENTS.md` has the rule.
+
 ## New providers
 
 When the PR adds files under `music_assistant/providers/`, the matching demo provider is the ground truth — it's the annotated template that encodes the required structure, lifecycle and config schema:

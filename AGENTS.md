@@ -19,14 +19,21 @@ Flag it in review, and never write it yourself, when a change would:
 - decode protected audio outside what the user's own account is entitled to, or keep the
   decoded result rather than only playing it
 - call a service's API without throttling, or re-fetch what the cache already holds
+- fan one user action or background job out into requests per album, track, playlist or page
+  of a catalogue, library or listing; the number of requests stays small and fixed, whatever
+  the size. Never walk a catalogue to build what a service has no endpoint for (an artist's
+  tracks from all of its albums), and cap paginated listings (an artist's albums stop at 100
+  releases)
+- bypass a throttler or a server-imposed cooldown for anything but the single playback call
 - write decoded audio from a streaming provider to disk
 - bypass a subscription tier, regional availability, or a service's stated concurrent-stream
   limit (see `max_concurrent_streams` in `music_assistant/models/music_provider.py`)
 - add downloading, exporting, or archiving of provider audio, however it is framed
 
 Some guards in the codebase exist only for this reason and read as removable if you do not know
-that — the readrate pacing on the stream endpoints, and the filesystem-only restriction on
-background audio analysis. Leave them in place. `DEVELOPMENT.md` carries the same rules for
+that — the readrate pacing on the stream endpoints, the filesystem-only restriction on
+background audio analysis, and the artist tracks listing that stays empty for a provider without
+an artist tracks endpoint. Leave them in place. `DEVELOPMENT.md` carries the same rules for
 provider authors.
 
 ## Development Commands
