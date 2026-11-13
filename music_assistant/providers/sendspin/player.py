@@ -2200,7 +2200,7 @@ class SendspinPlayer(SendspinBasePlayer):
             stop()
 
     async def on_attach(self, player: Player) -> None:
-        """Follow the client, from the volume and mute it declares now."""
+        """Follow the client, from the volume, mute and controls it declares now."""
         await super().on_attach(player)
         self.stop_taking_volume_reports()
         # a protocol attached again missed what its client reported while it was detached
@@ -2209,6 +2209,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._attr_volume_level = volume
             if (muted := role.get_player_muted()) is not None:
                 self._attr_volume_muted = muted
+            # none declared can also be a newer connection that has not declared them yet
+            if not self.control_features_pinned and role.state_supported_commands:
+                self._sync_control_features(role.state_supported_commands)
 
     async def on_detach(self) -> None:
         """End the playback session of the protocol when it is detached from its player."""

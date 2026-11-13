@@ -53,19 +53,20 @@ def _no_sendspin_entries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SendspinPlayer, "get_config_entries", _entries)
 
 
-def _client_state(volume: int, *, muted: bool) -> ClientStatePayload:
+def _client_state(volume: int, *, muted: bool, commands: bool = True) -> ClientStatePayload:
     """
     Return a client/state of the device with its level and mute.
 
     :param volume: The level the device reports.
     :param muted: Whether the device reports itself muted.
+    :param commands: Whether it takes volume and mute commands.
     """
     return ClientStatePayload(
         available=True,
         player=PlayerStatePayload(
             volume=volume,
             muted=muted,
-            supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
+            supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE] if commands else [],
         ),
     )
 
@@ -324,3 +325,35 @@ async def test_a_protocol_attached_again_shows_the_level_reported_while_it_was_d
     state = scenario.player(player_id)
     assert state is not None
     assert (state.volume_level, state.volume_muted) == (40, True)
+
+
+async def test_a_protocol_attached_again_takes_the_controls_declared_while_it_was_detached(
+    scenario: Scenario,
+) -> None:
+    """A client that first takes volume commands while its protocol is detached has a volume control once it is attached again."""
+    client = _client(None)
+
+    def _no_commands(provider: Any) -> None:
+        async def _enrich(_players: list[SendspinPlayer]) -> None:
+            client.active_roles[0].on_client_state(_client_state(28, muted=False, commands=False))
+
+        provider._apply_hass_esphome_enrichment = _enrich
+
+    await _connect(scenario, client, prepare=_no_commands)
+    protocol = scenario.mass.players.get_protocol(CLIENT_ID)
+    assert protocol is not None
+    assert protocol.player is not None
+    player_id = protocol.player.player_id
+    state = scenario.player(player_id)
+    assert state is not None
+    assert state.volume_control == "none"
+
+    await scenario.mass.players.detach(CLIENT_ID)
+    await scenario.settle()
+    client.active_roles[0].on_client_state(_client_state(40, muted=False))
+    await scenario.mass.players.attach(protocol)
+    await scenario.idle()
+
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_level, state.volume_control) == (40, "native")
