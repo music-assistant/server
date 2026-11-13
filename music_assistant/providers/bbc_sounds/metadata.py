@@ -3,7 +3,7 @@
 from auntie_sounds.models import LiveStation, Segment
 from music_assistant_models.streamdetails import StreamMetadata
 
-from .constants import _Constants
+from .constants import Constants
 
 
 def _find_segment(segments: list[Segment], elapsed_time: int) -> Segment | None:
@@ -28,7 +28,7 @@ def _segment_to_metadata(now_playing: Segment) -> StreamMetadata | None:
     title = now_playing.titles.secondary or ""
     artist = now_playing.titles.primary or ""
     image_url = now_playing.image_url
-    if image_url and _Constants.BLANK_IMAGE_NAME in image_url:
+    if image_url and Constants.BLANK_IMAGE_NAME in image_url:
         image_url = None
     return StreamMetadata(title=title, artist=artist, image_url=image_url)
 
