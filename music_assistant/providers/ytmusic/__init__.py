@@ -1706,8 +1706,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         Return the raw artist, cached so the calls of one artist page share a single fetch.
 
         :param prov_artist_id: The provider id of the artist.
-        :param language: Language of the response, "en" to read the albums, songs and related
-            artists sections, which ytmusicapi does not find in every language.
+        :param language: Language of the response, "en" to read the albums, singles or related
+            artists sections, which ytmusicapi finds by their translated title.
         """
         return await get_artist(
             prov_artist_id=prov_artist_id, headers=self._headers, language=language
