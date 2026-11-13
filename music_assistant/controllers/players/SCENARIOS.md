@@ -1118,6 +1118,14 @@ that names Kitchen after 120 s, and no group changed.
 - End-to-end: **no**: it needs a device that never answers a command.
 - Proven by: `test_commands.py::test_adding_a_player_that_stays_busy_fails_and_changes_no_group`
 
+### BUSY-11 · A play on the player a queue moved away from waits until the other one plays
+
+Kitchen takes 40 s to start the queue moved there from Den. Den has stopped and its queue is empty
+by then, but a play on Den sent meanwhile waits until Kitchen plays, and then plays on Den.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_play_on_the_source_waits_until_the_target_of_a_transfer_plays`
+
 ## What a stopped player keeps for a moment
 
 A player that stops still names what it played for a moment, so a playback that is replaced, and

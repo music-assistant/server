@@ -258,6 +258,36 @@ async def test_a_play_on_the_target_that_is_still_starting_is_done_before_a_tran
     assert _plays(scenario, den_id) == (PlaybackState.IDLE, [])
 
 
+async def test_a_play_on_the_source_waits_until_the_target_of_a_transfer_plays(
+    scenario: Scenario,
+) -> None:
+    """
+    A play on the player a queue moves away from waits until the player it moves to plays.
+
+    Kitchen takes 40 s to start the moved queue. A play on Den sent meanwhile, after Den has
+    stopped and its queue is empty, still waits for the move to end, and then plays on Den.
+    """
+    _den, den_id, _kitchen, kitchen_id = await _two_speakers(scenario)
+    await scenario.play(den_id)
+    _slow(_kitchen, "play_media", 40)
+    transfer = await scenario.command(
+        scenario.mass.player_queues.transfer_queue(den_id, kitchen_id)
+    )
+
+    await scenario.advance(10)
+    assert _plays(scenario, den_id) == (PlaybackState.IDLE, [])
+    play = await scenario.command(scenario.mass.player_queues.play_media(den_id, OTHER_TRACK_URI))
+    assert not play.done()
+
+    await scenario.advance(30)
+    await transfer
+    await play
+    await scenario.idle()
+
+    assert _plays(scenario, kitchen_id) == (PlaybackState.PLAYING, [TEST_TRACK_URI])
+    assert _plays(scenario, den_id) == (PlaybackState.PLAYING, [OTHER_TRACK_URI])
+
+
 async def test_a_transfer_to_a_player_that_stays_busy_fails_and_leaves_both_as_they_were(
     scenario: Scenario,
 ) -> None:
