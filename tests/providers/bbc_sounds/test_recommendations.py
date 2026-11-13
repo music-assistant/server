@@ -61,38 +61,12 @@ def _stub_api(provider: BBCSoundsProvider, payload: list[RecommendationFolder]) 
     return client
 
 
-def _install_cache_mocks(provider: BBCSoundsProvider) -> list[asyncio.Future[Any]]:
-    """Back the mixin's @use_cache with a dict store; return the background store tasks."""
-    store: dict[str, Any] = {}
-    background_tasks: list[asyncio.Future[Any]] = []
-
-    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
-        if key in store:
-            return store[key], True, True
-        return None, False, False
-
-    async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
-        store[key] = data
-
-    def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
-        task: asyncio.Future[Any] = asyncio.ensure_future(target)
-        background_tasks.append(task)
-        return task
-
-    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
-        side_effect=_cache_get
-    )
-    provider.mass.cache.set = AsyncMock(side_effect=_cache_set)  # type: ignore[method-assign]
-    provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
-    return background_tasks
-
-
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("cache_tasks")
 async def test_get_recommendations_returns_rows_without_items(
     provider: BBCSoundsProvider,
 ) -> None:
     """get_recommendations returns the payload folders as rows, stripped of items."""
-    _install_cache_mocks(provider)
     client = _stub_api(provider, _make_payload())
 
     rows = await provider.get_recommendations()
@@ -105,15 +79,15 @@ async def test_get_recommendations_returns_rows_without_items(
 @pytest.mark.asyncio
 async def test_rows_and_items_share_one_payload_fetch(
     provider: BBCSoundsProvider,
+    cache_tasks: list[asyncio.Future[Any]],
 ) -> None:
     """Items calls for both rows are served from the payload cached by the rows call."""
-    background_tasks = _install_cache_mocks(provider)
     payload = _make_payload()
     client = _stub_api(provider, payload)
 
     rows = await provider.get_recommendations()
     # let the background cache-store task complete before the items calls
-    await asyncio.gather(*background_tasks)
+    await asyncio.gather(*cache_tasks)
     music_items = await provider.get_recommendation_items(MUSIC_ROW_ID)
     podcast_items = await provider.get_recommendation_items(PODCAST_ROW_ID)
 
@@ -124,11 +98,11 @@ async def test_rows_and_items_share_one_payload_fetch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("cache_tasks")
 async def test_get_recommendation_items_unknown_id_returns_empty(
     provider: BBCSoundsProvider,
 ) -> None:
     """An item_id not present in the payload yields an empty UniqueList."""
-    _install_cache_mocks(provider)
     _stub_api(provider, _make_payload())
 
     result = await provider.get_recommendation_items("bogus_row")
@@ -138,11 +112,11 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("cache_tasks")
 async def test_not_logged_in_returns_empty_without_backend_calls(
     provider: BBCSoundsProvider,
 ) -> None:
     """Without a login, both methods return empty and never touch the backend."""
-    _install_cache_mocks(provider)
     client = _stub_api(provider, _make_payload())
     client.is_signed_in = False
 

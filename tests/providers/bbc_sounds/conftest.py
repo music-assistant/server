@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -45,8 +47,34 @@ def provider(client: SoundsClient) -> BBCSoundsProvider:
     instance = BBCSoundsProvider(mass, manifest, config, SUPPORTED_FEATURES)
     instance.adaptor = Adaptor(instance)
     instance.client = client
-    instance.show_local_stations = False
     return instance
+
+
+@pytest.fixture
+def cache_tasks(provider: BBCSoundsProvider) -> list[asyncio.Future[Any]]:
+    """Back @use_cache with a dict store; return the background store tasks."""
+    store: dict[str, Any] = {}
+    background_tasks: list[asyncio.Future[Any]] = []
+
+    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        if key in store:
+            return store[key], True, True
+        return None, False, False
+
+    async def _cache_set(key: str, data: Any, **_kwargs: Any) -> None:
+        store[key] = data
+
+    def _create_task(target: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
+        task: asyncio.Future[Any] = asyncio.ensure_future(target)
+        background_tasks.append(task)
+        return task
+
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_cache_get
+    )
+    provider.mass.cache.set = AsyncMock(side_effect=_cache_set)  # type: ignore[method-assign]
+    provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
+    return background_tasks
 
 
 @pytest.fixture
@@ -60,9 +88,9 @@ def uk_menu() -> Menu:
     """Create a realistic UK menu."""
     return Menu(
         sub_items=[
-            MenuItem(id="radio", title="Live Radio"),
+            MenuItem(id="live", title="Live Radio"),
             MenuItem(id="catch_up", title="Catch-up Radio"),
-            MenuItem(id="schedule", title="Station Schedules"),
+            MenuItem(id="schedules", title="Station Schedules"),
             MenuItem(id="my_sounds", title="My Sounds"),
             MenuItem(id="latest_playables_for_curation_lllll", title="Latest News Playlist"),
             MenuItem(id="editorial_collection", title="Editor's Picks"),
@@ -79,9 +107,9 @@ def international_menu() -> Menu:
     """Create a realistic international menu."""
     return Menu(
         sub_items=[
-            MenuItem(id="radio", title="Live Radio"),
+            MenuItem(id="live", title="Live Radio"),
             MenuItem(id="catch_up", title="Catch-up Radio"),
-            MenuItem(id="schedule", title="Station Schedules"),
+            MenuItem(id="schedules", title="Station Schedules"),
             MenuItem(id="collections", title="Collections"),
             MenuItem(id="categories", title="Categories"),
             MenuItem(id="explore", title="Explore All"),

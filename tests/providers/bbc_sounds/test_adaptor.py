@@ -5,7 +5,7 @@ from music_assistant_models.media_items import BrowseFolder, Track
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import Constants
 
 
 class TestMenuLoading:
@@ -15,7 +15,7 @@ class TestMenuLoading:
         """Test a RadioShow equal to the TRACK_DURATION_THRESHOLD is converted to a Track."""
         show = RadioShow(
             id="id",
-            duration=Duration(label="", value=_Constants.TRACK_DURATION_THRESHOLD),
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD),
             titles=Titles(entity_title="Track name"),
             pid="pid",
         )
@@ -27,7 +27,7 @@ class TestMenuLoading:
         """Test a RadioShow over the TRACK_DURATION_THRESHOLD is converted to a PodcastEpisode."""
         show = RadioShow(
             id="id",
-            duration=Duration(label="", value=_Constants.TRACK_DURATION_THRESHOLD + 1),
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD + 1),
             titles=Titles(entity_title="Track name"),
             pid="pid",
             container=Podcast(
@@ -49,7 +49,7 @@ class TestMenuLoading:
         """Test a RadioShow over the TRACK_DURATION_THRESHOLD without a container is converted to a Track."""
         show = RadioShow(
             id="id",
-            duration=Duration(label="", value=_Constants.TRACK_DURATION_THRESHOLD + 1),
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD + 1),
             titles=Titles(entity_title="Track name"),
             pid="pid",
         )
@@ -66,7 +66,7 @@ class TestMenuLoading:
         """
         show = RadioShow(
             id="id",
-            duration=Duration(label="", value=_Constants.TRACK_DURATION_THRESHOLD - 1),
+            duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD - 1),
             titles=Titles(entity_title="Track name"),
             pid="pid",
             container=Podcast(id="podcast"),

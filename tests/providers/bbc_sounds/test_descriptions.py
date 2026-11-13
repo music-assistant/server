@@ -17,7 +17,7 @@ from auntie_sounds.models import (
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
 
 from music_assistant.providers.bbc_sounds.adaptor import Context, PodcastConverter
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import Constants
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds import BBCSoundsProvider
@@ -76,7 +76,7 @@ async def test_radio_show_episode_gets_a_description(converter: PodcastConverter
     show = RadioShow(
         id="s01",
         pid="s01",
-        duration=Duration(label="", value=_Constants.TRACK_DURATION_THRESHOLD + 1),
+        duration=Duration(label="", value=Constants.TRACK_DURATION_THRESHOLD + 1),
         titles=Titles(primary="A show", secondary="An edition"),
         synopses=SYNOPSES,
         container=_podcast(),
@@ -98,8 +98,6 @@ async def test_stream_title_is_the_episode_name(converter: PodcastConverter) -> 
         container=_podcast(),
         stream="https://example.invalid/e01.m3u8",
     )
-
-    converter.context.provider.stream_format = _Constants.HLS
 
     stream_details = await converter.get_stream_details(episode)
 
@@ -135,8 +133,6 @@ async def test_clip_stream_title_survives_titles_without_a_primary_key(
         synopses=SYNOPSES,
         stream="https://example.invalid/c01.m3u8",
     )
-
-    converter.context.provider.stream_format = _Constants.HLS
 
     stream_details = await converter.get_stream_details(clip)
 
