@@ -267,6 +267,19 @@ class StationConverter(BaseConverter):
         station = await self.convert(source_obj)
         if not station or not source_obj.stream:
             return None
+        if type(source_obj) is Station and source_obj.international:
+            # This is a bare-bones international stream
+            sd = StreamDetails(
+                media_type=MediaType.RADIO,
+                stream_type=StreamType.HLS,
+                path=source_obj.stream,
+                item_id=station.item_id,
+                provider=station.provider,
+                audio_format=_audio_format(source_obj.stream),
+            )
+            self.logger.debug(sd)
+            return sd
+
         show_time = self._get_attr(source_obj, "titles.secondary")
         show_title = self._get_attr(source_obj, "titles.primary")
         programme_name = f"{show_time} • {show_title}"
