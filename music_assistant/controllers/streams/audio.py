@@ -58,6 +58,7 @@ from music_assistant_models.errors import (
     ProviderPermissionDenied,
     ProviderUnavailableError,
     QueueEmpty,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
@@ -4521,13 +4522,12 @@ class StreamsAudio:
         :param candidates: Candidates in mapping and compatible-instance order.
         :param media_item: The media item the candidates belong to.
         :return: The first resolved stream details, or None when every candidate failed.
-        :raises ResourceTemporarilyUnavailable: When no candidate resolved and a provider is
-            rate limited or temporarily unavailable.
+        :raises RateLimited: When no candidate resolved and a provider is rate limited.
         :raises RetriesExhausted: When no candidate resolved and a provider gave up retrying.
         :raises AudioError: The last (actionable) audio error when no candidate resolved.
         """
         last_audio_error: AudioError | None = None
-        temporary_error: ResourceTemporarilyUnavailable | RetriesExhausted | None = None
+        temporary_error: RateLimited | RetriesExhausted | None = None
         for mapping, provider in candidates:
             # any provider that streams its own items can own the mapping
             try:
@@ -4547,7 +4547,7 @@ class StreamsAudio:
                     self.mass.create_task(
                         self.mass.music.mark_provider_mapping_unavailable(media_item, mapping)
                     )
-            except (ResourceTemporarilyUnavailable, RetriesExhausted) as err:
+            except (RateLimited, RetriesExhausted) as err:
                 # the provider asked us to back off, the item may well play once it clears
                 temporary_error = err
                 self.logger.warning("%s", err)

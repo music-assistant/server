@@ -117,7 +117,6 @@ async def test_a_transient_error_does_not_mark_the_mapping() -> None:
     "error",
     [
         RateLimited("slow down", backoff_time=3600),
-        ResourceTemporarilyUnavailable("busy", backoff_time=30),
         RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
     ],
 )
@@ -140,6 +139,26 @@ async def test_a_provider_asking_to_back_off_surfaces_its_error(
         )
 
     assert exc_info.value is error
+    assert scheduled == []
+
+
+async def test_a_track_its_provider_cannot_serve_is_a_miss() -> None:
+    """A provider raising a temporary error for the item itself does not stop playback."""
+    mapping = _mapping("item")
+    track = Track(item_id="42", provider="library", name="15 Step", provider_mappings={mapping})
+    audio, _, scheduled = _audio()
+
+    streamdetails = await audio._request_streamdetails(
+        [
+            (
+                mapping,
+                _provider(INSTANCE, ResourceTemporarilyUnavailable("Track item is not available")),
+            )
+        ],
+        track,
+    )
+
+    assert streamdetails is None
     assert scheduled == []
 
 
