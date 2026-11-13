@@ -771,6 +771,84 @@ async def test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_con
     assert scenario.removals() == []
 
 
+async def test_pre_split_browser_players_keep_the_defaults_of_their_client_from_the_start(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player an older version stored and the upgrade keeps is hidden, not exposed, private.
+
+    It is so right after the upgrade, before its client connected, and stays so when it
+    does; a value the user set wins. One the user never touched is gone.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    for client_id in ("sendspin_web_renamed", "sendspin_web_untouched", "sendspin_web_exposed"):
+        sendspin.protocol(
+            client_id,
+            "Web Browser",
+            session_only=True,
+            expose_to_ha_by_default=False,
+            **WEB_PLAYER,
+        )
+    await scenario.seed_pre_split_config(
+        {
+            "sendspin_web_renamed": PRE_SPLIT_WEB_PLAYER
+            | {"player_id": "sendspin_web_renamed", "name": "Study browser"},
+            "sendspin_web_untouched": PRE_SPLIT_WEB_PLAYER
+            | {"player_id": "sendspin_web_untouched"},
+            "sendspin_web_exposed": PRE_SPLIT_WEB_PLAYER
+            | {
+                "player_id": "sendspin_web_exposed",
+                "values": {"sendspin_static_delay": 120, "expose_player_to_ha": True},
+            },
+        }
+    )
+    await scenario.idle()
+
+    def _listed() -> list[tuple[Any, ...]]:
+        return sorted(
+            (p.player_id, p.available, *_defaults(scenario, p.player_id)[:3])
+            for p in scenario.visible_players()
+        )
+
+    assert _listed() == [
+        ("sendspin_web_exposed", False, True, True, True),
+        ("sendspin_web_renamed", False, True, False, True),
+    ]
+    assert sorted(c.player_id for c in await scenario.player_configs()) == [
+        "sendspin_web_exposed",
+        "sendspin_web_renamed",
+    ]
+
+    for client_id in ("sendspin_web_renamed", "sendspin_web_exposed"):
+        await scenario.attach(scenario.protocol(client_id))
+    await scenario.idle()
+
+    assert _listed() == [
+        ("sendspin_web_exposed", True, True, True, True),
+        ("sendspin_web_renamed", True, True, False, True),
+    ]
+
+
+async def test_a_stored_player_with_part_of_its_defaults_has_the_generic_rest(
+    scenario: Scenario,
+) -> None:
+    """A kept web player whose record holds only some of its defaults has the others generic."""
+    sendspin = await scenario.add_provider("sendspin")
+    sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.seed_pre_split_config(
+        {
+            "sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER
+            | {
+                "name": "Study browser",
+                "values": {"protocol_defaults": {"hidden_by_default": True}},
+            }
+        }
+    )
+    await scenario.idle()
+
+    assert _defaults(scenario, "sendspin_web_3f2a")[:3] == (True, True, False)
+
+
 async def test_pre_split_session_only_player_the_user_disabled_stays_disabled(
     scenario: Scenario,
 ) -> None:

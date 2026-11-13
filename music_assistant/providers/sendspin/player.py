@@ -2247,6 +2247,8 @@ class SendspinPlayer(SendspinBasePlayer):
         is_standalone = self.is_web_player or cast(
             "SendspinProvider", self.provider
         ).is_virtual_player(self.protocol_id)
+        # the migration of the split stores the same for a kept player of an older version
+        # (SESSION_ONLY_DEFAULTS in controllers/config/player_split.py): keep them in line
         self._attr_expose_to_ha_by_default = not is_standalone
         self._attr_hidden_by_default = is_standalone
         self._attr_private = is_standalone
@@ -2986,6 +2988,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
     """A non-audio Sendspin player for visualizer/lighting devices."""
 
     _attr_type = PlayerType.VISUALIZER
+    # keep in line with SESSION_ONLY_DEFAULTS in controllers/config/player_split.py
     _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False
     _attr_session_only = True
@@ -3116,6 +3119,7 @@ class SendspinSourcePlayer(SendspinBasePlayer):
     """
 
     _attr_type = PlayerType.SOURCE
+    # keep in line with SESSION_ONLY_DEFAULTS in controllers/config/player_split.py
     _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False
     _attr_session_only = True

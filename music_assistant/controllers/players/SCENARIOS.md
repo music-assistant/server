@@ -978,6 +978,25 @@ disconnects again, the player stays, unavailable.
 - End-to-end: **no**: the lab has no settings of an older version.
 - Proven by: `test_lifecycle.py::test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_connects`
 
+### WEB-15 · A browser player an older version stored is hidden, not exposed and private from the start
+
+An older version stored three browser players: one the user renamed, one the user never touched,
+and one the user exposed to Home Assistant. After the upgrade, before any browser connected, the
+untouched one is gone, the renamed one is listed, unavailable, hidden, not exposed and private,
+and the exposed one is listed the same but exposed. When their browsers connect, nothing of that
+changes.
+
+- End-to-end: **no**: the lab has no settings of an older version.
+- Proven by: `test_lifecycle.py::test_pre_split_browser_players_keep_the_defaults_of_their_client_from_the_start`
+
+### WEB-16 · A stored browser player with part of its defaults has the generic rest
+
+The record of a browser player holds only that it is hidden, of the defaults its browser gives it.
+While the browser is away, the player is hidden, exposed to Home Assistant and not private.
+
+- End-to-end: **no**: no version stores part of these defaults.
+- Proven by: `test_lifecycle.py::test_a_stored_player_with_part_of_its_defaults_has_the_generic_rest`
+
 ## Commands to a busy player
 
 Commands to one player run one at a time: a command waits for the one before it.
