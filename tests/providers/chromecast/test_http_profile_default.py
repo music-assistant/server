@@ -1,4 +1,4 @@
-"""Tests for the Chromecast HTTP profile default per receiver model."""
+"""Tests for the Chromecast HTTP profile default."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 from pychromecast.const import CAST_TYPE_AUDIO, CAST_TYPE_CHROMECAST, CAST_TYPE_GROUP
 
 from music_assistant.constants import CONF_HTTP_PROFILE
-from music_assistant.providers.chromecast.helpers import ChromecastInfo, http_profile_entry
+from music_assistant.providers.chromecast.helpers import ChromecastInfo
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 
 
@@ -34,35 +34,37 @@ def _info(
 
 
 @pytest.mark.parametrize(
-    ("cast_info", "expected"),
+    "cast_info",
     [
-        (_info("Google Nest Mini"), "forced_content_length"),
-        (_info("Google Home Speaker"), "no_content_length"),
-        (_info("Google Cast Group", CAST_TYPE_GROUP), "no_content_length"),
-        (
-            _info("Google Cast Group", CAST_TYPE_GROUP, is_multichannel_group=True),
-            "no_content_length",
-        ),
-        (
-            _info("SHIELD Android TV", CAST_TYPE_CHROMECAST, manufacturer="NVIDIA"),
-            "no_content_length",
-        ),
-        (_info("Google Nest Hub", CAST_TYPE_CHROMECAST), "forced_content_length"),
+        _info("Google Nest Mini"),
+        _info("Google Home Speaker"),
+        _info("Google Nest Hub", CAST_TYPE_CHROMECAST),
+        _info("Music Frame", manufacturer="Samsung"),
+        _info("SHIELD Android TV", CAST_TYPE_CHROMECAST, manufacturer="NVIDIA"),
+        _info("Google Cast Group", CAST_TYPE_GROUP),
+        _info("Google Cast Group", CAST_TYPE_GROUP, is_multichannel_group=True),
     ],
-    ids=["nest-mini", "home-speaker", "group", "stereo-pair", "android-tv", "nest-hub"],
+    ids=[
+        "nest-mini",
+        "home-speaker",
+        "nest-hub",
+        "cast-lite",
+        "android-tv",
+        "group",
+        "stereo-pair",
+    ],
 )
-def test_http_profile_default_follows_model(cast_info: ChromecastInfo, expected: str) -> None:
-    """Groups, stereo pairs, Android TV and a Google Home Speaker default to no Content-Length."""
-    assert http_profile_entry(cast_info).default_value == expected
+async def test_cast_players_default_to_no_content_length(cast_info: ChromecastInfo) -> None:
+    """
+    Every Cast receiver, group and stereo pair defaults to a stream without a fixed length.
 
-
-async def test_group_config_entries_default_to_no_content_length() -> None:
-    """A Cast group defaults to no Content-Length whatever its members are."""
-    group_info = _info("Google Cast Group", CAST_TYPE_GROUP)
+    With a length, receivers fetch the stream in windows (10 MiB on Cast Lite speakers, about
+    24 MiB on Google and Android TV receivers), and a stream can not continue at a byte offset.
+    """
     with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-        group = ChromecastPlayer(MagicMock(), str(group_info.uuid), group_info, MagicMock())
+        player = ChromecastPlayer(MagicMock(), str(cast_info.uuid), cast_info, MagicMock())
 
-    entries = await group.get_config_entries()
+    entries = await player.get_config_entries()
 
     entry = next(entry for entry in entries if entry.key == CONF_HTTP_PROFILE)
     assert entry.default_value == "no_content_length"

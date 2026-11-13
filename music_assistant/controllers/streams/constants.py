@@ -73,23 +73,29 @@ ICY_PLACEHOLDER_IMAGE_URLS: Final[frozenset[str]] = frozenset(
 class PacingProfile(StrEnum):
     """Pace at which a stream's output is handed to a player."""
 
-    # a track handed over on its own. The opening chunk is what a gapless player holds
-    # before it starts, and the head start rides out a hiccup later in the track
-    DEFAULT = "default"
-    # the flow stream, and sources that hand their audio over just-in-time. Those are
-    # radio and a Spotify music provider track on its Soloist backend, not Spotify
-    # Connect, which is an AUDIO_SOURCE and takes LOW_LATENCY. Such a source delivers
-    # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
-    NEAR_REALTIME = "near_realtime"
+    # every stream but the two below: the flow stream, universal group streams and single
+    # tracks, including sources that hand their audio over just-in-time (radio and a Spotify
+    # music provider track on its Soloist backend; Spotify Connect is an AUDIO_SOURCE and
+    # takes LOW_LATENCY). A pace at playback speed leaves what such a source banks ahead on
+    # the server for its end-of-track crossfade, and keeps a player that never stops reading
+    # (the flow stream) from running ever further ahead, which some receivers do not survive.
+    # The burst is the cushion a player holds: at a session start, at a track boundary for a
+    # player that fetches each track only once the previous download completes (Sonos), and
+    # after a stall, which ffmpeg makes up at once by itself. It is sized for receivers that
+    # need a deep one: a Samsung Music Frame restarts its Cast service on 6 s.
+    REALTIME = "realtime"
+    # a single track for a player that must hold a whole opening chunk before it plays
+    # gapless, see Player.needs_gapless_burst
+    GAPLESS_BURST = "gapless_burst"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
     LOW_LATENCY = "low_latency"
 
 
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
-    PacingProfile.DEFAULT: ("1.1", "60"),
-    PacingProfile.NEAR_REALTIME: ("1.03", "3"),
-    PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
+    PacingProfile.REALTIME: ("1.0", "10"),
+    PacingProfile.GAPLESS_BURST: ("1.1", "60"),
+    PacingProfile.LOW_LATENCY: ("1.0", "1"),
 }
 
 
@@ -105,7 +111,7 @@ REALTIME_COLD_START_BANK: Final[int] = 5
 REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
 
 
-def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[str]:
+def output_pacing_args(profile: PacingProfile = PacingProfile.REALTIME) -> list[str]:
     """Return the ffmpeg pacing arguments for a stream handed to a player."""
     readrate, burst = _PACING[profile]
     return ["-readrate", readrate, "-readrate_initial_burst", burst]

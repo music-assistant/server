@@ -29,7 +29,11 @@ from pychromecast.controllers.media import (
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
-from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    MASS_LOGO_ONLINE,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -45,7 +49,7 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo, http_profile_entry, is_google_device
+from .helpers import CastStatusListener, ChromecastInfo, is_google_device
 from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
@@ -153,13 +157,13 @@ class ChromecastPlayer(Player):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
-                http_profile_entry(self.cast_info),
+                CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
-            http_profile_entry(self.cast_info),
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             CONF_ENTRY_SAMPLE_RATES_CAST,
         ]
 
