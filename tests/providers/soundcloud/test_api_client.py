@@ -53,3 +53,14 @@ async def test_rate_limited_request_is_retried_after_the_wait() -> None:
     assert sleep.await_args.args[0] >= 7
     # the cooldown holds back every other request of this account as well
     assert api.throttler.cooldown_remaining > 0
+
+
+async def test_unavailable_request_is_retried() -> None:
+    """A temporary 503 from Soundcloud is retried instead of failing the request."""
+    api = _api(_response(503), _response(200, {"id": 1}))
+
+    with patch(_SLEEP, AsyncMock()):
+        result = await api.get("https://api-v2.soundcloud.com/me")
+
+    assert result == {"id": 1}
+    assert api.http_session.get.call_count == 2

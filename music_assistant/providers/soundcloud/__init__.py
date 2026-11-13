@@ -24,6 +24,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     RateLimited,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -130,7 +131,8 @@ class _SoundcloudAPI(SoundcloudAsyncAPI):  # type: ignore[misc]
         :param url: The url to request.
         :param headers: The headers to send along.
         :param params: The query parameters to add to the url.
-        :raises RetriesExhausted: When Soundcloud keeps rate limiting the request.
+        :raises RetriesExhausted: When Soundcloud keeps rate limiting the request or stays
+            unavailable.
         """
         await self._before_request()
         async with self.http_session.get(url=url, params=params, headers=headers) as response:
@@ -138,6 +140,8 @@ class _SoundcloudAPI(SoundcloudAsyncAPI):  # type: ignore[misc]
                 msg = "Soundcloud rate limit reached"
                 retry_after = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited(msg, backoff_time=retry_after)
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
             return cast("dict[str, Any]", await response.json())
 
 
