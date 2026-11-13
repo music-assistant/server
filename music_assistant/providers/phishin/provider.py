@@ -26,7 +26,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import now
-from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
+from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ENDPOINTS,
@@ -168,10 +168,11 @@ class PhishInProvider(MusicProvider):
 
     @use_cache(expiration=86400)  # 24 hours - albums (ie. shows) could update daily
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of albums for the given artist."""
+        """Get a list of all albums for the given artist."""
         if prov_artist_id != PHISH_ARTIST_ID:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
+        # the one artist is the whole catalogue, so no ARTIST_ALBUMS_LIMIT: it's a few cached pages
         albums = []
         page = 1
         per_page = 750  # Phish.in limit is 1000 but this caused asyncio warnings
@@ -196,12 +197,12 @@ class PhishInProvider(MusicProvider):
                     if show.get("audio_status") in ["complete", "partial"]:
                         albums.append(show_to_album(self, show))
 
-                if len(shows) < per_page or len(albums) >= ARTIST_ALBUMS_LIMIT:
+                if len(shows) < per_page:
                     break
 
                 page += 1
 
-            return albums[:ARTIST_ALBUMS_LIMIT]
+            return albums
 
         except MediaNotFoundError, ProviderUnavailableError:
             raise

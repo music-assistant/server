@@ -594,8 +594,8 @@ async def test_get_artist_albums_gets_full_section_when_browse_pair_present(
     assert mock_ytmusic.call_args.kwargs["user"] == "test-brand-user"
 
 
-async def test_get_artist_albums_stops_at_limit(provider: YoutubeMusicProvider) -> None:
-    """A large discography lists at most 100 releases, keeping the section order."""
+async def test_get_artist_albums_keeps_every_section(provider: YoutubeMusicProvider) -> None:
+    """Each release section is capped on its own, so singles stay listed next to albums."""
     mock_ytm = MagicMock()
     mock_ytm.get_artist.return_value = {
         "channelId": "UCtest",
@@ -609,9 +609,9 @@ async def test_get_artist_albums_stops_at_limit(provider: YoutubeMusicProvider) 
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
         albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
 
-    assert len(albums) == 100
+    assert len(albums) == 160
     assert albums[79].item_id == "MPADalbums-79"
-    assert albums[-1].item_id == "MPADsingles-19"
+    assert albums[-1].item_id == "MPADsingles-79"
 
 
 async def test_get_artist_albums_skips_hydration_without_browse_pair(
