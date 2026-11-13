@@ -69,7 +69,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import group_commands as players_group_commands
 from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players import playback as players_playback
 from music_assistant.controllers.players import power as players_power
@@ -1658,7 +1658,7 @@ class TestSyncLeaderPowerOffUngroup:
         controller, leader, _protocol = self._sync_leader(mock_mass, PlayerType.PLAYER)
         controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
         leader.set_power_off_issued_at(
-            time.monotonic() - players_controller.POWER_OFF_IN_PROGRESS_EXPIRY - 1
+            time.monotonic() - players_group_commands.POWER_OFF_IN_PROGRESS_EXPIRY - 1
         )
 
         controller.signal_player_state_update(leader, {"powered": (True, False)})
