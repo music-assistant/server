@@ -662,6 +662,10 @@ A command holds the lock of the player it works on, and of no player it only pas
   override off) works on the owner and holds the owner's lock alone. The owner's handler locks
   each member it works on itself; a universal group plays each member in a task of its own, which
   takes that member's lock.
+- A command that works on two players uses `get_playback_locks` and holds each of them the way
+  `get_group_and_player_lock` does. A queue transfer holds the source's and the target's player
+  from before it reads either queue until the target plays; the hand-over of a playing sync
+  leader's queue holds the old and the new leader from the transfer to the resume on the new one.
 
 Either way the command never holds a player's lock while it waits for the lock of that player's
 owner:
@@ -671,6 +675,12 @@ owner:
   new order, a few times at most; then it fails as busy.
 - A command that already holds the player and finds it in a group whose lock it does not hold fails
   at once.
+- Nor does a command over several players hold one while it waits for another: it waits for the
+  locks of one of them (and its owner) only, and takes those of the others when they are free.
+  When one is busy, it lets go of all it took, waits for that one first and tries again, a few
+  times at most and within one lock timeout; then it fails as busy, before it changed anything.
+  Commands over the same players wait for the same player first, so they take turns; commands
+  over other players do not wait for it at all.
 
 Group changes nobody issued as a command:
 - Releasing the session of a static group (an ungroup of its member) takes the group's lock.
