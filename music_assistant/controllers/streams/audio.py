@@ -3985,10 +3985,18 @@ class StreamsAudio:
                         prefer_album_loudness=prefer_album_loudness,
                         excluded_provider_instances=busy_instances,
                     )
-                except (AudioError, MediaNotFoundError) as err:
+                except (
+                    AudioError,
+                    MediaNotFoundError,
+                    ResourceTemporarilyUnavailable,
+                    RetriesExhausted,
+                ) as err:
                     if last_capacity_error is None:
                         raise
                     if final_pass:
+                        if isinstance(err, (ResourceTemporarilyUnavailable, RetriesExhausted)):
+                            # no source resolved while a provider asks us to back off
+                            raise
                         # capacity was the root cause, surface the typed (actionable) error
                         raise last_capacity_error from err
                     # no usable alternative mapping: restore the capacity-blocked details
