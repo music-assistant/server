@@ -906,6 +906,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the subset of media_items the user explicitly picked to play next
         play_next_items: list[ResolvedItem] = []
         source_items: list[MediaItemType] = []
+        # the queue's enqueued items and shuffle state are only changed once the items resolved,
+        # so a request that runs out of time leaves them as they were
+        enqueued_items: list[MediaItemType] = []
+        reset_enqueued = False
+        batch_shuffle = shuffle
+        keep_preceding_items = False
         shuffle_settled = False
         first_item_resolved = False
         # reported to the caller when none of the requested items made it through
@@ -961,28 +967,24 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             )
                         # Forget the previous queue's enqueued items when a new queue is requested: it
                         # is the option that says whether this is a new queue or an addition to the
-                        # current one. Done after the check above, so a refused play leaves them alone.
-                        if option not in (QueueOption.ADD, QueueOption.NEXT):
-                            self._reset_enqueued_media_items(queue_data)
+                        # current one.
+                        reset_enqueued = option not in (QueueOption.ADD, QueueOption.NEXT)
 
                     # Save requested media item to play on the queue so we can use it as a seed
                     # for Autoplay's music refill (the podcast/audiobook continuations resolve
                     # their successor from the queue's last item instead).
-                    # Use FIFO list to keep track of the last 10 played items
                     # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                     if not isinstance(media_item, BrowseFolder) and (
                         is_dynamic_source(media_item)
                         or media_item.media_type
                         in (MediaType.TRACK, MediaType.ALBUM, MediaType.PLAYLIST, MediaType.ARTIST)
                     ):
-                        queue_data.enqueued_media_items.append(media_item)
-                        if len(queue_data.enqueued_media_items) > 10:
-                            queue_data.enqueued_media_items.pop(0)
+                        enqueued_items.append(media_item)
                         if is_dynamic_source(media_item):
                             # a dynamic playlist/station is always a self-managing dynamic source
                             source_items.append(media_item)
 
-                    # The shuffle state has to be settled before the items are resolved below: a
+                    # The shuffle state has to be decided before the items are resolved below: a
                     # shuffled queue keeps the items preceding a start_item (chosen track pinned
                     # first) instead of dropping them. The first item that resolves decides for the
                     # whole batch, because it is the only media type known this early.
@@ -1007,12 +1009,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             artist_tracks and artist_tracks.plays_albums
                         )
                         shuffle_settled = True
-                        await self._apply_shuffle(
-                            queue_id,
-                            option,
-                            # an explicit request always wins; only an unset one defers to the
-                            # media's own order
-                            False if shuffle is None and plays_in_order else shuffle,
+                        # an explicit request always wins; only an unset one defers to the
+                        # media's own order
+                        batch_shuffle = False if shuffle is None and plays_in_order else shuffle
+                        keep_preceding_items = self._settled_shuffle(
+                            queue_id, option, batch_shuffle
                         )
 
                     # the user picked this exact track to play next, so it must be inserted literally
@@ -1075,7 +1076,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             # under shuffle "start here and play forward" has no meaning, so keep the
                             # whole playlist/album (chosen track first) instead of dropping everything
                             # before it - the chosen track is pinned in front of the shuffled rest
-                            keep_preceding_items=queue.shuffle_enabled,
+                            keep_preceding_items=keep_preceding_items,
                             artist_tracks=artist_tracks.tracks if artist_tracks else None,
                             played_copy=played_copy,
                             start_position=start_position,
@@ -1096,10 +1097,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     self.logger.warning("Skipping %s: %s", item, err)
                     last_item_error = err
 
-        if not shuffle_settled and option is not None:
-            # nothing resolved, so no media type ever decided - but the sources are replaced
+        if reset_enqueued:
+            self._reset_enqueued_media_items(queue_data)
+        # Use FIFO list to keep track of the last 10 played items
+        queue_data.enqueued_media_items.extend(enqueued_items)
+        del queue_data.enqueued_media_items[:-10]
+        if option is not None:
+            # also when nothing resolved and no media type ever decided: the sources are replaced
             # below all the same, and a dynamic queue's imposed shuffle must not survive that
-            await self._apply_shuffle(queue_id, option, shuffle)
+            await self._apply_shuffle(queue_id, option, batch_shuffle)
 
         # captured before the reassignment below replaces the local with the stored list
         new_sources = bool(source_items)

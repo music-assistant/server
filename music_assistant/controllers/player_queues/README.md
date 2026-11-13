@@ -164,9 +164,9 @@ controller's own commands fall back to running without the lock after 30 seconds
 provider call). The lookup of what a play request plays (a big artist, playlist or folder fetched
 through a throttled provider can take minutes) runs under that lock, so it has a deadline of its own
 (`PLAY_REQUEST_RESOLVE_TIMEOUT`): when it runs out the request fails and releases the lock before it
-has replaced anything, so the queue keeps its items and playback. The next-track handover takes the
-same strict lock and only checks the queue once it holds it, so a track handed to the player after a
-wait is still the one that follows the playing one.
+has changed the queue, so the queue keeps its items, enqueued items, shuffle state and playback. The
+next-track handover takes the same strict lock and only checks the queue once it holds it, so a track
+handed to the player after a wait is still the one that follows the playing one.
 Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
 the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to

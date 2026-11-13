@@ -135,6 +135,33 @@ async def test_a_slow_resolution_fails_and_leaves_the_queue_alone() -> None:
     assert not data.transitioning
 
 
+@pytest.mark.parametrize(
+    ("is_dynamic", "option", "shuffle"),
+    [(False, QueueOption.PLAY, False), (True, QueueOption.REPLACE, None)],
+    ids=["queue", "smart_mix"],
+)
+async def test_a_slow_resolution_leaves_shuffle_and_seeds_alone(
+    is_dynamic: bool, option: QueueOption, shuffle: bool | None
+) -> None:
+    """A request that runs out of time keeps the queue's shuffle state and autoplay seeds."""
+    ctrl, _lock = _controller()
+    data: PlayerQueueData = ctrl._queue_data["q1"]
+    data.queue.current_index = 0
+    data.queue.shuffle_enabled = True
+    data.queue.is_dynamic = is_dynamic
+    data.enqueued_media_items = [_track("earlier")]
+    items_before = list(data.items)
+    seeds_before = list(data.enqueued_media_items)
+
+    with pytest.raises(PlayerCommandFailed):
+        await ctrl.play_media("q1", _track("slow"), option, shuffle=shuffle)
+
+    assert data.queue.shuffle_enabled
+    assert data.queue.is_dynamic == is_dynamic
+    assert data.enqueued_media_items == seeds_before
+    assert data.items == items_before
+
+
 async def test_the_next_command_gets_through_once_the_deadline_passed() -> None:
     """A command waiting for the lock runs as soon as the slow request gave up."""
     ctrl, _lock = _controller()
