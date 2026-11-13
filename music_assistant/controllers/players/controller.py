@@ -225,6 +225,16 @@ class PlayerController(
             if protocol.provider.instance_id == provider.instance_id:
                 await self.detach(protocol.protocol_id)
 
+    def on_provider_manifests_changed(self) -> None:
+        """
+        Handle a provider manifest that was registered or removed while the server runs.
+
+        A player without protocols says in its state whether its provider is installed.
+        """
+        for player in self._players.values():
+            if not player.protocols:
+                self.trigger_player_update(player.player_id)
+
     @property
     def providers(self) -> list[PlayerProvider]:
         """Return all loaded/running MusicProviders."""

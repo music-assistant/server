@@ -33,12 +33,11 @@ FEED_DATA = {
                 "title": "Feed Track",
                 "duration": 180000,
                 "permalink_url": "https://soundcloud.com/artist/feed-track",
-                "user": {"id": 42},
+                "user": {"id": 42, "username": "Artist", "permalink": "artist"},
             },
         },
     ]
 }
-USER_DATA = {"id": 42, "username": "Artist", "permalink": "artist"}
 
 
 def _stub_api(provider: SoundcloudMusicProvider) -> Mock:
@@ -46,7 +45,6 @@ def _stub_api(provider: SoundcloudMusicProvider) -> Mock:
     api = Mock()
     api.get_mixed_selection = AsyncMock(return_value=MIXED_DATA)
     api.get_subscribe_feed = AsyncMock(return_value=FEED_DATA)
-    api.get_user_details = AsyncMock(return_value=USER_DATA)
     provider._soundcloud = api
     return api
 

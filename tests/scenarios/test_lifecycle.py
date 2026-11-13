@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature
+from music_assistant_models.enums import (
+    EventType,
+    IdentifierType,
+    PlayerFeature,
+    ProviderTier,
+)
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_UNLINKED_FROM,
     SETUP_REASON_PROVIDER_NOT_INSTALLED,
 )
@@ -26,6 +33,8 @@ from music_assistant.helpers.config_entries import (
 from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, Event, Role, Scenario, VisiblePlayer
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from music_assistant_models.config_entries import ConfigEntry
 
 LIVING = {
@@ -1291,6 +1300,116 @@ async def test_a_stored_player_whose_provider_is_not_installed_says_so(
     not_loaded = scenario.player("pl1b2c3d4e5f6a")
     assert not_loaded is not None
     assert not_loaded.setup_reason is None
+
+
+def _stored_protocol(protocol_id: str, provider: str, player_id: str, role: str) -> dict[str, Any]:
+    """Return the stored config of a protocol of a stored player."""
+    return {
+        "protocol_id": protocol_id,
+        "provider": provider,
+        "player_id": player_id,
+        "role": role,
+        "enabled": True,
+        "default_name": "Patio",
+        "values": {},
+    }
+
+
+async def test_the_settings_of_a_player_whose_provider_is_not_installed_can_be_read(
+    scenario: Scenario,
+) -> None:
+    """
+    The settings of a stored player open while the providers of its protocols are not installed.
+
+    Its outputs are listed under the domain of their provider, for lack of a name.
+    """
+    await scenario.seed_config(
+        {
+            CONF_PLAYERS: {
+                "pl0a1b2c3d4e5f": _stored_player("pl0a1b2c3d4e5f", "retired_speakers", "Patio"),
+            },
+            CONF_PLAYER_PROTOCOLS: {
+                "retired_patio": _stored_protocol(
+                    "retired_patio", "retired_speakers", "pl0a1b2c3d4e5f", "native"
+                ),
+                "cast_patio": _stored_protocol(
+                    "cast_patio", "retired_cast", "pl0a1b2c3d4e5f", "audio"
+                ),
+            },
+        }
+    )
+    await scenario.idle()
+
+    config = await scenario.player_config("pl0a1b2c3d4e5f")
+
+    assert config is not None
+    outputs = config.values[CONF_PREFERRED_OUTPUT_PROTOCOL].options
+    assert [(option.title, option.value) for option in outputs if option.value != "auto"] == [
+        ("RETIRED_SPEAKERS (native)", "native"),
+        ("RETIRED_CAST", "cast_patio"),
+    ]
+    assert [listed.player_id for listed in await scenario.player_configs()] == ["pl0a1b2c3d4e5f"]
+
+
+async def test_a_stored_player_follows_a_provider_installed_or_removed_while_the_server_runs(
+    scenario: Scenario, tmp_path: Path
+) -> None:
+    """
+    A provider that is installed from a second folder counts as installed, like a shipped one.
+
+    The stored Patio player says its provider is not installed. Once the provider is
+    installed, without a restart, Patio is unavailable without that reason, as the player of
+    a shipped provider that is not set up. It says so again once the provider is removed.
+    """
+    provider_dir = tmp_path / "community_providers" / "garden_speakers"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "type": "player",
+                "domain": "garden_speakers",
+                "name": "Garden Speakers",
+                "description": "A provider that is installed later",
+                "codeowners": [],
+            }
+        )
+    )
+    await scenario.seed_config(
+        {
+            CONF_PLAYERS: {
+                "pl0a1b2c3d4e5f": _stored_player("pl0a1b2c3d4e5f", "garden_speakers", "Patio"),
+            },
+            CONF_PLAYER_PROTOCOLS: {
+                "garden_patio": _stored_protocol(
+                    "garden_patio", "garden_speakers", "pl0a1b2c3d4e5f", "native"
+                ),
+            },
+        }
+    )
+    await scenario.idle()
+
+    def _patio() -> tuple[bool, str | None]:
+        state = scenario.player("pl0a1b2c3d4e5f")
+        assert state is not None
+        return state.available, state.setup_reason
+
+    assert _patio() == (False, SETUP_REASON_PROVIDER_NOT_INSTALLED)
+
+    await scenario.mass.register_provider_manifest(str(provider_dir), ProviderTier.COMMUNITY)
+    await scenario.idle()
+
+    assert _patio() == (False, None)
+    config = await scenario.player_config("pl0a1b2c3d4e5f")
+    assert config is not None
+    outputs = config.values[CONF_PREFERRED_OUTPUT_PROTOCOL].options
+    assert [option.title for option in outputs if option.value == "native"] == [
+        "Garden Speakers (native)"
+    ]
+
+    await scenario.mass.unregister_provider_manifest("garden_speakers")
+    await scenario.idle()
+
+    assert _patio() == (False, SETUP_REASON_PROVIDER_NOT_INSTALLED)
 
 
 async def test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choice(
