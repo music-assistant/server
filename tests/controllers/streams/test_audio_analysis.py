@@ -1109,6 +1109,30 @@ def test_merged_from_rows_regression_sonic_does_not_clobber_loudness() -> None:
     assert scoped.loudness_integrated == -7.5  # fixed
 
 
+_EBU_PRIORITY = (LOUDNESS_ANALYSIS_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN)
+_SONIC_LOUDNESS_ROW = {"loudness_integrated": -20.0, "loudness_range": 4.0, "brightness": 0.2}
+
+
+def test_merged_from_rows_loudness_priority_drops_sonic_loudness() -> None:
+    """A priority listing a loudness domain never takes Sonic Analysis' loudness fields."""
+    rows = [_aa_row(SONIC_ANALYSIS_DOMAIN, 1, **_SONIC_LOUDNESS_ROW)]
+    merged = _merged_from_rows(rows, _ALL_AA_DOMAINS, priority=_EBU_PRIORITY)
+    assert merged is not None
+    assert merged.loudness_integrated is None
+    assert merged.loudness_range is None
+    assert merged.brightness == 0.2
+
+
+def test_merged_from_rows_priority_without_loudness_keeps_sonic_loudness() -> None:
+    """A priority without a loudness domain keeps Sonic Analysis' loudness_integrated."""
+    rows = [_aa_row(SONIC_ANALYSIS_DOMAIN, 1, **_SONIC_LOUDNESS_ROW)]
+    merged = _merged_from_rows(
+        rows, _ALL_AA_DOMAINS, priority=(SONIC_ANALYSIS_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN)
+    )
+    assert merged is not None
+    assert merged.loudness_integrated == -20.0
+
+
 @pytest.mark.asyncio
 async def test_get_audio_analysis_priority_threads_through_to_merge() -> None:
     """get_audio_analysis forwards priority so the loudness call gets the EBU R128 value."""

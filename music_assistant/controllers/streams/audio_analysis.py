@@ -68,6 +68,8 @@ SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
 # AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
 TRACK_EXPORT_AA_PRIORITY = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN)
+# Fields Sonic Analysis fills with RMS approximations instead of EBU R128 values.
+_SONIC_APPROXIMATED_LOUDNESS_FIELDS = ("loudness_integrated", "loudness_range")
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
@@ -182,7 +184,8 @@ def _merged_from_rows(
     :param available_aa_domains: AA provider domains currently available.
     :param priority: When None, merge all available providers' rows with latest-write-wins
         (non-None fields). When a tuple of AA provider domains is given, only those domains
-        are considered and the first-listed domain wins each per-field conflict.
+        are considered and the first-listed domain wins each per-field conflict. When the
+        tuple lists a loudness domain, Sonic Analysis' loudness fields are never used.
     :param unparsable_ids: When given, ids of rows whose packed record fails to parse
         are appended.
     :param arrays: The array fields to unpack (see :func:`decode`); None unpacks them all.
@@ -202,6 +205,7 @@ def _merged_from_rows(
     # priority given: merge only these domains, first-listed wins each field.
     wanted = tuple(d for d in priority if d in available_aa_domains)
     wanted_set = set(wanted)
+    drop_sonic_loudness = not set(priority).isdisjoint(LOUDNESS_PROVIDER_PRIORITY)
     by_domain: dict[str, AudioAnalysisData] = {}
     for row in rows:
         domain = row["aa_provider_domain"]
@@ -209,6 +213,9 @@ def _merged_from_rows(
             continue
         if (row_data := _parse_row(row, unparsable_ids, arrays=arrays)) is None:
             continue
+        if drop_sonic_loudness and domain == SONIC_ANALYSIS_DOMAIN:
+            for field_name in _SONIC_APPROXIMATED_LOUDNESS_FIELDS:
+                setattr(row_data, field_name, None)
         by_domain[domain] = row_data
     for domain in reversed(wanted):
         if (row_data := by_domain.get(domain)) is not None:
@@ -639,7 +646,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             that provider's values are used. With multiple domains, only those are merged
             and the first-listed domain wins each per-field conflict. Use this when a field
             (e.g. loudness_integrated) is written by several providers with different
-            semantics, so the authoritative source is selected.
+            semantics, so the authoritative source is selected. When the tuple lists a
+            loudness domain, Sonic Analysis' loudness fields are never used.
         """
         if not self._database_ready:
             return None
@@ -1029,7 +1037,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         :param media_type: The media type to filter on.
         :param priority: AA provider domains the merged values must come from, first-listed
             wins per-field conflicts (see get_audio_analysis). When None, all available
-            providers are merged latest-write-wins.
+            providers are merged latest-write-wins. When the tuple lists a loudness domain,
+            Sonic Analysis' loudness fields are never used.
         :param arrays: The array fields to unpack; every other array field is left None on
             the yielded records. None unpacks them all. A consumer that needs only a few
             arrays saves most of the decode work of a fully analysed track.

@@ -13,6 +13,8 @@ every install that only does e.g. loudness normalization.
 
 from __future__ import annotations
 
+import math
+from bisect import bisect_right
 from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any, Final
@@ -34,6 +36,25 @@ _LEGACY_BAND_RMS_FIELDS: Final[dict[str, str]] = {
     "mid": "band_rms_mid",
     "high": "band_rms_high",
 }
+
+# Fixed energy score calibration (mean, sd, weight), so a track scores the same on every install.
+_ENERGY_BRIGHTNESS: Final[tuple[float, float, float]] = (0.1404, 0.0608, 0.40)
+_ENERGY_LOUDNESS: Final[tuple[float, float, float]] = (-11.4158, 3.0752, 0.35)
+_ENERGY_AROUSAL_LOGIT: Final[tuple[float, float, float]] = (-1.1500, 1.3019, 0.25)
+_ENERGY_Z_LIMIT: Final = 3.0
+_ENERGY_AROUSAL_EPS: Final = 0.0001
+# Fixed energy_score thresholds between levels 1-10.
+_ENERGY_LEVEL_THRESHOLDS: Final[tuple[float, ...]] = (
+    -1.13,
+    -0.67,
+    -0.28,
+    0.01,
+    0.24,
+    0.48,
+    0.69,
+    0.98,
+    1.34,
+)
 
 
 class AudioAnalysisError(Exception):
@@ -114,7 +135,8 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # High-Level Descriptors (all normalized 0.0-1.0)
 
-    # Overall perceived energy: 0.0 = very low, 1.0 = very high.
+    # Mean RMS clamped to 0.0-1.0, so it follows the mastering level, not perceived energy.
+    # Use energy_score for perceived energy.
     energy: float | None = None
     # Rhythmic regularity and groove: 0.0 = not danceable, 1.0 = very danceable.
     danceability: float | None = None
@@ -192,6 +214,32 @@ class AudioAnalysisData(DataClassDictMixin):
             setattr(self, fld.name, new_val)
         return self
 
+    @property
+    def energy_score(self) -> float | None:
+        """
+        Perceived energy of the track, higher is more energetic.
+
+        Ranges from -3.0 to 3.0, where 0.0 is an average track. None unless brightness,
+        arousal and loudness_integrated are all set. loudness_integrated must be an
+        EBU R128 value, which holds when the data was merged with a loudness domain
+        in the priority.
+        """
+        if self.brightness is None or self.arousal is None or self.loudness_integrated is None:
+            return None
+        arousal = min(max(self.arousal, _ENERGY_AROUSAL_EPS), 1.0 - _ENERGY_AROUSAL_EPS)
+        return (
+            _energy_term(self.brightness, _ENERGY_BRIGHTNESS)
+            + _energy_term(self.loudness_integrated, _ENERGY_LOUDNESS)
+            + _energy_term(math.log(arousal / (1.0 - arousal)), _ENERGY_AROUSAL_LOGIT)
+        )
+
+    @property
+    def energy_level(self) -> int | None:
+        """Perceived energy as a level from 1 (calmest) to 10 (most energetic), see energy_score."""
+        if (score := self.energy_score) is None:
+            return None
+        return 1 + bisect_right(_ENERGY_LEVEL_THRESHOLDS, score)
+
     def as_audio_metadata(self) -> AudioMetadata | None:
         """Return the bpm and musical key as track AudioMetadata, or None when it holds neither."""
         if self.bpm is None and self.key is None:
@@ -204,3 +252,10 @@ class AudioAnalysisData(DataClassDictMixin):
             musical_key=musical_key,
             camelot_key=camelot_key(self.key, self.mode),
         )
+
+
+def _energy_term(value: float, calibration: tuple[float, float, float]) -> float:
+    """Return the weighted, clipped z-score of value for one energy_score input."""
+    mean, sd, weight = calibration
+    z = (value - mean) / sd
+    return weight * min(max(z, -_ENERGY_Z_LIMIT), _ENERGY_Z_LIMIT)

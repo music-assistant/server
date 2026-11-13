@@ -1,4 +1,4 @@
-"""AudioAnalysisData: typed array fields and the legacy extra_data lift."""
+"""AudioAnalysisData: typed array fields, the legacy extra_data lift and the energy score."""
 
 from __future__ import annotations
 
@@ -127,3 +127,41 @@ def test_lift_keeps_unknown_band_rms_entries() -> None:
     )
     assert data.band_rms_low == [0.1] * 1800
     assert data.extra_data == {"band_rms": {"sub": [0.2] * 1800}}
+
+
+@pytest.mark.parametrize(
+    ("brightness", "arousal", "loudness", "score", "level"),
+    [
+        (0.1404, 0.2405, -11.4158, 0.0, 4),
+        (0.2, 0.6, -8.0, 1.0796, 9),
+        (0.07, 0.1, -18.0, -1.4136, 1),
+        (0.3, 0.95, -5.0, 2.5302, 10),
+        (0.0, 0.0, -40.0, -2.7237, 1),
+        (1.0, 1.0, 0.0, 3.0, 10),
+    ],
+)
+def test_energy_score_and_level(
+    brightness: float, arousal: float, loudness: float, score: float, level: int
+) -> None:
+    """energy_score and energy_level match the reference values."""
+    data = AudioAnalysisData(brightness=brightness, arousal=arousal, loudness_integrated=loudness)
+    assert data.energy_score == pytest.approx(score, abs=1e-3)
+    assert data.energy_level == level
+
+
+@pytest.mark.parametrize("missing", ["brightness", "arousal", "loudness_integrated"])
+def test_energy_score_needs_all_inputs(missing: str) -> None:
+    """Without brightness, arousal or loudness_integrated there is no score or level."""
+    values: dict[str, Any] = {"brightness": 0.2, "arousal": 0.6, "loudness_integrated": -8.0}
+    values[missing] = None
+    data = AudioAnalysisData(**values)
+    assert data.energy_score is None
+    assert data.energy_level is None
+
+
+def test_energy_score_is_not_serialised() -> None:
+    """energy_score and energy_level are derived, not stored."""
+    data = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0)
+    serialised = data.to_dict()
+    assert "energy_score" not in serialised
+    assert "energy_level" not in serialised
