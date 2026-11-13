@@ -1,8 +1,8 @@
 """
 Player Locks Mixin for the Player Controller.
 
-Serializes the commands on a player: a command runs under the lock of its player, and
-under the lock of the group that holds the player before that.
+Serializes the commands on a player, per purpose. A command that needs the lock of a
+player and that of the group holding it takes the group's first.
 
 This module provides the PlayerLocksMixin class which is inherited by
 PlayerController to add the player command locks.

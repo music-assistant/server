@@ -236,9 +236,9 @@ class _PlayerControllerBase(CoreController):
         A protocol fetches its stream under its own id. An id that names no attached
         protocol is taken as that of a player: the protocol that renders for it now.
         Code that holds a player id asks the player instead
-        (``get_player(player_id).resolve_output_protocol()``): a player from before the
-        split shares its id with its own protocol, which this returns also while one of
-        its audio protocols renders.
+        (``get_player(player_id).resolve_output_protocol()``): a player id that is not
+        minted can be the id of one of its protocols, which this returns also while another
+        of its protocols renders.
 
         :param protocol_or_player_id: ID of an attached protocol, else of a player or one
             of the legacy ids of a player.
@@ -452,7 +452,7 @@ class _PlayerControllerBase(CoreController):
                 self.mass.loop.call_soon(player.refresh_state)
 
     def remove_player_control(self, control_id: str) -> None:
-        """Remove a player_control from the player manager."""
+        """Remove a player_control from the players controller."""
         control = self._controls.pop(control_id, None)
         if control is None:
             return

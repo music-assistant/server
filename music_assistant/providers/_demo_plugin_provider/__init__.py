@@ -351,6 +351,9 @@ class MyDemoPluginprovider(PluginProvider):
         # configured target, redirect via mass.player_queues.play_media(target,
         # uri) and then RAISE so the original (disallowed) request does not
         # continue into get_stream_details and stream to the wrong player.
+        # A player id stored in the config can be a legacy id of a player that was
+        # merged into another one: resolve it with mass.players.resolve_player_id()
+        # where you read it (see DEVELOPMENT.md, "Building your own Plugin Provider").
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str

@@ -956,7 +956,7 @@ class PlayerConfigMixin:
                 EventType.PLAYER_CONFIG_UPDATED, object_id=config.player_id, data=config
             )
         try:
-            # validate/handle the update in the player manager
+            # validate/handle the update in the players controller
             await self.mass.players.on_player_config_change(config, changed_keys)
         except Exception:
             # rollback on error - use existing_raw to preserve all values

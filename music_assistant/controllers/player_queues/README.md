@@ -56,8 +56,8 @@ and the targets for playback, and coordinates with several sibling controllers:
 - **Player Controller (`mass.players`)** — a bidirectional coupling. Outbound, the queue
   controller drives the player (stop/pause/play/enqueue-next, grouping/ungrouping, active-queue
   lookup) and serializes transport via the player's playback lock. Inbound, the player controller
-  calls the queue controller's register/update/elapsed-time/remove hooks, which is how the queue
-  reconciles itself against real player state. The `queue_id` is the `player_id`.
+  calls the queue controller's register/update/elapsed-time/detach/remove hooks, which is how the
+  queue reconciles itself against real player state. The `queue_id` is the `player_id`.
 - **Streams Controller (`mass.streams`)** — resolves a `QueueItem`'s stream details when loading
   and pre-loading items, and provides the audio-buffer primitive. It also drives next-track buffer
   warming: near the end of the item being streamed, or once a realtime source has delivered all

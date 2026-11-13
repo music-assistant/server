@@ -880,7 +880,7 @@ class PlayerProtocol(ABC):
         """
         Poll player for state updates.
 
-        This is called by the Player Manager;
+        This is called by the players controller
         if the 'needs_poll' property is True.
         """
         raise NotImplementedError("poll needs to be implemented when needs_poll is True")
@@ -1107,7 +1107,7 @@ class PlayerProtocol(ABC):
     def on_sync_parent_updated(
         self, sync_parent: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
-        """Handle callback when the sync parent of this player is updated."""
+        """Handle callback when the sync leader of the player of this protocol is updated."""
         # optional callback
         # default implementation will simply trigger an update for the state of the player
         self._trigger_player_update()

@@ -2526,10 +2526,11 @@ class StreamsAudio:
         :param start_queue_item: First queue item in the flow stream.
         :param pcm_format: Shared PCM format for the complete flow stream.
         :param session_id: Queue session that owns processing-detail updates.
-        :param protocol_player: The protocol player actually consuming the flow stream.
-            Must be the same player that was used to select ``pcm_format`` so
+        :param protocol_player: The protocol actually consuming the flow stream.
+            Must be the same protocol that was used to select ``pcm_format`` so
             restart decisions are made against the correct supported sample rates
-            and flow mode configuration. Falls back to the queue's player when omitted.
+            and flow mode configuration. Falls back to the protocol that renders for the
+            queue's player when omitted.
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False, the stream ends before its next item and
             does not report the queue completed.

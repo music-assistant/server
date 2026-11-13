@@ -1045,7 +1045,7 @@ class Player:
                 own.provider.domain in PROTOCOL_PRIORITY
                 and PlayerFeature.SET_MEMBERS in own.supported_features
             ):
-                # Player is itself a native endpoint of a known protocol domain.
+                # The own protocol is itself of a known protocol domain.
                 result.append(
                     OutputProtocol(
                         output_protocol_id=own.protocol_id,

@@ -143,8 +143,8 @@ class DemoPlayerprovider(PlayerProvider):
             # publish any changes to the values the protocol object reports
             # note that you would normally call this from some other callback from
             # the device's native api/library which informs you of changes in its state.
-            # as a last resort you can also choose to let the player manager
-            # poll the protocol for state changes
+            # as a last resort you can also choose to let the players controller
+            # poll the protocol for state changes (needs_poll)
             protocol.update_state()
             return
         # handle new device
@@ -161,8 +161,9 @@ class DemoPlayerprovider(PlayerProvider):
         # This is an optional method that you can implement if
         # you want to (manually) discover devices on the
         # network and you do not use mdns discovery.
-        # It is called when the provider is (re)loaded, when one of its players gets
-        # enabled and after one of its players was removed, so it must be safe to repeat.
+        # It is called when the provider is (re)loaded and on every discovery request of the
+        # players controller (a player of it enabled, removed or merged, for example), so it
+        # must be safe to repeat.
         number_of_players = cast("int", self.config.get_value(CONF_NUMBER_OF_PLAYERS, 0))
         self.logger.info(
             "Discovering %s demo players",
@@ -177,8 +178,8 @@ class DemoPlayerprovider(PlayerProvider):
             # device belongs to, or creates it. Nothing is attached for a player the
             # user disabled.
             await self.mass.players.attach(protocol)
-            # once the protocol is attached, you can either instruct the player manager to
-            # poll it for state changes or you can implement your own logic to listen for
+            # once the protocol is attached, you can either let the players controller
+            # poll it for state changes (needs_poll) or you can implement your own logic to listen for
             # state changes from the device and update the protocol object accordingly.
             # if a reported value changed, call the update method on the protocol:
             # protocol.update_state()
