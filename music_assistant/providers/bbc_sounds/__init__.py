@@ -968,7 +968,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             expiration=max(600, programme_id.end - int(datetime.utc_timestamp()) + 600),
         )
 
-    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
     async def _get_on_demand_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get the details of an on-demand podcast episode or radio show by id."""
         # If we are requesting a previously-aired radio show, we lose access to the
@@ -976,8 +976,11 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         # date, so the stream title loses access to the air date
         self.logger.debug("Getting podcast episode for %s", prov_episode_id)
         episode = await self.client.content.get_by_pid(prov_episode_id)
-        if not isinstance(episode, (RadioShow, SoundsPodcastEpisode)):
-            raise UnplayableMediaError(f"Unexpected episode type {type(prov_episode_id)}")
+        # This can return a mixture of episode/clip types
+        if not isinstance(episode, EpisodeTypes):
+            raise UnplayableMediaError(
+                f"Unexpected type {type(episode).__name__} for episode {prov_episode_id}"
+            )
         ma_episode = await self.adaptor.new_object(episode, force_type=PodcastEpisode)
         if not ma_episode:
             raise MediaNotFoundError(f"Podcast episode {prov_episode_id} not found")
