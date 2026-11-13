@@ -165,13 +165,13 @@ The provider discovers AirPlay devices via two MDNS service types:
    - Skip if the player controller does not want the device (`mass.players.wants_protocol()`: the player is disabled, or its AirPlay output is switched off)
    - Skip ShairportSync instances running on the same Music Assistant server (to avoid conflicts with AirPlay Receiver provider)
 4. **Create the protocol object** → `AirPlayPlayer` instance
-5. **Attach it** → `mass.players.attach()`: the controller finds the player of the device (or creates one) and binds the protocol to it
+5. **Register it** → `mass.players.register()`: the controller finds the player of the device (or creates one) and attaches the protocol to it
 
 A record for a device that is already attached only updates its discovery info, so the
 replay of the cached mDNS records (when the provider loads, and on every discovery request of the
 players controller, such as when a player is enabled or removed) offers exactly the devices that
 have no attached protocol. A device whose services
-disappear from mDNS is detached: its player stays, unavailable, until the device returns.
+disappear from mDNS is unregistered: its player stays, unavailable, until the device returns.
 
 ### Protocol ID Format
 
