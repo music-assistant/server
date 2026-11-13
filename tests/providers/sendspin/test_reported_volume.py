@@ -213,8 +213,13 @@ async def test_a_device_shows_the_volume_it_reported_before_its_protocol_was_att
     assert state.volume_level == 40
 
 
+@pytest.mark.parametrize(
+    "hello_commands",
+    [None, [PlayerCommand.VOLUME, PlayerCommand.MUTE]],
+    ids=["current_client", "older_client"],
+)
 async def test_a_device_keeps_its_reported_volume_when_a_second_connection_replaces_the_first(
-    scenario: Scenario,
+    scenario: Scenario, hello_commands: list[PlayerCommand] | None
 ) -> None:
     """
     The level and mute a device reported stay when a second connection of it replaces the first.
@@ -222,7 +227,7 @@ async def test_a_device_keeps_its_reported_volume_when_a_second_connection_repla
     The second connection sends no state until the device plays; until then the library takes
     no volume command for it, and the player keeps its controls.
     """
-    client = _client([PlayerCommand.VOLUME, PlayerCommand.MUTE])
+    client = _client(hello_commands)
     await _connect(scenario, client, replaced=True)
 
     protocol = scenario.mass.players.get_protocol(CLIENT_ID)
