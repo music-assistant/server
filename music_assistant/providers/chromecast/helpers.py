@@ -386,7 +386,7 @@ class CastStatusListener:
         if not self._valid:
             return
         if group_uuid == self.castplayer.active_cast_group:
-            self._deliver(self.castplayer.update_state)
+            self._deliver(self._leave_group)
         self.castplayer.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.display_name, group_uuid
         )
@@ -456,6 +456,11 @@ class CastStatusListener:
             return
 
         self.castplayer.on_new_cast_status(player_status)
+
+    def _leave_group(self) -> None:
+        """Show the own media of the cast once it left the group it played from (on the event loop)."""
+        self.castplayer.update_active_cast_group()
+        self.castplayer.on_new_media_status(self.castplayer.cc.media_controller.status)
 
     def _deliver(self, handler: Callable[..., None], *args: Any) -> None:
         """

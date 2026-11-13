@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 from music_assistant_models.enums import IdentifierType, PlayerType, ProtocolRole
 from pychromecast.const import CAST_TYPE_AUDIO, CAST_TYPE_GROUP
+from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
@@ -17,6 +18,7 @@ from music_assistant.providers.chromecast.constants import CONF_DEFER_IDLE_VOLUM
 from music_assistant.providers.chromecast.helpers import ChromecastInfo
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 from music_assistant.providers.chromecast.provider import ChromecastProvider
+from tests.providers.chromecast.test_media_status_updates import _media_status
 from tests.scenarios.harness import Scenario
 
 if TYPE_CHECKING:
@@ -394,3 +396,105 @@ async def test_a_status_of_a_detached_client_is_dropped(callback: str) -> None:
     assert protocol.volume_level == volume_level
     assert protocol.available is False
     assert protocol.active_cast_group is None
+
+
+def _connect_group_client(cast_info: Any, *_args: object) -> MagicMock:
+    """Return a fake client, as pychromecast connects one, that the multizone manager can track."""
+    client = _connect_client()
+    client.uuid = cast_info.uuid
+    client.status = MagicMock(app_id=None, volume_level=0.42, volume_muted=False)
+    client.media_controller.is_active = False
+    return client
+
+
+async def _speaker_in_a_playing_group() -> tuple[ChromecastPlayer, ChromecastPlayer, MagicMock]:
+    """
+    Return an attached speaker playing from the attached cast group it is a member of.
+
+    The membership runs through a real multizone manager. The speaker's own receiver
+    reports media of its own, which the speaker does not show while the group plays.
+
+    :return: The speaker, the group, and the controller that keeps the group's members.
+    """
+    provider = _mocked_provider()
+    provider.mass.streams.base_url = "http://mass"
+    provider.mz_mgr = MultizoneManager()
+    group = _cast_player(provider, _cast_info(cast_type=CAST_TYPE_GROUP))
+    speaker = _cast_player(provider, _cast_info())
+    protocols = {group.protocol_id: group, speaker.protocol_id: speaker}
+    provider.get_protocol = MagicMock(side_effect=protocols.get)
+    with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_group_client):
+        await group.on_attach(MagicMock())
+        await speaker.on_attach(MagicMock())
+    group_client = cast("MagicMock", group.cc)
+    group_client.media_controller.is_active = True
+    group_client.media_controller.status = _media_status(
+        playing=True, content_id="http://mass/group.flac"
+    )
+    group_listener = provider.mz_mgr._groups[group.protocol_id]["listener"]
+    members = group_listener._mz
+    members._add_member(speaker.protocol_id, "Speaker A")
+    group_listener.new_cast_status(group_client.status)
+    _report_own_media(speaker)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert speaker.active_cast_group == group.protocol_id
+    assert speaker.current_media is not None
+    assert speaker.current_media.uri == "http://mass/group.flac"
+    return speaker, group, members
+
+
+def _report_own_media(speaker: ChromecastPlayer) -> None:
+    """
+    Let the receiver of a speaker report it is connected and plays media of its own.
+
+    :param speaker: The (attached) speaker.
+    """
+    listener = speaker.status_listener
+    assert listener is not None
+    client = cast("MagicMock", speaker.cc)
+    client.media_controller.status = _media_status(playing=True, content_id="http://mass/solo.flac")
+    listener.new_connection_status(MagicMock(status=CONNECTION_STATUS_CONNECTED))
+    listener.new_media_status(client.media_controller.status)
+
+
+@pytest.mark.parametrize("left_group", [True, False], ids=["left-group", "still-member"])
+async def test_a_speaker_attached_again_plays_from_the_group_it_is_a_member_of_now(
+    left_group: bool,
+) -> None:
+    """
+    A speaker attached again shows its group's media only while it is still in that group.
+
+    The speaker's listener does not hear a group dropping it while its protocol is detached.
+    """
+    speaker, group, members = await _speaker_in_a_playing_group()
+
+    await speaker.on_detach()
+    if left_group:
+        members._remove_member(speaker.protocol_id)
+    with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_group_client):
+        await speaker.on_attach(MagicMock())
+    _report_own_media(speaker)
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert speaker.current_media is not None
+    if left_group:
+        assert speaker.active_cast_group is None
+        assert speaker.current_media.uri == "http://mass/solo.flac"
+    else:
+        assert speaker.active_cast_group == group.protocol_id
+        assert speaker.current_media.uri == "http://mass/group.flac"
+
+
+async def test_a_speaker_dropped_from_its_group_plays_its_own_media() -> None:
+    """An attached speaker that leaves the group it plays from shows its own media again."""
+    speaker, _group, members = await _speaker_in_a_playing_group()
+
+    members._remove_member(speaker.protocol_id)
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert speaker.active_cast_group is None
+    assert speaker.current_media is not None
+    assert speaker.current_media.uri == "http://mass/solo.flac"

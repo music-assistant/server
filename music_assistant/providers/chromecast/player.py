@@ -321,6 +321,8 @@ class ChromecastPlayer(PlayerProtocol):
             self.cast_info.to_cast_info(), self.mass.discovery.aiozc.zeroconf
         )
         self.status_listener = CastStatusListener(self, provider.mz_mgr)
+        # the groups it is a member of may have changed while it was detached
+        self.update_active_cast_group()
         if self.type == PlayerType.GROUP:
             self.mz_controller = MultizoneController(self.cast_info.uuid)
             self.cc.register_handler(self.mz_controller)
@@ -342,6 +344,7 @@ class ChromecastPlayer(PlayerProtocol):
         await super().on_detach()
         self.cancel_pending_app_quit()
         self.mz_controller = None
+        self.active_cast_group = None
         if self.status_listener is not None:
             self.status_listener.invalidate()
         self.status_listener = None
@@ -368,6 +371,18 @@ class ChromecastPlayer(PlayerProtocol):
         await cast("ChromecastProvider", self.provider).bridge_manager.remove_bridge(
             self.protocol_id, permanent=True
         )
+
+    def update_active_cast_group(self) -> None:
+        """Play from the playing cast group among the groups the speaker is a member of now."""
+        self.active_cast_group = None
+        if self.type != PlayerType.PLAYER:
+            return
+        mz_mgr = cast("ChromecastProvider", self.provider).mz_mgr
+        assert mz_mgr is not None  # for type checking
+        for group_uuid in mz_mgr.get_multizone_memberships(self.cast_info.uuid):
+            if mz_mgr.get_multizone_mediacontroller(UUID(group_uuid)).is_active:
+                self.active_cast_group = group_uuid
+                return
 
     ### Callbacks from Chromecast Statuslistener
 
@@ -942,15 +957,9 @@ class ChromecastPlayer(PlayerProtocol):
             )
             self.update_state()
 
-            if new_available and self.type == PlayerType.PLAYER:
+            if new_available:
                 # Poll current group status
-                provider = cast("ChromecastProvider", self.provider)
-                mz_mgr = provider.mz_mgr
-                assert mz_mgr is not None  # for type checking
-                for group_uuid in mz_mgr.get_multizone_memberships(self.cast_info.uuid):
-                    group_media_controller = mz_mgr.get_multizone_mediacontroller(UUID(group_uuid))
-                    if not group_media_controller:
-                        continue
+                self.update_active_cast_group()
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
