@@ -1080,6 +1080,16 @@ of its play.
 - End-to-end: **no**: it needs a device that never answers a command.
 - Proven by: `test_commands.py::test_a_transfer_to_a_player_that_stays_busy_fails_and_leaves_both_as_they_were`
 
+### BUSY-7 · A queue moved to a switched-off player holds neither player while it comes on
+
+The Bathroom player is on a smart plug that is switched off. The queue of Den, moved to Bathroom
+while Den plays, switches the plug on and waits for the device. A seek on Den meanwhile runs at
+once. Once the device is back, Bathroom plays Den's queue, and Den is stopped.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_commands.py::test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it_powers_on`
+
 ## What a stopped player keeps for a moment
 
 A player that stops still names what it played for a moment, so a playback that is replaced, and

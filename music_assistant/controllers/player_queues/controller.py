@@ -1363,6 +1363,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         target_queue_id = self._resolve_queue_id(target_queue_id)
         self._check_player_permission(source_queue_id)
         self._check_player_permission(target_queue_id)
+        # a switched-off target the transfer plays on is powered on before the locks are taken,
+        # as a play action does: waiting for its device outlasts the wait for a player's lock
+        if (
+            (
+                auto_play
+                if auto_play is not None
+                else (source := self.get(source_queue_id)) is not None
+                and source.state == PlaybackState.PLAYING
+            )
+            and (target_player := self.mass.players.get_player(target_queue_id)) is not None
+            and target_player.offline_by_power_control
+            and target_player.state.type in PLAYBACK_TARGET_TYPES
+        ):
+            await self.mass.players._power_on_switched_off_player(target_queue_id)
         # both queues change here, and a play action on either runs under its player's lock:
         # hold both players until the target plays, so neither runs in the middle of the other
         async with self.mass.players.get_playback_locks(source_queue_id, target_queue_id):
@@ -1382,6 +1396,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 raise PlayerCommandFailed(
                     f"Player {target_player.display_name} is not capable of playback"
                 )
+            if auto_play and target_player.offline_by_power_control:
+                # switched off again, or the source started to play while the locks were awaited
+                msg = f"Player {target_player.display_name} is switched off"
+                raise PlayerUnavailableError(msg)
             if target_player.state.active_group or target_player.state.synced_to:
                 # edge case: the user wants to move playback from the group as a whole, to a
                 # single player in the group or it is grouped and the command targeted at the

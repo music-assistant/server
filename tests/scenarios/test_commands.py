@@ -10,6 +10,8 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.errors import ResourceBusyError
 from music_assistant_models.player import PlayerMedia, PlayerSource
 
+from tests.common import record_lock_waits
+
 from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakeProtocol, Scenario
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
@@ -17,6 +19,7 @@ KITCHEN = {
     IdentifierType.MAC_ADDRESS: "00:11:22:33:44:66",
     IdentifierType.IP_ADDRESS: "192.168.1.31",
 }
+BATHROOM = {IdentifierType.MAC_ADDRESS: "B8:27:EB:AA:BB:CC"}
 # another track of the server's test music provider than the one play() plays
 OTHER_TRACK_URI = "test://track/1_1_1"
 
@@ -286,3 +289,45 @@ async def test_a_transfer_to_a_player_that_stays_busy_fails_and_leaves_both_as_t
     answered.set()
     await scenario.settle()
     await play
+
+
+async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it_powers_on(
+    scenario: Scenario,
+) -> None:
+    """
+    A queue moved to a player switched off at its plug switches the plug on first, holding nothing.
+
+    The device takes its time to come back. A seek on the source meanwhile runs at once, and
+    once the device is back the queue moves there and plays.
+    """
+    _den, den_id, _kitchen, _kitchen_id = await _two_speakers(scenario)
+    squeezelite = await scenario.add_provider("squeezelite")
+    pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
+    await scenario.attach(pi)
+    bathroom_id = scenario.single_player(pi).player_id
+    plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
+    await scenario.configure_player(bathroom_id, power_control=plug.control_id)
+    await scenario.switch(plug, False)
+    await scenario.detach(pi)
+    await scenario.idle()
+    await scenario.play(den_id)
+    transfer = await scenario.command(
+        scenario.mass.player_queues.transfer_queue(den_id, bathroom_id)
+    )
+    assert plug.commands == [True]
+    assert not transfer.done()
+
+    waits = record_lock_waits(scenario.mass.players)
+    seek = await scenario.command(scenario.mass.player_queues.seek(den_id, 10))
+
+    assert seek.done()
+    await seek
+    assert waits == []
+    await scenario.attach(pi)
+    # the power on looks for the device every 0.5 s
+    await scenario.advance(1)
+    await transfer
+    await scenario.idle()
+
+    assert _plays(scenario, bathroom_id) == (PlaybackState.PLAYING, [TEST_TRACK_URI])
+    assert _plays(scenario, den_id) == (PlaybackState.IDLE, [])

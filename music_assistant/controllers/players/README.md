@@ -666,6 +666,8 @@ A command holds the lock of the player it works on, and of no player it only pas
   `get_group_and_player_lock` does. A queue transfer holds the source's and the target's player
   from before it reads either queue until the target plays; the hand-over of a playing sync
   leader's queue holds the old and the new leader from the transfer to the resume on the new one.
+  A transfer that plays on a target switched off at its power control powers it on before it
+  takes the locks, as a play action does, so one that then fails as busy has switched it on.
 
 Either way the command never holds a player's lock while it waits for the lock of that player's
 owner:

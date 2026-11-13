@@ -792,6 +792,65 @@ async def test_a_transfer_that_can_not_get_a_player_fails_as_busy_and_changes_no
     fake.mass.players.cmd_ungroup.assert_not_called()
 
 
+@pytest.mark.parametrize("comes_online", [True, False])
+async def test_a_transfer_powers_a_switched_off_target_on_before_it_takes_the_locks(
+    comes_online: bool,
+) -> None:
+    """
+    A target switched off at its power control is powered on while no player is locked.
+
+    One that is still switched off once the locks are held (switched off again) fails as
+    unavailable, before anything changed.
+
+    :param comes_online: Whether the device is back when the power on returns.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, item = _playing_transfer(PlaybackState.IDLE, track)
+    players = _with_real_locks(fake)
+    target_player = fake.mass.players.get_player("tgt")
+    target_player.offline_by_power_control = True
+    locked_at_power_on: list[bool] = []
+
+    async def _power_on(_player_id: str) -> None:
+        locked_at_power_on.append(
+            any(lock.locked() for lock in players._player_command_locks.values())
+        )
+        target_player.offline_by_power_control = not comes_online
+
+    fake.mass.players._power_on_switched_off_player = AsyncMock(side_effect=_power_on)
+
+    if comes_online:
+        await PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "tgt"
+        )
+        fake.play_index.assert_awaited_once_with("tgt", item.queue_item_id, 20)
+    else:
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await PlayerQueuesController.transfer_queue(
+                cast("PlayerQueuesController", fake), "src", "tgt"
+            )
+        fake.stop.assert_not_awaited()
+        fake._clear.assert_not_called()
+        fake.load.assert_not_awaited()
+    assert locked_at_power_on == [False]
+
+
+async def test_a_transfer_that_does_not_play_leaves_a_switched_off_target_off() -> None:
+    """Without auto play, the queue moves to a switched-off target without powering it on."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.IDLE, track)
+    _with_real_locks(fake)
+    fake.mass.players.get_player("tgt").offline_by_power_control = True
+    fake.mass.players._power_on_switched_off_player = AsyncMock()
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    fake.mass.players._power_on_switched_off_player.assert_not_awaited()
+    fake.load.assert_awaited_once()
+
+
 def _with_real_locks(fake: MagicMock) -> PlayerController:
     """Give the controller stand-in the real playback locks of a bare players controller."""
     players = bare_player_controller()
