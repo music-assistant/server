@@ -851,6 +851,44 @@ async def test_a_transfer_that_does_not_play_leaves_a_switched_off_target_off() 
     fake.load.assert_awaited_once()
 
 
+@pytest.mark.parametrize("taken", [False, True])
+async def test_a_transfer_starts_a_target_a_group_took_once_it_let_go_of_the_players(
+    taken: bool,
+) -> None:
+    """
+    The target starts under the transfer's locks, unless it got another owner meanwhile.
+
+    A target that a group took while the transfer held it is started once the transfer let go
+    of both players, as a play action that takes the group's lock first.
+
+    :param taken: Whether a group takes the target while the transfer loads it.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, item = _playing_transfer(PlaybackState.IDLE, track)
+    players = _with_real_locks(fake)
+    owners: dict[str, str] = {}
+    players._playback_owner_id = lambda player_id: owners.get(player_id, player_id)  # type: ignore[method-assign]
+    fake.mass.players.holds_playback_owner_lock = players.holds_playback_owner_lock
+    locked_at_start: list[bool] = []
+
+    async def _load(*_args: object, **_kwargs: object) -> None:
+        if taken:
+            owners["tgt"] = "group"
+
+    async def _start(*_args: object) -> None:
+        locked_at_start.append(
+            any(lock.locked() for lock in players._player_command_locks.values())
+        )
+
+    fake.load = AsyncMock(side_effect=_load)
+    fake.play_index = AsyncMock(side_effect=_start)
+
+    await PlayerQueuesController.transfer_queue(cast("PlayerQueuesController", fake), "src", "tgt")
+
+    fake.play_index.assert_awaited_once_with("tgt", item.queue_item_id, 20)
+    assert locked_at_start == [not taken]
+
+
 def _with_real_locks(fake: MagicMock) -> PlayerController:
     """Give the controller stand-in the real playback locks of a bare players controller."""
     players = bare_player_controller()

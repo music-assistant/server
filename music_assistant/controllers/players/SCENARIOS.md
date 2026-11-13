@@ -1092,6 +1092,22 @@ once. Once the device is back, Bathroom plays Den's queue, and Den is stopped.
   container of a virtual player.
 - Proven by: `test_commands.py::test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it_powers_on`
 
+### BUSY-8 · A queue moved to a player that is grouped elsewhere meanwhile still plays there
+
+The queue of Den moves to Kitchen, by a transfer or because Den leaves the group it leads with
+Kitchen, and Den takes 40 s to stop. Meanwhile Kitchen joins Office's group, or Downstairs, a
+group of Office and Kitchen, takes it: a sync group that starts to play another track, or a
+universal group that powers on. The move still completes: Kitchen plays the moved queue and Den
+is idle with an empty queue. Kitchen leaves Office's group again; the sync group plays its track
+on Office; the universal group is idle. When the group takes Kitchen first and the queue moves
+while Office takes 40 s to do its part, Kitchen plays the moved queue as well, and a sync group
+still lists it, at the other track.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by:
+  - `test_commands.py::test_a_transfer_whose_target_joins_another_group_meanwhile_still_completes`
+  - `test_commands.py::test_a_transfer_whose_target_a_group_takes_meanwhile_still_completes`
+
 ### BUSY-11 · A play on the player a queue moved away from waits until the other one plays
 
 Kitchen takes 40 s to start the queue moved there from Den. Den has stopped and its queue is empty

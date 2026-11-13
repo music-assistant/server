@@ -14,6 +14,7 @@ but it can also be something else, hence the loose coupling.
 from __future__ import annotations
 
 import asyncio
+import functools
 import random
 import time
 from contextlib import suppress
@@ -116,7 +117,7 @@ from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
     from music_assistant_models import BackgroundTask
     from music_assistant_models.config_entries import (
@@ -1490,6 +1491,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             for item in source_items:
                 item.queue_id = target_queue_id
             self.update_items(target_queue_id, source_items)
+            start: Callable[[], Awaitable[None]] | None = None
             if (
                 auto_play
                 and not target_queue.ended
@@ -1499,9 +1501,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # the target's player can still report the media it played before, which resume()
                 # would read as this item's position: start the item where the source was instead
                 position = 0 if current_item.media_type == MediaType.RADIO else source_resume_pos
-                await self.play_index(target_queue_id, current_item.queue_item_id, position)
+                start = functools.partial(
+                    self.play_index, target_queue_id, current_item.queue_item_id, position
+                )
             elif auto_play:
-                await self.resume(target_queue_id)
+                start = functools.partial(self.resume, target_queue_id)
+            if start is not None and self.mass.players.holds_playback_owner_lock(target_queue_id):
+                await start()
+                start = None
+        if start is not None:
+            # the target got another owner while it was held (it joined a group): its start takes
+            # that owner's lock first, so it runs as a play action of its own once both players
+            # are let go of
+            await start()
 
     # Interaction with player
 

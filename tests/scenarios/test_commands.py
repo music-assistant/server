@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_FAKE
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import ResourceBusyError
 from music_assistant_models.player import PlayerMedia, PlayerSource
@@ -13,6 +14,7 @@ from music_assistant_models.player import PlayerMedia, PlayerSource
 from tests.common import record_lock_waits
 
 from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakeProtocol, Scenario
+from .test_grouping import _player_id, _speakers
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
 KITCHEN = {
@@ -56,13 +58,21 @@ async def _two_speakers(scenario: Scenario) -> tuple[FakeProtocol, str, FakeProt
     )
 
 
-def _slow(speaker: FakeProtocol, command: str, seconds: float) -> None:
-    """Let a command of the device take the given time before it does what it does."""
-    handle = getattr(FakeProtocol, command)
+def _slow(speaker: FakeProtocol, command: str, seconds: float, *, once: bool = False) -> None:
+    """
+    Let a command of the device take the given time before it does what it does.
 
-    async def _slow_command(*args: object) -> None:
-        await asyncio.sleep(seconds)
-        await handle(speaker, *args)
+    :param once: Only the first time the device gets the command.
+    """
+    handle = getattr(FakeProtocol, command)
+    slowed = False
+
+    async def _slow_command(*args: object, **kwargs: object) -> None:
+        nonlocal slowed
+        if not (once and slowed):
+            slowed = True
+            await asyncio.sleep(seconds)
+        await handle(speaker, *args, **kwargs)
 
     setattr(speaker, command, _slow_command)
 
@@ -361,3 +371,192 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
 
     assert _plays(scenario, bathroom_id) == (PlaybackState.PLAYING, [TEST_TRACK_URI])
     assert _plays(scenario, den_id) == (PlaybackState.IDLE, [])
+
+
+# what a client sees of a player: its playback, the uris its queue holds, the uri of what it
+# plays, the name of the player it is synced to and of the group holding it
+type _Seen = tuple[PlaybackState, list[str | None], str | None, str | None, str | None]
+
+
+def _seen(scenario: Scenario, names: dict[str, str]) -> dict[str, _Seen]:
+    """
+    Return what a client sees of each player, by name.
+
+    :param names: The name of each player, by its id.
+    """
+    seen: dict[str, _Seen] = {}
+    for player_id, name in names.items():
+        state = scenario.player(player_id)
+        assert state is not None
+        media = state.current_media.uri if state.current_media else None
+        synced_to = names.get(state.synced_to) if state.synced_to else None
+        group = names.get(state.active_group) if state.active_group else None
+        seen[name] = (state.playback_state, _plays(scenario, player_id)[1], media, synced_to, group)
+    return seen
+
+
+def _rendered(*speakers: FakeProtocol) -> dict[str, tuple[PlaybackState, str | None]]:
+    """Return what each device renders, by its name."""
+    return {
+        speaker.name or speaker.protocol_id: (
+            speaker.playback_state,
+            speaker.current_media.uri if speaker.current_media else None,
+        )
+        for speaker in speakers
+    }
+
+
+IDLE: _Seen = (PlaybackState.IDLE, [], None, None, None)
+PLAYS_MOVED: _Seen = (PlaybackState.PLAYING, [TEST_TRACK_URI], TEST_TRACK_URI, None, None)
+
+
+@pytest.mark.parametrize("operation", ["transfer", "hand-over"])
+async def test_a_transfer_whose_target_joins_another_group_meanwhile_still_completes(
+    scenario: Scenario, operation: str
+) -> None:
+    """
+    A player a queue moves to that joins another group meanwhile plays the queue once moved.
+
+    Den takes 40 s to stop. Kitchen, the player the queue of Den moves to (by a transfer, or as
+    Den's group member when Den leaves its group), joins Office's group meanwhile. Both commands
+    succeed: Kitchen leaves Office's group again and plays the moved queue, Den is idle with an
+    empty queue, and Office is idle.
+    """
+    _sonos, (den, kitchen, office) = await _speakers(scenario, "Den", "Kitchen", "Office")
+    den_id, kitchen_id, office_id = (_player_id(scenario, p) for p in (den, kitchen, office))
+    players = scenario.mass.players
+    if operation == "hand-over":
+        await players.cmd_set_members(den_id, player_ids_to_add=[kitchen_id])
+        await scenario.idle()
+    await scenario.play(den_id)
+    _slow(den, "stop", 40)
+    move = await scenario.command(
+        scenario.mass.player_queues.transfer_queue(den_id, kitchen_id)
+        if operation == "transfer"
+        else players.cmd_ungroup(den_id)
+    )
+
+    await scenario.advance(10)
+    join = await scenario.command(
+        players.cmd_set_members(office_id, player_ids_to_add=[kitchen_id])
+    )
+    await scenario.advance(50)
+    await move
+    await join
+    await scenario.idle()
+
+    names = {den_id: "Den", kitchen_id: "Kitchen", office_id: "Office"}
+    assert _seen(scenario, names) == {"Den": IDLE, "Kitchen": PLAYS_MOVED, "Office": IDLE}
+    assert _rendered(den, kitchen, office) == {
+        "Den": (PlaybackState.IDLE, None),
+        "Kitchen": (PlaybackState.PLAYING, TEST_TRACK_URI),
+        "Office": (PlaybackState.IDLE, None),
+    }
+
+
+_GROUP_PLAYS_OTHER: dict[str, _Seen] = {
+    "Office": (PlaybackState.PLAYING, [], OTHER_TRACK_URI, None, "Downstairs"),
+    "Downstairs": (PlaybackState.PLAYING, [OTHER_TRACK_URI], OTHER_TRACK_URI, None, None),
+}
+_SYNC_GROUP_RENDERS: dict[str, tuple[PlaybackState, str | None]] = {
+    "Den": (PlaybackState.IDLE, None),
+    "Kitchen": (PlaybackState.PLAYING, TEST_TRACK_URI),
+    "Office": (PlaybackState.PLAYING, OTHER_TRACK_URI),
+}
+_ONLY_KITCHEN_RENDERS: dict[str, tuple[PlaybackState, str | None]] = {
+    "Den": (PlaybackState.IDLE, None),
+    "Kitchen": (PlaybackState.PLAYING, TEST_TRACK_URI),
+    "Office": (PlaybackState.IDLE, None),
+}
+_UNIVERSAL_GROUP_END: tuple[dict[str, _Seen], dict[str, tuple[PlaybackState, str | None]]] = (
+    {"Den": IDLE, "Kitchen": PLAYS_MOVED, "Office": IDLE, "Downstairs": IDLE},
+    _ONLY_KITCHEN_RENDERS,
+)
+# what the players show and the devices render at the end, by group type and order
+CAPTURED_END = {
+    ("sync_group", "transfer first"): (
+        {"Den": IDLE, "Kitchen": PLAYS_MOVED, **_GROUP_PLAYS_OTHER},
+        _SYNC_GROUP_RENDERS,
+    ),
+    ("sync_group", "capture first"): (
+        {
+            "Den": IDLE,
+            "Kitchen": (
+                PlaybackState.PLAYING,
+                [TEST_TRACK_URI],
+                OTHER_TRACK_URI,
+                "Office",
+                "Downstairs",
+            ),
+            **_GROUP_PLAYS_OTHER,
+        },
+        _SYNC_GROUP_RENDERS,
+    ),
+    ("universal_group", "transfer first"): _UNIVERSAL_GROUP_END,
+    ("universal_group", "capture first"): _UNIVERSAL_GROUP_END,
+}
+
+
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+@pytest.mark.parametrize("order", ["transfer first", "capture first"])
+async def test_a_transfer_whose_target_a_group_takes_meanwhile_still_completes(
+    scenario: Scenario, group_type: str, order: str
+) -> None:
+    """
+    A player a queue moves to that a group takes meanwhile plays the moved queue.
+
+    The queue of Den moves to Kitchen while Downstairs, a group of Office and Kitchen, takes
+    Kitchen: a sync group that starts to play another track, or a universal group that powers
+    on. Either comes while Den takes 40 s to stop, or first, with Office taking 40 s to do its
+    part. Both commands succeed, Den is idle with an empty queue and Kitchen holds the moved
+    queue and plays it:
+    - the sync group plays the other track on Office; Kitchen has left it when the queue moved
+      first, and is still listed in it, at the other track, when the group came first;
+    - the universal group, which plays nothing, is idle with Office.
+    """
+    _sonos, (den, kitchen, office) = await _speakers(scenario, "Den", "Kitchen", "Office")
+    den_id, kitchen_id, office_id = (_player_id(scenario, p) for p in (den, kitchen, office))
+    players = scenario.mass.players
+    queues = scenario.mass.player_queues
+    if group_type == "universal_group":
+        await scenario.mass.config._create_provider_instance(group_type, {})
+    group = await players.create_group_player(
+        group_type, "Downstairs", [office_id, kitchen_id], dynamic=True
+    )
+    group_id = group.player_id
+    await scenario.idle()
+    await scenario.play(den_id)
+    if group_type == "universal_group":
+        await scenario.configure_player(group_id, power_control=PLAYER_CONTROL_FAKE)
+        if order == "capture first":
+            await scenario.report(office, powered=False)
+
+    async def _capture() -> None:
+        if group_type == "sync_group":
+            await queues.play_media(group_id, OTHER_TRACK_URI)
+        else:
+            await players.cmd_power(group_id, True)
+
+    if order == "transfer first":
+        _slow(den, "stop", 40, once=True)
+        transfer = await scenario.command(queues.transfer_queue(den_id, kitchen_id))
+        await scenario.advance(10)
+        capture = await scenario.command(_capture())
+    else:
+        _slow(office, "set_members" if group_type == "sync_group" else "power", 40, once=True)
+        capture = await scenario.command(_capture())
+        await scenario.advance(10)
+        transfer = await scenario.command(queues.transfer_queue(den_id, kitchen_id))
+    await scenario.advance(100)
+    await transfer
+    await capture
+    await scenario.idle()
+
+    names = {den_id: "Den", kitchen_id: "Kitchen", office_id: "Office", group_id: "Downstairs"}
+    seen, rendered = CAPTURED_END[group_type, order]
+    assert _seen(scenario, names) == seen
+    assert _rendered(den, kitchen, office) == rendered
+    stop = await scenario.command(players.cmd_stop(group_id))
+    await scenario.advance(20)
+    await stop
+    await scenario.idle()

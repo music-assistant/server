@@ -98,6 +98,18 @@ class PlayerLocksMixin(_PlayerControllerBase):
             task, set()
         )
 
+    def holds_playback_owner_lock(self, player_id: str) -> bool:
+        """
+        Return whether the running task holds the playback lock of a player's owner.
+
+        The owner is the player itself, its sync leader or the group holding it. A task that
+        holds a player that got another owner since (it joined a group) does not hold that
+        owner's lock, and a playback command on the player from that task fails as busy.
+
+        :param player_id: The player whose owner to check.
+        """
+        return self.holds_player_lock(self._playback_owner_id(player_id))
+
     @contextlib.asynccontextmanager
     async def get_group_and_player_lock(self, player_id: str) -> AsyncIterator[None]:
         """
