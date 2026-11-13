@@ -24,7 +24,7 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.player_state import derive_player_state
 from music_assistant.models.plugin import PluginProvider
-from tests.common import MockProvider, attach_mock, make_state_inputs
+from tests.common import MockProvider, attach_mock, make_state_inputs, virtual_loop_clock
 
 PLAYER_ID = "player_1"
 PROVIDER_INSTANCE = "spotify_connect--abc"
@@ -126,10 +126,13 @@ async def test_selecting_a_source_on_an_idle_player_is_not_held_up_by_a_stop() -
     player.state.active_source = "some_other_source"
     player.state.playback_state = PlaybackState.IDLE
 
-    # waiting on a state change that a no-op stop never reports would burn the
-    # full 5s timeout; this bound sits well below that and well above a prompt return
-    async with asyncio.timeout(2):
+    # waiting on a state change that a no-op stop never reports would burn the full 5s
+    # timeout; the clock only moves while the loop waits, so a prompt start takes no time
+    loop = asyncio.get_running_loop()
+    with virtual_loop_clock():
+        started = loop.time()
         await controller._handle_select_source(PLAYER_ID, SOURCE_URI)
+        assert loop.time() == started
 
     controller._handle_cmd_stop.assert_awaited_once_with(PLAYER_ID)
     controller._handle_play_media.assert_awaited_once()

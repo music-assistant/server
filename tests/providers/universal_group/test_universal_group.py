@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import partial
@@ -56,7 +55,13 @@ from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
-from tests.common import MockProvider, attach_mock, make_player_state, mock_player_mass
+from tests.common import (
+    MockProvider,
+    attach_mock,
+    make_player_state,
+    mock_player_mass,
+    record_lock_waits,
+)
 
 GROUP_PROTOCOL_ID = "ugp_test"
 
@@ -938,12 +943,12 @@ class TestCommandOnAMemberOfAHeldGroup:
         else:
             call = getattr(players, command)("m1")
 
-        started = time.monotonic()
-        await call
-        took = time.monotonic() - started
+        waits = record_lock_waits(players)
 
+        await call
+
+        assert waits == []
         assert sorted(played_on) == ["m1", "m2"]
-        assert took < LOCK_BUDGET
 
 
 class TestStreamContentLength:

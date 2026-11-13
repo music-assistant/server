@@ -54,6 +54,7 @@ from tests.common import (
     attach_mock,
     make_player_state,
     mock_player_mass,
+    record_lock_waits,
 )
 
 # the lock budget of the tests that wait for a real player lock, in seconds
@@ -1333,11 +1334,11 @@ class TestCommandOnAMemberOfASyncGroup:
             assert player is not None
             player.refresh_state(signal_event=False)
         assert member.state.active_group == _group_id(group)
+        waits = record_lock_waits(players)
 
-        started = time.monotonic()
         await getattr(players, command)("B")
 
-        assert time.monotonic() - started < LOCK_BUDGET
+        assert waits == []
         leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
 
     @pytest.mark.parametrize("command", ["cmd_play", "cmd_resume"])
@@ -1352,11 +1353,11 @@ class TestCommandOnAMemberOfASyncGroup:
         for player in (leader, child):
             player.refresh_state(signal_event=False)
         assert child.state.synced_to == "L"
+        waits = record_lock_waits(players)
 
-        started = time.monotonic()
         await getattr(players, command)("B")
 
-        assert time.monotonic() - started < LOCK_BUDGET
+        assert waits == []
         leader.own_protocol.play_media.assert_awaited_once()  # type: ignore[union-attr]
         child.own_protocol.play_media.assert_not_awaited()  # type: ignore[union-attr]
 
