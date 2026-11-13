@@ -29,6 +29,8 @@ USER_AGENT_HEADER = (
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
 MEDIA_GET_URL = "https://media.deezer.com/v1/get_url"
 GW_TIMEOUT = ClientTimeout(total=30)
+# Deezer's stream formats, best first
+STREAM_FORMATS = ("FLAC_24", "FLAC", "MP3_320", "MP3_128")
 
 
 class DeezerGWError(Exception):
@@ -67,11 +69,20 @@ class GWClient:
     user_country: str
 
     def __init__(
-        self, session: ClientSession, arl_token: str, account_id: str | None = None
+        self,
+        session: ClientSession,
+        arl_token: str,
+        account_id: str | None = None,
+        max_format: str = "FLAC_24",
     ) -> None:
-        """Provide an aiohttp ClientSession, the deezer ARL token and an optional Family profile."""
+        """
+        Provide an aiohttp ClientSession, the deezer ARL token and an optional Family profile.
+
+        :param max_format: The best format to request, from the quality setting.
+        """
         self._arl_token = arl_token
         self._account_id = account_id
+        self._max_format = max_format
         self.session = session
         # the session is shared server-wide, so this client keeps its cookies to itself
         self._cookies: dict[str, str] = {}
@@ -179,7 +190,8 @@ class GWClient:
                 "media": {
                     "id": last_track.item_id,
                     "type": "song",
-                    "format": last_track.data["format"],
+                    # Deezer drops a listen reported as FLAC_24, a hi-res play counts as FLAC
+                    "format": last_track.data["format"].removesuffix("_24"),
                 },
                 "type": 1,
                 "stat": {
@@ -274,7 +286,11 @@ class GWClient:
             formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
         if web_qualities["lossless"] or mobile_qualities["lossless"]:
             formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
-        self.formats = formats
+            # hi-res comes with lossless, Deezer has no flag for it
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC_24"})
+        # leave out the formats above the quality setting
+        allowed = STREAM_FORMATS[STREAM_FORMATS.index(self._max_format) :]
+        self.formats = [fmt for fmt in formats if fmt["format"] in allowed]
 
         self.user_country = user_data["results"]["COUNTRY"]
 

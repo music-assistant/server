@@ -2112,9 +2112,6 @@ class _FakeStreamResponse:
         """Record that the connection was ended."""
         self.force_closed = True
 
-    def enable_chunked_encoding(self) -> None:
-        """Accept the chunked-profile branch."""
-
     async def prepare(self, request: Any) -> None:
         """Accept the response start."""
 
@@ -2127,6 +2124,7 @@ def _single_item_handler(
     is_realtime: bool,
     capture_ffmpeg: pytest.MonkeyPatch | None = None,
     player_provider_domain: str = "test",
+    player_needs_gapless_burst: bool = False,
 ) -> tuple[Any, MagicMock, dict[str, Any]]:
     """
     Return a single-item stream handler rigged to stop early.
@@ -2165,6 +2163,7 @@ def _single_item_handler(
     mass.config.get_raw_core_config_value.return_value = 8
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
     player.provider.domain = player_provider_domain
+    player.needs_gapless_burst = player_needs_gapless_burst
     player.state.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
     player.state.name = "Player"
     mass.players.get_player.return_value = player
@@ -2203,7 +2202,7 @@ def _single_item_handler(
                 content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
             )
         )
-        player.get_config_value = MagicMock(return_value="default")
+        player.get_config_value = MagicMock(return_value=False)
         controller._update_audio_processing_context = MagicMock()
 
         def _capture_ffmpeg_args(**kwargs: Any) -> None:
@@ -2212,7 +2211,9 @@ def _single_item_handler(
 
         capture_ffmpeg.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
         capture_ffmpeg.setattr(
-            controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse)
+            controller_mod,
+            "web",
+            SimpleNamespace(StreamResponse=_FakeStreamResponse, HTTPNotFound=web.HTTPNotFound),
         )
     return controller, request, seen
 
@@ -2261,20 +2262,31 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
 
 @pytest.mark.parametrize(
-    ("is_realtime", "profile"),
-    [(False, PacingProfile.DEFAULT), (True, PacingProfile.NEAR_REALTIME)],
-    ids=["default", "realtime"],
+    ("is_realtime", "needs_gapless_burst", "profile"),
+    [
+        (False, False, PacingProfile.REALTIME),
+        (True, False, PacingProfile.REALTIME),
+        (False, True, PacingProfile.GAPLESS_BURST),
+        (True, True, PacingProfile.REALTIME),
+    ],
+    ids=["buffered", "realtime", "gapless-burst-buffered", "gapless-burst-realtime"],
 )
-async def test_single_item_handler_paces_by_source(
+async def test_single_item_handler_paces_by_player_and_source(
     monkeypatch: pytest.MonkeyPatch,
     is_realtime: bool,
+    needs_gapless_burst: bool,
     profile: PacingProfile,
 ) -> None:
-    """A buffered item gets the default; a source that feeds just-in-time a gentler pace."""
+    """
+    A single track gets the realtime pace, whatever its source.
+
+    Only a buffered track for a player that holds a whole opening chunk before it plays
+    gapless gets that chunk up front; a just-in-time source could not deliver it anyway.
+    """
     controller, request, seen = _single_item_handler(
         is_realtime=is_realtime,
         capture_ffmpeg=monkeypatch,
-        player_provider_domain="sonos",
+        player_needs_gapless_burst=needs_gapless_burst,
     )
 
     with pytest.raises(_FfmpegArgsCaptured):
@@ -2339,7 +2351,7 @@ def _flow_handler(
     mass.player_queues.get_item.return_value = start_queue_item
     mass.config.get_raw_player_config_value.return_value = "disabled"
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
-    player.get_config_value = MagicMock(return_value="default")
+    player.get_config_value = MagicMock(return_value=False)
     player.state.name = "Player"
     mass.players.get_player.return_value = player
 
@@ -2371,7 +2383,11 @@ def _flow_handler(
         raise _FfmpegArgsCaptured
 
     monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
-    monkeypatch.setattr(controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse))
+    monkeypatch.setattr(
+        controller_mod,
+        "web",
+        SimpleNamespace(StreamResponse=_FakeStreamResponse, HTTPNotFound=web.HTTPNotFound),
+    )
 
     request = MagicMock()
     request.method = "GET"
@@ -2402,7 +2418,7 @@ async def test_flow_is_always_paced_close_to_playback(
     with pytest.raises(_FfmpegArgsCaptured):
         await controller.serve_queue_flow_stream(request)
 
-    assert seen["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
+    assert seen["extra_input_args"] == output_pacing_args()
 
 
 async def test_flow_passes_on_encoded_audio_without_waiting_for_a_full_chunk(

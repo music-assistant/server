@@ -6,7 +6,6 @@
   "type": "music",
   "requirements": ["python-google-drive-api==0.1.0"],
   "codeowners": ["@OzGav"],
-  "tier": "community",
   "multi_instance": true,
   "stage": "beta"
 }

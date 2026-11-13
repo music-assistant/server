@@ -43,6 +43,8 @@ _DEVICES = """<?xml version='1.0' encoding='UTF-8'?>
   location='http://192.168.1.41:56766/zone-1.xml'>Bar,Sofa</device>
  <device udn='uuid:bar-renderer' type='urn:schemas-upnp-org:device:MediaRenderer:1'
   location='http://192.168.1.42:60778/bar.xml'>Speaker Bar</device>
+ <device udn='uuid:bar-device' type='urn:schemas-raumfeld-com:device:RaumfeldDevice:1'
+  location='http://192.168.1.42:57793/bar-device.xml'>Teufel Raumfeld Device</device>
  <device udn='uuid:media-server' type='urn:schemas-upnp-org:device:MediaServer:1'
   location='http://192.168.1.41:57132/ms.xml'>Raumfeld MediaServer</device>
 </devices>"""
@@ -86,6 +88,21 @@ def test_room_details_are_read_from_their_elements() -> None:
     assert not host.plays_spotify_connect("Kitchen")
 
 
+def test_a_room_lists_every_renderer_in_the_hosts_order() -> None:
+    """A room of several speakers lists them all; the first is the room's own renderer."""
+    host = RaumfeldHost(MagicMock(), "http://192.168.1.41:47365")
+    host._apply_zone_config(
+        _ZONES.replace(
+            "<renderer udn='uuid:kitchen-renderer' name='Connector Kitchen'></renderer>",
+            "<renderer udn='uuid:kitchen-2'/><renderer udn='uuid:kitchen-1'/>",
+        )
+    )
+    assert host.renderer_udns("Kitchen") == ["uuid:kitchen-2", "uuid:kitchen-1"]
+    assert host.renderer_udn("Kitchen") == "uuid:kitchen-2"
+    assert host.renderer_udns("Sofa") == ["uuid:sofa-renderer"]
+    assert host.renderer_udns("Attic") == []
+
+
 def test_an_unknown_room_has_no_details() -> None:
     """A room the host does not list gives nothing, rather than raising."""
     host = _loaded_host()
@@ -101,6 +118,10 @@ def test_devices_are_read_with_the_media_server() -> None:
     assert host.location("uuid:bar-renderer") == "http://192.168.1.42:60778/bar.xml"
     assert host.location("uuid:unknown") is None
     assert host.media_server_udn == "uuid:media-server"
+    assert (
+        host.raumfeld_device_location("192.168.1.42") == "http://192.168.1.42:57793/bar-device.xml"
+    )
+    assert host.raumfeld_device_location("192.168.1.41") is None
 
 
 def test_spotify_connect_ends_with_the_session() -> None:

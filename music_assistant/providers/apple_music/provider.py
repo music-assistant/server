@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, cast
 
 import jwt
@@ -44,6 +45,7 @@ from .constants import (
 from .helpers import browse_playlists
 from .helpers.utils import is_apple_id
 from .library import AppleMusicLibraryManager
+from .live_radio import AppleMusicLiveRadioManager
 from .media import AppleMusicMediaManager
 from .recommendations import AppleMusicRecommendationManager
 from .streaming import AppleMusicStreamingManager
@@ -82,7 +84,18 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self.media_manager = AppleMusicMediaManager(self)
         self.recommendation_manager = AppleMusicRecommendationManager(self)
         self.streaming_manager = AppleMusicStreamingManager(self)
+        self.live_radio_manager = AppleMusicLiveRadioManager(self)
         self._last_library_listings: dict[str, dict[str, Any]] = {}
+
+    @property
+    def storefront(self) -> str | None:
+        """Return the storefront of this account."""
+        return self._storefront
+
+    @property
+    def music_user_token(self) -> str | None:
+        """Return the music user token of this account."""
+        return self._music_user_token
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -104,6 +117,7 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
             "requests_since": self.api_client.request_counter.started_at,
             "requests": self.api_client.request_counter.as_dict(),
             "last_library_listings": self._last_library_listings,
+            "live_radio": self.live_radio_manager.state,
         }
 
     async def handle_async_init(self) -> None:
@@ -142,7 +156,16 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if path_parts[0] == "playlists":
             return await browse_playlists(self, path, path_parts)
         if path_parts[0] == "stations":
-            return await self.recommendation_manager.browse_stations()
+            try:
+                live_stations = await self.live_radio_manager.get_stations()
+            except (ClientError, TimeoutError, MusicAssistantError) as err:
+                # the recommended stations still work without the live ones
+                self.logger.warning("Could not get the live stations: %s", type(err).__name__)
+                live_stations = []
+            return [
+                *live_stations,
+                *await self.recommendation_manager.browse_stations(),
+            ]
         return await super().browse(path)
 
     async def search(
@@ -407,8 +430,23 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     # ------------------------------------------------------------------
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the content details for the given track when it will be streamed."""
+        """Return the content details for the given item when it will be streamed."""
+        if media_type == MediaType.RADIO:
+            return await self.live_radio_manager.get_stream_details(item_id)
         return await self.streaming_manager.get_stream_details(item_id)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio of a live station.
+
+        :param streamdetails: The StreamDetails from get_stream_details.
+        :param seek_position: Ignored, a live station can not seek.
+        """
+        async with aclosing(self.live_radio_manager.get_audio_stream(streamdetails)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders with items)."""

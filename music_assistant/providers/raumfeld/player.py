@@ -299,7 +299,9 @@ class RaumfeldPlayer(Player):
         self._power_changed_at = 0.0
         self._advance_task_id = f"raumfeld_advance_{player_id}"
         self._attr_device_info = DeviceInfo(
-            model=provider.room_model(room) or "Raumfeld", manufacturer="Teufel"
+            model=provider.room_model(room) or "Raumfeld",
+            manufacturer="Teufel",
+            software_version=provider.room_software_version(room),
         )
         # Expose the room's media-renderer UUID (and IP) so Music Assistant links this
         # native player to the same renderer's DLNA/Chromecast/Sendspin representation
@@ -337,16 +339,7 @@ class RaumfeldPlayer(Player):
         # expose the room's analog input as a selectable source when it has one
         if self._line_in is not None:
             self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
-            self._static_sources = [
-                PlayerSource(
-                    id=SOURCE_LINE_IN,
-                    name="Line-in",
-                    passive=False,
-                    can_play_pause=False,
-                    can_next_previous=False,
-                    can_seek=False,
-                )
-            ]
+            self._static_sources = self._line_in_sources()
             self._attr_source_list = list(self._static_sources)
 
     @property
@@ -416,6 +409,41 @@ class RaumfeldPlayer(Player):
         self._attr_name = room
         self.update_state()
 
+    def set_software_version(self, version: str | None) -> None:
+        """
+        Show the software version of this room's speaker, keeping the known one if unread.
+
+        :param version: The version the speaker reports, or ``None`` if it was not read.
+        """
+        if version is None or version == self._attr_device_info.software_version:
+            return
+        self._attr_device_info.software_version = version
+        self.update_state()
+
+    def set_model(self, model: str | None) -> None:
+        """
+        Show the model of the speaker the room plays through, keeping the known one if unread.
+
+        :param model: The model name the speaker reports, or ``None`` if it was not read.
+        """
+        if model is None or model == self._attr_device_info.model:
+            return
+        self._attr_device_info.model = model
+        self.update_state()
+
+    def set_line_in(self, line_in: tuple[str, str] | None) -> None:
+        """
+        Offer the Line-In of the speaker the room plays through, or none if it has none.
+
+        :param line_in: The ``(stream url, title)`` of the speaker's Line-In, or ``None``.
+        """
+        if line_in == self._line_in:
+            return
+        self._line_in = line_in
+        buttons = [source for source in self._static_sources if source.id != SOURCE_LINE_IN]
+        self._offer_sources([*self._line_in_sources(), *buttons])
+        self.update_state()
+
     def set_station_buttons(self, buttons: list[tuple[int, str, str, bool]]) -> None:
         """
         Offer this speaker's station buttons as sources.
@@ -433,18 +461,7 @@ class RaumfeldPlayer(Player):
         ]:
             return
         self._library_sources = library
-        self._static_sources = sources
-        if sources:
-            self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
-        # a button that is playing stays listed once, with the controls it plays with
-        if (external := self._external_source) is None:
-            self._attr_source_list = sources
-        elif any(s.id == external.id for s in sources):
-            self._attr_source_list = [external if s.id == external.id else s for s in sources]
-        else:
-            # its button is gone, so it can no longer be selected
-            external = self._external_source = dataclasses.replace(external, passive=True)
-            self._attr_source_list = [*sources, external]
+        self._offer_sources(sources)
         self.update_state()
 
     def set_group_members(self, member_ids: list[str]) -> None:
@@ -970,6 +987,42 @@ class RaumfeldPlayer(Player):
             return
         async with self._poll_guard():
             await self._poll_state()
+
+    def _line_in_sources(self) -> list[PlayerSource]:
+        """Return the Line-In as a source, or nothing if the room has none."""
+        if self._line_in is None:
+            return []
+        return [
+            PlayerSource(
+                id=SOURCE_LINE_IN,
+                name="Line-in",
+                passive=False,
+                can_play_pause=False,
+                can_next_previous=False,
+                can_seek=False,
+            )
+        ]
+
+    def _offer_sources(self, sources: list[PlayerSource]) -> None:
+        """
+        Offer the Line-In and station buttons given as this room's sources.
+
+        :param sources: The Line-In (if any) and the station buttons.
+        """
+        self._static_sources = sources
+        if sources:
+            self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.SELECT_SOURCE)
+        # a button that is playing stays listed once, with the controls it plays with
+        if (external := self._external_source) is None:
+            self._attr_source_list = sources
+        elif any(s.id == external.id for s in sources):
+            self._attr_source_list = [external if s.id == external.id else s for s in sources]
+        else:
+            # its button is gone, so it can no longer be selected
+            external = self._external_source = dataclasses.replace(external, passive=True)
+            self._attr_source_list = [*sources, external]
 
     async def _poll_state(self) -> None:
         """Read this room's current state and apply it."""

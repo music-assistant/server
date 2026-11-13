@@ -45,6 +45,9 @@ def _fake_controller() -> MagicMock:
     fake._cancel_pending_playback = partial(
         PlayerQueuesController._cancel_pending_playback, cast("PlayerQueuesController", fake)
     )
+    fake._end_session = partial(
+        PlayerQueuesController._end_session, cast("PlayerQueuesController", fake)
+    )
 
     def _close_coro(target: Any, **_kwargs: Any) -> None:
         # the cleanup is handed to create_task as a coroutine; nothing awaits it here

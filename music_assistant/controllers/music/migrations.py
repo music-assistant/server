@@ -1431,6 +1431,12 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
         # images; the provider no longer passes those through when resolving an image
         await _drop_opensubsonic_external_images(database)
 
+    if prev_version <= 72:
+        # The old name referred to either name COLLATE NOCASE or search_name;
+        # startup now creates search_name_idx, so neither old definition is needed.
+        for table in MEDIA_ITEM_DB_TABLES:
+            await database.execute(f"DROP INDEX IF EXISTS {table}_name_nocase_idx")
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active

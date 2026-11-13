@@ -180,6 +180,21 @@ class _PlayerDaemon:
     # on_source_selected. Cleared when the session ends.
     last_playback_options: BackendPlaybackOptions | None = None
 
+    def set_playing(self, playing: bool) -> None:
+        """Set the backend's play state, moving the stream position anchor to this moment."""
+        metadata = self.stream_metadata
+        # A backend may report no position on pause or resume, so the anchor moves here.
+        if (
+            playing != self.playing
+            and metadata.elapsed_time is not None
+            and metadata.elapsed_time_last_updated is not None
+        ):
+            now = int(time.time())
+            if not playing:
+                metadata.elapsed_time += int(now - metadata.elapsed_time_last_updated)
+            metadata.elapsed_time_last_updated = now
+        self.playing = playing
+
 
 class SpotifyConnectProvider(PluginProvider):
     """Implementation of a Spotify Connect Plugin (backed by SpotifyConnectBackends)."""
@@ -973,7 +988,7 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.active_player_id = None
         daemon.in_use_by_player = None
         daemon.active_session_id = None
-        daemon.playing = False
+        daemon.set_playing(False)
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
             # the player is not playing us any more, so it should stop saying it is;
@@ -1001,7 +1016,7 @@ class SpotifyConnectProvider(PluginProvider):
             # The backend's Spotify session is gone (e.g. daemon exit). Reset
             # session state so a dead/restarting backend isn't treated as active
             # and controllable; a fresh 'active' event re-establishes it.
-            daemon.playing = False
+            daemon.set_playing(False)
             daemon.spotify_session_active = False
             # stale options must not outlive the session they belong to
             daemon.last_playback_options = None
@@ -1051,7 +1066,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self._schedule_pause_stop(daemon, prev_player_id)
             return
         elif event.type is BackendEventType.PLAYING:
-            daemon.playing = True
+            daemon.set_playing(True)
             # A resume can arrive while the pause-stop is still in flight on a
             # slow player; cancel it so it doesn't kill the restarted stream.
             # (a stop that already completed is fine: play_media below restarts)
@@ -1065,7 +1080,7 @@ class SpotifyConnectProvider(PluginProvider):
             self._schedule_play_media(daemon)
         elif event.type in (BackendEventType.PAUSED, BackendEventType.STOPPED):
             was_playing = daemon.playing
-            daemon.playing = False
+            daemon.set_playing(False)
             # A pause/stop is the definitive "don't start": cancel a deferred fire
             # from a now-stale 'playing'. On a backend whose stream ends on pause the
             # active get_audio_stream sees the PCM stop and ends the stream (clean

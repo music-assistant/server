@@ -141,6 +141,9 @@ def test_a_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
             lambda queues: queues.save_as_playlist(OTHER_PLAYER, "Saved"), id="save_as_playlist"
         ),
         pytest.param(
+            lambda queues: queues.add_to_playlist(OTHER_PLAYER, "playlist_1"), id="add_to_playlist"
+        ),
+        pytest.param(
             lambda queues: queues.transfer_queue(OTHER_PLAYER, ALLOWED_PLAYER), id="transfer_from"
         ),
         pytest.param(

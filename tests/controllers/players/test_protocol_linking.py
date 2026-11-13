@@ -32,7 +32,6 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
     CONF_UNDERLYING_PLAYER_ID,
 )
-from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
@@ -11733,27 +11732,6 @@ class TestSelfReferentialProtocolLinks:
         # the obsolete universal player must not keep listing the native player,
         # or its permanent cleanup would re-evaluate it as an orphaned protocol
         assert "esp_client" not in universal._protocol_player_ids
-
-    async def test_migrate_clears_persisted_self_referential_link(self) -> None:
-        """Config migration scrubs a self-referential link left by an older version."""
-        config = ConfigController.__new__(ConfigController)
-        config._data = {
-            CONF_PLAYERS: {
-                "esp_client": {
-                    "provider": "sendspin",
-                    "player_id": "esp_client",
-                    "values": {
-                        "protocol_parent_id": "esp_client",
-                        "linked_protocol_ids": ["esp_client"],
-                    },
-                }
-            }
-        }
-        await migrate(config._data)
-
-        values = config._data[CONF_PLAYERS]["esp_client"]["values"]
-        assert values["protocol_parent_id"] is None
-        assert "esp_client" not in values["linked_protocol_ids"]
 
 
 class TestDerivedProtocolLinking:

@@ -27,6 +27,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     AudioError,
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -63,6 +64,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.throttle_retry import (
     MAX_WAIT_TIME,
     RequestPriority,
@@ -634,25 +636,17 @@ class SpotifyProvider(MusicProvider):
         for idx, episode_data in enumerate(episodes_data):
             episode = parse_podcast_episode(episode_data, self, podcast)
             episode.position = total - idx
-
-            # Set played status if sync is enabled and resume data exists
-            if self.podcast_progress_sync_enabled and "resume_point" in episode_data:
-                resume_point = episode_data["resume_point"]
-                fully_played = resume_point.get("fully_played", False)
-                position_ms = resume_point.get("resume_position_ms", 0)
-
-                episode.fully_played = fully_played or None
-                episode.resume_position_ms = position_ms if position_ms > 0 else None
-
+            self._apply_resume_point(episode, episode_data)
             yield episode
 
-    @use_cache(86400)  # 24 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id."""
-        episode_obj = await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
+        episode_obj = await self._get_podcast_episode_data(prov_episode_id)
         if not episode_obj:
             raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
-        return parse_podcast_episode(episode_obj, self)
+        episode = parse_podcast_episode(episode_obj, self)
+        self._apply_resume_point(episode, episode_obj)
+        return episode
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -963,6 +957,48 @@ class SpotifyProvider(MusicProvider):
                 track_uris.append({"uri": f"spotify:track:{track_data['id']}"})
         data = {"items": track_uris}
         await self._delete_data(f"playlists/{prov_playlist_id}/items", data=data)
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
+        """
+        await self._move_playlist_range(prov_playlist_id, from_position, 1, to_position)
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        The moved tracks keep their order.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based. None
+            moves the tracks to the end of the playlist.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        selected = sorted(positions)
+        if not selected or selected[-1] - selected[0] + 1 != len(selected):
+            # not one contiguous run, move the tracks one by one
+            await super().move_playlist_tracks(prov_playlist_id, positions, to_position)
+            return
+        # a contiguous run moves in a single request, to spare API calls
+        if to_position is None:
+            result = await self._get_data(
+                f"playlists/{prov_playlist_id}/items", limit=1, fields="total"
+            )
+            total = int(result.get("total", 0))
+            to_position = total - len(selected) + 1
+            validate_playlist_block_move(total, selected, to_position)
+        await self._move_playlist_range(prov_playlist_id, selected[0], len(selected), to_position)
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -1728,6 +1764,30 @@ class SpotifyProvider(MusicProvider):
 
         return episodes_data
 
+    @use_cache(43200)  # 12 hours, as the episode listing, since it carries the progress
+    async def _get_podcast_episode_data(self, prov_episode_id: str) -> dict[str, Any]:
+        """
+        Get raw episode data from Spotify API (cached).
+
+        :param prov_episode_id: Spotify episode ID.
+        """
+        return await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
+
+    def _apply_resume_point(self, episode: PodcastEpisode, episode_obj: dict[str, Any]) -> None:
+        """
+        Fill in the played state and resume position Spotify reports, when progress sync is on.
+
+        :param episode: The parsed episode to fill in.
+        :param episode_obj: The raw Spotify episode object it was parsed from.
+        """
+        if not self.podcast_progress_sync_enabled or "resume_point" not in episode_obj:
+            return
+        resume_point = episode_obj["resume_point"]
+        fully_played = resume_point.get("fully_played", False)
+        position_ms = resume_point.get("resume_position_ms", 0)
+        episode.fully_played = fully_played or None
+        episode.resume_position_ms = position_ms if position_ms > 0 else None
+
     @use_cache()
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
         """
@@ -1870,6 +1930,28 @@ class SpotifyProvider(MusicProvider):
             use_global_session,
             lambda session: session.post(endpoint, data, want_result, **kwargs),
         )
+
+    async def _move_playlist_range(
+        self, prov_playlist_id: str, from_position: int, length: int, to_position: int
+    ) -> None:
+        """Move a contiguous range of playlist tracks, doing nothing if it stays in place."""
+        if from_position == to_position:
+            return
+        # insert_before counts positions before the range is taken out
+        insert_before = to_position - 1 + length if to_position > from_position else to_position - 1
+        data = {
+            "range_start": from_position - 1,
+            "range_length": length,
+            "insert_before": insert_before,
+        }
+        try:
+            await self._put_data(f"playlists/{prov_playlist_id}/items", data=data)
+        except aiohttp.ClientResponseError as err:
+            # the upper bound is left to Spotify, which answers a range outside the playlist with 400
+            if err.status != 400:
+                raise
+            msg = f"Spotify refused to move tracks of playlist {prov_playlist_id}"
+            raise InvalidDataError(msg) from err
 
     async def _request_on_session[T](
         self, use_global_session: bool, request: Callable[[SpotifySession], Awaitable[T]]

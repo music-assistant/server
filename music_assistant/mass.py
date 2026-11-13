@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import random
+import shutil
 import threading
 import time
 from base64 import b64encode
@@ -27,6 +28,7 @@ from music_assistant_models.enums import (
     EventType,
     ProviderFeature,
     ProviderIconVariant,
+    ProviderTier,
     ProviderType,
 )
 from music_assistant_models.errors import (
@@ -85,6 +87,7 @@ from music_assistant.helpers.build_info import get_official_build_info
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.helpers.runtime_dir import prepare_runtime_dir
 from music_assistant.helpers.util import (
     TaskManager,
     is_hass_supervisor,
@@ -222,6 +225,8 @@ class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
     loop: asyncio.AbstractEventLoop
+    # private dir for the FIFOs and sockets the server and its providers create
+    runtime_path: str
     config: ConfigController
     webserver: WebserverController
     cache: CacheController
@@ -451,6 +456,8 @@ class MusicAssistant:
             await self._http_session_no_ssl.close()
         # the teardown above can schedule new timers (e.g. when stopping playback)
         self._cancel_tracked_timers()
+        if (runtime_path := getattr(self, "runtime_path", None)) is not None:
+            await asyncio.to_thread(shutil.rmtree, runtime_path, ignore_errors=True)
         self._set_state(CoreState.STOPPED)
 
     @property
@@ -1607,6 +1614,8 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
+                    # the tier follows from where a provider loads, not from its manifest file
+                    provider_manifest.tier = ProviderTier.CORE
                     # detect provider icon image variants (svg preferred over png)
                     icons = await detect_provider_icons(provider_path)
                     if icons:
@@ -1677,6 +1686,7 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
+        self.runtime_path = await asyncio.to_thread(prepare_runtime_dir, self.cache_path)
 
     def _cancel_tracked_timers(self) -> None:
         """Cancel all pending timers scheduled with call_later."""

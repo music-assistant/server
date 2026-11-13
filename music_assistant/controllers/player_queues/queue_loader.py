@@ -46,6 +46,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.music.favorites import without_disliked_tracks
+from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.autoplay import (
     AUTOPLAY_EXCLUDED_MEDIA_TYPES,
     AUTOPLAY_SERIES_MEDIA_TYPES,
@@ -87,6 +88,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.enums import SortDirection, SortField
     from music_assistant_models.queue_item import QueueItem
 
@@ -910,54 +912,27 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # resolve all media items
         for item in media_list:
             try:
-                # parse provided uri into a MA MediaItem or Basic QueueItem from URL
-                media_item: MediaItemType | ItemMapping | BrowseFolder
-                if isinstance(item, str):
-                    media_item = await self.mass.music.get_item_by_uri(item)
-                elif isinstance(item, dict):  # type: ignore[unreachable]
+                requested = item
+                if isinstance(requested, dict):
                     # TODO: Investigate why the API parser sometimes passes raw dicts instead of
                     # converting them to MediaItem objects. The parse_value function in api.py
                     # should handle dict-to-object conversion, but dicts are slipping through
                     # in some cases. This is defensive handling for that parser bug.
-                    media_item = media_from_dict(item)  # type: ignore[unreachable]
-                    self.logger.debug("Converted to: %s", type(media_item))
-                else:
-                    # item is MediaItemType | ItemMapping at this point
-                    media_item = item
+                    requested = media_from_dict(requested)  # type: ignore[unreachable]
+                    self.logger.debug("Converted to: %s", type(requested))
+                media_item = await self._resolve_play_media_entry(requested, playback_user)
 
                 # an audiobook keeps the account it was started from, which the library item
                 # that can take its place no longer names
                 played_copy = (
-                    await self._played_copy(item if isinstance(item, str) else media_item)
+                    await self._played_copy(requested)
                     if media_item.media_type == MediaType.AUDIOBOOK
                     else None
                 )
 
-                if isinstance(media_item, ItemMapping):
-                    # Resolve any ItemMapping to its full media item, exactly as the str-uri
-                    # form above already does. Everything below needs the real object: the
-                    # enqueued/source bookkeeping only accepts full items (so a mapping would
-                    # otherwise never count as a user-initiated play), and the dynamic check
-                    # needs details such as a playlist's 'is_dynamic'.
-                    if media_item.uri is None:
-                        raise InvalidDataError("ItemMapping has no URI")
-                    media_item = await self.mass.music.get_item_by_uri(media_item.uri)
-
-                # never enqueue what this user has no music source for; failing here keeps
-                # the caller from finding out only when the item is about to be streamed
-                self.mass.music.check_item_playable_for_user(media_item, playback_user)
-
                 # handle default enqueue option if needed
                 if option is None:
-                    # Radio + AudioSource share a single "live_sources" enqueue default —
-                    # both are live infinite streams where REPLACE is almost always the
-                    # right semantic. Other media types use their per-type config key.
-                    if media_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
-                        config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
-                    else:
-                        config_key = f"default_enqueue_option_{media_item.media_type.value}"
-                    config_value = self.get_config_value(config_key, return_type=str)
-                    option = QueueOption(config_value)
+                    option = self._default_enqueue_option(media_item.media_type)
                     # settled from the resolved option for the same reason as the reset below
                     already_dynamic = queue.is_dynamic and option in (
                         QueueOption.ADD,
@@ -1178,6 +1153,34 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_id, queue_items, option, pin_first=start_item is not None
         )
 
+    async def _resolve_play_media_entry(
+        self, entry: MediaItemType | ItemMapping | str, user: User | None
+    ) -> MediaItemType | BrowseFolder:
+        """
+        Return the media item one entry of a play request plays.
+
+        :param entry: One entry of a play request.
+        :param user: The user the playback is for; None for anonymous playback.
+        :raises MusicAssistantError: When the entry can not be played, the request then skips it.
+        """
+        # parse provided uri into a MA MediaItem or Basic QueueItem from URL
+        media_item = (
+            await self.mass.music.get_item_by_uri(entry) if isinstance(entry, str) else entry
+        )
+        if isinstance(media_item, ItemMapping):
+            # Resolve any ItemMapping to its full media item, exactly as the str-uri
+            # form above already does. The loader needs the real object: the
+            # enqueued/source bookkeeping only accepts full items (so a mapping would
+            # otherwise never count as a user-initiated play), and the dynamic check
+            # needs details such as a playlist's 'is_dynamic'.
+            if media_item.uri is None:
+                raise InvalidDataError("ItemMapping has no URI")
+            media_item = await self.mass.music.get_item_by_uri(media_item.uri)
+        # never enqueue what this user has no music source for; failing here keeps
+        # the caller from finding out only when the item is about to be streamed
+        self.mass.music.check_item_playable_for_user(media_item, user)
+        return media_item
+
     async def _played_copy(
         self, requested: str | MediaItemType | ItemMapping | BrowseFolder
     ) -> tuple[str, str] | None:
@@ -1198,6 +1201,21 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if (instance := self.mass.get_provider(provider)) is None:
             return None
         return (instance.instance_id, item_id)
+
+    def _default_enqueue_option(self, media_type: MediaType) -> QueueOption:
+        """
+        Return the enqueue option a play request of the given media type uses when it names none.
+
+        :param media_type: The media type of the (first) requested item.
+        """
+        # Radio + AudioSource share a single "live_sources" enqueue default —
+        # both are live infinite streams where REPLACE is almost always the
+        # right semantic. Other media types use their per-type config key.
+        if media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+            config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
+        else:
+            config_key = f"default_enqueue_option_{media_type.value}"
+        return QueueOption(self.get_config_value(config_key, return_type=str))
 
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """
@@ -1227,28 +1245,45 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if option == QueueOption.REPLACE:
             # A replace is a fresh queue, so the pool takes the place of the old items rather than
             # being appended behind the one that is playing (as PLAY, which shares start_playing,
-            # deliberately does). Zeroed before the truncation below so the pool is sized against
-            # an empty queue and none of the discarded tracks are held back from it.
+            # deliberately does). Zeroed so the pool is sized against an empty queue and none of
+            # the discarded tracks are held back from it.
             insert_at = 0
-            # as on the linear path: end the prewarm of the old next track, release the outgoing
-            # audio while its items are still on the queue, and drop the stale position
-            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
-            await self._cleanup_queue_audio_data(queue_id)
-            queue.index_in_buffer = None
-            queue.ended = False
         # PLAY/REPLACE start playback on the rebuilt pool; ADD/NEXT/REPLACE_NEXT only stage it and
         # never start playback (an idle/empty queue stays idle on an add, just like the linear path)
         start_playing = option in (QueueOption.PLAY, QueueOption.REPLACE)
-        # The tail is dropped before the pool is fetched, so the pool is sized and deduped against
-        # the kept head only (the tail we are discarding must not exclude its own tracks from it).
-        # That leaves the queue holding less than it plays - for a replace, nothing at all - across
-        # the fetch, so hold player reconciliation off until the new items are in: it would
-        # otherwise publish that half-built state, which is exactly the empty queue this avoids.
+        # The pool is sized and deduped against the kept head only (the tail we are discarding must
+        # not exclude its own tracks from it). The queue keeps its old items until the pool is in:
+        # players keep reading it during the fetch, which can take a while. Player reconciliation is
+        # held off meanwhile, so a track change does not start a refill of the tail being replaced.
         self._set_transitioning(queue_id, True)
         try:
-            queue_data.items = queue_data.items[:insert_at]
-            queue.items = len(queue_data.items)
-            pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+            pool_tracks = await self._managed_pool.fill(
+                queue_id, is_initial=False, preceding_items=queue_data.items[:insert_at]
+            )
+            if option != QueueOption.REPLACE:
+                # the player may have moved on into the old tail during the fetch: what it holds,
+                # or has asked for and not received audio of yet, stays, so the pool goes in behind
+                # it, without the songs it already holds
+                fetched_at = insert_at
+                base_index = committed_index(queue)
+                insert_at = 0 if base_index is None else base_index + 1
+                if queue_data.session_id is not None:
+                    requested = self.mass.streams.requested_item_ids(
+                        queue_id, queue_data.session_id
+                    )
+                    for index in range(len(queue_data.items) - 1, insert_at - 1, -1):
+                        if queue_data.items[index].queue_item_id in requested:
+                            insert_at = index + 1
+                            break
+                held = [item.media_item for item in queue_data.items[fetched_at:insert_at]]
+                held_songs = {
+                    key for media_item in held if media_item for key in song_keys(media_item)
+                }
+                pool_tracks = [
+                    track
+                    for track in pool_tracks
+                    if track not in held and held_songs.isdisjoint(song_keys(track))
+                ]
             queue_items = [
                 build_queue_item(queue_id, track) for track in pool_tracks if track.available
             ]
@@ -1256,7 +1291,19 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 raise MediaNotFoundError(
                     "No playable items found", translation_key="no_playable_items"
                 )
-            # the managed pool already interleaved the sources in a recency-aware order; load as-is
+            if option == QueueOption.REPLACE:
+                # as on the linear path: end the prewarm of the old next track, release the
+                # outgoing audio while its items are still on the queue, and drop the stale position
+                self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
+                await self._cleanup_queue_audio_data(queue_id)
+                queue.index_in_buffer = None
+                queue.ended = False
+            discarded = [] if option == QueueOption.REPLACE else queue_data.items[insert_at:]
+            if queue_data.next_item_id_preparing in {item.queue_item_id for item in discarded}:
+                # a prewarm of an item the swap drops would hold its source for nothing
+                self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
+            # the managed pool already interleaved the sources in a recency-aware order; load as-is,
+            # in one swap of the items so no reader sees the queue without its tail
             await self.load(
                 queue_id,
                 queue_items,
@@ -1264,6 +1311,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 keep_remaining=False,
                 keep_played=option != QueueOption.REPLACE,
             )
+            for item in discarded:
+                # off the queue now, so no cleanup reaches its audio any more; detached before
+                # releasing, as everywhere a buffer is cleared
+                if (details := item.streamdetails) and (buffer := details.buffer):
+                    details.buffer = None
+                    await buffer.clear()
             if start_playing:
                 await self.play_index(queue_id, insert_at)
             else:
