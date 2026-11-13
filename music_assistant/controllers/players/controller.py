@@ -333,11 +333,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Ordering rule: when a command needs both a group/leader lock and a member
         lock, it must take the group's first. The group players themselves lock their
         members from under their own lock, so a member-first acquisition is an
-        inversion and will deadlock. The one exception is a sync group's automatic
-        re-add of returned members, which holds the native leader's lock and each
-        member's without the group player's: it is safe because it never waits for a
-        member (see get_player_lock_if_free). A command on a member that reaches its
-        group uses get_group_and_player_lock for that.
+        inversion and will deadlock. A command on a member that reaches its group uses
+        get_group_and_player_lock for that.
 
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
