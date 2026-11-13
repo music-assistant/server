@@ -33,7 +33,6 @@ from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import (
     AsyncProcess,
     descriptor_path,
-    get_subprocess_env,
     open_in_thread,
 )
 from music_assistant.helpers.security import has_control_chars
@@ -774,7 +773,29 @@ async def async_parse_tags(
         raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
     source = input_file if fd is None else descriptor_path(fd)
     pass_fds = () if fd is None else (fd,)
-    args = _get_ffprobe_args(source, verify_ssl)
+    args = [
+        "ffprobe",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-threads",
+        "0",
+        "-show_error",
+        "-show_format",
+        "-show_streams",
+        "-show_chapters",
+        "-print_format",
+        "json",
+        *tls_verify_args(source, verify_ssl),
+        *user_agent_args(source),
+        *(
+            ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
+            if source.startswith("http")
+            else []
+        ),
+        "-i",
+        source,
+    ]
     try:
         async with AsyncProcess(
             args, stdin=False, stdout=True, stderr=True, pass_fds=pass_fds
@@ -798,9 +819,27 @@ async def async_parse_tags(
             raise
         del res
         if not tags.duration and require_duration:
+            duration_args = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "info",
+                *tls_verify_args(source, verify_ssl),
+                *user_agent_args(source),
+                *(
+                    ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
+                    if source.startswith("http")
+                    else []
+                ),
+                "-i",
+                source,
+                "-f",
+                "null",
+                "-",
+            ]
             try:
                 async with AsyncProcess(
-                    _get_duration_args(source, verify_ssl),
+                    duration_args,
                     stdin=False,
                     stdout=True,
                     stderr=subprocess.STDOUT,
@@ -809,7 +848,12 @@ async def async_parse_tags(
                     output, _ = await decoder.communicate(timeout=FFMPEG_DURATION_TIMEOUT)
                     if decoder.returncode:
                         raise InvalidDataError(f"Unable to retrieve duration for {input_file}")
-                tags.duration = _parse_duration_output(output)
+                # extract duration from ffmpeg output
+                duration_str = output.decode().split("time=")[-1].split(" ")[0].strip()
+                duration = 0.0
+                for part in duration_str.split(":"):
+                    duration = duration * 60 + float(part)
+                tags.duration = duration
             except (TimeoutError, OSError, ValueError, IndexError) as err:
                 raise InvalidDataError(f"Unable to retrieve duration for {input_file}") from err
         return tags
@@ -820,142 +864,6 @@ async def async_parse_tags(
     finally:
         if fd is not None:
             os.close(fd)
-
-
-def parse_tags(
-    input_file: str,
-    file_size: int | None = None,
-    require_duration: bool = False,
-    opener: Callable[[str, int], int] | None = None,
-    verify_ssl: bool = True,
-) -> AudioTags:
-    """
-    Parse tags from a media file (or URL). NOT Async friendly.
-
-    :param input_file: A (local) filename or URL accessible by ffmpeg.
-    :param file_size: Size of the file, to estimate a missing duration from its bitrate.
-    :param require_duration: Decode the whole file when its duration is not in its header.
-    :param opener: Opens input_file like the opener of open(), with the os.open flags, and
-        returns its descriptor; the file is then only read through that descriptor.
-    :param verify_ssl: Whether the certificate of an https source must be verified.
-    """
-    try:
-        fd = opener(input_file, os.O_RDONLY) if opener else None
-    except OSError as err:
-        raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
-    source = input_file if fd is None else descriptor_path(fd)
-    pass_fds = () if fd is None else (fd,)
-    args = _get_ffprobe_args(source, verify_ssl)
-    try:
-        res = subprocess.check_output(  # noqa: S603
-            args,
-            stderr=subprocess.PIPE,
-            env=get_subprocess_env(),
-            pass_fds=pass_fds,
-            timeout=FFPROBE_TIMEOUT,
-        )
-        tags = _parse_tags_output(res, input_file, source, file_size, fd)
-        del res
-        if not tags.duration and require_duration:
-            tags.duration = get_file_duration(source, pass_fds, verify_ssl)
-        return tags
-    except subprocess.CalledProcessError as err:
-        error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
-        raise InvalidDataError(error_msg) from err
-    except subprocess.TimeoutExpired as err:
-        raise InvalidDataError(
-            f"Unable to retrieve info for {input_file} (no result within {FFPROBE_TIMEOUT} seconds)"
-        ) from err
-    finally:
-        if fd is not None:
-            os.close(fd)
-
-
-def get_file_duration(
-    input_file: str, pass_fds: tuple[int, ...] = (), verify_ssl: bool = True
-) -> float:
-    """
-    Parse file/stream duration from an audio file using ffmpeg.
-
-    NOT Async friendly.
-
-    :param input_file: A (local) filename or URL accessible by ffmpeg.
-    :param pass_fds: Descriptors ffmpeg needs to open input_file.
-    :param verify_ssl: Whether the certificate of an https source must be verified.
-    """
-    args = _get_duration_args(input_file, verify_ssl)
-    try:
-        res = subprocess.check_output(  # noqa: S603
-            args,
-            stderr=subprocess.STDOUT,
-            env=get_subprocess_env(),
-            pass_fds=pass_fds,
-            timeout=FFMPEG_DURATION_TIMEOUT,
-        )
-        return _parse_duration_output(res)
-    except Exception as err:
-        error_msg = f"Unable to retrieve duration for {input_file}"
-        raise InvalidDataError(error_msg) from err
-
-
-def _get_ffprobe_args(source: str, verify_ssl: bool) -> list[str]:
-    """Return the command for probing a media source."""
-    return [
-        "ffprobe",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-threads",
-        "0",
-        "-show_error",
-        "-show_format",
-        "-show_streams",
-        "-show_chapters",
-        "-print_format",
-        "json",
-        *tls_verify_args(source, verify_ssl),
-        *user_agent_args(source),
-        *(
-            ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
-            if source.startswith("http")
-            else []
-        ),
-        "-i",
-        source,
-    ]
-
-
-def _get_duration_args(input_file: str, verify_ssl: bool) -> list[str]:
-    """Return the command for decoding a source to determine its duration."""
-    return [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "info",
-        *tls_verify_args(input_file, verify_ssl),
-        *user_agent_args(input_file),
-        *(
-            ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
-            if input_file.startswith("http")
-            else []
-        ),
-        "-i",
-        input_file,
-        "-f",
-        "null",
-        "-",
-    ]
-
-
-def _parse_duration_output(output: bytes) -> float:
-    """Return the duration reported by a full ffmpeg decode."""
-    # extract duration from ffmpeg output
-    duration_str = output.decode().split("time=")[-1].split(" ")[0].strip()
-    duration_parts = duration_str.split(":")
-    duration = 0.0
-    for part in duration_parts:
-        duration = duration * 60 + float(part)
-    return duration
 
 
 def _parse_tags_output(

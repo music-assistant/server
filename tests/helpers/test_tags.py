@@ -49,6 +49,18 @@ FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
 
 
+@pytest.fixture
+def probe_process(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Provide a probe whose output and exit status can be controlled."""
+    process = MagicMock(returncode=0)
+    process.communicate = AsyncMock(return_value=(b'{"format": {}, "streams": []}', b""))
+    process.__aenter__ = AsyncMock(return_value=process)
+    process.__aexit__ = AsyncMock(return_value=None)
+    factory = MagicMock(return_value=process)
+    monkeypatch.setattr(tags, "AsyncProcess", factory)
+    return factory
+
+
 @pytest.mark.parametrize(
     ("stderr", "expected_detail"),
     [
@@ -60,104 +72,63 @@ FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
         (b"broken.ogg: Unknown error occurred\n", "Invalid or unsupported media file"),
     ],
 )
-def test_parse_tags_reports_actionable_ffprobe_error(
-    monkeypatch: pytest.MonkeyPatch, stderr: bytes, expected_detail: str
+async def test_parse_tags_reports_actionable_ffprobe_error(
+    probe_process: MagicMock, stderr: bytes, expected_detail: str
 ) -> None:
     """Test that tag parsing reports a useful FFprobe failure."""
-    process_error = subprocess.CalledProcessError(
-        returncode=1,
-        cmd=("ffprobe",),
-        output=b'{"error":{"code":-1,"string":"Unknown error occurred"}}',
-        stderr=stderr,
+    process = probe_process.return_value
+    process.returncode = 1
+    process.communicate.return_value = (
+        b'{"error":{"code":-1,"string":"Unknown error occurred"}}',
+        stderr,
     )
-    check_output = MagicMock(side_effect=process_error)
-    monkeypatch.setattr(subprocess, "check_output", check_output)
-    monkeypatch.setenv("SUPERVISOR_TOKEN", "secret")
-    monkeypatch.setenv("HASSIO_TOKEN", "secret")
 
     with pytest.raises(InvalidDataError) as err:
-        tags.parse_tags("broken.ogg")
+        await tags.async_parse_tags("broken.ogg")
 
     assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
-    kwargs = check_output.call_args.kwargs
-    assert kwargs["stderr"] == subprocess.PIPE
-    assert "SUPERVISOR_TOKEN" not in kwargs["env"]
-    assert "HASSIO_TOKEN" not in kwargs["env"]
-    args = check_output.call_args.args[0]
+    assert probe_process.call_args.kwargs["stderr"] is True
+    args = probe_process.call_args.args[0]
     assert args[args.index("-loglevel") + 1] == "error"
 
 
-def test_parse_tags_gives_up_on_a_hanging_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_parse_tags_gives_up_on_a_hanging_probe(probe_process: MagicMock) -> None:
     """A probe that never finishes is bounded by a timeout and reported as invalid data."""
-    check_output = MagicMock(
-        side_effect=subprocess.TimeoutExpired(cmd=("ffprobe",), timeout=tags.FFPROBE_TIMEOUT)
-    )
-    monkeypatch.setattr(subprocess, "check_output", check_output)
+    process = probe_process.return_value
+    process.communicate.side_effect = TimeoutError
 
     with pytest.raises(InvalidDataError) as err:
-        tags.parse_tags("http://radio.example.com/stream")
+        await tags.async_parse_tags("http://radio.example.com/stream")
 
     assert "no result within" in str(err.value)
-    assert check_output.call_args.kwargs["timeout"] == tags.FFPROBE_TIMEOUT
+    process.communicate.assert_awaited_once_with(timeout=tags.FFPROBE_TIMEOUT)
 
 
-def test_parse_tags_skips_tls_verify_on_request(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_parse_tags_skips_tls_verify_on_request(probe_process: MagicMock) -> None:
     """Tag parsing skips certificate verification when asked."""
-    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
-    monkeypatch.setattr(subprocess, "check_output", check_output)
-
     with pytest.raises(InvalidDataError):
-        tags.parse_tags("https://192.168.1.10/a.mp3", verify_ssl=False)
+        await tags.async_parse_tags("https://192.168.1.10/a.mp3", verify_ssl=False)
 
-    args = list(check_output.call_args.args[0])
+    args = probe_process.call_args.args[0]
     tls_index = args.index("-tls_verify")
     assert args[tls_index + 1] == "0"
     assert tls_index < args.index("-i")
 
 
-def test_parse_tags_identifies_as_music_assistant_on_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_parse_tags_identifies_as_music_assistant_on_urls(probe_process: MagicMock) -> None:
     """Tag parsing of a URL sends the Music Assistant user agent, of a local file none."""
-    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
-    monkeypatch.setattr(subprocess, "check_output", check_output)
-
     with pytest.raises(InvalidDataError):
-        tags.parse_tags("https://example.com/a.mp3")
-    args = list(check_output.call_args.args[0])
+        await tags.async_parse_tags("https://example.com/a.mp3")
+    args = probe_process.call_args.args[0]
     assert args[args.index("-user_agent") + 1] == MASS_USER_AGENT
     assert args.index("-user_agent") < args.index("-i")
     assert args[args.index("-rw_timeout") + 1] == "10000000"
     assert args.index("-rw_timeout") < args.index("-i")
 
     with pytest.raises(InvalidDataError):
-        tags.parse_tags("/music/a.mp3")
-    assert "-user_agent" not in check_output.call_args.args[0]
-    assert "-rw_timeout" not in check_output.call_args.args[0]
-
-
-@pytest.mark.parametrize("input_file", ["https://example.com/audio", FILE_MP3])
-async def test_async_parse_tags_network_options(
-    monkeypatch: pytest.MonkeyPatch, input_file: str
-) -> None:
-    """Network probes use an I/O deadline without changing local file inputs."""
-    process = MagicMock(returncode=1)
-    process.communicate = AsyncMock(return_value=(b"", b"[http] connection timed out"))
-    process.__aenter__ = AsyncMock(return_value=process)
-    process.__aexit__ = AsyncMock(return_value=None)
-    factory = MagicMock(return_value=process)
-    monkeypatch.setattr(tags, "AsyncProcess", factory)
-
-    with pytest.raises(InvalidDataError, match="connection timed out"):
-        await tags.async_parse_tags(input_file, verify_ssl=False)
-
-    args = factory.call_args.args[0]
-    if input_file.startswith("https"):
-        index = args.index("-rw_timeout")
-        assert args[index + 1] == "10000000"
-        assert index < args.index("-i")
-        assert args[args.index("-tls_verify") + 1] == "0"
-    else:
-        assert "-rw_timeout" not in args
-    process.communicate.assert_awaited_once_with(timeout=tags.FFPROBE_TIMEOUT)
+        await tags.async_parse_tags("/music/a.mp3")
+    assert "-user_agent" not in probe_process.call_args.args[0]
+    assert "-rw_timeout" not in probe_process.call_args.args[0]
 
 
 async def test_async_parse_tags_decodes_missing_duration(monkeypatch: pytest.MonkeyPatch) -> None:
