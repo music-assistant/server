@@ -52,7 +52,7 @@ from .helpers import (
     fetch_all_bookmarks,
     parse_flac_streaminfo,
 )
-from .parsers import parse_audio_format, import parse_bookmark_time
+from .parsers import parse_audio_format, parse_bookmark_time
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import ItemMapping
