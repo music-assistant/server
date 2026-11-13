@@ -81,6 +81,9 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
+# a music service stops paging through an artist's discography at this many releases, so
+# one user action never costs a number of requests that grows with the catalogue (usage policy)
+ARTIST_ALBUMS_LIMIT: Final[int] = 100
 # a provider-wide payload change fails every single item, so only the first failures
 # of a sync run are logged in full to keep the (rotating) log file usable
 MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
@@ -441,8 +444,9 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
-        Get a list of all albums for the given artist.
+        Get a list of albums for the given artist.
 
+        A music service stops paging through the discography at ARTIST_ALBUMS_LIMIT releases.
         Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
         """
         raise NotImplementedError
