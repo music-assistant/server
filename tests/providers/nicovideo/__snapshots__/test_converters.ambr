@@ -2532,7 +2532,7 @@
       'uri': None,
     }),
     'stream_title': 'ゲスト - APIテスト用',
-    'stream_type': 'custom',
+    'stream_type': 'http',
     'target_loudness': None,
     'volume_normalization_gain_correct': None,
     'volume_normalization_mode': None,
