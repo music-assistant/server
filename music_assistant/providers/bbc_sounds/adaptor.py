@@ -526,8 +526,9 @@ class PodcastConverter(BaseConverter):
 
     async def _convert_podcast_episode(self, episode: PodcastEpisode) -> MAPodcastEpisode:
         duration = self._get_attr(episode, "duration.value")
-        progress_ms = self._get_attr(episode, "progress.value")
-        resume_position = (progress_ms * 1000) if progress_ms else None
+        resume_position_ms = (
+            self._get_attr(episode, "progress.value") * 1000 if episode.progress else None
+        )
         description = self._get_synopsis(episode)
 
         # Handle parent podcast
@@ -548,7 +549,7 @@ class PodcastConverter(BaseConverter):
             provider=self.context.provider_domain,
             duration=duration,
             position=0,
-            resume_position_ms=resume_position,
+            resume_position_ms=resume_position_ms,
             metadata=ImageProvider.create_metadata_with_image(
                 episode.image_url,
                 self.context.provider_domain,
@@ -568,19 +569,19 @@ class PodcastConverter(BaseConverter):
         A sensible, but arbitrary duration was picked for this.
         Track example: latest BBC News, PodcastEpisode: latest episode of a radio show.
         """
-        duration = self._get_attr(show, "duration.value")
+        duration = self._get_attr(show, "duration.value", 0)
         container = self._get_attr(show, "container")
         if self.context.force_type:
             return self.context.force_type is Track
-        if duration and duration < _Constants.TRACK_DURATION_THRESHOLD:
+        if duration and duration < Constants.TRACK_DURATION_THRESHOLD:
             return True
         return not container
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
         duration = self._get_attr(show, "duration.value")
-        progress_ms = self._get_attr(show, "progress.value")
-        resume_position = (progress_ms * 1000) if progress_ms else None
-
+        resume_position_ms = (
+            self._get_attr(show, "progress.value") * 1000 if show.progress else None
+        )
         if not show or not show.pid:
             raise ConversionError(f"No radio show for {show}")
 
@@ -611,7 +612,7 @@ class PodcastConverter(BaseConverter):
             name=self._format_show_title(show),
             provider=self.context.provider_domain,
             duration=duration,
-            resume_position_ms=resume_position,
+            resume_position_ms=resume_position_ms,
             metadata=ImageProvider.create_metadata_with_image(
                 url=show.image_url,
                 provider=self.context.provider_domain,
@@ -625,7 +626,7 @@ class PodcastConverter(BaseConverter):
         return episode
 
     async def _convert_radio_clip(self, clip: RadioClip) -> Track | MAPodcastEpisode:
-        duration = self._get_attr(clip, "duration.value")
+        duration = self._get_attr(clip, "duration.value", 0)
         description = self._get_synopsis(clip)
 
         if not clip or not clip.pid:
