@@ -9,12 +9,16 @@ import pytest
 from music_assistant_models.media_items import Artist, MediaItemImage
 
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
 def provider() -> YoutubeMusicProvider:
     """Return a YoutubeMusicProvider instance with mocked dependencies."""
     mass = AsyncMock()
+    # force a cache miss so the cached raw fetches always run
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    use_real_create_task(mass)
     manifest = MagicMock()
     manifest.domain = "ytmusic"
     config = MagicMock()
@@ -70,7 +74,9 @@ async def test_get_similar_artists_success(provider: YoutubeMusicProvider) -> No
         get_similar = cast("Any", YoutubeMusicProvider.get_similar_artists).__wrapped__
         artists = await get_similar(provider, "UCartist1")
 
-    mock_get_artist.assert_awaited_once_with(prov_artist_id="UCartist1", headers=provider._headers)
+    mock_get_artist.assert_awaited_once_with(
+        prov_artist_id="UCartist1", headers=provider._headers, language="en"
+    )
     assert len(artists) == 2
     assert all(isinstance(a, Artist) for a in artists)
 
