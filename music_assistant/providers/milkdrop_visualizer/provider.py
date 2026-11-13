@@ -77,10 +77,7 @@ class MilkdropVisualizerProvider(PluginProvider):
 
     async def get_visualizer_config(self) -> dict[str, bool]:
         """Return the visualizer settings that apply to every viewer."""
-        value = await self.mass.config.get_provider_config_value(
-            self.instance_id, CONF_SHOW_ON_DASHBOARDS, default=False
-        )
-        return {CONF_SHOW_ON_DASHBOARDS: bool(value)}
+        return {CONF_SHOW_ON_DASHBOARDS: bool(self.config.get_value(CONF_SHOW_ON_DASHBOARDS))}
 
     async def report_capability(
         self,

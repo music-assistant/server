@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 from music_assistant.providers.milkdrop_visualizer.provider import (
     CAPABILITY_COMMAND,
@@ -14,18 +14,15 @@ from music_assistant.providers.milkdrop_visualizer.provider import (
 )
 
 
-def _provider() -> tuple[MilkdropVisualizerProvider, Mock, AsyncMock]:
+def _provider() -> tuple[MilkdropVisualizerProvider, Mock, Mock]:
     """Return a provider instance (with its logger and config-read mocks) without full setup."""
     provider = MilkdropVisualizerProvider.__new__(MilkdropVisualizerProvider)
     logger = Mock()
-    config_value = AsyncMock()
-    mass = Mock()
-    mass.config.get_provider_config_value = config_value
     mocked = cast("Any", provider)
     mocked.logger = logger
     mocked.config = Mock()
-    mocked.mass = mass
-    return provider, logger, config_value
+    mocked.mass = Mock()
+    return provider, logger, mocked.config.get_value
 
 
 async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
@@ -61,12 +58,11 @@ async def test_loaded_in_mass_registers_the_viewer_commands() -> None:
 
 
 async def test_visualizer_config_reflects_dashboard_setting() -> None:
-    """The viewer config command reads the live show_on_dashboards setting."""
+    """The viewer config command reads show_on_dashboards from the provider config."""
     provider, _logger, config_value = _provider()
     config_value.return_value = True
     assert await provider.get_visualizer_config() == {CONF_SHOW_ON_DASHBOARDS: True}
-    # Read through the config controller (live), not this instance's snapshot.
-    assert config_value.call_args.args == (provider.config.instance_id, CONF_SHOW_ON_DASHBOARDS)
+    assert config_value.call_args.args == (CONF_SHOW_ON_DASHBOARDS,)
     config_value.return_value = False
     assert await provider.get_visualizer_config() == {CONF_SHOW_ON_DASHBOARDS: False}
 
