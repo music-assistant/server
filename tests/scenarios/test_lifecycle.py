@@ -326,18 +326,21 @@ async def test_session_only_player_has_the_same_id_in_every_session(scenario: Sc
     )
 
 
-async def test_disabling_a_player_removes_it_and_enabling_brings_it_back(
+async def test_disabling_a_player_takes_it_out_and_enabling_brings_it_back(
     scenario: Scenario,
 ) -> None:
     """
-    A disabled player is announced as removed and stays listed in the settings, disabled.
+    A disabled player leaves the players with a last update that it is unavailable.
 
-    Enabling it brings it back under the same id.
+    It is not announced as removed and stays listed in the settings, disabled, with its
+    queue saved. Enabling it announces it as added under the same id, with that queue.
     """
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
     player_id = scenario.single_player(living).player_id
+    await scenario.play(player_id)
+    await scenario.idle()
     scenario.clear_events()
 
     await scenario.disable(player_id)
@@ -347,16 +350,24 @@ async def test_disabling_a_player_removes_it_and_enabling_brings_it_back(
     assert [(c.player_id, c.enabled) for c in await scenario.player_configs()] == [
         (player_id, False)
     ]
+    assert scenario.removals() == []
+    assert scenario.events(EventType.PLAYER_UPDATED, EventType.PLAYER_REMOVED, object_id=player_id)[
+        -1
+    ] == Event(EventType.PLAYER_UPDATED, player_id)
+    assert scenario.availability_updates(player_id)[-1] is False
+    assert EventType.PLAYER_CONFIG_UPDATED in [
+        event.type for event in scenario.events(object_id=player_id)
+    ]
+    scenario.clear_events()
 
     await scenario.enable(player_id)
     await scenario.idle()
 
-    assert scenario.removals() == [(player_id, None)]
     assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
-        Event(EventType.PLAYER_REMOVED, player_id),
         Event(EventType.PLAYER_ADDED, player_id),
     ]
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, True)]
+    assert [item.uri for item in scenario.mass.player_queues.items(player_id)] == [TEST_TRACK_URI]
 
 
 async def test_a_browser_player_without_changes_is_removed_when_its_client_disconnects(

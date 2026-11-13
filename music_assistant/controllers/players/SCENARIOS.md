@@ -745,8 +745,9 @@ gives no setup reason.
 ## Removing and disabling
 
 What goes when the user removes a provider, removes a player or disables one. Clients are told
-a player is removed, with no data besides its id, when it is removed, disabled or merged into
-another player (MERGE-3); a device that goes away is no removal (AWAY-1).
+a player is removed, with no data besides its id, when it is removed or merged into another
+player (MERGE-3); a device that goes away is no removal (AWAY-1), and neither is disabling a
+player (REMOVE-4).
 
 ### REMOVE-1 · A player outlives the removal of its vendor's provider on its other protocols
 
@@ -777,14 +778,17 @@ id, available, with the default name Living.
   - `test_lifecycle.py::test_removed_player_of_a_present_device_comes_back_as_new`
   - `test_lifecycle.py::test_a_player_the_user_removes_is_announced_as_removed`
 
-### REMOVE-4 · A disabled player is removed and comes back with its id when enabled
+### REMOVE-4 · A disabled player leaves the players and comes back with its id when enabled
 
-The user disables the Living player. Clients are told it is removed, and the settings still list
-it, disabled. The user enables it again: clients are told it is added again under the same id,
-available.
+The Living player played a track. The user disables it: clients get a last update that it is
+unavailable, not that it is removed, it is no player anymore, and the settings still list it,
+disabled. The user enables it again: clients are told it is added under the same id, available,
+with its queue. A DJ of the AI radio on its queue is still there.
 
 - End-to-end: **yes**. Disable a virtual player and enable it again.
-- Proven by: `test_lifecycle.py::test_disabling_a_player_removes_it_and_enabling_brings_it_back`
+- Proven by:
+  - `test_lifecycle.py::test_disabling_a_player_takes_it_out_and_enabling_brings_it_back`
+  - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_stays_on_the_queue_of_a_player_that_is_disabled_and_enabled`
 
 ### REMOVE-5 · "Remove all unavailable players" removes only players nothing finds
 

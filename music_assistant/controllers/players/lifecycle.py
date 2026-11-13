@@ -749,6 +749,18 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         :param permanent: The player is removed for good: also delete its saved queue.
         """
         player_id = player.player_id
+        await self._unregister_player(player)
+        self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
+        if player.initialized.is_set() and not self.mass.closing:
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+
+    async def _unregister_player(self, player: Player) -> None:
+        """
+        Take a player out of the registry, with its locks, timers and live source.
+
+        :param player: The player, whose protocols are detached already.
+        """
+        player_id = player.player_id
         # a player that is going away is done with any live source it was playing,
         # so let the owning plugin release an upstream session pointing at us
         await self._release_audio_source(player_id)
@@ -762,9 +774,6 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         # once the player is gone its id can be a legacy id of another player, whose queue
         # this update must not reach
         self.mass.cancel_timer(f"queue_on_player_update_{player_id}")
-        self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
-        if player.initialized.is_set() and not self.mass.closing:
-            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     async def _remove_player(self, player_id: str, *, rediscover: bool) -> None:
         """
@@ -899,7 +908,10 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
     async def _disable_player(self, player: Player) -> None:
         """
-        Take a player the user disabled out of use: the player goes, its config stays.
+        Take a player the user disabled out of use.
+
+        It leaves the players with a last update that it is unavailable; its config and its
+        saved queue stay.
 
         :param player: The player to disable.
         """
@@ -909,7 +921,13 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             await self._unbind(protocol)
             # its provider keeps the object, which a removal of the player still has to reach
             self._unattached[protocol.protocol_id] = protocol
-        await self._drop_player(player, permanent=False)
+        await self._unregister_player(player)
+        self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+        if player.initialized.is_set() and not self.mass.closing:
+            player.update_state(signal_event=False)
+            self.mass.signal_event(
+                EventType.PLAYER_UPDATED, object_id=player.player_id, data=player
+            )
         self.logger.info("Player disabled: %s", player.display_name)
         self._schedule_update_all_players()
 
