@@ -71,6 +71,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players import locks as players_locks
+from music_assistant.controllers.players import power as players_power
 from music_assistant.controllers.players.constants import (
     PLAYER_LOCK_OWNER_ATTEMPTS,
     PlayerLockPurpose,
@@ -1908,7 +1909,7 @@ class TestExternalPowerOffEndsTheQueue:
 
         assert len(scheduled := _scheduled_queue_stops(mock_mass)) == 1
         assert scheduled[0].args == (
-            players_controller.EXTERNAL_POWER_OFF_STOP_DELAY,
+            players_power.EXTERNAL_POWER_OFF_STOP_DELAY,
             controller._stop_queue_on_external_power_off,
             "p1",
         )
@@ -2974,7 +2975,7 @@ class TestExternalPowerControl:
         assert player.state.powered is False
 
         with patch(
-            "music_assistant.controllers.players.controller.wait_for_power_on", AsyncMock()
+            "music_assistant.controllers.players.power.wait_for_power_on", AsyncMock()
         ) as wait_for_power_on:
             await controller._handle_cmd_power("player_1", True)
 
@@ -3164,7 +3165,7 @@ class TestOfflinePowerControl:
         controller, player, _protocol, _control = self._setup(mock_mass, comes_online=False)
 
         with (
-            patch.object(players_controller, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
+            patch.object(players_power, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
             pytest.raises(PlayerUnavailableError),
         ):
             await controller.cmd_power("player_1", True)
@@ -3623,7 +3624,7 @@ class TestOfflinePowerControl:
         controller._run_announcement = AsyncMock()  # type: ignore[method-assign]
 
         with (
-            patch.object(players_controller, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
+            patch.object(players_power, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
             pytest.raises(PlayerUnavailableError),
         ):
             await controller.play_announcement("player_1", "http://test/announcement.mp3")
