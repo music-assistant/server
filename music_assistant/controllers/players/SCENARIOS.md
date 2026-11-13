@@ -1452,3 +1452,14 @@ volume command reaches the device; the level it reports back shows.
 - End-to-end: **possible with** a Sendspin client of the lab that reports its volume right after
   its hello, checked after a restart of the server.
 - Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_shows_the_volume_it_reported_before_its_protocol_was_attached`
+
+### VOLUME-5 · A device keeps the level it reported when a second connection of it takes over
+
+A Sendspin voice device reports level 28, unmuted, on its first connection, and a second
+connection of it replaces the first before its player has it, without reporting its state again.
+The player shows level 28 and unmuted. Once the device reports its state on the new connection,
+a volume command reaches it.
+
+- End-to-end: **possible with** a Sendspin client of the lab that opens a second connection right
+  after its first one, checked after a restart of the server.
+- Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_keeps_its_reported_volume_when_a_second_connection_replaces_the_first`

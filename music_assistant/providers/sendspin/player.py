@@ -1590,10 +1590,7 @@ class SendspinPlayer(SendspinBasePlayer):
         """Event callback registered to the sendspin client."""
         match event:
             case VolumeChangedEvent(volume=volume, muted=muted):
-                self._attr_volume_level = volume
-                self._attr_volume_muted = muted
-                if not self.control_features_pinned and (role := self._player_role) is not None:
-                    self._sync_control_features(role.state_supported_commands)
+                self._take_reported_volume(volume, muted)
                 self.update_state()
             case OutputDelayChangedEvent(output_delay_ms=delay_ms):
                 self.logger.debug("Output delay changed to %d ms", delay_ms)
@@ -2179,18 +2176,18 @@ class SendspinPlayer(SendspinBasePlayer):
 
         return entries
 
-    async def on_attach(self, player: Player) -> None:
-        """Follow the client, starting from the volume, mute and controls it reported so far."""
-        await super().on_attach(player)
-        if (role := self._player_role) is None:
-            return
-        # a client/state that arrived before the attach found no listener
-        if (volume := role.get_player_volume()) is not None:
-            self._attr_volume_level = volume
-        if (muted := role.get_player_muted()) is not None:
-            self._attr_volume_muted = muted
-        if not self.control_features_pinned:
-            self._sync_control_features(role.state_supported_commands)
+    def take_volume_reports(self) -> Callable[[], None]:
+        """
+        Take the volume and mute its client reports while the protocol is not attached yet.
+
+        Returns the callable that stops it; an attached protocol follows its client itself.
+        """
+
+        def _on_client_event(_client: SendspinClient, event: ClientEvent) -> None:
+            if isinstance(event, VolumeChangedEvent):
+                self._take_reported_volume(event.volume, event.muted)
+
+        return self.api.add_event_listener(_on_client_event)
 
     async def on_detach(self) -> None:
         """End the playback session of the protocol when it is detached from its player."""
@@ -2516,6 +2513,13 @@ class SendspinPlayer(SendspinBasePlayer):
             self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms),
         )
         player_role.set_output_delay(config_value)
+
+    def _take_reported_volume(self, volume: int, muted: bool) -> None:
+        """Take the volume and mute the client reported, and the controls it declares with them."""
+        self._attr_volume_level = volume
+        self._attr_volume_muted = muted
+        if not self.control_features_pinned and (role := self._player_role) is not None:
+            self._sync_control_features(role.state_supported_commands)
 
     def _sync_control_features(self, commands: Iterable[PlayerCommand]) -> None:
         """Expose volume/mute control exactly for the commands the player accepts."""

@@ -116,12 +116,14 @@ def _client(hello_commands: list[PlayerCommand] | None) -> MagicMock:
     return client
 
 
-async def _connect(scenario: Scenario, client: MagicMock) -> None:
+async def _connect(scenario: Scenario, client: MagicMock, *, replaced: bool = False) -> None:
     """
     Let a voice device connect that sends its state while the provider sets it up.
 
     :param scenario: The running server.
     :param client: The client of the device.
+    :param replaced: Whether a second connection of the device replaces the first after that
+        state, and sends no state of its own.
     """
     await scenario.add_provider("sendspin")
     provider: Any = scenario.provider("sendspin")
@@ -143,7 +145,12 @@ async def _connect(scenario: Scenario, client: MagicMock) -> None:
 
     async def _enrich(_players: list[SendspinPlayer]) -> None:
         # the client/state arrives between the hello and the attach
-        client.active_roles[0].on_client_state(_client_state(28, muted=False))
+        role = client.active_roles[0]
+        role.on_client_state(_client_state(28, muted=False))
+        if replaced:
+            # what the client does with its role when another connection replaces the first
+            role.on_disconnect()
+            role.on_connect()
 
     provider._apply_hass_esphome_enrichment = _enrich
     await provider._handle_client_added(CLIENT_ID, provider._begin_client_event(CLIENT_ID))
@@ -179,3 +186,31 @@ async def test_a_device_shows_the_volume_it_reported_before_its_protocol_was_att
     state = scenario.player(player_id)
     assert state is not None
     assert state.volume_level == 40
+
+
+async def test_a_device_keeps_its_reported_volume_when_a_second_connection_replaces_the_first(
+    scenario: Scenario,
+) -> None:
+    """
+    The level and mute a device reported stay when a second connection of it replaces the first.
+
+    The second connection sends no state until the device plays; until then the library takes
+    no volume command for it, and the player keeps its controls.
+    """
+    client = _client([PlayerCommand.VOLUME, PlayerCommand.MUTE])
+    await _connect(scenario, client, replaced=True)
+
+    protocol = scenario.mass.players.get_protocol(CLIENT_ID)
+    assert protocol is not None
+    assert protocol.player is not None
+    player_id = protocol.player.player_id
+    state = scenario.player(player_id)
+    assert state is not None
+    assert (state.volume_level, state.volume_muted, state.volume_control) == (28, False, "native")
+
+    # the device reports its state on the new connection, from then on it takes commands
+    client.active_roles[0].on_client_state(_client_state(28, muted=False))
+    await scenario.settle()
+    await scenario.mass.players.cmd_volume_set(player_id, 40)
+    sent = [call.args[0].payload.player for call in client.send_message.call_args_list]
+    assert [(command.command, command.volume) for command in sent] == [(PlayerCommand.VOLUME, 40)]
