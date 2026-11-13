@@ -328,10 +328,14 @@ class StationConverter(BaseConverter):
         """Convert Station object."""
         image_url = self._get_attr(station, "image_url")
 
-        radio = Radio(
+        # Check if we need to add BBC prefix back to station to help identify station within MA
+        title = self._get_attr(station, "title", "Unknown")
+        if title[0:3] != "BBC":
+            title = f"BBC {title}"
+
+        return Radio(
             item_id=station.id,
-            # Add BBC prefix back to station to help identify station within MA
-            name=f"BBC {self._get_attr(station, 'title', 'Unknown')}",
+            name=title,
             provider=self.context.provider_domain,
             metadata=ImageProvider.create_metadata_with_image(
                 image_url, self.context.provider_domain
