@@ -224,7 +224,7 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
                 ConfigValueOption("top_tracks"),
                 ConfigValueOption("library_tracks"),
                 ConfigValueOption("prefer_library"),
-                ConfigValueOption("all_tracks"),
+                ConfigValueOption("library_album_tracks"),
             ],
             category=CATEGORY_ITEMS_TO_SELECT,
         ),
