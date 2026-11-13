@@ -819,9 +819,10 @@ looks for groups again.
 
 ## Browser and app players
 
-Browser and app players exist only while they are connected. A player of one has the id of its
-client, nothing is stored of it until the user customises it, and it is the same player in every
-session. The examples use a browser connected through Sendspin.
+A browser or app player has the id of its client and is the same player in every session. Until
+the user customises it, nothing of it is stored and it exists only while it is connected. Once the
+user customised it, it is stored and stays like the player of a device: unavailable while its
+client is away. The examples use a browser connected through Sendspin.
 
 ### WEB-1 · A browser player exists while it is connected and leaves nothing stored
 
@@ -833,15 +834,15 @@ stored. After a restart there is no player and no stored player.
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_session_only_web_player_exists_while_attached`
 
-### WEB-2 · A customised browser player keeps its settings while it is away
+### WEB-2 · A customised browser player stays listed, unavailable, while its browser is away
 
-The user renames a browser player. The browser disconnects and the server restarts: there is no
-player, but the settings list it with its name. When the browser connects again, the player is
-back under the same id with that name. When it disconnects again, the player is gone again and
-the settings still list it.
+The user renames a browser player and plays on it. The browser disconnects: the player stays,
+unavailable, with its name, and clients are told it is updated, not removed. After a restart it is
+still listed, unavailable, in the players and in the settings. When the browser connects again,
+the player is available under the same id, with its name and its queue.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
-- Proven by: `test_lifecycle.py::test_customised_session_only_player_keeps_its_config`
+- Proven by: `test_lifecycle.py::test_a_customised_browser_player_stays_listed_while_its_browser_is_away`
 
 ### WEB-3 · A browser player has the same id in every session
 
@@ -861,9 +862,10 @@ again: clients are told the player is added under the same id, and its queue is 
 
 ### WEB-5 · A browser player stored by an older version keeps its id
 
-An older version stored a browser player. After the upgrade it is no player until it connects,
-and the settings list it only when the user had named it. When it connects it is a player under
-its client id, with the stored name, or else its default name.
+An older version stored a browser player. When the user had named it, it is a player after the
+upgrade, unavailable, and the settings list it; otherwise it is no player and nothing is listed
+until it connects. When it connects it is an available player under its client id, with the
+stored name, or else its default name.
 
 - End-to-end: **no**: the lab has no settings of an older version.
 - Proven by: `test_lifecycle.py::test_pre_split_session_only_player_comes_back_with_its_id`

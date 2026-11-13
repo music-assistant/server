@@ -119,7 +119,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
         The player stays and keeps its queue; it is unavailable while none of its other
         protocols is available. A player that only exists while its device is connected
-        goes with its last protocol. Silently ignored for a protocol that is not attached.
+        goes with its last protocol, unless the user changed its config. Silently ignored
+        for a protocol that is not attached.
 
         :param protocol_id: Id of the protocol to detach.
         """
@@ -605,7 +606,11 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         if self._players.get(player.player_id) is not player or not player.initialized.is_set():
             # an attach that is still setting the player up drops it
             return
-        if player.session_only and not player.protocols:
+        if (
+            player.session_only
+            and not player.protocols
+            and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}") is None
+        ):
             await self._drop_player(player, permanent=False)
             self.logger.info("Player removed: %s", player.display_name)
             return
@@ -879,7 +884,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             self.mass.config.set(f"{conf_key}/player_type", player.type)
 
     async def _restore_players(self) -> None:
-        """Bring back every stored player that is enabled and kept while its device is away."""
+        """Bring back every stored player that is enabled."""
         stored_players = self.mass.config.get(CONF_PLAYERS, {})
         for player_id, stored in list(stored_players.items()):
             if not isinstance(stored, dict) or not stored.get("enabled", True):
@@ -887,8 +892,6 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if player_id in self._players:
                 continue
             try:
-                if (stored.get("values") or {}).get(CONF_SESSION_ONLY):
-                    continue
                 await self._publish_player(self._create_player(player_id))
             except Exception:
                 self.logger.exception("Could not restore player %s", player_id)
@@ -965,9 +968,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if not isinstance(stored, dict):
             return
-        # a player that only exists while its device is connected comes back when it attaches
-        if not (stored.get("values") or {}).get(CONF_SESSION_ONLY):
-            await self._publish_player(self._create_player(player_id))
+        await self._publish_player(self._create_player(player_id))
         provider_ids = {
             str(record.get("provider"))
             for protocol_id in self.mass.config.get_protocol_ids_of_player(player_id)

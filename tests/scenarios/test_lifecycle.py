@@ -228,43 +228,50 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     assert await scenario.player_configs() == []
 
 
-async def test_customised_session_only_player_keeps_its_config(scenario: Scenario) -> None:
+async def test_a_customised_browser_player_stays_listed_while_its_browser_is_away(
+    scenario: Scenario,
+) -> None:
     """
-    A session-only player the user customised keeps its config while it is away.
+    A web player the user customised stays a player, unavailable, while its client is away.
 
-    It comes back with the config, and still exists only while attached: it goes again once
-    it detaches, its config stays.
+    Its client disconnecting is no removal, also not after a restart; when it connects again
+    the player is available under the same id, with its settings and its queue.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
     player_id = scenario.single_player(browser).player_id
     await scenario.configure_player(player_id, name="Den browser")
+    await scenario.play(player_id)
+    await scenario.idle()
+    scenario.clear_events()
 
     await scenario.detach(browser)
+    await scenario.idle()
+
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
+        (player_id, "Den browser", False)
+    ]
+    assert scenario.events(EventType.PLAYER_UPDATED, object_id=player_id) != []
+
     await scenario.restart()
     await scenario.idle()
 
-    assert scenario.visible_players() == []
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
+        (player_id, "Den browser", False)
+    ]
     assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
         (player_id, "Den browser")
     ]
 
-    returned = scenario.protocol("sendspin_web_3f2a")
-    await scenario.attach(returned)
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
-    assert [(p.player_id, p.name) for p in scenario.visible_players()] == [
-        (player_id, "Den browser")
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
+        (player_id, "Den browser", True)
     ]
-
-    await scenario.detach(returned)
-    await scenario.idle()
-
-    assert scenario.visible_players() == []
-    assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
-        (player_id, "Den browser")
-    ]
+    assert [item.uri for item in scenario.mass.player_queues.items(player_id)] == [TEST_TRACK_URI]
+    assert scenario.removals() == []
 
 
 async def test_session_only_player_has_the_same_id_in_every_session(scenario: Scenario) -> None:
@@ -424,7 +431,8 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
     """
     A web player stored before the split has the same id when it next connects.
 
-    Its config is only kept when the user customised it, and then it comes back with it.
+    Its config is only kept when the user customised it: then it is a player from the start,
+    unavailable until its client connects, with its config.
     """
     sendspin = await scenario.add_provider("sendspin")
     sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
@@ -434,7 +442,9 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
     )
     await scenario.idle()
 
-    assert scenario.visible_players() == []
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == (
+        [("sendspin_web_3f2a", stored_name, False)] if stored_name else []
+    )
     assert [(c.player_id, c.name) for c in await scenario.player_configs()] == (
         [("sendspin_web_3f2a", stored_name)] if stored_name else []
     )

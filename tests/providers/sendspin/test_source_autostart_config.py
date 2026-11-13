@@ -243,8 +243,8 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     """
     A line-in that only exists while connected keeps the target the user picked for it.
 
-    Picking it in the setup flow stores the config of the line-in, so the target is there
-    again when it reconnects, also after a restart.
+    Picking it in the setup flow stores the config of the line-in, so it stays listed while
+    it is disconnected and the target is there again when it reconnects, also after a restart.
     """
 
     async def _no_security_entries(_self: SendspinBasePlayer) -> list[ConfigEntry]:
@@ -271,8 +271,9 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     await first._run_source_autostart_step(session)
     await scenario.mass.players.detach(LINE_IN_ID)
     await scenario.settle()
-    # it still leaves the list when it disconnects
-    assert scenario.mass.players.get_player(LINE_IN_ID) is None
+    state = scenario.player(LINE_IN_ID)
+    assert state is not None
+    assert state.available is False
 
     again = _line_in(sendspin)
     await scenario.mass.players.attach(again)
