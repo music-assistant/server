@@ -558,6 +558,40 @@ async def test_group_keeps_the_player_that_shares_its_id_with_a_protocol_taken_o
     assert group_state.group_members == ["wiim_living", hall_id]
 
 
+@pytest.mark.parametrize("group_type", ["universal_group", "sync_group"])
+async def test_group_does_not_take_another_player_for_its_disabled_member(
+    scenario: Scenario, group_type: str
+) -> None:
+    """
+    A disabled member is not swapped for the player of a protocol that has its id.
+
+    The living room player from before the split has the id of its own protocol, which was taken
+    off it. Disabled, the player has no live object but keeps its stored record, so its id still
+    names it and never the new player of that protocol. An id that only a protocol has still
+    names the player of that protocol.
+    """
+    if group_type == "universal_group":
+        await scenario.mass.config._create_provider_instance(group_type, {})
+    hall_id = await _pre_split_living_room_and_hall(scenario)
+    group = await scenario.mass.players.create_group_player(
+        group_type, "Group Z", ["wiim_living", hall_id], False
+    )
+    await scenario.idle()
+    new_id = await _unlink(scenario, "wiim_living")
+
+    await scenario.disable("wiim_living")
+    await scenario.idle()
+
+    players = scenario.mass.players
+    assert players.get_player_or_protocol_player("wiim_living") is None
+    hall = players.get_player_or_protocol_player("RINCON_HALL")
+    assert hall is not None
+    assert hall.player_id == hall_id
+    group_state = scenario.player(group.player_id)
+    assert group_state is not None
+    assert new_id not in group_state.group_members
+
+
 async def _pre_split_living_room_and_hall(scenario: Scenario) -> str:
     """
     Return the id of the hall player, next to the living room player from before the split.

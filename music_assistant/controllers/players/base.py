@@ -269,14 +269,20 @@ class _PlayerControllerBase(CoreController):
         Return the player an id names as a player id first, else the player of a protocol of that id.
 
         For an id that is a player id but may be the id of a protocol: the members of a group
-        protocol, a player id a plugin stored, the members of a player's state. A player keeps
-        its id also when a protocol of another player has the same id. An id that is only ever
-        a player id is looked up with `get_player`, an id a device protocol reports (its group
+        protocol, a player id a plugin stored, the members of a player's state. An id that names
+        a player, live or stored (a disabled one), never names another player, also when a
+        protocol of that player has the same id: for a stored player without a live object this
+        returns None. Only an id no player has names the player of a protocol. An id that is only
+        ever a player id is looked up with `get_player`, an id a device protocol reports (its group
         members, its sync leader) with `get_player_by_protocol`.
 
         :param player_id: ID of a player or one of its legacy ids, else of an attached protocol.
         """
-        return self.get_player(player_id) or self.get_player_by_protocol(player_id)
+        if player := self.get_player(player_id):
+            return player
+        if self.resolve_player_id(player_id) in self.mass.config.get(CONF_PLAYERS, {}):
+            return None
+        return self.get_player_by_protocol(player_id)
 
     def get_player_id_of_protocol(self, protocol_id: str) -> str | None:
         """
