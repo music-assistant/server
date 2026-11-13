@@ -144,10 +144,9 @@ class DashboardController(CoreController):
             raise InvalidCommand(msg)
 
         del self._dashboards[dashboard_id]
-        self._session_owners.pop(dashboard_id, None)
-        self._viewer_keys.pop(dashboard_id, None)
+        had_session = self._forget_session(dashboard_id) is not None
         self._signal_dashboards_updated()
-        if self._sessions.pop(dashboard_id, None) is not None:
+        if had_session:
             self._signal_sessions_updated()
 
     @api_command("dashboard/dashboards")
@@ -240,9 +239,7 @@ class DashboardController(CoreController):
             else:
                 self.mass.signal_event(EventType.DASHBOARD_HIDE, object_id=dashboard_id)
 
-        self._sessions.pop(dashboard_id, None)
-        self._session_owners.pop(dashboard_id, None)
-        self._viewer_keys.pop(dashboard_id, None)
+        self._forget_session(dashboard_id)
         self._signal_sessions_updated()
 
     @api_command("dashboard/viewer_preferences", required_scope=Scope.PROVIDERS_READ)
@@ -324,10 +321,9 @@ class DashboardController(CoreController):
 
         def unregister() -> None:
             self._dashboards.pop(dashboard_id, None)
-            self._session_owners.pop(dashboard_id, None)
-            self._viewer_keys.pop(dashboard_id, None)
+            had_session = self._forget_session(dashboard_id) is not None
             self._signal_dashboards_updated()
-            if self._sessions.pop(dashboard_id, None) is not None:
+            if had_session:
                 self._signal_sessions_updated()
 
         return unregister
@@ -345,9 +341,7 @@ class DashboardController(CoreController):
         sessions_changed = False
         for dashboard_id in stale_ids:
             del self._dashboards[dashboard_id]
-            self._session_owners.pop(dashboard_id, None)
-            self._viewer_keys.pop(dashboard_id, None)
-            if self._sessions.pop(dashboard_id, None) is not None:
+            if self._forget_session(dashboard_id) is not None:
                 sessions_changed = True
 
         self._signal_dashboards_updated()
@@ -382,9 +376,7 @@ class DashboardController(CoreController):
         :param dashboard_id: Id of a registered dashboard endpoint.
         :param reason: Human-readable cause, logged as a warning.
         """
-        session = self._sessions.pop(dashboard_id, None)
-        self._session_owners.pop(dashboard_id, None)
-        self._viewer_keys.pop(dashboard_id, None)
+        session = self._forget_session(dashboard_id)
         if session is None:
             return
         self.logger.warning("Dashboard session on %s ended: %s", session.name, reason)
@@ -549,6 +541,12 @@ class DashboardController(CoreController):
         self.mass.signal_event(
             EventType.DASHBOARD_SESSIONS_UPDATED, data=list(self._sessions.values())
         )
+
+    def _forget_session(self, dashboard_id: str) -> DashboardSession | None:
+        """Drop a dashboard's session, owner and viewer key, returning the session if any."""
+        self._session_owners.pop(dashboard_id, None)
+        self._viewer_keys.pop(dashboard_id, None)
+        return self._sessions.pop(dashboard_id, None)
 
 
 def _viewer_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
