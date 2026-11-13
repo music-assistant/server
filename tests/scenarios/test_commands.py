@@ -32,7 +32,7 @@ async def _speaker_with_an_input(scenario: Scenario) -> tuple[FakeProtocol, str]
     """Return a native speaker with an HDMI input, and the id of its player."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.report(
         speaker,
         supported_features={*DEFAULT_FEATURES, PlayerFeature.SELECT_SOURCE},
@@ -47,8 +47,8 @@ async def _two_speakers(scenario: Scenario) -> tuple[FakeProtocol, str, FakeProt
     sonos = await scenario.add_provider("sonos")
     den = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
     kitchen = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(den)
-    await scenario.attach(kitchen)
+    await scenario.register(den)
+    await scenario.register(kitchen)
     await scenario.idle()
     return (
         den,
@@ -343,12 +343,12 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
     _den, den_id, _kitchen, _kitchen_id = await _two_speakers(scenario)
     squeezelite = await scenario.add_provider("squeezelite")
     pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
-    await scenario.attach(pi)
+    await scenario.register(pi)
     bathroom_id = scenario.single_player(pi).player_id
     plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
     await scenario.configure_player(bathroom_id, power_control=plug.control_id)
     await scenario.switch(plug, False)
-    await scenario.detach(pi)
+    await scenario.unregister(pi)
     await scenario.idle()
     await scenario.play(den_id)
     transfer = await scenario.command(
@@ -363,7 +363,7 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
     assert seek.done()
     await seek
     assert waits == []
-    await scenario.attach(pi)
+    await scenario.register(pi)
     # the power on looks for the device every 0.5 s
     await scenario.advance(1)
     await transfer

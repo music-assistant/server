@@ -2518,7 +2518,7 @@ def _attaching_provider(
     async def attach(player: RaumfeldPlayer) -> None:
         registry[player.protocol_id] = player
 
-    players.attach = AsyncMock(side_effect=attach)
+    players.register = AsyncMock(side_effect=attach)
     return provider, registry
 
 
@@ -2816,7 +2816,7 @@ async def test_a_new_room_gets_the_icy_default_only_once_attached(attaches: bool
         return player
 
     players = cast("MagicMock", provider.mass.players)
-    players.attach = AsyncMock(side_effect=attach)
+    players.register = AsyncMock(side_effect=attach)
     players.get_protocol.side_effect = registry.get
     players.iter_protocols.return_value = []
     players.wants_protocol.return_value = True

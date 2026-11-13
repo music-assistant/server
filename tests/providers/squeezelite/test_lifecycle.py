@@ -52,7 +52,7 @@ def _client(player_id: str, name: str, *, device_model: str = "SqueezeLite") -> 
 
 
 async def _connect(scenario: Scenario, client: MagicMock) -> SqueezelitePlayer:
-    """Let a client connect: the provider sets up its protocol, which attaches it."""
+    """Let a client connect: the provider sets up its protocol, which registers it."""
     protocol = SqueezelitePlayer(
         scenario.provider("squeezelite"),  # type: ignore[arg-type]
         client.player_id,
@@ -64,8 +64,8 @@ async def _connect(scenario: Scenario, client: MagicMock) -> SqueezelitePlayer:
 
 
 async def _disconnect(scenario: Scenario, protocol: SqueezelitePlayer) -> None:
-    """Let a client disconnect: the provider detaches its protocol."""
-    await scenario.mass.players.detach(protocol.protocol_id)
+    """Let a client disconnect: the provider unregisters its protocol."""
+    await scenario.mass.players.unregister(protocol.protocol_id)
     await scenario.settle()
 
 

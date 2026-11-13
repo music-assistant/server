@@ -86,7 +86,7 @@ async def _kitchen_player(scenario: Scenario) -> tuple[FakeProtocol, str]:
     """Return the attached protocol of a speaker and the id of its player."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     return speaker, scenario.single_player(speaker).player_id
 
 
@@ -125,7 +125,7 @@ async def _group_listing(scenario: Scenario, *member_ids: str) -> FakeProtocol:
         ]
 
     group.get_config_entries = _get_config_entries  # type: ignore[method-assign]
-    await scenario.attach(group)
+    await scenario.register(group)
     config = scenario.mass.config
     config.set_protocol_value("group_all", CONF_GROUP_MEMBERS, list(member_ids))
     config.set_protocol_value("group_all", CONF_ALLOWED_MEMBERS, list(member_ids))
@@ -144,7 +144,7 @@ class TestCleanupWhenAPlayerGoes:
         locks = _locks_of(scenario, player_id)
         assert locks == sorted([f"playback_{player_id}", f"volume_{player_id}"])
 
-        await scenario.detach(speaker)
+        await scenario.unregister(speaker)
 
         assert _locks_of(scenario, player_id) == locks
 
@@ -157,7 +157,7 @@ class TestCleanupWhenAPlayerGoes:
         speaker, player_id = await _kitchen_player(scenario)
         sonos = scenario.provider("sonos")
         other = sonos.protocol("RINCON_LIVING", "Living", identifiers=LIVING)
-        await scenario.attach(other)
+        await scenario.register(other)
         other_id = scenario.single_player(other).player_id
         for one in (player_id, other_id):
             await _take_locks(scenario, one)
@@ -177,7 +177,7 @@ class TestCleanupWhenAPlayerGoes:
         sendspin = await scenario.add_provider("sendspin")
         # a player that only exists while connected takes the id of its protocol
         for protocol_id in ("b", "a_b"):
-            await scenario.attach(sendspin.protocol(protocol_id, protocol_id, session_only=True))
+            await scenario.register(sendspin.protocol(protocol_id, protocol_id, session_only=True))
             await _take_locks(scenario, protocol_id)
         assert scenario.mass.players.get_player("a_b") is not None
 
@@ -195,7 +195,7 @@ class TestCleanupWhenAPlayerGoes:
         stored = _stored(scenario)
         scenario.clear_events()
 
-        await scenario.mass.players.detach("nonexistent")
+        await scenario.mass.players.unregister("nonexistent")
         await scenario.remove("nonexistent")
         await scenario.idle()
 
@@ -232,7 +232,7 @@ class TestCleanupWhenAPlayerGoes:
         expires_at = players.set_sleep_timer(player_id, 600)
         timer_id = f"player_sleep_timer_{player_id}"
 
-        await scenario.detach(speaker)
+        await scenario.unregister(speaker)
 
         player = players.get_player(player_id)
         assert player is not None
@@ -280,9 +280,9 @@ class TestDetachWhileANewDeviceAttaches:
         scenario.clear_events()
 
         with patched:
-            task = await scenario.command(players.attach(speaker))
+            task = await scenario.command(players.register(speaker))
             assert reached.is_set()
-            await players.detach("RINCON_KITCHEN")
+            await players.unregister("RINCON_KITCHEN")
             release.set()
             await scenario.settle()
             await task
@@ -318,7 +318,7 @@ class TestDetachWhileANewDeviceAttaches:
 
         scenario.clear_events()
         with patch.object(queues, "on_player_register", _restore_later):
-            task = await scenario.command(players.attach(speaker))
+            task = await scenario.command(players.register(speaker))
             assert restoring.is_set()
             player = players.get_player_by_protocol("RINCON_KITCHEN")
             assert player is not None
@@ -343,14 +343,14 @@ class TestAnotherObjectOfAnAttachedProtocol:
         """The object that takes the place of the attached one gets its stored config."""
         squeezelite = await scenario.add_provider("squeezelite")
         old = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
-        await scenario.attach(old)
+        await scenario.register(old)
         player_id = scenario.single_player(old).player_id
         scenario.mass.config.set_protocol_value("aa:bb:cc:00:00:01", FAKE_SETTING, "custom")
         assert old.config.get_value(FAKE_SETTING) == "custom"
 
         new = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
         calls = _record_hooks(new)
-        await scenario.attach(new)
+        await scenario.register(new)
 
         assert scenario.player_of(new) == player_id
         # without its stored config the new object reads the default of every setting
@@ -363,7 +363,7 @@ class TestAnotherObjectOfAnAttachedProtocol:
         """A replacement that is lost while its config hook runs is not attached."""
         squeezelite = await scenario.add_provider("squeezelite")
         old = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
-        await scenario.attach(old)
+        await scenario.register(old)
         player_id = scenario.single_player(old).player_id
         players = scenario.mass.players
         new = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
@@ -372,12 +372,12 @@ class TestAnotherObjectOfAnAttachedProtocol:
 
         async def _lost_during_setup() -> None:
             await on_config_updated()
-            await players.detach("aa:bb:cc:00:00:01")
+            await players.unregister("aa:bb:cc:00:00:01")
 
         new.on_config_updated = _lost_during_setup  # type: ignore[method-assign]
         scenario.clear_events()
 
-        await players.attach(new)
+        await players.register(new)
         await scenario.idle()
 
         assert "on_attach" not in calls
@@ -408,9 +408,9 @@ class TestAnotherObjectOfAnAttachedProtocol:
             await on_attach(player)
 
         first.on_attach = _attach_later  # type: ignore[method-assign]
-        first_task = await scenario.command(players.attach(first))
+        first_task = await scenario.command(players.register(first))
         second = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
-        second_task = await scenario.command(players.attach(second))
+        second_task = await scenario.command(players.register(second))
 
         # the first attach is still setting its object up, so the second one waits
         assert players.get_protocol("aa:bb:cc:00:00:01") is first
@@ -452,7 +452,7 @@ class TestFailedAttach:
             patched = patch.object(speaker, "on_config_updated", _fail)
 
         with patched, pytest.raises(BrokenPipeError):
-            await players.attach(speaker)
+            await players.register(speaker)
         await scenario.settle()
 
         assert players.get_protocol("RINCON_KITCHEN") is None
@@ -461,7 +461,7 @@ class TestFailedAttach:
 
         # the provider tries again with a fresh object once the device reappears
         retried = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-        await scenario.attach(retried)
+        await scenario.register(retried)
 
         player = players.get_player_by_protocol("RINCON_KITCHEN")
         assert player is not None
@@ -477,13 +477,13 @@ class TestFailedAttach:
         players = scenario.mass.players
 
         async def _detach_then_fail() -> None:
-            await players.detach("RINCON_KITCHEN")
+            await players.unregister("RINCON_KITCHEN")
             raise BrokenPipeError("device gone")
 
         speaker.on_config_updated = _detach_then_fail  # type: ignore[method-assign]
 
         with pytest.raises(BrokenPipeError):
-            await players.attach(speaker)
+            await players.register(speaker)
         await scenario.settle()
 
         assert players.get_protocol("RINCON_KITCHEN") is None
@@ -509,7 +509,7 @@ class TestFailedAttach:
             patch.object(scenario.mass.player_queues, "on_player_register", _fail),
             pytest.raises(RuntimeError, match="boom"),
         ):
-            await players.attach(speaker)
+            await players.register(speaker)
         await scenario.settle()
 
         added = scenario.events(EventType.PLAYER_ADDED)
@@ -536,7 +536,7 @@ class TestFailedAttach:
             await asyncio.Event().wait()
 
         speaker.on_config_updated = _block  # type: ignore[method-assign]
-        task = await scenario.command(players.attach(speaker))
+        task = await scenario.command(players.register(speaker))
         assert reached.is_set()
 
         task.cancel()
@@ -549,7 +549,7 @@ class TestFailedAttach:
         assert _stored(scenario) == ([], [])
 
         retried = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-        await scenario.attach(retried)
+        await scenario.register(retried)
         assert scenario.player_of(retried) is not None
 
     async def test_failing_teardown_keeps_the_error_of_the_setup(self, scenario: Scenario) -> None:
@@ -569,7 +569,7 @@ class TestFailedAttach:
         speaker.on_detach = _teardown_fails  # type: ignore[method-assign]
 
         with pytest.raises(BrokenPipeError):
-            await players.attach(speaker)
+            await players.register(speaker)
         await scenario.settle()
 
         assert players.get_protocol("RINCON_KITCHEN") is None
@@ -605,12 +605,12 @@ class TestPlayerThatGoes:
         """A protocol that starts to report the group type stays the same player (Chromecast)."""
         chromecast = await scenario.add_provider("chromecast")
         speaker = chromecast.protocol("cc_kitchen", "Kitchen", identifiers=KITCHEN)
-        await scenario.attach(speaker)
+        await scenario.register(speaker)
         player_id = scenario.single_player(speaker).player_id
         scenario.clear_events()
 
         speaker._set_reported(type=PlayerType.GROUP)
-        await scenario.attach(speaker)
+        await scenario.register(speaker)
         await scenario.idle()
 
         assert scenario.player_of(speaker) == player_id
@@ -637,7 +637,7 @@ class TestPlayerThatGoes:
 
         speaker.on_detach = _teardown_fails  # type: ignore[method-assign]
 
-        await scenario.detach(speaker)
+        await scenario.unregister(speaker)
 
         assert torn_down == ["RINCON_KITCHEN"]
         assert players.get_protocol("RINCON_KITCHEN") is None
@@ -646,7 +646,7 @@ class TestPlayerThatGoes:
         assert state is not None
         assert state.available is False
 
-        await scenario.attach(speaker)
+        await scenario.register(speaker)
         await scenario.remove(player_id)
 
         assert torn_down == ["RINCON_KITCHEN", "RINCON_KITCHEN"]
@@ -680,7 +680,7 @@ class TestGroupMemberships:
         speaker, player_id = await _kitchen_player(scenario)
         await _group_listing(scenario, player_id, "pl_other")
 
-        await scenario.detach(speaker)
+        await scenario.unregister(speaker)
         await scenario.idle()
 
         assert scenario.mass.config.get_protocol_value("group_all", CONF_GROUP_MEMBERS) == [
@@ -720,12 +720,12 @@ class TestPowerOnOfAReturningDevice:
         """A protocol that is still setting up the returning device is not played to yet."""
         squeezelite = await scenario.add_provider("squeezelite")
         pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=KITCHEN)
-        await scenario.attach(pi)
+        await scenario.register(pi)
         player_id = scenario.single_player(pi).player_id
         plug = await scenario.add_power_control("switch.plug", "Plug", powered=True)
         await scenario.configure_player(player_id, power_control=plug.control_id)
         await scenario.switch(plug, False)
-        await scenario.detach(pi)
+        await scenario.unregister(pi)
         await scenario.idle()
         players = scenario.mass.players
         release = asyncio.Event()
@@ -739,7 +739,7 @@ class TestPowerOnOfAReturningDevice:
 
         power_on = await scenario.command(players.cmd_power(player_id, True))
         assert plug.commands == [True]
-        attach = await scenario.command(players.attach(pi))
+        attach = await scenario.command(players.register(pi))
         # the power on looks for the device every 0.5 s
         await scenario.advance(1)
 

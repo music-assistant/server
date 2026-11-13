@@ -122,19 +122,19 @@ async def test_a_speaker_attached_again_follows_its_events_and_takes_commands(
             role="audio",
             identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS},
         )
-        await scenario.attach(audio)
+        await scenario.register(audio)
 
     create = AsyncMock(side_effect=_sdk_device)
     with patch("music_assistant.providers.wiim.player.async_create_wiim_device", create):
         protocol = _speaker(provider)
-        await scenario.mass.players.attach(protocol)
+        await scenario.mass.players.register(protocol)
         await scenario.settle()
         if move == "unlink":
             await scenario.mass.players.unlink_protocol(PROTOCOL_ID)
         else:
-            await scenario.mass.players.detach(PROTOCOL_ID)
+            await scenario.mass.players.unregister(PROTOCOL_ID)
             await scenario.settle()
-            await scenario.mass.players.attach(protocol)
+            await scenario.mass.players.register(protocol)
         await scenario.settle()
 
     device = cast("MagicMock", protocol.device)

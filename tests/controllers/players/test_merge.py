@@ -86,9 +86,9 @@ async def _two_players_for_one_tv(scenario: Scenario) -> _TwoPlayers:
     chromecast = await scenario.add_provider("chromecast")
     tv_airplay = airplay.protocol("ap_tv", "Living TV", role="audio", identifiers=TV_AIRPLAY)
     tv_cast = chromecast.protocol("cast_tv", "Living TV", role="audio", identifiers=TV_CAST)
-    await scenario.attach(tv_airplay)
+    await scenario.register(tv_airplay)
     await scenario.advance(15)
-    await scenario.attach(tv_cast)
+    await scenario.register(tv_cast)
     await scenario.advance(15)
     await scenario.idle()
     return _TwoPlayers(
@@ -189,7 +189,7 @@ async def test_merge_takes_legacy_ids(scenario: Scenario, named_by_legacy_id: st
     tv = await _two_players_for_one_tv(scenario)
     dlna = await scenario.add_provider("dlna")
     tv_dlna = dlna.protocol("uuid:tv", "Living TV", role="audio")
-    await scenario.attach(tv_dlna)
+    await scenario.register(tv_dlna)
     await scenario.advance(15)
     dlna_id = scenario.single_player(tv_dlna).player_id
     # the Cast receiver's player goes into the DLNA one: its id is a legacy id from now on
@@ -212,7 +212,7 @@ async def test_chain_of_merges_keeps_every_absorbed_id_resolving(scenario: Scena
     tv = await _two_players_for_one_tv(scenario)
     dlna = await scenario.add_provider("dlna")
     tv_dlna = dlna.protocol("uuid:tv", "Living TV", role="audio")
-    await scenario.attach(tv_dlna)
+    await scenario.register(tv_dlna)
     await scenario.advance(15)
     dlna_id = scenario.single_player(tv_dlna).player_id
 
@@ -334,7 +334,7 @@ async def test_merge_leaves_alone_what_the_device_plays_by_itself(scenario: Scen
     musiccast = await scenario.add_provider("musiccast")
     # the AirPlay receiver of the AVR was first seen without its address
     avr_airplay = airplay.protocol("ap_avr", "AVR", role="audio")
-    await scenario.attach(avr_airplay)
+    await scenario.register(avr_airplay)
     await scenario.advance(15)
     keep_id = scenario.single_player(avr_airplay).player_id
     receiver = musiccast.protocol(
@@ -344,7 +344,7 @@ async def test_merge_leaves_alone_what_the_device_plays_by_itself(scenario: Scen
         playback_state=PlaybackState.PLAYING,
         active_source="hdmi1",
     )
-    await scenario.attach(receiver)
+    await scenario.register(receiver)
     receiver_id = scenario.single_player(receiver).player_id
 
     await _merge(scenario, keep_id, receiver_id)
@@ -364,7 +364,7 @@ async def test_merge_of_a_group_member_keeps_it_in_its_group(scenario: Scenario)
     tv = await _two_players_for_one_tv(scenario)
     sonos = await scenario.add_provider("sonos")
     hall = sonos.protocol("RINCON_HALL", "Hall", identifiers=HALL)
-    await scenario.attach(hall)
+    await scenario.register(hall)
     hall_id = scenario.single_player(hall).player_id
     await scenario.mass.config._create_provider_instance("universal_group", {})
     group = await scenario.mass.players.create_group_player(
@@ -400,7 +400,7 @@ async def test_merge_of_a_sync_leader_keeps_its_members(scenario: Scenario) -> N
     features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
     # the AirPlay receiver of the speaker was first seen without its address
     kitchen_airplay = airplay.protocol("ap_kitchen", "Kitchen", role="audio")
-    await scenario.attach(kitchen_airplay)
+    await scenario.register(kitchen_airplay)
     await scenario.advance(15)
     keep_id = scenario.single_player(kitchen_airplay).player_id
     leader = sonos.protocol(
@@ -417,8 +417,8 @@ async def test_merge_of_a_sync_leader_keeps_its_members(scenario: Scenario) -> N
         supported_features=features,
         can_group_with={"RINCON_KITCHEN"},
     )
-    await scenario.attach(leader)
-    await scenario.attach(member)
+    await scenario.register(leader)
+    await scenario.register(member)
     # the speakers learn who they can be grouped with
     await scenario.advance(3)
     leader_id = scenario.single_player(leader).player_id
@@ -458,7 +458,7 @@ async def test_merge_of_an_unavailable_player_takes_its_device_when_it_returns(
     Also after a restart, when only the stored config tells which player it belongs to.
     """
     tv = await _two_players_for_one_tv(scenario)
-    await scenario.detach(tv.cast)
+    await scenario.unregister(tv.cast)
 
     await scenario.mass.players.merge_players(tv.older_id, tv.younger_id)
     await scenario.settle()
@@ -479,7 +479,7 @@ async def test_merge_of_an_unavailable_player_takes_its_device_when_it_returns(
         )
     ]
     await scenario.restart()
-    await scenario.attach(scenario.protocol("cast_tv"))
+    await scenario.register(scenario.protocol("cast_tv"))
 
     assert scenario.player_of(scenario.protocol("cast_tv")) == tv.older_id
 
@@ -492,8 +492,8 @@ async def test_two_players_that_each_have_a_native_protocol_are_not_merged(
     bluesound = await scenario.add_provider("bluesound")
     kitchen = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     hall = bluesound.protocol("bluesound_hall", "Hall", identifiers=HALL)
-    await scenario.attach(kitchen)
-    await scenario.attach(hall)
+    await scenario.register(kitchen)
+    await scenario.register(hall)
     kitchen_id = scenario.single_player(kitchen).player_id
     hall_id = scenario.single_player(hall).player_id
 
@@ -514,8 +514,8 @@ async def test_two_players_with_a_protocol_of_one_domain_are_not_merged(
     airplay = await scenario.add_provider("airplay")
     kitchen = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
     hall = airplay.protocol("ap_hall", "Hall", role="audio", identifiers=HALL)
-    await scenario.attach(kitchen)
-    await scenario.attach(hall)
+    await scenario.register(kitchen)
+    await scenario.register(hall)
     kitchen_id = scenario.single_player(kitchen).player_id
     hall_id = scenario.single_player(hall).player_id
 
@@ -536,9 +536,9 @@ async def test_two_players_whose_identifiers_differ_are_not_merged(scenario: Sce
     speaker = bluesound.protocol(
         "bluesound_hall", "Hall", identifiers={IdentifierType.AIRPLAY_ID: "AA:02", **HALL}
     )
-    await scenario.attach(receiver)
+    await scenario.register(receiver)
     await scenario.advance(15)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     receiver_id = scenario.single_player(receiver).player_id
     speaker_id = scenario.single_player(speaker).player_id
 
@@ -569,7 +569,7 @@ async def test_session_only_player_is_not_merged(scenario: Scenario) -> None:
     tv = await _two_players_for_one_tv(scenario)
     sendspin = await scenario.add_provider("sendspin")
     web_player = sendspin.protocol("sendspin_web_1", "Browser", role="audio", session_only=True)
-    await scenario.attach(web_player)
+    await scenario.register(web_player)
     web_player_id = scenario.single_player(web_player).player_id
 
     with pytest.raises(InvalidCommand) as refused:
@@ -613,7 +613,7 @@ async def test_merge_command_follows_the_policy_of_removing_a_player(scenario: S
     tv = await _two_players_for_one_tv(scenario)
     dlna = await scenario.add_provider("dlna")
     speaker = dlna.protocol("uuid:speaker", "Speaker", role="audio", identifiers=HALL)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     speaker_id = scenario.single_player(speaker).player_id
     scenario.set_present("uuid:speaker", False)
     user = await scenario.mass.webserver.auth.create_user(
@@ -634,7 +634,7 @@ async def test_merge_command_takes_legacy_ids(scenario: Scenario) -> None:
     tv = await _two_players_for_one_tv(scenario)
     dlna = await scenario.add_provider("dlna")
     tv_dlna = dlna.protocol("uuid:tv", "Living TV", role="audio")
-    await scenario.attach(tv_dlna)
+    await scenario.register(tv_dlna)
     await scenario.advance(15)
     dlna_id = scenario.single_player(tv_dlna).player_id
     await _merge(scenario, dlna_id, tv.younger_id)
@@ -664,9 +664,9 @@ async def _duplicates(scenario: Scenario) -> _TwoPlayers:
         role="audio",
         identifiers={**TV_CAST, IdentifierType.IP_ADDRESS: TV_IP},
     )
-    await scenario.attach(tv_airplay)
+    await scenario.register(tv_airplay)
     await scenario.advance(15)
-    await scenario.attach(tv_cast)
+    await scenario.register(tv_cast)
     await scenario.advance(15)
     await scenario.idle()
     older_id = scenario.single_player(tv_airplay).player_id
@@ -680,8 +680,8 @@ async def _duplicates(scenario: Scenario) -> _TwoPlayers:
 async def _seen_again_with_its_address(scenario: Scenario, protocol: FakeProtocol) -> None:
     """Let the AirPlay receiver report the address of the TV and be found again."""
     await scenario.report(protocol, identifiers={IdentifierType.IP_ADDRESS: TV_IP})
-    await scenario.detach(protocol)
-    await scenario.attach(protocol)
+    await scenario.unregister(protocol)
+    await scenario.register(protocol)
     await scenario.idle()
 
 
@@ -750,7 +750,7 @@ async def _in_active_group(scenario: Scenario, tv: _TwoPlayers) -> None:
         group_members=["cast_tv"],
         powered=True,
     )
-    await scenario.attach(group)
+    await scenario.register(group)
     await scenario.idle()
     if (state := scenario.player(tv.younger_id)) is None or not state.active_group:
         msg = f"{tv.younger_id} is in no active group"
@@ -827,9 +827,9 @@ async def test_duplicates_with_a_protocol_of_one_domain_stay_apart(scenario: Sce
     host = {IdentifierType.IP_ADDRESS: "192.168.1.40"}
     first = dlna.protocol("uuid:renderer-1", "Renderer 1", role="audio", identifiers=host)
     second = dlna.protocol("uuid:renderer-2", "Renderer 2", role="audio", identifiers=host)
-    await scenario.attach(first)
+    await scenario.register(first)
     await scenario.advance(15)
-    await scenario.attach(second)
+    await scenario.register(second)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -864,7 +864,7 @@ async def test_synced_duplicate_stays_a_player_of_its_own(
     features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
     # the AirPlay receiver of the speaker was first seen without its address
     kitchen_airplay = airplay.protocol("ap_kitchen", "Kitchen", role="audio")
-    await scenario.attach(kitchen_airplay)
+    await scenario.register(kitchen_airplay)
     await scenario.advance(15)
     older_id = scenario.single_player(kitchen_airplay).player_id
     kitchen = sonos.protocol(
@@ -881,8 +881,8 @@ async def test_synced_duplicate_stays_a_player_of_its_own(
         supported_features=features,
         can_group_with={"RINCON_KITCHEN"},
     )
-    await scenario.attach(kitchen)
-    await scenario.attach(hall)
+    await scenario.register(kitchen)
+    await scenario.register(hall)
     # the speakers learn who they can be grouped with
     await scenario.advance(3)
     younger_id = scenario.single_player(kitchen).player_id
@@ -894,8 +894,8 @@ async def test_synced_duplicate_stays_a_player_of_its_own(
     await scenario.idle()
 
     await scenario.report(kitchen_airplay, identifiers=KITCHEN)
-    await scenario.detach(kitchen_airplay)
-    await scenario.attach(kitchen_airplay)
+    await scenario.unregister(kitchen_airplay)
+    await scenario.register(kitchen_airplay)
     await scenario.idle()
 
     expected = [older_id] if grouping == "none" else [younger_id]
@@ -909,7 +909,7 @@ async def test_duplicate_is_merged_when_its_attached_protocol_is_attached_again(
     tv = await _duplicates(scenario)
     await scenario.report(tv.airplay, identifiers={IdentifierType.IP_ADDRESS: TV_IP})
 
-    await scenario.attach(tv.airplay)
+    await scenario.register(tv.airplay)
     await scenario.idle()
 
     assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.older_id]
@@ -927,7 +927,7 @@ async def test_every_unused_duplicate_of_a_device_is_merged_at_once(scenario: Sc
     )
     tv_dlna = dlna.protocol("uuid:tv", "Living TV", role="audio", identifiers=serial)
     for protocol in (tv_airplay, tv_cast, tv_dlna):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
         await scenario.advance(15)
     await scenario.idle()
     older_id = scenario.single_player(tv_airplay).player_id
@@ -937,8 +937,8 @@ async def test_every_unused_duplicate_of_a_device_is_merged_at_once(scenario: Sc
 
     # the AirPlay receiver learns what ties it to both others
     await scenario.report(tv_airplay, identifiers={**KITCHEN, **serial})
-    await scenario.detach(tv_airplay)
-    await scenario.attach(tv_airplay)
+    await scenario.unregister(tv_airplay)
+    await scenario.register(tv_airplay)
     await scenario.idle()
 
     assert [
@@ -1025,7 +1025,7 @@ async def test_queue_is_transferred_by_the_id_of_a_merged_player(scenario: Scena
     tv = await _two_players_for_one_tv(scenario)
     dlna = await scenario.add_provider("dlna")
     speaker = dlna.protocol("uuid:speaker", "Speaker", role="audio", identifiers=HALL)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     speaker_id = scenario.single_player(speaker).player_id
     await _merge(scenario, tv.older_id, tv.younger_id)
     await scenario.play(tv.older_id)
@@ -1080,7 +1080,7 @@ async def test_a_protocol_its_provider_detaches_during_the_merge_is_not_attached
     scenario.set_present("cast_tv", False)
 
     merge = asyncio.create_task(players.merge_players(tv.older_id, tv.younger_id))
-    detach = asyncio.create_task(players.detach("cast_tv"))
+    detach = asyncio.create_task(players.unregister("cast_tv"))
     await scenario.settle()
     await merge
     await detach
@@ -1102,14 +1102,14 @@ async def test_a_protocol_detached_while_it_moves_is_not_attached_again(
     scenario.set_present("cast_tv", False)
 
     async def detach_then_rewrite(*args: Any, **kwargs: Any) -> None:
-        await scenario.mass.players.detach("cast_tv")
+        await scenario.mass.players.unregister("cast_tv")
         await rewrite_filters(*args, **kwargs)
 
     with patch.object(auth, "replace_player_in_user_filters", new=detach_then_rewrite):
         await _merge(scenario, tv.older_id, tv.younger_id)
 
     assert scenario.player_of(tv.cast) is None
-    await scenario.attach(tv.cast)
+    await scenario.register(tv.cast)
     assert scenario.player_of(tv.cast) == tv.older_id
 
 
@@ -1232,8 +1232,8 @@ async def test_duplicate_that_plays_is_merged_only_once_it_stopped(scenario: Sce
     assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.younger_id]
 
     await scenario.report(tv.cast, playback_state=PlaybackState.IDLE)
-    await scenario.detach(tv.airplay)
-    await scenario.attach(tv.airplay)
+    await scenario.unregister(tv.airplay)
+    await scenario.register(tv.airplay)
     await scenario.idle()
     assert [player.player_id for player in scenario.players_carrying(tv.cast)] == [tv.older_id]
 
@@ -1294,7 +1294,7 @@ async def test_playback_commands_by_the_id_of_a_merged_group_member_check_its_gr
     await _merge(scenario, tv.older_id, tv.younger_id)
     sonos = await scenario.add_provider("sonos")
     hall = sonos.protocol("RINCON_HALL", "Hall", identifiers=HALL)
-    await scenario.attach(hall)
+    await scenario.register(hall)
     hall_id = scenario.single_player(hall).player_id
     await scenario.mass.config._create_provider_instance("universal_group", {})
     group = await scenario.mass.players.create_group_player(
@@ -1376,9 +1376,9 @@ async def test_duplicate_merged_while_the_native_is_unreachable_plays_at_the_hel
     audio = airplay.protocol(
         "ap_kitchen", "Kitchen", role="audio", identifiers=TV_AIRPLAY, volume_level=80
     )
-    await scenario.attach(native)
+    await scenario.register(native)
     await scenario.advance(15)
-    await scenario.attach(audio)
+    await scenario.register(audio)
     await scenario.advance(15)
     await scenario.idle()
     older_id = scenario.single_player(native).player_id
@@ -1386,8 +1386,8 @@ async def test_duplicate_merged_while_the_native_is_unreachable_plays_at_the_hel
     await scenario.report(native, available=False)
 
     await scenario.report(audio, identifiers=KITCHEN)
-    await scenario.detach(audio)
-    await scenario.attach(audio)
+    await scenario.unregister(audio)
+    await scenario.register(audio)
     await scenario.idle()
 
     assert [player.player_id for player in scenario.players_carrying(native, audio)] == [older_id]

@@ -41,10 +41,10 @@ def _receiver() -> MusicCastPhysicalDevice:
     return physical_device
 
 
-async def _attach_zone(
+async def _register_zone(
     scenario: Scenario, physical_device: MusicCastPhysicalDevice, zone_name: str
 ) -> MusicCastPlayer:
-    """Attach the protocol of a zone of a receiver, as the provider does."""
+    """Register the protocol of a zone of a receiver, as the provider does."""
     protocol = MusicCastPlayer(
         provider=scenario.provider("musiccast"),  # type: ignore[arg-type]
         protocol_id=f"{DEVICE_ID}{PLAYER_ZONE_SPLITTER}{zone_name}",
@@ -54,7 +54,7 @@ async def _attach_zone(
     await protocol.set_static_attributes()
     # the poll reads the UPnP state of the receiver, which is not there
     protocol._attr_needs_poll = False
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     return protocol
 
@@ -69,18 +69,18 @@ async def test_each_zone_of_a_receiver_is_a_player_of_its_own(scenario: Scenario
     """A zone never lands on the player of another zone, also while that zone is away."""
     await scenario.add_provider("musiccast")
     receiver = _receiver()
-    main = await _attach_zone(scenario, receiver, "main")
-    zone2 = await _attach_zone(scenario, receiver, "zone2")
+    main = await _register_zone(scenario, receiver, "main")
+    zone2 = await _register_zone(scenario, receiver, "zone2")
     assert _player(main) is not _player(zone2)
     main_player = _player(main).player_id
-    await scenario.mass.players.detach(main.protocol_id)
+    await scenario.mass.players.unregister(main.protocol_id)
     await scenario.settle()
 
-    zone3 = await _attach_zone(scenario, receiver, "zone3")
+    zone3 = await _register_zone(scenario, receiver, "zone3")
 
     assert _player(zone3).player_id not in (main_player, _player(zone2).player_id)
     assert _player(zone3).player_id.startswith(PLAYER_ID_PREFIX)
-    main = await _attach_zone(scenario, receiver, "main")
+    main = await _register_zone(scenario, receiver, "main")
     assert _player(main).player_id == main_player
     assert sorted(player.name for player in scenario.visible_players()) == [
         "Garage",
@@ -93,15 +93,15 @@ async def test_each_zone_finds_its_own_player_after_a_restart(scenario: Scenario
     """After a restart the zones come back in any order, each on its own player."""
     await scenario.add_provider("musiccast")
     receiver = _receiver()
-    main = await _attach_zone(scenario, receiver, "main")
-    zone2 = await _attach_zone(scenario, receiver, "zone2")
+    main = await _register_zone(scenario, receiver, "main")
+    zone2 = await _register_zone(scenario, receiver, "zone2")
     main_player, zone2_player = _player(main).player_id, _player(zone2).player_id
     await scenario.configure_player(zone2_player, name="Patio amp")
 
     await scenario.restart()
     receiver = _receiver()
-    zone2 = await _attach_zone(scenario, receiver, "zone2")
-    main = await _attach_zone(scenario, receiver, "main")
+    zone2 = await _register_zone(scenario, receiver, "zone2")
+    main = await _register_zone(scenario, receiver, "main")
 
     assert _player(main).player_id == main_player
     assert _player(zone2).player_id == zone2_player
@@ -113,16 +113,16 @@ async def test_a_new_zone_does_not_take_the_record_of_the_main_zone_after_a_rest
 ) -> None:
     """A zone first seen after a restart, before the main zone is back, gets a player of its own."""
     await scenario.add_provider("musiccast")
-    main = await _attach_zone(scenario, _receiver(), "main")
+    main = await _register_zone(scenario, _receiver(), "main")
     main_player = _player(main).player_id
     await scenario.restart()
 
     receiver = _receiver()
-    zone2 = await _attach_zone(scenario, receiver, "zone2")
+    zone2 = await _register_zone(scenario, receiver, "zone2")
 
     assert _player(zone2).player_id != main_player
     assert scenario.mass.config.get_protocol_ids_of_player(main_player) == [main.protocol_id]
-    main = await _attach_zone(scenario, receiver, "main")
+    main = await _register_zone(scenario, receiver, "main")
     assert _player(main).player_id == main_player
 
 
@@ -130,7 +130,7 @@ async def test_a_setting_of_a_new_zone_is_read_from_its_own_record(scenario: Sce
     """A zone setting saved on a player with a minted id is the zone's, also after a return."""
     await scenario.add_provider("musiccast")
     receiver = _receiver()
-    zone2 = await _attach_zone(scenario, receiver, "zone2")
+    zone2 = await _register_zone(scenario, receiver, "zone2")
     player_id = _player(zone2).player_id
     assert player_id != zone2.protocol_id
 
@@ -141,9 +141,9 @@ async def test_a_setting_of_a_new_zone_is_read_from_its_own_record(scenario: Sce
     player_values = scenario.mass.config.get(f"players/{player_id}/values") or {}
     assert CONF_PLAYER_TURN_OFF_ON_LEAVE not in player_values
 
-    await scenario.mass.players.detach(zone2.protocol_id)
+    await scenario.mass.players.unregister(zone2.protocol_id)
     await scenario.settle()
-    returned = await _attach_zone(scenario, receiver, "zone2")
+    returned = await _register_zone(scenario, receiver, "zone2")
 
     assert _player(returned).player_id == player_id
     assert returned.get_config_value(CONF_PLAYER_TURN_OFF_ON_LEAVE) is True

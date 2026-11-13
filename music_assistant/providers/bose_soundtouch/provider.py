@@ -161,7 +161,7 @@ class BoseSoundTouchProvider(PlayerProvider):
         player = BoseSoundTouchPlayer(self, protocol_id, client, info)
         try:
             await player.setup(info)
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
         except MusicAssistantError, aiohttp.ClientError, TimeoutError, OSError:
             self.logger.exception("Failed to register SoundTouch player %s", info.name)
             await player.on_detach()

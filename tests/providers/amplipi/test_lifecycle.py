@@ -179,7 +179,7 @@ async def test_a_new_zone_keeps_its_settings_on_its_own_record(scenario: Scenari
     await scenario.mass.config.save_protocol_config(
         protocol.protocol_id, {CONF_OUTPUT_CODEC: "mp3"}
     )
-    await scenario.mass.players.detach(protocol.protocol_id)
+    await scenario.mass.players.unregister(protocol.protocol_id)
     await provider.discover_players()
     await scenario.settle()
 

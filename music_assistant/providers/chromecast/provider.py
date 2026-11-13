@@ -264,9 +264,11 @@ class ChromecastProvider(PlayerProvider):
     async def _create_and_register_player(
         self, protocol_id: str, cast_info: ChromecastInfo
     ) -> None:
-        """Create and attach a new ChromecastPlayer."""
+        """Create and register a new ChromecastPlayer."""
         try:
-            await self.mass.players.attach(ChromecastPlayer(self, protocol_id, cast_info=cast_info))
+            await self.mass.players.register(
+                ChromecastPlayer(self, protocol_id, cast_info=cast_info)
+            )
         finally:
             self._pending_discoveries.discard(protocol_id)
 

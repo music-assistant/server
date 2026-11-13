@@ -40,7 +40,7 @@ async def test_a_player_without_a_removal_hook_of_its_provider_is_removable(
     """A player is removed by the controller, whatever its provider knows about removal."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     hooks = _record_hooks(scenario, speaker, player_id)
     scenario.clear_events()
 
@@ -55,7 +55,7 @@ async def test_the_removal_hook_is_called_once_the_player_is_gone(scenario: Scen
     """The hook of the protocol runs after it was detached and the configs were deleted."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     hooks = _record_hooks(scenario, speaker, player_id)
 
     await scenario.remove(player_id)
@@ -78,7 +78,7 @@ async def test_the_provider_looks_again_for_the_device_of_a_removed_player(
     """The loaded provider of a removed player looks for devices again; a removed group is gone."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, type=player_type)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     discovery_requests = _count_discovery_requests(sonos)
     if not loaded:
         await scenario.mass.unload_provider(sonos.instance_id)
@@ -96,7 +96,7 @@ async def test_a_member_of_an_active_group_leaves_it_before_it_is_detached(
     """A removed player is taken out of its active group while the group can still reach it."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     group, group_id = await _active_group_of(scenario, sonos, speaker)
     left_while_attached = _record_leaving_members(scenario, group)
     hooks = _record_hooks(scenario, speaker, player_id)
@@ -123,7 +123,7 @@ async def test_a_group_that_can_not_let_the_member_go_does_not_keep_the_player(
     """A member its active group refuses to release, or can not reach, is removed all the same."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     group, _group_id = await _active_group_of(scenario, sonos, speaker)
     _record_leaving_members(scenario, group, leave_error)
     hooks = _record_hooks(scenario, speaker, player_id)
@@ -140,7 +140,7 @@ async def test_a_failing_removal_hook_does_not_keep_the_player(
     """A provider that fails to clean up its own leaves the player removed all the same."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     hooks = _record_hooks(scenario, speaker, player_id, RuntimeError("device unreachable"))
     scenario.expect_log("Error removing protocol RINCON_KITCHEN")
 
@@ -158,7 +158,7 @@ async def test_the_removal_hook_is_not_called_when_its_provider_removes_the_prot
     """A provider that forgets its own device gets no removal hook; the player goes with it."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     hooks = _record_hooks(scenario, speaker, player_id)
 
     await scenario.mass.players.remove_protocol("RINCON_KITCHEN")
@@ -174,7 +174,7 @@ async def test_removing_the_config_of_an_attached_player_removes_the_player(
     """Removing a player's config is removing the player, also while it is attached."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     hooks = _record_hooks(scenario, speaker, player_id)
 
     await scenario.mass.config.remove_player_config(player_id)
@@ -191,7 +191,7 @@ async def test_a_group_player_is_removed_like_any_other_player(
     """A group goes with either command through the same path, hook included."""
     sonos = await scenario.add_provider("sonos")
     group = sonos.protocol("group_1", "Group", role="virtual", type=PlayerType.GROUP)
-    group_id = await _attach_with_settings(scenario, group)
+    group_id = await _register_with_settings(scenario, group)
     hooks = _record_hooks(scenario, group, group_id)
 
     if command == "players/remove":
@@ -208,7 +208,7 @@ async def test_the_group_command_only_removes_group_players(scenario: Scenario) 
     """The group command refuses a player that is no group and leaves it alone."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    player_id = await _attach_with_settings(scenario, speaker)
+    player_id = await _register_with_settings(scenario, speaker)
     hooks = _record_hooks(scenario, speaker, player_id)
 
     with pytest.raises(UnsupportedFeaturedException, match="is not a group player"):
@@ -228,14 +228,14 @@ def test_the_group_providers_still_offer_the_removal_of_groups(module: object) -
     assert ProviderFeature.REMOVE_GROUP_PLAYER in features
 
 
-async def _attach_with_settings(scenario: Scenario, protocol: FakeProtocol) -> str:
+async def _register_with_settings(scenario: Scenario, protocol: FakeProtocol) -> str:
     """
-    Attach a new device and give its player DSP and queue settings; return the player id.
+    Register a new device and give its player DSP and queue settings; return the player id.
 
     :param scenario: The scenario.
     :param protocol: The protocol of the device.
     """
-    await scenario.attach(protocol)
+    await scenario.register(protocol)
     player_id = scenario.single_player(protocol).player_id
     scenario.mass.config.set(f"{CONF_PLAYER_DSP}/{player_id}", {"enabled": True})
     scenario.mass.config.set(
@@ -260,7 +260,7 @@ async def _active_group_of(
     group = provider.protocol(
         "group_1", "Group", role="virtual", identifiers=DEN, type=PlayerType.GROUP
     )
-    await scenario.attach(group)
+    await scenario.register(group)
     group_id = scenario.single_player(group).player_id
     await scenario.report(group, powered=True, group_members=[group_id, member_id])
     await scenario.report(member_protocol)

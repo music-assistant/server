@@ -709,7 +709,7 @@ def attach_mock(
     protocol_class: type[MockProtocol] = MockProtocol,
 ) -> tuple[Player, MockProtocol]:
     """
-    Return a player and a mock protocol attached to it, without what attach() awaits.
+    Return a player and a mock protocol attached to it, without what register() awaits.
 
     Both are in the registries of the players controller of the provider's mass
     (``provider.mass.players``). The player is created (initialized, with a config of

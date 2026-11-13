@@ -207,7 +207,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
             entity_registry=entity_registry,
         )
         self._entity_players[state["entity_id"]] = player
-        await self.mass.players.attach(player)
+        await self.mass.players.register(player)
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""

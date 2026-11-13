@@ -435,7 +435,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             await asyncio.sleep(RECONNECT_INTERVAL)
 
     async def _try_connect(self) -> None:
-        """Try once to connect to the host and attach its rooms."""
+        """Try once to connect to the host and register its rooms."""
         if not self._host_address:
             self.logger.debug("No Raumfeld host configured yet; will retry")
             return
@@ -624,7 +624,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._line_in = parse_line_in(didl)
 
     async def _sync_rooms(self) -> None:
-        """Attach a protocol for every Raumfeld room, and detach the ones of rooms that left."""
+        """Register a protocol for every Raumfeld room; unregister the ones of rooms that left."""
         async with self._sync_lock:
             # ``get_rooms`` returns the list of room names currently known to the host.
             rooms = self.host.get_rooms()
@@ -654,7 +654,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
             # another id can only take over the player of its old one once that is detached.
             for known in self.protocols:
                 if isinstance(known, RaumfeldPlayer) and known.protocol_id not in ids.values():
-                    await self.mass.players.detach(known.protocol_id)
+                    await self.mass.players.unregister(known.protocol_id)
             for room, protocol_id in ids.items():
                 if (existing := self.get_protocol(protocol_id)) is not None:
                     # already attached (e.g. after a reconnect): mark it available and, since
@@ -674,12 +674,12 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 if not self.mass.players.wants_protocol(protocol_id):
                     continue
                 player = RaumfeldPlayer(provider=self, protocol_id=protocol_id, room=room)
-                await self.mass.players.attach(player)
+                await self.mass.players.register(player)
                 # attaching creates the record; a room that did not attach (e.g. while the
                 # provider unloads) has no record to store the default in
                 if self.get_protocol(protocol_id) is player:
                     self._ensure_icy_default(protocol_id)
-                    self.logger.debug("Attached Raumfeld room '%s' as %s", room, protocol_id)
+                    self.logger.debug("Registered Raumfeld room '%s' as %s", room, protocol_id)
 
     async def _refresh_room_events(self) -> None:
         """Follow the events of every room's own renderer, and tell each room which come in."""

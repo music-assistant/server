@@ -63,8 +63,8 @@ async def _wrong_match(scenario: Scenario) -> _WrongMatch:
     receiver = airplay.protocol(
         "ap_studio", "Studio", role="audio", identifiers={IdentifierType.IP_ADDRESS: KITCHEN_IP}
     )
-    await scenario.attach(speaker)
-    await scenario.attach(receiver)
+    await scenario.register(speaker)
+    await scenario.register(receiver)
     await scenario.advance(15)
     await scenario.idle()
     player_id = scenario.single_player(speaker, receiver).player_id
@@ -132,8 +132,8 @@ async def test_unlinked_protocol_stays_on_its_player(scenario: Scenario) -> None
     match = await _wrong_match(scenario)
     new_id = await _unlink(scenario, "ap_studio")
 
-    await scenario.detach(match.receiver)
-    await scenario.attach(match.receiver)
+    await scenario.unregister(match.receiver)
+    await scenario.register(match.receiver)
     await scenario.idle()
     assert scenario.player_of(match.receiver) == new_id
 
@@ -163,7 +163,7 @@ async def test_merge_with_a_third_player_keeps_the_protocol_off_its_old_player(
     new_id = await _unlink(scenario, "ap_studio")
     dlna = await scenario.add_provider("dlna")
     studio_dlna = dlna.protocol("uuid:studio", "Studio", role="audio")
-    await scenario.attach(studio_dlna)
+    await scenario.register(studio_dlna)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -201,14 +201,14 @@ async def test_protocol_that_is_away_is_unlinked_to_a_player_that_waits_for_it(
 ) -> None:
     """A protocol whose device is away gets a player that is unavailable until it returns."""
     match = await _wrong_match(scenario)
-    await scenario.detach(match.receiver)
+    await scenario.unregister(match.receiver)
 
     new_id = await _unlink(scenario, "ap_studio")
 
     new_player = scenario.player(new_id)
     assert new_player is not None
     assert not new_player.available
-    await scenario.attach(match.receiver)
+    await scenario.register(match.receiver)
     assert scenario.player_of(match.receiver) == new_id
 
 
@@ -219,7 +219,7 @@ async def test_protocols_riding_on_an_unlinked_one_move_with_it(scenario: Scenar
     bridge = sendspin.protocol(
         "spb_studio", "Studio", role="audio", underlying_protocol_id="ap_studio"
     )
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
     assert scenario.player_of(bridge) == match.player_id
 
     new_id = await _unlink(scenario, "ap_studio")
@@ -235,7 +235,7 @@ async def test_only_protocol_of_a_player_is_not_unlinked(scenario: Scenario) -> 
     """A protocol that is all of its player is a player of its own already."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
 
     with pytest.raises(InvalidCommand) as refused:
         await scenario.mass.players.unlink_protocol("RINCON_KITCHEN")
@@ -247,7 +247,7 @@ async def test_protocol_of_a_group_is_not_unlinked(scenario: Scenario) -> None:
     """The protocol of a group stands for the group itself."""
     chromecast = await scenario.add_provider("chromecast")
     group = chromecast.protocol("cast_group", "Group Z", role="virtual", type=PlayerType.GROUP)
-    await scenario.attach(group)
+    await scenario.register(group)
 
     with pytest.raises(InvalidCommand) as refused:
         await scenario.mass.players.unlink_protocol("cast_group")
@@ -261,7 +261,7 @@ async def test_protocol_that_only_exists_while_connected_is_not_unlinked(
     """A browser player has no record to keep a player of its own in."""
     sendspin = await scenario.add_provider("sendspin")
     web_player = sendspin.protocol("sendspin_web_1", "Browser", role="audio", session_only=True)
-    await scenario.attach(web_player)
+    await scenario.register(web_player)
 
     with pytest.raises(InvalidCommand) as refused:
         await scenario.mass.players.unlink_protocol("sendspin_web_1")
@@ -342,7 +342,7 @@ async def test_protocol_taken_off_a_player_is_not_merged_back_through_an_older_p
     chromecast = await scenario.add_provider("chromecast")
     # an older player of the device the AirPlay receiver belongs to, first seen without identifiers
     studio_cast = chromecast.protocol("cast_studio", "Studio", role="audio")
-    await scenario.attach(studio_cast)
+    await scenario.register(studio_cast)
     await scenario.advance(15)
     studio_id = scenario.single_player(studio_cast).player_id
     match = await _wrong_match(scenario)
@@ -352,8 +352,8 @@ async def test_protocol_taken_off_a_player_is_not_merged_back_through_an_older_p
 
     # either of the two may be the one whose protocol attaches again
     for protocol in (match.receiver, match.speaker):
-        await scenario.detach(protocol)
-        await scenario.attach(protocol)
+        await scenario.unregister(protocol)
+        await scenario.register(protocol)
         await scenario.idle()
 
         assert scenario.player_of(match.receiver) == studio_id
@@ -367,12 +367,12 @@ async def test_protocol_taken_off_a_player_is_not_merged_back_into_the_player_th
     chromecast = await scenario.add_provider("chromecast")
     dlna = await scenario.add_provider("dlna")
     studio_cast = chromecast.protocol("cast_studio", "Studio", role="audio")
-    await scenario.attach(studio_cast)
+    await scenario.register(studio_cast)
     await scenario.advance(15)
     studio_id = scenario.single_player(studio_cast).player_id
     # a renderer of the speaker, first seen without identifiers
     kitchen_renderer = dlna.protocol("uuid:kitchen", "Kitchen", role="audio")
-    await scenario.attach(kitchen_renderer)
+    await scenario.register(kitchen_renderer)
     await scenario.advance(15)
     kitchen_id = scenario.single_player(kitchen_renderer).player_id
     match = await _wrong_match(scenario)
@@ -382,8 +382,8 @@ async def test_protocol_taken_off_a_player_is_not_merged_back_into_the_player_th
     await scenario.mass.players.merge_players(kitchen_id, match.player_id)
     await scenario.idle()
 
-    await scenario.detach(match.receiver)
-    await scenario.attach(match.receiver)
+    await scenario.unregister(match.receiver)
+    await scenario.register(match.receiver)
     await scenario.idle()
 
     assert scenario.player_of(match.receiver) == studio_id
@@ -419,8 +419,8 @@ async def test_a_restart_after_an_unlink_keeps_every_record(
         role="audio",
         identifiers={IdentifierType.IP_ADDRESS: KITCHEN_IP},
     )
-    await scenario.attach(speaker)
-    await scenario.attach(receiver)
+    await scenario.register(speaker)
+    await scenario.register(receiver)
     await scenario.advance(15)
     await scenario.idle()
     old_id = scenario.single_player(speaker, receiver).player_id
@@ -482,7 +482,7 @@ async def test_a_restart_after_an_unlink_and_a_merge_into_a_third_player_keeps_e
     new_id = await _unlink(scenario, "ap_studio")
     dlna = await scenario.add_provider("dlna")
     studio_dlna = dlna.protocol("uuid:studio", "Studio", role="audio")
-    await scenario.attach(studio_dlna)
+    await scenario.register(studio_dlna)
     await scenario.advance(15)
     await scenario.idle()
     third_id = scenario.single_player(studio_dlna).player_id

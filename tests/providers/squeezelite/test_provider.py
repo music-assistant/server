@@ -89,7 +89,7 @@ def test_disconnected_member_leaves_its_sync_leader() -> None:
 
     assert leader.group_members == []
     update_state.assert_called_once()
-    provider.mass.players.detach.assert_called_once_with("member")
+    provider.mass.players.unregister.assert_called_once_with("member")
 
 
 def test_reconnected_member_leaves_its_sync_leader() -> None:

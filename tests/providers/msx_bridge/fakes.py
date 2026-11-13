@@ -116,8 +116,8 @@ class FakeMass:
             _handle_play_media=AsyncMock(),
             get_protocol=Mock(return_value=None),
             get_player_lock=Mock(side_effect=self._player_lock),
-            attach=AsyncMock(side_effect=_attach),
-            detach=AsyncMock(),
+            register=AsyncMock(side_effect=_attach),
+            unregister=AsyncMock(),
             wants_protocol=Mock(return_value=True),
             iter_protocols=Mock(return_value=[]),
         )

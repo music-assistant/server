@@ -43,8 +43,8 @@ async def scenario(tmp_path: pathlib.Path) -> AsyncGenerator[Scenario]:
         await scenario.close()
 
 
-async def _attach_zone(scenario: Scenario, protocol_id: str, name: str) -> BluesoundPlayer:
-    """Attach a zone of the chassis the way discovery sets it up, without contacting it."""
+async def _register_zone(scenario: Scenario, protocol_id: str, name: str) -> BluesoundPlayer:
+    """Register a zone of the chassis the way discovery sets it up, without contacting it."""
     provider: Any = scenario.mass.get_provider("bluesound") or await scenario.add_provider(
         "bluesound"
     )
@@ -60,7 +60,7 @@ async def _attach_zone(scenario: Scenario, protocol_id: str, name: str) -> Blues
     protocol = BluesoundPlayer(provider, protocol_id, discovery_info, name, IP_ADDRESS, port)
     protocol.sync_status = MagicMock(leader=None, followers=[])
     protocol._attr_needs_poll = False
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     return protocol
 
@@ -75,7 +75,7 @@ async def test_a_new_device_is_the_native_protocol_of_a_minted_player(
     scenario: Scenario,
 ) -> None:
     """A device first seen now gets a player of its own, identified by its MAC, as main zone."""
-    protocol = await _attach_zone(scenario, MAIN_ZONE_ID, "Speaker A")
+    protocol = await _register_zone(scenario, MAIN_ZONE_ID, "Speaker A")
 
     assert _player_id(protocol).startswith(PLAYER_ID_PREFIX)
     assert protocol.player is not None
@@ -86,8 +86,8 @@ async def test_a_new_device_is_the_native_protocol_of_a_minted_player(
 
 async def test_two_zones_of_one_chassis_are_two_players(scenario: Scenario) -> None:
     """The zones share the MAC and IP of their chassis and still each get a player."""
-    main_zone = await _attach_zone(scenario, MAIN_ZONE_ID, "Speaker A")
-    second_zone = await _attach_zone(scenario, SECOND_ZONE_ID, "Speaker B")
+    main_zone = await _register_zone(scenario, MAIN_ZONE_ID, "Speaker A")
+    second_zone = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
 
     assert _player_id(second_zone) != _player_id(main_zone)
     assert second_zone.player is not None
@@ -99,7 +99,7 @@ async def test_the_airplay_receiver_of_the_chassis_lands_on_the_main_zone(
     scenario: Scenario,
 ) -> None:
     """An AirPlay receiver sharing the chassis MAC and IP is an output of the main zone only."""
-    second_zone = await _attach_zone(scenario, SECOND_ZONE_ID, "Speaker B")
+    second_zone = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
     airplay = (await scenario.add_provider("airplay")).protocol(
         "airplay_chassis",
         "Speaker A",
@@ -109,8 +109,8 @@ async def test_the_airplay_receiver_of_the_chassis_lands_on_the_main_zone(
             IdentifierType.IP_ADDRESS: IP_ADDRESS,
         },
     )
-    await scenario.attach(airplay)
-    main_zone = await _attach_zone(scenario, MAIN_ZONE_ID, "Speaker A")
+    await scenario.register(airplay)
+    main_zone = await _register_zone(scenario, MAIN_ZONE_ID, "Speaker A")
     await scenario.idle()
 
     assert scenario.player_of(airplay) == _player_id(main_zone)
@@ -122,27 +122,27 @@ async def test_a_new_zone_does_not_take_the_record_of_a_zone_that_is_away(
     scenario: Scenario,
 ) -> None:
     """A zone first seen while another zone of its chassis is not back yet gets its own player."""
-    main_zone = await _attach_zone(scenario, MAIN_ZONE_ID, "Speaker A")
+    main_zone = await _register_zone(scenario, MAIN_ZONE_ID, "Speaker A")
     main_player_id = _player_id(main_zone)
     await scenario.restart()
 
-    second_zone = await _attach_zone(scenario, SECOND_ZONE_ID, "Speaker B")
+    second_zone = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
 
     assert _player_id(second_zone) != main_player_id
     assert scenario.mass.config.get_protocol_ids_of_player(main_player_id) == [MAIN_ZONE_ID]
-    main_zone = await _attach_zone(scenario, MAIN_ZONE_ID, "Speaker A")
+    main_zone = await _register_zone(scenario, MAIN_ZONE_ID, "Speaker A")
     assert _player_id(main_zone) == main_player_id
 
 
 async def test_each_zone_finds_its_own_player_after_a_restart(scenario: Scenario) -> None:
     """After a restart a zone is the same player again, whichever zone is found first."""
-    main_zone = await _attach_zone(scenario, MAIN_ZONE_ID, "Speaker A")
-    second_zone = await _attach_zone(scenario, SECOND_ZONE_ID, "Speaker B")
+    main_zone = await _register_zone(scenario, MAIN_ZONE_ID, "Speaker A")
+    second_zone = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
     player_ids = {MAIN_ZONE_ID: _player_id(main_zone), SECOND_ZONE_ID: _player_id(second_zone)}
     await scenario.restart()
 
-    second_zone = await _attach_zone(scenario, SECOND_ZONE_ID, "Speaker B")
-    main_zone = await _attach_zone(scenario, MAIN_ZONE_ID, "Speaker A")
+    second_zone = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
+    main_zone = await _register_zone(scenario, MAIN_ZONE_ID, "Speaker A")
 
     assert {
         MAIN_ZONE_ID: _player_id(main_zone),
@@ -152,7 +152,7 @@ async def test_each_zone_finds_its_own_player_after_a_restart(scenario: Scenario
 
 async def test_a_new_zone_keeps_its_settings_on_its_own_record(scenario: Scenario) -> None:
     """A setting of a zone with a minted player id is stored on its protocol and survives."""
-    protocol = await _attach_zone(scenario, SECOND_ZONE_ID, "Speaker B")
+    protocol = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
     player_id = _player_id(protocol)
     assert player_id != SECOND_ZONE_ID
 
@@ -164,7 +164,7 @@ async def test_a_new_zone_keeps_its_settings_on_its_own_record(scenario: Scenari
     assert protocol.get_config_value(CONF_ENABLE_ICY_METADATA) == "basic"
     assert scenario.mass.config.get_player_value(player_id, CONF_ENABLE_ICY_METADATA) is None
     await scenario.restart()
-    protocol = await _attach_zone(scenario, SECOND_ZONE_ID, "Speaker B")
+    protocol = await _register_zone(scenario, SECOND_ZONE_ID, "Speaker B")
     assert _player_id(protocol) == player_id
     assert protocol.get_config_value(CONF_ENABLE_ICY_METADATA) == "basic"
 

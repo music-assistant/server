@@ -126,14 +126,14 @@ async def test_receivers_on_one_host_stay_separate_players(
         f"{domain}_kitchen", "Kitchen", role="audio", identifiers={**PI, **kitchen_ids}
     )
     den = provider.protocol(f"{domain}_den", "Den", role="audio", identifiers={**PI, **den_ids})
-    await scenario.attach(kitchen)
+    await scenario.register(kitchen)
     await scenario.advance(15)
     kitchen_id = scenario.single_player(kitchen).player_id
-    await scenario.detach(kitchen)
+    await scenario.unregister(kitchen)
 
-    await scenario.attach(den)
+    await scenario.register(den)
     await scenario.advance(15)
-    await scenario.attach(kitchen)
+    await scenario.register(kitchen)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -164,7 +164,7 @@ async def test_protocol_only_player_names_the_provider_of_its_protocol(scenario:
     """A player with one audio protocol and no native one names that protocol's provider."""
     airplay = await scenario.add_provider("airplay")
     kitchen = airplay.protocol("airplay_kitchen", "Kitchen", role="audio", identifiers=PI)
-    await scenario.attach(kitchen)
+    await scenario.register(kitchen)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -193,7 +193,7 @@ async def test_a_player_without_a_protocol_of_its_own_has_the_neutral_icon(
     office_cast = chromecast.protocol(f"cast_{room}", "Office", role="audio", identifiers=SPEAKER)
     office_twin = hass_players.protocol(f"media_player.{room}", "Office speaker", identifiers=TWIN)
     for protocol in (den, den_cast, patio, office, office_cast, office_twin):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -204,7 +204,7 @@ async def test_a_player_without_a_protocol_of_its_own_has_the_neutral_icon(
 
     assert (_icon(den), _icon(patio), _icon(office)) == ("speaker", "speaker", "airplay")
 
-    await scenario.detach(office)
+    await scenario.unregister(office)
     await scenario.idle()
     assert _icon(office_cast) == "airplay"
 
@@ -235,12 +235,12 @@ async def test_zones_of_one_chassis_are_one_player_each(scenario: Scenario) -> N
         role="audio",
         identifiers={**CHASSIS, IdentifierType.AIRPLAY_ID: "00:1A:2B:3C:4D:02", zone: "2"},
     )
-    await scenario.attach(zone_1)
-    await scenario.attach(zone_2)
+    await scenario.register(zone_1)
+    await scenario.register(zone_2)
 
     # the receiver of zone 2 is found first: on the chassis identifiers alone it lands on zone 1
-    await scenario.attach(airplay_2)
-    await scenario.attach(airplay_1)
+    await scenario.register(airplay_2)
+    await scenario.register(airplay_1)
     await scenario.idle()
 
     assert scenario.players_carrying(zone_1, airplay_1) == [
@@ -274,7 +274,7 @@ class _Receiver(NamedTuple):
 
 
 async def _receiver(scenario: Scenario) -> _Receiver:
-    """Create the zones of a receiver and its AirPlay receiver; attach them to use them."""
+    """Create the zones of a receiver and its AirPlay receiver; register them to use them."""
     musiccast = await scenario.add_provider("musiccast")
     airplay = await scenario.add_provider("airplay")
     return _Receiver(
@@ -309,7 +309,7 @@ async def test_a_receiver_without_a_zone_lands_on_the_main_zone(
     """
     receiver = await _receiver(scenario)
     for part in order:
-        await scenario.attach(getattr(receiver, part))
+        await scenario.register(getattr(receiver, part))
     await scenario.idle()
     player_ids = _receiver_players(scenario, receiver)
 
@@ -317,7 +317,7 @@ async def test_a_receiver_without_a_zone_lands_on_the_main_zone(
         scenario.set_present(protocol.protocol_id, False)
     await scenario.restart()
     for part in reversed(order):
-        await scenario.attach(scenario.protocol(getattr(receiver, part).protocol_id))
+        await scenario.register(scenario.protocol(getattr(receiver, part).protocol_id))
     await scenario.idle()
 
     receiver = _Receiver(*(scenario.protocol(protocol.protocol_id) for protocol in receiver))
@@ -335,20 +335,20 @@ async def test_a_receiver_first_seen_without_its_main_zone_still_lands_on_it(
     It never lands on the second zone, which is there and was found first.
     """
     receiver = await _receiver(scenario)
-    await scenario.attach(receiver.second)
-    await scenario.attach(receiver.main)
+    await scenario.register(receiver.second)
+    await scenario.register(receiver.main)
     main_id = scenario.single_player(receiver.main).player_id
     if main_zone == "away":
-        await scenario.detach(receiver.main)
+        await scenario.unregister(receiver.main)
     else:
         await scenario.disable(main_id)
 
-    await scenario.attach(receiver.airplay)
+    await scenario.register(receiver.airplay)
     await scenario.idle()
 
     assert scenario.player_of(receiver.airplay) == (main_id if main_zone == "away" else None)
     if main_zone == "away":
-        await scenario.attach(receiver.main)
+        await scenario.register(receiver.main)
     else:
         await scenario.enable(main_id)
     await scenario.idle()
@@ -364,11 +364,11 @@ async def test_a_receiver_lands_on_the_main_zone_again_after_a_removal(scenario:
     """
     receiver = await _receiver(scenario)
     for protocol in receiver:
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     main_id, second_id = _receiver_players(scenario, receiver)
 
     await scenario.mass.players.remove_protocol(receiver.airplay.protocol_id)
-    await scenario.attach(receiver.airplay)
+    await scenario.register(receiver.airplay)
     await scenario.idle()
     assert _receiver_players(scenario, receiver) == (main_id, second_id)
 
@@ -440,7 +440,7 @@ class _Speaker(NamedTuple):
 
 
 async def _speaker(scenario: Scenario) -> _Speaker:
-    """Create the protocols of a speaker; attach them to use them."""
+    """Create the protocols of a speaker; register them to use them."""
     sonos = await scenario.add_provider("sonos")
     hass_players = await scenario.add_provider("hass_players")
     airplay = await scenario.add_provider("airplay")
@@ -492,7 +492,7 @@ async def test_a_home_assistant_twin_is_a_control_of_the_vendor_player(
     """
     speaker = await _speaker(scenario)
     for part in order:
-        await scenario.attach(getattr(speaker, part))
+        await scenario.register(getattr(speaker, part))
     await scenario.idle()
 
     player = scenario.single_player(*speaker)
@@ -508,7 +508,7 @@ async def test_a_home_assistant_twin_is_a_control_of_the_vendor_player(
         scenario.set_present(protocol.protocol_id, False)
     await scenario.restart()
     for part in reversed(order):
-        await scenario.attach(scenario.protocol(getattr(speaker, part).protocol_id))
+        await scenario.register(scenario.protocol(getattr(speaker, part).protocol_id))
     await scenario.idle()
 
     assert scenario.single_player(*_current(scenario, speaker)).player_id == player.player_id
@@ -525,11 +525,11 @@ async def test_a_vendor_protocol_joins_the_player_of_its_home_assistant_twin(
     Same id and name, now played through the vendor's protocol.
     """
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.twin).player_id
     await scenario.configure_player(player_id, name="Kitchen Speaker")
 
-    await scenario.attach(speaker.vendor)
+    await scenario.register(speaker.vendor)
     await scenario.idle()
 
     assert scenario.players_carrying(speaker.vendor, speaker.twin) == [
@@ -556,18 +556,18 @@ async def test_the_twin_stays_a_control_while_the_vendor_protocol_is_gone(
     protocol is away, and nothing changes once the vendor protocol is back.
     """
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.vendor)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.vendor)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
     roles = _roles(scenario, player_id)
 
     if gone == "away":
-        await scenario.detach(speaker.vendor)
+        await scenario.unregister(speaker.vendor)
         assert [(p.player_id, p.available) for p in scenario.players_carrying(speaker.twin)] == [
             (player_id, False)
         ]
         assert _roles(scenario, player_id) == roles
-        await scenario.attach(speaker.vendor)
+        await scenario.register(speaker.vendor)
     elif gone == "reloaded":
         await scenario.reload_provider(scenario.provider("sonos"))
     else:
@@ -590,8 +590,8 @@ async def test_the_twin_is_the_native_protocol_once_the_vendor_protocol_is_remov
     Gone for good is a protocol its provider forgets, or one of a provider that is removed.
     """
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.vendor)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.vendor)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
     scenario.set_present(speaker.vendor.protocol_id, False)
 
@@ -634,15 +634,15 @@ async def test_the_settings_of_a_disabled_player_are_those_of_its_vendor_protoco
         identifiers=TWIN,
     )
     linkplay = wiim.protocol("linkplay_kitchen", "Kitchen", role="control", identifiers=SPEAKER)
-    await scenario.attach(twin)
+    await scenario.register(twin)
     player_id = scenario.single_player(twin).player_id
     await scenario.configure_player(player_id, **{FAKE_SETTING: "of the twin"})
     if found == "while_enabled":
-        await scenario.attach(linkplay)
+        await scenario.register(linkplay)
         await scenario.disable(player_id)
     else:
         await scenario.disable(player_id)
-        await scenario.attach(linkplay)
+        await scenario.register(linkplay)
         assert scenario.player_of(linkplay) is None
         assert (scenario.mass.config.get_protocol_record(twin.protocol_id) or {})["role"] == (
             ProtocolRole.NATIVE.value
@@ -663,8 +663,8 @@ async def test_the_settings_of_a_disabled_player_follow_the_protocol_switched_on
 ) -> None:
     """A disabled player keeps its settings on the twin while the vendor's provider is disabled."""
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.vendor)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.vendor)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
     for protocol, value in ((speaker.vendor, "of the vendor"), (speaker.twin, "of the twin")):
         await scenario.mass.config.save_protocol_config(protocol.protocol_id, {FAKE_SETTING: value})
@@ -693,13 +693,13 @@ async def test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native
     the player plays through it.
     """
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.twin).player_id
 
     if failure == "raises":
         speaker.vendor.on_attach = AsyncMock(side_effect=RuntimeError("the device went away"))  # type: ignore[method-assign]
         with pytest.raises(RuntimeError):
-            await scenario.attach(speaker.vendor)
+            await scenario.register(speaker.vendor)
     else:
         never = asyncio.Event()
 
@@ -707,7 +707,7 @@ async def test_a_vendor_protocol_whose_first_attach_fails_leaves_the_twin_native
             await never.wait()
 
         speaker.vendor.on_attach = _never_returns  # type: ignore[method-assign, assignment]
-        attach = await scenario.command(scenario.mass.players.attach(speaker.vendor))
+        attach = await scenario.command(scenario.mass.players.register(speaker.vendor))
         attach.cancel()
         with pytest.raises(asyncio.CancelledError):
             await attach
@@ -743,8 +743,8 @@ async def test_the_twin_is_native_while_the_user_has_the_vendor_protocol_switche
     """
     speaker = await _speaker(scenario)
     sonos = scenario.provider("sonos")
-    await scenario.attach(speaker.twin)
-    await scenario.attach(speaker.vendor)
+    await scenario.register(speaker.twin)
+    await scenario.register(speaker.vendor)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
     scenario.set_present(speaker.vendor.protocol_id, False)
     if switch == "unloaded_provider":
@@ -793,13 +793,13 @@ async def test_the_twin_object_attached_again_keeps_its_role_and_its_hooks_quiet
 ) -> None:
     """A demoted twin attached again as the same object keeps its role and is not set up again."""
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.vendor)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.vendor)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
     roles = _roles(scenario, player_id)
     on_attach = speaker.twin.on_attach = AsyncMock(wraps=speaker.twin.on_attach)  # type: ignore[method-assign]
 
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.twin)
     await scenario.idle()
 
     on_attach.assert_not_awaited()
@@ -842,7 +842,7 @@ async def test_a_twin_under_a_new_entity_id_returns_to_its_own_player(
         "Kitchen speaker",
         identifiers=TWIN,
     )
-    await scenario.attach(renamed)
+    await scenario.register(renamed)
     await scenario.idle()
 
     assert scenario.player_of(renamed) == "media_player.kitchen"
@@ -864,8 +864,8 @@ async def test_a_removed_player_of_a_speaker_comes_back_with_the_same_roles(
 ) -> None:
     """A speaker whose player the user removed is found again as one player, the twin its control."""
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.vendor)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.vendor)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
 
     await scenario.remove(player_id)
@@ -889,8 +889,8 @@ async def test_two_native_protocols_of_one_rank_on_one_host_stay_two_players(
     kitchen = squeezelite.protocol("b8:27:eb:11:22:33", "Kitchen", identifiers=PI)
     den = snapcast.protocol("snapcast_den", "Den", identifiers=PI)
 
-    await scenario.attach(kitchen)
-    await scenario.attach(den)
+    await scenario.register(kitchen)
+    await scenario.register(den)
     await scenario.idle()
 
     assert [player.name for player in scenario.players_carrying(kitchen)] == ["Kitchen"]
@@ -1005,7 +1005,7 @@ async def test_a_choice_that_names_the_demoted_twin_sends_it_nothing(
     protocol.
     """
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.twin).player_id
     twin_id = speaker.twin.protocol_id
     if choice == "volume_and_mute":
@@ -1017,8 +1017,8 @@ async def test_a_choice_that_names_the_demoted_twin_sends_it_nothing(
     speaker = _current(scenario, speaker)
     if choice == "preferred_output":
         await scenario.report(speaker.vendor, supported_features={PlayerFeature.PLAY_MEDIA})
-        await scenario.attach(speaker.airplay)
-    await scenario.attach(speaker.vendor)
+        await scenario.register(speaker.airplay)
+    await scenario.register(speaker.vendor)
     await scenario.idle()
     assert _roles(scenario, player_id)[twin_id] == ProtocolRole.CONTROL
 
@@ -1052,8 +1052,8 @@ async def test_a_command_to_the_player_never_reaches_the_twin(scenario: Scenario
     away, when the player is unavailable.
     """
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.vendor)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.vendor)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
 
     with as_user([player_id]):
@@ -1062,7 +1062,7 @@ async def test_a_command_to_the_player_never_reaches_the_twin(scenario: Scenario
     with as_user(["another_player"]), pytest.raises(InsufficientPermissions):
         await scenario.mass.players.cmd_volume_set(player_id, 20)
     await scenario.play(player_id)
-    await scenario.detach(speaker.vendor)
+    await scenario.unregister(speaker.vendor)
     with pytest.raises(PlayerUnavailableError):
         await scenario.mass.players.cmd_play(player_id)
     await scenario.idle()
@@ -1086,7 +1086,7 @@ async def test_unused_zone_players_are_never_merged_by_themselves(
     """
     receiver = await _receiver(scenario)
     for part in order:
-        await scenario.attach(getattr(receiver, part))
+        await scenario.register(getattr(receiver, part))
     await scenario.idle()
 
     _receiver_players(scenario, receiver)
@@ -1133,7 +1133,7 @@ async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(
     ]
     parts = {"main": main, "second": second, "patio": receivers[0], "living": receivers[1]}
     for part in order:
-        await scenario.attach(parts[part])
+        await scenario.register(parts[part])
     await scenario.idle()
     main_id = scenario.single_player(main).player_id
     second_id = scenario.single_player(second).player_id
@@ -1156,7 +1156,7 @@ async def test_a_receiver_on_the_wrong_zone_is_put_right_by_hand(
             scenario.set_present(protocol_id, False)
         await scenario.restart()
         for protocol_id in restart_order:
-            await scenario.attach(scenario.protocol(protocol_id))
+            await scenario.register(scenario.protocol(protocol_id))
         await scenario.idle()
         assert {
             protocol_id: scenario.player_of(scenario.protocol(protocol_id))
@@ -1174,7 +1174,7 @@ async def _twin_found_first(scenario: Scenario) -> None:
     """Find the twin of a speaker before its vendor protocol."""
     speaker = await _speaker(scenario)
     for protocol in (speaker.twin, speaker.vendor):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
 
 
 async def _twin_kept_by_a_merge(scenario: Scenario) -> None:
@@ -1190,14 +1190,14 @@ async def _twin_kept_by_a_merge(scenario: Scenario) -> None:
 async def _zones(scenario: Scenario) -> None:
     """Find both zones of a receiver and its AirPlay receiver."""
     for protocol in await _receiver(scenario):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
 
 
 async def _zone_put_right_by_hand(scenario: Scenario) -> None:
     """Unlink the receiver of the main zone and merge its player into the second zone."""
     receiver = await _receiver(scenario)
     for protocol in receiver:
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     second_id = scenario.single_player(receiver.second).player_id
     unlinked_id = await scenario.mass.players.unlink_protocol(receiver.airplay.protocol_id)
@@ -1262,7 +1262,7 @@ async def test_a_speaker_and_its_twin_stored_apart_can_be_merged_by_hand(
     kept_id = ids[keep]
     absorbed_id = ids["twin" if keep == "vendor" else "vendor"]
     if not vendor_present:
-        await scenario.detach(scenario.protocol(speaker.vendor.protocol_id))
+        await scenario.unregister(scenario.protocol(speaker.vendor.protocol_id))
 
     await scenario.mass.players.merge(absorbed_id, kept_id)
     await scenario.idle()
@@ -1319,8 +1319,8 @@ async def test_two_players_of_one_rank_on_one_host_can_not_be_merged(scenario: S
     snapcast = await scenario.add_provider("snapcast")
     kitchen = squeezelite.protocol("b8:27:eb:11:22:33", "Kitchen", identifiers=PI)
     den = snapcast.protocol("snapcast_den", "Den", identifiers=PI)
-    await scenario.attach(kitchen)
-    await scenario.attach(den)
+    await scenario.register(kitchen)
+    await scenario.register(den)
 
     with pytest.raises(InvalidCommand):
         await scenario.mass.players.merge(
@@ -1339,8 +1339,8 @@ async def test_a_protocol_unlinked_from_a_speaker_stands_on_its_own(
     its own role too, and neither is merged back by itself, also after a restart.
     """
     speaker = await _speaker(scenario)
-    await scenario.attach(speaker.vendor)
-    await scenario.attach(speaker.twin)
+    await scenario.register(speaker.vendor)
+    await scenario.register(speaker.twin)
     player_id = scenario.single_player(speaker.vendor, speaker.twin).player_id
     taken_off = speaker.vendor if unlinked == "vendor" else speaker.twin
     staying = speaker.twin if unlinked == "vendor" else speaker.vendor
@@ -1434,7 +1434,7 @@ async def test_a_room_is_the_player_of_its_own_renderer_only(
     )
     found_on: dict[str, str | None] = {}
     for part in order:
-        await scenario.attach(parts[part])
+        await scenario.register(parts[part])
         await scenario.idle()
         found_on[part] = scenario.player_of(parts[part])
     room_id = found_on[next(part for part in order if part in ("room", "connector"))]
@@ -1456,7 +1456,7 @@ async def test_a_room_is_the_player_of_its_own_renderer_only(
                 scenario.set_present(protocol.protocol_id, False)
             await scenario.restart()
             for part in reversed(order):
-                await scenario.attach(scenario.protocol(parts[part].protocol_id))
+                await scenario.register(scenario.protocol(parts[part].protocol_id))
             await scenario.idle()
         assert {
             part: scenario.player_of(scenario.protocol(protocol.protocol_id))
@@ -1480,12 +1480,12 @@ async def test_reflashed_device_keeps_its_player(scenario: Scenario) -> None:
     esp_sendspin = sendspin.protocol(
         "sendspin_esp32_loud", "esp32-loud", role="audio", identifiers=ESP32
     )
-    await scenario.attach(esp_squeezelite)
+    await scenario.register(esp_squeezelite)
     player_id = scenario.single_player(esp_squeezelite).player_id
     await scenario.configure_player(player_id, name="Kitchen Speaker")
-    await scenario.detach(esp_squeezelite)
+    await scenario.unregister(esp_squeezelite)
 
-    await scenario.attach(esp_sendspin)
+    await scenario.register(esp_sendspin)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -1507,13 +1507,13 @@ async def test_device_with_a_new_protocol_id_keeps_its_player_and_settings(
     """
     sendspin = await scenario.add_provider("sendspin")
     by_mac = sendspin.protocol("sendspin_a0b765001122", "esp32-loud", identifiers=ESP32)
-    await scenario.attach(by_mac)
+    await scenario.register(by_mac)
     player_id = scenario.single_player(by_mac).player_id
     await scenario.configure_player(player_id, name="Kitchen Speaker", **{FAKE_SETTING: "loud"})
-    await scenario.detach(by_mac)
+    await scenario.unregister(by_mac)
 
     by_key = sendspin.protocol("sendspin_key_7f3a9c", "esp32-loud", identifiers=ESP32)
-    await scenario.attach(by_key)
+    await scenario.register(by_key)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -1543,12 +1543,12 @@ async def test_role_flip_of_a_protocol_keeps_its_player(
             IdentifierType.IP_ADDRESS: LIVING_TV.ip,
         },
     )
-    await scenario.attach(tv)
+    await scenario.register(tv)
     await scenario.advance(15)
     player_id = scenario.single_player(tv).player_id
     scenario.clear_events()
 
-    await scenario.attach(tv, role=second_role)
+    await scenario.register(tv, role=second_role)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -1582,10 +1582,10 @@ async def _two_players_for_one_tv(
         role="audio",
         identifiers={IdentifierType.CAST_UUID: tv.cast_uuid, IdentifierType.IP_ADDRESS: tv.ip},
     )
-    await scenario.attach(tv_airplay)
+    await scenario.register(tv_airplay)
     await scenario.advance(15)
     older_id = scenario.single_player(tv_airplay).player_id
-    await scenario.attach(tv_cast)
+    await scenario.register(tv_cast)
     await scenario.advance(15)
     younger_id = scenario.single_player(tv_cast).player_id
     if younger_id == older_id:
@@ -1597,8 +1597,8 @@ async def _two_players_for_one_tv(
 async def _seen_again_with_its_address(scenario: Scenario, protocol: FakeProtocol, ip: str) -> None:
     """Let the receiver report its address and be found again by its provider."""
     await scenario.report(protocol, identifiers={IdentifierType.IP_ADDRESS: ip})
-    await scenario.detach(protocol)
-    await scenario.attach(protocol)
+    await scenario.unregister(protocol)
+    await scenario.register(protocol)
     await scenario.idle()
 
 

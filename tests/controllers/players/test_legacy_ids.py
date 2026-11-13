@@ -200,8 +200,8 @@ async def test_absorbed_frozen_id_names_the_keeper_and_still_its_protocol(
     mac = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:D4"}
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=mac)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=mac)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     keeper_id = scenario.single_player(native, audio).player_id
     scenario.mass.config.set_player_value(keeper_id, CONF_LEGACY_IDS, ["ap_kitchen"])
     players = scenario.mass.players
@@ -316,8 +316,8 @@ async def _living_room_with_a_legacy_id(scenario: Scenario) -> tuple[str, FakePr
         supported_features=set(GROUPING),
         can_group_with={"ap_living"},
     )
-    await scenario.attach(living)
-    await scenario.attach(hall)
+    await scenario.register(living)
+    await scenario.register(hall)
     await scenario.idle()
     living_id = scenario.single_player(living).player_id
     scenario.mass.config.set_player_value(living_id, CONF_LEGACY_IDS, [OLD_LIVING])

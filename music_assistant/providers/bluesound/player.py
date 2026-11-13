@@ -100,7 +100,7 @@ class BluesoundPlayer(PlayerProtocol):
     async def setup(self) -> None:
         """Set up the player."""
         await self.update_attributes()
-        await self.mass.players.attach(self)
+        await self.mass.players.register(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""

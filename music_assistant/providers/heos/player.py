@@ -100,7 +100,7 @@ class HeosPlayer(PlayerProtocol):
         self.set_device_info()
         self.set_dynamic_attributes(update_media=True)
 
-        await self.mass.players.attach(self)
+        await self.mass.players.register(self)
         if self.player is None:
             # not attached: the user disabled the player
             return

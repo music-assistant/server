@@ -171,9 +171,9 @@ async def test_an_entity_is_set_up_once_by_discovery_and_its_first_state_event(
     provider = _register(scenario, fake.instance_id, hass_prov)
     await provider.loaded_in_mass()
     on_event = hass_prov.hass.subscribe_entities.await_args.args[0]
-    attach = AsyncMock(wraps=scenario.mass.players.attach)
+    attach = AsyncMock(wraps=scenario.mass.players.register)
 
-    with patch.object(scenario.mass.players, "attach", attach):
+    with patch.object(scenario.mass.players, "register", attach):
         if first == "event":
             on_event(_first_event())
             await scenario.settle()
@@ -346,7 +346,7 @@ async def test_two_entities_of_one_device_stay_two_players(scenario: Scenario) -
     await provider._setup_player(_state(BEDROOM), registry, devices)
     await scenario.settle()
     bedroom_player = _player(provider, BEDROOM).player_id
-    await scenario.mass.players.detach(BEDROOM)
+    await scenario.mass.players.unregister(BEDROOM)
     await scenario.settle()
 
     await provider._setup_player(_state(KITCHEN), registry, devices)
@@ -369,7 +369,7 @@ async def test_the_entity_of_a_speaker_is_a_control_of_its_player(scenario: Scen
             IdentifierType.UUID: "RINCON_001122334455",
         },
     )
-    await scenario.attach(vendor)
+    await scenario.register(vendor)
     provider = await _receiver_provider(scenario)
     registry = {KITCHEN: _entity_of_receiver(KITCHEN, "0a1b2c3d4e5f60718293a4b5c6d7e8f9")}
     devices: Any = {"receiver": {"id": "receiver", "connections": [["mac", RECEIVER_MAC]]}}

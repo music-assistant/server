@@ -6,9 +6,9 @@ whose devices are provided by Player Providers.
 
 Note that the PlayerController has a concept of a 'player', a 'protocol' and a 'playerstate'.
 The Player is what users and clients see, one per device, and is owned by this controller.
-A protocol is the object a provider attaches to a player for its device: it
-incorporates the (unaltered) state the device reports (e.g. volume, state, etc)
-and the functions for controlling the device (e.g. play, pause, etc).
+A protocol is the object a provider registers for its device, which this controller
+attaches to a player: it incorporates the (unaltered) state the device reports
+(e.g. volume, state, etc) and the functions for controlling the device (e.g. play, pause, etc).
 
 The playerstate is the (final) state of the player, derived from what its protocols
 report, including any user customizations and transformations that are applied to it.
@@ -95,8 +95,8 @@ class PlayerController(
         """Initialize core controller."""
         super().__init__(mass)
         self._players: dict[str, Player] = {}
-        # the protocol objects the providers attached, by their id: bound to their
-        # player, or held while it is not known yet which player they belong to
+        # the registered protocol objects that are attached to their player, or held while
+        # it is not known yet which player they belong to, by their id
         self._protocols: dict[str, PlayerProtocol] = {}
         # the protocol objects the providers hold that are not attached: detached, or not
         # attached as their player is disabled or the user switched the protocol off
@@ -163,7 +163,7 @@ class PlayerController(
         self._poll_task = self.mass.create_task(self._poll_players())
 
     async def post_setup(self) -> None:
-        """Bring back the stored players, before any provider attaches a protocol."""
+        """Bring back the stored players, before any provider registers a protocol."""
         await self._restore_players()
 
     async def close(self) -> None:
@@ -223,7 +223,7 @@ class PlayerController(
         self.mass.cancel_timer(f"discover_players_{provider.instance_id}")
         for protocol in list(self._protocols.values()):
             if protocol.provider.instance_id == provider.instance_id:
-                await self.detach(protocol.protocol_id)
+                await self.unregister(protocol.protocol_id)
 
     @property
     def providers(self) -> list[PlayerProvider]:

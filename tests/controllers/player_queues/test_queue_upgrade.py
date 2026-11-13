@@ -56,7 +56,7 @@ async def test_saved_queues_of_a_browser_and_a_wrapper_survive_the_upgrade(
     await scenario.idle()
 
     assert BROWSER not in [config.player_id for config in await scenario.player_configs()]
-    await scenario.attach(scenario.protocol(BROWSER))
+    await scenario.register(scenario.protocol(BROWSER))
     await scenario.idle()
 
     for queue_id in (BROWSER, WRAPPER):

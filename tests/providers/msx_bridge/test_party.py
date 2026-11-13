@@ -231,7 +231,7 @@ async def test_msx_party_page_refreshes_player_activity(
     """Viewing the party page must attach/refresh the player like other MSX pages."""
     resp = await http_client.get("/msx/party.json?device_id=partytv")
     assert resp.status == 200
-    mass_mock.players.attach.assert_awaited()
+    mass_mock.players.register.assert_awaited()
 
 
 def test_stamp_qr_on_cover_rejects_oversized_cover_without_changing_pillow_limit(

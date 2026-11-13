@@ -32,7 +32,7 @@ async def _linked_client(scenario: Scenario) -> tuple[str, Any]:
     sonos = await scenario.add_provider("sonos")
     await scenario.add_provider("sendspin")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
     sendspin = _sendspin(scenario)
     scenario.mass.config.create_protocol_record(

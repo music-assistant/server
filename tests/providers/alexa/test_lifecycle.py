@@ -132,8 +132,8 @@ async def test_a_new_echo_streams_in_the_codec_of_its_own_record(scenario: Scena
     assert protocol.player is not None
     player_id = protocol.player.player_id
     await scenario.mass.config.save_protocol_config(PROTOCOL_ID, {CONF_OUTPUT_CODEC: "mp3"})
-    await scenario.mass.players.detach(PROTOCOL_ID)
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.unregister(PROTOCOL_ID)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     media = PlayerMedia(
         uri="source://line_in",

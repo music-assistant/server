@@ -1132,7 +1132,7 @@ async def test_provider_selects_player_model_from_device_identity(
     }
     provider._mrp_info_by_address = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
-    provider.mass.players.attach = AsyncMock()
+    provider.mass.players.register = AsyncMock()
     provider.mass.players.get_protocol.return_value = None
     provider.mass.players.wants_protocol.return_value = True
     provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
@@ -1155,7 +1155,7 @@ async def test_provider_selects_player_model_from_device_identity(
     ):
         await provider._setup_player("player", "Player", info)
 
-    player = provider.mass.players.attach.await_args.args[0]
+    player = provider.mass.players.register.await_args.args[0]
     assert isinstance(player, expected_type)
 
 
@@ -1185,7 +1185,7 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
         return companion_info if service_type == COMPANION_DISCOVERY_TYPE else None
 
     provider.mass.discovery.async_find_mdns_service = AsyncMock(side_effect=_find_service)
-    provider.mass.players.attach = AsyncMock()
+    provider.mass.players.register = AsyncMock()
     provider.mass.players.get_protocol.return_value = None
     provider.mass.players.wants_protocol.return_value = True
     provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
@@ -1209,7 +1209,7 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     ):
         await provider._setup_player("apple", "Apple TV", info)
 
-    player = provider.mass.players.attach.await_args.args[0]
+    player = provider.mass.players.register.await_args.args[0]
     assert isinstance(player, AirPlayControlPlayer)
     assert player.companion_discovery_info is companion_info
 
@@ -1314,8 +1314,8 @@ async def test_late_companion_discovery_never_changes_player_model() -> None:
         model="Model",
     )
     provider.get_players = MagicMock(return_value=[generic_player])  # type: ignore[method-assign]
-    provider.mass.players.detach = AsyncMock()
-    provider.mass.players.attach = AsyncMock()
+    provider.mass.players.unregister = AsyncMock()
+    provider.mass.players.register = AsyncMock()
     info = _service_info(
         COMPANION_DISCOVERY_TYPE,
         properties={"rpFl": "0x367A2"},
@@ -1327,8 +1327,8 @@ async def test_late_companion_discovery_never_changes_player_model() -> None:
         info,
     )
 
-    provider.mass.players.detach.assert_not_awaited()
-    provider.mass.players.attach.assert_not_awaited()
+    provider.mass.players.unregister.assert_not_awaited()
+    provider.mass.players.register.assert_not_awaited()
 
 
 async def test_generic_device_setup_skips_control_discovery() -> None:
@@ -1344,7 +1344,7 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
-    provider.mass.players.attach = AsyncMock()
+    provider.mass.players.register = AsyncMock()
     provider.mass.players.get_protocol.return_value = None
     provider.mass.players.wants_protocol.return_value = True
     provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
@@ -1367,7 +1367,7 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     ):
         await provider._setup_player("player", "Player", info)
 
-    player = provider.mass.players.attach.await_args.args[0]
+    player = provider.mass.players.register.await_args.args[0]
     assert isinstance(player, GenericAirPlayPlayer)
     control_lookups = [
         lookup_call

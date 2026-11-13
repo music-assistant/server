@@ -449,7 +449,7 @@ class RaumfeldPlayer(PlayerProtocol):
                 changed = True
         if changed:
             # publishes the identity of the room under its renderer's new address
-            await self.mass.players.attach(self)
+            await self.mass.players.register(self)
 
     def set_line_in(self, line_in: tuple[str, str] | None) -> None:
         """

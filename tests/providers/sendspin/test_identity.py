@@ -103,17 +103,17 @@ def _client(
     return protocol
 
 
-async def _attach(scenario: Scenario, protocol: SendspinPlayer) -> Player:
-    """Attach a protocol, as the provider does for a connected client, and return its player."""
-    await scenario.mass.players.attach(protocol)
+async def _register(scenario: Scenario, protocol: SendspinPlayer) -> Player:
+    """Register a protocol, as the provider does for a connected client; return its player."""
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     assert protocol.player is not None
     return protocol.player
 
 
-async def _detach(scenario: Scenario, protocol: SendspinPlayer) -> None:
-    """Detach a protocol, as the provider does for a client that disconnected."""
-    await scenario.mass.players.detach(protocol.protocol_id)
+async def _unregister(scenario: Scenario, protocol: SendspinPlayer) -> None:
+    """Unregister a protocol, as the provider does for a client that disconnected."""
+    await scenario.mass.players.unregister(protocol.protocol_id)
     await scenario.settle()
 
 
@@ -128,13 +128,13 @@ async def test_device_that_comes_back_under_its_key_id_keeps_its_player_and_sett
     """
     sendspin = await _sendspin(scenario)
     by_mac = _client(sendspin, MAC_CLIENT_ID)
-    player_id = (await _attach(scenario, by_mac)).player_id
+    player_id = (await _register(scenario, by_mac)).player_id
     await scenario.configure_player(player_id, name="Kitchen Speaker")
     scenario.mass.config.set_protocol_value(MAC_CLIENT_ID, CONF_SENDSPIN_STATIC_DELAY, 80)
-    await _detach(scenario, by_mac)
+    await _unregister(scenario, by_mac)
 
     by_key = _client(sendspin, KEY_CLIENT_ID)
-    player = await _attach(scenario, by_key)
+    player = await _register(scenario, by_key)
 
     assert player.player_id == player_id
     assert player.display_name == "Kitchen Speaker"
@@ -150,11 +150,11 @@ async def test_a_device_with_nothing_else_is_the_native_protocol_of_its_player(
     sendspin = await _sendspin(scenario)
     first = _client(sendspin, KEY_CLIENT_ID)
     assert first.role == ProtocolRole.AUDIO
-    player_id = (await _attach(scenario, first)).player_id
-    await _detach(scenario, first)
+    player_id = (await _register(scenario, first)).player_id
+    await _unregister(scenario, first)
 
     again = _client(sendspin, KEY_CLIENT_ID)
-    player = await _attach(scenario, again)
+    player = await _register(scenario, again)
 
     assert again.role == ProtocolRole.NATIVE
     assert player.player_id == player_id
@@ -190,7 +190,7 @@ async def test_a_new_client_gets_its_player_at_once(
         product_name="sendspin-cli",
     )
 
-    player = await _attach(scenario, first)
+    player = await _register(scenario, first)
 
     assert first.role == role
     assert player.get_role(first.protocol_id) == role
@@ -200,12 +200,12 @@ async def test_two_clients_on_one_host_stay_two_players(scenario: Scenario) -> N
     """A second software client on a host does not take over the offline first one's player."""
     sendspin = await _sendspin(scenario)
     first = _client(sendspin, "sendspin-cli-1111", name="Pi Kitchen", product_name="sendspin-cli")
-    first_id = (await _attach(scenario, first)).player_id
+    first_id = (await _register(scenario, first)).player_id
     await scenario.configure_player(first_id, name="Kitchen")
-    await _detach(scenario, first)
+    await _unregister(scenario, first)
 
     second = _client(sendspin, "sendspin-cli-2222", name="Pi Office", product_name="sendspin-cli")
-    second_player = await _attach(scenario, second)
+    second_player = await _register(scenario, second)
 
     assert second_player.player_id != first_id
     assert scenario.mass.config.get_protocol_ids_of_player(first_id) == ["sendspin-cli-1111"]
@@ -222,15 +222,15 @@ async def test_a_client_of_a_device_with_another_native_is_an_output_of_its_play
     native = squeezelite.protocol(
         "a0b765001122", "ESP32 Loud", identifiers={IdentifierType.MAC_ADDRESS: MAC}
     )
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.player_of(native)
     sendspin = await _sendspin(scenario)
 
     first = _client(sendspin, KEY_CLIENT_ID)
-    assert (await _attach(scenario, first)).player_id == player_id
-    await _detach(scenario, first)
+    assert (await _register(scenario, first)).player_id == player_id
+    await _unregister(scenario, first)
     again = _client(sendspin, KEY_CLIENT_ID)
-    player = await _attach(scenario, again)
+    player = await _register(scenario, again)
 
     assert again.role == ProtocolRole.AUDIO
     assert player.player_id == player_id
@@ -249,7 +249,7 @@ async def test_a_web_player_is_its_own_player_with_nothing_stored(scenario: Scen
     )
     assert browser.session_only is True
     browser._attr_role = ProtocolRole.NATIVE
-    player = await _attach(scenario, browser)
+    player = await _register(scenario, browser)
 
     browser.event_cb(MagicMock(), OutputDelayChangedEvent(output_delay_ms=150))
 
@@ -259,7 +259,7 @@ async def test_a_web_player_is_its_own_player_with_nothing_stored(scenario: Scen
     assert await scenario.stored_config_mentioning("web-3f2a9c") == []
 
     scenario.clear_events()
-    await _detach(scenario, browser)
+    await _unregister(scenario, browser)
 
     assert scenario.mass.players.get_player("web-3f2a9c") is None
     assert [event.object_id for event in scenario.events(EventType.PLAYER_REMOVED)] == [
@@ -277,15 +277,15 @@ async def test_a_setting_of_a_new_device_is_kept_on_its_protocol(scenario: Scena
     """
     sendspin = await _sendspin(scenario)
     first = _client(sendspin, KEY_CLIENT_ID)
-    player_id = (await _attach(scenario, first)).player_id
+    player_id = (await _register(scenario, first)).player_id
     assert player_id.startswith(PLAYER_ID_PREFIX)
     assert player_id != KEY_CLIENT_ID
     # the delay the device reports becomes its setting
     first.event_cb(MagicMock(), OutputDelayChangedEvent(output_delay_ms=80))
-    await _detach(scenario, first)
+    await _unregister(scenario, first)
 
     again = _client(sendspin, KEY_CLIENT_ID)
-    await _attach(scenario, again)
+    await _register(scenario, again)
 
     record = scenario.mass.config.get_protocol_record(KEY_CLIENT_ID) or {}
     assert record["values"][CONF_SENDSPIN_STATIC_DELAY] == 80

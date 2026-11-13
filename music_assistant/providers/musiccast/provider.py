@@ -84,7 +84,7 @@ class MusicCastProvider(PlayerProvider):
         """Attach the zones of the known devices that have no attached protocol."""
         for device_id, musiccast_player_helper in list(self.musiccast_player_helpers.items()):
             for zone_name in list(musiccast_player_helper.physical_device.zone_devices):
-                await self._attach_known_zone(f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_name}")
+                await self._register_known_zone(f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_name}")
 
     async def forget_player(self, protocol_id: str) -> None:
         """
@@ -215,11 +215,11 @@ class MusicCastProvider(PlayerProvider):
                     device_ip,
                 )
 
-    async def _attach_known_zone(self, protocol_id: str) -> None:
-        """Attach a zone of a known device that has no attached protocol, such as a re-enabled one."""
+    async def _register_known_zone(self, protocol_id: str) -> None:
+        """Register a zone of a known device that has no attached protocol, such as a re-enabled one."""
         device_id, _, zone_name = protocol_id.partition(PLAYER_ZONE_SPLITTER)
         async with self._registration_locks.setdefault(device_id, asyncio.Lock()):
-            # a discovery still queued must not attach zones for an unloaded instance
+            # a discovery still queued must not register zones for an unloaded instance
             if self.unloading:
                 return
             # a known device only lacks the protocol of the zone, which got detached when
@@ -241,7 +241,7 @@ class MusicCastProvider(PlayerProvider):
                 protocol_id
             ):
                 player = await self._setup_zone_player(musiccast_player_helper, zone_device)
-                await self.mass.players.attach(player)
+                await self.mass.players.register(player)
                 setattr(musiccast_player_helper, f"player_{zone_device.zone_name}", player)
 
     async def _register_player(
@@ -270,7 +270,7 @@ class MusicCastProvider(PlayerProvider):
             if zone_device.zone_data is not None and zone_device.zone_data.name is not None
         ]
         for player in players:
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
             setattr(musiccast_player_helper, f"player_{player.zone_device.zone_name}", player)
             physical_device.register_callback(partial(self._on_udp_update, player.protocol_id))
 

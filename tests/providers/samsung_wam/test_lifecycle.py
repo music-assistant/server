@@ -53,8 +53,8 @@ def _speaker() -> MagicMock:
     return speaker
 
 
-async def _attach(scenario: Scenario, speaker: MagicMock) -> WamPlayer:
-    """Attach the protocol of a speaker the way discovery sets it up."""
+async def _register(scenario: Scenario, speaker: MagicMock) -> WamPlayer:
+    """Register the protocol of a speaker the way discovery sets it up."""
     provider: Any = scenario.mass.get_provider("samsung_wam") or await scenario.add_provider(
         "samsung_wam"
     )
@@ -62,7 +62,7 @@ async def _attach(scenario: Scenario, speaker: MagicMock) -> WamPlayer:
     protocol = WamPlayer(provider, IP_ADDRESS, UDN, MAC_ADDRESS, speaker)
     protocol._attr_name = "Speaker A"
     protocol._attr_needs_poll = False
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     return protocol
 
@@ -71,7 +71,7 @@ async def test_a_new_speaker_is_the_native_protocol_of_a_minted_player(
     scenario: Scenario,
 ) -> None:
     """A speaker first seen now gets a player of its own, identified by its MAC and UDN."""
-    protocol = await _attach(scenario, _speaker())
+    protocol = await _register(scenario, _speaker())
 
     assert protocol.player is not None
     assert protocol.player.player_id.startswith(PLAYER_ID_PREFIX)
@@ -83,25 +83,25 @@ async def test_a_new_speaker_is_the_native_protocol_of_a_minted_player(
 async def test_the_speaker_is_followed_while_attached(scenario: Scenario) -> None:
     """Its events and groups are followed while attached; a detach disconnects it."""
     speaker = _speaker()
-    protocol = await _attach(scenario, speaker)
+    protocol = await _register(scenario, speaker)
     speaker.events.register_subscriber.assert_called_once()
     assert protocol.player is not None
     player_id = protocol.player.player_id
 
-    await scenario.mass.players.detach(MAC_ADDRESS)
+    await scenario.mass.players.unregister(MAC_ADDRESS)
     await scenario.settle()
 
     speaker.disconnect.assert_awaited()
     assert scenario.mass.players.get_protocol(MAC_ADDRESS) is None
     assert scenario.mass.players.get_player(player_id) is not None
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     assert speaker.events.register_subscriber.call_count == 2
 
 
 async def test_a_new_speaker_takes_the_name_of_its_player(scenario: Scenario) -> None:
     """A name the user gives the player of a speaker with a minted id is set on the speaker."""
-    protocol = await _attach(scenario, _speaker())
+    protocol = await _register(scenario, _speaker())
     assert protocol.player is not None
     protocol.device_config.set_name = AsyncMock()  # type: ignore[method-assign]
 
@@ -112,7 +112,7 @@ async def test_a_new_speaker_takes_the_name_of_its_player(scenario: Scenario) ->
 
 async def test_a_new_speaker_keeps_its_settings_on_its_own_record(scenario: Scenario) -> None:
     """A setting of a speaker with a minted player id is stored on its protocol and survives."""
-    protocol = await _attach(scenario, _speaker())
+    protocol = await _register(scenario, _speaker())
     assert protocol.player is not None
     player_id = protocol.player.player_id
 
@@ -120,8 +120,8 @@ async def test_a_new_speaker_keeps_its_settings_on_its_own_record(scenario: Scen
     await scenario.mass.config.save_protocol_config(
         MAC_ADDRESS, {CONF_REQUIRES_FIXED_CONTENT_LENGTH: False}
     )
-    await scenario.mass.players.detach(MAC_ADDRESS)
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.unregister(MAC_ADDRESS)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
 
     assert protocol.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH) is False

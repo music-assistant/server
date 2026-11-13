@@ -113,7 +113,7 @@ class _PlayerControllerBase(CoreController):
 
     def iter_protocols(self, provider_filter: str | None = None) -> Iterator[PlayerProtocol]:
         """
-        Iterate over the protocol objects the providers attached.
+        Iterate over the protocol objects that are attached to a player.
 
         A protocol that is held until it is known which player it belongs to is
         included; its ``player`` is None.
@@ -654,7 +654,7 @@ class _PlayerControllerBase(CoreController):
             self, player_id: str, *, hold_player: bool
         ) -> AbstractAsyncContextManager[None]: ...
         # lifecycle
-        async def detach(self, protocol_id: str) -> None: ...
+        async def unregister(self, protocol_id: str) -> None: ...
         async def remove(self, player_id: str) -> None: ...
         def wants_protocol(
             self, protocol_id: str, protocol: PlayerProtocol | None = None

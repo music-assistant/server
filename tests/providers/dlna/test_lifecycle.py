@@ -103,7 +103,7 @@ async def test_two_renderers_on_one_host_are_two_players(scenario: Scenario) -> 
     assert renderer_a.player is not None
     player_a = renderer_a.player.player_id
     # while it is offline, its player has no DLNA protocol attached
-    await scenario.mass.players.detach(UDN)
+    await scenario.mass.players.unregister(UDN)
     await scenario.settle()
 
     renderer_b = await _attach_renderer(scenario, "uuid:dlna-renderer-b")
@@ -120,7 +120,7 @@ async def test_the_renderer_of_a_cast_device_joins_its_player(scenario: Scenario
         "TV",
         identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS, IdentifierType.CAST_UUID: "c1"},
     )
-    await scenario.attach(tv)
+    await scenario.register(tv)
 
     renderer = await _attach_renderer(scenario)
 
@@ -135,7 +135,7 @@ async def test_a_renderer_that_rejects_event_subscriptions_joins_its_player(
     """A renderer that is polled because it rejects event subscriptions joins its device's player."""
     cast = await scenario.add_provider("chromecast")
     tv = cast.protocol("cast-tv", "TV", identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS})
-    await scenario.attach(tv)
+    await scenario.register(tv)
     provider: Any = await scenario.add_provider("dlna")
     provider.upnp_factory = UpnpFactory(_Requester(DESCRIPTION_XML.format(presentation="/")))
     provider.notify_server = MagicMock()
@@ -164,7 +164,7 @@ async def test_a_renderer_of_a_disabled_player_releases_its_subscriptions(
     """A renderer set up for a player the user disabled does not keep its event subscriptions."""
     cast = await scenario.add_provider("chromecast")
     tv = cast.protocol("cast-tv", "TV", identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS})
-    await scenario.attach(tv)
+    await scenario.register(tv)
     player_id = scenario.player_of(tv)
     assert player_id is not None
     await scenario.disable(player_id)
@@ -179,7 +179,7 @@ async def test_a_renderer_taken_off_its_player_connects_again(scenario: Scenario
     """A renderer moved to a player of its own connects to its device again at its next poll."""
     cast = await scenario.add_provider("chromecast")
     tv = cast.protocol("cast-tv", "TV", identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS})
-    await scenario.attach(tv)
+    await scenario.register(tv)
     renderer = await _attach_renderer(scenario)
     assert renderer.player is not None
     old_player_id = renderer.player.player_id

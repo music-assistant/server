@@ -134,13 +134,13 @@ class WiimProvider(PlayerProvider):
                 ip_address=ip_address,
                 mac_address=mac_address,
             )
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
             if self.get_protocol(protocol_id) is not player:
                 # the user disabled the player meanwhile
                 return
-            self.logger.info("WiiM player attached: %s (%s)", player.name, protocol_id)
+            self.logger.info("WiiM player registered: %s (%s)", player.name, protocol_id)
         except Exception:
-            self.logger.exception("Failed to attach WiiM player %s", protocol_id)
+            self.logger.exception("Failed to register WiiM player %s", protocol_id)
 
     async def try_add_linkplay_player(
         self,
@@ -175,14 +175,14 @@ class WiimProvider(PlayerProvider):
             device_info=device_info,
         )
         await player.setup()
-        await self.mass.players.attach(player)
+        await self.mass.players.register(player)
         # read the live topology now the protocol is attached (setup runs before the
         # attach, so the coordinator would discard a read taken there), then
         # reconcile so any leader that already lists this device, or that it leads,
         # self-heals regardless of discovery order.
         await self.native_groups.refresh_leader(player, force=True)
         self.native_groups.schedule_reconcile()
-        self.logger.info("LinkPlay player attached: %s (%s)", player.name, protocol_id)
+        self.logger.info("LinkPlay player registered: %s (%s)", player.name, protocol_id)
 
     def _candidate_locations(
         self, ip_address: str, advertised_port: int | None = None

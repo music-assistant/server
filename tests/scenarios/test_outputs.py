@@ -27,8 +27,8 @@ async def test_playback_goes_to_the_output_the_user_prefers(scenario: Scenario) 
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     await scenario.idle()
     player_id = scenario.single_player(native, audio).player_id
 

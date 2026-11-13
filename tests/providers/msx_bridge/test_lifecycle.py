@@ -105,7 +105,7 @@ async def test_an_idle_tv_stays_listed_and_returns_on_its_player(
     protocol = await _request(scenario, provider)
     player_id = _player(protocol).player_id
 
-    await provider._handle_player_detach(TV)
+    await provider._handle_player_unregister(TV)
     await scenario.settle()
 
     assert scenario.player(player_id).available is False  # type: ignore[union-attr]
@@ -125,7 +125,7 @@ async def test_a_tv_that_was_playing_returns_idle_after_its_idle_timeout(
     await scenario.play(player_id)
 
     protocol.on_ws_disconnected()
-    await provider._handle_player_detach(TV)
+    await provider._handle_player_unregister(TV)
     await scenario.settle()
     await _request(scenario, provider)
 
@@ -161,7 +161,7 @@ async def test_a_setting_of_a_new_player_is_its_tv_s(
     player_id = _player(protocol).player_id
 
     await scenario.configure_player(player_id, **{CONF_OUTPUT_CODEC: "aac"})
-    await provider._handle_player_detach(TV)
+    await provider._handle_player_unregister(TV)
     await _request(scenario, provider)
 
     assert protocol.config.get_value(CONF_OUTPUT_CODEC) == "aac"
@@ -182,7 +182,7 @@ async def test_a_tv_under_a_new_address_reports_it(
     await scenario.settle()
     player_id = _player(protocol).player_id
     if away:
-        await provider._handle_player_detach(TV)
+        await provider._handle_player_unregister(TV)
         await scenario.settle()
     scenario.arp["10.0.0.20"] = "00:11:22:33:44:66"
     scenario.arp["10.0.0.21"] = "00:11:22:33:44:55"
@@ -200,7 +200,7 @@ async def test_a_tv_under_a_new_address_reports_it(
             IdentifierType.MAC_ADDRESS: "00:11:22:33:44:66",
         },
     )
-    await scenario.attach(other_device)
+    await scenario.register(other_device)
 
     assert _player(returned).player_id == player_id
     assert returned.device_info.ip_address == "10.0.0.21"
@@ -217,7 +217,7 @@ async def test_two_clients_on_one_host_stay_two_players(
     )
     await scenario.settle()
     first_player = _player(first).player_id
-    await provider._handle_player_detach(first.protocol_id)
+    await provider._handle_player_unregister(first.protocol_id)
     await scenario.settle()
 
     second = await provider.get_or_register_player(

@@ -594,7 +594,7 @@ class SnapCastProvider(PlayerProvider):
         return search_dict[snap_client_id]
 
     def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer | None:
-        """Attach the protocol of a snapclient."""
+        """Register the protocol of a snapclient."""
         protocol_id = self._generate_and_register_id(snap_client.identifier)
         if not self.mass.players.wants_protocol(protocol_id):
             self.logger.debug("Ignoring disabled snapcast player: %s", protocol_id)
@@ -610,7 +610,7 @@ class SnapCastProvider(PlayerProvider):
             player.setup()
         else:
             player = cast("SnapCastPlayer", player)  # for type checking
-        asyncio.run_coroutine_threadsafe(self.mass.players.attach(player), loop=self.mass.loop)
+        asyncio.run_coroutine_threadsafe(self.mass.players.register(player), loop=self.mass.loop)
         return player
 
     def _handle_update(self) -> None:

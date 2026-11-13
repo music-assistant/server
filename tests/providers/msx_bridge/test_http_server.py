@@ -1263,7 +1263,7 @@ async def test_state_sync_tells_the_tv_whether_its_player_is_enabled(
         payload = await ws.receive_json()
         assert payload["type"] == "state_sync"
         assert payload["enabled"] is wanted
-        assert mass_mock.players.attach.await_count == int(wanted)
+        assert mass_mock.players.register.await_count == int(wanted)
         await ws.close()
     finally:
         await client.close()

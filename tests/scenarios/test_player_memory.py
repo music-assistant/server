@@ -27,7 +27,7 @@ async def _stopped_player(scenario: Scenario) -> tuple[FakeProtocol, str]:
     """Return a speaker that played MEDIA and just stopped, and the id of its player."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.idle()
     player_id = scenario.single_player(speaker).player_id
     await scenario.mass.players.play_media(player_id, MEDIA)
@@ -89,7 +89,7 @@ async def test_a_source_selected_while_stopped_is_kept(scenario: Scenario) -> No
     """A source selected after the player stopped is not forgotten 5 s after that stop."""
     _speaker, player_id = await _stopped_player(scenario)
     kitchen = scenario.provider("sonos").protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(kitchen)
+    await scenario.register(kitchen)
     other_queue = scenario.single_player(kitchen).player_id
 
     await scenario.advance(1)
@@ -109,12 +109,12 @@ async def test_a_stop_calls_off_a_power_on_that_waits_for_the_device(scenario: S
     """
     squeezelite = await scenario.add_provider("squeezelite")
     pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
-    await scenario.attach(pi)
+    await scenario.register(pi)
     player_id = scenario.single_player(pi).player_id
     plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
     await scenario.configure_player(player_id, power_control=plug.control_id)
     await scenario.switch(plug, False)
-    await scenario.detach(pi)
+    await scenario.unregister(pi)
     await scenario.idle()
 
     power_on = await scenario.command(scenario.mass.players.cmd_power(player_id, True))

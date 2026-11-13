@@ -171,7 +171,7 @@ async def test_unload_of_a_player_provider_detaches_its_protocols(
     bedroom = sonos.protocol("RINCON_BEDROOM", "Bedroom", identifiers=BEDROOM)
     office = sonos.protocol("RINCON_OFFICE", "Office", identifiers=OFFICE)
     for protocol in (kitchen, kitchen_audio, bedroom, office):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     kitchen_id = scenario.single_player(kitchen, kitchen_audio).player_id
     bedroom_id = scenario.single_player(bedroom).player_id
     office_id = scenario.single_player(office).player_id
@@ -273,7 +273,7 @@ async def _setup_player_provider(
         for protocol_id in ("device_a", "device_b", "device_c")
     ]
     for protocol in protocols:
-        await mass.players.attach(protocol)
+        await mass.players.register(protocol)
     assert all(protocol.player is not None for protocol in protocols)
     return provider, protocols, signalled
 
@@ -309,7 +309,7 @@ async def test_failing_detach_still_deregisters_the_provider(
         mass_minimal, monkeypatch, "device_a"
     )
     monkeypatch.setattr(
-        mass_minimal.players, "detach", AsyncMock(side_effect=RuntimeError("teardown blew up"))
+        mass_minimal.players, "unregister", AsyncMock(side_effect=RuntimeError("teardown blew up"))
     )
 
     unload_error: Exception | None = None
@@ -373,7 +373,7 @@ async def test_unload_provider_rejects_late_protocol_attach(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A player provider on its way out can no longer attach protocols."""
+    """A player provider on its way out can no longer register protocols."""
     provider = await _setup_bare_player_provider(mass_minimal, monkeypatch)
     monkeypatch.setattr(
         "music_assistant.controllers.players.lifecycle.enrich_device_mac_address",
@@ -390,10 +390,10 @@ async def test_unload_provider_rejects_late_protocol_attach(
             await super().on_detach()
             # stands in for a discovery that was already running when the unload started
             # and only reaches the controller once the protocols have been detached
-            await self.mass.players.attach(late_protocol)
+            await self.mass.players.register(late_protocol)
 
     protocol = LateAttachingProtocol(provider, "existing_device")
-    await mass_minimal.players.attach(protocol)
+    await mass_minimal.players.register(protocol)
     assert protocol.player is not None
     existing_player_id = protocol.player.player_id
 
@@ -427,7 +427,7 @@ async def test_unload_provider_rejects_in_flight_protocol_attach(
     )
 
     protocol = _TeardownProtocol(provider, "in_flight")
-    attach = asyncio.create_task(mass_minimal.players.attach(protocol))
+    attach = asyncio.create_task(mass_minimal.players.register(protocol))
     await asyncio.wait_for(attach_started.wait(), timeout=5)
 
     # start the unload with the attach parked, and release it once the provider is

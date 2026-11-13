@@ -64,7 +64,7 @@ class MediaAssistantPlayer(PlayerProtocol):
         """Set up player in MA."""
         self._attr_available = False
         self._attr_powered = False
-        await self.mass.players.attach(self)
+        await self.mass.players.register(self)
 
     @property
     def needs_poll(self) -> bool:

@@ -19,8 +19,8 @@ class PlayerProvider(Provider):
     """
     Base representation of a Player Provider.
 
-    A player provider owns protocols (PlayerProtocol), not players: it attaches one per
-    device it reaches to the players controller, which owns the player of that device.
+    A player provider owns protocols (PlayerProtocol), not players: it registers one per
+    device it reaches with the players controller, which owns the player of that device.
     Player Provider implementations should inherit from this base model.
     """
 
@@ -92,7 +92,7 @@ class PlayerProvider(Provider):
 
     async def discover_players(self) -> None:
         """
-        Attach every device this provider knows of that has no attached protocol.
+        Register every device this provider knows of that has no attached protocol.
 
         Called when the provider is (re)loaded and on every discovery request of the players
         controller: when one of its players is enabled or, unless it is a group, removed, and
