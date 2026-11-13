@@ -1663,7 +1663,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         # Use lock for playback commands to prevent protocol switches from
         # racing with concurrent play_media / play_index / resume calls.
-        async with self.get_player_lock(parent_player.player_id, PlayerLockPurpose.PLAYBACK):
+        # A target whose group leaves member changes to it (a static group) is changed under
+        # that group's lock too: moving its output to another protocol resumes the group.
+        async with self.get_group_and_player_lock(parent_player.player_id):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     def check_player_access(self, player_id: str) -> None:
