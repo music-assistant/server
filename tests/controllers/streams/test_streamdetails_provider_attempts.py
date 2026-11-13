@@ -19,7 +19,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import (
+    AudioError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -354,3 +361,69 @@ async def test_concurrent_callers_for_one_queue_item_share_one_resolution() -> N
     assert calls == [ITEM_ID]
     assert first_details is second_details
     assert queue_item.streamdetails is first_details
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RateLimited("slow down", backoff_time=3600),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
+)
+async def test_a_provider_asking_to_back_off_surfaces_its_error(
+    error: MusicAssistantError,
+) -> None:
+    """A rate limited or temporarily unavailable provider is reported, not taken for a miss."""
+    limited = MagicMock()
+    limited.get_stream_details = AsyncMock(side_effect=error)
+    other = MagicMock()
+    other.get_stream_details = AsyncMock(side_effect=AudioError("not on this tier"))
+    audio = _audio({INSTANCE: limited, OTHER_INSTANCE: other})
+
+    with pytest.raises(type(error)) as exc_info:
+        await audio.get_stream_details(
+            # an actionable audio error of another candidate does not hide the back-off
+            queue_item=_queue_item(
+                _mapping(INSTANCE, content_type=ContentType.FLAC), _mapping(OTHER_INSTANCE)
+            )
+        )
+
+    assert exc_info.value is error
+
+
+async def test_a_track_its_provider_cannot_serve_is_a_miss() -> None:
+    """A provider raising a temporary error for the item itself does not stop playback."""
+    unservable = MagicMock()
+    unservable.get_stream_details = AsyncMock(
+        side_effect=ResourceTemporarilyUnavailable("Track item is not available")
+    )
+    other = MagicMock()
+    other.get_stream_details = AsyncMock(side_effect=AudioError("not on this tier"))
+    audio = _audio({INSTANCE: unservable, OTHER_INSTANCE: other})
+
+    with pytest.raises(AudioError, match="not on this tier"):
+        await audio.get_stream_details(
+            queue_item=_queue_item(
+                _mapping(INSTANCE, content_type=ContentType.FLAC), _mapping(OTHER_INSTANCE)
+            )
+        )
+
+
+async def test_another_candidate_plays_while_a_provider_backs_off() -> None:
+    """A rate limited provider does not keep another candidate from serving the item."""
+    limited = MagicMock()
+    limited.get_stream_details = AsyncMock(side_effect=RetriesExhausted("Not retrying"))
+    alive = MagicMock()
+    alive.get_stream_details = AsyncMock(
+        return_value=_streamdetails(ITEM_ID, MediaType.SOUND_EFFECT, OTHER_INSTANCE)
+    )
+    audio = _audio({INSTANCE: limited, OTHER_INSTANCE: alive})
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(
+            _mapping(INSTANCE, content_type=ContentType.FLAC), _mapping(OTHER_INSTANCE)
+        )
+    )
+
+    assert streamdetails.provider == OTHER_INSTANCE
+    limited.get_stream_details.assert_awaited_once()

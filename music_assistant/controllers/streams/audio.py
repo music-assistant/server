@@ -58,6 +58,8 @@ from music_assistant_models.errors import (
     ProviderPermissionDenied,
     ProviderUnavailableError,
     QueueEmpty,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import Album, AudioFormat, Track
@@ -3557,10 +3559,18 @@ class StreamsAudio:
                         prefer_album_loudness=prefer_album_loudness,
                         excluded_provider_instances=busy_instances,
                     )
-                except (AudioError, MediaNotFoundError) as err:
+                except (
+                    AudioError,
+                    MediaNotFoundError,
+                    ResourceTemporarilyUnavailable,
+                    RetriesExhausted,
+                ) as err:
                     if last_capacity_error is None:
                         raise
                     if final_pass:
+                        if isinstance(err, (ResourceTemporarilyUnavailable, RetriesExhausted)):
+                            # no source resolved while a provider asks us to back off
+                            raise
                         # capacity was the root cause, surface the typed (actionable) error
                         raise last_capacity_error from err
                     # no usable alternative mapping: restore the capacity-blocked details
@@ -3840,9 +3850,12 @@ class StreamsAudio:
         :param candidates: Candidates in mapping and compatible-instance order.
         :param media_type: Media type requested from each provider.
         :return: The first resolved stream details, or None when every candidate failed.
+        :raises RateLimited: When no candidate resolved and a provider is rate limited.
+        :raises RetriesExhausted: When no candidate resolved and a provider gave up retrying.
         :raises AudioError: The last (actionable) audio error when no candidate resolved.
         """
         last_audio_error: AudioError | None = None
+        temporary_error: RateLimited | RetriesExhausted | None = None
         for mapping, provider in candidates:
             # music and plugin providers share this signature, so either type can own the item
             token = BYPASS_THROTTLER.set(True)
@@ -3853,10 +3866,16 @@ class StreamsAudio:
                 # remember the last one so its (actionable) message can be re-raised
                 last_audio_error = err
                 self.logger.warning("%s", err)
+            except (RateLimited, RetriesExhausted) as err:
+                # the provider asked us to back off, the item may well play once it clears
+                temporary_error = err
+                self.logger.warning("%s", err)
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
             finally:
                 BYPASS_THROTTLER.reset(token)
+        if temporary_error is not None:
+            raise temporary_error
         if last_audio_error is not None:
             raise last_audio_error
         return None
