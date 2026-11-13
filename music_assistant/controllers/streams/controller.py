@@ -1233,10 +1233,10 @@ class StreamsController(CoreController):
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
                     pacing = PacingProfile.LOW_LATENCY
-                elif queue_item.streamdetails.is_realtime:
-                    pacing = PacingProfile.NEAR_REALTIME
+                elif not queue_item.streamdetails.is_realtime and player.needs_gapless_burst:
+                    pacing = PacingProfile.GAPLESS_BURST
                 else:
-                    pacing = PacingProfile.DEFAULT
+                    pacing = PacingProfile.REALTIME
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -1664,7 +1664,7 @@ class StreamsController(CoreController):
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
             # one continuous stream, so the player gains nothing from running far ahead
-            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
+            extra_input_args=output_pacing_args(),
             # without ICY framing, pass on whatever ffmpeg has encoded: an exact 1s read
             # holds back FLAC on quiet passages until the player gives up waiting.
             # with ICY framing the write loop counts bytes towards the metadata interval
