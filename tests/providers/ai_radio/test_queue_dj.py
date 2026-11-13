@@ -726,6 +726,48 @@ async def test_on_dj_queue_event_forgets_armed_show_on_player_removed(tmp_path: 
     assert "q1" not in dj._armed_show_queues
 
 
+async def test_a_show_dj_outlives_a_disabled_player(tmp_path: Path) -> None:
+    """
+    A show-bound DJ and its arm-once record stay while the player is disabled, and run again.
+
+    A disable takes the queue away and sends a last QUEUE_UPDATED for it, no PLAYER_REMOVED.
+    """
+    dj = _dj_harness(tmp_path)
+    show = [f"{dj.instance_id}://radio/morning_show"]
+    _fake_queue_with_sources(dj, "q1", show)
+    await dj._ensure_show_dj("q1")
+    _fake_queue_with_sources(dj, "other-queue", [])
+
+    await dj._on_dj_queue_event(MassEvent(EventType.QUEUE_UPDATED, "q1"))
+
+    assert dj._dj_queues["q1"].station_id == "morning_show"
+    assert dj._armed_show_queues["q1"] == "morning_show"
+
+    dj.replanned.clear()
+    dj.rendered_ahead.clear()
+    _fake_queue_with_sources(dj, "q1", show)
+    await dj._on_dj_queue_event(MassEvent(EventType.QUEUE_ADDED, "q1"))
+
+    assert dj._dj_queues["q1"].station_id == "morning_show"
+    assert dj._armed_show_queues["q1"] == "morning_show"
+    assert dj.replanned == ["q1"]
+    assert dj.rendered_ahead == ["q1"]
+
+
+async def test_a_show_dj_goes_with_a_removed_player(tmp_path: Path) -> None:
+    """A removal takes the queue away as a disable does, then PLAYER_REMOVED drops both."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    await dj._ensure_show_dj("q1")
+    _fake_queue_with_sources(dj, "other-queue", [])
+
+    await dj._on_dj_queue_event(MassEvent(EventType.QUEUE_UPDATED, "q1"))
+    await dj._on_dj_queue_event(_player_removed("q1"))
+
+    assert "q1" not in dj._dj_queues
+    assert "q1" not in dj._armed_show_queues
+
+
 async def test_ensure_show_dj_arms_via_the_shows_library_uri(tmp_path: Path) -> None:
     """A queue sourcing the show by its library identity still arms the show's host."""
     dj = _dj_harness(tmp_path)
