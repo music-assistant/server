@@ -835,6 +835,7 @@
   "core.player_queues.config_entries.volume_normalization.options.disabled": "Disabled",
   "core.player_queues.config_entries.volume_normalization.options.enabled": "Enabled",
   "core.player_queues.config_entries.volume_normalization.options.global": "Global",
+  "core.player_queues.errors.play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled.",
   "core.player_queues.manifest.description": "Configuration of the core player queue management module",
   "core.player_queues.manifest.name": "Player Queues",
   "core.players.config_entries.announce_tts_engine.description": "The engine used to speak an announcement that is sent as a text message instead of an audio link.",

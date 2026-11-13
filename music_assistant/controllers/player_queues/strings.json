@@ -283,5 +283,8 @@
         "play_track": "Play only this track"
       }
     }
+  },
+  "errors": {
+    "play_request_timeout": "Loading what you asked to play took longer than {0} seconds and was cancelled."
   }
 }
