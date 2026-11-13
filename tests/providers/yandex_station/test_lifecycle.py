@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import asyncio
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import IdentifierType, ProtocolRole
+from ya_passport_auth import SecretStr
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.yandex_station.constants import CONF_VOICE_CONTROL
+from music_assistant.providers.yandex_station.glagol import YandexGlagol
 from music_assistant.providers.yandex_station.player import YandexStationPlayer
 from music_assistant.providers.yandex_station.provider import YandexStationProvider
 from tests.scenarios.harness import Scenario
@@ -46,6 +49,55 @@ def glagol() -> MagicMock:
     glagol.stop = AsyncMock()
     glagol.connected = False
     return glagol
+
+
+class _StationSocket:
+    """A local WebSocket to a Station that answers every command, until it is closed."""
+
+    def __init__(self, glagol: YandexGlagol) -> None:
+        """
+        Initialize the socket.
+
+        :param glagol: The connection the socket answers to.
+        """
+        self.glagol = glagol
+        self.closed = False
+        self._closing = asyncio.Event()
+
+    def __aiter__(self) -> _StationSocket:
+        """Return the iterator over the messages the Station sends."""
+        return self
+
+    async def __anext__(self) -> Any:
+        """Wait until the socket is closed: the Station sends nothing on its own."""
+        await self._closing.wait()
+        raise StopAsyncIteration
+
+    async def close(self) -> None:
+        """Close the socket."""
+        self.closed = True
+        self._closing.set()
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        """
+        Answer a command as the Station does.
+
+        :param payload: The message sent to the Station.
+        """
+        self.glagol._handle_message({"requestId": payload["id"], "status": "SUCCESS"})
+
+
+def _local_glagol() -> tuple[YandexGlagol, AsyncMock]:
+    """
+    Return a real local connection to a Station, whose WebSocket is in memory.
+
+    :return: The connection, and the call that opens its WebSocket.
+    """
+    session = MagicMock(ws_connect=AsyncMock())
+    glagol = YandexGlagol(session, MagicMock(), _speaker())
+    glagol.get_device_token = AsyncMock(return_value=SecretStr("token"))  # type: ignore[method-assign]
+    session.ws_connect.side_effect = lambda *_args, **_kwargs: _StationSocket(glagol)
+    return glagol, session.ws_connect
 
 
 def _speaker() -> dict[str, Any]:
@@ -159,19 +211,29 @@ async def test_the_say_command_reaches_the_station_of_a_minted_player(
     say.assert_awaited_once_with("Привет")
 
 
-async def test_a_new_station_keeps_its_settings_on_its_own_record(
-    scenario: Scenario, glagol: MagicMock
+async def test_a_station_attached_again_keeps_its_settings_and_takes_commands(
+    scenario: Scenario,
 ) -> None:
-    """A setting of a Station with a minted player id is stored on its protocol and survives."""
-    protocol = await _attach(scenario, glagol)
+    """
+    A Station attached again reads its settings from its own record and is connected again.
+
+    A merge, an unlink and a role change each detach the protocol and attach the same object.
+    """
+    glagol, ws_connect = _local_glagol()
+    protocol = await _attach(scenario, cast("MagicMock", glagol))
     assert protocol.player is not None
+    assert glagol.connected
     player_id = protocol.player.player_id
     voice_control_before = protocol._voice_control_enabled
 
     await scenario.mass.config.save_protocol_config(PROTOCOL_ID, {CONF_VOICE_CONTROL: True})
     await scenario.mass.players.detach(PROTOCOL_ID)
+    await scenario.settle()
     await scenario.mass.players.attach(protocol)
     await scenario.settle()
 
     assert (voice_control_before, protocol._voice_control_enabled) == (False, True)
     assert scenario.mass.config.get_player_value(player_id, CONF_VOICE_CONTROL) is None
+    assert glagol.connected
+    assert ws_connect.await_count == 2
+    await scenario.mass.players.cmd_volume_set(player_id, 30)

@@ -1893,7 +1893,10 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             player_id, prefix_label=prefix_label, remote_ip=remote_ip
         )
         player = await self.provider.get_or_register_player(
-            player_id, display_name=display_name, ip_address=remote_ip
+            player_id,
+            display_name=display_name,
+            ip_address=remote_ip,
+            device_id=request.query.get("device_id", "")[:64] or None,
         )
         return player_id, device_param, player
 

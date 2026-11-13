@@ -118,12 +118,16 @@ class DLNAPlayer(PlayerProtocol):
         """
         await self._device_connect()
 
+        # an ignored renderer is never attached, so never detached: its event
+        # subscriptions (with auto-renewal) end here
         if self.device and not self.device.has_play_media:
             self.logger.debug("Ignoring %s - no play capability", self.device.name)
+            await self._device_disconnect()
             return False
 
         if self.device and await self._is_sonos_passive_speaker():
             self.logger.debug("Ignoring %s - passive stereo pair speaker", self.device.name)
+            await self._device_disconnect()
             return False
 
         if self.device and self._is_raumfeld_zone_renderer():
@@ -462,36 +466,35 @@ class DLNAPlayer(PlayerProtocol):
                 self.device = None
                 self.logger.debug("Error while subscribing during device connect: %r", err)
                 raise
-            else:
-                # connect was successful, update device info
-                self._attr_device_info = DeviceInfo(
-                    model=self.device.model_name,
-                    manufacturer=self.device.manufacturer,
+            # connect was successful, update device info
+            self._attr_device_info = DeviceInfo(
+                model=self.device.model_name,
+                manufacturer=self.device.manufacturer,
+            )
+            # Add UDN (protocol_id) as UUID identifier for matching with other protocols
+            # Strip the "uuid:" prefix if present for proper matching
+            uuid_value = self.protocol_id
+            if uuid_value.lower().startswith("uuid:"):
+                uuid_value = uuid_value[5:]
+            # the UDN of a Sonos renderer is the UUID of its Sonos player plus "_MR"
+            self._attr_device_info.add_identifier(
+                IdentifierType.UUID, uuid_value.removesuffix("_MR")
+            )
+            # MAC address is NOT extracted from UUID because the last 12 chars
+            # of UPnP UUIDs are unreliable — many devices put random/model
+            # values there, not the real hardware MAC. Instead, the player
+            # controller resolves the real MAC via ARP during registration
+            # using the IP address extracted below.
+            # Try to extract just the IP from the URL for matching
+            # presentationURL may be relative (e.g. "/"), resolve it against the description URL
+            with suppress(ValueError):
+                parsed = urlparse(
+                    urljoin(self.description_url, self.device.device.presentation_url or "")
                 )
-                # Add UDN (protocol_id) as UUID identifier for matching with other protocols
-                # Strip the "uuid:" prefix if present for proper matching
-                uuid_value = self.protocol_id
-                if uuid_value.lower().startswith("uuid:"):
-                    uuid_value = uuid_value[5:]
-                # the UDN of a Sonos renderer is the UUID of its Sonos player plus "_MR"
-                self._attr_device_info.add_identifier(
-                    IdentifierType.UUID, uuid_value.removesuffix("_MR")
-                )
-                # MAC address is NOT extracted from UUID because the last 12 chars
-                # of UPnP UUIDs are unreliable — many devices put random/model
-                # values there, not the real hardware MAC. Instead, the player
-                # controller resolves the real MAC via ARP during registration
-                # using the IP address extracted below.
-                # Try to extract just the IP from the URL for matching
-                # presentationURL may be relative (e.g. "/"), resolve it against the description URL
-                with suppress(ValueError):
-                    parsed = urlparse(
-                        urljoin(self.description_url, self.device.device.presentation_url or "")
+                if parsed.hostname:
+                    self._attr_device_info.add_identifier(
+                        IdentifierType.IP_ADDRESS, parsed.hostname
                     )
-                    if parsed.hostname:
-                        self._attr_device_info.add_identifier(
-                            IdentifierType.IP_ADDRESS, parsed.hostname
-                        )
 
     def _handle_event(
         self,

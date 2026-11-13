@@ -352,3 +352,43 @@ async def test_the_dlna_renderer_of_a_rooms_speaker_is_an_output_of_its_room(
     room_player = _player(_attached(provider, BAR)).player_id
     assert scenario.player_of(own) == room_player
     assert scenario.player_of(second) not in (None, room_player)
+
+
+async def test_a_room_whose_speaker_returns_under_another_address_reports_it(
+    scenario: Scenario,
+) -> None:
+    """
+    A room whose speaker the host lists under another address after an outage reports that one.
+
+    The device that has its old address now has an audio output of its own player.
+    """
+    provider = await _raumfeld(scenario)
+    scenario.arp[BAR_SPEAKER.ip_address] = "00:1e:c0:00:00:01"
+    await _sync(scenario, provider, {"Bar": BAR_SPEAKER})
+    protocol = _attached(provider, BAR)
+    player_id = _player(protocol).player_id
+    await provider._disconnect("is gone")
+    scenario.expect_log("pausing")
+    scenario.arp[BAR_SPEAKER.ip_address] = "00:1e:c0:00:00:02"
+    scenario.arp["192.168.1.43"] = "00:1e:c0:00:00:01"
+
+    await _sync(scenario, provider, {"Bar": replace(BAR_SPEAKER, ip_address="192.168.1.43")})
+    other_device = (await scenario.add_provider("dlna")).protocol(
+        "uuid:device-b",
+        "Device B",
+        role="audio",
+        identifiers={
+            IdentifierType.UUID: "device-b",
+            IdentifierType.IP_ADDRESS: BAR_SPEAKER.ip_address,
+            IdentifierType.MAC_ADDRESS: "00:1e:c0:00:00:02",
+        },
+    )
+    await scenario.attach(other_device)
+
+    assert _attached(provider, BAR) is protocol
+    assert protocol.device_info.ip_address == "192.168.1.43"
+    # what is stored for the room while it is away follows it too
+    record = scenario.mass.config.get_protocol_record(BAR)
+    assert record is not None
+    assert [IdentifierType.IP_ADDRESS.value, "192.168.1.43"] in record["values"]["identifiers"]
+    assert scenario.player_of(other_device) != player_id

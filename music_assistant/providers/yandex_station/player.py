@@ -34,7 +34,7 @@ from music_assistant.constants import (
     create_output_codec_config_entry,
 )
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
-from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
 from . import protobuf
@@ -610,6 +610,15 @@ class YandexStationPlayer(PlayerProtocol):
         :param text: The request, e.g. "включи свет на кухне".
         """
         _raise_if_failed(await self.glagol.send_text(text), "send_command")
+
+    async def on_attach(self, player: Player) -> None:
+        """
+        Connect to the Station while the protocol is attached, once its local endpoint is known.
+
+        :param player: The player the protocol is attached to.
+        """
+        if self.glagol.device.get("host") and self.glagol.device.get("port"):
+            await self.async_setup()
 
     async def on_detach(self) -> None:
         """Clean up when the protocol is detached from its player."""

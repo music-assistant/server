@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import VisualisationType as SlimVisualisationType
-from music_assistant_models.enums import ProtocolRole
+from music_assistant_models.enums import ContentType, ProtocolRole
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.squeezelite.constants import CONF_ENTRY_DISPLAY
+from music_assistant.providers.squeezelite.multi_client_stream import MultiClientStream
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.models.player import Player
     from tests.scenarios.harness import Scenario
 
@@ -127,6 +132,41 @@ async def test_a_disconnected_client_leaves_its_player_unavailable(scenario: Sce
 
     assert _player(returned).player_id == player_id
     assert scenario.player(player_id).available is True  # type: ignore[union-attr]
+
+
+async def test_a_detached_player_ends_the_stream_of_its_sync_group(scenario: Scenario) -> None:
+    """A detach ends the stream the player serves to its sync group, and closes its audio source."""
+    await scenario.add_provider("squeezelite")
+    protocol = await _connect(scenario, _client(AMP_ONE, "Pi amp 1"))
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def _source() -> AsyncGenerator[bytes]:
+        try:
+            started.set()
+            await asyncio.Event().wait()
+            yield b""
+        finally:
+            closed.set()
+
+    stream = protocol.multi_client_stream = MultiClientStream(
+        audio_source=_source(),
+        audio_format=AudioFormat(content_type=ContentType.PCM_S16LE),
+        queue_id=None,
+        session_id=None,
+    )
+    # a member connected, so the stream reads its source
+    stream.subscribers.append(asyncio.Queue())
+    await scenario.advance(1)
+    assert started.is_set()
+
+    await _disconnect(scenario, protocol)
+    # the controller detaches again when a detach overtook an attach
+    await protocol.on_detach()
+
+    assert stream.done
+    assert closed.is_set()
+    assert protocol.multi_client_stream is None
 
 
 async def test_a_bridged_device_is_an_audio_protocol(scenario: Scenario) -> None:
