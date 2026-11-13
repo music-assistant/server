@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant.models.player import Player
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1006,7 +1007,7 @@ class AriaCastReceiver(PluginProvider):
     @property
     def _ariacast_name(self) -> str:
         """Return the advertised receiver name: the connected player's display name."""
-        if player := self.mass.players.get_player_by_protocol(self._default_player_id):
+        if player := self._get_player(self._default_player_id):
             return player.display_name
         return DEFAULT_ARIACAST_NAME
 
@@ -1034,9 +1035,20 @@ class AriaCastReceiver(PluginProvider):
         :param player_id: The configured or remembered player id; a configured id can
             also name a protocol of the player.
         """
-        if not player_id or not (player := self.mass.players.get_player_by_protocol(player_id)):
+        if not player_id or not (player := self._get_player(player_id)):
             return None
         return player.player_id if player.state.available else None
+
+    def _get_player(self, player_id: str) -> Player | None:
+        """
+        Return the player a configured or remembered id names.
+
+        :param player_id: The id of a player, else of a protocol of one.
+        """
+        # a player answers to its own id first, also when another player has a protocol of it
+        return self.mass.players.get_player(player_id) or self.mass.players.get_player_by_protocol(
+            player_id
+        )
 
 
 # ---------------------------------------------------------------------------

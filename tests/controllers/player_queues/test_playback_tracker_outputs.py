@@ -27,6 +27,20 @@ def test_output_player_ids_name_the_player_of_a_protocol() -> None:
     assert result == {"queue-1", "player-1", "missing-player"}
 
 
+def test_output_player_ids_name_a_player_also_when_a_protocol_of_another_has_its_id() -> None:
+    """A member of the state is a player, also when another player has a protocol of its id."""
+    mass = mock_player_mass()
+    attach_mock(MockProvider("airplay", mass=mass), "airplay_living", player_id="wiim_living")
+    attach_mock(MockProvider("wiim", mass=mass), "wiim_living")
+    tracker = cast("Any", SimpleNamespace(mass=mass))
+    player = MagicMock(player_id="group-1")
+    player.state.group_members = ["wiim_living"]
+
+    result = PlaybackTrackerMixin._get_output_player_ids(tracker, cast("Player", player))
+
+    assert result == {"group-1", "wiim_living"}
+
+
 def test_parse_current_item_id_ignores_items_no_longer_in_the_queue() -> None:
     """Only accept player-reported item IDs that belong to the queue."""
     get_item = MagicMock(return_value=None)

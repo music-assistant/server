@@ -2134,13 +2134,15 @@ class Player:
         linked, active_protocol, foreign_app = self._collect_protocols(
             peers, probe_synced_to=not own.synced_to
         )
+        # a group protocol names its members by player id, a device protocol by protocol id
+        by_player_id = own_protocol is not None and own_protocol.role == ProtocolRole.VIRTUAL
         for member_id in own.group_members:
-            self._collect_peer(peers, member_id, as_member=True)
+            self._collect_peer(peers, member_id, as_member=True, by_player_id=by_player_id)
         static_group_members = own_protocol.static_group_members if own_protocol else []
         for member_id in static_group_members:
-            self._collect_peer(peers, member_id)
+            self._collect_peer(peers, member_id, by_player_id=by_player_id)
         if own.synced_to:
-            self._collect_peer(peers, own.synced_to)
+            self._collect_peer(peers, own.synced_to, by_player_id=by_player_id)
         can_group_with: set[str] = set()
         protocol_can_group_with: set[str] = set()
         grouping_locked = own_protocol.grouping_locked if own_protocol else False
@@ -2283,8 +2285,9 @@ class Player:
         :param protocol: The protocol to collect the grouping candidates of.
         """
         result: set[str] = set()
+        by_player_id = protocol.role == ProtocolRole.VIRTUAL
         for member_id in protocol.can_group_with:
-            if self._collect_peer(peers, member_id):
+            if self._collect_peer(peers, member_id, by_player_id=by_player_id):
                 result.add(member_id)
                 continue  # already the id of a protocol or player
             # Check if member_id is a provider instance ID
@@ -2337,6 +2340,7 @@ class Player:
         peers: dict[str, PeerSnapshot],
         peer_id: str,
         as_member: bool = False,
+        by_player_id: bool = False,
     ) -> Player | None:
         """
         Add the player that the given id names to the peers, if there is one.
@@ -2345,8 +2349,14 @@ class Player:
         :param peer_id: Id of an attached protocol or of a player, or one of its legacy ids.
         :param as_member: The player is grouped to this one, which makes it count whether
             it is available for playback.
+        :param by_player_id: The id names a player first, and the player of a protocol only
+            when no player has it.
         """
-        if not (player := self.mass.players.get_player_by_protocol(peer_id)):
+        players = self.mass.players
+        player = (by_player_id and players.get_player(peer_id)) or players.get_player_by_protocol(
+            peer_id
+        )
+        if not player:
             return None
         self._add_peer(peers, peer_id, player)
         if as_member:

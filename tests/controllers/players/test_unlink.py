@@ -12,7 +12,13 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import EventType, IdentifierType, PlayerType, ProtocolRole
+from music_assistant_models.enums import (
+    EventType,
+    IdentifierType,
+    PlayerFeature,
+    PlayerType,
+    ProtocolRole,
+)
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidCommand,
@@ -29,7 +35,13 @@ from music_assistant.controllers.config.player_split import (
     remove_player_records_of_older_versions,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
-from tests.scenarios.harness import Event, FakeProtocol, Scenario, VisiblePlayer
+from tests.scenarios.harness import (
+    DEFAULT_FEATURES,
+    Event,
+    FakeProtocol,
+    Scenario,
+    VisiblePlayer,
+)
 
 KITCHEN_IP = "192.168.1.20"
 KITCHEN = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0", IdentifierType.IP_ADDRESS: KITCHEN_IP}
@@ -507,3 +519,89 @@ async def _assert_a_restart_keeps_every_record(scenario: Scenario) -> None:
 def _edges(protocols: dict[str, Any]) -> dict[str, Any]:
     """Return the player each stored protocol names, by protocol id."""
     return {protocol_id: record.get("player_id") for protocol_id, record in protocols.items()}
+
+
+@pytest.mark.parametrize("group_type", ["universal_group", "sync_group"])
+async def test_group_keeps_the_player_that_shares_its_id_with_a_protocol_taken_off_it(
+    scenario: Scenario, group_type: str
+) -> None:
+    """
+    A group keeps naming the player from before the split once its own protocol was taken off.
+
+    That protocol keeps the id it shares with its old player, and is on a player of its own
+    from then on: the group still names the old player, also after a restart.
+    """
+    if group_type == "universal_group":
+        await scenario.mass.config._create_provider_instance(group_type, {})
+    hall_id = await _pre_split_living_room_and_hall(scenario)
+    group = await scenario.mass.players.create_group_player(
+        group_type, "Group Z", ["wiim_living", hall_id], False
+    )
+    await scenario.idle()
+
+    await _unlink(scenario, "wiim_living")
+
+    group_state = scenario.player(group.player_id)
+    assert group_state is not None
+    assert group_state.group_members == ["wiim_living", hall_id]
+    await scenario.restart()
+    await scenario.idle()
+    group_state = scenario.player(group.player_id)
+    assert group_state is not None
+    assert group_state.group_members == ["wiim_living", hall_id]
+
+
+async def _pre_split_living_room_and_hall(scenario: Scenario) -> str:
+    """
+    Return the id of the hall player, next to the living room player from before the split.
+
+    The living room player has the id of its own protocol (`wiim_living`) and an AirPlay
+    output; the two can be grouped.
+
+    :param scenario: The running scenario.
+    """
+    wiim = await scenario.add_provider("wiim")
+    airplay = await scenario.add_provider("airplay")
+    sonos = await scenario.add_provider("sonos")
+    features = {*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS}
+    living = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A5"}
+    wiim.protocol(
+        "wiim_living",
+        "Living",
+        identifiers=living,
+        supported_features=features,
+        can_group_with={"RINCON_HALL"},
+    )
+    airplay.protocol("airplay_living", "Living", role="audio", identifiers=living)
+    sonos.protocol(
+        "RINCON_HALL",
+        "Hall",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B5"},
+        supported_features=features,
+        can_group_with={"wiim_living"},
+    )
+    for protocol_id in ("wiim_living", "airplay_living", "RINCON_HALL"):
+        scenario.set_present(protocol_id, True)
+    await scenario.seed_pre_split_config(
+        {
+            "wiim_living": {
+                "player_id": "wiim_living",
+                "provider": "wiim",
+                "player_type": "player",
+                "enabled": True,
+                "name": "Living Room",
+                "default_name": "Living",
+                "values": {"linked_protocol_ids": ["airplay_living"]},
+            },
+            "airplay_living": {
+                "player_id": "airplay_living",
+                "provider": "airplay",
+                "player_type": "protocol",
+                "enabled": True,
+                "default_name": "Living",
+                "values": {"protocol_parent_id": "wiim_living"},
+            },
+        }
+    )
+    await scenario.idle()
+    return scenario.single_player(scenario.protocol("RINCON_HALL")).player_id

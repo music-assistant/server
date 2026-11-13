@@ -76,6 +76,24 @@ def test_advertised_name_follows_the_player_of_a_connected_protocol() -> None:
     assert provider._ariacast_name == "Living Room"
 
 
+def test_connected_player_wins_over_a_protocol_of_another_player_with_its_id() -> None:
+    """
+    A connected id names the player that has it, not another player with a protocol of that id.
+
+    That is the case of a player from before the split once its own protocol, which shares
+    its id, was taken off it.
+    """
+    provider = _make_provider(player_id="wiim_living")
+    connected = _attach(provider, "airplay_living", player_id="wiim_living")
+    other, _protocol = attach_mock(
+        MockProvider("wiim", mass=cast("MagicMock", provider.mass)), "wiim_living", "Other"
+    )
+    other.update_state()
+
+    assert provider._ariacast_name == "Living Room"
+    assert provider._get_target_player_id() == connected.player_id
+
+
 def test_advertised_name_falls_back_while_player_unregistered() -> None:
     """The default name applies while the connected player is not registered."""
     provider = _make_provider()
