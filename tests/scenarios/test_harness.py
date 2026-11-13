@@ -104,11 +104,12 @@ async def test_settle_waits_for_runnable_work_only(scenario: Scenario) -> None:
         _wait_event(),
     ]
     tasks = [asyncio.ensure_future(wait) for wait in waits]
-    started = time.monotonic()
     await scenario.settle()
     command = await scenario.command(_command())
 
-    assert time.monotonic() - started < 1
+    # the work blocked on the clock or on another task is left waiting, the clock unmoved
+    assert asyncio.get_running_loop().time() == CLOCK_START
+    assert not any(task.done() for task in tasks)
     assert steps == ["started", "acted"]
     for task in [*tasks, command]:
         task.cancel()

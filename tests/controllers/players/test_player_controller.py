@@ -83,7 +83,14 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     sendspin_player_id,
 )
 from music_assistant.models.player import Player
-from tests.common import MockProtocol, MockProvider, attach_mock, use_real_create_task
+from tests.common import (
+    MockProtocol,
+    MockProvider,
+    attach_mock,
+    record_lock_waits,
+    use_real_create_task,
+    virtual_loop_clock,
+)
 
 
 def _proto(player_id: str) -> str:
@@ -2428,13 +2435,12 @@ class TestOwnerChangesWhileWaitingForTheLock:
             protocol._attr_group_members = ["member"]
             _refresh(group, member)
             async with _lock_held_elsewhere(controller, "g1"):
-                started = time.monotonic()
+                waits = record_lock_waits(controller)
                 with pytest.raises(ResourceBusyError):
                     async with controller.get_group_and_player_lock("member"):
                         pytest.fail("the body ran without the group's lock")
-                waited = time.monotonic() - started
 
-        assert waited < 0.1
+        assert waits == []
 
     async def test_a_player_whose_owner_keeps_changing_fails_as_busy(
         self, controller: PlayerController
@@ -2496,33 +2502,17 @@ class TestReleaseWaitForPlayMedia:
     """
     The release of a captured player for an explicit play_media waits for its confirmation.
 
-    The clock runs 50 times faster, so the waits are measured in the seconds real devices take.
-    The tests check the order of the leave, the play and the end of the wait, with the bound
-    of the wait far past every leave: a pause of the test machine can not change that order.
+    The loop runs on a virtual clock, so the waits are measured in the seconds real devices
+    take, and the order of the leave, the play and the end of the wait does not depend on the
+    speed of the machine.
     """
 
-    # the bound of the wait in these tests, in seconds of the fast clock, and that of the server
-    BOUND = 60.0
-    SERVER_BOUND = players_playback.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
+    # the bound of the wait, in seconds
+    BOUND = players_playback.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
 
     @pytest.fixture(autouse=True)
-    def _wide_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(players_playback, "RELEASE_FOR_PLAY_MEDIA_TIMEOUT", self.BOUND)
-
-    @pytest.fixture(autouse=True)
-    async def _fast_clock(self) -> AsyncIterator[None]:
-        loop = asyncio.get_running_loop()
-        real_time = loop.time
-        real_select = loop._selector.select  # type: ignore[attr-defined]
-        start = real_time()
-
-        def _select(timeout: float | None = None) -> Any:
-            return real_select(None if timeout is None else timeout / 50)
-
-        with (
-            patch.object(loop, "time", lambda: start + (real_time() - start) * 50),
-            patch.object(loop._selector, "select", _select),  # type: ignore[attr-defined]
-        ):
+    async def _virtual_clock(self) -> AsyncIterator[None]:
+        with virtual_loop_clock():
             yield
 
     @staticmethod
@@ -2634,8 +2624,8 @@ class TestReleaseWaitForPlayMedia:
         assert events == ["left", "play on member"]
         assert member.state.synced_to is None
         assert member.state.active_group is None
-        # the bound of the server outlasts it too
-        assert self.SERVER_BOUND > 6.7
+        # the bound of the server outlasts it
+        assert self.BOUND > 6.7
 
     async def test_a_leave_never_reported_plays_at_the_bound(self, mock_mass: MagicMock) -> None:
         """Without a confirmation the play goes out once the wait ran out, for the player to judge."""
@@ -3030,6 +3020,13 @@ class TestExternalPowerControl:
 class TestOfflinePowerControl:
     """A player switched off at its external power control is powered on through that control."""
 
+    @pytest.fixture(autouse=True)
+    async def _virtual_clock(self) -> AsyncIterator[None]:
+        # the device comes online, and a wait for it gives up, at a time of the clock rather
+        # than after a real wait: how fast the machine is does not change what happens first
+        with virtual_loop_clock():
+            yield
+
     def _setup(
         self,
         mock_mass: MagicMock,
@@ -3363,9 +3360,12 @@ class TestOfflinePowerControl:
         pending = asyncio.create_task(getattr(controller, command)("player_1", *arguments[command]))
         await asyncio.sleep(0.1)
         assert player.power_on_in_progress
+        waits = record_lock_waits(controller)
 
-        async with asyncio.timeout(0.2), controller.get_group_and_player_lock("player_1"):
+        async with controller.get_group_and_player_lock("player_1"):
             pass
+
+        assert waits == []
 
         protocol._attr_available = True
         await pending
@@ -3387,7 +3387,8 @@ class TestOfflinePowerControl:
             controller.play_media("player_1", PlayerMedia(uri="http://ma/stream.flac"))
         )
         await asyncio.sleep(0.1)
-        started = time.monotonic()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
 
         async with asyncio.timeout(0.2):
             await controller.cmd_power("player_1", False)
@@ -3395,7 +3396,7 @@ class TestOfflinePowerControl:
             await pending
 
         cast("AsyncMock", control.power_off).assert_awaited_once()
-        assert time.monotonic() - started < 1.5
+        assert loop.time() - started < 1.5
         controller._handle_play_media.assert_not_awaited()
         assert not player.power_on_in_progress
         assert player.state.available is True
@@ -3414,14 +3415,15 @@ class TestOfflinePowerControl:
         )
         await asyncio.sleep(0.1)
         assert player.state.powered is False
-        started = time.monotonic()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
 
         await controller.cmd_power("player_1", False)
         with pytest.raises(PlayerUnavailableError, match="switched off"):
             await pending
 
         cast("AsyncMock", control.power_off).assert_awaited_once()
-        assert time.monotonic() - started < 1.5
+        assert loop.time() - started < 1.5
         controller._handle_play_media.assert_not_awaited()
         assert not player.power_on_in_progress
 

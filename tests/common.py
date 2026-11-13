@@ -33,6 +33,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -477,6 +478,62 @@ def grouping_player_controller(*player_ids: str) -> PlayerController:
     controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
     use_api_command_registry(mass, controller)
     return controller
+
+
+def record_lock_waits(players: PlayerController) -> list[str]:
+    """
+    Record each player lock a command has to wait for from now on, by its key.
+
+    A lock that is free, or that the task holds already, is taken at once and not recorded,
+    so an empty record proves that no command waited, however fast the machine is.
+
+    :param players: The players controller whose locks to watch.
+    :return: The keys of the locks waited for (e.g. ``playback_<player id>``), in order.
+    """
+    waits: list[str] = []
+    acquire = players._acquire_player_lock
+
+    async def _acquire(
+        lock: asyncio.Lock, lock_key: str, purpose: PlayerLockPurpose, player_id: str
+    ) -> None:
+        if lock.locked():
+            waits.append(lock_key)
+        await acquire(lock, lock_key, purpose, player_id)
+
+    players._acquire_player_lock = _acquire  # type: ignore[method-assign]
+    return waits
+
+
+@contextlib.contextmanager
+def virtual_loop_clock() -> Iterator[None]:
+    """
+    Run the running loop on a clock that moves only while the loop has nothing else to do.
+
+    The clock (loop.time()) stands still while anything is runnable; once the loop would wait,
+    it jumps to the next timer. Sleeps, timers and timeouts then fire in the order they fall due,
+    however fast or busy the machine is. For tests without thread or socket work, as the loop
+    no longer waits for that.
+    """
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    real_select = loop._selector.select  # type: ignore[attr-defined]
+
+    def _time() -> float:
+        return now
+
+    def _select(timeout: float | None = None) -> Any:
+        nonlocal now
+        if timeout:
+            # nothing is runnable before the next timer: let the clock jump to it
+            now += timeout
+            timeout = 0
+        return real_select(timeout)
+
+    with (
+        patch.object(loop, "time", _time),
+        patch.object(loop._selector, "select", _select),  # type: ignore[attr-defined]
+    ):
+        yield
 
 
 @contextlib.contextmanager
