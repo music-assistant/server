@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     from music_assistant.models.player import Player
 
-    from .controller import PlayerController
+    from .base import _PlayerControllerBase
 
 
 class AnnounceData(TypedDict):
@@ -47,13 +47,13 @@ class AnnounceData(TypedDict):
 
 
 @overload
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
+def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]],
 ) -> Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]: ...
 
 
 @overload
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
+def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     func: None = None,
     *,
     lock: PlayerLockPurpose | None = None,
@@ -66,7 +66,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 ]: ...
 
 
-def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
+def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
     lock: PlayerLockPurpose | None = None,

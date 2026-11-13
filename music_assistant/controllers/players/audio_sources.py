@@ -12,7 +12,6 @@ PlayerController to add per-player audio source sessions.
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -22,12 +21,12 @@ from music_assistant_models.enums import ProviderFeature, RepeatMode
 
 from music_assistant.models.plugin import PluginProvider
 
+from .base import _PlayerControllerBase
+
 if TYPE_CHECKING:
     from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.media_items import AudioSource
     from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-
-    from music_assistant.mass import MusicAssistant
 
 
 @dataclass
@@ -106,7 +105,7 @@ class AudioSourceSession:
             self.stream_metadata_last_updated = time.time()
 
 
-class AudioSourceMixin:
+class AudioSourceMixin(_PlayerControllerBase):
     """
     Mixin class providing live audio source sessions for PlayerController.
 
@@ -115,21 +114,7 @@ class AudioSourceMixin:
     - Committing a source's move between players once its stream is claimed
     - Resolving that source (and its owning plugin) for command proxying
     - Receiving the live metadata the owning plugin pushes about the source
-
-    This mixin expects to be mixed with a class that provides:
-    - mass: MusicAssistant instance
-    - logger: logging.Logger instance
-    - _source_sessions: dict of live sessions, keyed on player_id
-    - trigger_player_update(): method to signal a player state change
     """
-
-    # Type hints for attributes provided by the class this mixin is used with
-    if TYPE_CHECKING:
-        mass: MusicAssistant
-        logger: logging.Logger
-        _source_sessions: dict[str, AudioSourceSession]
-
-        def trigger_player_update(self, player_id: str) -> None: ...  # noqa: D102
 
     def get_audio_source_session(self, player_id: str) -> AudioSourceSession | None:
         """

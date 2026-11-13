@@ -11,14 +11,12 @@ PlayerController to add these capabilities.
 
 from __future__ import annotations
 
-import asyncio
-import logging
 import re
 import secrets
 import time
 from contextlib import suppress
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import (
     IdentifierType,
@@ -65,10 +63,11 @@ from music_assistant.controllers.players.matching import (
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import OWN_PROTOCOL_ROLES, Player, get_device_name
 
+from .base import _PlayerControllerBase
+
 if TYPE_CHECKING:
     from music_assistant_models.player import OutputProtocol
 
-    from music_assistant import MusicAssistant
     from music_assistant.models.player_protocol import PlayerProtocol
 
 # How long an audio protocol that matches no player waits for the identifiers that tell
@@ -84,7 +83,7 @@ PLAYER_ID_PREFIX = "pl"
 MINTED_PLAYER_ID = re.compile(rf"{PLAYER_ID_PREFIX}[0-9a-f]{{12}}")
 
 
-class ProtocolLinkingMixin:
+class ProtocolLinkingMixin(_PlayerControllerBase):
     """
     Mixin class providing the handling of protocols for PlayerController.
 
@@ -93,42 +92,7 @@ class ProtocolLinkingMixin:
     - Creating a player for a device that is new
     - Selecting the best output protocol for playback
     - Translating a group of players to the protocols that carry it
-
-    This mixin expects to be mixed with a class that provides:
-    - mass: MusicAssistant instance
-    - _players: dict of players
-    - _protocols: dict of attached protocols
-    - _pending_protocol_evaluations: dict of pending protocol evaluations
-    - logger: logging.Logger instance
     """
-
-    # Type hints for attributes provided by the class this mixin is used with
-    if TYPE_CHECKING:
-        mass: MusicAssistant
-        _players: dict[str, Player]
-        _protocols: dict[str, PlayerProtocol]
-        _unattached: Any
-        _removing: set[str]
-        _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
-        _register_lock: asyncio.Lock
-        logger: logging.Logger
-        translation_owner: str
-
-        def get_player(self, player_id: str) -> Player | None: ...  # noqa: D102
-
-        def resolve_player_id(self, player_id: str) -> str: ...  # noqa: D102
-
-        def get_protocol(self, protocol_id: str) -> PlayerProtocol | None: ...  # noqa: D102
-
-        def get_player_by_protocol(  # noqa: D102
-            self, protocol_or_player_id: str
-        ) -> Player | None: ...
-
-        def get_player_id_of_protocol(self, protocol_id: str) -> str | None: ...  # noqa: D102
-
-        def wants_protocol(self, protocol_id: str) -> bool: ...  # noqa: D102
-
-        async def _run_attach(self, protocol: PlayerProtocol, final: bool = False) -> None: ...
 
     def _resolve_player_id(self, protocol: PlayerProtocol) -> str | None:
         """

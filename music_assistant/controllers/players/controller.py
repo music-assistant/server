@@ -127,7 +127,6 @@ from music_assistant.helpers.util import (
     enrich_device_mac_address,
     is_valid_mac_address,
 )
-from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
@@ -261,7 +260,7 @@ class _Attach:
         self.new_player: Player | None = None
 
 
-class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixin, CoreController):
+class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixin):
     """Controller holding all logic to control registered players."""
 
     domain: str = "players"
