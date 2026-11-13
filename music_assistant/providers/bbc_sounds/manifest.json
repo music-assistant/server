@@ -7,7 +7,6 @@
   "codeowners": [
     "@kieranhogg"
   ],
-  "tier": "community",
   "documentation": "https://music-assistant.io/music-providers/bbc-sounds/",
   "credits": [
     "[auntie-sounds](https://github.com/kieranhogg/auntie-sounds)"

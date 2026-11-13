@@ -7,7 +7,6 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from copy import deepcopy
-from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
@@ -98,6 +97,7 @@ from music_assistant.controllers.music.constants import (
     TRACK_RECONCILIATION_MAX_DURATION_DELTA,
     TRACK_RECONCILIATION_MAX_TITLE_ROWS,
     TRACK_RECONCILIATION_TASK_ID,
+    UNAVAILABLE_MAPPING_CHECK_TASK_ID,
 )
 from music_assistant.controllers.music.database import (
     PLAYLOG_CONFLICT_KEYS,
@@ -105,7 +105,9 @@ from music_assistant.controllers.music.database import (
 )
 from music_assistant.controllers.music.favorites import FavoritesStore
 from music_assistant.controllers.music.helpers import (
+    ResumePoint,
     filter_search_results,
+    select_resume_point,
     sibling_instance_mappings,
     sort_search_result,
 )
@@ -118,7 +120,10 @@ from music_assistant.controllers.music.listing_cache import (
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.controllers.music.media.audiobooks import AudiobooksController
-from music_assistant.controllers.music.media.base import SUPPRESS_MEDIA_ITEM_UPDATES
+from music_assistant.controllers.music.media.base import (
+    REFRESH_FETCH_ERRORS,
+    SUPPRESS_MEDIA_ITEM_UPDATES,
+)
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.music.media.podcasts import PodcastsController
@@ -153,7 +158,6 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
-    from_utc_timestamp,
     local_clock_time_to_utc,
     utc_timestamp,
 )
@@ -173,7 +177,7 @@ from music_assistant.helpers.provider_access import (
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
@@ -503,6 +507,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self._register_provider_mapping_correction_task()
         self._restore_track_reconciliation_state()
         self._register_track_reconciliation_task()
+        self._register_unavailable_mapping_check_task()
         self.genres.register_scheduled_scan_task()
 
     async def close(self) -> None:
@@ -2308,10 +2313,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param pinned: The (provider instance, item id) of the copy the item plays from, whose
             resume point is asked for first.
         """
-        provider_fully_played = False
-        provider_position_ms = 0
-        provider_timestamp: datetime | None = None
-
         user: User | None = None
         if userid:
             # userid overridden by parameter
@@ -2347,22 +2348,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # Try to get position from providers
+        provider_point: ResumePoint | None = None
         for prov_mapping in preferred_providers:
             provider = exact_provider(self.mass, prov_mapping.provider_instance)
             if not isinstance(provider, MusicProvider):
                 continue
             with suppress(NotImplementedError):
-                (
-                    provider_fully_played,
-                    provider_position_ms,
-                    provider_timestamp,
-                ) = await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
+                provider_point = ResumePoint(
+                    *await provider.get_resume_position(prov_mapping.item_id, media_item.media_type)
+                )
                 break  # Use first provider that returns data
 
         # Get MA's internal position from playlog
-        ma_fully_played = False
-        ma_position_ms = 0
-        ma_timestamp = from_utc_timestamp(0)
         params = {
             "media_type": media_item.media_type.value,
             "item_id": media_item.item_id,
@@ -2372,18 +2369,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             params["userid"] = userid
         elif user:
             params["userid"] = user.user_id
-        if db_entry := await self.database.get_row(DB_TABLE_MEDIA_PROGRESS, params):
-            ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
-            # fully_played is a nullable column; treat an unknown (NULL) value as not played
-            ma_fully_played = parse_optional_bool(db_entry["fully_played"]) or False
-            ma_timestamp = from_utc_timestamp(db_entry["timestamp"])
+        db_entry = await self.database.get_row(DB_TABLE_MEDIA_PROGRESS, params)
+        playlog_point = ResumePoint.from_playlog_row(db_entry) if db_entry else None
 
-        if provider_timestamp is not None and provider_timestamp > ma_timestamp:
-            return provider_fully_played, provider_position_ms
-        # Return the higher position to ensure users never lose progress
-        if ma_position_ms >= provider_position_ms:
-            return ma_fully_played, ma_position_ms
-        return provider_fully_played, provider_position_ms
+        if point := select_resume_point(provider_point, playlog_point):
+            return point.fully_played, point.position_ms
+        return False, 0
 
     async def get_playback_speed(
         self, media_item: Audiobook | PodcastEpisode, userid: str | None = None
@@ -2860,24 +2851,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param media_item: The library item that holds the mapping.
         :param mapping: The provider mapping whose item the provider did not find.
         """
-        if media_item.provider != "library" or not mapping.available:
-            return
-        self.logger.debug(
-            "Marking %s/%s of %s unavailable: not found on the provider",
-            mapping.provider_instance,
-            mapping.item_id,
-            media_item.uri,
-        )
-        mapping.available = False
-        # the item or its mapping may be gone by now, e.g. removed while it was being played
-        with suppress(MediaNotFoundError):
-            await self.update_provider_mapping(
-                media_item.media_type,
-                media_item.item_id,
-                mapping.provider_instance,
-                mapping.item_id,
-                available=False,
-            )
+        await self._set_provider_mapping_available(media_item, mapping, False)
+
+    async def mark_provider_mapping_available(
+        self, media_item: MediaItemType, mapping: ProviderMapping
+    ) -> None:
+        """
+        Mark a library item's provider mapping available again after its provider found it.
+
+        Items that are not library items are left untouched.
+
+        :param media_item: The library item that holds the mapping.
+        :param mapping: The provider mapping whose item the provider found again.
+        """
+        await self._set_provider_mapping_available(media_item, mapping, True)
 
     def queue_provider_mapping_correction_task(self) -> BackgroundTask:
         """Queue the provider mapping correction as a managed background task."""
@@ -3615,6 +3602,98 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             },
             allow_retry=True,
         )
+
+    def _register_unavailable_mapping_check_task(self) -> BackgroundTask:
+        """Register the recurring check of unavailable podcast and radio mappings."""
+        utc_hour, utc_minute = local_clock_time_to_utc(3, 0)
+        return self.mass.tasks.register_scheduled_task(
+            task_id=UNAVAILABLE_MAPPING_CHECK_TASK_ID,
+            name="Check unavailable podcasts and radio stations",
+            handler=self._check_unavailable_mappings,
+            schedule=TaskSchedule.daily(hour=utc_hour, minute=utc_minute),
+            translation_key="check_unavailable_mappings",
+            translation_owner=self.translation_owner,
+            metadata={
+                "task_domain": "music_unavailable_mapping_check",
+            },
+            allow_retry=True,
+        )
+
+    async def _check_unavailable_mappings(self) -> None:
+        """Mark unavailable podcast and radio mappings available again when found again."""
+        # podcasts and radio stations often come from providers without a library sync,
+        # which would otherwise be the only way back for such a mapping
+        for ctrl in (self.podcasts, self.radio):
+            rows = [
+                row
+                async for row in self.database.iter_items(
+                    DB_TABLE_PROVIDER_MAPPINGS,
+                    {"media_type": ctrl.media_type.value, "available": 0},
+                )
+            ]
+            for row in rows:
+                if exact_provider(self.mass, row["provider_instance"]) is None:
+                    continue
+                try:
+                    library_item = await ctrl.get_library_item(row["item_id"])
+                except MediaNotFoundError:
+                    continue  # removed in the meantime
+                for mapping in library_item.provider_mappings:
+                    if (mapping.provider_instance, mapping.item_id) == (
+                        row["provider_instance"],
+                        row["provider_item_id"],
+                    ) and await self._found_on_provider(ctrl, mapping):
+                        await self.mark_provider_mapping_available(library_item, mapping)
+
+    async def _found_on_provider(
+        self, ctrl: MediaControllerBase[Any], mapping: ProviderMapping
+    ) -> bool:
+        """Return whether the mapping's own provider finds its item and reports it available."""
+        try:
+            # a cached answer may predate the not found that marked the mapping
+            with request_priority(RequestPriority.LOW):
+                provider_item: MediaItemType = await ctrl.get_provider_item(
+                    mapping.item_id,
+                    mapping.provider_instance,
+                    force_refresh=True,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
+                )
+        except NotImplementedError:
+            # some providers list radio stations they cannot look up one by one
+            return False
+        except REFRESH_FETCH_ERRORS as err:
+            self.logger.debug(
+                "%s/%s is still unavailable: %s", mapping.provider_instance, mapping.item_id, err
+            )
+            return False
+        return provider_item.available
+
+    async def _set_provider_mapping_available(
+        self, media_item: MediaItemType, mapping: ProviderMapping, available: bool
+    ) -> None:
+        """Store whether a library item's provider mapping is available."""
+        if media_item.provider != "library" or mapping.available is available:
+            return
+        self.logger.debug(
+            "Marking %s/%s of %s %s",
+            mapping.provider_instance,
+            mapping.item_id,
+            media_item.uri,
+            "available: found on the provider again"
+            if available
+            else "unavailable: not found on the provider",
+        )
+        mapping.available = available
+        # the item or its mapping may be gone by now, e.g. removed while it was being played
+        with suppress(MediaNotFoundError):
+            await self.update_provider_mapping(
+                media_item.media_type,
+                media_item.item_id,
+                mapping.provider_instance,
+                mapping.item_id,
+                available=available,
+            )
 
     async def _reconcile_duplicate_tracks(self) -> None:
         """Merge a small batch of library tracks that are held twice across providers."""

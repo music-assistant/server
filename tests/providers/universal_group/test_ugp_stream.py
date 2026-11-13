@@ -9,7 +9,7 @@ from unittest.mock import patch
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
+from music_assistant.controllers.streams.constants import output_pacing_args
 from music_assistant.providers.universal_group.ugp_stream import UGPStream
 
 
@@ -18,7 +18,7 @@ async def test_ugp_stream_is_paced_like_the_flow_stream() -> None:
     The group stream is one continuous stream fanned out to all members.
 
     Its source is the raw PCM queue flow, which carries no pacing of its own, so this
-    ffmpeg is the single pacing point and takes the flow route's NEAR_REALTIME pace.
+    ffmpeg is the single pacing point and takes the flow route's realtime pace.
     """
     recorded: dict[str, Any] = {}
     pcm_format = AudioFormat(
@@ -49,4 +49,4 @@ async def test_ugp_stream_is_paced_like_the_flow_stream() -> None:
         chunks = [chunk async for chunk in stream.subscribe_raw()]
 
     assert chunks == [b"\x00" * 16]
-    assert recorded["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
+    assert recorded["extra_input_args"] == output_pacing_args()

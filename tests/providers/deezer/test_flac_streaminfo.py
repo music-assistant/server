@@ -1,4 +1,4 @@
-"""Test that Deezer FLAC tracks report the format found in their STREAMINFO block."""
+"""Test the audio format Deezer streams report."""
 
 from __future__ import annotations
 
@@ -66,13 +66,17 @@ def _streaming(
     return streaming, provider
 
 
-async def test_flac_track_reports_real_format(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("track_format", ["FLAC", "FLAC_24"])
+async def test_flac_track_reports_real_format(
+    monkeypatch: pytest.MonkeyPatch, track_format: str
+) -> None:
     """A hi-res FLAC track is declared with the format from its header, which is cached."""
-    streaming, provider = _streaming(monkeypatch, "FLAC", _flac_header(88200, 24, 2))
+    streaming, provider = _streaming(monkeypatch, track_format, _flac_header(88200, 24, 2))
 
     details = await streaming.get_stream_details("1", MediaType.TRACK)
 
     assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (88200, 24)
+    assert details.size == 1000
     provider.mass.cache.set.assert_awaited_once()
 
 
@@ -86,16 +90,20 @@ async def test_cached_format_skips_the_probe(monkeypatch: pytest.MonkeyPatch) ->
     provider.mass.http_session.get.assert_not_called()
 
 
+@pytest.mark.parametrize(("track_format", "bit_depth"), [("FLAC", 16), ("FLAC_24", 24)])
 @pytest.mark.parametrize("first_chunk", [TimeoutError(), b"ID3" * 700])
 async def test_failed_probe_keeps_default_format(
-    monkeypatch: pytest.MonkeyPatch, first_chunk: bytes | Exception
+    monkeypatch: pytest.MonkeyPatch,
+    first_chunk: bytes | Exception,
+    track_format: str,
+    bit_depth: int,
 ) -> None:
-    """A probe that fails keeps the default format and caches nothing."""
-    streaming, provider = _streaming(monkeypatch, "FLAC", first_chunk)
+    """A probe that fails keeps the format the name gives and caches nothing."""
+    streaming, provider = _streaming(monkeypatch, track_format, first_chunk)
 
     details = await streaming.get_stream_details("1", MediaType.TRACK)
 
-    assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (44100, 16)
+    assert (details.audio_format.sample_rate, details.audio_format.bit_depth) == (44100, bit_depth)
     provider.mass.cache.set.assert_not_called()
 
 
@@ -122,3 +130,31 @@ async def test_mp3_track_is_not_probed(monkeypatch: pytest.MonkeyPatch) -> None:
     await streaming.get_stream_details("1", MediaType.TRACK)
 
     provider.mass.http_session.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("track_format", "bit_rate"), [("MP3_320", 320), ("MP3_128", 128), ("MP3_MISC", None)]
+)
+async def test_mp3_track_reports_its_bit_rate(
+    monkeypatch: pytest.MonkeyPatch, track_format: str, bit_rate: int | None
+) -> None:
+    """An MP3 track reports the bit rate its format names, a personal upload none."""
+    streaming, _provider = _streaming(monkeypatch, track_format, b"")
+
+    details = await streaming.get_stream_details("1", MediaType.TRACK)
+
+    assert details.audio_format.bit_rate == bit_rate
+
+
+async def test_mp3_audiobook_reports_its_bit_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An audiobook reports the format of its chapters like a track does."""
+    streaming, _provider = _streaming(monkeypatch, "MP3_320", b"")
+    chapter = Mock(node=Mock(id="1", duration=60))
+    monkeypatch.setattr(
+        "music_assistant.providers.deezer.streaming.fetch_all_audiobook_chapter_edges",
+        AsyncMock(return_value=[chapter]),
+    )
+
+    details = await streaming.get_stream_details("1", MediaType.AUDIOBOOK)
+
+    assert details.audio_format.bit_rate == 320

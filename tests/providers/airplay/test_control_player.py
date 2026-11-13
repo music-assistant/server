@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
+from contextlib import AbstractContextManager
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1434,3 +1436,97 @@ async def test_launch_app_dispatches_to_device() -> None:
     with patch.object(player, "_device_for_feature", return_value=device):
         await player.async_launch_app("musicassistant://dashboard/show")
     device.apps.launch_app.assert_awaited_once_with("musicassistant://dashboard/show")
+
+
+def _record_reconnect_waits(delays: list[float]) -> AbstractContextManager[object]:
+    """Patch the reconnect wait to record its timeout and return without sleeping."""
+
+    async def _wait_for(coro: Coroutine[object, object, object], timeout: float) -> None:
+        coro.close()
+        delays.append(timeout)
+        raise TimeoutError
+
+    return patch(
+        "music_assistant.providers.airplay.control_player.asyncio.wait_for",
+        side_effect=_wait_for,
+    )
+
+
+async def test_failing_control_connect_backs_off_to_a_cap() -> None:
+    """A receiver that keeps refusing is retried with a doubling delay, capped at 10 min."""
+    player = _make_control_player()
+    delays: list[float] = []
+    connect = AsyncMock(side_effect=[True] * 7 + [False])
+
+    with (
+        patch.object(player, "_connect_control_services", connect),
+        _record_reconnect_waits(delays),
+    ):
+        await player._connection_loop()
+
+    assert delays == [30, 60, 120, 240, 480, 600, 600]
+
+
+async def test_channel_drop_during_successful_pass_is_retried() -> None:
+    """A channel that drops while the other one is still connecting gets reconnected."""
+    player = _make_control_player()
+    calls = 0
+
+    async def _connect() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            player._schedule_connection()
+        return False
+
+    with patch.object(player, "_connect_control_services", side_effect=_connect):
+        player._connection_task = asyncio.create_task(player._connection_loop())
+        await asyncio.wait_for(player._connection_task, 1)
+
+    assert calls == 2
+
+
+async def test_forced_control_reconnect_resets_backoff() -> None:
+    """A forced reconnect (new mDNS record, config or pairing) starts at the initial delay."""
+    player = _make_control_player()
+    delays: list[float] = []
+    # the cancellation stands in for the forced reconnect aborting the running loop
+    connect = AsyncMock(side_effect=[True, True, True, asyncio.CancelledError(), True, False])
+
+    with (
+        patch.object(player, "_connect_control_services", connect),
+        _record_reconnect_waits(delays),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await player._connection_loop()
+        player._schedule_connection(force=True)
+        await player._connection_loop()
+
+    assert delays == [30, 60, 120, 30]
+
+
+async def test_dropped_control_channel_wakes_backoff_wait() -> None:
+    """A live channel that drops reconnects without waiting out another channel's backoff."""
+    player = _make_control_player()
+    waiting = asyncio.Event()
+    calls = 0
+
+    async def _connect() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            waiting.set()
+            return True
+        return False
+
+    with patch.object(player, "_connect_control_services", side_effect=_connect):
+        task = asyncio.create_task(player._connection_loop())
+        player._connection_task = task
+        await waiting.wait()
+        await asyncio.sleep(0)
+        player._schedule_connection()
+        await asyncio.wait_for(task, 1)
+
+    assert calls == 2
+    # waking the loop keeps the failing channel's backoff
+    assert player._reconnect_delay == 60

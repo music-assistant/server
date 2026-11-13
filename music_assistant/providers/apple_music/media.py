@@ -127,8 +127,6 @@ class AppleMusicMediaManager:
                 *(
                     parse_station(self.provider, item)
                     for item in response["results"]["stations"]["data"]
-                    # live broadcast stations require Widevine DRM
-                    if not item.get("attributes", {}).get("isLive", False)
                 ),
             ]
         return searchresult

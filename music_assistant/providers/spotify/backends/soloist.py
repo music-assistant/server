@@ -1790,8 +1790,11 @@ class _EngineRun:
             paced_bytes += len(raw)
             if not await self._route(raw):
                 return
-            resume_at = pace_anchor + paced_bytes / (_BYTES_PER_SECOND * _PACE_RATE) - _PACE_BURST_S
-            if (delay := resume_at - loop.time()) > 0:
+            paced_s = paced_bytes / (_BYTES_PER_SECOND * _PACE_RATE)
+            # time lost without a read timeout (a stalled loop, a full cushion) is
+            # not made up either: at most the burst is ever read unpaced
+            pace_anchor = max(pace_anchor, loop.time() - paced_s)
+            if (delay := pace_anchor + paced_s - _PACE_BURST_S - loop.time()) > 0:
                 await asyncio.sleep(delay)
 
     async def _route(self, raw: bytes) -> bool:

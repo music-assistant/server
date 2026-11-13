@@ -73,11 +73,14 @@ from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_SEARCH_RESULTS,
     COLLECTION_COVER_COUNT,
     RANDOM_SORT_FIELDS,
+    RESUME_POSITION_TOLERANCE_SECONDS,
 )
 from music_assistant.controllers.music.helpers import (
+    ResumePoint,
     preferred_thumb,
     provider_mappings_from_urls,
     search_name_match_clause,
+    select_resume_point,
     sibling_instance_mappings,
     usable_thumb,
 )
@@ -214,6 +217,24 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
     narrators: tuple[str, ...]
     fully_played: bool | None
     resume_position_ms: int | None
+    resume_position_timestamp: datetime | None
+
+    def resume_point_changed(self, incoming_audiobook: Audiobook) -> bool:
+        """
+        Return True when the provider's resume point differs from the stored one and wins.
+
+        :param incoming_audiobook: The audiobook as the provider currently reports it.
+        """
+        provider_point = ResumePoint.from_item(incoming_audiobook)
+        stored_point = ResumePoint.from_item(self)
+        if provider_point is None or (
+            stored_point is not None
+            and provider_point.fully_played == stored_point.fully_played
+            and abs(provider_point.position_ms - stored_point.position_ms)
+            <= RESUME_POSITION_TOLERANCE_SECONDS * 1000
+        ):
+            return False
+        return select_resume_point(provider_point, stored_point) is provider_point
 
     def authors_narrators_changed(self, audiobook: Audiobook) -> bool:
         """
@@ -1017,7 +1038,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Resolution order matches get_library_item_by_prov_mappings (instance first,
         then domain).
         """
-        extra_columns, extra_joins, extra_params = self._sync_details_query_parts()
+        extra_columns, extra_joins, extra_params = await self._sync_details_query_parts(
+            provider_mappings
+        )
         base_sql = f"""
             SELECT
                 {self.db_table}.item_id,
@@ -2814,6 +2837,53 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         return sql_query, base_query_params
 
+    @final
+    async def _library_letter_index(
+        self,
+        query_parts: list[str],
+        query_params: dict[str, Any],
+        favorite: bool | None,
+        search: str | None,
+        provider: str | list[str] | None,
+        genre: int | list[int] | None,
+        played_only: bool,
+        sort_field: SortField | None,
+        sort_direction: SortDirection | None,
+        reachable_via: list[str] | None,
+    ) -> list[dict[str, str | int]]:
+        """Return the row offset where each starting letter begins in a library listing."""
+        field, direction = self.resolve_sort(sort_field, sort_direction)
+        if search or field not in (SortField.NAME, SortField.SORT_NAME):
+            return []
+        reachable_via = self._resolve_reachable_via(reachable_via)
+        if reachable_via is not None and not reachable_via:
+            return []
+        self._apply_filters(
+            query_parts=query_parts,
+            query_params=query_params,
+            favorite=favorite,
+            search=None,
+            genre_ids=self._preprocess_genre_ids(genre),
+            provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
+            played_only=played_only,
+            in_library_only=True,
+            reachable_via=reachable_via,
+        )
+        query_parts.extend(self.listing_filter(query_params))
+        # the name columns only hold lowercase a-z and 0-9, so every letter is one run of rows
+        name_column = BASE_SORT_FIELD_SQL[field].format(prefix=f"{self.db_table}.")
+        first_char = f"substr({name_column}, 1, 1)"
+        sql_query = (
+            "SELECT letter, MIN(row_num) - 1 AS first_row FROM ("
+            f"SELECT CASE WHEN {first_char} BETWEEN 'a' AND 'z' "
+            f"THEN upper({first_char}) ELSE '#' END AS letter, "
+            f"ROW_NUMBER() OVER (ORDER BY {self._get_sort_sql(field, direction)}) AS row_num "
+            f"FROM {self.db_table} WHERE {' AND '.join(self._clean_query_parts(query_parts))}) "
+            "GROUP BY letter ORDER BY first_row"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(sql_query, query_params, limit=0)
+        return [{"letter": row["letter"], "offset": row["first_row"]} for row in rows]
+
     def _seeded_random_sort_sql(
         self,
         field: SortField,
@@ -3240,12 +3310,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         return True
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """
         Return extra (columns, joins, params) for this media type's sync-details query.
 
         Override in a subclass to select additional lightweight columns needed by the
         library sync change detection for this media type.
+
+        :param provider_mappings: The mappings of the item the provider is syncing.
         """
         return "", "", {}
 

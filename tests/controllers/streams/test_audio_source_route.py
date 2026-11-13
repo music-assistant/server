@@ -187,7 +187,7 @@ async def test_http_output_is_registered_to_the_source_session(
     ctrl.audio.get_audio_source_stream.return_value = "audio-input"
     ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
     player.state.group_members = ["member-1"]
-    player.get_config_value.return_value = "default"
+    player.get_config_value.return_value = False
     response = MagicMock()
     response.prepare = AsyncMock()
     monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
@@ -429,3 +429,30 @@ async def test_the_pcm_claim_evicts_the_other_player() -> None:
 
     with pytest.raises(StopAsyncIteration):
         await anext(stream)
+
+
+async def test_an_opened_source_that_never_streams_is_released_once() -> None:
+    """A consumer that opens a source for its stream details and then gives up releases it."""
+    session = _session()
+    session.streamdetails = MagicMock()
+    ctrl, provider, _player, _store = _controller(session)
+    media = PlayerMedia(
+        uri="x://audio_source/main",
+        media_type=MediaType.AUDIO_SOURCE,
+        source_id=OWNER_ID,
+        queue_session_id=session.playback_session_id,
+    )
+
+    source_stream = await ctrl.open_audio_source_stream(media, CONSUMER_ID)
+    assert source_stream is not None
+    assert source_stream.streamdetails is session.streamdetails
+    await source_stream.aclose()
+    await source_stream.aclose()
+
+    provider.on_source_unselected.assert_awaited_once()
+    ctrl.mass.players.deselect_source.assert_awaited_once_with(
+        OWNER_ID,
+        provider_instance_id=session.provider_instance_id,
+        source_id=session.source_id,
+        playback_session_id=session.playback_session_id,
+    )

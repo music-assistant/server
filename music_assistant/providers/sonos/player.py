@@ -29,7 +29,13 @@ from aiosonos.api.models import (
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import CannotConnect, CommandTimeout, ConnectionFailed, FailedCommand
+from aiosonos.exceptions import (
+    CannotConnect,
+    CommandTimeout,
+    ConnectionFailed,
+    FailedCommand,
+    SonosException,
+)
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     EventType,
@@ -43,7 +49,6 @@ from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailable
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
@@ -60,6 +65,7 @@ from music_assistant.providers.sonos.const import (
     PREVIOUS_ITEMS,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
+    SOURCE_MUSIC_ASSISTANT,
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
     SOURCE_TV,
@@ -115,6 +121,9 @@ MOVED_GROUP_TIMEOUT = 5
 # seconds a queue released on a session eviction still counts for a coordinator move:
 # the speaker may send the eviction just before the move
 EVICTED_QUEUE_GRACE = 5
+# seconds a speaker gets to answer for its grouping after a group change; a healthy one
+# answers within 50 ms, one that lost power never does
+GROUPS_REFRESH_TIMEOUT = 2
 # seconds past an announcement's own duration to wait for the speaker to report it done
 ANNOUNCEMENT_STATUS_MARGIN = 5
 # clip states after which the speaker no longer plays the clip
@@ -304,7 +313,6 @@ class SonosPlayer(Player):
         # when the user selects fewer rates.
         hi_res = self._attr_device_info.model not in NON_HIRES_MODELS
         return [
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
             create_sample_rates_config_entry(
                 supported_sample_rates=[44100, 48000],
@@ -889,6 +897,17 @@ class SonosPlayer(Player):
                 player_ids_to_remove=player_ids_to_remove,
             )
             await self._wait_for_group_members(player_ids_to_add, player_ids_to_remove)
+            members = (
+                self.mass.players.get_player(player_id)
+                for player_id in {*player_ids_to_add, *player_ids_to_remove} - {self.player_id}
+            )
+            await asyncio.gather(
+                *(
+                    member._refresh_groups()
+                    for member in members
+                    if isinstance(member, SonosPlayer) and member.connected
+                )
+            )
 
     async def ungroup(self) -> None:
         """
@@ -1067,6 +1086,10 @@ class SonosPlayer(Player):
         container_type = active_group.container_type
         active_service = self._active_service(active_group)
         container = active_group.playback_metadata.get("container")
+        # a Music Assistant session we did not start, such as another server's, is not our queue
+        foreign_session = active_service == MusicService.MUSIC_ASSISTANT and not (
+            group_parent or self
+        )._plays_own_session(active_group)
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
@@ -1089,6 +1112,10 @@ class SonosPlayer(Player):
             # add spotify to source list if not yet there
             if SOURCE_SPOTIFY not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
+        elif foreign_session:
+            self._attr_active_source = SOURCE_MUSIC_ASSISTANT
+            if SOURCE_MUSIC_ASSISTANT not in [x.id for x in self._attr_source_list]:
+                self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_MUSIC_ASSISTANT])
         elif active_service == MusicService.MUSIC_ASSISTANT:
             # setting active source to None is fine
             self._attr_active_source = None
@@ -1133,7 +1160,7 @@ class SonosPlayer(Player):
                 duration=int(track_duration_millis / 1000) if track_duration_millis else None,
                 image_url=track_image_url,
             )
-            if active_service == MusicService.MUSIC_ASSISTANT:
+            if active_service == MusicService.MUSIC_ASSISTANT and not foreign_session:
                 current_media.source_id = self._attr_active_source
                 current_media.queue_item_id = self._playing_item_id(current_item["id"])
         # radio stream info
@@ -1604,6 +1631,16 @@ class SonosPlayer(Player):
         """Return the MA queue the speaker plays, as a cloud queue or as one stream."""
         return self.cloud_queue_id or self._flow_queue_id
 
+    def _plays_own_session(self, group: SonosGroup) -> bool:
+        """
+        Return whether the Music Assistant session of the group this player coordinates is ours.
+
+        :param group: The group, as this player's connection reports it.
+        """
+        # the library forgets our session on a reconnect, the queue we loaded is kept until a
+        # stop or an eviction
+        return group.active_session_id is not None or self._playing_queue_id() is not None
+
     def _wire_id_at(self, queue_item_id: str, index: int, generation: int | None) -> str:
         """Return the id to serve a queue item under at a queue position."""
         wire_id = self.wire_item_id(queue_item_id, generation) or queue_item_id
@@ -1801,6 +1838,24 @@ class SonosPlayer(Player):
                 self.name,
                 player_ids_to_add,
             )
+
+    async def _refresh_groups(self) -> None:
+        """Update the grouping of this speaker from what the speaker reports right now."""
+        # a speaker knows its new group at once, but holds its groups event back for seconds,
+        # and sends none at all when its group is back to what it last reported by then
+        try:
+            async with asyncio.timeout(GROUPS_REFRESH_TIMEOUT):
+                groups = await self.client.api.groups.get_groups(self.client.household_id)
+        except asyncio.CancelledError:
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
+            # a reconnect cancels the replies it still waited on, the refresh among them
+            self.logger.debug("Could not refresh the groups of %s: connection closed", self.name)
+            return
+        except (SonosException, ClientError, OSError, TimeoutError) as err:
+            self.logger.debug("Could not refresh the groups of %s: %s", self.name, err)
+            return
+        self.client._handle_groups_event(groups)
 
     def _extract_mac_from_player_id(self) -> str | None:
         """

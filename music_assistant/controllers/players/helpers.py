@@ -58,6 +58,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     *,
     lock: PlayerLockPurpose | None = None,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    to_playback_owner: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -69,6 +70,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     *,
     lock: PlayerLockPurpose | None = None,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    to_playback_owner: bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -92,6 +94,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
         the command has nothing to act on (volume), ignored after calling off a power on
         under way (stop, pause), powered on first (before any lock is taken) for commands
         that start playback, or run as is for commands that handle it themselves.
+    :param to_playback_owner: The command acts on the owner of the player's playback (its
+        sync leader or group player), so the user needs access to that owner as well.
     """  # noqa: D401
 
     def decorator(
@@ -131,6 +135,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                     f"{current_user.username} does not have access to player {player.display_name}"
                 )
                 raise InsufficientPermissions(msg)
+            if to_playback_owner and (owner := self._resolve_playback_owner(player)) is not player:
+                self.check_player_access(owner.player_id)
 
             self.logger.debug(
                 "Handling command %s for player %s (%s)",
