@@ -81,6 +81,11 @@ class GroupCommandsMixin(_PlayerControllerBase):
         :raises PlayerUnavailableError: if the target player is not available.
         """
         parent_player = self._get_reachable_player(target_player)
+        # the members are changed under the current ids of their players
+        if player_ids_to_add is not None:
+            player_ids_to_add = [self._command_player_id(pid) for pid in player_ids_to_add]
+        if player_ids_to_remove is not None:
+            player_ids_to_remove = [self._command_player_id(pid) for pid in player_ids_to_remove]
         # refused, passed on to the group player that holds the target, or the target is
         # released from the player it is synced to first
         if await route_group_change(

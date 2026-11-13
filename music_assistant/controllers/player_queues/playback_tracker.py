@@ -56,7 +56,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
     set_impersonated_user,
 )
-from music_assistant.helpers.audio import resolve_output_player_ids
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
@@ -333,10 +332,11 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
     def _get_output_player_ids(self, player: Player) -> set[str]:
         """Return destination player IDs represented in the processing chain."""
-        return resolve_output_player_ids(
-            self.mass,
-            [player.player_id, *player.state.group_members],
-        )
+        output_player_ids = {player.player_id}
+        for member_id in player.state.group_members:
+            member = self.mass.players.get_player_or_protocol_player(member_id)
+            output_player_ids.add(member.player_id if member else member_id)
+        return output_player_ids
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player

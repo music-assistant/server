@@ -111,29 +111,22 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
             player_id = kwargs.get("player_id") or args[0]
             assert isinstance(player_id, str)  # for type checking
 
-            # this should not happen, but in case the id of a protocol is used,
-            # auto-resolve it to the player it is attached to
-            if (
-                player_id not in self._players
-                and (protocol := self._protocols.get(player_id))
-                and (protocol_parent := protocol.player)
-            ):
-                if "player_id" in kwargs:
-                    kwargs["player_id"] = protocol_parent.player_id
-                else:
-                    args = (protocol_parent.player_id, *args[1:])  # type: ignore[assignment]
+            if (command_player_id := self._command_player_id(player_id)) != player_id:
                 self.logger.debug(
-                    "Auto-resolved protocol %s to its player %s for command %s",
+                    "Resolved %s to its player %s for command %s",
                     player_id,
-                    protocol_parent.player_id,
+                    command_player_id,
                     fn.__name__,
                 )
-                player_id = protocol_parent.player_id
-
-            player = self.get_player(player_id, raise_unavailable=not accept_unavailable)
+            player = self.get_player(command_player_id, raise_unavailable=not accept_unavailable)
             if player is None:
                 msg = f"Player {player_id} is not available"
                 raise PlayerUnavailableError(msg)
+            # the command works with the current id of the player
+            if "player_id" in kwargs:
+                kwargs["player_id"] = player.player_id
+            else:
+                args = (player.player_id, *args[1:])  # type: ignore[assignment]
 
             current_user = get_current_user()
             if current_user and not has_player_access(current_user, player.player_id, player):

@@ -404,6 +404,7 @@ def use_player_registry(mass: MagicMock | MusicAssistant) -> MagicMock:
         "resolve_player_id",
         "get_protocol",
         "get_player_by_protocol",
+        "get_player_or_protocol_player",
         "get_output_protocol",
         "iter_players",
         "iter_protocols",

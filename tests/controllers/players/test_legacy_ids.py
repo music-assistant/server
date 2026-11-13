@@ -6,18 +6,23 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import IdentifierType, PlayerFeature
 
 from music_assistant.constants import CONF_LEGACY_IDS, CONF_PLAYERS
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from tests.common import MockProvider, attach_mock
+from tests.scenarios.harness import DEFAULT_FEATURES
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
-    from tests.scenarios.harness import Scenario
+    from tests.scenarios.harness import FakeProtocol, Scenario
 
 KITCHEN = "kitchen"
 BEDROOM = "bedroom"
+# the id of a player that was merged into the living room player
+OLD_LIVING = "old_living"
+GROUPING = frozenset({*DEFAULT_FEATURES, PlayerFeature.SET_MEMBERS, PlayerFeature.POWER})
 
 
 def _stored(*legacy_ids: Any) -> dict[str, Any]:
@@ -226,3 +231,95 @@ def test_malformed_stored_legacy_ids_are_ignored(stored_configs: Any) -> None:
 
     assert controller._legacy_ids == {}
     assert controller.resolve_player_id("old_kitchen") == "old_kitchen"
+
+
+async def test_volume_command_by_a_legacy_id_keeps_the_limit_and_lock_of_the_player(
+    scenario: Scenario,
+) -> None:
+    """A volume command by a legacy id is held to the player's volume limit and waits for its lock."""
+    living_id, living, _hall_id = await _living_room_with_a_legacy_id(scenario)
+    await scenario.configure_player(living_id, max_volume=40)
+    await scenario.idle()
+    players = scenario.mass.players
+    living.commands.clear()
+
+    await players.cmd_volume_set(OLD_LIVING, 80)
+    await scenario.idle()
+
+    assert [args for command, *args in living.commands if command == "volume_set"] == [[32]]
+    async with players.get_player_lock(living_id, PlayerLockPurpose.VOLUME):
+        task = await scenario.command(players.cmd_volume_set(OLD_LIVING, 10))
+        assert not task.done()
+    await scenario.settle()
+    await task
+    assert not [key for key in players._player_command_locks if OLD_LIVING in key]
+
+
+async def test_power_command_by_a_legacy_id_waits_for_the_playback_lock_of_the_player(
+    scenario: Scenario,
+) -> None:
+    """A power on by a legacy id is serialized with the playback of the player."""
+    living_id, living, _hall_id = await _living_room_with_a_legacy_id(scenario)
+    players = scenario.mass.players
+
+    async with players.get_player_lock(living_id, PlayerLockPurpose.PLAYBACK):
+        task = await scenario.command(players.cmd_power(OLD_LIVING, True))
+        assert not task.done()
+    await scenario.settle()
+    await task
+    assert ("power", True) in living.commands
+
+
+@pytest.mark.parametrize("command", ["set_members", "group"])
+async def test_group_change_by_a_legacy_id_admits_the_player(
+    scenario: Scenario, command: str
+) -> None:
+    """A member named by a legacy id joins the group as the player that answers to it."""
+    living_id, _living, hall_id = await _living_room_with_a_legacy_id(scenario)
+    players = scenario.mass.players
+
+    if command == "group":
+        await players.cmd_group(OLD_LIVING, hall_id)
+    else:
+        await players.cmd_set_members(hall_id, player_ids_to_add=[OLD_LIVING])
+    await scenario.idle()
+
+    hall, living = scenario.player(hall_id), scenario.player(living_id)
+    assert hall is not None
+    assert living is not None
+    assert (hall.group_members, living.synced_to) == ([hall_id, living_id], hall_id)
+
+
+async def _living_room_with_a_legacy_id(scenario: Scenario) -> tuple[str, FakeProtocol, str]:
+    """
+    Return the living room player, which answers to a legacy id, its protocol and the hall player.
+
+    The two can be grouped with each other.
+
+    :param scenario: The running scenario.
+    """
+    airplay = await scenario.add_provider("airplay")
+    living = airplay.protocol(
+        "ap_living",
+        "Living Room",
+        role="native",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:E1"},
+        supported_features=set(GROUPING),
+        can_group_with={"ap_hall"},
+        powered=False,
+    )
+    hall = airplay.protocol(
+        "ap_hall",
+        "Hall",
+        role="native",
+        identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:E2"},
+        supported_features=set(GROUPING),
+        can_group_with={"ap_living"},
+    )
+    await scenario.attach(living)
+    await scenario.attach(hall)
+    await scenario.idle()
+    living_id = scenario.single_player(living).player_id
+    scenario.mass.config.set_player_value(living_id, CONF_LEGACY_IDS, [OLD_LIVING])
+    scenario.mass.players._build_legacy_id_index()
+    return living_id, living, scenario.single_player(hall).player_id

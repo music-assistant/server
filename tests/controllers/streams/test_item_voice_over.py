@@ -271,7 +271,7 @@ def test_a_declared_overlap_follows_the_sample_rate_rule_of_the_player(
     allowed = audio.crossfade_allowed(
         cast("Any", _clip()),
         crossfade_mode=CrossfadeMode.VOICE_OVER,
-        player_id="player-1",
+        protocol_id="player-1",
         flow_mode=flow_mode,
         next_queue_item=cast("Any", track),
         sample_rate=44100,

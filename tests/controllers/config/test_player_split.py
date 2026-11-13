@@ -572,6 +572,32 @@ def test_group_members_name_players() -> None:
     }
 
 
+@pytest.mark.parametrize("key", ["group_members", "allowed_members"])
+@pytest.mark.parametrize(
+    "malformed",
+    [{}, [], {"player_id": "sonos_17"}],
+    ids=["empty_mapping", "empty_list", "mapping"],
+)
+def test_malformed_group_member_is_left_out(key: str, malformed: Any) -> None:
+    """A member that is no id is left out of its list and logged once; the rest migrates."""
+    native = _record("sonos_17", SONOS)
+    airplay = _protocol("ap_17", AIRPLAY, "sonos_17")
+    other = _record("sonos_18", SONOS)
+    group = _record("syncgroup_17", "sync_group", "group", values={key: ["ap_17", malformed]})
+    healthy = _record("syncgroup_18", "sync_group", "group", values={key: ["sonos_18"]})
+
+    with capture_log_records(player_split.LOGGER) as records:
+        result = _migrated(_settings(native, airplay, other, group, healthy))
+
+    protocols = result[CONF_PLAYER_PROTOCOLS]
+    assert protocols["syncgroup_17"]["values"] == {key: ["sonos_17"]}
+    assert protocols["syncgroup_18"]["values"] == {key: ["sonos_18"]}
+    assert sorted(protocols) == ["ap_17", "sonos_17", "sonos_18", "syncgroup_17", "syncgroup_18"]
+    warnings = [record.getMessage() for record in records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "syncgroup_17" in warnings[0]
+
+
 def test_session_only_players_are_deleted_unless_customised() -> None:
     """A Sendspin player that is no protocol of a device is only kept when the user set it up."""
     records = [
@@ -1134,6 +1160,26 @@ async def test_a_declined_audio_input_is_found_under_the_id_of_its_client(
 
     for client_id in ("ss_50", "ss_52"):
         assert controller.get_protocol_value(client_id, "source_input_declined", False) is True
+
+
+async def test_start_with_a_malformed_group_member_succeeds_every_time(tmp_path: Path) -> None:
+    """A start migrates a group with a malformed member, and so does every start after it."""
+    settings = tmp_path / "settings.json"
+    group = _record(
+        "syncgroup_19",
+        "sync_group",
+        "group",
+        values={"group_members": ["sonos_19", {"player_id": "sonos_19"}]},
+    )
+    settings.write_text(json.dumps(_settings(_record("sonos_19", SONOS), group)))
+
+    for _ in range(2):
+        await _make_controller(tmp_path)._load()
+
+        stored = json.loads(settings.read_text())
+        assert stored[CONF_PLAYER_PROTOCOLS]["syncgroup_19"]["values"] == {
+            "group_members": ["sonos_19"]
+        }
 
 
 async def test_new_installation_gets_no_backup(tmp_path: Path) -> None:

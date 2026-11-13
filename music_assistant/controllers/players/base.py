@@ -264,6 +264,26 @@ class _PlayerControllerBase(CoreController):
             return protocol.player
         return self.get_player(protocol_or_player_id)
 
+    def get_player_or_protocol_player(self, player_id: str) -> Player | None:
+        """
+        Return the player an id names as a player id first, else the player of a protocol of that id.
+
+        For an id that is a player id but may be the id of a protocol: the members of a group
+        protocol, a player id a plugin stored, the members of a player's state. An id that names
+        a player, live or stored (a disabled one), never names another player, also when a
+        protocol of that player has the same id: for a stored player without a live object this
+        returns None. Only an id no player has names the player of a protocol. An id that is only
+        ever a player id is looked up with `get_player`, an id a device protocol reports (its group
+        members, its sync leader) with `get_player_by_protocol`.
+
+        :param player_id: ID of a player or one of its legacy ids, else of an attached protocol.
+        """
+        if player := self.get_player(player_id):
+            return player
+        if self.resolve_player_id(player_id) in self.mass.config.get(CONF_PLAYERS, {}):
+            return None
+        return self.get_player_by_protocol(player_id)
+
     def get_player_id_of_protocol(self, protocol_id: str) -> str | None:
         """
         Return the id of the player a protocol belongs to, attached or not.
@@ -510,6 +530,23 @@ class _PlayerControllerBase(CoreController):
             for conf_key in (CONF_POWER_CONTROL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
             if (value := self.mass.config.get_player_value(player_id, conf_key))
         }
+
+    def _command_player_id(self, player_id: str) -> str:
+        """
+        Return the current id of the player a command names.
+
+        :param player_id: The id of a player, one of its legacy ids, or the id of a protocol
+            attached to it.
+        """
+        # this should not happen, but in case the id of a protocol is used,
+        # auto-resolve it to the player it is attached to
+        if (
+            player_id not in self._players
+            and (protocol := self._protocols.get(player_id))
+            and (protocol_parent := protocol.player)
+        ):
+            return protocol_parent.player_id
+        return self.resolve_player_id(player_id)
 
     def _get_reachable_player(self, player_id: str) -> Player:
         """

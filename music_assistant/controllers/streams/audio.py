@@ -1254,8 +1254,9 @@ class StreamsAudio:
         :param protocol_id: ID of the protocol that renders the audio.
         :param input_format: PCM format entering player-specific processing.
         :param output_format: Furthest downstream output format known to the server.
-        :param shared_player_ids: Additional players receiving this identical output path.
-            An empty iterable marks a path that can gain shared destinations later.
+        :param shared_player_ids: The other protocols receiving this identical output path, as
+            the rendering protocol names its group members. An empty iterable marks a path that
+            can gain shared destinations later.
         :param handoff_format: Earlier provider handoff format when it differs.
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
@@ -2254,7 +2255,7 @@ class StreamsAudio:
                 crossfade_allowed = self.crossfade_allowed(
                     queue_item,
                     crossfade_mode=crossfade_mode,
-                    player_id=player.protocol_id,
+                    protocol_id=player.protocol_id,
                     flow_mode=False,
                     next_queue_item=next_queue_item,
                     sample_rate=pcm_format.sample_rate,
@@ -3185,7 +3186,6 @@ class StreamsAudio:
                 if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
                     queue_track,
                     crossfade_mode=item_crossfade_mode,
-                    player_id=queue.queue_id,
                     flow_mode=True,
                 ):
                     last_fadeout_part = bytes(crossfade_buffer[-crossfade_buffer_size:])
@@ -3326,13 +3326,24 @@ class StreamsAudio:
         self,
         queue_item: QueueItem,
         crossfade_mode: CrossfadeMode,
-        player_id: str,
+        protocol_id: str | None = None,
         flow_mode: bool = False,
         next_queue_item: QueueItem | None = None,
         sample_rate: int | None = None,
         next_sample_rate: int | None = None,
     ) -> bool:
-        """Get the crossfade config for a queue item."""
+        """
+        Return whether a queue item may be mixed into the item after it.
+
+        :param queue_item: The queue item that ends.
+        :param crossfade_mode: The crossfade mode of the queue.
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param next_queue_item: The item that follows, when it is loaded already.
+        :param sample_rate: PCM sample rate of the outgoing item, when known.
+        :param next_sample_rate: PCM sample rate of the incoming item, when known.
+        """
         if queue_item.streamdetails and (tail_overlap := queue_item.streamdetails.tail_overlap):
             # a declared overlap plays only into the track it was planned against
             next_item = next_queue_item or self.mass.player_queues.get_next_item(
@@ -3350,7 +3361,7 @@ class StreamsAudio:
                 )
                 return False
             if not self._may_mix_across_sample_rates(
-                player_id, flow_mode, sample_rate, next_sample_rate
+                protocol_id, flow_mode, sample_rate, next_sample_rate
             ):
                 self.logger.info(
                     "Skipping the tail overlap of %s: the player does not play gapless across "
@@ -3364,8 +3375,6 @@ class StreamsAudio:
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
         if not (self.mass.player_queues.get(queue_item.queue_id)):
-            return False  # just a guard
-        if not (self.mass.players.get_player(player_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: current item is not a track")
@@ -3393,7 +3402,7 @@ class StreamsAudio:
 
         # check if we're allowed to crossfade on different sample rates
         if not self._may_mix_across_sample_rates(
-            player_id, flow_mode, sample_rate, next_sample_rate
+            protocol_id, flow_mode, sample_rate, next_sample_rate
         ):
             self.logger.debug(
                 "Skipping crossfade: player(protocol) does not support gapless playback "
@@ -5059,7 +5068,7 @@ class StreamsAudio:
 
     def _may_mix_across_sample_rates(
         self,
-        player_id: str,
+        protocol_id: str | None,
         flow_mode: bool,
         sample_rate: int | None,
         next_sample_rate: int | None,
@@ -5067,7 +5076,8 @@ class StreamsAudio:
         """
         Return whether a boundary mix may span two items that stream at different rates.
 
-        :param player_id: The player the items play on.
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
         :param flow_mode: Whether the items play on one flow stream.
         :param sample_rate: PCM sample rate of the outgoing item, when known.
         :param next_sample_rate: PCM sample rate of the incoming item, when known.
@@ -5076,9 +5086,10 @@ class StreamsAudio:
         # switch lands inside the mix, so the player has to play gapless across rates
         if flow_mode or not sample_rate or not next_sample_rate or sample_rate == next_sample_rate:
             return True
+        assert protocol_id is not None
         return bool(
             self.mass.config.get_protocol_value(
-                player_id,
+                protocol_id,
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
             )
