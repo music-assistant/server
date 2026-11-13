@@ -182,6 +182,7 @@ from music_assistant.models.core_controller import CoreController
 from music_assistant.models.media_capabilities import MediaCatalogMixin
 from music_assistant.models.music_provider import (
     LIBRARY_FEATURE_BY_MEDIA_TYPE,
+    UNPLAYABLE_LIBRARY_FOLDERS,
     MusicProvider,
     NothingToSync,
 )
@@ -3010,6 +3011,23 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return
         msg = f"{item.name} is not available on any music source of this user"
         raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
+
+    def can_play_folder(self, path: str) -> bool:
+        """
+        Return whether the folder at a browse path may be played as a whole.
+
+        A provider's standard artists, albums and playlists folders may not.
+
+        :param path: The browse path of the folder.
+        """
+        provider_instance, _, sub_path = path.partition("://")
+        provider = self.mass.get_provider(provider_instance)
+        # a local source with its own browse lists its own folders, such as a directory "artists"
+        if not isinstance(provider, MusicProvider) or not (
+            provider.is_streaming_provider or type(provider).browse is MusicProvider.browse
+        ):
+            return True
+        return _library_folder(provider, sub_path) not in UNPLAYABLE_LIBRARY_FOLDERS
 
     async def _library_folder_page(
         self,

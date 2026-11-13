@@ -117,6 +117,12 @@ LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
     MediaType.PODCAST: ProviderFeature.LIBRARY_PODCASTS,
 }
 
+# the library folders that are not playable as a whole: playing one would fetch the tracks of
+# every item in the library, one request each
+UNPLAYABLE_LIBRARY_FOLDERS: Final[frozenset[MediaType]] = frozenset(
+    {MediaType.ARTIST, MediaType.ALBUM, MediaType.PLAYLIST}
+)
+
 
 class NothingToSync(Exception):
     """Raised from sync_library when the provider found nothing changed since its last sync."""
@@ -1032,8 +1038,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             raise KeyError(msg)
 
         # no subpath: return main listing
-        # artists, albums and playlists folders are not playable: playing one would fetch
-        # the tracks of every item in the library, one request each
         folders: list[BrowseFolder] = []
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
@@ -1043,6 +1047,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "artists",
                     name="",
                     translation_key="artists",
+                    is_playable=MediaType.ARTIST not in UNPLAYABLE_LIBRARY_FOLDERS,
                 )
             )
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
@@ -1053,6 +1058,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "albums",
                     name="",
                     translation_key="albums",
+                    is_playable=MediaType.ALBUM not in UNPLAYABLE_LIBRARY_FOLDERS,
                 )
             )
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
@@ -1063,7 +1069,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "tracks",
                     name="",
                     translation_key="tracks",
-                    is_playable=True,
+                    is_playable=MediaType.TRACK not in UNPLAYABLE_LIBRARY_FOLDERS,
                 )
             )
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
@@ -1074,6 +1080,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "playlists",
                     name="",
                     translation_key="playlists",
+                    is_playable=MediaType.PLAYLIST not in UNPLAYABLE_LIBRARY_FOLDERS,
                 )
             )
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:

@@ -290,6 +290,7 @@
   "common.errors.config_value_required": "{0} is required.",
   "common.errors.connect_failed": "Failed to connect to {0}.",
   "common.errors.connection_timeout": "Connection timed out: {0}.",
+  "common.errors.folder_not_playable": "This folder can not be played as a whole. Open it to play its items.",
   "common.errors.guest_account_disabled": "Guest access is unavailable because the {0} account is disabled.",
   "common.errors.host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
   "common.errors.insufficient_permissions": "You do not have permission to perform this action.",

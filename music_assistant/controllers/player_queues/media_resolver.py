@@ -1237,6 +1237,9 @@ class MediaResolver:
         queue_id: str | None = None,
     ) -> list[ResolvedItem]:
         """Fetch the playable items for the given browse folder, each played from that folder."""
+        if not self.mass.music.can_play_folder(folder.path):
+            msg = f"Folder '{folder.path}' can not be played as a whole"
+            raise MediaNotFoundError(msg, translation_key="folder_not_playable")
         self.logger.info(
             "Fetching items to play for folder %s",
             folder.name,

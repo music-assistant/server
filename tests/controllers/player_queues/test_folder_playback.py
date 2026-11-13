@@ -6,7 +6,10 @@ from typing import cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from music_assistant_models.enums import MediaType
+import pytest
+from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -20,11 +23,13 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import DB_TABLE_ALBUMS
 from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 
 PROVIDER = "test_folder_prov"
 
@@ -312,3 +317,95 @@ async def test_a_providers_root_folder_plays_its_files(mass: MusicAssistant) -> 
     assert origin.container is not None
     assert origin.container.media_type == MediaType.FOLDER
     assert (origin.provider_instance, origin.item_id) == (PROVIDER, "01.flac")
+
+
+class _LocalProvider(MusicProvider):
+    """A local source that lists its library folders the standard way."""
+
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return False: the catalog of a local source is its library."""
+        return False
+
+
+class _OwnBrowseProvider(MusicProvider):
+    """A streaming service that lists every folder its own way."""
+
+    async def browse(self, path: str) -> list[BrowseFolder]:
+        """Return the service's own listing of the folder."""
+        return []
+
+
+class _OwnBrowseLocalProvider(_OwnBrowseProvider):
+    """A local source that lists every folder its own way, such as the directories of a disk."""
+
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return False: the catalog of a local source is its library."""
+        return False
+
+
+def _load(mass: MusicAssistant, provider_cls: type[MusicProvider]) -> str:
+    """Load a provider of the given class into the running server and return its instance id."""
+    domain = provider_cls.__name__.strip("_").lower()
+    manifest = ProviderManifest(
+        type=ProviderType.MUSIC,
+        domain=domain,
+        name=domain,
+        description=domain,
+        codeowners=["@music-assistant"],
+    )
+    config = ProviderConfig(
+        values={}, type=ProviderType.MUSIC, domain=domain, instance_id=domain, name=domain
+    )
+    provider = provider_cls(mass, manifest, config)
+    provider.available = True
+    mass._providers[domain] = provider
+    return domain
+
+
+@pytest.mark.parametrize(
+    ("provider_cls", "folder"),
+    [(_LocalProvider, "artists"), (_LocalProvider, "playlists"), (_OwnBrowseProvider, "albums")],
+)
+async def test_a_library_folder_played_by_uri_is_refused_unbrowsed(
+    mass: MusicAssistant, provider_cls: type[MusicProvider], folder: str
+) -> None:
+    """
+    A provider's artists, albums or playlists folder is not played as a whole.
+
+    A streaming service that browses its own way still lists its library folders there.
+    """
+    instance_id = _load(mass, provider_cls)
+    folder_item = await mass.music.get_item_by_uri(f"{instance_id}://folder/{folder}")
+
+    with (
+        patch.object(mass.music, "browse", AsyncMock(return_value=[_file("01.flac")])) as browse,
+        pytest.raises(MediaNotFoundError) as err,
+    ):
+        await mass.player_queues._media_resolver._resolve_media_items(folder_item)
+
+    assert err.value.translation_key == "folder_not_playable"
+    browse.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("provider_cls", "folder"),
+    [(_LocalProvider, "tracks"), (_OwnBrowseLocalProvider, "artists")],
+)
+async def test_a_folder_played_by_uri_plays_unless_it_is_a_library_folder(
+    mass: MusicAssistant, provider_cls: type[MusicProvider], folder: str
+) -> None:
+    """
+    A provider's tracks folder plays, as does any folder of a local source's own browse.
+
+    A local source that browses its own way can hold a directory named like a library folder.
+    """
+    instance_id = _load(mass, provider_cls)
+    folder_item = await mass.music.get_item_by_uri(f"{instance_id}://folder/{folder}")
+
+    with patch.object(mass.music, "browse", AsyncMock(return_value=[_file("01.flac")])) as browse:
+        resolved = await mass.player_queues._media_resolver._resolve_media_items(folder_item)
+
+    browse.assert_awaited_once_with(f"{instance_id}://{folder}", limit=None)
+    assert [x.item.item_id for x in resolved] == ["01.flac"]
