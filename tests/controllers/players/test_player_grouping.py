@@ -1091,55 +1091,6 @@ def _ad_hoc_leader(
 class TestAdHocLeadershipTransfer:
     """Unjoining an ad-hoc sync leader transfers leadership instead of dissolving."""
 
-    async def test_the_hand_over_holds_both_leaders_until_the_resume(
-        self, controller: PlayerController
-    ) -> None:
-        """
-        The old and the new leader stay locked from the transfer to the resume on the new one.
-
-        The transfer alone lets go of the new leader when it returns; a command on it could then
-        cut in before the regroup and the resume.
-        """
-        provider = MockProvider("test", instance_id="test", mass=cast("MagicMock", controller.mass))
-        _sync_leader(provider, "member_a", "member_b")
-        _attach(provider, "member_a", "Member A")
-        _attach(provider, "member_b", "Member B")
-        _refresh(*controller._players.values())
-        leader = controller._players["leader"]
-        controller.get_active_queue = MagicMock(return_value=_queue_stub("leader"))  # type: ignore[method-assign]
-        held: list[tuple[str, bool]] = []
-
-        def _recorder(step: str) -> AsyncMock:
-            def _record(*_args: Any, **_kwargs: Any) -> None:
-                locks = controller._player_command_locks
-                held.append(
-                    (
-                        step,
-                        controller.holds_player_lock("leader")
-                        and controller.holds_player_lock("member_a")
-                        and locks["playback_leader"].locked()
-                        and locks["playback_member_a"].locked(),
-                    )
-                )
-
-            return AsyncMock(side_effect=_record)
-
-        mass = cast("MagicMock", controller.mass)
-        mass.player_queues.transfer_queue = _recorder("transfer")
-        mass.player_queues.resume = _recorder("resume")
-        controller.cmd_set_members = _recorder("set_members")  # type: ignore[method-assign]
-
-        # the hand-over runs under the old leader's lock, which the member change on it holds
-        async with controller.get_group_and_player_lock("leader"):
-            await controller._transfer_ad_hoc_leadership(leader, ["member_a", "member_b"])
-
-        mass.player_queues.transfer_queue.assert_awaited_once_with(
-            "leader", "member_a", auto_play=False
-        )
-        assert held == [("transfer", True), ("set_members", True), ("resume", True)]
-        assert not controller._player_command_locks["playback_member_a"].locked()
-        assert not controller._player_command_locks["playback_leader"].locked()
-
     def test_select_ad_hoc_leader_prefers_active_protocol(
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:

@@ -179,8 +179,8 @@ async def test_a_group_change_that_makes_the_source_a_member_of_the_target_meets
     The group change holds C and then waits for A, which the transfer has just taken: the
     transfer must not wait for C while it holds A, or both sit out the lock timeout.
 
-    :param group_change: A regroup that takes A's lock, or a leader hand-over that takes the
-        locks of both leaders.
+    :param group_change: A regroup that takes A's lock, or a leader hand-over whose transfer of
+        C's queue to A takes the locks of both.
     """
     owners: dict[str, str] = {}
     players = _players(owners)
@@ -243,7 +243,8 @@ async def test_a_command_holding_a_players_owner_takes_the_players_without_waiti
     """
     A command that holds C already takes C and its member A again without waiting for itself.
 
-    A leader hand-over runs under the lock of the old leader, which it takes again.
+    The transfer within a leader hand-over runs under the lock of the old leader, which it takes
+    again.
     """
     players = _players({"a": "c"})
     waits = record_lock_waits(players)

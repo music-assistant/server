@@ -560,3 +560,62 @@ async def test_a_transfer_whose_target_a_group_takes_meanwhile_still_completes(
     await scenario.advance(20)
     await stop
     await scenario.idle()
+
+
+@pytest.mark.parametrize("step", ["regroup", "resume"])
+async def test_a_hand_over_whose_new_leader_joins_another_group_meanwhile_completes(
+    scenario: Scenario, step: str
+) -> None:
+    """
+    A new leader that joins another group while the hand-over regroups or resumes it.
+
+    Den leads Kitchen and Office and plays its own queue. Den leaves its group: its queue moves
+    to Kitchen, the new leader, which takes 40 s to regroup Office, or to start the queue.
+    Meanwhile Kitchen joins Patio's group. Both commands succeed and Den is idle with an empty
+    queue:
+    - during the regroup, Kitchen leaves Patio's group again, leads Office and plays the moved
+      queue, and Patio is idle;
+    - during the start, Kitchen's device plays the moved queue while Kitchen is listed in
+      Patio's group, idle, with Office still following Kitchen.
+    """
+    _sonos, (den, kitchen, office, patio) = await _speakers(
+        scenario, "Den", "Kitchen", "Office", "Patio"
+    )
+    ids = [_player_id(scenario, p) for p in (den, kitchen, office, patio)]
+    den_id, kitchen_id, office_id, patio_id = ids
+    players = scenario.mass.players
+    await players.cmd_set_members(den_id, player_ids_to_add=[kitchen_id, office_id])
+    await scenario.idle()
+    await scenario.play(den_id)
+    _slow(kitchen, "set_members" if step == "regroup" else "play_media", 40, once=True)
+    hand_over = await scenario.command(players.cmd_ungroup(den_id))
+
+    await scenario.advance(10)
+    assert not hand_over.done()
+    await players.cmd_set_members(patio_id, player_ids_to_add=[kitchen_id])
+    await scenario.report(kitchen)
+    await scenario.advance(200)
+    await hand_over
+    await scenario.idle()
+
+    names = dict(zip(ids, ("Den", "Kitchen", "Office", "Patio"), strict=True))
+    if step == "regroup":
+        assert _seen(scenario, names) == {
+            "Den": IDLE,
+            "Kitchen": PLAYS_MOVED,
+            "Office": (PlaybackState.PLAYING, [], TEST_TRACK_URI, "Kitchen", None),
+            "Patio": IDLE,
+        }
+    else:
+        assert _seen(scenario, names) == {
+            "Den": IDLE,
+            "Kitchen": (PlaybackState.IDLE, [TEST_TRACK_URI], None, "Patio", None),
+            "Office": (PlaybackState.IDLE, [], None, "Kitchen", None),
+            "Patio": IDLE,
+        }
+    assert _rendered(den, kitchen, office, patio) == {
+        "Den": (PlaybackState.IDLE, None),
+        "Kitchen": (PlaybackState.PLAYING, TEST_TRACK_URI),
+        "Office": (PlaybackState.IDLE, None),
+        "Patio": (PlaybackState.IDLE, None),
+    }

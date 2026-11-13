@@ -1108,13 +1108,25 @@ still lists it, at the other track.
   - `test_commands.py::test_a_transfer_whose_target_joins_another_group_meanwhile_still_completes`
   - `test_commands.py::test_a_transfer_whose_target_a_group_takes_meanwhile_still_completes`
 
-### BUSY-11 · A play on the player a queue moved away from waits until the other one plays
+### BUSY-9 · A play on the player a queue moved away from waits until the other one plays
 
 Kitchen takes 40 s to start the queue moved there from Den. Den has stopped and its queue is empty
 by then, but a play on Den sent meanwhile waits until Kitchen plays, and then plays on Den.
 
 - End-to-end: **no**: it needs a device that takes that long over a command.
 - Proven by: `test_commands.py::test_a_play_on_the_source_waits_until_the_target_of_a_transfer_plays`
+
+### BUSY-10 · A hand-over whose new leader joins another group meanwhile still completes
+
+Den leads Kitchen and Office, plays its own queue and leaves its group: its queue moves to
+Kitchen, the new leader, which takes 40 s to regroup Office, or to start the queue. Meanwhile
+Kitchen joins Patio's group. The hand-over still completes, and Den is idle with an empty queue.
+When Kitchen joined during the regroup, it leaves Patio's group again, leads Office and plays the
+moved queue. When it joined during the start, Kitchen's speaker plays the moved queue while
+Kitchen is listed in Patio's group.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_hand_over_whose_new_leader_joins_another_group_meanwhile_completes`
 
 ## What a stopped player keeps for a moment
 
