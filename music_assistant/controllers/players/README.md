@@ -613,8 +613,8 @@ decide.
 
 For the whole change the executor keeps the objects it addresses (the leader, the protocol the
 group joins, the protocol it leaves). It takes no lock of its own: a change runs under the locks
-its entry holds (`cmd_set_members` takes the target's, after that of a static group holding it),
-and the nested commands it calls take theirs.
+its entry holds (`cmd_set_members` takes the target's, after that of a static group holding it,
+and those of the players it adds or removes), and the nested commands it calls take theirs.
 
 A trigger (play media with `play_media_overrides_group`, select source, power off, disabling, an
 announcement, a queue transfer) decides whether a player leaves what holds it and through which
@@ -655,15 +655,18 @@ A command holds the lock of the player it works on, and of no player it only pas
 - A command that works on the player under its group uses `get_group_and_player_lock`. It takes
   the lock of the group holding the player (following the same redirect as `cmd_set_members`),
   then the player's own, and holds both from the release of the group to the command on the
-  player. A power off, an announcement, a source selection, a member change on a player under a
-  static group, a play media that takes the player out of its group and the queue play actions
-  use it.
+  player. A power off, an announcement, a source selection, a play media that takes the player
+  out of its group and the queue play actions use it.
 - A playback command that is redirected to the owner (stop, play, resume, and play media with the
   override off) works on the owner and holds the owner's lock alone. The owner's handler locks
   each member it works on itself; a universal group plays each member in a task of its own, which
   takes that member's lock.
-- A command that works on two players uses `get_playback_locks` and holds each of them the way
-  `get_group_and_player_lock` does. A queue transfer holds the source's and the target's player
+- A command that works on several players uses `get_playback_locks` and holds each of them the
+  way `get_group_and_player_lock` does. A member change (`cmd_set_members`, and the joins and
+  ungroups that go through it) holds its target, after the static group holding it, and each
+  player it adds or removes, after the owner that player has now. So no player that a command
+  holds gets another owner under it: the change waits for that command, or fails as busy before
+  it changed anything. A queue transfer holds the source's and the target's player
   from before it reads either queue until the target plays; the hand-over of a playing sync
   leader's queue holds the old and the new leader from the transfer to the resume on the new one.
   A transfer that plays on a target switched off at its power control powers it on before it
@@ -698,6 +701,9 @@ Group changes nobody issued as a command:
 - Work that a handler hands to tasks of its own and waits for never waits for a lock its caller
   holds: a universal group plays a member whose lock the calling command holds (a play action on
   that member's own queue) in the command's own task.
+- A group player that captures its members itself (a sync group that forms, a universal group
+  that powers on) takes no member's lock. A command that holds such a member finds the group as
+  its new owner at its next check and fails as busy there.
 - A change that comes from a device itself (speakers grouped in the vendor's app) holds no lock of
   ours. A command notices the new owner at its next check; a wait for that owner's lock ends in a
   busy error at the timeout, never in running without the lock.

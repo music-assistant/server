@@ -12,7 +12,15 @@ from music_assistant_models.player import PlayerMedia, PlayerSource
 
 from tests.common import record_lock_waits
 
-from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakeProtocol, Scenario
+from .harness import (
+    DEFAULT_FEATURES,
+    MUSIC_PROVIDER,
+    TEST_TRACK_URI,
+    FakePlayerProvider,
+    FakeProtocol,
+    Scenario,
+)
+from .test_grouping import _player_id, _speakers
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
 KITCHEN = {
@@ -60,9 +68,9 @@ def _slow(speaker: FakeProtocol, command: str, seconds: float) -> None:
     """Let a command of the device take the given time before it does what it does."""
     handle = getattr(FakeProtocol, command)
 
-    async def _slow_command(*args: object) -> None:
+    async def _slow_command(*args: object, **kwargs: object) -> None:
         await asyncio.sleep(seconds)
-        await handle(speaker, *args)
+        await handle(speaker, *args, **kwargs)
 
     setattr(speaker, command, _slow_command)
 
@@ -331,3 +339,163 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
 
     assert _plays(scenario, bathroom_id) == (PlaybackState.PLAYING, [TEST_TRACK_URI])
     assert _plays(scenario, den_id) == (PlaybackState.IDLE, [])
+
+
+async def _load_test_music(scenario: Scenario) -> None:
+    """Load the server's test music provider, which play() loads on first use."""
+    if scenario.mass.get_provider(MUSIC_PROVIDER) is None:
+        await scenario.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
+
+
+def _synced_to(scenario: Scenario, player_id: str) -> str | None:
+    """Return the player a player is synced to."""
+    state = scenario.player(player_id)
+    assert state is not None
+    return state.synced_to
+
+
+def _sequence(provider: FakePlayerProvider, *steps: tuple[FakeProtocol, str]) -> list[int]:
+    """Return where each (device, command) first shows in the provider's timeline of commands."""
+    timeline = [(protocol_id, command[0]) for protocol_id, command in provider._timeline]
+    return [timeline.index((protocol.protocol_id, name)) for protocol, name in steps]
+
+
+@pytest.mark.parametrize("operation", ["transfer", "hand-over"])
+async def test_a_player_a_queue_moves_to_joins_another_group_once_the_move_is_done(
+    scenario: Scenario, operation: str
+) -> None:
+    """
+    A player that a queue moves to is added to another group only once it plays the queue.
+
+    Den takes 40 s to stop. Kitchen, the player the queue of Den moves to (by a transfer, or
+    as Den's group member when Den leaves its group), is added to Office's group meanwhile.
+    The add must not take Kitchen from under the move, which would end with nobody playing.
+    """
+    sonos, (den, kitchen, office) = await _speakers(scenario, "Den", "Kitchen", "Office")
+    den_id, kitchen_id, office_id = (_player_id(scenario, p) for p in (den, kitchen, office))
+    players = scenario.mass.players
+    if operation == "hand-over":
+        await players.cmd_set_members(den_id, player_ids_to_add=[kitchen_id])
+        await scenario.idle()
+    await scenario.play(den_id)
+    _slow(den, "stop", 40)
+    move = await scenario.command(
+        scenario.mass.player_queues.transfer_queue(den_id, kitchen_id)
+        if operation == "transfer"
+        else players.cmd_ungroup(den_id)
+    )
+
+    await scenario.advance(10)
+    join = await scenario.command(
+        players.cmd_set_members(office_id, player_ids_to_add=[kitchen_id])
+    )
+    assert not join.done()
+
+    await scenario.advance(30)
+    await move
+    await join
+    await scenario.idle()
+
+    play, add = _sequence(sonos, (kitchen, "play_media"), (office, "set_members"))
+    assert play < add
+    assert _synced_to(scenario, kitchen_id) == office_id
+    assert _plays(scenario, den_id) == (PlaybackState.IDLE, [])
+
+
+async def test_a_player_that_is_still_starting_a_play_joins_a_group_after_it(
+    scenario: Scenario,
+) -> None:
+    """A play that takes 40 s at Kitchen is done before Kitchen is added to Office's group."""
+    sonos, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    kitchen_id, office_id = (_player_id(scenario, p) for p in (kitchen, office))
+    await _load_test_music(scenario)
+    _slow(kitchen, "play_media", 40)
+    play = await scenario.command(
+        scenario.mass.player_queues.play_media(kitchen_id, TEST_TRACK_URI)
+    )
+
+    await scenario.advance(10)
+    join = await scenario.command(
+        scenario.mass.players.cmd_set_members(office_id, player_ids_to_add=[kitchen_id])
+    )
+    assert not join.done()
+
+    await scenario.advance(30)
+    await play
+    await join
+    await scenario.idle()
+
+    play_at, add_at = _sequence(sonos, (kitchen, "play_media"), (office, "set_members"))
+    assert play_at < add_at
+    assert _synced_to(scenario, kitchen_id) == office_id
+
+
+async def test_two_groups_that_add_the_same_player_at_once_take_turns(
+    scenario: Scenario,
+) -> None:
+    """
+    Kitchen added to Office's group and to Den's at once ends in the group added last.
+
+    Office takes 40 s to add it. The add to Den's group waits for that, then takes Kitchen
+    over, rather than both changing Kitchen at the same time.
+    """
+    _sonos, (den, kitchen, office) = await _speakers(scenario, "Den", "Kitchen", "Office")
+    den_id, kitchen_id, office_id = (_player_id(scenario, p) for p in (den, kitchen, office))
+    players = scenario.mass.players
+    _slow(office, "set_members", 40)
+    to_office = await scenario.command(
+        players.cmd_set_members(office_id, player_ids_to_add=[kitchen_id])
+    )
+    to_den = await scenario.command(players.cmd_set_members(den_id, player_ids_to_add=[kitchen_id]))
+
+    await scenario.advance(10)
+    assert not to_den.done()
+
+    await scenario.advance(30)
+    await to_office
+    await to_den
+    await scenario.idle()
+
+    assert _synced_to(scenario, kitchen_id) == den_id
+    office_state = scenario.player(office_id)
+    assert office_state is not None
+    assert kitchen_id not in office_state.group_members
+
+
+async def test_adding_a_player_that_stays_busy_fails_and_changes_no_group(
+    scenario: Scenario,
+) -> None:
+    """
+    An add of a player busy with a play that never returns fails as busy after 120 s.
+
+    No group changed: Office has no members and Kitchen is in no group.
+    """
+    _sonos, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    kitchen_id, office_id = (_player_id(scenario, p) for p in (kitchen, office))
+    await _load_test_music(scenario)
+    answered = asyncio.Event()
+
+    async def _play_media_that_never_returns(media: PlayerMedia) -> None:
+        await answered.wait()
+        await FakeProtocol.play_media(kitchen, media)
+
+    kitchen.play_media = _play_media_that_never_returns  # type: ignore[method-assign]
+    scenario.expect_log("Gave up waiting 120s for the playback lock of player Kitchen")
+    play = await scenario.command(
+        scenario.mass.player_queues.play_media(kitchen_id, TEST_TRACK_URI)
+    )
+    join = await scenario.command(
+        scenario.mass.players.cmd_set_members(office_id, player_ids_to_add=[kitchen_id])
+    )
+
+    await scenario.advance(120)
+    with pytest.raises(ResourceBusyError) as busy:
+        await join
+
+    assert busy.value.translation_args == ["Kitchen"]
+    assert [command for command in office.commands if command[0] == "set_members"] == []
+    assert _synced_to(scenario, kitchen_id) is None
+
+    answered.set()
+    await scenario.settle()
+    await play

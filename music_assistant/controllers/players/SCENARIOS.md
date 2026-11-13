@@ -1090,6 +1090,34 @@ once. Once the device is back, Bathroom plays Den's queue, and Den is stopped.
   container of a virtual player.
 - Proven by: `test_commands.py::test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it_powers_on`
 
+### BUSY-8 · A player another command works on joins a group after that command
+
+The queue of Den moves to Kitchen, by a transfer or because Den leaves the group it leads with
+Kitchen, and Den takes 40 s to stop. Kitchen, added to Office's group meanwhile, plays the queue
+first and then joins Office. A play that takes 40 s at Kitchen is done before Kitchen joins too.
+The move or the play is never left half done with nobody playing.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by:
+  - `test_commands.py::test_a_player_a_queue_moves_to_joins_another_group_once_the_move_is_done`
+  - `test_commands.py::test_a_player_that_is_still_starting_a_play_joins_a_group_after_it`
+
+### BUSY-9 · Two groups that take one player at once take turns
+
+Office takes 40 s to add Kitchen to its group. Den adds Kitchen to its own group meanwhile: that
+waits for Office's add, then takes Kitchen over. Kitchen ends in Den's group only.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_two_groups_that_add_the_same_player_at_once_take_turns`
+
+### BUSY-10 · A player that stays busy is not added to a group
+
+A play on Kitchen never returns. Office adds Kitchen to its group: the add fails with a busy error
+that names Kitchen after 120 s, and no group changed.
+
+- End-to-end: **no**: it needs a device that never answers a command.
+- Proven by: `test_commands.py::test_adding_a_player_that_stays_busy_fails_and_changes_no_group`
+
 ## What a stopped player keeps for a moment
 
 A player that stops still names what it played for a moment, so a playback that is replaced, and

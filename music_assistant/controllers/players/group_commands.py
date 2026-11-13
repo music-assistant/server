@@ -103,7 +103,11 @@ class GroupCommandsMixin(_PlayerControllerBase):
         # racing with concurrent play_media / play_index / resume calls.
         # A target whose group leaves member changes to it (a static group) is changed under
         # that group's lock too: moving its output to another protocol resumes the group.
-        async with self.get_group_and_player_lock(parent_player.player_id):
+        # Each player added or removed gets another owner, so it is held too (with the owner
+        # it has now): a command that holds such a player keeps the owner it found.
+        async with self.get_playback_locks(
+            parent_player.player_id, *(player_ids_to_add or ()), *(player_ids_to_remove or ())
+        ):
             await self._handle_set_members(parent_player, player_ids_to_add, player_ids_to_remove)
 
     def check_grouping_access(
