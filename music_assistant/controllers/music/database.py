@@ -120,9 +120,11 @@ class MusicDatabaseSetupMixin:
         """Perform database cleanup/maintenance."""
         self.logger.debug("Performing database cleanup...")
         update_current_task_progress_text("Cleaning old playlog entries")
-        # Remove playlog entries older than 90 days
+        # Remove playlog entries older than 90 days, except the progress of library audiobooks
         await self.database.delete_where_query(
-            DB_TABLE_MEDIA_PROGRESS, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
+            DB_TABLE_MEDIA_PROGRESS,
+            f"timestamp < strftime('%s','now') - {3600 * 24 * 90} "
+            "AND NOT (provider = 'library' AND media_type = 'audiobook')",
         )
         # db tables cleanup
         for ctrl in (
