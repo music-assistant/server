@@ -118,7 +118,7 @@ DEFAULT_FEATURES = frozenset(
 FAKE_SETTING = "fake_setting"
 
 type Role = Literal["native", "audio", "control", "virtual"]
-type Identifiers = Mapping[IdentifierType, str | list[str] | tuple[str, ...]]
+type Identifiers = Mapping[IdentifierType, str]
 
 # The role a protocol reports for each role a scenario names.
 _ROLES: dict[Role, ProtocolRole] = {
@@ -291,6 +291,9 @@ class FakeProtocol(PlayerProtocol):
     def _apply(self, command: str, *args: Any, **state: Any) -> None:
         """Record a command and report the state it leads to."""
         self.commands.append((command, *args))
+        cast("FakePlayerProvider", self.provider)._timeline.append(
+            (self.protocol_id, (command, *args))
+        )
         if state:
             self._set_reported(**state)
             self.update_state()
@@ -300,13 +303,8 @@ class FakeProtocol(PlayerProtocol):
         for key, value in state.items():
             if key == "identifiers":
                 for identifier_type, identifier in value.items():
-                    values = (
-                        list(identifier) if isinstance(identifier, list | tuple) else [identifier]
-                    )
-                    # a device info keeps one identifier per type, so of several values the
-                    # server sees the last one; None (or no value) drops the identifier
-                    for one in values or [None]:
-                        self._attr_device_info.add_identifier(identifier_type, one)
+                    # None (or no value) drops the identifier
+                    self._attr_device_info.add_identifier(identifier_type, identifier)
                     if identifier:
                         self._device.identifiers[identifier_type] = identifier
                     else:
@@ -333,6 +331,7 @@ class FakePlayerProvider(PlayerProvider):
         manifest: ProviderManifest,
         config: ProviderConfig,
         devices: dict[str, _Device],
+        timeline: list[tuple[str, tuple[Any, ...]]],
     ) -> None:
         """
         Initialize the provider.
@@ -341,9 +340,11 @@ class FakePlayerProvider(PlayerProvider):
         :param manifest: The (fake) manifest of the impersonated domain.
         :param config: The provider instance config.
         :param devices: The devices of the scenario, by protocol id.
+        :param timeline: The commands the devices of the scenario received, in order.
         """
         super().__init__(mass, manifest, config)
         self._devices = devices
+        self._timeline = timeline
         self._protocols: dict[str, FakeProtocol] = {}
 
     def protocol(
@@ -364,8 +365,7 @@ class FakePlayerProvider(PlayerProvider):
         :param role: ``"native"`` for the vendor's own control plane, ``"audio"`` for an audio
             protocol of a device (AirPlay, Cast, DLNA, ...), ``"control"`` for control without
             an audio path (LinkPlay), ``"virtual"`` for a group (with ``type=PlayerType.GROUP``).
-        :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...); a list of
-            values reports them one after the other, of which the device info keeps the last.
+        :param identifiers: The device identifiers it reports (MAC, IP, UUID, ...).
         :param session_only: Whether the protocol reports that it exists only while attached,
             like a browser session.
         :param state: Other reported state, as taken by Scenario.report().
@@ -437,6 +437,8 @@ class Scenario:
         self._removals: list[tuple[str | None, Any]] = []
         self._unsubscribe: Callable[[], None] | None = None
         self._devices: dict[str, _Device] = {}
+        # every command any device received, in order: (protocol id, command)
+        self.timeline: list[tuple[str, tuple[Any, ...]]] = []
         self._power_controls: dict[str, FakePowerControl] = {}
         self._commands: set[asyncio.Task[Any]] = set()
         self._threads_busy = 0
@@ -557,7 +559,7 @@ class Scenario:
         :param state: Values by attribute name without the ``_attr_`` prefix (``available``,
             ``powered``, ``volume_level``, ``playback_state``, ``supported_features``, ...),
             plus ``identifiers`` (merged into the reported device info, a None value drops
-            one, a list of values reports several of one type). A role changes with attach().
+            one). A role changes with attach().
         """
         self._check_current(protocol)
         if "role" in state:
@@ -687,17 +689,15 @@ class Scenario:
         self._clock.now = target
         await self.settle()
 
-    async def idle(self, horizon: float = IDLE_HORIZON) -> None:
+    async def idle(self) -> None:
         """
         Let the follow-up work on short timers run (debounces), for an assertion of steady state.
 
-        Raises ScenarioError when the server still has work due within the horizon after it, or
+        Raises ScenarioError when the server still has work due within IDLE_HORIZON after it, or
         a protocol that waits for its player at all, which a scenario lets happen with advance().
-
-        :param horizon: Seconds to pass.
         """
-        await self.advance(horizon)
-        limit = self._clock.now + horizon
+        await self.advance(IDLE_HORIZON)
+        limit = self._clock.now + IDLE_HORIZON
         pending = [
             task_id
             for task_id, handle in self.mass._tracked_timers.items()
@@ -712,7 +712,9 @@ class Scenario:
             if not handle.cancelled()
         ]
         if pending:
-            msg = f"Not idle after {horizon} s, still pending: {sorted(pending)}; use advance()"
+            msg = (
+                f"Not idle after {IDLE_HORIZON} s, still pending: {sorted(pending)}; use advance()"
+            )
             raise ScenarioError(msg)
 
     async def restart(self) -> None:
@@ -773,6 +775,10 @@ class Scenario:
                 # only thread work is left, which reports back through the loop: nothing on
                 # the loop can run meanwhile, and a loop timer would wait for the clock
                 time.sleep(0.001)  # noqa: ASYNC251
+
+    def wall_time(self) -> float:
+        """Return the wall clock time as the server reads it (time.time()), for reported state."""
+        return self._clock.wall_time()
 
     def protocol(self, protocol_id: str) -> FakeProtocol:
         """
@@ -1129,7 +1135,7 @@ class Scenario:
         async def _setup_provider(
             mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
         ) -> FakePlayerProvider:
-            return FakePlayerProvider(mass, manifest, config, self._devices)
+            return FakePlayerProvider(mass, manifest, config, self._devices, self.timeline)
 
         async def _load_module(domain: str, requirements: list[str]) -> Any:
             if domain in fake_domains:
@@ -1215,9 +1221,7 @@ class _Device:
     provider_id: str
     # reported state by attribute name, as taken by Scenario.report()
     state: dict[str, Any]
-    identifiers: dict[IdentifierType, str | list[str] | tuple[str, ...]] = field(
-        default_factory=dict
-    )
+    identifiers: dict[IdentifierType, str] = field(default_factory=dict)
     session_only: bool = False
     present: bool = False
 

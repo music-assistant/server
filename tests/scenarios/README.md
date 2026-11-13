@@ -61,7 +61,7 @@ tests of the harness itself.
 |---|---|
 | `add_provider(domain)`, `reload_provider(provider)`, `remove_provider(provider)` | load a new fake provider instance, reload one, remove one as a user does |
 | `attach(protocol, role=None)`, `detach(protocol)` | the provider found the device (again, possibly in a new role), or lost it |
-| `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...); a list of identifier values reports several of one type |
+| `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...); a None identifier value drops it |
 | `remove(player_id)`, `enable(id)`, `disable(id)`, `configure_player(id, **values)` | what a user does with a player |
 | `add_power_control(id, name)`, `switch(control, powered)` | an external power control (select it with `configure_player(id, power_control=...)`), switched by hand |
 | `play(player_id)` | play a track on the player through its queue, as a client does; returns once the player reports playing |
@@ -81,6 +81,8 @@ tests of the harness itself.
 | `await player_configs()` | the stored player configs as the settings page lists them, disabled ones included |
 | `protocol_config(protocol_id)` | the stored config values of a protocol object, None when none is stored |
 | `await stored_config_mentioning(text)` | every key and value of the stored config (settings.json) that mentions the text, e.g. a protocol id |
+| `wall_time()` | the wall clock time as the server reads it (`time.time()`), e.g. for an `elapsed_time_last_updated` a device reports |
+| `timeline` | every command any device received, in order, as (protocol id, command), as each protocol records it in `protocol.commands` |
 | `events(*types)`, `clear_events()` | the emitted events in order, from the boot on; repeats of an update event collapsed |
 | `removals()` | the player id and the data of every `PLAYER_REMOVED` event in order, from the boot on |
 | `provider(domain_or_id)`, `protocol(protocol_id)` | the loaded fake provider, the current protocol object of a device |
@@ -138,6 +140,16 @@ async def test_native_device_attaches_as_available_player(scenario: Scenario) ->
 
 Take player ids from the observations rather than from the protocol ids: a new player gets an
 id of its own.
+
+## The scenarios document
+
+Every scenario is written out in plain words in the players controller's
+[SCENARIOS.md](../../music_assistant/controllers/players/SCENARIOS.md). A new test goes into exactly
+one entry there: the entry whose rule it proves, or a new entry. A renamed test is renamed there
+too. `tests/controllers/players/test_scenarios_document.py` fails when a test is named by no entry
+or by two, when an entry names a test that does not exist, when a heading is no entry heading,
+when an end-to-end line lacks what a run needs or why there is none, and when a scenario file
+holds a test class: scenarios are functions at the top level of their file.
 
 ## One xfail marker per phase
 

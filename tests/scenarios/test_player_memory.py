@@ -54,14 +54,17 @@ async def test_a_stopped_player_keeps_its_source_for_5_seconds(scenario: Scenari
     assert _active_source(scenario, player_id) == player_id
 
 
-async def test_playing_again_within_5_seconds_keeps_the_source(scenario: Scenario) -> None:
-    """A stop for a moment while the playback is replaced does not lose the source."""
+@pytest.mark.parametrize("state", [PlaybackState.PLAYING, PlaybackState.PAUSED])
+async def test_playing_again_within_5_seconds_keeps_the_source(
+    scenario: Scenario, state: PlaybackState
+) -> None:
+    """A stop for a moment, before the player plays or is paused again, keeps the source."""
     speaker, player_id = await _stopped_player(scenario)
 
     await scenario.advance(3)
-    await scenario.report(speaker, playback_state=PlaybackState.PLAYING)
+    await scenario.report(speaker, playback_state=state)
     await scenario.idle()
-    # a playing device keeps reporting, long after the 5 s
+    # the device keeps reporting, long after the 5 s
     await scenario.report(speaker, volume_level=30)
 
     assert _active_source(scenario, player_id) == "group_queue"

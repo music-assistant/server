@@ -53,9 +53,12 @@ async def test_audio_protocol_without_a_hardware_address_waits_for_its_device(
     assert scenario.mass.config.get(CONF_PLAYER_PROTOCOLS, {}) == {}
 
     await scenario.advance(1)
-    await scenario.idle()
 
-    player_id = scenario.single_player(speaker).player_id
+    # the player is there at 15 s, before any follow-up work runs
+    players = scenario.players_carrying(speaker)
+    assert len(players) == 1
+    player_id = players[0].player_id
+    await scenario.idle()
     assert player_id.startswith("pl")
     assert scenario.events(*PLAYER_EVENTS) == [Event(EventType.PLAYER_ADDED, player_id)]
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY
 
 import pytest
@@ -15,9 +15,17 @@ from music_assistant.constants import (
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_UNLINKED_FROM,
+    SETUP_REASON_PROVIDER_NOT_INSTALLED,
+)
+from music_assistant.helpers.config_entries import (
+    create_connected_players_entry,
+    create_player_selector,
 )
 
 from .harness import Event, Role, Scenario, VisiblePlayer
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
 
 LIVING = {
     IdentifierType.MAC_ADDRESS: "A8:40:41:00:00:01",
@@ -86,7 +94,7 @@ async def test_player_without_other_protocols_goes_with_its_removed_provider(
 
 
 async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Scenario) -> None:
-    """A removed player whose device is still there comes back as a new player with its defaults."""
+    """A removed player whose device is still there comes back new: a new id, its defaults."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
@@ -109,9 +117,11 @@ async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Sc
             outputs=(("wiim", True),),
         )
     ]
+    new_player_id = scenario.single_player(current).player_id
+    assert new_player_id != player_id
     assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
         Event(EventType.PLAYER_REMOVED, player_id),
-        Event(EventType.PLAYER_ADDED, scenario.single_player(current).player_id),
+        Event(EventType.PLAYER_ADDED, new_player_id),
     ]
 
 
@@ -222,13 +232,14 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
     """
     A session-only player the user customised keeps its config while it is away.
 
-    It comes back with the config, and still exists only while attached.
+    It comes back with the config, and still exists only while attached: it goes again once
+    it detaches, its config stays.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
     player_id = scenario.single_player(browser).player_id
-    await scenario.configure_player(player_id, name="Marcel's browser")
+    await scenario.configure_player(player_id, name="Den browser")
 
     await scenario.detach(browser)
     await scenario.restart()
@@ -236,14 +247,23 @@ async def test_customised_session_only_player_keeps_its_config(scenario: Scenari
 
     assert scenario.visible_players() == []
     assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
-        (player_id, "Marcel's browser")
+        (player_id, "Den browser")
     ]
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    returned = scenario.protocol("sendspin_web_3f2a")
+    await scenario.attach(returned)
     await scenario.idle()
 
     assert [(p.player_id, p.name) for p in scenario.visible_players()] == [
-        (player_id, "Marcel's browser")
+        (player_id, "Den browser")
+    ]
+
+    await scenario.detach(returned)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
+        (player_id, "Den browser")
     ]
 
 
@@ -321,7 +341,7 @@ async def test_a_session_only_player_whose_client_disconnects_is_gone_for_now(
 
 
 async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario) -> None:
-    """A removed player is announced as removed for good; its device comes back as a new player."""
+    """A player the user removes is announced as removed for good."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
@@ -335,7 +355,7 @@ async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario)
 
 
 async def test_a_player_merged_into_another_one_is_removed_for_good(scenario: Scenario) -> None:
-    """The player that goes in a merge is announced as removed for good: its queue goes with it."""
+    """The player that goes in a merge is announced as removed for good."""
     airplay = await scenario.add_provider("airplay")
     chromecast = await scenario.add_provider("chromecast")
     tv_airplay = airplay.protocol(
@@ -689,3 +709,79 @@ async def test_what_an_older_version_stored_goes_at_the_next_start(scenario: Sce
     await scenario.idle()
 
     assert scenario.player_of(scenario.protocol("sendspin_web_3f2a")) == "sendspin_web_3f2a"
+
+
+def _stored_player(player_id: str, provider: str, name: str) -> dict[str, Any]:
+    """Return the stored config of a player of this version that has no protocol stored."""
+    return {
+        "player_id": player_id,
+        "provider": provider,
+        "player_type": "player",
+        "enabled": True,
+        "default_name": name,
+        "values": {},
+    }
+
+
+async def test_a_stored_player_whose_provider_is_not_installed_says_so(
+    scenario: Scenario,
+) -> None:
+    """
+    A stored player of a provider this install does not have is listed, and says why.
+
+    It is unavailable with the setup reason that its provider is not installed. A player of a
+    provider that is installed but not set up is unavailable without that reason.
+    """
+    await scenario.seed_config(
+        {
+            CONF_PLAYERS: {
+                "pl0a1b2c3d4e5f": _stored_player("pl0a1b2c3d4e5f", "retired_speakers", "Patio"),
+                "pl1b2c3d4e5f6a": _stored_player("pl1b2c3d4e5f6a", "sonos", "Kitchen"),
+            }
+        }
+    )
+    await scenario.idle()
+
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
+        ("pl1b2c3d4e5f6a", "Kitchen", False),
+        ("pl0a1b2c3d4e5f", "Patio", False),
+    ]
+    not_installed = scenario.player("pl0a1b2c3d4e5f")
+    assert not_installed is not None
+    assert not_installed.setup_reason == SETUP_REASON_PROVIDER_NOT_INSTALLED
+    not_loaded = scenario.player("pl1b2c3d4e5f6a")
+    assert not_loaded is not None
+    assert not_loaded.setup_reason is None
+
+
+async def test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choice(
+    scenario: Scenario,
+) -> None:
+    """
+    The player pickers a plugin builds its settings with offer no browser player.
+
+    A browser player that is the plugin's choice already stays offered, so saving the form
+    keeps it.
+    """
+    wiim = await scenario.add_provider("wiim")
+    sendspin = await scenario.add_provider("sendspin")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(living)
+    await scenario.attach(browser)
+    await scenario.idle()
+    living_id = scenario.single_player(living).player_id
+
+    def _offered(entry: ConfigEntry) -> list[str]:
+        return [str(option.value) for option in entry.options]
+
+    assert _offered(create_player_selector(scenario.mass, "player")) == [living_id]
+    assert _offered(create_connected_players_entry(scenario.mass)) == [living_id]
+    assert _offered(create_player_selector(scenario.mass, "player", "sendspin_web_3f2a")) == [
+        living_id,
+        "sendspin_web_3f2a",
+    ]
+    assert _offered(create_connected_players_entry(scenario.mass, ["sendspin_web_3f2a"])) == [
+        living_id,
+        "sendspin_web_3f2a",
+    ]
