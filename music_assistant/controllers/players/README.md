@@ -672,6 +672,11 @@ A command holds the lock of the player it works on, and of no player it only pas
     one that then fails as busy has switched it on.
   - The hand-over of a playing sync leader's queue holds the old and the new leader from the
     transfer to the resume on the new one.
+  - A member change, or a group that takes its members itself (a sync group that forms, a
+    universal group that powers on), does not take the lock of the players it takes, so a player
+    that a transfer holds can still get another owner. The transfer then starts the target, and
+    the hand-over regroups and resumes the new leader, once it let go of both players: as play
+    actions of their own, which take the new owner's lock first.
 
 Either way the command never holds a player's lock while it waits for the lock of that player's
 owner:
