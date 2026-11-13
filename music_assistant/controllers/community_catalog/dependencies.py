@@ -35,6 +35,9 @@ _UV_INDEX_ARGS: list[str] = [
 ]
 _LOCK_FILE = "requirements.lock"
 _INPUTS_HASH_PREFIX = "# inputs: "
+_ENVIRONMENT_PREFIX = "# python: "
+# a wheel with native code only fits the Python version and platform it was installed for
+_ENVIRONMENT = f"{sys.implementation.cache_tag}-{sysconfig.get_platform()}"
 # uv exits with 1 when the requirements cannot be resolved; any other failure is its own
 _EXIT_CONFLICT = 1
 # a package name with optional extras and version specifiers; never a URL or an option for uv
@@ -69,10 +72,11 @@ class DependenciesUnavailable(MusicAssistantError):
 
 @dataclass(frozen=True, slots=True)
 class ResolvedDependencies:
-    """The pinned requirements of all community providers and a hash of what they came from."""
+    """The pinned requirements of all community providers and what they were resolved for."""
 
     pins: tuple[str, ...]
     inputs_hash: str
+    environment: str
 
 
 class CommunityDependencies:
@@ -92,9 +96,9 @@ class CommunityDependencies:
         Resolve the requirements of all community providers against the server's own packages.
 
         The result holds only what the server does not have. Pins of the installed set are kept
-        unless a requirement forces a change. When neither the server's packages nor the
-        requirements changed since the last sync, the installed set is returned without uv.
-        Nothing on disk changes.
+        unless a requirement forces a change. When the server's packages, its Python and the
+        requirements are as they were at the last sync, the installed set is returned without
+        uv. Nothing on disk changes.
 
         :param requirements: The requirements per provider domain. When two providers clash,
             the later one is refused.
@@ -109,10 +113,10 @@ class CommunityDependencies:
         union = sorted({req for reqs in requirements.values() for req in reqs})
         inputs_hash = hashlib.sha256("\n".join([*constraints, "", *union]).encode()).hexdigest()
         current = await asyncio.to_thread(self._read_lock)
-        if inputs_hash == current.inputs_hash:
+        if (inputs_hash, _ENVIRONMENT) == (current.inputs_hash, current.environment):
             return current
         if not union:
-            return ResolvedDependencies((), inputs_hash)
+            return ResolvedDependencies((), inputs_hash, _ENVIRONMENT)
         workdir = await asyncio.to_thread(tempfile.mkdtemp, prefix="community_deps_")
         try:
             output = os.path.join(workdir, _LOCK_FILE)
@@ -130,7 +134,7 @@ class CommunityDependencies:
             )
         finally:
             await asyncio.to_thread(shutil.rmtree, workdir, True)
-        return ResolvedDependencies(pins, inputs_hash)
+        return ResolvedDependencies(pins, inputs_hash, _ENVIRONMENT)
 
     async def touches_imported(self, pins: Sequence[str]) -> bool:
         """
@@ -153,11 +157,17 @@ class CommunityDependencies:
         if resolved == current:
             return
         new_lock = f"{self._lock_path}.new"
-        await asyncio.to_thread(
-            _write_lines, new_lock, [f"{_INPUTS_HASH_PREFIX}{resolved.inputs_hash}", *resolved.pins]
+        header = (
+            f"{_INPUTS_HASH_PREFIX}{resolved.inputs_hash}",
+            f"{_ENVIRONMENT_PREFIX}{resolved.environment}",
         )
-        if resolved.pins != current.pins:
-            args = ("--target", self.path, "--allow-empty-requirements")
+        await asyncio.to_thread(_write_lines, new_lock, [*header, *resolved.pins])
+        reinstall = resolved.environment != current.environment
+        if reinstall or resolved.pins != current.pins:
+            args = ["--target", self.path, "--allow-empty-requirements"]
+            if reinstall:
+                # what is in the folder was installed for another Python or platform
+                args.append("--reinstall")
             if (cause := await self._uv("sync", new_lock, *args)) is not None:
                 raise DependenciesUnavailable(cause)
             # a package new in a folder that is already on sys.path is only found after this
@@ -246,13 +256,20 @@ class CommunityDependencies:
         raise DependenciesUnavailable(msg)
 
     def _read_lock(self) -> ResolvedDependencies:
-        """Return the installed pins and the hash of their inputs (blocking)."""
+        """Return the installed pins and what they were resolved for (blocking)."""
         try:
             lines = _read_lines(self._lock_path)
         except FileNotFoundError:
-            return ResolvedDependencies((), "")
-        inputs_hash = lines[0].removeprefix(_INPUTS_HASH_PREFIX) if lines else ""
-        return ResolvedDependencies(_pins(lines), inputs_hash)
+            lines = []
+        header = {
+            prefix: line.removeprefix(prefix)
+            for line in lines
+            for prefix in (_INPUTS_HASH_PREFIX, _ENVIRONMENT_PREFIX)
+            if line.startswith(prefix)
+        }
+        return ResolvedDependencies(
+            _pins(lines), header.get(_INPUTS_HASH_PREFIX, ""), header.get(_ENVIRONMENT_PREFIX, "")
+        )
 
     def _touches_imported(self, keep: set[str]) -> bool:
         """Return whether a module is imported from a package that is not in keep (blocking)."""

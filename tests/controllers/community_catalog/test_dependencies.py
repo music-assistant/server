@@ -128,7 +128,7 @@ async def test_sync_removes_what_the_lock_no_longer_has(deps: CommunityDependenc
     await deps.sync(await deps.resolve({"two": ["uses-server"]}))
     assert not (Path(deps.path) / "newdep").exists()
     assert (Path(deps.path) / "uses_server").is_dir()
-    assert (Path(deps.path) / "requirements.lock").read_text().splitlines()[1:] == [
+    assert (Path(deps.path) / "requirements.lock").read_text().splitlines()[2:] == [
         "uses-server==1.0"
     ]
 
@@ -148,8 +148,25 @@ async def test_unavailable_uv(
     with pytest.raises(DependenciesUnavailable):
         await deps.resolve({"one": ["newdep"]})
     with pytest.raises(DependenciesUnavailable):
-        await deps.sync(ResolvedDependencies(("newdep==2.0",), "changed"))
+        await deps.sync(ResolvedDependencies(("newdep==2.0",), "changed", resolved.environment))
     assert (Path(deps.path) / "requirements.lock").read_text() == lock
+
+
+async def test_another_python_installs_the_folder_again(
+    deps: CommunityDependencies, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a Python or platform change the same pins are installed again."""
+    await deps.sync(await deps.resolve({"one": ["newdep<2"]}))
+    module = Path(deps.path) / "newdep" / "__init__.py"
+    module.write_text("installed for the previous Python")
+    monkeypatch.setattr(dependencies, "_ENVIRONMENT", "another-python")
+
+    resolved = await deps.resolve({"one": ["newdep<2"]})
+    assert resolved.pins == ("newdep==1.0",)
+    await deps.sync(resolved)
+
+    assert module.read_text() == "VERSION = '1.0'\n"
+    assert await deps.resolve({"one": ["newdep<2"]}) == resolved
 
 
 def test_server_constraints_keep_the_installed_build(monkeypatch: pytest.MonkeyPatch) -> None:
