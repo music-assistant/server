@@ -342,9 +342,6 @@ class StationConverter(BaseConverter):
             ),
             provider_mappings={self._create_provider_mapping(station.id)},
         )
-        if station.stream:
-            radio.uri = station.stream
-        return radio
 
     def _convert_live_station(self, station: LiveStation) -> Radio:
         """Convert LiveStation object."""
