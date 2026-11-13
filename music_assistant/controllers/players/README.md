@@ -576,40 +576,44 @@ announcement that plays, or a power on that still waits for the device, holds th
 
 ## Grouping
 
-How a group change reaches the devices is decided in one place: `plan_group_change`
-([grouping_plan.py](grouping_plan.py)). It is a pure function of a `GroupingSnapshot`: per player
-and protocol what grouping reads (the published state, the protocols with their features, the groups
-they report and what they can group with, the outputs, the active and the preferred output, the
-queue it plays). It returns the steps of the change: which protocol of each member carries it, who
-leads, what is released first, what is refused and why, the lines for the log. The snapshot builds
-the view of a player or protocol when the plan first reads it, and asks whether two protocols group
-natively only for the pair the plan asks about, so a change costs what it reads. A playback start
-whose player has no grouped audio protocol has nothing to regroup and takes no snapshot at all.
-`apply_group_change` ([grouping.py](grouping.py)) runs the steps, and is the only code of the
-controller that calls a protocol's grouping methods. The entries stay what callers use:
-`cmd_set_members`, `cmd_ungroup`, and `_handle_set_members` and `_detach_member` for a group
-provider or a protocol that changes the group of its leader itself.
+How a group change reaches the devices is decided in one place, [grouping_plan.py](grouping_plan.py),
+by pure functions of a `GroupingSnapshot`: per player and protocol what grouping reads (the published
+state, the protocols with their features, the groups they report and what they can group with, the
+outputs, the active and the preferred output, the queue it plays). `plan_group_change` returns the
+steps of a change: who leads, what is released first, what is refused and why, the lines for the log.
+`GroupRules` takes the decisions of the join that completes a member change: which protocol of each
+member carries it, what is refused, whether the leader's output moves and is handed over. The
+snapshot builds the view of a player or protocol when a decision first reads it, and asks whether two
+protocols group natively only for the pair a decision asks about, so a change costs what it reads. A
+playback start whose player has no grouped audio protocol has nothing to regroup and takes no
+snapshot at all. `apply_group_change` ([grouping.py](grouping.py)) runs the steps and the join, and is
+the only code of the controller that calls a protocol's grouping methods. The entries stay what
+callers use: `cmd_set_members`, `cmd_ungroup`, and `_handle_set_members` and `_detach_member` for a
+group provider or a protocol that changes the group of its leader itself.
 
-A change, and a join in particular, is planned in phases, because some of its steps have an
-outcome that decides what follows. The plan stops after each of these:
-- a member released from another leader, giving up a group of its own, or powered on;
-- the content takeover hook;
-- a joining member's output activated, when another member follows (the last one is activated in
-  the plan of the join call);
-- the protocol's join call;
-- the leader's output moved;
-- the protocol it rendered on before stopped and left by its members;
-- a resume.
+A plan stops at a step whose outcome decides what follows, and the change is planned again on a new
+snapshot from where it got to (`GroupProgress`). That is the admission of the members to add: it
+stops after a member is released from another leader, gives up a group of its own, or is powered
+on, and checks the next member on the state after it.
 
-The executor runs the steps, takes a new snapshot and plans on from where the change got to.
-`JoinPhase` lists the phases of a join in order, each with the device call that ends it. What the
-change decided or read before such a step travels with it in its progress (`JoinProgress` for the
-join) and is not read again: the members per protocol, whether the leader played before its output
-moved, the members of the old protocol before it stopped. Everything else is read from the new
-snapshot. So the hand-over of the leader's output is decided on the state after the join call: a
-leader paused on the device while that call ran hands its output over without resuming. This keeps
-every ordering rule plain data that a test reads from the plan, and leaves the executor nothing to
-decide.
+The join is one sequence of device calls (`_join`). With new content the takeover hook of the
+group's protocol runs first, and a failure later in the join aborts the takeover it opened. Then:
+- each joining member's output moves to the group's protocol, then that protocol's join call adds
+  and removes the members;
+- the members that left drop their output, and the leader's output moves to the protocol;
+- members that rode the leader's own stream are released from its own protocol, which stops when
+  the leader hands its output over;
+- on a hand-over the protocol the leader rendered on before stops and lets its members go, the
+  leader resumes when it played, and those members join it again;
+- the members of the leader's own protocol join last, and a dissolved leader stops.
+
+A regroup at a fresh start takes the members off the protocol none of them needs anymore and runs
+the same join. The join reads the players again after each device call and takes its next decision
+on that read. What it decided or read before such a call is carried and not read again: the members
+per protocol, whether the leader played and what it rendered on before its output moved, the
+members of the old protocol before it stopped. So the hand-over of the leader's output is decided on
+the state after the join call: a leader paused on the device while that call ran hands its output
+over without resuming.
 
 For the whole change the executor keeps the objects it addresses (the leader, the protocol the
 group joins, the protocol it leaves). It takes no lock of its own: a change runs under the locks
