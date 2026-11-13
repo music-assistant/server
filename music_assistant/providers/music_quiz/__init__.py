@@ -767,7 +767,9 @@ class MusicQuizPlugin(PluginProvider):
         Attach a guest's web player to the game audio.
 
         :param web_player_id: The player_id of the guest's web player.
+        :raises InsufficientPermissions: if the current user may not use the web player.
         """
+        self.mass.players.check_player_access(web_player_id)
         # hold the playback lock across resolving and joining the session so a
         # guest can never be attached to a session that is being torn down
         async with self._playback_lock:
@@ -782,7 +784,9 @@ class MusicQuizPlugin(PluginProvider):
         Detach a guest's web player from the game audio.
 
         :param web_player_id: The player_id of the guest's web player.
+        :raises InsufficientPermissions: if the current user may not use the web player.
         """
+        self.mass.players.check_player_access(web_player_id)
         async with self._playback_lock:
             if self._playback_session is not None:
                 await self._playback_session.remove_guest_listener(web_player_id)

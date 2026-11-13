@@ -358,17 +358,18 @@ async def test_get_resume_position_returns_matching_bookmark(
     bookmark.entry.id = "ep-1"
     bookmark.position = 90000
     bookmark.created = "2026-07-25T10:00:00"
+    bookmark.changed = "2026-07-26T12:30:00"
 
     provider.conn = Mock()
     provider.conn.get_bookmarks = AsyncMock(return_value=[bookmark])
 
-    fully_played, position, created = await provider.get_resume_position(
+    fully_played, position, last_played = await provider.get_resume_position(
         f"pd-1{EP_CHAN_SEP}ep-1", MediaType.PODCAST_EPISODE
     )
 
     assert not fully_played
     assert position == 90000
-    assert isinstance(created, datetime)
+    assert last_played == datetime.fromisoformat(bookmark.changed)
 
 
 @pytest.mark.asyncio

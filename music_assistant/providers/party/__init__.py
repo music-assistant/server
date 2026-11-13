@@ -997,9 +997,11 @@ class PartyPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         :returns: Result dict with success status and the party queue ID.
+        :raises InsufficientPermissions: if the current user may not use the web player.
         """
         if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
             raise InvalidDataError("Party guest access is disabled")
+        self.mass.players.check_player_access(web_player_id)
 
         # hold the session lock across resolving and joining the session so a
         # guest can never be attached to a session that is being torn down
@@ -1022,7 +1024,9 @@ class PartyPlugin(PluginProvider):
 
         :param web_player_id: The player_id of the guest's web player.
         :returns: Result dict with success status.
+        :raises InsufficientPermissions: if the current user may not use the web player.
         """
+        self.mass.players.check_player_access(web_player_id)
         async with self._session_lock:
             if self._session is not None:
                 await self._session.remove_guest_listener(web_player_id)

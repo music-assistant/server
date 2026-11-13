@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     StreamType,
     TaskScheduleType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -366,7 +366,7 @@ class ITunesPodcastsProvider(MusicProvider):
                     cache_expiration=self._get_cache_expiration(),
                 )
                 self.logger.debug("Synced podcast %s.", podcast.name)
-            except MediaNotFoundError:
+            except MediaNotFoundError, ProviderUnavailableError:
                 # If we are not able to refresh the podcast, we must prevent the sync
                 # from deleting the podcast from the library - that is both a breaking change
                 # (pre March 2026) and certainly not desired just because of some downtime.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
@@ -999,3 +999,12 @@ def parse_audio_format(deezer_format: str) -> AudioFormat:
         bit_depth=24 if deezer_format == "FLAC_24" else 16,
         bit_rate={"MP3_320": 320, "MP3_128": 128}.get(deezer_format),
     )
+
+
+def parse_bookmark_time(bookmarked_at: str) -> datetime | None:
+    """Parse when Deezer saved a podcast episode bookmark."""
+    timestamp = parse_date(bookmarked_at)
+    if timestamp is not None and timestamp.tzinfo is None:
+        # the core compares against an aware timestamp; Deezer's times are UTC
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp

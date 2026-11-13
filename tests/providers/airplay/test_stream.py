@@ -113,6 +113,7 @@ def _make_player() -> MagicMock:
     prov.mass.streams.publish_ip = "192.168.1.99"
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
+    prov.mass.runtime_path = "/ma-runtime"
     player.provider = prov
     return player
 
@@ -773,6 +774,12 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
     first_stream = AirPlayStream(player)
     second_stream = AirPlayStream(player)
     assert first_stream.commands_pipe.path != second_stream.commands_pipe.path
+
+
+def test_command_pipe_lives_in_the_runtime_dir() -> None:
+    """The command pipe is created in the server's runtime dir."""
+    stream = AirPlayStream(_make_player())
+    assert Path(stream.commands_pipe.path).parent == Path("/ma-runtime")
 
 
 @pytest.mark.asyncio

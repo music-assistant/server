@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -32,6 +33,7 @@ from music_assistant.controllers.webserver.remote_access import (
 )
 from music_assistant.controllers.webserver.remote_access.gateway import (
     DATA_CHANNEL_CHUNK_SIZE,
+    DATA_CHANNEL_INBOUND_MAX_BYTES,
     HTTP_PROXY_CONCURRENCY,
     WebRTCGateway,
     WebRTCSession,
@@ -2089,6 +2091,202 @@ async def test_send_chunked_stops_framing_once_the_channel_closes(
     # the guard and the send of the first piece, then the guard again: the other ten pieces
     # are never framed
     assert channel.open_checks == 3
+
+
+_INBOUND_SENTINEL = "sentinel"
+_MISSING = object()
+
+
+def _chunk_frame(group_id: Any, seq: Any, count: Any, piece: bytes) -> str:
+    """Build a client __chunk__ frame carrying ``piece``."""
+    return json.dumps(
+        {
+            "type": "__chunk__",
+            "id": group_id,
+            "seq": seq,
+            "count": count,
+            "b64": base64.b64encode(piece).decode(),
+        }
+    )
+
+
+@contextlib.asynccontextmanager
+async def _inbound_pump(
+    cert_pems: tuple[str, str],
+) -> AsyncIterator[tuple[WebRTCGateway, _FakeBidiChannel, _FakeLocalWS, WebRTCSession]]:
+    """Run the real ma-api bridge against fakes and tear it down afterwards."""
+    fake_ws = _FakeLocalWS()
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock(
+        return_value=cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    )
+    cert_pem, key_pem = cert_pems
+    gateway = WebRTCGateway(
+        http_session=http_session, remote_id="TEST-REMOTE-ID", cert_pem=cert_pem, key_pem=key_pem
+    )
+    channel = _FakeBidiChannel()
+    session = _register_bridge_session(gateway, "inbound-session", channel)
+    bridge = asyncio.ensure_future(gateway._bridge_ma_api(session, cast("DataChannel", channel)))
+    try:
+        await _wait_for(lambda: session.local_ws is not None)
+        yield gateway, channel, fake_ws, session
+    finally:
+        channel.close()
+        await asyncio.wait_for(bridge, timeout=5)
+        await _wait_for(lambda: "inbound-session" not in gateway.sessions)
+
+
+async def _forwarded(channel: _FakeBidiChannel, fake_ws: _FakeLocalWS) -> list[str | bytes]:
+    """Return what reached the local WS so far; the sentinel proves the pump kept running."""
+    channel.feed(_INBOUND_SENTINEL)
+    await _wait_for(lambda: bool(fake_ws.sent) and fake_ws.sent[-1] == _INBOUND_SENTINEL)
+    return fake_ws.sent[:-1]
+
+
+async def _chunked_frames(gateway: WebRTCGateway, text: str) -> list[str]:
+    """Chunk ``text`` with the real outbound sender."""
+    out = _FakeDataChannel()
+    await gateway._send_chunked(cast("DataChannel", out), text)
+    assert len(out.sent) > 1
+    return out.sent
+
+
+async def _assert_session_closed(
+    gateway: WebRTCGateway, fake_ws: _FakeLocalWS, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Assert a chunk violation ended the pump and tore the session down with nothing forwarded."""
+    await _wait_for(lambda: "inbound-session" not in gateway.sessions)
+    assert fake_ws.sent == []
+    assert "Closing session inbound-session" in caplog.text
+
+
+async def test_inbound_chunks_reassemble_in_order(cert_pems: tuple[str, str]) -> None:
+    """Frames from the outbound sender reassemble byte-identically, even split mid-character."""
+    text = '{"data":"' + "音楽" * DATA_CHANNEL_CHUNK_SIZE + '"}'
+    async with _inbound_pump(cert_pems) as (gateway, channel, fake_ws, session):
+        for frame in await _chunked_frames(gateway, text):
+            channel.feed(frame)
+        assert await _forwarded(channel, fake_ws) == [text]
+        assert session.chunk_group is None
+
+
+async def test_inbound_back_to_back_messages_both_arrive(cert_pems: tuple[str, str]) -> None:
+    """A second chunked message may start right after the first completes."""
+    text_a = "音楽" * DATA_CHANNEL_CHUNK_SIZE
+    text_b = "b" * (DATA_CHANNEL_CHUNK_SIZE * 2)
+    async with _inbound_pump(cert_pems) as (gateway, channel, fake_ws, _session):
+        for frame in await _chunked_frames(gateway, text_a) + await _chunked_frames(
+            gateway, text_b
+        ):
+            channel.feed(frame)
+        assert await _forwarded(channel, fake_ws) == [text_a, text_b]
+
+
+async def test_inbound_empty_piece_is_accepted(cert_pems: tuple[str, str]) -> None:
+    """An empty piece inside a valid group is harmless."""
+    async with _inbound_pump(cert_pems) as (_gateway, channel, fake_ws, _session):
+        channel.feed(_chunk_frame(1, 0, 3, b"ab"))
+        channel.feed(_chunk_frame(1, 1, 3, b""))
+        channel.feed(_chunk_frame(1, 2, 3, b"cd"))
+        assert await _forwarded(channel, fake_ws) == ["abcd"]
+
+
+async def test_inbound_one_byte_under_the_cap_is_forwarded(cert_pems: tuple[str, str]) -> None:
+    """The largest message aiohttp still accepts goes through."""
+    total = DATA_CHANNEL_INBOUND_MAX_BYTES - 1
+    piece_size = DATA_CHANNEL_CHUNK_SIZE
+    count = -(-total // piece_size)
+    async with _inbound_pump(cert_pems) as (_gateway, channel, fake_ws, _session):
+        for seq in range(count):
+            size = min(piece_size, total - seq * piece_size)
+            channel.feed(_chunk_frame(1, seq, count, b"x" * size))
+        assert await _forwarded(channel, fake_ws) == ["x" * total]
+
+
+async def test_inbound_exactly_the_cap_closes_the_session(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Aiohttp rejects a message of exactly the cap, so the gateway ends the session first."""
+    total = DATA_CHANNEL_INBOUND_MAX_BYTES
+    piece_size = DATA_CHANNEL_CHUNK_SIZE
+    count = -(-total // piece_size)
+    async with _inbound_pump(cert_pems) as (gateway, channel, fake_ws, _session):
+        for seq in range(count):
+            channel.feed(_chunk_frame(1, seq, count, b"x" * piece_size))
+        await _assert_session_closed(gateway, fake_ws, caplog)
+
+
+def _malformed_frame(**overrides: Any) -> str:
+    frame: dict[str, Any] = {"type": "__chunk__", "id": 1, "seq": 0, "count": 2, "b64": "aGk="}
+    frame.update(overrides)
+    return json.dumps({k: v for k, v in frame.items() if v is not _MISSING})
+
+
+@pytest.mark.parametrize(
+    "frames",
+    [
+        [_chunk_frame(1, 0, 3, b"a"), _chunk_frame(1, 2, 3, b"c")],
+        [_chunk_frame(1, 0, 2, b"a"), _chunk_frame(1, 0, 2, b"a")],
+        [_chunk_frame(1, 0, 3, b"a"), _chunk_frame(1, 1, 3, b"b"), _chunk_frame(1, 1, 3, b"b")],
+        [_chunk_frame(1, 0, 2, b"a"), _chunk_frame(2, 0, 2, b"a")],
+        [_chunk_frame(1, 1, 2, b"b")],
+        [_chunk_frame(1, 0, 2, b"a"), _chunk_frame(2, 1, 2, b"b")],
+        [_chunk_frame(1, 0, 2, b"a"), _chunk_frame(1, 1, 3, b"b")],
+        [_malformed_frame(count=0)],
+        [_malformed_frame(id=[1])],
+        [_malformed_frame(id=_MISSING)],
+        [_malformed_frame(id="1")],
+        [_malformed_frame(seq="0")],
+        [_malformed_frame(seq=_MISSING)],
+        [_malformed_frame(count="2")],
+        [_malformed_frame(b64=5)],
+        [_malformed_frame(b64="not base64!")],
+        [_chunk_frame(1, 0, 1, b"\xff\xfe")],
+    ],
+    ids=[
+        "out-of-order",
+        "duplicate-seq-zero",
+        "duplicate-seq",
+        "new-group-while-open",
+        "no-group-open",
+        "group-id-changes",
+        "count-changes",
+        "count-zero",
+        "id-unhashable",
+        "id-missing",
+        "id-string",
+        "seq-string",
+        "seq-missing",
+        "count-string",
+        "b64-not-string",
+        "b64-invalid",
+        "invalid-utf8",
+    ],
+)
+async def test_inbound_chunk_violation_closes_the_session(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture, frames: list[str]
+) -> None:
+    """Any broken framing ends the session instead of forwarding or guessing."""
+    async with _inbound_pump(cert_pems) as (gateway, channel, fake_ws, session):
+        for frame in frames:
+            channel.feed(frame)
+        await _assert_session_closed(gateway, fake_ws, caplog)
+        assert session.chunk_group is None
+
+
+async def test_inbound_plain_messages_pass_through(cert_pems: tuple[str, str]) -> None:
+    """Anything that is not a chunk frame is forwarded verbatim and in order."""
+    messages: list[str | bytes] = [
+        "plain text",
+        '{"command":"players/all","message_id":1}',
+        b"\x00\x01binary",
+        '{"type":"something-else","id":1}',
+    ]
+    async with _inbound_pump(cert_pems) as (_gateway, channel, fake_ws, session):
+        for message in messages:
+            channel.feed(message)
+        assert await _forwarded(channel, fake_ws) == messages
+        assert session.chunk_group is None
 
 
 async def test_dropped_message_is_logged_with_its_size_on_the_wire(

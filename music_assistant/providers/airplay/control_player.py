@@ -79,7 +79,8 @@ if TYPE_CHECKING:
 
     from .provider import AirPlayProvider
 
-_CONTROL_RECONNECT_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_INITIAL_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_MAX_DELAY: Final[float] = 600.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 
 # mDNS TXT keys whose values change with transient playback, session or group
@@ -160,6 +161,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_push_listener: _AirPlayPushListener | None = None
         self._connection_task: asyncio.Task[None] | None = None
         self._connection_lock = asyncio.Lock()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
+        self._reconnect_wakeup = asyncio.Event()
         self._power_on_event = asyncio.Event()
         self._volume_before_mute: int | None = None
         self._disconnecting = False
@@ -482,8 +485,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         if self._connection_task and not self._connection_task.done():
             if not force:
+                # a dropped channel must not wait out another channel's backoff
+                self._reconnect_wakeup.set()
                 return
             self._connection_task.cancel()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
         self._restart_connections = self._restart_connections or force
         self._connection_task = self.mass.create_task(
             self._connection_loop(),
@@ -493,11 +499,18 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def _connection_loop(self) -> None:
         """Connect control services and retry transient failures."""
-        retry = True
-        while retry and not self._unloading:
+        while not self._unloading:
+            self._reconnect_wakeup.clear()
             retry = await self._connect_control_services()
-            if retry:
-                await asyncio.sleep(_CONTROL_RECONNECT_DELAY)
+            if self._reconnect_wakeup.is_set():
+                # a channel dropped during this pass
+                continue
+            if not retry:
+                return
+            delay = self._reconnect_delay
+            self._reconnect_delay = min(delay * 2, _CONTROL_RECONNECT_MAX_DELAY)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._reconnect_wakeup.wait(), delay)
 
     async def _connect_control_services(self) -> bool:
         """Connect Companion and MRP independently."""
