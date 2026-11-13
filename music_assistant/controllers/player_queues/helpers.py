@@ -207,6 +207,33 @@ def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
     return any(is_dynamic_source(item) for item in source_items)
 
 
+def keeps_batch_order(mass: MusicAssistant, item: MediaItemType) -> bool:
+    """
+    Return True if the item's provider wants its dynamic batch queued in the order it returns.
+
+    :param mass: The Music Assistant instance.
+    :param item: The dynamic source item.
+    """
+    instances = {item.provider, *(mapping.provider_instance for mapping in item.provider_mappings)}
+    return any(
+        (provider := mass.get_provider(instance)) is not None and provider.keeps_batch_order
+        for instance in instances
+    )
+
+
+def plays_ordered_source_only(mass: MusicAssistant, source_items: list[MediaItemType]) -> bool:
+    """
+    Return True if the queue's only source is dynamic and keeps its batch order.
+
+    :param mass: The Music Assistant instance.
+    :param source_items: The source items of the queue.
+    """
+    if len({item.uri for item in source_items}) != 1:
+        return False
+    source = source_items[0]
+    return is_dynamic_source(source) and keeps_batch_order(mass, source)
+
+
 def build_queue_item(
     queue_id: str, media_item: PlayableMediaItemType, origin: QueueItemOrigin | None = None
 ) -> QueueItem:

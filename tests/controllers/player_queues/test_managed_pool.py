@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import random
-from collections import Counter
+from collections import Counter, deque
 from itertools import groupby
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.media_items import ItemMapping, Playlist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows, song_keys
+from music_assistant.controllers.player_queues.helpers import keeps_batch_order
 from music_assistant.controllers.player_queues.managed_pool import (
     DynamicFillMode,
     DynamicSource,
@@ -22,6 +23,8 @@ from music_assistant.controllers.player_queues.managed_pool import (
     allocate_refill,
     gate_tracks,
 )
+from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.provider import Provider
 
 NOW = 1_000_000_000
 HOUR = 3600
@@ -483,3 +486,183 @@ async def test_fill_reconciles_after_smart_fade_reordering(
     call = reconcile.await_args
     assert call is not None
     assert call.args[2] == reordered
+
+
+def _ordered_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    candidates: list[Track],
+    tail_ids: list[str],
+    unplayed: int | None = None,
+) -> tuple[ManagedPool, MagicMock, AsyncMock]:
+    """Build a pool whose only source is an ORDERED one; also return its reconcile mock."""
+    queues = MagicMock()
+    pool = ManagedPool(queues)
+    queue = MagicMock(queue_id="q1", current_index=None)
+    queue_data = SimpleNamespace(
+        queue=queue,
+        userid=None,
+        items=[SimpleNamespace(media_item=_track(tid)) for tid in tail_ids],
+    )
+    queues.queue_data_or_none.return_value = queue_data
+    queues.recency_windows.return_value = RecencyWindows()
+    queues.smart_fade_ordering_enabled.return_value = True
+    queues.mass.music.recency.snapshot = AsyncMock(return_value=_snapshot())
+    source = DynamicSource(
+        media_item=_track("seed"),
+        multiplicity=1,
+        fill_mode=DynamicFillMode.ORDERED,
+        candidates=candidates,
+    )
+    reconcile = AsyncMock()
+    monkeypatch.setattr(pool, "_collect_sources", AsyncMock(return_value=[source]))
+    monkeypatch.setattr(pool, "_reconcile_tracks", reconcile)
+    if unplayed is not None:
+        monkeypatch.setattr(pool, "_unplayed", MagicMock(return_value=unplayed))
+    return pool, queues, reconcile
+
+
+@pytest.mark.asyncio
+async def test_fill_ordered_source_keeps_batch_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ordered source is returned unchanged: deduped by identity only, never reordered."""
+    candidates = [_artist_track(cid, "Same Artist") for cid in "abcd"]
+    candidates[2].name = candidates[3].name = "Kapitel"
+    pool, _, reconcile = _ordered_pool(monkeypatch, candidates, ["a"])
+    order_tracks = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.managed_pool.order_tracks", order_tracks
+    )
+
+    result = await pool.fill("q1", is_initial=False)
+
+    assert _ids(result) == ["b", "c", "d"]
+    order_tracks.assert_not_awaited()
+    reconcile.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fill_ordered_source_keeps_the_current_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ordered source may queue the current track again; only the upcoming tail is deduped."""
+    pool, queues, _ = _ordered_pool(
+        monkeypatch, [_track(tid) for tid in "abde"], ["x", "d", "a"], unplayed=1
+    )
+    queues.queue_data_or_none.return_value.queue.current_index = 1
+
+    result = await pool.fill("q1", is_initial=False)
+
+    assert _ids(result) == ["b", "d", "e"]
+
+
+@pytest.mark.asyncio
+async def test_fill_ordered_source_keeps_a_later_copy_of_a_queued_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track the source hands out twice is deduped only as often as it is upcoming."""
+    pool, _, _ = _ordered_pool(monkeypatch, [_track(tid) for tid in "abac"], ["a", "b"], unplayed=2)
+
+    result = await pool.fill("q1", is_initial=False)
+
+    assert _ids(result) == ["a", "c"]
+
+
+@pytest.mark.asyncio
+async def test_fill_ordered_source_respects_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ordered source fills only the free slots, taking the first candidates."""
+    pool, _, _ = _ordered_pool(monkeypatch, [_track(str(i)) for i in range(30)], [], unplayed=10)
+
+    result = await pool.fill("q1", is_initial=False)
+
+    assert _ids(result) == [str(i) for i in range(15)]
+
+
+@pytest.mark.asyncio
+async def test_collect_sources_marks_ordered_only_when_single_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A keep-order playlist is ORDERED alone, and DYNAMIC when mixed with other sources."""
+    queues = MagicMock()
+    pool = ManagedPool(queues)
+    rotation = Playlist(
+        item_id="rot",
+        provider="rotation",
+        name="Rotation",
+        is_dynamic=True,
+        provider_mappings=set(),
+    )
+    album = _track("album")
+    monkeypatch.setattr(pool, "_fetch_dynamic", AsyncMock(return_value=[_track("x")]))
+    monkeypatch.setattr(
+        pool,
+        "_materialize",
+        AsyncMock(return_value=SimpleNamespace(tracks=deque([_track("y")]), multiplicity=1)),
+    )
+    queue_data = SimpleNamespace(userid=None, source_items=[rotation])
+    queues.queue_data_or_none.return_value = queue_data
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.helpers.keeps_batch_order",
+        MagicMock(return_value=True),
+    )
+    alone = await pool._collect_sources("q1", include_dynamic=True)
+    queue_data.source_items = [rotation, album]
+    mixed = await pool._collect_sources("q1", include_dynamic=True)
+
+    assert [s.fill_mode for s in alone] == [DynamicFillMode.ORDERED]
+    assert mixed[0].fill_mode is DynamicFillMode.DYNAMIC
+
+
+def test_keeps_batch_order_checks_provider_mappings() -> None:
+    """A library item counts when any mapped provider instance keeps its batch order."""
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda instance: {
+        "rotation--1": SimpleNamespace(keeps_batch_order=True),
+        "radio--1": SimpleNamespace(keeps_batch_order=False),
+    }.get(instance)
+
+    def _playlist(provider: str, mapped_instance: str) -> Playlist:
+        return Playlist(
+            item_id="p",
+            provider=provider,
+            name="P",
+            provider_mappings={
+                ProviderMapping(item_id="p", provider_domain="x", provider_instance=mapped_instance)
+            },
+        )
+
+    assert keeps_batch_order(mass, _playlist("library", "rotation--1")) is True
+    assert keeps_batch_order(mass, _playlist("radio--1", "radio--1")) is False
+
+
+def test_providers_mix_their_batches_by_default() -> None:
+    """Only a provider that says so keeps its batch order; the base class does not."""
+    assert Provider.keeps_batch_order is False
+    assert PluginProvider.keeps_batch_order is False
+
+
+@pytest.mark.parametrize(("ordered", "shuffled"), [(True, False), (False, True)])
+def test_retiring_the_last_mixed_source_ends_the_forced_shuffle(
+    monkeypatch: pytest.MonkeyPatch, ordered: bool, shuffled: bool
+) -> None:
+    """When only a source that keeps its order is left, the queue is no longer shuffled."""
+    queues = MagicMock()
+    pool = ManagedPool(queues)
+    rotation = Playlist(
+        item_id="rot",
+        provider="rotation",
+        name="Rotation",
+        is_dynamic=True,
+        provider_mappings=set(),
+    )
+    album = _track("album")
+    queue = SimpleNamespace(queue_id="q1", shuffle_enabled=True)
+    queues.get.return_value = queue
+    queues.queue_data.return_value = SimpleNamespace(source_items=[rotation, album])
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.helpers.keeps_batch_order",
+        MagicMock(return_value=ordered),
+    )
+
+    pool._retire_sources("q1", [str(album.uri)])
+
+    queues.store_sources.assert_called_once_with(queue, [rotation])
+    assert queue.shuffle_enabled is shuffled

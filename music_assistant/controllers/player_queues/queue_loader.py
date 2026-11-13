@@ -68,6 +68,7 @@ from music_assistant.controllers.player_queues.helpers import (
     is_finite_radio,
     origin_for,
     played_from_album,
+    plays_ordered_source_only,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.players.constants import SwitchedOffAction
@@ -898,8 +899,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # item is kept only as a source (the bounded pool materializes it) instead of being expanded
         # into the queue. Any other enqueue (PLAY/REPLACE, or onto a linear queue) expands finite
         # items normally. Keys off is_dynamic since a finite-only queue records sources too.
-        # A play-next track is exempt from this (see plays_next_track below).
+        # A play-next track is exempt from this (see inserted_literally below).
         already_dynamic = queue.is_dynamic and option in (QueueOption.ADD, QueueOption.NEXT)
+        # the only source of the queue keeps its own order, so an added track goes to the end
+        # as it is, instead of being mixed into that order as a source of the pool
+        adds_tracks_literally = (
+            already_dynamic
+            and option == QueueOption.ADD
+            and plays_ordered_source_only(self.mass, queue_data.source_items)
+        )
 
         media_items: list[ResolvedItem] = []
         # the subset of media_items the user explicitly picked to play next
@@ -937,6 +945,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     already_dynamic = queue.is_dynamic and option in (
                         QueueOption.ADD,
                         QueueOption.NEXT,
+                    )
+                    adds_tracks_literally = (
+                        already_dynamic
+                        and option == QueueOption.ADD
+                        and plays_ordered_source_only(self.mass, queue_data.source_items)
                     )
 
                 # like the shuffle state below, the first item that resolves decides for the batch
@@ -1010,9 +1023,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         False if shuffle is None and plays_in_order else shuffle,
                     )
 
-                # the user picked this exact track to play next, so it must be inserted literally
-                plays_next_track = (
-                    option == QueueOption.NEXT and media_item.media_type == MediaType.TRACK
+                # the user picked this exact track to play next (or to add after an ordered
+                # source), so it must be inserted literally
+                inserted_literally = media_item.media_type == MediaType.TRACK and (
+                    option == QueueOption.NEXT or adds_tracks_literally
                 )
                 # collect media_items to play
                 if is_dynamic_source(media_item):
@@ -1029,7 +1043,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                                 user_initiated=True,
                             )
                         )
-                elif already_dynamic and not plays_next_track:
+                elif already_dynamic and not inserted_literally:
                     # feed the already-active pool: keep the finite item as a (materialized) source
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
@@ -1040,7 +1054,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # handled by the is_dynamic_source branch above instead.
                     finite_parent: MediaItemType | None = (
                         media_item
-                        if not plays_next_track
+                        if not inserted_literally
                         and not isinstance(media_item, BrowseFolder)
                         and (
                             is_finite_radio(media_item)
@@ -1081,7 +1095,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         # transition and for similar/autoplay seeds); one that yielded nothing
                         # is not a source, or a show's DJ would arm on an empty queue
                         source_items.append(finite_parent)
-                    if plays_next_track:
+                    if inserted_literally:
                         play_next_items += resolved_items
 
             except ProviderStreamLimitError:
@@ -1226,7 +1240,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         tail, and replaces it with a bounded, recency-orchestrated mix of all the queue's sources
         (finite sources materialized as TRACKS seeds, dynamic playlists as DYNAMIC seeds), so the
         queue stays a fixed-size mix instead of growing by each added source's own batch. Shuffle is
-        enabled implicitly: a dynamic queue is always a smart mix.
+        enabled implicitly: a dynamic queue is always a smart mix, unless its only source keeps its
+        own batch order.
 
         :param queue_id: The queue to (re)build the dynamic pool for.
         :param option: The enqueue option that triggered the (re)build. PLAY/REPLACE start playback
@@ -1235,8 +1250,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
-        queue.shuffle_enabled = True
+        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state.
+        # A source that keeps its batch order owns the order, so an added track goes to the end.
+        queue.shuffle_enabled = not plays_ordered_source_only(self.mass, queue_data.source_items)
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         # rebuild from the buffered position so the already-prepared next track is kept and the
         # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)

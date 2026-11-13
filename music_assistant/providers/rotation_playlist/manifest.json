@@ -1,0 +1,14 @@
+{
+  "type": "plugin",
+  "stage": "beta",
+  "domain": "rotation_playlist",
+  "name": "Rotations",
+  "description": "Playlists you build from simple steps, that play endlessly in rounds: for example albums in random order, each album in track order.",
+  "codeowners": ["@jordiboehme"],
+  "tier": "community",
+  "requirements": [],
+  "documentation": "https://music-assistant.io/plugins/rotation_playlist/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "album"
+}

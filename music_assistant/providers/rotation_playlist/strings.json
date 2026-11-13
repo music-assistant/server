@@ -1,0 +1,111 @@
+{
+  "manifest": {
+    "description": "Playlists you build from simple steps, that play endlessly in rounds: for example albums in random order, each album in track order."
+  },
+  "fields": {
+    "name": "Name",
+    "favorite": "Favorite",
+    "genre": "Genre",
+    "provider": "Provider",
+    "date_added": "Date added",
+    "date_favorited": "Date favorited",
+    "mood": "Mood",
+    "style": "Style",
+    "label": "Label",
+    "language": "Language",
+    "popularity": "Popularity",
+    "play_count": "Play count (all users)",
+    "last_played": "Last played (all users)",
+    "version": "Version",
+    "artist": "Artist",
+    "year": "Year",
+    "album_type": "Album type",
+    "track_count": "Number of tracks",
+    "audio_quality": "Audio quality",
+    "title": "Title",
+    "album": "Album",
+    "track_number": "Track number",
+    "disc_number": "Disc number",
+    "duration": "Duration (seconds)",
+    "explicit": "Explicit"
+  },
+  "recipes": {
+    "random_tracks": {
+      "name": "Random tracks",
+      "goal": "Play all tracks of your library in random order."
+    },
+    "albums_random_complete": {
+      "name": "Albums in random order, each complete",
+      "goal": "Play the albums of one artist in random order, each album complete in track order. Pick the artist, and use the last filter to leave out tracks such as intros."
+    },
+    "favorite_artists_albums": {
+      "name": "Albums of my favorite artists",
+      "goal": "Play the albums of your favorite artists in random order, each album complete."
+    },
+    "forgotten_favorites": {
+      "name": "Forgotten favorites",
+      "goal": "Play your favorite tracks that did not play in the last 90 days, in random order."
+    },
+    "newest_albums": {
+      "name": "Newest albums first",
+      "goal": "Play the albums added in the last 30 days, newest first, each album complete."
+    }
+  },
+  "errors": {
+    "invalid_steps": "Invalid steps: {0}",
+    "step_error": "step {0}: {1}",
+    "steps_not_list": "the steps must be a list",
+    "no_steps": "add at least a source step",
+    "too_many_steps": "at most {0} steps are allowed",
+    "first_step_not_source": "the first step must be a source; add a source step",
+    "second_source": "only the first step can be a source; remove this one",
+    "step_not_object": "a step must be an object with a type",
+    "unknown_step_type": "unknown step type {0}; use one of: {1}",
+    "unknown_fields": "unknown field(s): {0}; remove them",
+    "source_not_library": "only the library is supported as a source for now",
+    "missing_field": "missing field {0}; add it",
+    "invalid_value": "invalid value ({0}); check the field type",
+    "too_many_conditions": "at most {0} conditions are allowed per filter",
+    "sort_without_keys": "a sort step needs at least one key",
+    "too_many_sort_keys": "at most {0} sort keys are allowed",
+    "limit_count_or_minutes": "a limit step needs exactly one of count or minutes",
+    "limit_too_small": "the limit must be at least 1",
+    "expand_without_source": "an expand step needs albums or artists before it; add a source of albums",
+    "expand_albums": "albums can only become tracks; use track",
+    "expand_artists": "artists can only become albums or tracks; use album or track",
+    "expand_tracks": "tracks cannot be expanded; remove this step",
+    "expand_artist_tracks_from_providers": "the tracks of an artist come from the library only; to reach the providers, expand the artists to albums with the providers scope, then the albums to tracks",
+    "steps_without_source": "the steps must start with a source step",
+    "sort_too_many_items": "this order needs all items and more than {0} reach it; add an 'Only the first' step before step {1}",
+    "random_not_filter": "'random' can only be used to order items; pick another field",
+    "field_not_sortable": "'{0}' has no order; choose one of: {1}",
+    "field_not_for_artists": "'{0}' is not available for artists; choose one of: {1}",
+    "field_not_for_albums": "'{0}' is not available for albums; choose one of: {1}",
+    "field_not_for_tracks": "'{0}' is not available for tracks; choose one of: {1}",
+    "field_needs_tracks_of_albums": "'{0}' is not available for albums; add a 'Play each album's tracks' step before this step",
+    "field_needs_albums_of_artists": "'{0}' is not available for artists; add a 'Play each artist's albums' step before this step",
+    "field_needs_tracks_of_artists": "'{0}' is not available for artists; add a 'Play each artist's tracks' step before this step",
+    "operator_not_for_field": "'{0}' does not fit '{1}' ({2}); use one of: {3}",
+    "condition_value": "'{0}' {1}: {2}",
+    "pick_genre": "pick a genre",
+    "pick_provider": "pick a provider",
+    "pick_artist": "pick an artist",
+    "pick_album_type": "pick an album type",
+    "pick_audio_quality": "pick an audio quality",
+    "pick_album": "pick an album",
+    "value_missing": "add a value",
+    "value_not_days": "the value must be a whole number of days above 0",
+    "value_not_pair": "the value must be a list of two values",
+    "value_not_texts": "the value must be a list of texts",
+    "value_unknown": "'{0}' is not a known value; use one of: {1}",
+    "value_not_number": "the value must be a number",
+    "value_not_bool": "the value must be true or false",
+    "value_not_date": "the value must be a date such as 2024-05-31",
+    "value_not_text": "the value must be a non-empty text",
+    "rotation_not_found": "Rotation {0} not found",
+    "preview_limit_not_number": "The limit must be a whole number",
+    "preview_limit_out_of_range": "The limit must be between 1 and {0}",
+    "unknown_media_type": "Unknown media type {0}; use {1}",
+    "name_missing": "A Rotation needs a name"
+  }
+}

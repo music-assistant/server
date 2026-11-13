@@ -268,6 +268,8 @@ def _play_media_controller(
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = Mock()
+    # the providers of the sources mix their batches like most providers do
+    ctrl.mass.get_provider.return_value.keeps_batch_order = False
     ctrl.mass.music.get_item_by_uri = AsyncMock(return_value=media_item)
     ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
     lock_cm = MagicMock()

@@ -2657,7 +2657,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # locked), so it must not outlive the source that imposed it. Recorded directly
             # because set_shuffle refuses a queue that is still a smart mix, and the items are
             # resolved against this flag. The state is provisional until the sources are known:
-            # `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            # `_enter_dynamic_mode` sets it again if the queue stays dynamic.
             if option == QueueOption.REPLACE_NEXT:
                 # staging leaves the shuffle the user chose alone, so it never carries a request
                 # of its own to honour here

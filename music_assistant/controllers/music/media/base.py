@@ -1315,6 +1315,28 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 break
             offset += limit
 
+    async def get_library_play_stats(self, item_ids: Sequence[int]) -> dict[int, tuple[int, int]]:
+        """
+        Return the play count and the last played timestamp of library items, of all users.
+
+        Ids that are not in the library are left out. A last played of 0 means the item
+        was never played.
+
+        :param item_ids: The library ids of the items.
+        """
+        if not item_ids:
+            return {}
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, play_count, last_played FROM {self.db_table} "
+            "WHERE item_id IN :item_ids",
+            {"item_ids": [int(item_id) for item_id in item_ids]},
+            limit=0,
+        )
+        return {
+            int(row["item_id"]): (int(row["play_count"] or 0), int(row["last_played"] or 0))
+            for row in rows
+        }
+
     @final
     async def set_favorite(
         self, item_id: str | int, favorite: bool | None, user_ids: list[str]

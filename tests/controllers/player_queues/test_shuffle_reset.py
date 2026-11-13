@@ -167,6 +167,8 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl.mass.players.get_player = Mock(
         return_value=Mock(extra_data={}, offline_by_power_control=False)
     )
+    # the providers of the sources mix their batches like most providers do
+    ctrl.mass.get_provider.return_value.keeps_batch_order = False
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
