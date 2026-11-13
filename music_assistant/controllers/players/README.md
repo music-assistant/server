@@ -673,8 +673,9 @@ A command holds the lock of the player it works on, and of no player it only pas
     transfer to the resume on the new one.
   - A member change (`cmd_set_members`, and the joins and ungroups that go through it) holds its
     target, after the static group holding it, and each player it adds or removes, after the owner
-    that player has now. So no player that a command holds gets another owner under it: the change
-    waits for that command, or fails as busy before it changed anything.
+    that player has now. So the change gives no player that a command holds another owner: it
+    waits for that command, or fails as busy before it changed anything. One step runs before
+    these locks: a target that is synced to a leader leaves that leader first, without a lock.
 
 Either way the command never holds a player's lock while it waits for the lock of that player's
 owner:
