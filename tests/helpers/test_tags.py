@@ -82,6 +82,20 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     assert args[args.index("-loglevel") + 1] == "error"
 
 
+def test_parse_tags_gives_up_on_a_hanging_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A probe that never finishes is bounded by a timeout and reported as invalid data."""
+    check_output = MagicMock(
+        side_effect=subprocess.TimeoutExpired(cmd=("ffprobe",), timeout=tags.FFPROBE_TIMEOUT)
+    )
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError) as err:
+        tags.parse_tags("http://radio.example.com/stream")
+
+    assert "no result within" in str(err.value)
+    assert check_output.call_args.kwargs["timeout"] == tags.FFPROBE_TIMEOUT
+
+
 def test_parse_tags_skips_tls_verify_on_request(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tag parsing skips certificate verification when asked."""
     check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')

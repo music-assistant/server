@@ -41,6 +41,11 @@ from music_assistant.helpers.util import infer_album_type, try_parse_int
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
+# An unresponsive or malformed (live) stream can keep ffprobe/ffmpeg busy indefinitely,
+# so a probe gets killed once it runs past these limits.
+FFPROBE_TIMEOUT = 60
+FFMPEG_DURATION_TIMEOUT = 600
+
 
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.
@@ -810,7 +815,11 @@ def parse_tags(
     )
     try:
         res = subprocess.check_output(  # noqa: S603
-            args, stderr=subprocess.PIPE, env=get_subprocess_env(), pass_fds=pass_fds
+            args,
+            stderr=subprocess.PIPE,
+            env=get_subprocess_env(),
+            pass_fds=pass_fds,
+            timeout=FFPROBE_TIMEOUT,
         )
         data = json.loads(res)
         if error := data.get("error"):
@@ -849,6 +858,10 @@ def parse_tags(
     except subprocess.CalledProcessError as err:
         error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
         raise InvalidDataError(error_msg) from err
+    except subprocess.TimeoutExpired as err:
+        raise InvalidDataError(
+            f"Unable to retrieve info for {input_file} (no result within {FFPROBE_TIMEOUT} seconds)"
+        ) from err
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         try:
             msg = f"Unable to retrieve info for {input_file}: {err!s}"
@@ -888,7 +901,11 @@ def get_file_duration(
     )
     try:
         res = subprocess.check_output(  # noqa: S603
-            args, stderr=subprocess.STDOUT, env=get_subprocess_env(), pass_fds=pass_fds
+            args,
+            stderr=subprocess.STDOUT,
+            env=get_subprocess_env(),
+            pass_fds=pass_fds,
+            timeout=FFMPEG_DURATION_TIMEOUT,
         ).decode()
         # extract duration from ffmpeg output
         duration_str = res.split("time=")[-1].split(" ")[0].strip()
