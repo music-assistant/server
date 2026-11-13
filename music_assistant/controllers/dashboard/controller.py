@@ -245,8 +245,8 @@ class DashboardController(CoreController):
     @api_command("dashboard/viewer_preferences", required_scope=Scope.PROVIDERS_READ)
     async def get_viewer_preferences(
         self,
-        dashboard_id: str | None = None,
-        viewer_key: str | None = None,
+        dashboard_id: str,
+        viewer_key: str,
     ) -> dict[str, Any]:
         """
         Return the visualizer preferences a dashboard viewer should render with.
@@ -260,12 +260,12 @@ class DashboardController(CoreController):
         :param dashboard_id: The viewer's own dashboard id, carried in the launched
             url; identifies its session when several displays show the same dashboard.
         :param viewer_key: The session's secret, carried in the launched url.
+        :raises InsufficientPermissions: If the dashboard has no viewer key or it does not match.
         """
-        if dashboard_id is None or viewer_key is None:
-            return {}
         stored_key = self._viewer_keys.get(dashboard_id)
         if stored_key is None or not secrets.compare_digest(stored_key, viewer_key):
-            return {}
+            msg = "Insufficient permissions to read viewer preferences"
+            raise InsufficientPermissions(msg)
         owner_id = self._session_owners.get(dashboard_id)
         if owner_id is None:
             return {}

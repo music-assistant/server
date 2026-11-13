@@ -693,8 +693,11 @@ async def _viewer_prefs_allowed(controller: DashboardController, key: str) -> bo
     controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
         return_value=_owner_user("user-1", {"visualizer_enabled": True})
     )
-    prefs = await controller.get_viewer_preferences(dashboard_id="dash1", viewer_key=key)
-    return bool(prefs)
+    try:
+        await controller.get_viewer_preferences(dashboard_id="dash1", viewer_key=key)
+    except InsufficientPermissions:
+        return False
+    return True
 
 
 async def test_show_dashboard_rotates_the_viewer_key_on_every_show() -> None:
@@ -1150,7 +1153,7 @@ async def test_viewer_preferences_resolve_each_display_by_dashboard_id() -> None
 
 
 async def test_viewer_preferences_require_the_sessions_viewer_key() -> None:
-    """A missing, wrong or unissued key yields nothing, even for a real dashboard_id."""
+    """A wrong or unissued key is rejected, even for a real dashboard_id."""
     controller = _make_controller()
     controller._sessions["dash1"] = DashboardSession(
         dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
@@ -1161,11 +1164,12 @@ async def test_viewer_preferences_require_the_sessions_viewer_key() -> None:
     )
 
     # no key issued for the session yet
-    assert await controller.get_viewer_preferences("dash1", "x") == {}
+    with pytest.raises(InsufficientPermissions):
+        await controller.get_viewer_preferences("dash1", "x")
 
     controller._viewer_keys["dash1"] = VIEWER_KEY
-    assert await controller.get_viewer_preferences("dash1") == {}
-    assert await controller.get_viewer_preferences("dash1", "x") == {}
+    with pytest.raises(InsufficientPermissions):
+        await controller.get_viewer_preferences("dash1", "x")
     right = await controller.get_viewer_preferences("dash1", VIEWER_KEY)
     assert right == {"visualizer_preset": "one"}
 
@@ -1183,19 +1187,22 @@ async def test_dashboard_sessions_do_not_expose_the_viewer_key() -> None:
     assert VIEWER_KEY not in str([session.to_dict() for session in sessions])
 
 
-async def test_viewer_preferences_without_matching_session_are_empty() -> None:
-    """A missing dashboard_id, unknown session, or unknown owner yields empty preferences."""
+async def test_viewer_preferences_with_a_valid_key_but_no_owner_are_empty() -> None:
+    """A valid key whose session has no owner, or whose owner is gone, yields empty preferences."""
     controller = _make_controller()
-    assert await controller.get_viewer_preferences() == {}
-    assert await controller.get_viewer_preferences("dash1") == {}
-
-    controller._sessions["dash1"] = DashboardSession(
-        dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
-    )
-    controller._session_owners["dash1"] = "user-gone"
     controller._viewer_keys["dash1"] = VIEWER_KEY
+    assert await controller.get_viewer_preferences("dash1", VIEWER_KEY) == {}
+
+    controller._session_owners["dash1"] = "user-gone"
     controller.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
     assert await controller.get_viewer_preferences("dash1", VIEWER_KEY) == {}
+
+
+async def test_viewer_preferences_for_an_unknown_dashboard_are_rejected() -> None:
+    """A dashboard_id with no stored key is rejected rather than answered with nothing."""
+    controller = _make_controller()
+    with pytest.raises(InsufficientPermissions):
+        await controller.get_viewer_preferences("dash1", VIEWER_KEY)
 
 
 async def test_preferences_change_signals_only_for_session_owners() -> None:
