@@ -1446,6 +1446,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _hass_announce_entity_id: str | None = None
     # Volume/mute features fixed by a hello command list instead of following client/state
     control_features_pinned: bool = False
+    # stops taking the volume reports of the client before the protocol follows it itself
+    _stop_taking_volume_reports: Callable[[], None] | None = None
     # sample rate an automatic Sendspin format follows, set by the last playback session
     _session_sample_rate: int | None = None
 
@@ -2176,21 +2178,41 @@ class SendspinPlayer(SendspinBasePlayer):
 
         return entries
 
-    def take_volume_reports(self) -> Callable[[], None]:
+    def take_volume_reports(self) -> None:
         """
-        Take the volume and mute its client reports while the protocol is not attached yet.
+        Take the volume and mute its client reports until the protocol follows its client.
 
-        Returns the callable that stops it; an attached protocol follows its client itself.
+        For a new protocol object, also while it waits for its player. It ends when the
+        protocol is attached or detached, or with stop_taking_volume_reports.
         """
 
         def _on_client_event(_client: SendspinClient, event: ClientEvent) -> None:
             if isinstance(event, VolumeChangedEvent):
                 self._take_reported_volume(event.volume, event.muted)
 
-        return self.api.add_event_listener(_on_client_event)
+        self.stop_taking_volume_reports()
+        self._stop_taking_volume_reports = self.api.add_event_listener(_on_client_event)
+
+    def stop_taking_volume_reports(self) -> None:
+        """Stop taking the volume reports of the client, see take_volume_reports."""
+        if (stop := self._stop_taking_volume_reports) is not None:
+            self._stop_taking_volume_reports = None
+            stop()
+
+    async def on_attach(self, player: Player) -> None:
+        """Follow the client, from the volume and mute it declares now."""
+        await super().on_attach(player)
+        self.stop_taking_volume_reports()
+        # a protocol attached again missed what its client reported while it was detached
+        if (role := self._player_role) is not None:
+            if (volume := role.get_player_volume()) is not None:
+                self._attr_volume_level = volume
+            if (muted := role.get_player_muted()) is not None:
+                self._attr_volume_muted = muted
 
     async def on_detach(self) -> None:
         """End the playback session of the protocol when it is detached from its player."""
+        self.stop_taking_volume_reports()
         await self.playback_session.close()
         await super().on_detach()
         if self.underlying_protocol_id and not self.mass.players.wants_protocol(self.protocol_id):

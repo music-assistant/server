@@ -1732,9 +1732,8 @@ class SendspinProvider(PlayerProvider):
                 return
             # the client can report its state before the attach, while the protocol does not
             # follow it yet, and a later connection of it may not report it again
-            stop_taking_volume = (
-                player.take_volume_reports() if isinstance(player, SendspinPlayer) else None
-            )
+            if isinstance(player, SendspinPlayer):
+                player.take_volume_reports()
             try:
                 await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
                 self.logger.debug("Client %s connected", client_id)
@@ -1746,8 +1745,12 @@ class SendspinProvider(PlayerProvider):
                     return
                 await self.mass.players.attach(player)
             finally:
-                if stop_taking_volume is not None:
-                    stop_taking_volume()
+                if (
+                    isinstance(player, SendspinPlayer)
+                    and self.mass.players.get_protocol(client_id) is not player
+                ):
+                    # neither attached nor held: no attach or detach of it ends this
+                    player.stop_taking_volume_reports()
         finally:
             self._finish_client_event(client_id)
 

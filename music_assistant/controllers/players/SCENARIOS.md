@@ -1447,11 +1447,16 @@ command.
 
 A Sendspin voice device connects after a restart and reports level 28, unmuted, while its provider
 still sets it up. From the moment its player has it, the player shows level 28 and unmuted, and a
-volume command reaches the device; the level it reports back shows.
+volume command reaches the device; the level it reports back shows. A level it reports while its
+protocol waits for its player (for its identity, or for the protocol a bridge rides on), or while
+its protocol is detached to be attached again, shows once the protocol is attached.
 
 - End-to-end: **possible with** a Sendspin client of the lab that reports its volume right after
   its hello, checked after a restart of the server.
-- Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_shows_the_volume_it_reported_before_its_protocol_was_attached`
+- Proven by:
+  - `tests/providers/sendspin/test_reported_volume.py::test_a_device_shows_the_volume_it_reported_before_its_protocol_was_attached`
+  - `tests/providers/sendspin/test_reported_volume.py::test_a_volume_report_while_the_protocol_is_held_shows_once_it_is_bound`
+  - `tests/providers/sendspin/test_reported_volume.py::test_a_protocol_attached_again_shows_the_level_reported_while_it_was_detached`
 
 ### VOLUME-5 · A device keeps the level it reported when a second connection of it takes over
 
