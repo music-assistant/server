@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import IdentifierType, MediaType, ProtocolRole
 from pyheos import PlayState as HeosPlayState
+from pyheos import const as heos_const
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.models.player import PlayerMedia
@@ -163,3 +165,32 @@ async def test_discovery_only_builds_the_wanted_devices_without_a_protocol() -> 
     attached.set_device_info.assert_called_once()
     assert [call.args[1].player_id for call in player_cls.call_args_list] == [3]
     player_cls.return_value.setup.assert_awaited_once()
+
+
+async def test_a_detached_device_leaves_its_queue_alone(scenario: Scenario) -> None:
+    """A detach ends the cleanup of the device's own queue that MA playback scheduled."""
+    device = _device()
+    device.play_url = AsyncMock()
+    protocol = await _attach(scenario, device)
+    queue: Any = protocol._heos_queue
+    queue.player_get_queue = AsyncMock(
+        return_value=[SimpleNamespace(queue_id=1), SimpleNamespace(queue_id=2)]
+    )
+    queue.get_now_playing_media = AsyncMock(return_value=SimpleNamespace(queue_id=2))
+    queue.player_remove_from_queue = AsyncMock()
+    await protocol.play_media(
+        PlayerMedia(
+            uri="source://line_in",
+            media_type=MediaType.AUDIO_SOURCE,
+            source_id="line_in",
+            queue_session_id="session_a",
+        )
+    )
+    device.state = HeosPlayState.PLAY
+    on_event = device.add_on_player_event.call_args.args[0]
+    await on_event(heos_const.EVENT_PLAYER_QUEUE_CHANGED)
+
+    await scenario.mass.players.detach(PROTOCOL_ID)
+    await scenario.advance(5)
+
+    queue.player_remove_from_queue.assert_not_awaited()

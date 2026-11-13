@@ -111,6 +111,7 @@ class HeosPlayer(PlayerProtocol):
     async def on_attach(self, player: Player) -> None:
         """Subscribe to the events of the device while the protocol is attached."""
         self._on_detach_callbacks.append(self._cancel_ma_playback_transition)
+        self._on_detach_callbacks.append(self._end_queue_cleanup)
         self._on_detach_callbacks.append(
             self._device.add_on_player_event(self._player_event_received)
         )
@@ -525,6 +526,13 @@ class HeosPlayer(PlayerProtocol):
         self._ma_controls_playback = False
         self._queue_cleanup_pending = False
         await self._device.play_input_source(source)
+
+    def _end_queue_cleanup(self) -> None:
+        """Stop cleaning up the device's queue: the MA playback of a detached protocol ended."""
+        self._ma_controls_playback = False
+        self._queue_cleanup_pending = False
+        self.mass.cancel_timer(f"heos_queue_cleanup_timer_{self.protocol_id}")
+        self.mass.cancel_task(f"heos_queue_cleanup_task_{self.protocol_id}")
 
     def _cancel_ma_playback_transition(self) -> None:
         """Cancel the transition to MA-controlled playback."""
