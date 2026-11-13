@@ -93,8 +93,8 @@ def _plans(*plans: GroupPlan) -> Iterator[MagicMock]:
         yield scripted
 
 
-async def test_k1_an_opened_takeover_goes_to_the_caller() -> None:
-    """K1: a token from the hook is handed back once the change is done."""
+async def test_an_opened_takeover_goes_to_the_caller() -> None:
+    """A token from the hook is handed back once the change is done."""
     players = _Players()
     protocol = players.protocols["airplay"] = _protocol(token="token")
     with _plans(GroupPlan((OpenTakeover(protocol_id="airplay"),))):
@@ -102,8 +102,8 @@ async def test_k1_an_opened_takeover_goes_to_the_caller() -> None:
     assert result == (protocol, "token")
 
 
-async def test_k2_a_failure_after_the_hook_aborts_the_takeover() -> None:
-    """K2: the transaction is aborted before the error propagates."""
+async def test_a_failure_after_the_hook_aborts_the_takeover() -> None:
+    """The takeover is aborted before the error propagates."""
     players = _Players()
     protocol = players.protocols["airplay"] = _protocol(token="token")
     protocol.set_members.side_effect = PlayerCommandFailed("refused")
@@ -115,8 +115,8 @@ async def test_k2_a_failure_after_the_hook_aborts_the_takeover() -> None:
     protocol.on_group_content_takeover_aborted.assert_awaited_once_with("token")
 
 
-async def test_k4_a_hook_that_returns_none_opens_nothing() -> None:
-    """K4: nothing to abort and nothing handed back."""
+async def test_a_hook_that_returns_none_opens_nothing() -> None:
+    """Nothing to abort and nothing handed back."""
     players = _Players()
     protocol = players.protocols["airplay"] = _protocol(token=None)
     protocol.set_members.side_effect = PlayerCommandFailed("refused")
@@ -128,8 +128,8 @@ async def test_k4_a_hook_that_returns_none_opens_nothing() -> None:
     protocol.on_group_content_takeover_aborted.assert_not_awaited()
 
 
-async def test_z1_a_failing_release_is_warned_and_the_change_goes_on() -> None:
-    """Z1: a release with WARN logs its line, the next step runs."""
+async def test_a_failing_release_is_warned_and_the_change_goes_on() -> None:
+    """A release with WARN logs its line, the next step runs."""
     players = _Players()
     players._detach_member.side_effect = PlayerCommandFailed("no")
     plan = GroupPlan(
@@ -158,8 +158,8 @@ async def test_z1_a_failing_release_is_warned_and_the_change_goes_on() -> None:
         Ungroup(protocol_id="airplay", failure=Failure.UNAVAILABLE, message="u"),
     ],
 )
-async def test_z11_a_cancellation_propagates(step: Any) -> None:
-    """Z11: a cancellation is never a warning, a member left out or an unavailable player."""
+async def test_a_cancellation_propagates(step: Any) -> None:
+    """A cancellation is never a warning, a member left out or an unavailable player."""
     players = _Players()
     players._detach_member.side_effect = asyncio.CancelledError
     players._handle_set_members.side_effect = asyncio.CancelledError
@@ -170,10 +170,8 @@ async def test_z11_a_cancellation_propagates(step: Any) -> None:
     players.logger.warning.assert_not_called()
 
 
-async def test_z2_a_failed_dissolve_continues_from_the_progress_that_leaves_the_member_out() -> (
-    None
-):
-    """Z2: LEAVE_OUT warns and plans on from progress_left_out."""
+async def test_a_failed_dissolve_continues_from_the_progress_that_leaves_the_member_out() -> None:
+    """LEAVE_OUT warns and plans on from progress_left_out."""
     players = _Players()
     players._handle_set_members.side_effect = PlayerCommandFailed("no")
     dissolved = GroupProgress(next_add=0, stage=MemberStage.DISSOLVED)
@@ -190,7 +188,7 @@ async def test_z2_a_failed_dissolve_continues_from_the_progress_that_leaves_the_
 
 
 async def test_a_cleanup_failure_is_logged_at_debug_and_other_errors_propagate() -> None:
-    """J8: the cleanup's known errors are debug lines, others propagate."""
+    """The cleanup's known errors are debug lines, others propagate."""
     players = _Players()
     players._handle_set_members.side_effect = PlayerUnavailableError("gone")
     step = MemberChange(
@@ -204,8 +202,8 @@ async def test_a_cleanup_failure_is_logged_at_debug_and_other_errors_propagate()
         await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
 
 
-async def test_i2_a_failing_own_side_ungroup_is_an_unavailable_player() -> None:
-    """I2: the error of the ungroup is chained to a PlayerUnavailableError."""
+async def test_a_failing_own_side_ungroup_is_an_unavailable_player() -> None:
+    """The error of the ungroup is chained to a PlayerUnavailableError."""
     players = _Players()
     players.protocols["airplay"] = _protocol()
     players.protocols["airplay"].ungroup.side_effect = OSError("down")
@@ -235,7 +233,7 @@ async def test_i2_a_failing_own_side_ungroup_is_an_unavailable_player() -> None:
         ),
     ],
 )
-async def test_set_members_passes_its_lists_as_the_chain_did(
+async def test_set_members_passes_its_lists_in_the_shape_the_step_names(
     step: SetMembers, expected: dict[str, Any]
 ) -> None:
     """The call shapes: None for an empty list, the lists as they are, or the removals only."""
@@ -257,7 +255,7 @@ async def test_a_nested_change_passes_only_the_lists_it_has() -> None:
 
 
 async def test_a_held_protocol_is_called_after_it_was_replaced() -> None:
-    """RP14-RP16: the object a change holds is the one it calls, as the chain held it."""
+    """The protocol object a change holds is the one it calls, also after it was replaced."""
     players = _Players()
     held = players.protocols["old"] = _protocol()
     snapshots = 0
@@ -293,8 +291,8 @@ async def test_a_refusal_raises_with_its_translation() -> None:
     assert err.value.translation_key == "member_cannot_follow_protocol"
 
 
-async def test_x06_a_release_waits_up_to_5_s_for_the_member_to_report_it() -> None:
-    """E6, M7: a release from another leader is waited for, up to 5 seconds."""
+async def test_a_release_waits_up_to_5_s_for_the_member_to_report_it() -> None:
+    """A release from another leader is waited for, up to 5 seconds."""
     players = _Players()
     release = Detach(member_id="m", wait_for_update=True, failure=Failure.WARN, message="w")
     with _plans(GroupPlan((release,))):
@@ -303,7 +301,7 @@ async def test_x06_a_release_waits_up_to_5_s_for_the_member_to_report_it() -> No
     players._detach_member.assert_awaited_once_with(players.get_player("m"))
 
 
-async def test_x09_the_change_calls_the_target_object_it_holds() -> None:
+async def test_the_change_calls_the_target_object_it_holds() -> None:
     """The target a change is about is the object the entry passed, not a lookup by id."""
     players = _Players()
     held = MagicMock(player_id="leader")

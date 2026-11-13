@@ -1,8 +1,7 @@
 """
 The plan of a group change, one rule per test, on snapshots built by hand.
 
-The row ids name the rows of the behaviour table of the player split's grouping design
-(9a-design.md); rules marked as kept order dependences or kept defects say so.
+A test that pins a known shortcoming says so in its docstring.
 """
 
 from __future__ import annotations
@@ -215,11 +214,11 @@ def _members(plan: GroupPlan, protocol_id: str) -> list[tuple[tuple[str, ...], t
     ]
 
 
-# -- E: routing --
+# -- routing --
 
 
-def test_e3_a_target_without_grouping_is_refused() -> None:
-    """E3: a target without SET_MEMBERS in its state refuses the change."""
+def test_a_target_without_grouping_is_refused() -> None:
+    """A target without SET_MEMBERS in its state refuses the change."""
     world = _World()
     _sonos(world, "a", "b", features=frozenset())
     plan = _plan(world, ChangeKind.ROUTE, "a", ("b",))
@@ -227,8 +226,8 @@ def test_e3_a_target_without_grouping_is_refused() -> None:
     assert plan.steps[-1].error is UnsupportedFeaturedException
 
 
-def test_e4_a_member_change_on_a_held_target_goes_to_its_group() -> None:
-    """E4: a target held by a group player with SET_MEMBERS passes the change on to it."""
+def test_a_member_change_on_a_held_target_goes_to_its_group() -> None:
+    """A target held by a group player with SET_MEMBERS passes the change on to it."""
     world = _World()
     _sonos(world, "a", "b", active_group="g", playback_owner="g")
     world.protocol("group_g", "g", "sync_group", role=ProtocolRole.VIRTUAL)
@@ -239,8 +238,8 @@ def test_e4_a_member_change_on_a_held_target_goes_to_its_group() -> None:
     assert set_members_group(world.snapshot(), "a") == "g"
 
 
-def test_e5_a_target_held_by_a_group_without_grouping_keeps_the_change() -> None:
-    """E5: a group player without SET_MEMBERS is not passed the change."""
+def test_a_target_held_by_a_group_without_grouping_keeps_the_change() -> None:
+    """A group player without SET_MEMBERS is not passed the change."""
     world = _World()
     _sonos(world, "a", "b", active_group="g", playback_owner="g")
     world.protocol("group_g", "g", "sync_group", role=ProtocolRole.VIRTUAL, features=PLAYS)
@@ -250,8 +249,8 @@ def test_e5_a_target_held_by_a_group_without_grouping_keeps_the_change() -> None
     assert _calls(plan) == []
 
 
-def test_e6_a_synced_target_is_released_first() -> None:
-    """E6: a synced target leaves its leader first, waited for, a failure only warned."""
+def test_a_synced_target_is_released_first() -> None:
+    """A synced target leaves its leader first, waited for, a failure only warned."""
     world = _World()
     _sonos(world, "a", "b", synced_to="c")
     plan = _plan(world, ChangeKind.ROUTE, "a", ("b",))
@@ -276,8 +275,8 @@ def _fail(name: str) -> Any:
     return Failure(name)
 
 
-def test_e14_a_legacy_id_names_its_player_unless_a_player_has_that_id() -> None:
-    """E14: an alias resolves to its player; a live player's own id wins over it."""
+def test_a_legacy_id_names_its_player_unless_a_player_has_that_id() -> None:
+    """An alias resolves to its player; a live player's own id wins over it."""
     world = _World()
     _sonos(world, "a", "b")
     world.aliases["old_b"] = "b"
@@ -288,7 +287,7 @@ def test_e14_a_legacy_id_names_its_player_unless_a_player_has_that_id() -> None:
     assert snapshot.player("unknown") is None
 
 
-# -- L: the leader removes itself --
+# -- the leader removes itself --
 
 
 def _leader_with_members(world: _World, queue: QueueView | None, **member_values: Any) -> None:
@@ -302,8 +301,8 @@ def _leader_with_members(world: _World, queue: QueueView | None, **member_values
         world.player(name, f"sonos_{name}", synced_to="a", **member_values)
 
 
-def test_l3_a_leader_playing_its_own_queue_hands_the_group_over() -> None:
-    """L1-L3: the remaining members that can play take the group over, nothing else happens."""
+def test_a_leader_playing_its_own_queue_hands_the_group_over() -> None:
+    """The remaining members that can play take the group over, nothing else happens."""
     world = _World()
     _leader_with_members(world, QueueView(queue_id="a", state=PLAYING))
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("x",), ("a",))
@@ -318,8 +317,8 @@ def test_l3_a_leader_playing_its_own_queue_hands_the_group_over() -> None:
         QueueView(queue_id="g", state=PLAYING),
     ],
 )
-def test_l6_a_leader_without_a_playing_queue_of_its_own_dissolves(queue: QueueView | None) -> None:
-    """L6, L7: the group is dissolved natively and the leader stopped afterwards."""
+def test_a_leader_without_a_playing_queue_of_its_own_dissolves(queue: QueueView | None) -> None:
+    """The group is dissolved natively and the leader stopped afterwards."""
     world = _World()
     _leader_with_members(world, queue)
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("x",), ("a",))
@@ -332,16 +331,21 @@ def test_l6_a_leader_without_a_playing_queue_of_its_own_dissolves(queue: QueueVi
     )
 
 
-def test_l2_a_group_of_displays_only_has_no_heir() -> None:
-    """L2: members that can not play audio never take the group over."""
+def test_a_group_of_displays_only_has_no_heir() -> None:
+    """Members that can not play audio never take the group over."""
     world = _World()
     _leader_with_members(world, QueueView(queue_id="a", state=PLAYING), type=PlayerType.VISUALIZER)
     plan = _plan(world, ChangeKind.MEMBERS, "a", None, ("a",))
     assert not any(isinstance(step, TransferLeadership) for step in plan.steps)
 
 
-def test_l8_a_group_player_removing_itself_runs_the_leader_path() -> None:
-    """L8, D5 (kept): a group player removing itself loses its members, without a stop."""
+def test_a_group_player_removing_itself_runs_the_leader_path() -> None:
+    """
+    A group player removed from itself takes the path of a leader that leaves its group.
+
+    It dissolves: its members are removed from it, without the stop that ends a leader's playback.
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     world.protocol("group_g", "g", "sync_group", role=ProtocolRole.VIRTUAL, members=("a", "b"))
     world.player("g", "group_g", type=PlayerType.GROUP, group_members=("a", "b"))
@@ -356,10 +360,10 @@ def test_l8_a_group_player_removing_itself_runs_the_leader_path() -> None:
     ("domain_of_b", "domain_of_c", "expected"),
     [("airplay", "airplay", "b"), ("dlna", "airplay", "c"), ("sendspin", "dlna", "b")],
 )
-def test_l4_the_heir_can_be_reached_on_the_groups_protocol(
+def test_the_heir_can_be_reached_on_the_groups_protocol(
     domain_of_b: str, domain_of_c: str, expected: str
 ) -> None:
-    """L4, O2: the first member on the domain the group plays on, else the first one."""
+    """The heir is the first member on the domain the group plays on, else the first one."""
     world = _World()
     world.protocol("airplay_a", "a", "airplay")
     world.player("a", "airplay_a", active_output="airplay_a")
@@ -370,8 +374,8 @@ def test_l4_the_heir_can_be_reached_on_the_groups_protocol(
     assert elect_ad_hoc_leader(world.snapshot(), "a", ["b", "c"]) == expected
 
 
-def test_l4_a_player_that_can_not_play_audio_never_leads() -> None:
-    """L4: a visualizer is passed over even when it comes first."""
+def test_a_player_that_can_not_play_audio_never_leads() -> None:
+    """A visualizer is passed over even when it comes first."""
     world = _World()
     world.protocol("airplay_a", "a", "airplay")
     world.player("a", "airplay_a")
@@ -382,11 +386,11 @@ def test_l4_a_player_that_can_not_play_audio_never_leads() -> None:
     assert elect_ad_hoc_leader(world.snapshot(), "a", ["v", "b"]) == "b"
 
 
-# -- M: admission --
+# -- admission --
 
 
-def test_m1_m2_the_target_and_a_repeated_member_are_skipped_silently() -> None:
-    """M1, M2: the target itself and a member asked twice join once, without a log line."""
+def test_the_target_and_a_repeated_member_are_skipped_silently() -> None:
+    """The target itself and a member asked twice join once, without a log line."""
     world = _World()
     _sonos(world, "a", "b")
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("a", "b", "b"))
@@ -397,8 +401,8 @@ def test_m1_m2_the_target_and_a_repeated_member_are_skipped_silently() -> None:
     assert _notes(plan, logging.WARNING) == []
 
 
-def test_m3_an_unknown_or_unavailable_member_is_left_out() -> None:
-    """M3: a member that is unknown or can not play now is left out with a warning."""
+def test_an_unknown_or_unavailable_member_is_left_out() -> None:
+    """A member that is unknown or can not play now is left out with a warning."""
     world = _World()
     _sonos(world, "a", "b")
     world.players["b"] = replace(world.players["b"], available_for_playback=False)
@@ -410,8 +414,8 @@ def test_m3_an_unknown_or_unavailable_member_is_left_out() -> None:
     assert _members(plan, "sonos_a") == []
 
 
-def test_m4_a_member_the_target_can_not_group_with_is_left_out() -> None:
-    """M4: a member missing from the target's can_group_with is left out with a warning."""
+def test_a_member_the_target_can_not_group_with_is_left_out() -> None:
+    """A member missing from the target's can_group_with is left out with a warning."""
     world = _World()
     _sonos(world, "a", "b")
     world.players["a"] = replace(world.players["a"], can_group_with=frozenset())
@@ -421,8 +425,8 @@ def test_m4_a_member_the_target_can_not_group_with_is_left_out() -> None:
 
 
 @pytest.mark.parametrize("held_as", ["synced_to", "active_group"])
-def test_m5_m6_a_member_already_in_the_group_is_skipped(held_as: str) -> None:
-    """M5, M6: a listed member synced to the target, or held by it, joins nothing again."""
+def test_a_member_already_in_the_group_is_skipped(held_as: str) -> None:
+    """A listed member synced to the target, or held by it, joins nothing again."""
     world = _World()
     _sonos(world, "a", "b")
     world.players["a"] = replace(world.players["a"], group_members=("a", "b"))
@@ -436,8 +440,8 @@ def test_m5_m6_a_member_already_in_the_group_is_skipped(held_as: str) -> None:
     assert _calls(plan) == []
 
 
-def test_m7_a_member_synced_elsewhere_is_released_and_the_plan_stops() -> None:
-    """M7, RP1: the release ends the plan; the next one goes on with that member."""
+def test_a_member_synced_elsewhere_is_released_and_the_plan_stops() -> None:
+    """The release ends the plan; the next one goes on with that member."""
     world = _World()
     _sonos(world, "a", "b", "c")
     world.players["b"] = replace(world.players["b"], synced_to="c")
@@ -451,8 +455,13 @@ def test_m7_a_member_synced_elsewhere_is_released_and_the_plan_stops() -> None:
     assert next_plan.progress is None
 
 
-def test_m8_a_member_held_by_a_group_without_sync_is_not_released() -> None:
-    """M8, D3 (kept): a member a group holds without being synced joins without a release."""
+def test_a_member_held_by_a_group_without_sync_is_not_released() -> None:
+    """
+    A member a group holds without being synced joins without being released from it.
+
+    b's active group is g, so g still holds b after b joined a.
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     _sonos(world, "a", "b", active_group="g")
     world.players["a"] = replace(world.players["a"], active_group=None)
@@ -477,8 +486,8 @@ def _airplay_leaders(world: _World, state: PlaybackState = PlaybackState.IDLE) -
     world.player("c", "airplay_c", synced_to="b")
 
 
-def test_m9_a_member_whose_group_rides_its_own_stream_dissolves_it_first() -> None:
-    """M9, RP2: its members are removed, the plan ends; a failure leaves the member out."""
+def test_a_member_whose_group_rides_its_own_stream_dissolves_it_first() -> None:
+    """Its members are removed and the plan ends there; a failure leaves the member out."""
     world = _World()
     _airplay_leaders(world)
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",))
@@ -493,8 +502,8 @@ def test_m9_a_member_whose_group_rides_its_own_stream_dissolves_it_first() -> No
     assert plan.progress_left_out == GroupProgress(next_add=1)
 
 
-def test_m10_a_member_still_serving_its_own_group_is_left_out() -> None:
-    """M10: a member that plays for its own group is left out with a warning."""
+def test_a_member_still_serving_its_own_group_is_left_out() -> None:
+    """A member that plays for its own group is left out with a warning."""
     world = _World()
     _airplay_leaders(world, state=PLAYING)
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",))
@@ -504,8 +513,8 @@ def test_m10_a_member_still_serving_its_own_group_is_left_out() -> None:
     assert _calls(plan) == []
 
 
-def test_m11_m14_a_member_whose_group_survives_joins_as_it_is() -> None:
-    """M11, M14: no own-stream rule, or no followers: nothing to dissolve."""
+def test_a_member_whose_group_survives_joins_as_it_is() -> None:
+    """Without the own-stream rule, or without followers, there is nothing to dissolve."""
     world = _World()
     _sonos(world, "a", "b", "c")
     world.players["b"] = replace(world.players["b"], group_members=("b", "c"))
@@ -514,8 +523,13 @@ def test_m11_m14_a_member_whose_group_survives_joins_as_it_is() -> None:
     assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
 
 
-def test_m12_a_member_that_powers_on_ends_the_plan() -> None:
-    """M12, RP3, D11 (kept): powering a member on ends the plan, auto play is the handler's."""
+def test_a_member_that_powers_on_ends_the_plan() -> None:
+    """
+    Powering a member on ends the plan; the next plan groups it with the others.
+
+    The power on runs the member's auto play, so it may start playing before it joins.
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     _sonos(world, "a", "b", "c")
     world.players["b"] = replace(world.players["b"], powered=False, power_control="fake")
@@ -526,8 +540,14 @@ def test_m12_a_member_that_powers_on_ends_the_plan() -> None:
     assert _members(next_plan, "sonos_a") == [(("sonos_b", "sonos_c"), ())]
 
 
-def test_m13_o9_a_later_member_is_checked_on_the_state_after_the_earlier_release() -> None:
-    """M13, O9 (kept): the playing leader j is admitted once its member i left it."""
+def test_a_later_member_is_checked_on_the_state_after_the_earlier_release() -> None:
+    """
+    A later member is checked on the state after an earlier member's release.
+
+    j leads i, so the target offers j only once i left it: listed after i, j joins; listed
+    before i, j is left out, so the outcome depends on the order of the request.
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     _sonos(world, "a", "i", "j")
     world.players["i"] = replace(world.players["i"], synced_to="j")
@@ -541,11 +561,11 @@ def test_m13_o9_a_later_member_is_checked_on_the_state_after_the_earlier_release
     assert _members(second, "sonos_a") == [(("sonos_i", "sonos_j"), ())]
 
 
-# -- R: removals --
+# -- removals --
 
 
-def test_r1_r3_only_members_of_the_group_are_removed() -> None:
-    """R1-R3: a listed member, or one that reports being synced to the target, is removed."""
+def test_only_members_of_the_group_are_removed() -> None:
+    """A listed member, or one that reports being synced to the target, is removed."""
     world = _World()
     _sonos(world, "a", "b", "c", "d")
     world.players["a"] = replace(world.players["a"], group_members=("a", "b"))
@@ -554,11 +574,11 @@ def test_r1_r3_only_members_of_the_group_are_removed() -> None:
     assert _members(plan, "sonos_a") == [((), ("sonos_b", "sonos_c"))]
 
 
-# -- G: a group player as target --
+# -- a group player as target --
 
 
-def test_g1_a_group_player_takes_its_member_lists_as_they_are() -> None:
-    """G1: its own protocol is called with both lists, empty ones included."""
+def test_a_group_player_takes_its_member_lists_as_they_are() -> None:
+    """Its own protocol is called with both lists, empty ones included."""
     world = _World()
     world.protocol("group_g", "g", "sync_group", role=ProtocolRole.VIRTUAL)
     world.player("g", "group_g", type=PlayerType.GROUP, can_group_with=frozenset({"a"}))
@@ -569,8 +589,8 @@ def test_g1_a_group_player_takes_its_member_lists_as_they_are() -> None:
     )
 
 
-def test_g5_a_group_without_grouping_reached_internally_calls_nothing() -> None:
-    """G5: without SET_MEMBERS the removal goes through the protocol path, which ends empty."""
+def test_a_group_without_grouping_reached_internally_calls_nothing() -> None:
+    """Without SET_MEMBERS the removal goes through the protocol path, which ends empty."""
     world = _World()
     world.protocol("group_g", "g", "sync_group", role=ProtocolRole.VIRTUAL, features=PLAYS)
     world.player("g", "group_g", type=PlayerType.GROUP, features=frozenset(), group_members=("a",))
@@ -579,7 +599,7 @@ def test_g5_a_group_without_grouping_reached_internally_calls_nothing() -> None:
     assert _calls(plan) == []
 
 
-# -- T: which protocol carries a member --
+# -- which protocol carries a member --
 
 
 def _mixed(
@@ -604,16 +624,16 @@ def _mixed(
     world.player("w", "wiim_w", "airplay_w")
 
 
-def test_t8_a_native_peer_groups_on_the_own_protocol() -> None:
-    """T8: a member of the same provider groups natively, by its own protocol id."""
+def test_a_native_peer_groups_on_the_own_protocol() -> None:
+    """A member of the same provider groups natively, by its own protocol id."""
     world = _World()
     _mixed(world)
     plan = _plan(world, ChangeKind.MEMBERS, "s", ("b",))
     assert _members(plan, "sonos_s") == [(("sonos_b",), ())]
 
 
-def test_t9_a_member_of_another_make_groups_over_a_shared_protocol() -> None:
-    """T9, F6, F7: over AirPlay, its output activated first, then the join, then the leader."""
+def test_a_member_of_another_make_groups_over_a_shared_protocol() -> None:
+    """Over AirPlay: its output is activated first, then the join call, then the leader's."""
     world = _World()
     _mixed(world)
     plan = _plan(world, ChangeKind.MEMBERS, "s", ("w",))
@@ -627,10 +647,16 @@ def test_t9_a_member_of_another_make_groups_over_a_shared_protocol() -> None:
 
 
 @pytest.mark.parametrize(("order", "native"), [(("w", "b"), ()), (("b", "w"), ("sonos_b",))])
-def test_t13_o1_an_idle_mixed_batch_depends_on_its_order(
+def test_an_idle_mixed_batch_depends_on_its_order(
     order: tuple[str, str], native: tuple[str, ...]
 ) -> None:
-    """T13, O1 (kept): on an idle leader the request order decides who groups natively."""
+    """
+    On an idle leader the order of a mixed request decides who groups natively.
+
+    w only has AirPlay: asked first, it takes the group to AirPlay and b follows there;
+    asked second, b has joined natively already.
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     _mixed(world)
     plan = _all_plans(world, ChangeKind.MEMBERS, "s", order)
@@ -638,10 +664,10 @@ def test_t13_o1_an_idle_mixed_batch_depends_on_its_order(
 
 
 @pytest.mark.parametrize("order", [("w", "b"), ("b", "w")])
-def test_t2_a_live_native_session_keeps_a_mixed_batch_on_one_protocol(
+def test_a_live_native_session_keeps_a_mixed_batch_on_one_protocol(
     order: tuple[str, str],
 ) -> None:
-    """T2, T3: with a live native session, members that need a protocol are taken first."""
+    """With a live native session, members that need a protocol are taken first."""
     world = _World()
     _mixed(world, leader_state=PLAYING, active_output="native")
     plan = _all_plans(world, ChangeKind.MEMBERS, "s", order)
@@ -649,8 +675,8 @@ def test_t2_a_live_native_session_keeps_a_mixed_batch_on_one_protocol(
     assert _members(plan, "airplay_s") == [(("airplay_w", "airplay_b"), ())]
 
 
-def test_t4_a_member_that_prefers_native_grouping_groups_natively() -> None:
-    """T4: a member whose own protocol prefers native grouping skips its preferred output."""
+def test_a_member_that_prefers_native_grouping_groups_natively() -> None:
+    """A member whose own protocol prefers native grouping skips its preferred output."""
     world = _World()
     _mixed(world)
     world.protocols["sonos_b"] = replace(world.protocols["sonos_b"], prefers_native=True)
@@ -659,8 +685,8 @@ def test_t4_a_member_that_prefers_native_grouping_groups_natively() -> None:
     assert _members(plan, "sonos_s") == [(("sonos_b",), ())]
 
 
-def test_t5_a_members_preferred_output_carries_it() -> None:
-    """T5: the member's preferred output wins over native grouping."""
+def test_a_members_preferred_output_carries_it() -> None:
+    """The member's preferred output wins over native grouping."""
     world = _World()
     _mixed(world)
     world.players["b"] = replace(world.players["b"], preferred_output="airplay_b")
@@ -668,8 +694,8 @@ def test_t5_a_members_preferred_output_carries_it() -> None:
     assert SetMembers(protocol_id="airplay_s", add=("airplay_b",)) in plan.steps
 
 
-def test_t6_t7_a_group_on_a_protocol_takes_members_on_it() -> None:
-    """T6, T7: the group's protocol carries a member that has it; without SET_MEMBERS it drops."""
+def test_a_group_on_a_protocol_takes_members_on_it() -> None:
+    """The group's protocol carries a member that has it; without SET_MEMBERS it is passed over."""
     world = _World()
     _mixed(world, active_output="airplay_s")
     plan = _plan(world, ChangeKind.MEMBERS, "s", ("b",))
@@ -679,8 +705,14 @@ def test_t6_t7_a_group_on_a_protocol_takes_members_on_it() -> None:
     assert _members(plan, "sonos_s") == [(("sonos_b",), ())]
 
 
-def test_t10_a_member_without_any_way_is_dropped_with_a_warning() -> None:
-    """T10, D7 (kept): no grouping method: a warning, after it was already prepared."""
+def test_a_member_without_any_way_is_dropped_with_a_warning() -> None:
+    """
+    A member with no way into the group is left out with a warning.
+
+    The plan finds that out only after it prepared the member (released it from another
+    leader, powered it on).
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     _mixed(world)
     world.protocol("dlna_x", "x", "dlna", features=PLAYS)
@@ -693,8 +725,13 @@ def test_t10_a_member_without_any_way_is_dropped_with_a_warning() -> None:
     )
 
 
-def test_t11_d6_a_later_switch_drops_an_earlier_member_silently() -> None:
-    """T11, D6 (kept): X joins over AirPlay, Y moves the group to Sendspin, X is dropped."""
+def test_a_later_switch_drops_an_earlier_member_silently() -> None:
+    """
+    A member that moves the group to another protocol drops an earlier one without a log line.
+
+    x would join over AirPlay; y needs Sendspin and takes the group there, leaving x out.
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     world.protocol("sonos_p", "p", "sonos", role=ProtocolRole.NATIVE)
     world.protocol("airplay_p", "p", "airplay")
@@ -710,8 +747,8 @@ def test_t11_d6_a_later_switch_drops_an_earlier_member_silently() -> None:
     assert _notes(plan, logging.WARNING) == []
 
 
-def test_t12_native_members_follow_a_group_that_left_its_own_stream() -> None:
-    """T12: on an own-stream leader, native members move to the group's protocol or drop."""
+def test_native_members_follow_a_group_that_left_its_own_stream() -> None:
+    """On an own-stream leader, native members move to the group's protocol or drop."""
     world = _World()
     world.protocol(
         "airplay_l", "l", "airplay", role=ProtocolRole.NATIVE, own_stream=True, can=("airplay_m",)
@@ -730,8 +767,8 @@ def test_t12_native_members_follow_a_group_that_left_its_own_stream() -> None:
     )
 
 
-def test_t14_an_unknown_id_is_skipped_silently_in_a_translation() -> None:
-    """T14: an id that names no player is skipped while translating removals."""
+def test_an_unknown_id_is_skipped_silently_in_a_translation() -> None:
+    """An id that names no player is skipped while translating removals."""
     world = _World()
     _sonos(world, "a", "b")
     world.players["a"] = replace(world.players["a"], group_members=("a", "ghost"))
@@ -739,11 +776,11 @@ def test_t14_an_unknown_id_is_skipped_silently_in_a_translation() -> None:
     assert _calls(plan) == []
 
 
-# -- X: removals per protocol --
+# -- removals per protocol --
 
 
-def test_x1_a_member_on_the_groups_protocol_leaves_it_there() -> None:
-    """X1, F8: removed from the protocol, its output cleared after the call."""
+def test_a_member_on_the_groups_protocol_leaves_it_there() -> None:
+    """It is removed from the protocol, and its output is cleared after that call."""
     world = _World()
     _mixed(world, active_output="airplay_s")
     world.protocols["airplay_s"] = replace(
@@ -758,8 +795,13 @@ def test_x1_a_member_on_the_groups_protocol_leaves_it_there() -> None:
     assert _calls(after) == [SetOutput(player_id="w", output_id=None)]
 
 
-def test_x4_d2_a_member_whose_output_went_away_is_removed_natively() -> None:
-    """X3, X4, D2 (kept): an unavailable output never matches; the removal goes native."""
+def test_a_member_whose_output_went_away_is_removed_natively() -> None:
+    """
+    A member whose output went away is removed natively, not from the group that holds it.
+
+    An output that can not play never matches, so w stays in s's AirPlay group.
+    This is a known shortcoming, kept as it was; this test changes when it is fixed.
+    """
     world = _World()
     _mixed(world, active_output="airplay_s")
     world.protocols["airplay_s"] = replace(
@@ -778,8 +820,8 @@ def test_x4_d2_a_member_whose_output_went_away_is_removed_natively() -> None:
     assert _members(plan, "sonos_s") == [((), ("wiim_w",))]
 
 
-def test_x2_a_native_airplay_leader_removes_the_audio_protocol_it_holds() -> None:
-    """X2, O4: the member's first audio protocol in the leader's native group is removed."""
+def test_a_native_airplay_leader_removes_the_audio_protocol_it_holds() -> None:
+    """The member's first audio protocol in the leader's native group is removed."""
     world = _World()
     world.protocol(
         "airplay_t", "t", "airplay", role=ProtocolRole.NATIVE, members=("airplay_t", "airplay_b")
@@ -792,7 +834,7 @@ def test_x2_a_native_airplay_leader_removes_the_audio_protocol_it_holds() -> Non
     assert _members(plan, "airplay_t") == [((), ("airplay_b",))]
 
 
-# -- F and H: the forward and the handover --
+# -- the join call and the hand-over --
 
 
 def _switching(world: _World, state: PlaybackState) -> None:
@@ -816,8 +858,8 @@ def _switching(world: _World, state: PlaybackState) -> None:
     world.player("y", "sendspin_y")
 
 
-def test_f4_a_switch_that_would_silence_a_member_is_refused() -> None:
-    """F4: x can not follow to Sendspin while the leader plays, so y is refused."""
+def test_a_switch_that_would_silence_a_member_is_refused() -> None:
+    """Member x can not follow to Sendspin while the leader plays, so adding y is refused."""
     world = _World()
     _switching(world, PLAYING)
     world.protocols["airplay_l"] = replace(world.protocols["airplay_l"], features=GROUPS)
@@ -831,8 +873,8 @@ def test_f4_a_switch_that_would_silence_a_member_is_refused() -> None:
     )
 
 
-def test_h_an_idle_switch_hands_nothing_over_and_keeps_x() -> None:
-    """F9, H8: idle, the switch only moves the leader's output after the join call."""
+def test_an_idle_switch_hands_nothing_over_and_keeps_x() -> None:
+    """Idle, the switch only moves the leader's output after the join call."""
     world = _World()
     _switching(world, PlaybackState.IDLE)
     plan = _plan(world, ChangeKind.MEMBERS, "l", ("y",))
@@ -855,8 +897,8 @@ def _joined(state: PlaybackState) -> tuple[_World, GroupProgress]:
     return world, plan.progress
 
 
-def test_h2_h4_h5_h6_a_playing_switch_stops_the_old_protocol_resumes_and_regroups() -> None:
-    """H2-H6, RP12-RP18: the phases of a hand-over, each after the device call before it."""
+def test_a_playing_switch_stops_the_old_protocol_resumes_and_regroups() -> None:
+    """The phases of a hand-over, each planned after the device call before it."""
     world, progress = _joined(PLAYING)
     leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
     assert _calls(leader) == [SetOutput(player_id="l", output_id="sendspin_l")]
@@ -880,8 +922,8 @@ def test_h2_h4_h5_h6_a_playing_switch_stops_the_old_protocol_resumes_and_regroup
     assert _calls(tail) == [Resume(player_id="l"), MemberChange(target_id="l", add=("x",))]
 
 
-def test_h7_a_pause_during_the_join_call_means_no_resume() -> None:
-    """H7, RP13: a leader that paused while the join call ran hands over without resuming."""
+def test_a_pause_during_the_join_call_means_no_resume() -> None:
+    """A leader that paused while the join call ran hands over without resuming."""
     world, progress = _joined(PLAYING)
     world.players["l"] = replace(world.players["l"], playback_state=PlaybackState.PAUSED)
     leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
@@ -891,8 +933,8 @@ def test_h7_a_pause_during_the_join_call_means_no_resume() -> None:
     assert not leader.progress.join.was_playing
 
 
-def test_h_was_playing_is_carried_across_the_leaders_activation() -> None:
-    """RP13, RP18: a pause after the leader's output moved still resumes, as today."""
+def test_a_pause_after_the_leaders_output_moved_still_resumes() -> None:
+    """Whether the leader played is read before its output moves, so a pause after it resumes."""
     world, progress = _joined(PLAYING)
     leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
     world.players["l"] = replace(
@@ -906,8 +948,8 @@ def test_h_was_playing_is_carried_across_the_leaders_activation() -> None:
     assert Resume(player_id="l") in steps
 
 
-def test_h3_h10_stranded_members_are_released_from_the_own_protocol() -> None:
-    """F5, H3, H10: own-stream leader: natives move along and are released, unless own is gone."""
+def test_stranded_members_are_released_from_the_own_protocol() -> None:
+    """On an own-stream leader natives move along and are released, unless own is gone."""
     world = _World()
     world.protocol(
         "airplay_l",
@@ -940,7 +982,7 @@ def test_h3_h10_stranded_members_are_released_from_the_own_protocol() -> None:
     assert _calls(active) == [
         SetMembers(protocol_id="airplay_l", remove=("airplay_n",), lists=MemberLists.REMOVE_ONLY)
     ]
-    # H10: the own protocol is gone by then: nothing is released
+    # the own protocol is gone by then: nothing is released
     gone = GroupingSnapshot(
         players={**world.players, "l": replace(world.players["l"], own_protocol=None)},
         protocols=world.protocols,
@@ -948,8 +990,8 @@ def test_h3_h10_stranded_members_are_released_from_the_own_protocol() -> None:
     assert _calls(_plan(gone, ChangeKind.MEMBERS, "l", ("s",), progress=joined.progress)) == []
 
 
-def test_f2_f3_f10_the_forward_filters_and_checks_the_protocol() -> None:
-    """F1-F3, F10: other domains and unknown ids drop; a protocol without SET_MEMBERS notes it."""
+def test_the_forward_filters_and_checks_the_protocol() -> None:
+    """Other domains and unknown ids drop; a protocol without SET_MEMBERS notes it."""
     world = _World()
     _mixed(world, active_output="airplay_s")
     world.protocols["airplay_s"] = replace(
@@ -981,8 +1023,8 @@ def _join(phase: JoinPhase, protocol_id: str | None, **values: Any) -> Any:
     return JoinProgress(phase=phase, protocol_id=protocol_id, **values)
 
 
-def test_f6_rp10_each_further_activation_is_planned_after_the_one_before() -> None:
-    """F6, RP10: one member's activation ends the plan when another one follows."""
+def test_each_further_activation_is_planned_after_the_one_before() -> None:
+    """One member's activation ends the plan when another one follows."""
     world = _World()
     _mixed(world)
     world.protocol("airplay_v", "v", "airplay")
@@ -999,8 +1041,8 @@ def test_f6_rp10_each_further_activation_is_planned_after_the_one_before() -> No
     assert _calls(after) == [SetMembers(protocol_id="airplay_s", add=("airplay_w", "airplay_v"))]
 
 
-def test_n1_rp19_the_native_forward_reads_the_own_protocol_after_the_protocol_leg() -> None:
-    """N1, N2, RP19: native members are grouped after the protocol leg, if the feature stays."""
+def test_the_native_forward_reads_the_own_protocol_after_the_protocol_leg() -> None:
+    """Native members are grouped after the protocol leg, if the own protocol still can."""
     world = _World()
     _mixed(world)
     progress = GroupProgress(join=_join(JoinPhase.NATIVE, None, native_add=("sonos_b",)))
@@ -1012,8 +1054,8 @@ def test_n1_rp19_the_native_forward_reads_the_own_protocol_after_the_protocol_le
     assert _calls(plan_group_change(world.snapshot(), change, progress)) == []
 
 
-def test_k1_k3_a_takeover_is_opened_for_new_content_over_a_protocol_only() -> None:
-    """K1, K3, RP6: the hook is called before the forward and ends the plan; never natively."""
+def test_a_takeover_is_opened_for_new_content_over_a_protocol_only() -> None:
+    """The hook is called before the join call and ends the plan; never for a native join."""
     world = _World()
     _mixed(world)
     plan = _plan(world, ChangeKind.MEMBERS, "s", ("w",), new_content=True)
@@ -1023,11 +1065,11 @@ def test_k1_k3_a_takeover_is_opened_for_new_content_over_a_protocol_only() -> No
     assert not any(isinstance(step, OpenTakeover) for step in native.steps)
 
 
-# -- U, I, J: ungroup, detach and the triggers --
+# -- ungroup, detach and the triggers --
 
 
-def test_u3_u4_a_group_player_or_its_static_member_ends_the_session() -> None:
-    """U3, U4: ungrouping a group player, or its static member, ends the group's session."""
+def test_a_group_player_or_its_static_member_ends_the_session() -> None:
+    """Ungrouping a group player, or its static member, ends the group's session."""
     world = _World()
     world.protocol("group_g", "g", "sync_group", role=ProtocolRole.VIRTUAL)
     world.player("g", "group_g", type=PlayerType.GROUP, static_group_members=("a",))
@@ -1039,8 +1081,8 @@ def test_u3_u4_a_group_player_or_its_static_member_ends_the_session() -> None:
     ]
 
 
-def test_u6_u7_u8_a_synced_member_or_a_leader_leaves() -> None:
-    """U6-U8: through its reachable leader, on its own side, or the leader removes itself."""
+def test_a_synced_member_or_a_leader_leaves() -> None:
+    """Through its reachable leader, on its own side, or the leader removes itself."""
     world = _World()
     _sonos(world, "a", "b", "c")
     world.players["b"] = replace(world.players["b"], synced_to="a")
@@ -1055,8 +1097,14 @@ def test_u6_u7_u8_a_synced_member_or_a_leader_leaves() -> None:
     ]
 
 
-def test_u9_u12_o5_d9_the_scan_takes_the_first_initialised_leader_listing_it() -> None:
-    """U9, U12, O5, D9 (kept on purpose): registry order, only what iter_players yields."""
+def test_the_ungroup_scan_takes_the_first_initialised_leader_listing_it() -> None:
+    """
+    Ungrouping a free player asks the first leader that still lists it to let it go.
+
+    The leaders are scanned in registry order, only those ``iter_players`` yields. This is
+    on purpose: Home Assistant has a single unjoin command, which has to reach a dynamic
+    group that still lists the player.
+    """
     world = _World()
     _sonos(world, "x", "y", "free")
     world.players["x"] = replace(world.players["x"], group_members=("x", "free"), iterated=False)
@@ -1066,8 +1114,8 @@ def test_u9_u12_o5_d9_the_scan_takes_the_first_initialised_leader_listing_it() -
     ]
 
 
-def test_i1_i2_a_member_leaves_on_its_own_side_when_its_leader_is_away() -> None:
-    """I1, I2: through the leader, else the protocol that reports the sync, else refused."""
+def test_a_member_leaves_on_its_own_side_when_its_leader_is_away() -> None:
+    """Through the leader, else the protocol that reports the sync, else refused."""
     world = _World()
     _sonos(world, "a", "b")
     world.players["b"] = replace(world.players["b"], synced_to="a")
@@ -1088,8 +1136,8 @@ def test_i1_i2_a_member_leaves_on_its_own_side_when_its_leader_is_away() -> None
     assert refusal.error is PlayerUnavailableError
 
 
-def test_j8_j22_a_player_that_went_away_leaves_its_group_or_nothing_happens() -> None:
-    """J8, J22: removed from its group or leader; gone, free, or a gone parent: nothing."""
+def test_a_player_that_went_away_leaves_its_group_or_nothing_happens() -> None:
+    """Removed from its group or leader; gone, free, or with a gone parent: nothing."""
     world = _World()
     _sonos(world, "a", "b", "c")
     world.players["b"] = replace(world.players["b"], synced_to="a")
@@ -1102,8 +1150,8 @@ def test_j8_j22_a_player_that_went_away_leaves_its_group_or_nothing_happens() ->
     assert _calls(_plan(world, ChangeKind.LEAVE, "nobody")) == []
 
 
-def test_j12_j13_a_removed_player_leaves_through_its_group_or_its_leader() -> None:
-    """J12, J13: straight to the group's own protocol, else a detach from its leader."""
+def test_a_removed_player_leaves_through_its_group_or_its_leader() -> None:
+    """Straight to the group's own protocol, else a detach from its leader."""
     world = _World()
     world.protocol("group_g", "g", "sync_group", role=ProtocolRole.VIRTUAL)
     world.player("g", "group_g", type=PlayerType.GROUP)
@@ -1116,8 +1164,8 @@ def test_j12_j13_a_removed_player_leaves_through_its_group_or_its_leader() -> No
     assert _calls(_plan(world, ChangeKind.LEAVE_FOR_REMOVAL, "b")) == [Detach(member_id="b")]
 
 
-def test_j17_a_protocol_taken_over_by_an_external_source_leaves_its_group() -> None:
-    """J17: the protocol leaves its group from its own side."""
+def test_a_protocol_taken_over_by_an_external_source_leaves_its_group() -> None:
+    """The protocol leaves its group from its own side."""
     world = _World()
     _sonos(world, "a")
     assert _calls(_plan(world, ChangeKind.LEAVE_PROTOCOL, "sonos_a")) == [
@@ -1125,7 +1173,7 @@ def test_j17_a_protocol_taken_over_by_an_external_source_leaves_its_group() -> N
     ]
 
 
-# -- S: regroup at a fresh start --
+# -- regroup at a fresh start --
 
 
 def _left_on_bridge(world: _World, preferred: str | None = None) -> None:
@@ -1138,8 +1186,8 @@ def _left_on_bridge(world: _World, preferred: str | None = None) -> None:
     world.player("b", "sonos_b", "airplay_b", active_output="airplay_b")
 
 
-def test_s4_a_group_left_on_a_protocol_regroups_natively_at_a_fresh_start() -> None:
-    """S1-S4, RP22, RP23: removed from the protocol, then joined afresh after that call."""
+def test_a_group_left_on_a_protocol_regroups_natively_at_a_fresh_start() -> None:
+    """Removed from the protocol, then joined afresh after that call."""
     world = _World()
     _left_on_bridge(world)
     plan = _plan(world, ChangeKind.REGROUP_FOR_START, "a")
@@ -1155,8 +1203,8 @@ def test_s4_a_group_left_on_a_protocol_regroups_natively_at_a_fresh_start() -> N
 
 
 @pytest.mark.parametrize("why", ["preferred", "unavailable", "synced"])
-def test_s1_s3_a_group_that_still_needs_its_protocol_stays(why: str) -> None:
-    """S1-S3: a preferred bridge, a member away, or a synced protocol leave the group alone."""
+def test_a_group_that_still_needs_its_protocol_stays(why: str) -> None:
+    """A preferred bridge, a member away, or a synced protocol leave the group alone."""
     world = _World()
     _left_on_bridge(world, preferred="airplay_a" if why == "preferred" else None)
     if why == "unavailable":
@@ -1166,8 +1214,15 @@ def test_s1_s3_a_group_that_still_needs_its_protocol_stays(why: str) -> None:
     assert _calls(_plan(world, ChangeKind.REGROUP_FOR_START, "a")) == []
 
 
-def test_t9_d10_the_common_output_can_be_the_leaders_own_protocol() -> None:
-    """T9, D10 (kept): P4 matches the leader's native output for a member P3 ruled out."""
+def test_the_common_output_can_be_the_leaders_own_protocol() -> None:
+    """
+    A member native grouping rules out can still join the leader's own protocol.
+
+    b is of the same make in another household, so it is no native peer of a; the search
+    for a common output then matches a's native output by its domain. This may be a
+    shortcoming, though no provider is known to reach it; it is kept as it was, and this
+    test changes when it is fixed.
+    """
     world = _World()
     world.protocol("sonos_a", "a", "sonos", role=ProtocolRole.NATIVE)
     world.player("a", "sonos_a", can_group_with=frozenset({"b"}))
@@ -1181,8 +1236,8 @@ def test_t9_d10_the_common_output_can_be_the_leaders_own_protocol() -> None:
     assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
 
 
-def test_h9_the_old_members_leave_out_the_protocol_unknown_ids_and_the_leader() -> None:
-    """H9: the frozen old members skip the protocol itself, unknown ids and the leader."""
+def test_the_old_members_leave_out_the_protocol_unknown_ids_and_the_leader() -> None:
+    """The old members skip the protocol itself, unknown ids and the leader."""
     world, progress = _joined(PLAYING)
     world.protocols["airplay_l"] = replace(
         world.protocols["airplay_l"],
@@ -1196,8 +1251,8 @@ def test_h9_the_old_members_leave_out_the_protocol_unknown_ids_and_the_leader() 
     assert stop.progress.join.old_members == (("airplay_x", "x"),)
 
 
-def test_rp15_the_old_members_are_the_ones_frozen_before_the_stop() -> None:
-    """RP15, H4: the stopped protocol's members are removed as they were before its stop."""
+def test_the_old_members_are_the_ones_captured_before_the_stop() -> None:
+    """The stopped protocol's members are removed as they were before its stop."""
     world, progress = _joined(PLAYING)
     leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
     world.players["l"] = replace(world.players["l"], active_output="sendspin_l")
@@ -1210,8 +1265,8 @@ def test_rp15_the_old_members_are_the_ones_frozen_before_the_stop() -> None:
     assert _calls(removal) == [SetMembers(protocol_id="airplay_l", remove=("airplay_x",))]
 
 
-def test_m28_the_native_add_keeps_only_what_the_own_protocol_can_group() -> None:
-    """N1, RP19: a native member the own protocol does not offer is left out of its call."""
+def test_the_native_add_keeps_only_what_the_own_protocol_can_group() -> None:
+    """A native member the own protocol does not offer is left out of its call."""
     world = _World()
     _mixed(world)
     progress = GroupProgress(join=_join(JoinPhase.NATIVE, None, native_add=("sonos_b", "wiim_w")))
@@ -1221,8 +1276,8 @@ def test_m28_the_native_add_keeps_only_what_the_own_protocol_can_group() -> None
     ]
 
 
-def test_m29b_a_native_only_join_opens_no_takeover_while_the_group_is_on_a_protocol() -> None:
-    """K3: new content, the group on AirPlay, a member that joins natively: no takeover."""
+def test_a_native_only_join_opens_no_takeover_while_the_group_is_on_a_protocol() -> None:
+    """New content, the group on AirPlay, a member that joins natively: no takeover."""
     world = _World()
     _mixed(world, active_output="airplay_s")
     world.protocol("sonos_c", "c", "sonos", role=ProtocolRole.NATIVE)
@@ -1236,8 +1291,8 @@ def test_m29b_a_native_only_join_opens_no_takeover_while_the_group_is_on_a_proto
     assert [step for step in plan.steps if isinstance(step, OpenTakeover)] == []
 
 
-def test_m43_a_regroup_that_can_not_place_every_member_leaves_the_group_alone() -> None:
-    """S2: a member the fresh grouping can not place keeps the group on its protocol."""
+def test_a_regroup_that_can_not_place_every_member_leaves_the_group_alone() -> None:
+    """A member the fresh grouping can not place keeps the group on its protocol."""
     world = _World()
     _left_on_bridge(world)
     # z rides the bridge too, but its AirPlay output went away and it has no native way
@@ -1250,8 +1305,8 @@ def test_m43_a_regroup_that_can_not_place_every_member_leaves_the_group_alone() 
     assert _calls(_plan(world, ChangeKind.REGROUP_FOR_START, "a")) == []
 
 
-def test_m49_the_ungroup_scan_passes_over_a_leader_that_holds_the_player_as_static() -> None:
-    """U9: a leader that lists the player as a static member is not asked to let it go."""
+def test_the_ungroup_scan_passes_over_a_leader_that_holds_the_player_as_static() -> None:
+    """A leader that lists the player as a static member is not asked to let it go."""
     world = _World()
     _sonos(world, "x", "free")
     world.players["x"] = replace(
@@ -1260,8 +1315,8 @@ def test_m49_the_ungroup_scan_passes_over_a_leader_that_holds_the_player_as_stat
     assert _calls(_plan(world, ChangeKind.UNGROUP, "free")) == []
 
 
-def test_m54_the_cleanup_of_a_player_that_went_away_only_logs_its_failure() -> None:
-    """J8: the removal from the group fails into a debug line, never an error."""
+def test_the_cleanup_of_a_player_that_went_away_only_logs_its_failure() -> None:
+    """The removal from the group fails into a debug line, never an error."""
     world = _World()
     _sonos(world, "a", "b")
     world.players["b"] = replace(world.players["b"], synced_to="a")
@@ -1276,8 +1331,8 @@ def test_m54_the_cleanup_of_a_player_that_went_away_only_logs_its_failure() -> N
     ]
 
 
-def test_m68_a_dissolve_removes_the_members_that_are_away_too() -> None:
-    """L6: every member but the leader is removed, also one that can not play now."""
+def test_a_dissolve_removes_the_members_that_are_away_too() -> None:
+    """Every member but the leader is removed, also one that can not play now."""
     world = _World()
     _leader_with_members(world, None)
     world.players["c"] = replace(world.players["c"], available_for_playback=False)
@@ -1288,8 +1343,8 @@ def test_m68_a_dissolve_removes_the_members_that_are_away_too() -> None:
     ]
 
 
-def test_m69_only_members_that_can_play_now_take_the_group_over() -> None:
-    """L1: a member that can not play now is no heir and does not go along."""
+def test_only_members_that_can_play_now_take_the_group_over() -> None:
+    """A member that can not play now is no heir and does not go along."""
     world = _World()
     _leader_with_members(world, QueueView(queue_id="a", state=PLAYING))
     world.players["b"] = replace(world.players["b"], available_for_playback=False)
@@ -1297,8 +1352,8 @@ def test_m69_only_members_that_can_play_now_take_the_group_over() -> None:
     assert plan.steps == (TransferLeadership(leader_id="a", remaining=("c",)),)
 
 
-def test_m75_an_output_of_the_leader_that_can_not_play_is_no_common_output() -> None:
-    """T9: the leader's AirPlay output is away, so a member only on AirPlay can not join."""
+def test_an_output_of_the_leader_that_can_not_play_is_no_common_output() -> None:
+    """The leader's AirPlay output is away, so a member only on AirPlay can not join."""
     world = _World()
     world.protocol("sonos_p", "p", "sonos", role=ProtocolRole.NATIVE)
     world.protocol("airplay_p", "p", "airplay", available=False)
