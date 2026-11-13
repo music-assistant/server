@@ -36,7 +36,7 @@ from music_assistant.constants import (
     CONF_VOLUME_STEP,
 )
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import volume as players_volume
 from music_assistant.models.player import Player
 from tests.common import MockProtocol, MockProvider, attach_mock, use_real_create_task
 
@@ -1003,7 +1003,7 @@ class TestVolumeNudgeTarget:
         _own(player)._attr_volume_level = 20
         player.update_state(force_update=True, signal_event=False)
 
-        with patch.object(players_controller, "VOLUME_TARGET_EXPIRY", 0):
+        with patch.object(players_volume, "VOLUME_TARGET_EXPIRY", 0):
             await controller.cmd_volume_up("player_1")
 
         assert device.commands[-1] == 25
@@ -1120,7 +1120,7 @@ class TestGroupVolumeReference:
         self._report(players["member_1"], 55)
         self._report(players["member_2"], 55)
 
-        with patch.object(players_controller, "VOLUME_TARGET_EXPIRY", 0):
+        with patch.object(players_volume, "VOLUME_TARGET_EXPIRY", 0):
             # the member is turned down on the device itself, well after that command
             self._report(players["member_2"], 20)
             await controller.cmd_group_volume_up("group")
