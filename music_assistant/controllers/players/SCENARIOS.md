@@ -698,6 +698,18 @@ is back on Kitchen.
   - `tests/controllers/players/test_unlink.py::test_unlinked_protocol_stays_on_its_player`
   - `tests/controllers/players/test_unlink.py::test_unlink_then_merge_back_puts_the_protocol_back`
 
+### MERGE-11 · A disabled player that goes in a merge is announced as removed
+
+The user disables the player of a TV's Cast receiver, which played, and merges it into the
+player of its AirPlay receiver. Clients are told once that the Cast receiver's player is removed,
+its saved queue is gone, and so is the DJ of the AI radio on its queue.
+
+- End-to-end: **possible with** two players that may be one, such as an AirPlay and a DLNA
+  receiver, one of them disabled.
+- Proven by:
+  - `test_lifecycle.py::test_a_disabled_player_that_goes_in_a_merge_is_announced_as_removed`
+  - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_goes_with_a_disabled_player_that_goes_in_a_merge`
+
 ## Restart and upgrade
 
 Players are stored. After a restart a player is back with its id, name and settings, unavailable

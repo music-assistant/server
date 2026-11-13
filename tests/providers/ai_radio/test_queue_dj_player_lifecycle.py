@@ -130,3 +130,32 @@ async def test_a_dj_goes_with_a_disabled_player_that_is_removed(
     await scenario.idle()
 
     assert player_id not in dj._dj_queues
+
+
+async def test_a_dj_goes_with_a_disabled_player_that_goes_in_a_merge(
+    scenario: Scenario, tmp_path: Path
+) -> None:
+    """A disabled player merged into another one is gone: its queue loses its DJ."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    tv_airplay = airplay.protocol(
+        "ap_tv", "Living TV", role="audio", identifiers={IdentifierType.AIRPLAY_ID: "C0:FF:EE:01"}
+    )
+    tv_cast = chromecast.protocol(
+        "cast_tv", "Living TV", role="audio", identifiers={IdentifierType.CAST_UUID: "6f0c1a2b"}
+    )
+    await scenario.attach(tv_airplay)
+    await scenario.advance(15)
+    await scenario.attach(tv_cast)
+    await scenario.advance(15)
+    keep_id = scenario.single_player(tv_airplay).player_id
+    absorb_id = scenario.single_player(tv_cast).player_id
+    dj = _queue_dj(scenario, tmp_path)
+    await dj.set_queue_dj(absorb_id, "rick")
+    await scenario.disable(absorb_id)
+    await scenario.idle()
+
+    await scenario.mass.players.merge(absorb_id, keep_id)
+    await scenario.idle()
+
+    assert absorb_id not in dj._dj_queues

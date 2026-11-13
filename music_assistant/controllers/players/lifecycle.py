@@ -640,7 +640,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             and not player.protocols
             and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}") is None
         ):
-            await self._drop_player(player)
+            await self._drop_player(player.player_id, player)
             self.logger.info("Player removed: %s", player.display_name)
             return
         player.set_config(await self.mass.config.get_player_object_config(player))
@@ -770,16 +770,23 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player_id, data=player)
         await self.mass.player_queues.on_player_register(player)
 
-    async def _drop_player(self, player: Player) -> None:
+    async def _drop_player(self, player_id: str, player: Player | None) -> None:
         """
-        Take a player out of the registry for good, with its saved queue, and let clients know.
+        Take a player away for good, with its saved queue, and let clients know it is gone.
 
-        :param player: The player to drop, whose protocols are detached already.
+        Every permanent removal of a player that is live or has a stored record goes here.
+
+        :param player_id: Id of the player.
+        :param player: The live player, whose protocols are detached already; None for a
+            player that only has a stored record, such as a disabled one.
         """
-        player_id = player.player_id
-        await self._unregister_player(player)
-        self.mass.player_queues.on_player_remove(player_id, permanent=True)
-        if player.initialized.is_set() and not self.mass.closing:
+        if player is not None:
+            await self._unregister_player(player)
+            self.mass.player_queues.on_player_remove(player_id, permanent=True)
+        else:
+            self.mass.player_queues.purge_saved_queue(player_id)
+        # a live player nobody was told about yet goes unannounced
+        if (player is None or player.initialized.is_set()) and not self.mass.closing:
             self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     async def _unregister_player(self, player: Player) -> None:
@@ -849,11 +856,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             # No group detach is issued for its persisted memberships: the player is out of
             # the registry, so it is filtered out of every group's live member list, and
             # its persisted membership is settled by the config cleanup below.
-            if player is not None:
-                await self._drop_player(player)
-            elif stored is not None and not self.mass.closing:
-                # a disabled player is not in the registry, but it is gone for good all the same
-                self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+            if player is not None or stored is not None:
+                await self._drop_player(player_id, player)
             # a protocol found again during the awaits above belongs to another player now
             self._delete_player_config(
                 player_id, set(self.mass.config.get_protocol_ids_of_player(player_id))
@@ -884,8 +888,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         """
         Permanently delete everything stored about a player.
 
-        That is its own config and those of its protocols, its DSP and queue settings and
-        its saved queue, so a device that returns starts out fresh. Any group that lists
+        That is its own config and those of its protocols and its DSP and queue settings,
+        so a device that returns starts out fresh. Any group that lists
         the player as a member loses the member, and so do the user access filters.
 
         :param player_id: Id of the player to delete the configuration of.
@@ -900,8 +904,6 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             f"{CONF_PLAYER_QUEUES}/{player_id}",
         ):
             self.mass.config.remove(key)
-        if player_id not in self._players:
-            self.mass.player_queues.purge_saved_queue(player_id)
         self._build_legacy_id_index()
         # a user access filter is an allow-list of player ids, so it must not be left
         # pointing at a player whose config was just wiped

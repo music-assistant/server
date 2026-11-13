@@ -759,6 +759,39 @@ async def test_the_player_that_goes_in_a_merge_is_announced_as_removed(
     assert scenario.removals() == [(absorb_id, None)]
 
 
+async def test_a_disabled_player_that_goes_in_a_merge_is_announced_as_removed(
+    scenario: Scenario,
+) -> None:
+    """A disabled player merged into another one is gone for good: announced once, queue gone."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    tv_airplay = airplay.protocol(
+        "ap_tv", "Living TV", role="audio", identifiers={IdentifierType.AIRPLAY_ID: "C0:FF:EE:01"}
+    )
+    tv_cast = chromecast.protocol(
+        "cast_tv", "Living TV", role="audio", identifiers={IdentifierType.CAST_UUID: "6f0c1a2b"}
+    )
+    await scenario.attach(tv_airplay)
+    await scenario.advance(15)
+    await scenario.attach(tv_cast)
+    await scenario.advance(15)
+    await scenario.idle()
+    keep_id = scenario.single_player(tv_airplay).player_id
+    absorb_id = scenario.single_player(tv_cast).player_id
+    await scenario.play(absorb_id)
+    await scenario.idle()
+    await scenario.disable(absorb_id)
+    await scenario.idle()
+    scenario.clear_events()
+
+    await scenario.mass.players.merge(absorb_id, keep_id)
+    await scenario.idle()
+
+    assert scenario.removals() == [(absorb_id, None)]
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{absorb_id}") is None
+    assert await scenario.saved_queue(absorb_id) is None
+
+
 # the stored config of a web player as written before the split, where every player was stored
 PRE_SPLIT_WEB_PLAYER: dict[str, Any] = {
     "player_id": "sendspin_web_3f2a",

@@ -141,6 +141,10 @@ class PlayerMergingMixin(_PlayerControllerBase):
         protocol_ids = set(self.mass.config.get_protocol_ids_of_player(absorb_id))
         if absorbed := self._players.get(absorb_id):
             protocol_ids.update(absorbed.protocol_ids)
+        # a disabled player is no live player, only a stored one
+        disabled = (
+            absorbed is None and self.mass.config.get(f"{CONF_PLAYERS}/{absorb_id}") is not None
+        )
         self.logger.info(
             "Merging player %s into %s",
             self._stored_player_name(absorb_id),
@@ -169,10 +173,9 @@ class PlayerMergingMixin(_PlayerControllerBase):
         for protocol in moving:
             if protocol.player is absorbed:
                 await self._unbind(protocol)
-        if absorbed is not None:
-            await self._drop_player(absorbed)
-        else:
-            self.mass.player_queues.purge_saved_queue(absorb_id)
+        if absorbed is not None or disabled:
+            # a live player that is gone meanwhile was removed, and announced, by the user
+            await self._drop_player(absorb_id, absorbed)
         try:
             await self.mass.webserver.auth.replace_player_in_user_filters(
                 absorb_id, keep_id, removed_player_ids=[absorb_id]
