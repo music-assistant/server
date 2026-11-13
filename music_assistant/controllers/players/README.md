@@ -197,27 +197,51 @@ registered under that id and no config is stored under it.
 
 ### 1. PlayerController ([controller.py](controller.py))
 
-The main orchestrator. It keeps the players and, next to them, the protocols the providers attached
-(also those that still wait for their player), and owns their lifecycle (`attach`, `detach`,
-`remove_protocol`, `remove`, merging players and taking a protocol off its player), the player
-commands, sync group coordination, availability and the state events.
+The controller is one class, composed of a mixin per concern over a typed base. `controller.py`
+holds its state and its setup and teardown, and lists the concerns.
 
-### 2. ProtocolLinkingMixin ([protocol_linking.py](protocol_linking.py))
+### 2. The Registry ([base.py](base.py))
 
-Finding the player a protocol belongs to, creating the player of a new device, holding a protocol
-until it is known which player it belongs to, and the output protocol selection for playback.
+The players and, next to them, the protocols the providers attached (also those that still wait for
+their player), their lookups, the owner of a player's playback, the access check and the player
+controls. It also declares the operations one concern calls on another, so each mixin type-checks
+on its own.
 
-### 3. Identifier Matching ([matching.py](matching.py))
+### 3. Lifecycle and Identity
+
+- [lifecycle.py](lifecycle.py): attaching and detaching protocols (`attach`, `detach`,
+  `remove_protocol`), creating and dropping players, removing (`remove`), enabling and disabling them.
+- [protocol_linking.py](protocol_linking.py): finding the player a protocol belongs to, creating the
+  player of a new device and holding a protocol until it is known which player it belongs to.
+- [merging.py](merging.py): merging two players and taking a protocol off its player.
+
+### 4. State ([state_updates.py](state_updates.py), [config_changes.py](config_changes.py))
+
+Publishing the state of a player, acting on what changed in it and polling the protocols that need
+it; what a changed player, protocol or DSP config does.
+
+### 5. Commands
+
+- [locks.py](locks.py): the player command locks (see [Locking](#locking)).
+- [playback.py](playback.py): play, pause, stop, seek, next and previous, play media.
+- [outputs.py](outputs.py): the output that renders the audio (see
+  [Output Protocol Selection](#output-protocol-selection)).
+- [audio_sources.py](audio_sources.py): selecting a source, and the live source sessions.
+- [power.py](power.py), [volume.py](volume.py), [sleep_timer.py](sleep_timer.py) and
+  [announcements.py](announcements.py).
+- [group_commands.py](group_commands.py): the entries of a group change (see [Grouping](#grouping)).
+
+### 6. Identifier Matching ([matching.py](matching.py))
 
 The pure function that decides whether a protocol stands for the device of a player, with every
 veto and precedence rule in one table (see [Device Identifier Matching](#device-identifier-matching)).
 
-### 4. Grouping ([grouping_plan.py](grouping_plan.py), [grouping.py](grouping.py))
+### 7. Grouping ([grouping_plan.py](grouping_plan.py), [grouping.py](grouping.py))
 
 The plan of a group change, a pure function of a snapshot of the players, and the executor that
 carries a plan out (see [Grouping](#grouping)).
 
-### 5. Helper Utilities ([helpers.py](helpers.py))
+### 8. Helper Utilities ([helpers.py](helpers.py))
 
 The `handle_player_command` decorator for command validation, and `AnnounceData`.
 
