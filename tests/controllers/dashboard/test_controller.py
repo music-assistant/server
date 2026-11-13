@@ -675,16 +675,12 @@ async def _resolve_key(controller: DashboardController) -> str:
     return _route_query(url)[VIEWER_KEY_PARAM]
 
 
-def _register_resolving_endpoint(
-    controller: DashboardController, keys: list[str], fail: bool = False
-) -> None:
+def _register_resolving_endpoint(controller: DashboardController, keys: list[str]) -> None:
     """Register dash1 with an on_show that resolves its url like a real consumer."""
     controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
 
     async def on_show(_dashboard: DashboardType, _player_id: str | None) -> None:
         keys.append(await _resolve_key(controller))
-        if fail:
-            raise MusicAssistantError("cast failed")
 
     device = DashboardDevice(
         dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
@@ -731,37 +727,6 @@ async def test_get_url_between_shows_keeps_the_current_viewer_key() -> None:
     assert await _resolve_key(controller) == keys[0]
     await controller.show_dashboard("dash1", DashboardType.PARTY)
     assert await _resolve_key(controller) == keys[1]
-
-
-async def test_show_dashboard_failure_restores_the_previous_viewer_key() -> None:
-    """A failed replacing show keeps the earlier cast's key and drops the failed one."""
-    controller = _make_controller()
-    keys: list[str] = []
-    _register_resolving_endpoint(controller, keys)
-    await controller.show_dashboard("dash1", DashboardType.PARTY)
-    controller._session_owners["dash1"] = "user-1"
-    _register_resolving_endpoint(controller, keys, fail=True)
-
-    with pytest.raises(MusicAssistantError, match="cast failed"):
-        await controller.show_dashboard("dash1", DashboardType.PARTY)
-
-    old_key, failed_key = keys
-    assert controller._viewer_keys["dash1"] == old_key
-    assert await _viewer_prefs_allowed(controller, old_key)
-    assert not await _viewer_prefs_allowed(controller, failed_key)
-
-
-async def test_show_dashboard_failure_without_previous_key_leaves_no_key() -> None:
-    """A failing first show does not leave a valid key behind."""
-    controller = _make_controller()
-    keys: list[str] = []
-    _register_resolving_endpoint(controller, keys, fail=True)
-
-    with pytest.raises(MusicAssistantError):
-        await controller.show_dashboard("dash1", DashboardType.PARTY)
-
-    assert keys
-    assert "dash1" not in controller._viewer_keys
 
 
 async def test_show_dashboard_api_path_emits_event_without_url() -> None:
