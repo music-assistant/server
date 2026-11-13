@@ -511,6 +511,23 @@ class _PlayerControllerBase(CoreController):
             if (value := self.mass.config.get_player_value(player_id, conf_key))
         }
 
+    def _command_player_id(self, player_id: str) -> str:
+        """
+        Return the current id of the player a command names.
+
+        :param player_id: The id of a player, one of its legacy ids, or the id of a protocol
+            attached to it.
+        """
+        # this should not happen, but in case the id of a protocol is used,
+        # auto-resolve it to the player it is attached to
+        if (
+            player_id not in self._players
+            and (protocol := self._protocols.get(player_id))
+            and (protocol_parent := protocol.player)
+        ):
+            return protocol_parent.player_id
+        return self.resolve_player_id(player_id)
+
     def _get_reachable_player(self, player_id: str) -> Player:
         """
         Return the player, provided it can take a command right now.
