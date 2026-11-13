@@ -516,13 +516,17 @@ async def test_disabling_a_player_takes_it_out_and_enabling_brings_it_back(
         (player_id, False)
     ]
     assert scenario.removals() == []
-    assert scenario.events(EventType.PLAYER_UPDATED, EventType.PLAYER_REMOVED, object_id=player_id)[
-        -1
-    ] == Event(EventType.PLAYER_UPDATED, player_id)
-    assert scenario.availability_updates(player_id)[-1] is False
-    assert EventType.PLAYER_CONFIG_UPDATED in [
-        event.type for event in scenario.events(object_id=player_id)
+    # as on dev: the last update of the player, then the config event of the save
+    assert scenario.events(
+        EventType.PLAYER_UPDATED,
+        EventType.PLAYER_CONFIG_UPDATED,
+        EventType.PLAYER_REMOVED,
+        object_id=player_id,
+    )[-2:] == [
+        Event(EventType.PLAYER_UPDATED, player_id),
+        Event(EventType.PLAYER_CONFIG_UPDATED, player_id),
     ]
+    assert scenario.availability_updates(player_id)[-1] is False
     scenario.clear_events()
 
     await scenario.enable(player_id)

@@ -1372,8 +1372,8 @@ async def test_disable_and_enable_announce_the_player_going_and_coming(scenario:
     assert scenario.mass.players.wants_protocol("ap_kitchen") is False
     assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN", "ap_kitchen"])
     assert scenario.events(*LIFECYCLE_EVENTS, EventType.PLAYER_CONFIG_UPDATED) == [
-        Event(EventType.PLAYER_CONFIG_UPDATED, player_id),
         Event(EventType.PLAYER_UPDATED, player_id),
+        Event(EventType.PLAYER_CONFIG_UPDATED, player_id),
     ]
     assert scenario.availability_updates(player_id) == [False]
     with pytest.raises(PlayerUnavailableError):

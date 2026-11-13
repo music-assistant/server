@@ -983,12 +983,6 @@ class PlayerConfigMixin:
         self.set(conf_key, new_raw)
         for values_key, protocol_values in values_by_key.items():
             self.set(values_key, protocol_values)
-        player_disabled = CONF_ENABLED in changed_keys and not config.enabled
-        if player_disabled:
-            # clients get the config of a player that is disabled before the player goes
-            self.mass.signal_event(
-                EventType.PLAYER_CONFIG_UPDATED, object_id=config.player_id, data=config
-            )
         try:
             # validate/handle the update in the players controller
             await self.mass.players.on_player_config_change(config, changed_keys)
@@ -1002,13 +996,12 @@ class PlayerConfigMixin:
                 else:
                     self.set(values_key, existing_protocol)
             raise
-        if not player_disabled:
-            # send config updated event
-            self.mass.signal_event(
-                EventType.PLAYER_CONFIG_UPDATED,
-                object_id=config.player_id,
-                data=config,
-            )
+        # send config updated event
+        self.mass.signal_event(
+            EventType.PLAYER_CONFIG_UPDATED,
+            object_id=config.player_id,
+            data=config,
+        )
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
