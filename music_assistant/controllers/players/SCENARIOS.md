@@ -1025,7 +1025,9 @@ While the browser is away, the player is hidden, exposed to Home Assistant and n
 ## Commands to a busy player
 
 Commands to one player run one at a time: a command waits for the one before it. Moving a queue
-to another player holds both players until the other one plays.
+to another player holds both players until the other one plays: a play, stop, resume, next,
+previous, seek or play of either queue waits for the move. A pause and a clear of a queue take no
+lock and do not wait.
 
 ### BUSY-1 · A command waits for the command that holds the player
 
