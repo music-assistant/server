@@ -19,11 +19,11 @@ Flag it in review, and never write it yourself, when a change would:
 - decode protected audio outside what the user's own account is entitled to, or keep the
   decoded result rather than only playing it
 - call a service's API without throttling, or re-fetch what the cache already holds
-- fan one user action or background job out into requests per album, track, playlist or page
-  of a catalogue, library or listing; the number of requests stays small and fixed, whatever
-  the size. Never walk a catalogue to build what a service has no endpoint for (an artist's
-  tracks from all of its albums), and cap paginated listings (an artist's albums stop at 100
-  releases)
+- walk a service's catalogue for one user action or background job: requests per album, track
+  or page of an artist's discography or a service listing, so the count grows with the
+  catalogue. Never build what a service has no endpoint for that way (an artist's tracks from
+  all of its albums), and cap catalogue listings (an artist's albums stop at 100 releases).
+  Paging through the user's own library, through the throttler, is fine
 - bypass a throttler, or keep sending requests while a service has asked us to wait
 - write decoded audio from a streaming provider to disk
 - bypass a subscription tier, regional availability, or a service's stated concurrent-stream

@@ -18,7 +18,7 @@ Check whether `music_assistant/helpers/` already covers what new code does; prov
 
 ## Requests to music services
 
-One user action or background job makes a small, fixed number of requests to a music service. A change that fans it out into requests per album, track, playlist or page of a catalogue, library or listing, so the count grows with an artist's discography, a library or a playlist, is `[CRITICAL]`. The same goes for building what a service has no endpoint for by walking its catalogue (an artist's tracks from all of its albums), a paginated listing without a cap, and bypassing a throttler or sending requests while a service has asked us to wait. A provider without the endpoint does not offer the feature: `ProviderFeature.ARTIST_TRACKS` and `ProviderFeature.ARTIST_TOPTRACKS` are separate features. The usage policy in `AGENTS.md` has the rule.
+A change that walks a music service's catalogue for one user action or background job, with requests per album, track or page of an artist's discography or a service listing so the count grows with the catalogue, is `[CRITICAL]`. The same goes for building what a service has no endpoint for that way (an artist's tracks from all of its albums), a catalogue listing without a cap, and bypassing a throttler or sending requests while a service has asked us to wait. Paging through the user's own library, through the throttler, is fine. A provider without the endpoint does not offer the feature: `ProviderFeature.ARTIST_TRACKS` and `ProviderFeature.ARTIST_TOPTRACKS` are separate features. The usage policy in `AGENTS.md` has the rule.
 
 ## New providers
 

@@ -157,9 +157,10 @@ A provider that talks to a music service must therefore:
   service's API and set it to what that service actually tolerates, and put
   [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
   instead of asking again. Back off on a 429 rather than retrying into it.
-  One user action or background job makes a small, fixed number of requests: never fan it out
-  per album, track, playlist or page, and never build what the service has no endpoint for by
-  walking its catalogue. A provider without an artist tracks endpoint does not offer
+  One user action or background job never walks the service's catalogue: no requests per album,
+  track or page of an artist's discography or a service listing, and never build what the
+  service has no endpoint for that way. Paging through the user's own library, through the
+  throttler, is fine. A provider without an artist tracks endpoint does not offer
   `ProviderFeature.ARTIST_TRACKS`; artist top tracks (`ARTIST_TOPTRACKS`) is a feature of its own.
   The throttler serves playback first, user actions second and background work last. Background
   work may use only half of the rate limit and is spread evenly over time, which keeps room free
