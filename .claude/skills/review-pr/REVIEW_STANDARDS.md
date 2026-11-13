@@ -16,6 +16,10 @@ If the PR references an issue, read it (`gh issue view`) before reviewing the di
 
 Check whether `music_assistant/helpers/` already covers what new code does; providers are expected to use the shared helpers rather than reimplement. A music provider parsing PLS itself instead of calling `parse_pls` from `music_assistant.helpers.playlists` is a `[PROBLEM]`.
 
+## Requests to music services
+
+A change that walks a music service's catalogue for one user action or background job, with requests per album, track or page of an artist's discography or a service listing so the count grows with the catalogue, is `[CRITICAL]`. The same goes for building what a service has no endpoint for that way (an artist's tracks from all of its albums), a catalogue listing without a cap, and bypassing a throttler or sending requests while a service has asked us to wait. Paging through the user's own library, through the throttler, is fine. A provider without the endpoint does not offer the feature: `ProviderFeature.ARTIST_TRACKS` and `ProviderFeature.ARTIST_TOPTRACKS` are separate features. The usage policy in `CLAUDE.md` has the rule.
+
 ## New providers
 
 If the PR adds files under `music_assistant/providers/`, read `references/new-provider.md`.
