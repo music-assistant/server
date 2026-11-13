@@ -15,6 +15,10 @@ PLAYER_LOCK_TIMEOUT: Final = 120
 # leader holding it) again when the owner changed while it waited; a player whose owner keeps
 # changing makes it fail as busy instead of waiting on.
 PLAYER_LOCK_OWNER_ATTEMPTS: Final = 3
+# How many times a command over several players (see PlayerController.get_playback_locks)
+# tries to take their locks, each time first waiting for the player found busy the time before;
+# one that keeps finding a busy player fails as busy instead of waiting on.
+PLAYER_LOCKS_ATTEMPTS: Final = 3
 
 
 class PlayerLockPurpose(StrEnum):
