@@ -96,6 +96,19 @@ async def test_reports_playing_track_as_the_player() -> None:
     assert headers["X-Plex-Device-Name"] == "Living Room"
 
 
+@pytest.mark.usefixtures("clock")
+async def test_player_name_outside_latin_1_can_be_sent() -> None:
+    """A player name in any script reaches the Plex server as UTF-8."""
+    queue = _queue()
+    queue.display_name = "客厅"
+    reporter = _reporter(queue)
+
+    await reporter._report_queues()
+
+    [(_params, headers)] = _sent(reporter)
+    assert headers["X-Plex-Device-Name"].encode("latin-1") == "客厅".encode()
+
+
 @pytest.mark.parametrize(
     "item",
     [

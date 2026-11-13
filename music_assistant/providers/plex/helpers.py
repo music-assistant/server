@@ -175,7 +175,9 @@ def player_client_headers(client_id: str, device_name: str) -> dict[str, str]:
     :param device_name: The name Plex shows for the player.
     """
     return {
-        "X-Plex-Device-Name": device_name,
+        # header values are sent as Latin-1, so the UTF-8 bytes of the name are passed
+        # as Latin-1 text to reach Plex as UTF-8 in any script
+        "X-Plex-Device-Name": device_name.encode().decode("latin-1"),
         "X-Plex-Session-Identifier": client_id,
         "X-Plex-Client-Identifier": client_id,
         "X-Plex-Product": APPLICATION_NAME,
