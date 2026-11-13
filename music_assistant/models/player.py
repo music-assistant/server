@@ -557,6 +557,16 @@ class Player(ABC):
         return PlayerFeature.ENQUEUE not in self.supported_features
 
     @property
+    def needs_gapless_burst(self) -> bool:
+        """
+        Return if the player must hold a whole opening chunk of a track before it plays gapless.
+
+        Such a player gets a large head start on every track it streams on its own. A player
+        that struggles with the realtime pacing otherwise plays in flow mode.
+        """
+        return False
+
+    @property
     def device_info(self) -> DeviceInfo:
         """Return the device info of the player."""
         return self._attr_device_info
@@ -1308,8 +1318,8 @@ class Player(ABC):
         """
         Return a config value resolved on the player that renders the audio output.
 
-        Audio/output related settings (output codec, http profile, output channels,
-        sample rates) live on the player(protocol) that actually renders the audio:
+        Audio/output related settings (output codec, fixed content length, output
+        channels, sample rates) live on the player(protocol) that actually renders the audio:
         the active linked protocol player when outputting via a protocol, otherwise
         this player itself. The output player's value (or its provider's entry
         default) takes precedence; this player's own value is the fallback for keys

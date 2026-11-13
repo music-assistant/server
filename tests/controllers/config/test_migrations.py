@@ -20,6 +20,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_apple_music_sync_schedule,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
+    _migrate_drop_http_profile,
     _migrate_emby_album_artists_heal,
     _migrate_nicovideo_drop_mail_login,
     _migrate_orphaned_disabled_protocol_configs,
@@ -63,7 +64,7 @@ def test_migrate_bluesound_http_profile_drops_stored_pick() -> None:
     assert _migrate_bluesound_http_profile(data) is True
     assert data["players"]["b1"]["values"] == {"flow_mode": True}
     assert data["players"]["b2"]["values"] == {}
-    # other providers still offer the setting, so their pick is left alone
+    # other providers are left to the step that drops the setting everywhere
     assert data["players"]["c1"]["values"] == {"http_profile": "chunked"}
 
 
@@ -81,6 +82,68 @@ def test_migrate_bluesound_http_profile_noop_when_already_required() -> None:
         }
     }
     assert _migrate_bluesound_http_profile(data) is False
+
+
+def test_migrate_drop_http_profile_drops_every_stored_value() -> None:
+    """The HTTP profile is dropped from every player, protocol players included."""
+    data: dict[str, Any] = {
+        "players": {
+            "sonos_1": {
+                "provider": "sonos",
+                "values": {
+                    "http_profile": "chunked",
+                    "dlna_1||protocol||http_profile": "forced_content_length",
+                    "dlna_1||protocol||flow_mode": True,
+                    "output_codec": "mp3",
+                },
+            },
+            "dlna_1": {
+                "provider": "dlna",
+                "player_type": "protocol",
+                "values": {"http_profile": "forced_content_length", "flow_mode": True},
+            },
+            "cast_1": {"provider": "chromecast", "values": {"http_profile": "chunked"}},
+            "ap_1": {"provider": "airplay", "values": {"output_codec": "flac"}},
+        }
+    }
+    players = data["players"]
+
+    assert _migrate_drop_http_profile(data) is True
+    assert players["sonos_1"]["values"] == {
+        "dlna_1||protocol||flow_mode": True,
+        "output_codec": "mp3",
+    }
+    assert players["dlna_1"]["values"] == {"flow_mode": True}
+    assert players["cast_1"]["values"] == {}
+    assert players["ap_1"]["values"] == {"output_codec": "flac"}
+
+
+async def test_migrate_drop_http_profile_idempotent() -> None:
+    """The settings migration drops the HTTP profile once and reports no change after."""
+    data: dict[str, Any] = {
+        "players": {"dlna_1": {"provider": "dlna", "values": {"http_profile": "chunked"}}}
+    }
+    assert await migrate(data) is True
+    assert await migrate(data) is False
+    assert data["players"]["dlna_1"]["values"] == {}
+
+
+def test_migrate_drop_http_profile_tolerates_malformed_data() -> None:
+    """Missing or non-dict player configs and values are skipped without raising."""
+    assert _migrate_drop_http_profile({}) is False
+    assert _migrate_drop_http_profile({"players": "broken"}) is False
+    data: dict[str, Any] = {
+        "players": {
+            "p1": "broken",
+            "p2": {"provider": "dlna"},
+            "p3": {"provider": "dlna", "values": None},
+            "p4": {"provider": "dlna", "values": {"http_profile": None}},
+        }
+    }
+    assert _migrate_drop_http_profile(data) is True
+    assert data["players"]["p1"] == "broken"
+    assert "values" not in data["players"]["p2"]
+    assert data["players"]["p4"]["values"] == {}
 
 
 def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:

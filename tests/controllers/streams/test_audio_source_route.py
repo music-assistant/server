@@ -187,7 +187,7 @@ async def test_http_output_is_registered_to_the_source_session(
     ctrl.audio.get_audio_source_stream.return_value = "audio-input"
     ctrl.audio.get_player_output_plan.return_value = SimpleNamespace(filter_params=[])
     player.state.group_members = ["member-1"]
-    player.get_config_value.return_value = "default"
+    player.get_config_value.return_value = False
     response = MagicMock()
     response.prepare = AsyncMock()
     monkeypatch.setattr(web, "StreamResponse", MagicMock(return_value=response))
