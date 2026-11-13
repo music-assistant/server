@@ -95,9 +95,9 @@ class PlayerProvider(Provider):
         Attach every device this provider knows of that has no attached protocol.
 
         Called when the provider is (re)loaded and on every discovery request of the players
-        controller: when one of its players gets enabled, was removed or merged, and when one of
-        its protocols that is not attached is taken off its player or switched on again as an
-        output. A provider that discovers its devices through mdns only does not need to
+        controller: when one of its players is enabled or, unless it is a group, removed, and
+        when one of its protocols that is not attached moves to another player (in a merge, or
+        when it is taken off its player) or is switched on again as an output. A provider that discovers its devices through mdns only does not need to
         implement this.
         """
 

@@ -376,9 +376,10 @@ protocol: the protocol is released again, and a player it created that nobody sa
 config it stored for it. A failing attach is rolled back the same way.
 
 The controller asks providers to look for their devices again a few seconds later
-(`provider.schedule_discovery()`) when a device may be found again: after a player is enabled or
-removed (not a group), and when a protocol that is not attached moves to another player or is
-switched on again as an output.
+(`provider.schedule_discovery()`) when a device may be found again: after a player is enabled,
+after a player that is not a group is removed, and when a protocol that is not attached moves to
+another player (in a merge, or when it is taken off its player) or is switched on again as an
+output.
 
 ### Startup
 
