@@ -158,6 +158,7 @@ class MSXBridgeProvider(PlayerProvider):
         player_id: str,
         display_name: str | None = None,
         ip_address: str | None = None,
+        device_id: str | None = None,
     ) -> MSXPlayer:
         """
         Return the MSX player for this TV, attaching it if needed.
@@ -183,6 +184,7 @@ class MSXBridgeProvider(PlayerProvider):
                 protocol_id=player_id,
                 name=name,
                 ip_address=ip_address,
+                device_id=device_id,
             )
             self._tvs[player_id] = player
         elif ip_address:

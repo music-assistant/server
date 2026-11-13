@@ -205,3 +205,27 @@ async def test_a_tv_under_a_new_address_reports_it(
     assert _player(returned).player_id == player_id
     assert returned.device_info.ip_address == "10.0.0.21"
     assert scenario.player_of(other_device) != player_id
+
+
+async def test_two_clients_on_one_host_stay_two_players(
+    scenario: Scenario, provider: MSXBridgeProvider
+) -> None:
+    """A client first seen while another client of its host is away gets a player of its own."""
+    scenario.arp["10.0.0.20"] = "00:11:22:33:44:55"
+    first = await provider.get_or_register_player(
+        "msx_client_a", ip_address="10.0.0.20", device_id="client-a"
+    )
+    await scenario.settle()
+    first_player = _player(first).player_id
+    await provider._handle_player_detach(first.protocol_id)
+    await scenario.settle()
+
+    second = await provider.get_or_register_player(
+        "msx_client_b", ip_address="10.0.0.20", device_id="client-b"
+    )
+    await scenario.settle()
+
+    assert _player(second).player_id != first_player
+    record = scenario.mass.config.get_protocol_record(first.protocol_id)
+    assert record is not None
+    assert record["player_id"] == first_player

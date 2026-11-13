@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo
 
@@ -44,6 +44,7 @@ class MSXPlayer(PlayerProtocol):
         name: str = "MSX TV",
         *,
         ip_address: str | None = None,
+        device_id: str | None = None,
     ) -> None:
         """Initialize the MSX Player."""
         super().__init__(provider, protocol_id)
@@ -61,6 +62,9 @@ class MSXPlayer(PlayerProtocol):
         )
         if ip_address:
             self._attr_device_info.ip_address = ip_address
+        # the device id a client sends tells it apart from the other clients on its host
+        if device_id:
+            self._attr_device_info.add_identifier(IdentifierType.UUID, device_id)
         self._attr_available = True
         self._attr_powered = True
         self._attr_volume_level = 100

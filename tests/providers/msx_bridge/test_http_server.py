@@ -2512,6 +2512,28 @@ async def test_queue_playlist_does_not_register_request_derived_player(
         await client.close()
 
 
+@pytest.mark.parametrize(
+    ("query", "device_id"),
+    [("?device_id=Living%20Room", "Living Room"), ("", None)],
+    ids=["device-id", "address-only"],
+)
+async def test_a_request_registers_its_client_by_its_device_id(
+    provider: MSXBridgeProvider, query: str, device_id: str | None
+) -> None:
+    """The device id a client sends is passed on, which tells it apart from others on its host."""
+    provider.get_or_register_player = AsyncMock()  # type: ignore[method-assign]
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        response = await client.get(f"/msx/input.html{query}")
+        assert response.status == 200
+        assert provider.get_or_register_player.await_args is not None
+        assert provider.get_or_register_player.await_args.kwargs["device_id"] == device_id
+    finally:
+        await client.close()
+
+
 @pytest.mark.parametrize("body", [[], None, "track", 1])
 async def test_api_play_rejects_non_object_json(provider: MSXBridgeProvider, body: object) -> None:
     """Valid JSON primitives are invalid request bodies, not server errors."""
