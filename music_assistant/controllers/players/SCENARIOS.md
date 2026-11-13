@@ -801,13 +801,14 @@ id, available, with the default name Living.
 ### REMOVE-4 · A disabled player leaves the players and comes back with its id when enabled
 
 The Living player played a track. The user disables it: clients get a last update that it is
-unavailable, not that it is removed, it is no player anymore, and the settings still list it,
-disabled. The user enables it again: clients are told it is added under the same id, available,
+disabled and unavailable, also when its power control just switched it off, not that it is
+removed; it is no player anymore, and the settings still list it, disabled. The user enables it again: clients are told it is added under the same id, available,
 with its queue. A DJ of the AI radio on its queue is still there.
 
 - End-to-end: **yes**. Disable a virtual player and enable it again.
 - Proven by:
   - `test_lifecycle.py::test_disabling_a_player_takes_it_out_and_enabling_brings_it_back`
+  - `test_lifecycle.py::test_the_last_update_of_a_disabled_player_says_it_is_disabled_and_unavailable`
   - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_stays_on_the_queue_of_a_player_that_is_disabled_and_enabled`
 
 ### REMOVE-5 · "Remove all unavailable players" removes only players nothing finds

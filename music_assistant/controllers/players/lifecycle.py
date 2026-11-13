@@ -958,6 +958,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         await self._unregister_player(player)
         self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
         if player.initialized.is_set() and not self.mass.closing:
+            # its last update carries the disabled config, which also makes it unavailable
+            player.set_config(await self.mass.config.get_player_object_config(player))
             player.update_state(signal_event=False)
             self.mass.signal_event(
                 EventType.PLAYER_UPDATED, object_id=player.player_id, data=player

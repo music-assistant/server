@@ -436,7 +436,7 @@ class Scenario:
         self._clock = _VirtualClock()
         self._events: list[Event] = []
         self._removals: list[tuple[str | None, Any]] = []
-        self._availability: list[tuple[str | None, bool]] = []
+        self._player_updates: list[tuple[str | None, PlayerState]] = []
         self._unsubscribe: Callable[[], None] | None = None
         self._devices: dict[str, _Device] = {}
         # every command any device received, in order: (protocol id, command)
@@ -967,13 +967,23 @@ class Scenario:
 
         :param player_id: ID of the player.
         """
-        return [available for object_id, available in self._availability if object_id == player_id]
+        return [state.available for state in self.player_updates(player_id)]
+
+    def player_updates(self, player_id: str) -> list[PlayerState]:
+        """
+        Return the state every PLAYER_UPDATED event of a player carried, in order.
+
+        Since the start or the last clear_events(), the events of each boot included.
+
+        :param player_id: ID of the player.
+        """
+        return [state for object_id, state in self._player_updates if object_id == player_id]
 
     def clear_events(self) -> None:
         """Forget the events emitted so far."""
         self._events.clear()
         self._removals.clear()
-        self._availability.clear()
+        self._player_updates.clear()
 
     @property
     def _settings_file(self) -> pathlib.Path:
@@ -1097,7 +1107,7 @@ class Scenario:
             self._removals.append((event.object_id, event.data))
         elif event.event == EventType.PLAYER_UPDATED:
             state = event.data.state if isinstance(event.data, Player) else event.data
-            self._availability.append((event.object_id, state.available))
+            self._player_updates.append((event.object_id, state))
 
     def _visible(self, state: PlayerState) -> VisiblePlayer:
         """Return the visible record of a player state."""

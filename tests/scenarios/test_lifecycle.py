@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType
+from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -23,7 +23,7 @@ from music_assistant.helpers.config_entries import (
     create_player_selector,
 )
 
-from .harness import TEST_TRACK_URI, Event, Role, Scenario, VisiblePlayer
+from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, Event, Role, Scenario, VisiblePlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -533,6 +533,38 @@ async def test_disabling_a_player_takes_it_out_and_enabling_brings_it_back(
     ]
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, True)]
     assert [item.uri for item in scenario.mass.player_queues.items(player_id)] == [TEST_TRACK_URI]
+
+
+@pytest.mark.parametrize("power", ["native", "external", "none"])
+async def test_the_last_update_of_a_disabled_player_says_it_is_disabled_and_unavailable(
+    scenario: Scenario, power: str
+) -> None:
+    """
+    A player that is disabled leaves with an update that it is disabled and unavailable.
+
+    Also when its power control switched it off just before, which otherwise shows a player
+    as available and powered off.
+    """
+    features = set(DEFAULT_FEATURES)
+    if power == "native":
+        features.add(PlayerFeature.POWER)
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol(
+        "wiim_living", "Living", identifiers=LIVING, supported_features=features, powered=True
+    )
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    if power == "external":
+        plug = await scenario.add_power_control("switch.living_plug", "Living plug", powered=True)
+        await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.idle()
+    scenario.clear_events()
+
+    await scenario.disable(player_id)
+    await scenario.idle()
+
+    last = scenario.player_updates(player_id)[-1]
+    assert (last.enabled, last.available) == (False, False)
 
 
 async def test_a_browser_player_that_was_only_seen_is_removed_when_its_client_disconnects(

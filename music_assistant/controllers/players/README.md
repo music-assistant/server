@@ -375,7 +375,7 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 | A provider forgets a device (`remove_protocol`) | The protocol record goes, and so do the protocols that ride on it. An output or control choice of the player that names it falls back to its default. The player goes for good when no protocol record of it is left. |
 | The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries; `PLAYER_REMOVED` is sent once, also for a disabled player, which is not live. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
-| The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player leaves the registry with a last `PLAYER_UPDATED`, unavailable; it is not removed. Its config, its id and its saved queue stay. |
+| The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player leaves the registry with a last `PLAYER_UPDATED` that says it is disabled and unavailable, whatever its power control; it is not removed. Its config, its id and its saved queue stay. |
 | The user enables a player | It is created from its record, unavailable until a protocol attaches. |
 | A plugin keeps a player (`keep_player`) | A player that only exists while connected and has no record gets one, as on the first save of its config: from then on it stays, unavailable, while its client is away. Nothing happens for a player that has a record. |
 | Two players turn out to be one device, or a protocol sits on the wrong player | The user merges them, or takes the protocol off; see [One device, two players](#one-device-two-players). |
@@ -477,7 +477,7 @@ that is published, the controller ([state_updates.py](state_updates.py)):
 `PLAYER_REMOVED` is only sent for a player that is gone for good, and carries no data: a
 subscriber drops what it keeps about it. A device that goes away is no removal: its player stays,
 unavailable. Neither is disabling a player: it leaves the registry with a last `PLAYER_UPDATED`,
-unavailable, and comes back under the same id when the user enables it, announced with
+disabled and unavailable, and comes back under the same id when the user enables it, announced with
 `PLAYER_ADDED`. A player that only exists while connected stays when its client disconnects,
 unavailable, once it has a record or its queue has items; else it is removed, and a client that
 connects again is a new player under the same id, announced with `PLAYER_ADDED`.
