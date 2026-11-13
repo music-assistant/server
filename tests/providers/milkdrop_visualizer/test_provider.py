@@ -101,3 +101,12 @@ async def test_capability_report_without_an_error_is_logged_at_debug() -> None:
 
     logger.log.assert_called_once()
     assert logger.log.call_args.args[0] == logging.DEBUG
+
+
+async def test_capability_report_without_webgl2_is_logged_as_a_warning() -> None:
+    """A display that cannot render is the point of the report, so it is not buried at debug."""
+    provider, logger, _config_value = _provider()
+
+    await provider.report_capability(webgl2=False, dashboard_id="dash1")
+
+    assert logger.log.call_args.args[0] == logging.WARNING

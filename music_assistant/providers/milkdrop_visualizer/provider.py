@@ -104,7 +104,7 @@ class MilkdropVisualizerProvider(PluginProvider):
         :param dashboard_id: The reporting display's dashboard id, so several displays
             stay apart in the log.
         """
-        level = logging.WARNING if error else logging.DEBUG
+        level = logging.WARNING if error or webgl2 is False else logging.DEBUG
         self.logger.log(
             level,
             "Viewer capability on %s: webgl2=%s renderer=%s gpu=%s user_agent=%s error=%s",
