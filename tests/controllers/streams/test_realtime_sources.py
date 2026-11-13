@@ -2112,9 +2112,6 @@ class _FakeStreamResponse:
         """Record that the connection was ended."""
         self.force_closed = True
 
-    def enable_chunked_encoding(self) -> None:
-        """Accept the chunked-profile branch."""
-
     async def prepare(self, request: Any) -> None:
         """Accept the response start."""
 
@@ -2205,7 +2202,7 @@ def _single_item_handler(
                 content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
             )
         )
-        player.get_config_value = MagicMock(return_value="default")
+        player.get_config_value = MagicMock(return_value=False)
         controller._update_audio_processing_context = MagicMock()
 
         def _capture_ffmpeg_args(**kwargs: Any) -> None:
@@ -2354,7 +2351,7 @@ def _flow_handler(
     mass.player_queues.get_item.return_value = start_queue_item
     mass.config.get_raw_player_config_value.return_value = "disabled"
     player = MagicMock(player_id="player-1", protocol_parent_id=None)
-    player.get_config_value = MagicMock(return_value="default")
+    player.get_config_value = MagicMock(return_value=False)
     player.state.name = "Player"
     mass.players.get_player.return_value = player
 

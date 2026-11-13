@@ -259,32 +259,32 @@ async def test_a_reader_can_start_before_the_render_finished() -> None:
     assert renderer.active_renders == 0
 
 
-def test_announcement_http_profile_prefers_fetching_player() -> None:
-    """The http profile comes from the player that actually fetches the announcement."""
+def test_announcement_fixed_content_length_prefers_fetching_player() -> None:
+    """The fixed content length setting comes from the player that fetches the announcement."""
     controller = StreamsController.__new__(StreamsController)
     controller.mass = mass = MagicMock()
     fetcher = MagicMock()
-    fetcher.get_output_config_value.return_value = "forced_content_length"
+    fetcher.get_output_config_value.return_value = False
     parent = MagicMock()
-    parent.get_output_config_value.return_value = "chunked"
+    parent.get_output_config_value.return_value = True
     players = {"fetcher": fetcher, "parent": parent}
     mass.players.get_player = MagicMock(side_effect=lambda pid: players.get(pid))
 
-    # a known fetcher (e.g. a linked protocol player) provides the profile
-    profile = controller._get_announcement_http_profile("parent", _announce_data("fetcher"))
-    assert profile == "forced_content_length"
+    # a known fetcher (e.g. a linked protocol player) provides the setting
+    assert not controller._announcement_requires_fixed_content_length(
+        "parent", _announce_data("fetcher")
+    )
 
     # without a recorded fetcher, resolve against the visible player's output path
-    profile = controller._get_announcement_http_profile("parent", _announce_data(None))
-    assert profile == "chunked"
+    assert controller._announcement_requires_fixed_content_length("parent", _announce_data(None))
 
     # a dangling fetcher id falls back to the visible player
-    profile = controller._get_announcement_http_profile("parent", _announce_data("ghost"))
-    assert profile == "chunked"
+    assert controller._announcement_requires_fixed_content_length("parent", _announce_data("ghost"))
 
-    # unknown player resolves to the safe default
-    profile = controller._get_announcement_http_profile("unknown", _announce_data(None))
-    assert profile == "default"
+    # unknown player resolves to no fixed content length
+    assert not controller._announcement_requires_fixed_content_length(
+        "unknown", _announce_data(None)
+    )
 
 
 ANNOUNCEMENT_AUDIO = b"announcement-audio"
@@ -306,7 +306,7 @@ def render_mock_fixture() -> Iterator[MagicMock]:
         yield mocked
 
 
-def _announcement_controller(http_profile: str) -> tuple[StreamsController, MagicMock]:
+def _announcement_controller(fixed_content_length: bool) -> tuple[StreamsController, MagicMock]:
     """Build a controller serving one pending announcement for player 'player1'."""
     controller = StreamsController.__new__(StreamsController)
     controller.mass = mass = MagicMock()
@@ -315,7 +315,7 @@ def _announcement_controller(http_profile: str) -> tuple[StreamsController, Magi
     controller.announcement_renderer._by_player = {"player1": _announce_data(None)}
     player = MagicMock()
     player.display_name = "Player A"
-    player.get_output_config_value.return_value = http_profile
+    player.get_output_config_value.return_value = fixed_content_length
     mass.players.get_player = MagicMock(
         side_effect=lambda pid, *_args, **_kwargs: player if pid == "player1" else None
     )
@@ -333,12 +333,12 @@ def _mocked_request(method: str, player_id: str = "player1") -> web.Request:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("http_profile", ["forced_content_length", "chunked", "default"])
+@pytest.mark.parametrize("fixed_content_length", [True, False])
 async def test_head_request_does_not_render_announcement(
-    render_mock: MagicMock, http_profile: str
+    render_mock: MagicMock, fixed_content_length: bool
 ) -> None:
     """A HEAD probe answers with headers only, without running the render chain."""
-    controller, _ = _announcement_controller(http_profile)
+    controller, _ = _announcement_controller(fixed_content_length)
 
     resp = await controller.serve_announcement_stream(_mocked_request("HEAD"))
 
@@ -349,8 +349,8 @@ async def test_head_request_does_not_render_announcement(
 
 @pytest.mark.asyncio
 async def test_get_request_renders_announcement_once(render_mock: MagicMock) -> None:
-    """A GET on the forced_content_length profile renders the announcement exactly once."""
-    controller, _ = _announcement_controller("forced_content_length")
+    """A GET with a fixed content length renders the announcement exactly once."""
+    controller, _ = _announcement_controller(True)
 
     resp = await controller.serve_announcement_stream(_mocked_request("GET"))
 
@@ -364,7 +364,7 @@ async def test_announcement_served_to_player_without_queue(
     render_mock: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The stream resolves the player itself, so a player without a queue is still served."""
-    controller, mass = _announcement_controller("default")
+    controller, mass = _announcement_controller(False)
 
     with caplog.at_level(logging.DEBUG, logger="test.streams.announcement"):
         resp = await controller.serve_announcement_stream(_mocked_request("GET"))
@@ -379,7 +379,7 @@ async def test_announcement_served_to_player_without_queue(
 @pytest.mark.asyncio
 async def test_unknown_player_raises_not_found(render_mock: MagicMock) -> None:
     """An announcement request for an unknown player is rejected."""
-    controller, _ = _announcement_controller("default")
+    controller, _ = _announcement_controller(False)
 
     with pytest.raises(web.HTTPNotFound):
         await controller.serve_announcement_stream(_mocked_request("GET", player_id="ghost"))

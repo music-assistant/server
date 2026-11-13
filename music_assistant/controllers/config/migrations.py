@@ -19,12 +19,12 @@ from music_assistant.constants import (
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_ENABLE_ICY_METADATA,
-    CONF_HTTP_PROFILE,
     CONF_ICON,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
+    CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
@@ -53,6 +53,9 @@ LEGACY_MSX_BRIDGE_KEYS = ("enable_player_grouping", "enable_sendspin_bridge")
 
 # player id prefix of the Sendspin clients the removed MSX Sendspin bridge registered
 LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
+
+# removed player HTTP profile config key, only referenced by its migrations
+LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
@@ -591,6 +594,11 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_raumfeld_icy_basic(data):
         changed = True
 
+    # Drop the stored value of the removed HTTP profile setting from every player.
+    # TODO: remove after 2.13 release
+    if _migrate_drop_http_profile(data):
+        changed = True
+
     return changed
 
 
@@ -1104,11 +1112,37 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
         player_values = player_cfg.get("values")
         if not isinstance(player_values, dict):
             continue
-        if player_values.get(CONF_HTTP_PROFILE, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
-            del player_values[CONF_HTTP_PROFILE]
+        if player_values.get(LEGACY_HTTP_PROFILE_KEY, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
+            del player_values[LEGACY_HTTP_PROFILE_KEY]
             changed = True
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
+    """Drop the stored value of the removed HTTP profile setting from every player config."""
+    all_player_configs = data.get(CONF_PLAYERS)
+    if not isinstance(all_player_configs, dict):
+        return False
+    # a parent player can hold a stale copy of a linked protocol player's value
+    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{LEGACY_HTTP_PROFILE_KEY}"
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if not isinstance(player_values, dict):
+            continue
+        for key in [
+            key
+            for key in player_values
+            if key == LEGACY_HTTP_PROFILE_KEY or key.endswith(protocol_key_suffix)
+        ]:
+            del player_values[key]
+            changed = True
+    if changed:
+        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
     return changed
 
 

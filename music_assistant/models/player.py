@@ -1318,8 +1318,8 @@ class Player(ABC):
         """
         Return a config value resolved on the player that renders the audio output.
 
-        Audio/output related settings (output codec, http profile, output channels,
-        sample rates) live on the player(protocol) that actually renders the audio:
+        Audio/output related settings (output codec, fixed content length, output
+        channels, sample rates) live on the player(protocol) that actually renders the audio:
         the active linked protocol player when outputting via a protocol, otherwise
         this player itself. The output player's value (or its provider's entry
         default) takes precedence; this player's own value is the fallback for keys

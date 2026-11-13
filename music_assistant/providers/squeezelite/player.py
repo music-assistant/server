@@ -27,7 +27,6 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidCommand, MusicAssistantError
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
@@ -190,7 +189,6 @@ class SqueezelitePlayer(Player):
             CONF_ENTRY_SYNC_ADJUST,
             CONF_ENTRY_DISPLAY,
             CONF_ENTRY_VISUALIZATION,
-            CONF_ENTRY_HTTP_PROFILE_FORCED_2,
             CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
         ]
 
