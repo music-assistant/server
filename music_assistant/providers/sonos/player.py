@@ -51,7 +51,6 @@ from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailable
 from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerOptionValueType
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
@@ -73,6 +72,7 @@ from music_assistant.providers.sonos.const import (
     PREVIOUS_ITEMS,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
+    SOURCE_MUSIC_ASSISTANT,
     SOURCE_RADIO,
     SOURCE_SPOTIFY,
     SOURCE_TV,
@@ -333,7 +333,6 @@ class SonosPlayer(Player):
         # when the user selects fewer rates.
         hi_res = self._attr_device_info.model not in NON_HIRES_MODELS
         return [
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
             create_sample_rates_config_entry(
                 supported_sample_rates=[44100, 48000],
@@ -1167,6 +1166,10 @@ class SonosPlayer(Player):
         container_type = active_group.container_type
         active_service = self._active_service(active_group)
         container = active_group.playback_metadata.get("container")
+        # a Music Assistant session we did not start, such as another server's, is not our queue
+        foreign_session = active_service == MusicService.MUSIC_ASSISTANT and not (
+            group_parent or self
+        )._plays_own_session(active_group)
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
@@ -1189,6 +1192,10 @@ class SonosPlayer(Player):
             # add spotify to source list if not yet there
             if SOURCE_SPOTIFY not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
+        elif foreign_session:
+            self._attr_active_source = SOURCE_MUSIC_ASSISTANT
+            if SOURCE_MUSIC_ASSISTANT not in [x.id for x in self._attr_source_list]:
+                self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_MUSIC_ASSISTANT])
         elif active_service == MusicService.MUSIC_ASSISTANT:
             # setting active source to None is fine
             self._attr_active_source = None
@@ -1233,7 +1240,7 @@ class SonosPlayer(Player):
                 duration=int(track_duration_millis / 1000) if track_duration_millis else None,
                 image_url=track_image_url,
             )
-            if active_service == MusicService.MUSIC_ASSISTANT:
+            if active_service == MusicService.MUSIC_ASSISTANT and not foreign_session:
                 current_media.source_id = self._attr_active_source
                 current_media.queue_item_id = self._playing_item_id(current_item["id"])
         # radio stream info
@@ -1706,6 +1713,16 @@ class SonosPlayer(Player):
     def _playing_queue_id(self) -> str | None:
         """Return the MA queue the speaker plays, as a cloud queue or as one stream."""
         return self.cloud_queue_id or self._flow_queue_id
+
+    def _plays_own_session(self, group: SonosGroup) -> bool:
+        """
+        Return whether the Music Assistant session of the group this player coordinates is ours.
+
+        :param group: The group, as this player's connection reports it.
+        """
+        # the library forgets our session on a reconnect, the queue we loaded is kept until a
+        # stop or an eviction
+        return group.active_session_id is not None or self._playing_queue_id() is not None
 
     def _wire_id_at(self, queue_item_id: str, index: int, generation: int | None) -> str:
         """Return the id to serve a queue item under at a queue position."""

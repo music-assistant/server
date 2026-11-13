@@ -5,7 +5,6 @@
   "name": "The Audio DB",
   "description": "Provides artist images, album art, and rich textual metadata from TheAudioDB for use in the Music Assistant UI.",
   "codeowners": ["@music-assistant"],
-  "tier": "core",
   "requirements": [],
   "documentation": "https://music-assistant.io/metadata/artwork/",
   "multi_instance": false,

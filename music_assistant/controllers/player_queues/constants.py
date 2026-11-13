@@ -6,7 +6,10 @@ from enum import StrEnum
 
 from music_assistant_models.enums import AlbumType, MediaType
 
-from music_assistant.controllers.streams.constants import BUFFER_INACTIVITY_TIMEOUT
+from music_assistant.controllers.streams.constants import (
+    BUFFER_INACTIVITY_TIMEOUT,
+    FLOW_STREAM_MAX_LEAD_OUT_SECONDS,
+)
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
@@ -181,3 +184,12 @@ SKIP_END_MARGIN = 1
 # are rounded and position reports lag, so an item that changed within this many seconds of the
 # point a sleep timer stops at ended there. One that changed earlier was skipped on the device.
 SLEEP_TIMER_NATURAL_END_MARGIN = 5
+
+# A player counts as having played a fully streamed flow stream session once its position is
+# this close to the end of it: position reports are not exact down to the last audio frame.
+FLOW_PLAYED_OUT_MARGIN = 0.5
+
+# Longest wait, in seconds, for a player to go idle once its flow stream ran out of items. It
+# keeps playing the audio it buffered, which a held-open stream lets it do for up to the maximum
+# lead-out; the extra minute covers its idle report after the connection closes.
+FLOW_PLAYOUT_IDLE_TIMEOUT = FLOW_STREAM_MAX_LEAD_OUT_SECONDS + 60

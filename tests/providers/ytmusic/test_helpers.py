@@ -1,13 +1,14 @@
 """Test the ytmusicapi call wrapper's handling of a signed-out session."""
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import ytmusicapi
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
+from ytmusicapi.models.content.enums import PlaylistSortOrder
 
 from music_assistant.providers.ytmusic import helpers
 
@@ -188,3 +189,35 @@ async def test_get_episode_start_seconds_reads_the_player_response(
 
     assert ytm._send_request.call_args.args[0] == "player"
     assert ytm._send_request.call_args.args[1]["video_id"] == "v1"
+
+
+@pytest.mark.parametrize(
+    ("successor", "placement"),
+    [
+        ("D", {"movedSetVideoIdSuccessor": "D"}),
+        (None, {}),
+    ],
+)
+async def test_move_playlist_entries_orders_manually_then_moves_in_one_request(
+    successor: str | None, placement: dict[str, str]
+) -> None:
+    """The playlist is ordered manually first, then all entries move in one request."""
+    mock_ytm = MagicMock()
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        await helpers.move_playlist_entries(
+            headers={}, prov_playlist_id="PL1", set_video_ids=["A", "C"], successor=successor
+        )
+
+    assert mock_ytm.mock_calls == [
+        call.edit_playlist("PL1", sortOrder=PlaylistSortOrder.MANUAL),
+        call._send_request(
+            "browse/edit_playlist",
+            {
+                "playlistId": "PL1",
+                "actions": [
+                    {"action": "ACTION_MOVE_VIDEO_BEFORE", "setVideoId": svid, **placement}
+                    for svid in ("A", "C")
+                ],
+            },
+        ),
+    ]

@@ -134,6 +134,12 @@ class AlbumsController(MediaControllerBase[Album]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
+            f"music/{api_base}/letter_index",
+            self.letter_index,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/album_tracks",
             self.tracks,
             required_scope=Scope.LIBRARY_READ,
@@ -254,12 +260,9 @@ class AlbumsController(MediaControllerBase[Album]):
         if reachable_via is not None and not reachable_via:
             return []
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts: list[str] = []
+        extra_query_parts = self._library_filter_parts(extra_query_params, album_types)
         extra_join_parts: list[str] = []
         artist_table_joined = False
-        if album_types:
-            extra_query_parts.append("albums.album_type IN :album_types")
-            extra_query_params["album_types"] = [x.value for x in album_types]
         if field == SortField.ARTIST_NAME:
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "
@@ -355,6 +358,51 @@ class AlbumsController(MediaControllerBase[Album]):
                     if len(result) >= limit:
                         break
         return result
+
+    async def letter_index(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
+        played_only: bool = False,
+        album_types: list[AlbumType] | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        reachable_via: list[str] | None = None,
+    ) -> list[dict[str, str | int]]:
+        """
+        Return where each starting letter begins in the in-database albums listing.
+
+        Each entry holds a letter ("A" to "Z", or "#" for anything else) and the offset of
+        its first album in ``library_items`` for the same arguments, in listing order.
+        Empty when sorted on anything but name or sort name, or when searching.
+
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
+        :param search: Filter by search query.
+        :param provider: Filter by provider instance ID (single string or list).
+        :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played albums.
+        :param album_types: Filter by album types.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids, see `library_items`.
+        """
+        query_params: dict[str, Any] = {}
+        return await self._library_letter_index(
+            self._library_filter_parts(query_params, album_types),
+            query_params,
+            favorite=favorite,
+            search=search,
+            provider=provider,
+            genre=genre,
+            played_only=played_only,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            reachable_via=reachable_via,
+        )
 
     async def library_count(
         self, favorite_only: bool = False, album_types: list[AlbumType] | None = None
@@ -1692,6 +1740,16 @@ class AlbumsController(MediaControllerBase[Album]):
                 "disc_number": track.disc_number,
             },
         )
+
+    @staticmethod
+    def _library_filter_parts(
+        query_params: dict[str, Any], album_types: list[AlbumType] | None
+    ) -> list[str]:
+        """Return the WHERE conditions of the album-specific library listing filters."""
+        if not album_types:
+            return []
+        query_params["album_types"] = [x.value for x in album_types]
+        return ["albums.album_type IN :album_types"]
 
     def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str:
         """Return the ORDER BY clause for a sort field, ARTIST_NAME through the artists join."""

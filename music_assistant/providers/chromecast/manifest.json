@@ -5,7 +5,6 @@
   "name": "Chromecast",
   "description": "Cast music and podcasts to Chromecast or Google Cast devices.",
   "codeowners": ["@music-assistant"],
-  "tier": "core",
   "credits": [
     "[PyChromecast](https://github.com/home-assistant-libs/pychromecast)"
   ],

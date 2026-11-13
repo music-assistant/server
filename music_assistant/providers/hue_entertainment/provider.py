@@ -2,8 +2,9 @@
 Hue Lights Sync provider for Music Assistant.
 
 Discovers entertainment areas on a paired Hue bridge and creates
-virtual Sendspin players for each. When music plays to a virtual player,
-the lights in that entertainment area react to the music.
+virtual Sendspin players for each, or creates one player for a set of
+Hue lamps on ZHA. When music plays to a virtual player, its lights
+react to the music.
 """
 
 from __future__ import annotations
@@ -20,18 +21,23 @@ from music_assistant.models.plugin import PluginProvider
 
 from .bridge import HueEntertainmentBridgeManager
 from .constants import (
+    BACKEND_ZHA,
     COLOR_MODES,
+    CONF_BACKEND,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS,
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
+    CONF_ZIGBEE_LIGHTS,
+    CONF_ZIGBEE_NAME,
     DEFAULT_BRIGHTNESS,
     DEFAULT_COLOR_MODE,
     DEFAULT_HUE_LATENCY_MS,
 )
 from .settings import get_brightness, get_color_mode, get_hue_latency_ms
+from .targets import HueAreaTarget, ZigbeeTarget
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -97,12 +103,16 @@ class HueEntertainmentProvider(PluginProvider):
         return self._hue_api
 
     async def loaded_in_mass(self) -> None:
-        """Initialize Hue bridge connection and set up entertainment area bridges."""
+        """Set up the light players: per entertainment area of the bridge, or the ZHA lamps."""
         # Migrate orphaned color_mode values from older versions to the default
         # so the settings dropdown shows a valid option.
         stored_mode = self.config.get_value(CONF_COLOR_MODE)
         if stored_mode is not None and str(stored_mode) not in COLOR_MODES:
             self._update_config_value(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
+
+        if self.get_setup_value(CONF_BACKEND) == BACKEND_ZHA:
+            await self._setup_zigbee()
+            return
 
         host = self.get_setup_value(CONF_BRIDGE_HOST)
         username = self.get_setup_value(CONF_USERNAME)
@@ -126,7 +136,7 @@ class HueEntertainmentProvider(PluginProvider):
                     len(areas),
                     ", ".join(a.name for a in areas),
                 )
-            await self._bridge_manager.setup_bridges(areas)
+            await self._bridge_manager.setup_bridges([HueAreaTarget(self, a) for a in areas])
             self.available = True
         except Exception as err:
             self.logger.error("Failed to initialize Hue bridge at %s: %s", host, err)
@@ -204,7 +214,9 @@ class HueEntertainmentProvider(PluginProvider):
             if self._hue_api and self._bridge_manager:
                 try:
                     areas = await self._hue_api.get_entertainment_areas()
-                    await self._bridge_manager.setup_bridges(areas)
+                    await self._bridge_manager.setup_bridges(
+                        [HueAreaTarget(self, a) for a in areas]
+                    )
                 except Exception as err:
                     self.logger.warning("Failed to reinitialize bridges: %s", err)
 
@@ -231,3 +243,19 @@ class HueEntertainmentProvider(PluginProvider):
             return
 
         await super().update_config(config, changed_keys)
+
+    async def _setup_zigbee(self) -> None:
+        """Set up the player for the ZHA lamps; Home Assistant is only needed once it streams."""
+        stored = self.get_setup_value(CONF_ZIGBEE_LIGHTS) or []
+        lights: list[tuple[str, int]] = []
+        for value in stored if isinstance(stored, list) else []:
+            ieee, _, zones = str(value).rpartition("/")
+            lights.append((ieee, int(zones)))
+        if not lights:
+            self.logger.warning("No ZHA lamps configured, provider inactive")
+            self.available = False
+            return
+        name = str(self.get_setup_value(CONF_ZIGBEE_NAME) or self.name)
+        self._bridge_manager = HueEntertainmentBridgeManager(self)
+        await self._bridge_manager.setup_bridges([ZigbeeTarget(self, lights, name)])
+        self.available = True
