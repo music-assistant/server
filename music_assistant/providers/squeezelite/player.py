@@ -132,6 +132,13 @@ class SqueezelitePlayer(PlayerProtocol):
         await self._set_preset_items()
         await self._set_display()
 
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        if (stream := self.multi_client_stream) is not None:
+            self.multi_client_stream = None
+            await stream.stop()
+        await super().on_detach()
+
     async def setup(self) -> None:
         """Set up the player and attach it."""
         protocol_id = self.client.player_id
