@@ -492,6 +492,61 @@ async def test_stranded_members_are_not_released_from_an_own_protocol_that_went_
     assert _device_calls(devices)[-1] == ("set_output", "l", "sendspin_l")
 
 
+async def test_the_old_protocol_is_read_after_the_stranded_members_were_released() -> None:
+    """
+    The old protocol's members are taken on the state after the release from the own protocol.
+
+    The leader moved onto its Chromecast group while the join call ran, so it hands that output
+    over; x left the Chromecast group while the stranded members were released, so nobody is
+    removed from it or added back.
+    """
+    world = _World()
+    world.protocol(
+        "airplay_l",
+        "l",
+        "airplay",
+        role=ProtocolRole.NATIVE,
+        own_stream=True,
+        members=("airplay_l", "airplay_n"),
+    )
+    world.protocol("sendspin_l", "l", "sendspin")
+    world.protocol("chromecast_l", "l", "chromecast", members=("chromecast_l", "chromecast_x"))
+    world.player(
+        "l",
+        "airplay_l",
+        "sendspin_l",
+        "chromecast_l",
+        can_group_with=frozenset({"s"}),
+        group_members=("l", "n"),
+    )
+    world.protocol("airplay_n", "n", "airplay", role=ProtocolRole.NATIVE)
+    world.protocol("sendspin_n", "n", "sendspin")
+    world.player("n", "airplay_n", "sendspin_n", synced_to="l")
+    world.protocol("chromecast_x", "x", "chromecast")
+    world.player("x", "chromecast_x")
+    world.protocol("sendspin_s", "s", "sendspin")
+    world.player("s", "sendspin_s")
+    devices = _Devices(world)
+    devices.during["set_members", "sendspin_l"] = devices.change(
+        "l", active_output="chromecast_l", playback_state=PLAYING
+    )
+
+    def _x_left() -> None:
+        world.protocols["chromecast_l"] = replace(
+            world.protocols["chromecast_l"], group_members=("chromecast_l",)
+        )
+
+    devices.during["set_members", "airplay_l"] = _x_left
+    await _join(devices, "l", ("s",))
+    assert _device_calls(devices)[3:] == [
+        ("set_output", "l", "sendspin_l"),
+        ("set_members", "airplay_l", {"player_ids_to_remove": ["airplay_n"]}),
+        ("stop", "airplay_l"),
+        ("stop", "chromecast_l"),
+        ("resume", "l"),
+    ]
+
+
 # -- the native call, the takeover and the end of a join --
 
 
