@@ -693,9 +693,7 @@ async def _viewer_prefs_allowed(controller: DashboardController, key: str) -> bo
     controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
         return_value=_owner_user("user-1", {"visualizer_enabled": True})
     )
-    prefs = await controller.get_viewer_preferences(
-        DashboardType.PARTY, dashboard_id="dash1", viewer_key=key
-    )
+    prefs = await controller.get_viewer_preferences(dashboard_id="dash1", viewer_key=key)
     return bool(prefs)
 
 
@@ -1118,9 +1116,7 @@ async def test_viewer_preferences_follow_the_casting_user() -> None:
     )
     controller.mass.webserver.auth.get_user = AsyncMock(return_value=owner)  # type: ignore[method-assign]
 
-    prefs = await controller.get_viewer_preferences(
-        DashboardType.PARTY, dashboard_id="dash1", viewer_key=VIEWER_KEY
-    )
+    prefs = await controller.get_viewer_preferences(dashboard_id="dash1", viewer_key=VIEWER_KEY)
 
     assert prefs == {
         "visualizer_enabled": True,
@@ -1146,47 +1142,11 @@ async def test_viewer_preferences_resolve_each_display_by_dashboard_id() -> None
         side_effect=lambda uid: users.get(uid)
     )
 
-    prefs1 = await controller.get_viewer_preferences(
-        DashboardType.PARTY, dashboard_id="dash1", viewer_key="key-dash1"
-    )
-    prefs2 = await controller.get_viewer_preferences(
-        DashboardType.PARTY, dashboard_id="dash2", viewer_key="key-dash2"
-    )
+    prefs1 = await controller.get_viewer_preferences(dashboard_id="dash1", viewer_key="key-dash1")
+    prefs2 = await controller.get_viewer_preferences(dashboard_id="dash2", viewer_key="key-dash2")
 
     assert prefs1 == {"visualizer_preset": "one"}
     assert prefs2 == {"visualizer_preset": "two"}
-
-
-async def test_viewer_preferences_session_must_match_what_the_viewer_shows() -> None:
-    """A session that shows a different dashboard (or player) than claimed yields nothing."""
-    controller = _make_controller()
-    controller._sessions["dash1"] = DashboardSession(
-        dashboard_id="dash1",
-        name="Living Room",
-        dashboard=DashboardType.NOW_PLAYING,
-        player_id="player1",
-    )
-    controller._session_owners["dash1"] = "user-1"
-    controller._viewer_keys["dash1"] = VIEWER_KEY
-    controller.mass.webserver.auth.get_user = AsyncMock(  # type: ignore[method-assign]
-        return_value=_owner_user("user-1", {"visualizer_preset": "one"})
-    )
-
-    prefs = await controller.get_viewer_preferences(
-        DashboardType.NOW_PLAYING, "player1", "dash1", VIEWER_KEY
-    )
-    assert prefs == {"visualizer_preset": "one"}
-
-    assert (
-        await controller.get_viewer_preferences(
-            DashboardType.NOW_PLAYING, "player2", "dash1", VIEWER_KEY
-        )
-        == {}
-    )
-    assert (
-        await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", VIEWER_KEY)
-        == {}
-    )
 
 
 async def test_viewer_preferences_require_the_sessions_viewer_key() -> None:
@@ -1201,12 +1161,12 @@ async def test_viewer_preferences_require_the_sessions_viewer_key() -> None:
     )
 
     # no key issued for the session yet
-    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", "x") == {}
+    assert await controller.get_viewer_preferences("dash1", "x") == {}
 
     controller._viewer_keys["dash1"] = VIEWER_KEY
-    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1") == {}
-    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", "x") == {}
-    right = await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", VIEWER_KEY)
+    assert await controller.get_viewer_preferences("dash1") == {}
+    assert await controller.get_viewer_preferences("dash1", "x") == {}
+    right = await controller.get_viewer_preferences("dash1", VIEWER_KEY)
     assert right == {"visualizer_preset": "one"}
 
 
@@ -1226,8 +1186,8 @@ async def test_dashboard_sessions_do_not_expose_the_viewer_key() -> None:
 async def test_viewer_preferences_without_matching_session_are_empty() -> None:
     """A missing dashboard_id, unknown session, or unknown owner yields empty preferences."""
     controller = _make_controller()
-    assert await controller.get_viewer_preferences(DashboardType.PARTY) == {}
-    assert await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1") == {}
+    assert await controller.get_viewer_preferences() == {}
+    assert await controller.get_viewer_preferences("dash1") == {}
 
     controller._sessions["dash1"] = DashboardSession(
         dashboard_id="dash1", name="Living Room", dashboard=DashboardType.PARTY
@@ -1235,10 +1195,7 @@ async def test_viewer_preferences_without_matching_session_are_empty() -> None:
     controller._session_owners["dash1"] = "user-gone"
     controller._viewer_keys["dash1"] = VIEWER_KEY
     controller.mass.webserver.auth.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    assert (
-        await controller.get_viewer_preferences(DashboardType.PARTY, None, "dash1", VIEWER_KEY)
-        == {}
-    )
+    assert await controller.get_viewer_preferences("dash1", VIEWER_KEY) == {}
 
 
 async def test_preferences_change_signals_only_for_session_owners() -> None:

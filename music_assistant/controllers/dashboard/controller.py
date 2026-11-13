@@ -248,8 +248,6 @@ class DashboardController(CoreController):
     @api_command("dashboard/viewer_preferences", required_scope=Scope.PROVIDERS_READ)
     async def get_viewer_preferences(
         self,
-        dashboard: DashboardType,
-        player_id: str | None = None,
         dashboard_id: str | None = None,
         viewer_key: str | None = None,
     ) -> dict[str, Any]:
@@ -262,8 +260,6 @@ class DashboardController(CoreController):
         viewer itself can read this, and the viewer_key from its launched url is what
         authorizes it; only visualizer settings are exposed.
 
-        :param dashboard: Dashboard the viewer is showing.
-        :param player_id: Player the viewer is showing, when dashboard is NOW_PLAYING.
         :param dashboard_id: The viewer's own dashboard id, carried in the launched
             url; identifies its session when several displays show the same dashboard.
         :param viewer_key: The session's secret, carried in the launched url.
@@ -272,12 +268,6 @@ class DashboardController(CoreController):
             return {}
         stored_key = self._viewer_keys.get(dashboard_id)
         if stored_key is None or not secrets.compare_digest(stored_key, viewer_key):
-            return {}
-        session = self._sessions.get(dashboard_id)
-        # the session must show what the viewer claims to be showing
-        if session is None or session.dashboard != dashboard:
-            return {}
-        if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
             return {}
         owner_id = self._session_owners.get(dashboard_id)
         if owner_id is None:
