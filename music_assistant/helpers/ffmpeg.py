@@ -32,7 +32,6 @@ LOGGER = logging.getLogger("ffmpeg")
 MINIMAL_FFMPEG_VERSION = 8
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
-CACHE_ATTR_HLS_CMAF_BLOCKED: Final[str] = "hls_cmaf_blocked"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 # Maximum seconds to spend detecting the format of a source before it is decoded.
 AUDIO_PROBE_TIMEOUT: Final[int] = 5
@@ -812,22 +811,6 @@ def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
     return args
 
 
-def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
-    """
-    Return HLS demuxer input arguments that let CMAF segments through, if any are needed.
-
-    Pass these only for a playlist from a source known to serve CMAF, never for a playlist
-    URL that a user supplied.
-    """
-    # The check this relaxes is hardening against hostile playlists, hence opt-in per caller.
-    # allowed_extensions cannot narrow it: the demuxer matches a segment URL against that
-    # option *and* against a hardcoded per-format extension list that no option reaches, so
-    # switching the check off is the only lever over the second one.
-    if get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED):
-        return ["-extension_picky", "0"]
-    return []
-
-
 def add_input_fflag(input_args: list[str], flag: str) -> None:
     """
     Add a format flag to the input args, merging it into an existing -fflags option.
@@ -870,22 +853,11 @@ async def check_ffmpeg_version() -> None:
             f"Additional info: {returncode} {output.decode().strip()}"
         )
     libsoxr_support = "enable-libsoxr" in output.decode()
-    # 7.1.1 backported a segment extension check without whitelisting CMAF, so it rejects the
-    # .cmfa segments some services serve; 7.1.2 whitelisted them, see
-    # https://trac.ffmpeg.org/ticket/11526. Probe the demuxer rather than compare versions,
-    # which builds from git report as e.g. "N-121037-g1234567". A probe that fails reads as
-    # "not blocked", so the check stays in place. Drop this once every supported build
-    # whitelists CMAF.
-    returncode, hls_options = await check_output("ffmpeg", "-hide_banner", "-h", "demuxer=hls")
-    cmaf_blocked = (
-        returncode == 0 and b"extension_picky" in hls_options and b"cmfa" not in hls_options
-    )
     # use globals as in-memory cache
     await set_global_cache_values(
         {
             CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support,
             CACHE_ATTR_FFMPEG_VERSION: version,
-            CACHE_ATTR_HLS_CMAF_BLOCKED: cmaf_blocked,
         }
     )
 
