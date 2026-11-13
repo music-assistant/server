@@ -253,15 +253,19 @@ controller that calls a protocol's grouping methods. The entries stay what calle
 `cmd_set_members`, `cmd_ungroup`, and `_handle_set_members` and `_detach_member` for a group
 provider or a protocol that changes the group of its leader itself.
 
-A plan stops where the outcome of a step decides what follows: after a member is released from
-another leader, gives up a group of its own or is powered on, after the content takeover hook,
-after a joining member's output is activated, after the protocol's join call, after the leader's
-output moved, after the protocol it rendered on before stopped and let its members go, after a
-resume. The executor then takes a new snapshot and plans on from where the change got to. What
-the change captured before such a step travels with it and is not read again: whether the leader
-played before its output moved, the members of the old protocol before it stopped. So the hand
-over of the leader's output is decided on the state after the join call: a leader paused on the
-device while that call ran hands its output over without resuming.
+A change, and a join in particular, is planned in phases because some of its steps have an
+outcome that decides what follows: a member released from another leader, giving up a group of
+its own or powered on; the content takeover hook; a joining member's output activated; the
+protocol's join call; the leader's output moved; the protocol it rendered on before stopped and
+left by its members; a resume. The plan stops after each of them. The executor runs the steps,
+takes a new snapshot and plans on from where the change got to; `JoinPhase` lists the phases of a
+join in order, each with the device call that ends it. What the change decided or read before
+such a step travels with it in its progress (`JoinProgress` for the join) and is not read again:
+the members per protocol, whether the leader played before its output moved, the members of the
+old protocol before it stopped. Everything else is read from the new snapshot, so the hand-over
+of the leader's output is decided on the state after the join call: a leader paused on the
+device while that call ran hands its output over without resuming. This keeps every ordering
+rule plain data that a test reads from the plan, and leaves the executor nothing to decide.
 
 For the whole change the executor keeps the objects it addresses (the leader, the protocol the
 group joins, the protocol it leaves). It takes no lock of its own: a change runs under the lock

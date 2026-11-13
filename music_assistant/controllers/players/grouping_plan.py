@@ -301,9 +301,27 @@ class MemberStage(IntEnum):
 
 
 class JoinPhase(StrEnum):
-    """Where the join of a member change got to."""
+    """
+    Where the join of a member change got to.
 
-    START = "start"
+    A join runs through the phases in this order. Each phase ends with the device call whose
+    outcome the next one reads, and a phase with nothing to do passes straight on. With new
+    content the takeover hook of the group's protocol runs before the first phase.
+
+    - FORWARD: each joining member's output moves to the group's protocol, then that
+      protocol's ``set_members`` adds and removes the members (the join call).
+    - JOINED: the members that left have their output cleared, and the leader's output moves
+      to the group's protocol.
+    - LEADER_ACTIVE: members that rode the leader's own stream are released from its own
+      protocol (``set_members``), which is stopped when the leader hands its output over.
+    - NATIVE_RELEASED: on a hand-over, the protocol the leader rendered on before is stopped.
+    - OLD_STOPPED: that protocol's members are removed from it (``set_members``).
+    - OLD_LEFT: their outputs are cleared, the leader resumes when it played, and those
+      members are added back through a member change.
+    - NATIVE: the members that group natively join on the leader's own protocol
+      (``set_members``), and a dissolved leader is stopped.
+    """
+
     FORWARD = "forward"
     JOINED = "joined"
     LEADER_ACTIVE = "leader_active"
