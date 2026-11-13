@@ -520,7 +520,7 @@ class ProviderConfigMixin:
         """Remove/reset single Provider config value."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}/values/{key}"
         existing = self.get(conf_key)
-        if existing is None:
+        if not existing:
             return
         self.remove(conf_key)
 

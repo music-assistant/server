@@ -22,12 +22,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 CONF_SHOW_ON_DASHBOARDS = "show_on_dashboards"
-# provider setting replaced by the per-user palette preferences, migrated once on load
-CONF_COLOR_TINT = "color_tint"
-PREF_PALETTE_COLORS = "visualizer_palette_colors"
-PREF_PALETTE_RAMP = "visualizer_palette_ramp"
-# the per-user values that reproduce a disabled color tint
-PALETTE_OFF_PREFERENCES = {PREF_PALETTE_COLORS: False, PREF_PALETTE_RAMP: 0}
 CONFIG_COMMAND = "milkdrop_visualizer/config"
 CAPABILITY_COMMAND = "milkdrop_visualizer/report_capability"
 # viewer-reported strings go straight into the server log, cap what a display can write
@@ -80,8 +74,6 @@ class MilkdropVisualizerProvider(PluginProvider):
                     required_scope=Scope.PROVIDERS_READ,
                 )
             )
-        # last, so a failing migration (retried on the next load) cannot take the plugin down
-        await self._migrate_color_tint()
 
     async def get_visualizer_config(self) -> dict[str, bool]:
         """Return the visualizer settings that apply to every viewer."""
@@ -134,28 +126,6 @@ class MilkdropVisualizerProvider(PluginProvider):
             unregister()
         self._unregister_handles.clear()
         await self._relay.close()
-
-    async def _migrate_color_tint(self) -> None:
-        """
-        Fold a stored color_tint opt-out into every user's palette preferences, once.
-
-        Removes the old provider setting once every enabled user carries its replacement, so a
-        server that never had it (or already migrated it) does nothing here.
-        """
-        stored = self.mass.config.get_raw_provider_config_value(self.instance_id, CONF_COLOR_TINT)
-        if stored is None:
-            return
-        if stored is False:
-            auth = self.mass.webserver.auth
-            for user in await auth.list_users():
-                # a disabled user cannot be updated, and gets the defaults if re-enabled
-                if not user.enabled or PALETTE_OFF_PREFERENCES.keys() <= user.preferences.keys():
-                    continue
-                await auth.update_user_preferences(
-                    user, {**PALETTE_OFF_PREFERENCES, **user.preferences}
-                )
-            self.logger.info("Migrated the disabled color tint into the users' palette preferences")
-        await self.mass.config.remove_provider_config_value(self.instance_id, CONF_COLOR_TINT)
 
 
 def _trim(value: object) -> str | None:
