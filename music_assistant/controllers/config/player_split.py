@@ -538,14 +538,28 @@ def _split_player_record(protocols: dict[str, Any], player_id: str, record: dict
 
 
 def _repair_group_members(protocols: dict[str, Any], edges: dict[str, str]) -> None:
-    """Let the member lists of the groups name players where they name a protocol of one."""
-    for record in protocols.values():
+    """
+    Let the member lists of the groups name players where they name a protocol of one.
+
+    A member that is no id is left out.
+    """
+    for protocol_id, record in protocols.items():
         if not isinstance(record, dict):
             continue
         for key in GROUP_MEMBER_KEYS:
             members = _values(record).get(key)
             if not isinstance(members, list):
                 continue
-            repaired = list(dict.fromkeys(edges.get(member_id, member_id) for member_id in members))
+            member_ids = [member_id for member_id in members if isinstance(member_id, str)]
+            if len(member_ids) != len(members):
+                LOGGER.warning(
+                    "Left %s members that are no id out of the %s of the stored group %s",
+                    len(members) - len(member_ids),
+                    key,
+                    protocol_id,
+                )
+            repaired = list(
+                dict.fromkeys(edges.get(member_id, member_id) for member_id in member_ids)
+            )
             if repaired != members:
                 record["values"][key] = repaired
