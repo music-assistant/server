@@ -286,7 +286,6 @@ class BandcampProvider(MusicProvider):
                 name="Wishlist",
                 translation_key="wishlist",
                 icon="mdi-heart",
-                is_playable=True,
             ),
         ]
 
@@ -969,7 +968,7 @@ class BandcampProvider(MusicProvider):
         if path_parts and path_parts[0] in (BROWSE_FANS, BROWSE_FOLLOWERS):
             return await self._browse_person(path_parts, base)
 
-        # The feed/wishlist recommendation folders resolve to their tracks here when played;
+        # The feed recommendation folder resolves to its tracks here when played;
         # the folder's explicit path is dropped on deserialization, so play arrives as the
         # bare item_id slug (e.g. ".../feed") rather than ".../recommendations/feed".
         if path_parts == [BROWSE_FEED]:

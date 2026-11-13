@@ -152,9 +152,9 @@ _COLLECTION_SUB_FOLDERS: frozenset[str] = frozenset(
 # Collection labels stay distinct from the core "media.folder.*" library labels.
 _COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, bool], ...] = (
     (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", True),
-    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", True),
-    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", True),
-    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", True),
+    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", False),
+    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", False),
+    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", False),
     (ProviderFeature.LIBRARY_PODCASTS, "podcasts", "my_podcasts", False),
     (ProviderFeature.LIBRARY_AUDIOBOOKS, "audiobooks", "my_audiobooks", False),
 )

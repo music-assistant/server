@@ -116,14 +116,14 @@ def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
     return (item_id, None)
 
 
-# Collection sub-folder browse ids -> (ProviderFeature, library sub_id, label key, English name).
-# The library sub_id ("tracks") and label key ("my_favorites") differ on purpose so the Collection
-# labels stay distinct from the core "media.folder.*" library labels.
-_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, str], ...] = (
-    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", "My Favorites"),
-    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", "My Artists"),
-    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", "My Albums"),
-    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", "My Playlists"),
+# Collection sub-folder browse ids -> (ProviderFeature, library sub_id, label key, English name,
+# is_playable). The library sub_id ("tracks") and label key ("my_favorites") differ on purpose so
+# the Collection labels stay distinct from the core "media.folder.*" library labels.
+_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, str, bool], ...] = (
+    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", "My Favorites", True),
+    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", "My Artists", False),
+    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", "My Albums", False),
+    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", "My Playlists", False),
 )
 
 
@@ -925,7 +925,7 @@ class KionMusicProvider(MusicProvider):
         root_base = (base_parts[0] + "//") if len(base_parts) > 1 else path.rstrip("/") + "/"
 
         folders: list[BrowseFolder] = []
-        for feature, sub_id, label_key, label_name in _COLLECTION_SUBFOLDERS:
+        for feature, sub_id, label_key, label_name, is_playable in _COLLECTION_SUBFOLDERS:
             if feature not in self.supported_features:
                 continue
             folders.append(
@@ -935,7 +935,7 @@ class KionMusicProvider(MusicProvider):
                     path=f"{root_base}{sub_id}",
                     name=label_name,
                     translation_key=label_key,
-                    is_playable=True,
+                    is_playable=is_playable,
                 )
             )
         return folders
