@@ -1,8 +1,8 @@
 # Player Controller Architecture
 
-This document provides an overview of the Music Assistant Player Controller architecture: the
-Player and the protocols it is made up of, how a protocol finds its player, the stored config,
-the lifecycle and the rules for commands and volume.
+This document describes the architecture of the Music Assistant Player Controller: the model of a
+player and the protocols it is made up of, how a protocol finds its player, the lifecycle and the
+stored config, how a state reaches clients, and the rules for commands, grouping and locks.
 
 What the controller guarantees, scenario by scenario and each proven by tests, is written out in
 [SCENARIOS.md](SCENARIOS.md).
@@ -11,27 +11,30 @@ What the controller guarantees, scenario by scenario and each proven by tests, i
 
 - [Overview](#overview)
 - [Player, PlayerProtocol and PlayerState](#player-playerprotocol-and-playerstate)
-- [Identity](#identity)
-- [Legacy Ids](#legacy-ids)
 - [Core Components](#core-components)
-- [Locking](#locking)
-- [Grouping](#grouping)
 - [Player Types and Protocol Roles](#player-types-and-protocol-roles)
-- [Finding the Player of a Protocol](#finding-the-player-of-a-protocol)
+- [Identity](#identity)
 - [Lifecycle](#lifecycle)
-- [Commands, Outputs and Volume](#commands-outputs-and-volume)
 - [Configuration Storage](#configuration-storage)
-- [Development Guide](#development-guide)
+- [State and Events](#state-and-events)
+- [Commands, Outputs, Volume and Power](#commands-outputs-volume-and-power)
+- [Grouping](#grouping)
+- [Locking](#locking)
+- [What a Provider Has to Do](#what-a-provider-has-to-do)
+- [Scenarios](#scenarios)
 
 ## Overview
 
-The Player Controller is a core controller that owns every player users and clients see. It provides:
-- One player per device, made up of the protocols its providers attach (the vendor's own protocol, AirPlay, Chromecast, DLNA, Sendspin, ...)
-- Unified control interface for all players (play, pause, volume, etc.)
-- Players that stay known while their device is away, and come back with their settings
-- Sync group management for synchronized playback
-- Player state management and event broadcasting
-- User access control and permissions
+The Player Controller is a core controller that owns every player users and clients see. A player
+stands for one device or one group. The player providers do not own players: they attach a
+protocol object to the player of its device for every way they reach it (the vendor's own
+protocol, AirPlay, Chromecast, DLNA, Sendspin, ...). The controller decides which player a protocol
+belongs to, derives the state of the player from what its protocols report, and routes every
+command to the protocol that has to carry it out.
+
+A player outlives its protocols. It is created from its stored config at startup, before any
+provider loads, and stays listed (unavailable) while its device is away, with its settings and its
+queue. It goes only when the user removes or disables it.
 
 ## Player, PlayerProtocol and PlayerState
 
@@ -61,6 +64,15 @@ The Player Controller is a core controller that owns every player users and clie
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+Four models, each with one owner:
+
+| Model | Owner | Is |
+|---|---|---|
+| `PlayerProtocol` | a player provider, which subclasses it | the provider's handle on one device over one protocol |
+| `Player` | the controller; never subclassed | the player users, clients and the queue see |
+| `PlayerState` | derived by the player | the published snapshot of a player, what the API sends |
+| `PlayerConfig` | the config controller | what is stored about a player or a protocol |
+
 ### PlayerProtocol (provider model)
 
 A `PlayerProtocol` ([player_protocol.py](../../models/player_protocol.py)) is the object a player
@@ -70,10 +82,13 @@ connected (`session_only`) and, for a transport that rides on another protocol, 
 on (`underlying_protocol_id`). While it is attached, `protocol.player` is its player; its
 `update_state()` publishes through that player. Its config is its own record (`protocol.config`).
 
+A protocol has no published state of its own. Its provider finds its own protocol objects through
+`provider.get_protocol()` and `provider.protocols`.
+
 ### Player (controller model)
 
 A `Player` ([player.py](../../models/player.py)) is created and owned by the controller, from its
-stored record or when a device is new, and is never subclassed by a provider. It holds:
+stored record or when a device is new. It holds:
 - the attached protocols, each with the role it attached in; the one that stands for the device
   itself is its `own_protocol` (native, else control, else virtual), the audio ones are its
   `audio_protocols`, most preferred first;
@@ -101,97 +116,14 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 - Is a snapshot created when `player.update_state()` is called
 - Is derived by `derive_player_state` ([player_state.py](../../models/player_state.py)), a function of a snapshot of everything the state depends on
 - Lists the protocols of the player (`protocols`: id, domain, provider, role, available, active),
-  when the player was last seen and since when it is unavailable
+  its legacy ids, when the player was last seen and since when it is unavailable
 - Contains only serializable data suitable for API consumers
 
-A player is available while any of its protocols is (or while it is switched off at its external
-power control); it is available for playback while a protocol is reachable and set up.
-
-## Identity
-
-A player id and a protocol id are different things. A device or group first seen by this version
-gets a player id of its own (`pl` and twelve hex digits); a record that existed before the player
-configs were split keeps its id, which is then also the id of its own protocol. A protocol that only
-exists while connected (a browser or app player) gives the player it creates its own protocol id, so
-that player has the same id in every session. Nothing else may assume the two ids are equal.
-
-Protocols name each other by protocol id in what they report (`group_members`, `synced_to`,
-`can_group_with`); the state derivation translates those to player ids. A group protocol names its
-members by player id. `get_player_by_protocol` resolves either kind; `get_protocol` only knows
-protocol ids and never goes through the legacy-id resolver.
-
-### One device, two players
-
-Which player a protocol belongs to is decided when it attaches, and that can turn out wrong: a
-device ends up as two players when its second protocol was first seen while the first was away, or
-before the identifiers that tie them together were known, and a protocol can end up on the player
-of another device. So two players can be merged into one, and a protocol can be taken off its
-player again.
-
-**Merging.** The player that goes hands its protocols to the player that stays, which answers to
-its id from then on: that id and the legacy ids of the player that goes become legacy ids of the
-kept player. Group member lists and allow-lists, the player filters of users and the edges of the
-protocols name the kept player. A name, a setting, DSP or queue settings only the player that goes
-has are kept; where both have one, the kept player's stays. The queue of the player that goes is
-dropped, and stopped first when it plays its own queue. A group it plays for keeps playing and
-keeps it as a member, as the kept player. Whether its own audio goes on depends on its protocol,
-which is detached to move: one that leaves its stream when it is detached, as AirPlay does, is
-silent until it joins the playback again, at the latest when the group or the player is started
-again. The attach rules decide whether two players can be one: not when
-both have a protocol that stands for the device, or a protocol of the same domain, when a strong
-identifier of one rules the other out, and never for a group or a player that only exists while
-connected. What is stored changes in one step, right after that check, and is saved before
-anything else of the player that goes is deleted, so after a crash either both players are as
-they were or the merge is stored. The user filters are rewritten once the removal of the player
-that goes reached the users limited to it; a crash in between leaves such a user limited to an id
-that no player has anymore.
-
-Two players also merge by themselves: when a protocol attaches, or is attached again, and the
-identifiers of its player match another live player, while the attach rules allow it and the
-younger of the two is unused. Unused means nothing about it is the user's own yet: no custom name,
-no value the user set on it or on one of its protocols, no DSP switched on, no queue settings, no
-queue items, nothing playing right now, no place in the member list of a group, no sync leader or members, no group that
-holds it. Values the server or a provider stores by itself never count. The older player stays:
-by the moment it was created, a player without one counting as the oldest, and of two equally old
-ones the one with an id from before the split. Otherwise both stay, for the user to merge.
-
-**Taking a protocol off its player.** A protocol that ended up on the wrong player gets a player of
-its own, and the protocols that ride on it go along: a new player (a minted id, the name of the
-protocol, default settings, an empty queue) that its stored edge names from then on. Its record
-keeps the id of the player it was taken off (`unlinked_from`): the two players are never merged
-by themselves again, also when either of them goes into another player later (the id resolves
-like any legacy id); a merge of the two that the user asks for forgets it. The old player keeps
-its id, name, settings and queue, and its output and control choices that named the protocol fall
-back to their default: the identity stays with the protocols that stay, whichever role the one
-taken off has, so without its own protocol the old player is a player of its audio protocols. A
-protocol that rides on another, the protocol of a group, a protocol that only exists while
-connected and the only protocol of a player are not taken off.
-
-## Legacy Ids
-
-A player keeps answering to its legacy ids: ids it was known under before, such as the id of a
-player that was merged into it. They are stored with the player's config (`values.legacy_ids`)
-and resolved in one place, `PlayerController.resolve_player_id`. They resolve in:
-
-- the id-bearing arguments of an API command (`PLAYER_ID_ARGUMENTS`), which every API
-  transport rewrites before the handler runs (`run_api_command` in
-  [helpers/api.py](../../helpers/api.py));
-- `get_player`, and the queue lookups (`get`, `queue_data`, `items`, `get_item` and the like);
-- the `source` and `source_id` arguments of the player commands, which also take source ids
-  that are no queue, so these commands resolve them before they compare them with the active
-  source;
-- `has_player_access`, when the caller passes the player it looked up.
-
-A command called inside the server is not rewritten. The queue commands resolve the id they are
-given themselves, so a plugin setting that still names a merged player reaches its queue; other
-commands called inside the server take the id of the player itself. Protocol ids never resolve.
-
-The state a player publishes lists its legacy ids (`legacy_ids`), so a client can tell which ids
-it answers to.
-
-The lookup is built from the stored player configs at startup, by a merge, which writes the
-legacy ids, and again whenever a player config is deleted. An id resolves to the player that lists it only while no player is
-registered under that id and no config is stored under it.
+A player is available while it is enabled and one of its protocols that can render audio reaches
+its device (a control protocol alone does not count), or while it is switched off at its external
+power control; not while it only has a protocol that still needs setup. It is available for
+playback while such a protocol is reachable and set up; that is what internal code checks before
+it sends anything to the device.
 
 ## Core Components
 
@@ -245,66 +177,6 @@ carries a plan out (see [Grouping](#grouping)).
 
 The `handle_player_command` decorator for command validation, and `AnnounceData`.
 
-## Locking
-
-Player commands are serialized per player with `get_player_lock`. A command never runs without the lock: it waits for the command that holds it, up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with a `ResourceBusyError` ("still busy with a previous command"), since two commands running at once on one player or queue corrupt it. That wait outlasts what most commands hold a player for, such as a play request that loads a large playlist, but the budget can also turn away a command behind long work that is legitimate: an announcement holds the player for as long as it plays. The warning logged at the timeout shows where the holder waits. The timeouts live in [constants.py](constants.py).
-
-Attaching protocols is serialized by one lock of the controller, so an object that replaces
-another under the same protocol id waits for an attach of that id that is still running. A detach
-does not wait for it: it stops an attach of its protocol that is in progress.
-
-### Lock Ordering
-
-A group player locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**.
-
-A command that locks a member and only then reaches the group — a power off detaching the player from its group is the typical one — has to acquire the group's lock up front. Taking them the other way round deadlocks against any concurrent command on that group. Nested acquisitions within the same task are re-entrant, so locking the group up front costs nothing further down the call chain.
-
-A command holds the lock of the player it works on, and of no player it only passes through. `get_group_and_player_lock` is for a command that works on the player under its group: it takes the lock of the group holding the player (following the same redirect as `cmd_set_members`) and then the player's own, and holds both from the release of the group to the command on the player; a power off, an announcement, a source selection, a member change on a player under a static group, a play media that takes the player out of its group and the queue play actions use it. A playback command that is redirected to the owner (stop, play, resume, and play media with the override off) works on the owner and holds the owner's lock alone, as the owner's handler locks each member it works on itself (a universal group plays each member in a task of its own, which takes that member's lock). Either way the command never holds a player's lock while it waits for the lock of that player's owner: once it holds its locks it checks that the owner is still the one whose lock it took, and when the player joined or left a group meanwhile it releases them and takes them again in the new order (a few times at most, then it fails as busy); a command that already holds the player and finds it in a group whose lock it does not hold fails at once. Releasing the session of a static group (an ungroup of its member) takes the group's lock. A sync group's formation takes the leader's lock before it records that leader, and its dissolve holds the recorded leader's lock (and that of the player a provider handed the members to); the re-form after an unjoin and the hand-over to a new leader record a leader that already belongs to the group (its pending re-form, or the old leader, keeps it the group's), so that player's owner does not change there. Work that a handler hands to tasks of its own and waits for never waits for a lock its caller holds: a universal group plays a member whose lock the calling command holds (a play action on that member's own queue) in the command's own task. A capture nobody asked for at that moment (a sync group re-adding a member that came back) changes the group, so it runs under the group's lock: it takes the group's lock only when it is free, then the leader's, then each member's only when it is free, and holds them across the capture. It never waits for a group or member a command is busy with: a busy group is left as it is and a busy member left out, and the leader's next report tries again. A change that comes from a device itself (speakers grouped in the vendor's app) holds no lock of ours: a command notices the new owner at its next check, and a wait for that owner's lock ends in a busy error at the timeout, never in running without the lock. The re-entrancy is per task, so a group command that fans out to its members in separate tasks (a group announcement) has those tasks take the member's lock only.
-
-A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect, worked out under the owner's lock, is what puts the command under the group's lock rather than the leader's. The playback commands flagged with `handle_player_command(to_playback_owner=True)` and the sleep timer commands need the caller's access to that owner as well as to the player they name. Taking the player out of its group (ungroup, power off, select source, play media with its `play_media_overrides_group` setting on) only needs access to the player itself.
-
-## Grouping
-
-How a group change reaches the devices is decided in one place: `plan_group_change` in
-[grouping_plan.py](grouping_plan.py). It is a pure function of a `GroupingSnapshot`: per player
-and protocol what grouping reads (the published state, the protocols with their features, the
-groups they report and what they can group with, the outputs, the active and the preferred
-output, the queue it plays). It returns the steps of the change: which protocol of each member
-carries it, who leads, what is released first, what is refused and why, the lines for the log.
-The snapshot builds the view of a player or protocol when the plan first reads it, and asks
-whether two protocols group natively only for the pair the plan asks about, so a change costs
-what it reads. A playback start whose player has no grouped audio protocol has nothing to
-regroup and takes no snapshot at all.
-`apply_group_change` in [grouping.py](grouping.py) runs the steps, and is the only code of the
-controller that calls a protocol's grouping methods. The entries stay what callers use:
-`cmd_set_members`, `cmd_ungroup`, and `_handle_set_members` and `_detach_member` for a group
-provider or a protocol that changes the group of its leader itself.
-
-A change, and a join in particular, is planned in phases because some of its steps have an
-outcome that decides what follows: a member released from another leader, giving up a group of
-its own or powered on; the content takeover hook; a joining member's output activated; the
-protocol's join call; the leader's output moved; the protocol it rendered on before stopped and
-left by its members; a resume. The plan stops after each of them. The executor runs the steps,
-takes a new snapshot and plans on from where the change got to; `JoinPhase` lists the phases of a
-join in order, each with the device call that ends it. What the change decided or read before
-such a step travels with it in its progress (`JoinProgress` for the join) and is not read again:
-the members per protocol, whether the leader played before its output moved, the members of the
-old protocol before it stopped. Everything else is read from the new snapshot, so the hand-over
-of the leader's output is decided on the state after the join call: a leader paused on the
-device while that call ran hands its output over without resuming. This keeps every ordering
-rule plain data that a test reads from the plan, and leaves the executor nothing to decide.
-
-For the whole change the executor keeps the objects it addresses (the leader, the protocol the
-group joins, the protocol it leaves). It takes no lock of its own: a change runs under the lock
-its entry holds (`cmd_set_members` takes the target's), and the nested commands it calls take
-theirs.
-
-A trigger (play media with `play_media_overrides_group`, select source, power off, disabling, an
-announcement, a queue transfer) decides whether a player leaves what holds it and through which
-entry; the plan decides how. A group player's provider (sync group, universal group) decides its
-own members, its leader and when it forms, and reaches the plan through `_handle_set_members` on
-its leader.
-
 ## Player Types and Protocol Roles
 
 The type of a player (`PlayerType.PLAYER`, `GROUP`, `STEREO_PAIR`, and the kinds of Sendspin
@@ -332,12 +204,54 @@ other one stands for the device again while the user has the better one's provid
 better one switched off, and once the better one is removed (its provider forgets the device, or is
 removed). Two of one rank, such as the Squeezelite and Snapcast clients of one host, are two players.
 
-A role is fixed while the protocol is attached; a protocol that reports another role, or that
-attaches in another one because a protocol that ranks above it arrived or was removed, is
-detached and attached again, to the same player when it still has a place for it, else to a
-player of its own.
+A role is not identity. It is fixed while the protocol is attached; a protocol that reports another
+role, or that attaches in another one because a protocol that ranks above it arrived or was
+removed, is detached and attached again, to the same player when it still has a place for it, else
+to a player of its own.
 
-## Finding the Player of a Protocol
+## Identity
+
+A player id and a protocol id are different things. A player has one of two kinds of id:
+- a minted id (`pl` and twelve hex digits), for a player this version created;
+- the id of a player record an older version stored, which the player keeps and which is then also
+  the id of its own protocol.
+
+A protocol that only exists while connected (a browser or app player) gives the player it creates
+its own protocol id, so that player has the same id in every session. Nothing else may assume the
+two ids are equal.
+
+Protocols name each other by protocol id in what they report (`group_members`, `synced_to`,
+`can_group_with`); the state derivation translates those to player ids. A group protocol names its
+members by player id. `get_player_by_protocol` resolves either kind; `get_protocol` only knows
+protocol ids and never goes through the legacy-id resolver.
+
+### Legacy Ids
+
+A player keeps answering to its legacy ids: ids it was known under before, such as the id of a
+player that was merged into it. They are stored with the player's config (`values.legacy_ids`)
+and resolved in one place, `PlayerController.resolve_player_id`. They resolve in:
+
+- the id-bearing arguments of an API command (`PLAYER_ID_ARGUMENTS`), which every API
+  transport rewrites before the handler runs (`run_api_command` in
+  [helpers/api.py](../../helpers/api.py));
+- `get_player`, and the queue lookups (`get`, `queue_data`, `items`, `get_item` and the like);
+- the `source` and `source_id` arguments of the player commands, which also take source ids
+  that are no queue, so these commands resolve them before they compare them with the active
+  source;
+- `has_player_access`, when the caller passes the player it looked up.
+
+A command called inside the server is not rewritten. The queue commands resolve the id they are
+given themselves, so a plugin setting that still names a merged player reaches its queue; other
+commands called inside the server take the id of the player itself. Protocol ids never resolve.
+
+The state a player publishes lists its legacy ids (`legacy_ids`), so a client can tell which ids
+it answers to.
+
+The lookup is built from the stored player configs at startup, by a merge, which writes the
+legacy ids, and again whenever a player config is deleted. An id resolves to the player that
+lists it only while no player is registered under that id and no config is stored under it.
+
+### Finding the Player of a Protocol
 
 When a protocol attaches, the controller looks for its player in this order:
 1. The player its record names, as long as none of the protocols attached to that player rules it out.
@@ -347,18 +261,24 @@ When a protocol attaches, the controller looks for its player in this order:
    over that record (settings, setup data) under its own id.
 3. Else a new player is created for it.
 
+A group protocol and a protocol that only exists while connected match no device: without a record
+that names its player, each gets a player of its own.
+
 A protocol that rides on another one (`underlying_protocol_id`) belongs to the player of that
 protocol: the player it is attached to, else the player its record names, so it also attaches
 while that protocol is away. It waits, however long that takes, while there is no such player or
 that player has a protocol of the same domain already, attached or away (a stored record of that
-domain counts); once that record is removed, it attaches. An audio protocol that matches no player
-and has no hardware MAC address yet waits up to 15 seconds for identifiers that tie it to other
-protocols of its device; it attaches as soon as one arrives or another protocol creates the player
-of its device, and gets a player of its own when the wait ends. A native protocol never waits.
+domain counts); once that record is removed, it attaches.
+
+An audio protocol that matches no player and has no globally administered MAC address yet waits up
+to 15 seconds for identifiers that tie it to other protocols of its device; it attaches as soon as
+one arrives or another protocol creates the player of its device, and gets a player of its own when
+the wait ends. A native, control or virtual protocol and a protocol that only exists while
+connected never wait.
 
 ### Device Identifier Matching
 
-Whether a protocol stands for the device of a player is decided in one place: `matches_device` in [matching.py](matching.py), a pure function over what each side reports about its device:
+Whether a protocol stands for the device of a player is decided in one place: `matches_device`, a pure function over what each side reports about its device:
 
 - its identifiers as a set of `(type, value)` pairs, so a device with two MAC addresses (the one its provider reported and the one ARP resolved) holds a pair for each
 - the protocol domains that reported them
@@ -395,6 +315,53 @@ provider on one host (Snapcast clients, Squeezelite instances, Sendspin software
 separate players, not protocols of one device; their provider reports an identifier of its own
 instance (`UUID` or `SERIAL_NUMBER`), which vetoes within the domain.
 
+### One device, two players
+
+Which player a protocol belongs to is decided when it attaches, and that can turn out wrong: a
+device ends up as two players when its second protocol was first seen while the first was away, or
+before the identifiers that tie them together were known, and a protocol can end up on the player
+of another device. So two players can be merged into one (`players/merge`), and a protocol can be
+taken off its player again (`players/unlink_protocol`).
+
+**Merging.** The player that goes hands its protocols to the player that stays, which answers to
+its id from then on: that id and the legacy ids of the player that goes become legacy ids of the
+kept player. Group member lists and allow-lists, the player filters of users and the edges of the
+protocols name the kept player. A name, a setting, DSP or queue settings only the player that goes
+has are kept; where both have one, the kept player's stays. The queue of the player that goes is
+dropped, and stopped first when it plays its own queue. A group it plays for keeps playing and
+keeps it as a member, as the kept player. Whether its own audio goes on depends on its protocol,
+which is detached to move: one that leaves its stream when it is detached, as AirPlay does, is
+silent until it joins the playback again, at the latest when the group or the player is started
+again. The attach rules decide whether two players can be one: not when
+both have a protocol that stands for the device, or a protocol of the same domain, when a strong
+identifier of one rules the other out, and never for a group or a player that only exists while
+connected. What is stored changes in one step, right after that check, and is saved before
+anything else of the player that goes is deleted, so after a crash either both players are as
+they were or the merge is stored. The user filters are rewritten once the removal of the player
+that goes reached the users limited to it; a crash in between leaves such a user limited to an id
+that no player has anymore.
+
+Two players also merge by themselves: when a protocol attaches, or is attached again, and the
+identifiers of its player match another live player, while the attach rules allow it and the
+younger of the two is unused. Unused means nothing about it is the user's own yet: no custom name,
+no value the user set on it or on one of its protocols, no DSP switched on, no queue settings, no
+queue items, nothing playing right now, no place in the member list of a group, no sync leader or
+members, no group that holds it. Values the server or a provider stores by itself never count. The
+older player stays: by the moment it was created, a player without one counting as the oldest, and
+of two equally old ones the one whose id is not minted. Otherwise both stay, for the user to merge.
+
+**Taking a protocol off its player.** A protocol that ended up on the wrong player gets a player of
+its own, and the protocols that ride on it go along: a new player (a minted id, the name of the
+protocol, default settings, an empty queue) that its stored edge names from then on. Its record
+keeps the id of the player it was taken off (`unlinked_from`): the two players are never merged
+by themselves again, also when either of them goes into another player later (the id resolves
+like any legacy id); a merge of the two that the user asks for forgets it. The old player keeps
+its id, name, settings and queue, and its output and control choices that named the protocol fall
+back to their default: the identity stays with the protocols that stay, whichever role the one
+taken off has, so without its own protocol the old player is a player of its audio protocols. A
+protocol that rides on another, the protocol of a group, a protocol that only exists while
+connected and the only protocol of a player are not taken off.
+
 ## Lifecycle
 
 | Call | When | What happens |
@@ -402,24 +369,27 @@ instance (`UUID` or `SERIAL_NUMBER`), which vetoes within the domain.
 | `attach(protocol)` | a provider found a device, or found it again | the player is found or created and the protocol bound to it; `on_config_updated()` and `on_attach(player)` run. Attaching the attached object again publishes what it reports now; another object under the same id replaces it. Nothing attaches for a disabled player or an output the user switched off. |
 | `detach(protocol_id)` | the device is gone, or its provider unloads | `on_detach()` runs; the player stays (unavailable while no other protocol is) and keeps its queue, which only stops when this protocol was the one that played. A player that only exists while connected goes with its last protocol. |
 | `remove_protocol(protocol_id)` | a provider forgets a device | detach and delete the protocol record, and the same for the protocols that ride on it; an output or control choice of the player that names it falls back to its default; the player goes when no protocol record of it is left. |
-| `remove(player_id)` | the user removes a player | every protocol is detached and gets `on_remove()`, also one whose player is not live; the player, its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries go. Its providers look for devices again, so a device still on the network comes back as a new player (not for a group). |
+| `remove(player_id)` (`players/remove`) | the user removes a player | every protocol is detached and gets `on_remove()`, also one whose player is not live; the player, its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries go. Its providers look for devices again, so a device still on the network comes back as a new player (not for a group). |
+| `remove_unavailable()` (`players/remove_unavailable`) | the user cleans up | removes every unavailable, enabled player whose providers are all loaded and had time to find their devices since they loaded; no discovery follows. With `dry_run` it only returns the ids it would remove. |
+| `merge` (`players/merge`), `unlink_protocol` (`players/unlink_protocol`) | the user repairs which player a protocol belongs to | see [One device, two players](#one-device-two-players). |
 
 An attach that waits on the provider (a hook, an address lookup) is stopped by a detach of its
 protocol: the protocol is released again, and a player it created that nobody saw yet goes with the
 config it stored for it. A failing attach is rolled back the same way.
 
-Disabling a player detaches its protocols and announces it as removed; its config stays. Enabling
-it creates it from its record and lets its providers look for its devices.
+Disabling a player powers it off (or stops what it plays when it has no power control), detaches
+its protocols and announces it as removed; its config stays. Enabling it creates it from its
+record.
 
-`PLAYER_REMOVED` says whether the player is removed for good (`data={"permanent": True}`, read
-with `helpers.player.player_removed_for_good`): after `remove`, and for the player that goes in a
-merge. A disabled player and a player that only exists while connected whose client disconnected
-are gone for now: they come back with the same id and their saved queue, so a subscriber keeps
-what it stores about them.
+Five flows end with a discovery request to the providers of the protocols involved
+(`provider.schedule_discovery()`), which run their discovery a few seconds later: enabling a player, removing one, a merge, taking a
+protocol off its player while that protocol is not attached, and an output the user switches on
+again while it is not attached.
 
 ### Startup
 
-1. The config controller loads the settings and runs the migrations, the player split last.
+1. The config controller loads the settings and runs the migrations, with the conversion of
+   player records of the older single-record shape at the end.
 2. The core controllers set up; `players.post_setup` creates a player for every stored player that
    is enabled and not session-only, announces it with its queue, unavailable until a protocol
    attaches. A player without protocols whose provider is not installed says so in its
@@ -427,12 +397,90 @@ what it stores about them.
 3. The webserver starts: clients get one complete list, unavailable players included.
 4. The providers load and attach their protocols.
 
-## Commands, Outputs and Volume
+## Configuration Storage
+
+Every player has a record under `players/{player_id}` (base keys, its name, and the values of the
+entries every player gets: controls, volume limits, announcement settings, icon, visibility,
+preferred output, plus what the player stores itself: legacy ids, last seen, device info,
+`session_only`, `created_at`). Every protocol has a record under `player_protocols/{protocol_id}`:
+its provider, the id of its player (the edge), its role, whether it is used as an output of its
+player (`enabled`), the values of the entries it declares, the audio settings of its output, what
+its provider stores for it (MAC addresses, identifiers, the protocol it rides on) and its setup data.
+DSP and queue settings stay per player under `player_dsp/` and `player_queues/`. For a player that
+kept the id an older version stored, the player record and the record of its own protocol share
+the id string.
+
+The edge lives on the protocol record and nowhere else: a player finds its protocols through the
+records that name it.
+
+A protocol that only exists while connected has no record until the user changes something about
+its player; until then it holds its config in memory, and provider writes go there.
+
+Stored config is read and written per scope, through the config controller:
+- `get_player_value` / `set_player_value` - a value of the player itself (`PLAYER_VALUE_KEYS`)
+- `get_protocol_value` / `set_protocol_value` - a value of a protocol: an entry the protocol declares, an audio setting of its output, or what its provider stores for it
+
+The config of a player as clients read and save it (`config/players/*`) is one form: the values of
+the player, the unprefixed values of its own protocol, and the values of its audio protocols
+prefixed with their id. Saving it stores each value with whoever declared its entry.
+
+Player records of the older single-record shape are converted to these two trees once, by
+[player_split.py](../config/player_split.py), which first keeps a copy of the settings file it
+started from (`settings.json.pre-player-split`).
+
+## State and Events
+
+A provider never publishes a state itself. It changes what its protocol reports and calls
+`protocol.update_state()`, which hands over to the player the protocol is attached to (a protocol
+that still waits for its player is matched again instead). The player then:
+1. returns at once when none of its own inputs changed and nothing marked its state dirty;
+2. collects everything its state depends on (`StateInputs`: its protocols, config, controls, the
+   peers and groups it refers to, its queues and sources) and calls `derive_player_state`, which
+   returns the new `PlayerState` and what has to happen besides publishing it (`StateEffects`);
+3. carries out those effects and diffs the new state against the last one.
+
+A change the player derives from elsewhere (group topology, the active queue, a config change)
+comes with `mark_state_dirty()`; the controller does that on all its notification paths
+(`trigger_player_update`, which also debounces, and the fan-out below).
+
+When the diff is not empty, the controller passes the change to the queue of the player, runs the
+reactions to it (membership cleanup when availability or power changed, the volume limits, a
+source takeover), calls the internal subscribers (`subscribe_player_state_update`), emits the event
+and forwards the change to the related players: the members of a group or sync leader, the groups
+that hold the player and its sync leader.
+
+| Event | When |
+|---|---|
+| `PLAYER_ADDED` | a player object is published: at startup from its config, for a new device or a protocol taken off its player, when the user enables a player, when a player that only exists while connected connects |
+| `PLAYER_UPDATED` | every published change of a player, attach and detach included; a device that goes away or comes back is a change of `available` |
+| `PLAYER_OPTIONS_UPDATED` | the options of a player changed |
+| `PLAYER_REMOVED` | the player object goes; `data={"permanent": True}` when it is removed for good |
+| `PLAYER_CONFIG_UPDATED` | a config of the player was saved; also when its features or its power, volume or mute control change, for the Home Assistant integration, which only re-reads them on that event |
+
+`PLAYER_REMOVED` says whether the player is removed for good (read with
+`helpers.player.player_removed_for_good`): after a removal by the user (`remove`,
+`remove_unavailable`) or by its provider (`remove_protocol` of its last protocol), and for the
+player that goes in a merge. A disabled player and a player that only exists while connected
+whose client disconnected are gone for now: they come back with the same id and their saved queue, so a
+subscriber keeps what it stores about them.
+
+The queue of a player lives as long as the player object: it is created when the player is
+published (`PLAYER_ADDED`), restored from the saved queue. When the protocol that rendered the audio
+of the player is detached, the queue releases its audio and pending work and keeps its items and
+position. It goes with the player object, and its saved state only when the player is removed for
+good.
+
+## Commands, Outputs, Volume and Power
+
+Every player command validates its player first (`handle_player_command`): it checks that the
+player exists and is available and that the user may use it, and decides what to do with a player
+that is switched off at its external power control. A command to an unavailable player raises
+`PlayerUnavailableError`; a power on is accepted.
 
 A playback command goes to the protocol that renders the audio of the player. A transport command
 for what the device plays itself goes to the audio protocol whose app is shown on the player, else
-to its own protocol. A command to an unavailable player raises `PlayerUnavailableError`; a power on
-is accepted, and a play on a player switched off at its external power control powers it on first.
+to its own protocol. A playback command on a player that plays along with a group or sync leader
+goes to the owner of its playback (see [Locking](#locking)).
 
 ### Output Protocol Selection
 
@@ -443,6 +491,10 @@ When playing media, the controller selects the output:
 3. **Native playback** - Use the own protocol when it supports PLAY_MEDIA
 4. **Default domain** - The audio protocol of the domain the own protocol prefers (a LinkPlay device prefers DLNA)
 5. **Best available** - Select by protocol priority (AirPlay > Squeezelite > Chromecast > Sendspin > DLNA)
+
+A command that travels with the audio (enqueue, pause, an announcement the device can not play
+itself) goes to the active output, else to the own protocol, else to the output the user picked,
+else to the best available audio protocol.
 
 ### Volume and Mute
 
@@ -458,43 +510,134 @@ that and what the protocol in control reports, nothing is sent when the control 
 output that is activated for playback is given it. A volume or mute command, an output given it, or
 the own protocol back in reach ends that; the own protocol's level counts again then.
 
-## Configuration Storage
+The group volume of a group player or sync leader is set on its powered members together, keeping
+their balance. It has a lock purpose of its own, so it runs next to the volume commands of the
+members.
 
-Every player has a record under `players/{player_id}` (base keys, its name, and the values of the
-entries every player gets: controls, volume limits, announcement settings, icon, visibility,
-preferred output, plus what the player stores itself: legacy ids, last seen, device info,
-`session_only`, `created_at`). Every protocol has a record under `player_protocols/{protocol_id}`:
-its provider, the id of its player (the edge), its role, whether it is used as an output of its
-player (`enabled`), the values of the entries it declares, the audio settings of its output, what
-its provider stores for it (MAC addresses, identifiers, the protocol it rides on) and its setup data.
-DSP and queue settings stay per player under `player_dsp/` and `player_queues/`. For a record from
-before the split, the player record and the record of its own protocol share the id string.
+### Power
 
-A protocol that only exists while connected has no record until the user changes something about
-its player; until then it holds its config in memory, and provider writes go there.
+The power control of a player is the one the user picked: native, a fake control that only keeps
+the state in Music Assistant (kept across restarts, except for a group), none, or an external
+power control (a `PlayerControl`, such as a smart plug another provider registers). Without a
+choice it is native when the own protocol supports power, else none.
 
-Stored config is read and written per scope, through the config controller:
-- `get_player_value` / `set_player_value` - a value of the player itself (`PLAYER_VALUE_KEYS`)
-- `get_protocol_value` / `set_protocol_value` - a value of a protocol: an entry the protocol declares, an audio setting of its output, or what its provider stores for it
+A player switched off at its external power control is published as available and powered off, so
+a client can still power it on or play to it. What a command does with it is part of the command
+(`SwitchedOffAction`): play, resume, play media and select source power it on first and wait for
+the device; stop and pause call off a power on under way and otherwise do nothing; volume, mute and
+ungroup do nothing; power, play/pause and announcements handle it themselves; every other command
+is refused.
 
-The config of a player as clients read and save it (`config/players/*`) is one form: the values of
-the player, the unprefixed values of its own protocol, and the values of its audio protocols
-prefixed with their id. Saving it stores each value with whoever declared its entry.
+A player whose power is turned off outside of Music Assistant while it plays its own queue has that
+queue stopped shortly after; a group member leaves its group instead. A player with an idle power
+off time is powered off once it was idle that long.
 
-The player configs were split into these two trees by a migration that keeps a copy of the
-settings file from before it (`settings.json.pre-player-split`); see
-[player_split.py](../config/player_split.py). Restoring that copy is the way back to an older
-version. An older version that runs on the split settings stores the players it finds in the old
-shape; without the copy, the next start on this version removes what the older version stored for
-players.
+### Sleep Timer, Announcements and Audio Sources
 
-## Development Guide
+- **Sleep timer**: held by the owner of the playback of the player it is set on. A timer for a
+  duration is kept by that player and stops it when it expires; a timer to the end of the item or
+  chapter is kept by its queue.
+- **Announcements**: played natively by the own protocol or an audio protocol that supports it,
+  else by the controller, which plays the announcement as media and restores what the player did
+  before. A group announcement goes to the members when they can start it together. An
+  announcement holds the player (and its group) for as long as it plays.
+- **Audio sources**: a live source of a plugin (an `AudioSource`, such as Spotify Connect) plays
+  on a player independently of its queue. The controller keeps the session per player and passes
+  the transport commands for it to the plugin that owns it; the queue keeps its items and goes
+  inactive meanwhile.
+
+## Grouping
+
+How a group change reaches the devices is decided in one place: `plan_group_change`. It is a pure
+function of a `GroupingSnapshot`: per player and protocol what grouping reads (the published state,
+the protocols with their features, the groups they report and what they can group with, the
+outputs, the active and the preferred output, the queue it plays). It returns the steps of the
+change: which protocol of each member carries it, who leads, what is released first, what is
+refused and why, the lines for the log.
+The snapshot builds the view of a player or protocol when the plan first reads it, and asks
+whether two protocols group natively only for the pair the plan asks about, so a change costs
+what it reads. A playback start whose player has no grouped audio protocol has nothing to
+regroup and takes no snapshot at all.
+`apply_group_change` runs the steps, and is the only code of the controller that calls a
+protocol's grouping methods. The entries stay what callers use: `cmd_set_members`, `cmd_ungroup`,
+and `_handle_set_members` and `_detach_member` for a group provider or a protocol that changes the
+group of its leader itself.
+
+A change, and a join in particular, is planned in phases because some of its steps have an
+outcome that decides what follows: a member released from another leader, giving up a group of
+its own or powered on; the content takeover hook; a joining member's output activated; the
+protocol's join call; the leader's output moved; the protocol it rendered on before stopped and
+left by its members; a resume. The plan stops after each of them. The executor runs the steps,
+takes a new snapshot and plans on from where the change got to; `JoinPhase` lists the phases of a
+join in order, each with the device call that ends it. What the change decided or read before
+such a step travels with it in its progress (`JoinProgress` for the join) and is not read again:
+the members per protocol, whether the leader played before its output moved, the members of the
+old protocol before it stopped. Everything else is read from the new snapshot, so the hand-over
+of the leader's output is decided on the state after the join call: a leader paused on the
+device while that call ran hands its output over without resuming. This keeps every ordering
+rule plain data that a test reads from the plan, and leaves the executor nothing to decide.
+
+For the whole change the executor keeps the objects it addresses (the leader, the protocol the
+group joins, the protocol it leaves). It takes no lock of its own: a change runs under the lock
+its entry holds (`cmd_set_members` takes the target's), and the nested commands it calls take
+theirs.
+
+A trigger (play media with `play_media_overrides_group`, select source, power off, disabling, an
+announcement, a queue transfer) decides whether a player leaves what holds it and through which
+entry; the plan decides how. A group player's provider (sync group, universal group) decides its
+own members, its leader and when it forms, and reaches the plan through `_handle_set_members` on
+its leader.
+
+## Locking
+
+Player commands are serialized per player and purpose with `get_player_lock`: playback, volume and
+group volume each have a lock of their own (`PlayerLockPurpose`), so a volume command does not wait
+for a play command. A command never runs without its lock: it waits for the command that holds it,
+up to 120 seconds per lock (a grouped player's group lock first, then its own), and then fails with
+a `ResourceBusyError` ("still busy with a previous command"), since two commands running at once on
+one player or queue corrupt it. That wait outlasts what most commands hold a player for, such as a
+play request that loads a large playlist, but the budget can also turn away a command behind long
+work that is legitimate: an announcement holds the player for as long as it plays. The warning
+logged at the timeout shows where the holder waits.
+
+Attaching protocols is serialized by one lock of the controller, so an object that replaces
+another under the same protocol id waits for an attach of that id that is still running. A detach
+does not wait for it: it stops an attach of its protocol that is in progress.
+
+### Lock Ordering
+
+A group player locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**.
+
+A command that locks a member and only then reaches the group — a power off detaching the player from its group is the typical one — has to acquire the group's lock up front. Taking them the other way round deadlocks against any concurrent command on that group. Nested acquisitions within the same task are re-entrant, so locking the group up front costs nothing further down the call chain. The re-entrancy is per task, so a group command that fans out to its members in separate tasks (a group announcement) has those tasks take the member's lock only.
+
+A command holds the lock of the player it works on, and of no player it only passes through:
+- `get_group_and_player_lock` is for a command that works on the player under its group: it takes the lock of the group holding the player (following the same redirect as `cmd_set_members`) and then the player's own, and holds both from the release of the group to the command on the player. A power off, an announcement, a source selection, a member change on a player under a static group, a play media that takes the player out of its group and the queue play actions use it.
+- A playback command that is redirected to the owner (stop, play, resume, and play media with the override off) works on the owner and holds the owner's lock alone, as the owner's handler locks each member it works on itself (a universal group plays each member in a task of its own, which takes that member's lock).
+
+Either way the command never holds a player's lock while it waits for the lock of that player's owner: once it holds its locks it checks that the owner is still the one whose lock it took, and when the player joined or left a group meanwhile it releases them and takes them again in the new order (a few times at most, then it fails as busy); a command that already holds the player and finds it in a group whose lock it does not hold fails at once.
+
+Group changes that run outside a command:
+- Releasing the session of a static group (an ungroup of its member) takes the group's lock.
+- A sync group's formation takes the leader's lock before it records that leader, and its dissolve holds the recorded leader's lock (and that of the player a provider handed the members to); the re-form after an unjoin and the hand-over to a new leader record a leader that already belongs to the group (its pending re-form, or the old leader, keeps it the group's), so that player's owner does not change there.
+- Work that a handler hands to tasks of its own and waits for never waits for a lock its caller holds: a universal group plays a member whose lock the calling command holds (a play action on that member's own queue) in the command's own task.
+- A capture nobody asked for at that moment (a sync group re-adding a member that came back) changes the group, so it runs under the group's lock: it takes the group's lock only when it is free (`get_player_lock_if_free`), then the leader's, then each member's only when it is free, and holds them across the capture. It never waits for a group or member a command is busy with: a busy group is left as it is and a busy member left out, and the leader's next report tries again.
+- A change that comes from a device itself (speakers grouped in the vendor's app) holds no lock of ours: a command notices the new owner at its next check, and a wait for that owner's lock ends in a busy error at the timeout, never in running without the lock.
+
+A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect, worked out under the owner's lock, is what puts the command under the group's lock rather than the leader's. The playback commands flagged with `handle_player_command(to_playback_owner=True)` and the sleep timer commands need the caller's access to that owner as well as to the player they name. Taking the player out of its group (ungroup, power off, select source, play media with its `play_media_overrides_group` setting on) only needs access to the player itself.
+
+## What a Provider Has to Do
 
 The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Provider"), and
 `providers/_demo_player_provider` is the annotated example. In short:
 
-1. Implement one `PlayerProtocol` per device and report its role (`_attr_role`); leave the type at
-   `PlayerType.PLAYER` unless it is a group or stereo pair.
+1. Implement one `PlayerProtocol` per device and report its role (`_attr_role`) and its type
+   (`PlayerType.PLAYER`, unless it is a group, a stereo pair or another kind of client the enum
+   names). Report besides, where it applies: `session_only` for something that is no device to
+   keep track of (a browser tab, an app), `underlying_protocol_id` for a transport that rides on
+   another protocol, `enabled_by_default` for a device that starts out disabled,
+   `default_output_protocol_domain` for a control protocol
+   whose device plays best over one audio protocol, `prefer_native_grouping` for a device that runs
+   its own multiroom.
 2. **Populate `device_info.identifiers`** with every identifier the device really has, validated:
    ```python
    from music_assistant.helpers.util import is_valid_mac_address
@@ -510,7 +653,7 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
 4. Claim per-device resources in `on_attach` and release them in `on_detach`; forget what the
    provider keeps about a device in `on_remove`.
 5. `discover_players()` offers every known device that has no attached protocol, and is safe to
-   repeat: enabling and removing a player both end with a discovery request.
+   repeat: every discovery request of the controller (see [Lifecycle](#lifecycle)) runs it.
 6. Ask `mass.players.wants_protocol(protocol_id)` before setting up a connection for a device.
 
 **Important Notes:**
@@ -521,3 +664,10 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
 - `IP_ADDRESS` is only used as a last resort after strong identifiers were checked first
 - Read your own reported values through your own properties; read `self.player.state` only for what
   the device must display or follow (current media, position, the grouping of the player)
+
+## Scenarios
+
+[SCENARIOS.md](SCENARIOS.md) writes out what a user, a provider and a client can rely on, one
+scenario per rule. Every scenario has a stable id and names the tests that prove it
+([tests/scenarios](../../../tests/scenarios)). This document describes the model those scenarios
+run on and does not repeat them.

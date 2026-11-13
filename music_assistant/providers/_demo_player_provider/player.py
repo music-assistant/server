@@ -108,7 +108,7 @@ class DemoPlayer(PlayerProtocol):
         ]
 
     async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
+        """Return the Config Entries of this protocol, stored on its record under player_protocols/."""
         # OPTIONAL
         # this method is optional and should be implemented if you need player specific
         # configuration entries. If you do not need player specific configuration entries,
@@ -148,7 +148,7 @@ class DemoPlayer(PlayerProtocol):
             # either from a callback or by polling the player.
             logger.info("Received POWER OFF command on player %s", self.display_name)
             self._attr_powered = False
-        # update the player state in the player manager
+        # publish the change through the state of the player this protocol is attached to
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -167,7 +167,7 @@ class DemoPlayer(PlayerProtocol):
             volume_level,
         )
         self._attr_volume_level = volume_level  # volume level is between 0 and 100
-        # update the player state in the player manager
+        # publish the change through the state of the player this protocol is attached to
         self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
@@ -313,7 +313,7 @@ class DemoPlayer(PlayerProtocol):
         # The announcement object contains all the details needed to play the announcement.
         # The volume_level is optional and can be used to set the volume level for the announcement.
         # If you do not use the announcement playerfeature, the default behavior is to play the
-        # announcement as a regular media item using the play_media method and the MA player manager
+        # announcement as a regular media item using the play_media method and the MA players controller
         # will take care of setting the volume level for the announcement and resuming etc.
         # Override the announcement_features property to declare how this player behaves during
         # an announcement (see AnnouncementFeature): add COORDINATES_START if it lines up its start
@@ -402,7 +402,7 @@ class DemoPlayer(PlayerProtocol):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
-        # OPTIONAL - This is called by the Player Manager if the 'needs_poll' property is True.
+        # OPTIONAL - This is called by the players controller if the 'needs_poll' property is True.
         self._set_attributes()
         self.update_state()
 

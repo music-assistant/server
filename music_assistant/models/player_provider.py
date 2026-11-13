@@ -1,4 +1,4 @@
-"""Model/base for a Metadata Provider implementation."""
+"""Model/base for a Player Provider implementation."""
 
 from __future__ import annotations
 
@@ -17,8 +17,10 @@ if TYPE_CHECKING:
 
 class PlayerProvider(Provider):
     """
-    Base representation of a Player Provider (controller).
+    Base representation of a Player Provider.
 
+    A player provider owns protocols (PlayerProtocol), not players: it attaches one per
+    device it reaches to the players controller, which owns the player of that device.
     Player Provider implementations should inherit from this base model.
     """
 
@@ -92,9 +94,11 @@ class PlayerProvider(Provider):
         """
         Attach every device this provider knows of that has no attached protocol.
 
-        Called when the provider is (re)loaded, when one of its players gets enabled and
-        after one of its players was removed. A provider that discovers its devices
-        through mdns only does not need to implement this.
+        Called when the provider is (re)loaded and on every discovery request of the players
+        controller: when one of its players gets enabled, was removed or merged, and when one of
+        its protocols that is not attached is taken off its player or switched on again as an
+        output. A provider that discovers its devices through mdns only does not need to
+        implement this.
         """
 
     @property

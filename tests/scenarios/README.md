@@ -1,11 +1,10 @@
 # Player lifecycle scenarios
 
-Acceptance scenarios for attaching and detaching the protocols of a device: what a client sees
-when a provider finds, loses or re-identifies a device, after a restart, or when the user removes
-something. They drive a real server only through what providers and clients use (attach and
-detach, reported state, `players/all`, events, queues, the config API), so they stay valid
-while the players controller is rebuilt for the player split
-(music-assistant/backlog `docs/plans/player-split.md`, "Scenario suite").
+Acceptance scenarios of the players controller: what a client sees when a provider finds, loses
+or re-identifies a device, after a restart, when the user removes, merges or groups players, and
+what commands, outputs and volume do. They drive a real server only through what providers and
+clients use (attach and detach, reported state, `players/all`, events, queues, the config API),
+so they stay valid whatever the controller does inside.
 
 ## The harness
 
@@ -28,8 +27,8 @@ tests of the harness itself.
   while attached (a browser session). Every fake protocol has one config entry of its own,
   `FAKE_SETTING`, like a provider setting of the device. A device is present from `attach()`
   until `detach()` (or `set_present()`), and like a real provider the fake one attaches the
-  present devices when it loads (boot, reload) and 5 s after a player of it gets enabled or
-  removed. A protocol object belongs to one server and provider instance: after a restart or a
+  present devices when it loads (boot, reload) and on every discovery request of the server
+  (5 s after a player of it gets enabled, removed or merged, for example). A protocol object belongs to one server and provider instance: after a restart or a
   reload, `scenario.protocol(protocol_id)` returns the current one.
 - **Music**: `play(player_id)` plays a track on a player through its queue, as a client does
   (`player_queues/play_media`). The track is one of the server's own `test` music provider
@@ -151,17 +150,16 @@ or by two, when an entry names a test that does not exist, when a heading is no 
 when an end-to-end line lacks what a run needs or why there is none, and when a scenario file
 holds a test class: scenarios are functions at the top level of their file.
 
-## One xfail marker per phase
+## Expected failures
 
-A scenario states one behaviour. When it asserts today's behaviour that the target changes, its
-docstring says so. When it describes the target and fails today, it carries the phase that makes it
-pass (issue numbers refer to music-assistant/backlog):
+A scenario states one behaviour. One that describes a behaviour the server does not have yet
+carries a strict marker that names why:
 
 ```python
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="phase 2 (#416): the id of a merged player becomes a legacy id",
+    reason="the id of a merged player becomes a legacy id",
 )
 ```
 
@@ -169,8 +167,5 @@ The marker is strict, so a scenario that starts to pass fails the run until its 
 An expected failure only counts when the test module raises it itself, in the test (not a fixture),
 and it is no `ScenarioError`: `conftest.py` turns any other into a failure, so a failing harness
 precondition, a server error or a renamed internal can not pass as the expected one.
-`raises=AssertionError` narrows it to the scenario's own asserts; where the target API does not
-exist yet, use `raises=(AssertionError, AttributeError)`. A phase PR runs the suite with
-`--runxfail` and checks that no marker is still caught as an `AttributeError`: by then the API a
-scenario assumed exists, or the scenario is rewritten. A phase is done when all of its markers
-are gone; the scenarios of today's behaviour it changes are rewritten in the same PR.
+`raises=AssertionError` narrows it to the scenario's own asserts; where the API it needs does not
+exist yet, use `raises=(AssertionError, AttributeError)`.

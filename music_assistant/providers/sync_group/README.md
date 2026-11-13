@@ -312,7 +312,7 @@ Boolean option to allow runtime member changes. When enabled:
 
 A sync group is a `PlayerProtocol` with the virtual role: the players controller builds the group's `Player` from it.
 
-- The protocol id has the format `syncgroup_{random_8_chars}` (e.g. `syncgroup_ab12cd34`); a group created now gets a player with an id of its own, minted by the controller (`pl…`). Only groups that existed before the player split have equal ids.
+- The protocol id has the format `syncgroup_{random_8_chars}` (e.g. `syncgroup_ab12cd34`); a group created now gets a player with an id of its own, minted by the controller (`pl…`). Only a group that kept the id an older version stored for it has equal ids.
 - The group names its members by **player id**: the configured members, the allow-list, `group_members` and `static_group_members`. The member lists and the dynamic toggle are settings of the group protocol and live on its record (`player_protocols/{protocol_id}`); the power control is a setting of the player (`players/{player_id}`).
 - The protocols of the members speak protocol ids of their own provider. The group only uses those for the seamless leader handoff, where it talks to the member protocols directly, and translates what they report back to player ids.
 

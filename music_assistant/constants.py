@@ -221,7 +221,7 @@ CONF_CREATED_AT: Final[str] = "created_at"
 CONF_UNDERLYING_PLAYER_ID: Final[str] = (
     "underlying_player_id"  # protocol this (bridge) protocol is derived from
 )
-# Translation key of the warning a provider stores on a protocol player it considers
+# Translation key of the warning a provider stores on a protocol it considers
 # experimental. Its presence also makes the output's enable entry default to disabled;
 # a stored enabled state still wins, so the provider persists that one itself.
 CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
@@ -1085,7 +1085,7 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
-    # Player features that may be copied from the protocol player that plays an app
+    # Player features that may be copied from the audio protocol that plays an app
     # Music Assistant did not start
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.PAUSE,

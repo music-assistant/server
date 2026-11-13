@@ -168,15 +168,16 @@ The provider discovers AirPlay devices via two MDNS service types:
 5. **Attach it** → `mass.players.attach()`: the controller finds the player of the device (or creates one) and binds the protocol to it
 
 A record for a device that is already attached only updates its discovery info, so the
-replay of the cached mDNS records (when the provider loads, and when a player is enabled or
-removed) offers exactly the devices that have no attached protocol. A device whose services
+replay of the cached mDNS records (when the provider loads, and on every discovery request of the
+players controller, such as when a player is enabled or removed) offers exactly the devices that
+have no attached protocol. A device whose services
 disappear from mDNS is detached: its player stays, unavailable, until the device returns.
 
 ### Protocol ID Format
 
 Protocol IDs follow the format: `ap{mac_address}` (e.g., `ap1a2b3c4d5e6f`). The player a
-protocol belongs to has an id of its own, which only equals the protocol id for a device
-that was set up before the player split.
+protocol belongs to has an id of its own, which only equals the protocol id for a player that
+kept the id an older version stored for it.
 
 ## Pairing for Apple Devices
 
