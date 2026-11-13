@@ -1317,7 +1317,7 @@ async def test_migrate_milkdrop_drop_color_tint_removes_the_stored_value() -> No
         "providers": {
             "milkdrop_visualizer": {
                 "domain": "milkdrop_visualizer",
-                "values": {"color_tint": False, "show_on_dashboards": True},
+                "values": {"color_tint": False, "log_level": "debug"},
             },
             "milkdrop_visualizer--b": {
                 "domain": "milkdrop_visualizer",
@@ -1330,7 +1330,7 @@ async def test_migrate_milkdrop_drop_color_tint_removes_the_stored_value() -> No
     providers = data["providers"]
 
     assert await migrate(data) is True
-    assert providers["milkdrop_visualizer"]["values"] == {"show_on_dashboards": True}
+    assert providers["milkdrop_visualizer"]["values"] == {"log_level": "debug"}
     assert providers["milkdrop_visualizer--b"]["values"] == {}
     assert providers["milkdrop_visualizer--c"] == {"domain": "milkdrop_visualizer"}
     assert providers["spotify--s"]["values"] == {"color_tint": False}
