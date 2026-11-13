@@ -849,19 +849,20 @@ def get_bit_rate(fmt: AudioFormat) -> int:
 
 def resolve_output_player_ids(
     mass: MusicAssistant,
-    player_ids: Iterable[str],
+    protocol_ids: Iterable[str],
 ) -> set[str]:
     """
-    Resolve output destinations to their user-facing player identifiers.
+    Resolve output destinations a device protocol reports to their user-facing player identifiers.
 
     :param mass: Music Assistant instance.
-    :param player_ids: Player or protocol identifiers to resolve.
+    :param protocol_ids: Ids as a device protocol reports them (its group members): an id
+        names a protocol first, a player only when no protocol has it.
     :return: Deduplicated user-facing player identifiers.
     """
     resolved_ids: set[str] = set()
-    for player_id in player_ids:
-        player = mass.players.get_player_by_protocol(player_id)
-        resolved_ids.add(player.player_id if player else player_id)
+    for protocol_id in protocol_ids:
+        player = mass.players.get_player_by_protocol(protocol_id)
+        resolved_ids.add(player.player_id if player else protocol_id)
     return resolved_ids
 
 

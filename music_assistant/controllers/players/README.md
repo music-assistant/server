@@ -210,8 +210,10 @@ player id is the id of one of its protocols.
 
 Protocols name each other by protocol id in what they report (`group_members`, `synced_to`,
 `can_group_with`); the state derivation translates those to player ids. A group protocol names its
-members by player id. `get_player_by_protocol` resolves either kind; `get_protocol` only knows
-protocol ids and never goes through the legacy-id resolver.
+members by player id. `get_player_by_protocol` resolves either kind, a protocol first;
+`get_player_or_protocol_player` resolves either kind, a player first, for an id that is a player
+id but may be a protocol's (the members of a group protocol, a player id a plugin stored);
+`get_protocol` only knows protocol ids and never goes through the legacy-id resolver.
 
 ### Legacy Ids
 

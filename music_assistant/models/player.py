@@ -2353,8 +2353,10 @@ class Player:
             when no player has it.
         """
         players = self.mass.players
-        player = (by_player_id and players.get_player(peer_id)) or players.get_player_by_protocol(
-            peer_id
+        player = (
+            players.get_player_or_protocol_player(peer_id)
+            if by_player_id
+            else players.get_player_by_protocol(peer_id)
         )
         if not player:
             return None

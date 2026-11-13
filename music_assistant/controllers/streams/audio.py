@@ -1254,8 +1254,9 @@ class StreamsAudio:
         :param protocol_id: ID of the protocol that renders the audio.
         :param input_format: PCM format entering player-specific processing.
         :param output_format: Furthest downstream output format known to the server.
-        :param shared_player_ids: Additional players receiving this identical output path.
-            An empty iterable marks a path that can gain shared destinations later.
+        :param shared_player_ids: The other protocols receiving this identical output path, as
+            the rendering protocol names its group members. An empty iterable marks a path that
+            can gain shared destinations later.
         :param handoff_format: Earlier provider handoff format when it differs.
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.

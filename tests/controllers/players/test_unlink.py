@@ -539,8 +539,15 @@ async def test_group_keeps_the_player_that_shares_its_id_with_a_protocol_taken_o
     )
     await scenario.idle()
 
-    await _unlink(scenario, "wiim_living")
+    new_id = await _unlink(scenario, "wiim_living")
 
+    players = scenario.mass.players
+    living = players.get_player_or_protocol_player("wiim_living")
+    assert living is not None
+    assert living.player_id == "wiim_living"
+    new_player = players.get_player_by_protocol("wiim_living")
+    assert new_player is not None
+    assert new_player.player_id == new_id
     group_state = scenario.player(group.player_id)
     assert group_state is not None
     assert group_state.group_members == ["wiim_living", hall_id]

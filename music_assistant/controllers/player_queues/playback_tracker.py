@@ -332,11 +332,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
     def _get_output_player_ids(self, player: Player) -> set[str]:
         """Return destination player IDs represented in the processing chain."""
-        players = self.mass.players
         output_player_ids = {player.player_id}
         for member_id in player.state.group_members:
-            # the members of a state are players; an id that names none may be a protocol's
-            member = players.get_player(member_id) or players.get_player_by_protocol(member_id)
+            member = self.mass.players.get_player_or_protocol_player(member_id)
             output_player_ids.add(member.player_id if member else member_id)
         return output_player_ids
 
