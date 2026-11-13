@@ -43,7 +43,7 @@ from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAY_MEDIA_OVERRI
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_processing import AudioOutputPlan
@@ -850,8 +850,8 @@ class TestCommandOnAMemberOfAHeldGroup:
 
         :return: The controller, the group and the record of the members asked to play.
         """
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", LOCK_BUDGET)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", LOCK_BUDGET)
         mass = mock_player_mass()
         mass.config.get_raw_core_config_value.return_value = "GLOBAL"
         players = PlayerController(mass)

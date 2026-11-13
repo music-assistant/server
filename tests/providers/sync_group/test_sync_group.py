@@ -41,7 +41,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
@@ -1215,8 +1215,8 @@ def _real_controller(monkeypatch: pytest.MonkeyPatch) -> PlayerController:
 
     The lock budget is short and background tasks are left out.
     """
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", LOCK_BUDGET)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", LOCK_BUDGET)
     mass = mock_player_mass()
     mass.config.get_raw_core_config_value.return_value = "GLOBAL"
     mass.test_providers = {}
