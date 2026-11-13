@@ -24,8 +24,15 @@ from music_assistant.helpers.process import check_output
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
-# the package index uv resolves against; tests point it at locally built wheels
-_UV_INDEX_ARGS: list[str] = []
+# uv resolves against the indexes the server's own packages are installed from (see
+# requirements_all.txt and the Dockerfile), so a build such as torch `+cpu` keeps its own
+# requirements; tests point it at locally built wheels
+_UV_INDEX_ARGS: list[str] = [
+    "--extra-index-url",
+    "https://download.pytorch.org/whl/cpu",
+    "--index-strategy",
+    "unsafe-best-match",
+]
 _LOCK_FILE = "requirements.lock"
 _INPUTS_HASH_PREFIX = "# inputs: "
 # uv exits with 1 when the requirements cannot be resolved; any other failure is its own
@@ -270,8 +277,7 @@ def _server_constraints() -> list[str]:
     """Return the distributions of the server's own environment as sorted pins (blocking)."""
     paths = sysconfig.get_paths()
     versions = {
-        # a local version (`+cpu`) never exists on the package index
-        _canonical_name(dist.name): dist.version.split("+")[0]
+        _canonical_name(dist.name): dist.version
         for dist in distributions(path=list({paths["purelib"], paths["platlib"]}))
     }
     return sorted(f"{name}=={version}" for name, version in versions.items())

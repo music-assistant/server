@@ -10,6 +10,7 @@ import sys
 import zipfile
 from importlib.metadata import version
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 # a package of the server's own environment, and a version of it the server does not have
 SERVER_PACKAGE = "orjson"
-SERVER_VERSION = version(SERVER_PACKAGE).split("+")[0]
+SERVER_VERSION = version(SERVER_PACKAGE)
 
 
 @pytest.fixture(scope="module")
@@ -149,6 +150,32 @@ async def test_unavailable_uv(
     with pytest.raises(DependenciesUnavailable):
         await deps.sync(ResolvedDependencies(("newdep==2.0",), "changed"))
     assert (Path(deps.path) / "requirements.lock").read_text() == lock
+
+
+def test_server_constraints_keep_the_installed_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server package installed as a local build (`+cpu`) is pinned exactly as installed."""
+    installed = [SimpleNamespace(name="Local_Build", version="1.0+cpu")]
+    monkeypatch.setattr(dependencies, "distributions", lambda path: installed)  # noqa: ARG005
+
+    assert dependencies._server_constraints() == ["local-build==1.0+cpu"]
+
+
+def test_resolves_against_the_indexes_of_the_server() -> None:
+    """The resolve uses the extra index and index strategy the server image is built with."""
+    repo = Path(__file__).parents[3]
+    extra_index = next(
+        line.split()[1]
+        for line in (repo / "requirements_all.txt").read_text().splitlines()
+        if line.startswith("--extra-index-url")
+    )
+
+    assert [
+        "--extra-index-url",
+        extra_index,
+        "--index-strategy",
+        "unsafe-best-match",
+    ] == dependencies._UV_INDEX_ARGS
+    assert "--index-strategy unsafe-best-match" in (repo / "Dockerfile").read_text()
 
 
 async def test_touches_imported(
