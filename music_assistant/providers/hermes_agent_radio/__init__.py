@@ -41,7 +41,7 @@ BASE_URL: Final = "https://hermesagentradio.com"
 STATIONS_ENDPOINT: Final = f"{BASE_URL}/stations.json"
 NOW_PLAYING_ENDPOINT: Final = f"{BASE_URL}/now-playing.json"
 
-# the main mount's now-playing feed is re-read this often while its stream plays
+# the now-playing feed for the playing mount is re-read this often
 STREAM_METADATA_UPDATE_INTERVAL: Final = 60
 
 # bound each request; the shared session's default timeout is too long for a metadata fetch
@@ -135,11 +135,10 @@ class HermesAgentRadio(MusicProvider):
             # radio is live linear audio: never treated as a fixed-duration item
             is_realtime=True,
         )
-        # the now-playing feed only describes the main mount, so live metadata
-        # is attached to that one station's stream and never to the genre mounts
-        if item_id == "main":
-            streamdetails.stream_metadata_update_callback = self._update_stream_metadata
-            streamdetails.stream_metadata_update_interval = STREAM_METADATA_UPDATE_INTERVAL
+        # the station's now-playing feed answers per mount (?station=<id>), so every
+        # station gets live metadata while it plays, showing its own on-air item
+        streamdetails.stream_metadata_update_callback = self._update_stream_metadata
+        streamdetails.stream_metadata_update_interval = STREAM_METADATA_UPDATE_INTERVAL
         return streamdetails
 
     @use_cache(3600)  # station list may gain genre mounts; refresh hourly
@@ -164,10 +163,12 @@ class HermesAgentRadio(MusicProvider):
         )
 
     async def _update_stream_metadata(self, streamdetails: StreamDetails, _elapsed: int) -> None:
-        """Refresh the main station's live metadata from its now-playing feed."""
+        """Refresh the playing station's live metadata from its mount's now-playing feed."""
         try:
             async with self.mass.http_session.get(
-                NOW_PLAYING_ENDPOINT, timeout=HTTP_TIMEOUT
+                NOW_PLAYING_ENDPOINT,
+                params={"station": streamdetails.item_id},
+                timeout=HTTP_TIMEOUT,
             ) as resp:
                 resp.raise_for_status()
                 data: dict[str, Any] = await resp.json()

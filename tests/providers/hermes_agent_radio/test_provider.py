@@ -218,15 +218,15 @@ async def test_stream_details_use_the_station_mounts(provider: HermesAgentRadio)
     assert techno.path == "https://hermesagentradio.com/stream/techno"
 
 
-async def test_live_metadata_is_attached_to_the_main_station_only(
+async def test_live_metadata_is_attached_to_every_station(
     provider: HermesAgentRadio,
 ) -> None:
-    """The now-playing feed covers only the main mix, so only it gets the callback."""
+    """Each mount plays with its own live-metadata callback."""
     main = await provider.get_stream_details("main", MediaType.RADIO)
     assert main.stream_metadata_update_callback == provider._update_stream_metadata
     assert main.stream_metadata_update_interval == 60
     techno = await provider.get_stream_details("techno", MediaType.RADIO)
-    assert techno.stream_metadata_update_callback is None
+    assert techno.stream_metadata_update_callback == provider._update_stream_metadata
 
 
 async def test_stream_details_refuse_an_unknown_id(provider: HermesAgentRadio) -> None:
@@ -261,6 +261,17 @@ async def test_metadata_callback_updates_from_the_now_playing_feed(
     assert meta.artist == "Night Shift Cipher"
     assert meta.duration == 195
     assert meta.description == "Up next: Barn Light Boogie"
+
+
+async def test_metadata_callback_asks_for_the_playing_mount(provider: HermesAgentRadio) -> None:
+    """A genre station's metadata comes from its own mount, not the main mix."""
+    streamdetails = await provider.get_stream_details("techno", MediaType.RADIO)
+    await provider._update_stream_metadata(streamdetails, 0)
+    session: Any = provider.mass.http_session
+    now_calls = [
+        call for call in session.get.call_args_list if NOW_PLAYING_ENDPOINT in call.args[0]
+    ]
+    assert now_calls[-1].kwargs["params"] == {"station": "techno"}
 
 
 async def test_metadata_callback_keeps_last_known_on_failure() -> None:
