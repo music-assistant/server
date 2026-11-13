@@ -71,6 +71,7 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players import locks as players_locks
+from music_assistant.controllers.players import playback as players_playback
 from music_assistant.controllers.players import power as players_power
 from music_assistant.controllers.players.constants import (
     PLAYER_LOCK_OWNER_ATTEMPTS,
@@ -2502,11 +2503,11 @@ class TestReleaseWaitForPlayMedia:
 
     # the bound of the wait in these tests, in seconds of the fast clock, and that of the server
     BOUND = 60.0
-    SERVER_BOUND = players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
+    SERVER_BOUND = players_playback.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
 
     @pytest.fixture(autouse=True)
     def _wide_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(players_controller, "RELEASE_FOR_PLAY_MEDIA_TIMEOUT", self.BOUND)
+        monkeypatch.setattr(players_playback, "RELEASE_FOR_PLAY_MEDIA_TIMEOUT", self.BOUND)
 
     @pytest.fixture(autouse=True)
     async def _fast_clock(self) -> AsyncIterator[None]:
@@ -4266,7 +4267,7 @@ class TestAddCurrentlyPlayingToFavorites:
             with (
                 patch.object(controller, "get_active_queue", return_value=queue),
                 patch.object(
-                    players_controller,
+                    players_playback,
                     "resolve_playback_user",
                     AsyncMock(return_value=playback_user),
                 ),
