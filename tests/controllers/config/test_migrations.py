@@ -22,6 +22,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_bose_soundtouch_presets,
     _migrate_drop_http_profile,
     _migrate_emby_album_artists_heal,
+    _migrate_milkdrop_drop_color_tint,
     _migrate_nicovideo_drop_mail_login,
     _migrate_orphaned_disabled_protocol_configs,
     _migrate_player_icons,
@@ -1308,6 +1309,47 @@ def test_migrate_nicovideo_drop_mail_login_survives_malformed_config() -> None:
     }
     assert _migrate_nicovideo_drop_mail_login(data) is False
     assert data["providers"]["nicovideo--a"]["values"] == "broken"
+
+
+async def test_migrate_milkdrop_drop_color_tint_removes_the_stored_value() -> None:
+    """The color tint is removed from every milkdrop instance, whatever its value."""
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": False, "show_on_dashboards": True},
+            },
+            "milkdrop_visualizer--b": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": True},
+            },
+            "milkdrop_visualizer--c": {"domain": "milkdrop_visualizer"},
+            "spotify--s": {"domain": "spotify", "values": {"color_tint": False}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["milkdrop_visualizer"]["values"] == {"show_on_dashboards": True}
+    assert providers["milkdrop_visualizer--b"]["values"] == {}
+    assert providers["milkdrop_visualizer--c"] == {"domain": "milkdrop_visualizer"}
+    assert providers["spotify--s"]["values"] == {"color_tint": False}
+
+    # a second run has nothing left to remove
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+
+
+def test_migrate_milkdrop_drop_color_tint_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_milkdrop_drop_color_tint({"providers": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {"domain": "milkdrop_visualizer", "values": "broken"},
+            "broken": "broken",
+        }
+    }
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+    assert data["providers"]["milkdrop_visualizer"]["values"] == "broken"
 
 
 def test_migrate_raumfeld_icy_basic_moves_former_default() -> None:
