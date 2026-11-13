@@ -165,8 +165,10 @@ provider call). The lookup of what a play request plays (a big artist, playlist 
 through a throttled provider can take minutes) runs under that lock, so it has a deadline of its own
 (`PLAY_REQUEST_RESOLVE_TIMEOUT`): when it runs out the request fails and releases the lock before it
 has changed the queue, so the queue keeps its items, enqueued items, shuffle state and playback. The
-next-track handover takes the same strict lock and only checks the queue once it holds it, so a track
-handed to the player after a wait is still the one that follows the playing one.
+deadline does not cover filling the managed pool of a queue that stays dynamic, which fetches the
+tracks of each new source once the queue's sources are stored. The next-track handover takes the
+same strict lock and only checks the queue once it holds it, so a track handed to the player after a
+wait is still the one that follows the playing one.
 Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
 the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
