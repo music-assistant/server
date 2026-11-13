@@ -123,7 +123,7 @@ Add a new folder to the `providers` folder with the name of provider. Add two fi
 
 **Configuring the manifest.json file**
 
-The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. See [the manifest section](#⚙️-manifest-file) for all available properties.
+The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. See [the manifest section](#%EF%B8%8F-manifest-file) for all available properties.
 
 **Creating the provider**
 
@@ -194,7 +194,9 @@ A player provider implements one `PlayerProtocol` (`music_assistant/models/playe
 * A provider whose native protocol stands for devices of other makes (a Home Assistant media player) is ranked below the vendor's own protocol in `NATIVE_PRIORITY`: on a device that has both, it attaches as a control protocol of the vendor's player.
 * Every zone of a multi-zone chassis reports its zone as `ZONE` next to the identifiers of the chassis: `MAIN_ZONE` for the zone where the protocols of the chassis that report no zone (AirPlay, DLNA, ...) play, its own id for every other zone.
 
-Enabling a player, removing one, merging one into another, and taking a protocol off its player or switching an output on again while it is not attached all end with a discovery request to the providers of its protocols: the server replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets, so `discover_players()` only has to offer the known devices that this cannot reach. An audio protocol without a globally administered MAC address (none at all, or only a locally administered one) is held up to 15 seconds before it gets a player of its own, as the other protocols of its device may still identify it.
+The server asks a provider to look for its devices again when one may be found again: after a player is enabled or removed (not a group), and when a protocol that is not attached moves to another player or is switched on again as an output. It then replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets. So `discover_players()` only has to offer the known devices that this cannot reach.
+
+An audio protocol that matches no player and has no globally administered MAC address (none at all, or only a locally administered one) waits up to 15 seconds before it gets a player of its own, as the other protocols of its device may still identify it. A protocol that only exists while connected does not wait; a protocol that rides on another one waits for that one instead.
 
 ## 💽 Building your own Metadata Provider
 Will follow soon™

@@ -2339,7 +2339,7 @@ class StreamsController(CoreController):
 
         :param inner: The underlying audio stream generator.
         :param queue_item: The AudioSource queue item being streamed.
-        :param player_id: The id the stream is requested under (that of the protocol consuming it).
+        :param player_id: The id the stream is requested under.
         """
         media_item = queue_item.media_item
         assert media_item is not None  # caller checked media_type == AUDIO_SOURCE
