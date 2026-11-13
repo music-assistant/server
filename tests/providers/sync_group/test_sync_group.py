@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 from typing import Any, cast
@@ -1500,90 +1500,86 @@ class TestRejoinLeavesABusyMemberAlone:
         assert member.state.active_group == _group_id(group)
 
 
+def _group_on_sendspin_with_an_airplay_member_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[PlayerController, SyncGroupPlayer, Player, Player, Player]:
+    """
+    Build a static group of A, B and C that plays over Sendspin on A and B, with C back.
+
+    A and B also have AirPlay and C has nothing else to group over, so adding C moves the
+    group to AirPlay. A resume of the group's queue plays it on its leader again.
+
+    :return: The controller, the group, A, B and C.
+    """
+    players = _real_controller(monkeypatch)
+    mass = cast("MagicMock", players.mass)
+    mass.config.get_player_value = MagicMock(
+        side_effect=lambda player_id, key, default=None: (
+            "sendspin_A" if (player_id, key) == ("A", CONF_PREFERRED_OUTPUT_PROTOCOL) else default
+        )
+    )
+    group = _make_sync_group(mass, dynamic=False, members=["A", "B", "C"])
+    a = _make_member(mass, "A", "sonos", audio=["airplay", "sendspin"], active_output="sendspin")
+    b = _make_member(mass, "B", "wiim", audio=["airplay", "sendspin"], active_output="sendspin")
+    c = _make_member(mass, "C", "wiim", audio=["airplay"])
+    assert group.player is not None
+    devices = (a, group.player, b, c)
+
+    def _refresh() -> None:
+        # twice: the leader reads the group's state, which is derived from the leader's
+        for player in (*devices, *devices):
+            player.refresh_state(signal_event=False)
+
+    def _reports(protocol: MockProtocol) -> None:
+        """Let a protocol report its group, start and stop the way the device does."""
+        set_members = protocol.set_members
+
+        async def _set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            await set_members(player_ids_to_add, player_ids_to_remove)
+            _refresh()
+
+        async def _play_media(media: PlayerMedia) -> None:
+            protocol._attr_current_media = media
+            protocol._attr_playback_state = PlaybackState.PLAYING
+            _refresh()
+
+        async def _stop() -> None:
+            protocol._attr_playback_state = PlaybackState.IDLE
+            _refresh()
+
+        protocol.set_members = _set_members  # type: ignore[method-assign]
+        protocol.play_media = AsyncMock(side_effect=_play_media)  # type: ignore[method-assign]
+        protocol.stop = AsyncMock(side_effect=_stop)  # type: ignore[method-assign]
+
+    protocols = [protocol for player in (a, b, c) for protocol in player.protocols.values()]
+    for protocol in protocols:
+        assert isinstance(protocol, MockProtocol)
+        _reports(protocol)
+        protocol._attr_can_group_with = {
+            other.protocol_id
+            for other in protocols
+            if other is not protocol and other.provider is protocol.provider
+        }
+    _protocol(a, "sendspin")._attr_group_members = ["sendspin_A", "sendspin_B"]
+    for protocol in (_protocol(a, "sendspin"), _protocol(b, "sendspin")):
+        protocol._attr_playback_state = PlaybackState.PLAYING
+    group._attr_static_group_members = ["A", "B", "C"]
+    group._attr_group_members = ["A", "B"]
+    group.sync_leader = a
+    group.update_state = MagicMock()  # type: ignore[method-assign,misc]
+    _queue_resume_plays(players)
+    _refresh()
+    assert a.state.playback_state == PlaybackState.PLAYING
+    assert a.state.active_group == _group_id(group)
+    assert group._missing_members(a) == ["C"]
+    return players, group, a, b, c
+
+
 class TestRejoinThatMovesTheGroupToAnotherProtocol:
     """A re-add that moves the group to another protocol keeps it playing, or leaves it be."""
-
-    @staticmethod
-    def _group_on_sendspin_with_an_airplay_member_back(
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> tuple[PlayerController, SyncGroupPlayer, Player, Player, Player]:
-        """
-        Build a static group of A, B and C that plays over Sendspin on A and B, with C back.
-
-        A and B also have AirPlay and C has nothing else to group over, so re-adding C moves
-        the group to AirPlay. A resume of the group's queue plays it on its leader again.
-
-        :return: The controller, the group, A, B and C.
-        """
-        players = _real_controller(monkeypatch)
-        mass = cast("MagicMock", players.mass)
-        mass.config.get_player_value = MagicMock(
-            side_effect=lambda player_id, key, default=None: (
-                "sendspin_A"
-                if (player_id, key) == ("A", CONF_PREFERRED_OUTPUT_PROTOCOL)
-                else default
-            )
-        )
-        group = _make_sync_group(mass, dynamic=False, members=["A", "B", "C"])
-        a = _make_member(
-            mass, "A", "sonos", audio=["airplay", "sendspin"], active_output="sendspin"
-        )
-        b = _make_member(mass, "B", "wiim", audio=["airplay", "sendspin"], active_output="sendspin")
-        c = _make_member(mass, "C", "wiim", audio=["airplay"])
-        assert group.player is not None
-        devices = (a, group.player, b, c)
-
-        def _refresh() -> None:
-            # twice: the leader reads the group's state, which is derived from the leader's
-            for player in (*devices, *devices):
-                player.refresh_state(signal_event=False)
-
-        def _reports(protocol: MockProtocol) -> None:
-            """Let a protocol report its group, start and stop the way the device does."""
-            set_members = protocol.set_members
-
-            async def _set_members(
-                player_ids_to_add: list[str] | None = None,
-                player_ids_to_remove: list[str] | None = None,
-            ) -> None:
-                await set_members(player_ids_to_add, player_ids_to_remove)
-                _refresh()
-
-            async def _play_media(media: PlayerMedia) -> None:
-                protocol._attr_current_media = media
-                protocol._attr_playback_state = PlaybackState.PLAYING
-                _refresh()
-
-            async def _stop() -> None:
-                protocol._attr_playback_state = PlaybackState.IDLE
-                _refresh()
-
-            protocol.set_members = _set_members  # type: ignore[method-assign]
-            protocol.play_media = AsyncMock(side_effect=_play_media)  # type: ignore[method-assign]
-            protocol.stop = AsyncMock(side_effect=_stop)  # type: ignore[method-assign]
-
-        protocols = [protocol for player in (a, b, c) for protocol in player.protocols.values()]
-        for protocol in protocols:
-            assert isinstance(protocol, MockProtocol)
-            _reports(protocol)
-            protocol._attr_can_group_with = {
-                other.protocol_id
-                for other in protocols
-                if other is not protocol and other.provider is protocol.provider
-            }
-        _protocol(a, "sendspin")._attr_group_members = ["sendspin_A", "sendspin_B"]
-        for protocol in (_protocol(a, "sendspin"), _protocol(b, "sendspin")):
-            protocol._attr_playback_state = PlaybackState.PLAYING
-        group._attr_static_group_members = ["A", "B", "C"]
-        group._attr_group_members = ["A", "B"]
-        group.sync_leader = a
-        group.update_state = MagicMock()  # type: ignore[method-assign,misc]
-        _queue_resume_plays(players)
-        _refresh()
-        assert a.state.playback_state == PlaybackState.PLAYING
-        assert a.state.active_group == _group_id(group)
-        assert group._missing_members(a) == ["C"]
-        return players, group, a, b, c
 
     @staticmethod
     def _assert_plays_on_airplay_with_every_member(
@@ -1607,7 +1603,7 @@ class TestRejoinThatMovesTheGroupToAnotherProtocol:
 
         A re-add from a task that holds the group's lock already runs as well.
         """
-        players, group, a, _b, c = self._group_on_sendspin_with_an_airplay_member_back(monkeypatch)
+        players, group, a, _b, c = _group_on_sendspin_with_an_airplay_member_back(monkeypatch)
 
         async with AsyncExitStack() as stack:
             if from_a_holder_of_the_group:
@@ -1625,7 +1621,7 @@ class TestRejoinThatMovesTheGroupToAnotherProtocol:
 
         The leader's next report re-adds C.
         """
-        players, group, a, b, c = self._group_on_sendspin_with_an_airplay_member_back(monkeypatch)
+        players, group, a, b, c = _group_on_sendspin_with_an_airplay_member_back(monkeypatch)
 
         async with players.get_player_lock(_group_id(group)):
             rejoin = asyncio.create_task(group._rejoin_members())
@@ -1648,6 +1644,60 @@ class TestRejoinThatMovesTheGroupToAnotherProtocol:
         await group._rejoin_members()
 
         self._assert_plays_on_airplay_with_every_member(group, a, c)
+
+
+# the ways a user adds C to the leader A by hand: the frontend's group panel, the MCP server
+# and the API send a member change, Home Assistant's join a group of many
+ADD_C_TO_A_BY_HAND = {
+    "set_members": lambda players: players.cmd_set_members("A", player_ids_to_add=["C"]),
+    "group_many": lambda players: players.cmd_group_many("A", ["C"]),
+    "group": lambda players: players.cmd_group("C", "A"),
+}
+
+
+class TestMemberAddedToTheLeaderByHand:
+    """A member added by hand to the leader of a static group keeps the group playing."""
+
+    @staticmethod
+    def _assert_plays_on_airplay_with_every_member(a: Player, c: Player) -> None:
+        """Assert the group plays on A over AirPlay again, with B and C following."""
+        assert a.active_output_protocol == "airplay_A"
+        assert a.state.playback_state == PlaybackState.PLAYING
+        assert _protocol(a, "sendspin").playback_state == PlaybackState.IDLE
+        assert set(_protocol(a, "airplay").group_members) == {"airplay_A", "airplay_B", "airplay_C"}
+        assert c.active_output_protocol == "airplay_C"
+
+    @pytest.mark.parametrize("add", ADD_C_TO_A_BY_HAND.values(), ids=ADD_C_TO_A_BY_HAND.keys())
+    async def test_the_group_plays_on_with_every_member(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        add: Callable[[PlayerController], Awaitable[None]],
+    ) -> None:
+        """The leader resumes on the new protocol and B follows it, as C joins."""
+        players, _group, a, _b, c = _group_on_sendspin_with_an_airplay_member_back(monkeypatch)
+
+        await add(players)
+
+        self._assert_plays_on_airplay_with_every_member(a, c)
+        assert not players._lock_holders
+
+    async def test_the_add_waits_for_a_command_on_the_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An add while a command holds the group changes nothing until that one is done."""
+        players, group, a, b, c = _group_on_sendspin_with_an_airplay_member_back(monkeypatch)
+
+        async with players.get_player_lock(_group_id(group)):
+            adding = asyncio.create_task(players.cmd_set_members("A", player_ids_to_add=["C"]))
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert not adding.done()
+            assert a.active_output_protocol == "sendspin_A"
+            assert b.active_output_protocol == "sendspin_B"
+            assert c.active_output_protocol is None
+        await adding
+
+        self._assert_plays_on_airplay_with_every_member(a, c)
 
 
 class TestFormationTakesTheLeaderFirst:
