@@ -509,8 +509,11 @@ else to the best available audio protocol.
 The level and mute of a player are its own. Without a control the user picked, a volume or mute
 command ([volume.py](volume.py)) goes to the protocol that renders the audio, else to the own
 protocol, else to an available protocol with the feature; level reports are only taken from that
-protocol. When the output changes, the protocol that becomes the control gets the level and mute of
-the player before it is made the active output and before the stream starts.
+protocol. The `volume_control` and `mute_control` of the player state name where such a command
+goes right now, so while another output than the own protocol renders the audio they are the id of
+that protocol. A client only reads from them whether the player has a control (`none` if not).
+When the output changes, the protocol that becomes the control gets the level and mute of the
+player before it is made the active output and before the stream starts.
 
 While its own protocol is attached but can not be reached, a player keeps the level and mute it had
 when that began: what any of its protocols reports may be stale then. It is shown as the quieter of
