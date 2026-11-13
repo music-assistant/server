@@ -253,6 +253,16 @@ is Study. A name the user gives the player stays, whatever its protocols report.
   while its DLNA renderer stays up.
 - Proven by: `test_attach_detach.py::test_a_player_keeps_its_stored_name_while_only_another_protocol_is_there`
 
+### AWAY-9 · A player keeps the defaults of its device while the device is away
+
+The Living speaker's protocol hides it in the UI, keeps it from Home Assistant and keeps it
+private by default. The speaker goes away: the player is still hidden, not exposed and private,
+with the same device info and icon, also after a restart. When the speaker comes back with other
+defaults, the player has those from then on, also while it is away again.
+
+- End-to-end: **no**: no player provider of the lab gives a device these defaults.
+- Proven by: `test_lifecycle.py::test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_away`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
@@ -900,6 +910,23 @@ an app player that is connected and was never changed.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_the_settings_list_every_stored_player_and_every_connected_one`
+
+### WEB-9 · A kept browser player keeps the defaults of its browser while it is away
+
+A browser player is hidden in the UI, not exposed to Home Assistant and private. The user renames
+it, and the browser disconnects: the player is still hidden, not exposed and private, with the
+same device info and icon, also after a restart and when the browser connects again.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_kept_browser_player_keeps_the_defaults_of_its_client_while_away`
+
+### WEB-10 · What the user set on a browser player wins over what its browser gives it
+
+The user shows a browser player in the UI and exposes it to Home Assistant. The browser
+disconnects: the player stays shown and exposed, also after a restart, and is still private.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_value_the_user_set_on_a_kept_browser_player_wins_over_its_client`
 
 ## Commands to a busy player
 

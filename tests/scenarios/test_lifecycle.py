@@ -301,6 +301,125 @@ async def test_the_settings_list_every_stored_player_and_every_connected_one(
     )
 
 
+def _defaults(scenario: Scenario, player_id: str) -> tuple[Any, ...]:
+    """
+    Return what a player has from what its protocol supplies.
+
+    Whether it is hidden in the UI, exposed to Home Assistant and private, its device info
+    and its icon.
+
+    :param scenario: The running server.
+    :param player_id: ID of the player.
+    """
+    state = scenario.player(player_id)
+    assert state is not None
+    return (
+        state.hide_in_ui,
+        state.expose_to_ha,
+        state.private,
+        state.device_info.manufacturer,
+        state.device_info.model,
+        state.icon,
+    )
+
+
+async def test_a_kept_browser_player_keeps_the_defaults_of_its_client_while_away(
+    scenario: Scenario,
+) -> None:
+    """
+    A kept web player is hidden, not exposed and private while away, as its client has it.
+
+    The same after a restart and when its client connects again.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol(
+        "sendspin_web_3f2a",
+        "Web Browser",
+        session_only=True,
+        expose_to_ha_by_default=False,
+        **WEB_PLAYER,
+    )
+    await scenario.attach(browser)
+    await scenario.configure_player("sendspin_web_3f2a", name="Den browser")
+    connected = _defaults(scenario, "sendspin_web_3f2a")
+    assert connected[:3] == (True, False, True)
+
+    await scenario.detach(browser)
+    await scenario.idle()
+    away = _defaults(scenario, "sendspin_web_3f2a")
+    await scenario.restart()
+    await scenario.idle()
+    restarted = _defaults(scenario, "sendspin_web_3f2a")
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [away, restarted, _defaults(scenario, "sendspin_web_3f2a")] == [connected] * 3
+
+
+async def test_a_value_the_user_set_on_a_kept_browser_player_wins_over_its_client(
+    scenario: Scenario,
+) -> None:
+    """A web player the user showed and exposed stays shown and exposed while its client is away."""
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol(
+        "sendspin_web_3f2a",
+        "Web Browser",
+        session_only=True,
+        expose_to_ha_by_default=False,
+        **WEB_PLAYER,
+    )
+    await scenario.attach(browser)
+    await scenario.configure_player("sendspin_web_3f2a", hide_in_ui=False, expose_player_to_ha=True)
+    chosen = _defaults(scenario, "sendspin_web_3f2a")
+    assert chosen[:3] == (False, True, True)
+
+    await scenario.detach(browser)
+    await scenario.idle()
+    away = _defaults(scenario, "sendspin_web_3f2a")
+    await scenario.restart()
+    await scenario.idle()
+
+    assert [away, _defaults(scenario, "sendspin_web_3f2a")] == [chosen] * 2
+
+
+async def test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_away(
+    scenario: Scenario,
+) -> None:
+    """
+    A player its device hides, keeps from Home Assistant and keeps private stays so while away.
+
+    A device that comes back with other defaults gives the player those from then on.
+    """
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol(
+        "wiim_living",
+        "Living",
+        identifiers=LIVING,
+        hidden_by_default=True,
+        expose_to_ha_by_default=False,
+        private=True,
+    )
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    connected = _defaults(scenario, player_id)
+    assert connected[:3] == (True, False, True)
+
+    await scenario.detach(living)
+    await scenario.idle()
+    away = _defaults(scenario, player_id)
+    await scenario.restart()
+    await scenario.idle()
+
+    assert [away, _defaults(scenario, player_id)] == [connected] * 2
+
+    updated = scenario.provider("wiim").protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(updated)
+    await scenario.detach(updated)
+    await scenario.idle()
+
+    assert _defaults(scenario, player_id)[:3] == (False, True, False)
+
+
 async def test_session_only_player_has_the_same_id_in_every_session(scenario: Scenario) -> None:
     """A web player is known by the id of its protocol, in every session and after a restart."""
     sendspin = await scenario.add_provider("sendspin")

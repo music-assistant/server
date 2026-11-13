@@ -1095,9 +1095,9 @@ class PlayerConfigMixin:
         """
         Store the config of a player that only existed while its device is connected.
 
-        Its config is kept from now on, while the player itself still goes when its
-        device disconnects. Returns the config each protocol stored with it had before,
-        by protocol id: None for a protocol that had none.
+        From now on the player is kept like the player of a device: it stays, unavailable,
+        while its device is away, and it is there after a restart. Returns the config each
+        protocol stored with it had before, by protocol id: None for a protocol that had none.
 
         :param player_id: ID of the player, which has no stored config.
         :raises KeyError: If there is no such player.
@@ -1133,6 +1133,7 @@ class PlayerConfigMixin:
                 },
             )
         player.protocol_ids.update(player.protocols)
+        player.store_protocol_defaults()
         return previous
 
     def _get_stored_value(
@@ -1289,7 +1290,6 @@ class PlayerConfigMixin:
         This does not return audio/protocol specific entries, those are handled elsewhere.
         """
         entries: list[ConfigEntry] = []
-        own = player.own_protocol
 
         icon_entry = deepcopy(
             CONF_ENTRY_PLAYER_ICON_GROUP
@@ -1318,7 +1318,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_HIDE_IN_UI,
                 type=ConfigEntryType.BOOLEAN,
-                default_value=own.hidden_by_default if own else False,
+                default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
             ),
@@ -1328,7 +1328,7 @@ class PlayerConfigMixin:
                 type=ConfigEntryType.BOOLEAN,
                 category="generic",
                 advanced=False,
-                default_value=own.expose_to_ha_by_default if own else True,
+                default_value=player.expose_to_ha_by_default,
             ),
         ]
         # group-player config entries

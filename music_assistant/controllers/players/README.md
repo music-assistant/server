@@ -102,11 +102,13 @@ stored record or when a device is new. It holds:
 What a player reports for its device comes from its `device_protocol`: its own protocol, else its
 most preferred audio protocol. Its device info also carries the identifiers its other protocols
 add. While no protocol is attached, its device info and provider are what was stored, and it has
-no extra attributes. Its name is the custom name, else its stored name. The stored name follows the
-name its own protocol reports while that is attached; an audio protocol sets it only for a player
-without a protocol of its own, or one that has no name stored yet. Its default icon is the one its
-device model names, else that of the provider of its own protocol (also while that is away), else
-the neutral speaker icon.
+no extra attributes. So are the defaults its own protocol gives it for hiding it in the UI, exposing
+it to Home Assistant and keeping it private: what the user set wins, and a protocol that attaches
+with other defaults stores those. Its name is the custom name, else its stored name. The stored name
+follows the name its own protocol reports while that is attached; an audio protocol sets it only for
+a player without a protocol of its own, or one that has no name stored yet. Its default icon is the
+one its device model names, else that of the provider of its own protocol (also while that is
+away), else the neutral speaker icon.
 
 The remembered MA source is cleared five seconds after the player went idle.
 Returning to playing or paused, or selecting a source, before that timeout cancels the reset,
@@ -402,8 +404,8 @@ output.
 
 Every player has a record under `players/{player_id}` (base keys, its name, and the values of the
 entries every player gets: controls, volume limits, announcement settings, icon, visibility,
-preferred output, plus what the player stores itself: legacy ids, last seen, device info,
-`session_only`, `created_at`). Every protocol has a record under `player_protocols/{protocol_id}`:
+preferred output, plus what the player stores itself: legacy ids, last seen, device info, the defaults of its own
+protocol (`protocol_defaults`), `session_only`, `created_at`). Every protocol has a record under `player_protocols/{protocol_id}`:
 its provider, the id of its player (the edge), its role, whether it is used as an output of its
 player (`enabled`), the values of the entries it declares, the audio settings of its output, what
 its provider stores for it (MAC addresses, identifiers, the protocol it rides on) and its setup data.

@@ -880,7 +880,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
     def _store_player_base(self, player: Player) -> None:
         """
-        Store the provider and type a player has now, for when none of its protocols is attached.
+        Store what a player has from its protocols now, for when none of them is attached.
+
+        That is its provider and type, and what store_protocol_defaults() keeps.
 
         :param player: The player, which may have no stored config at all.
         """
@@ -891,6 +893,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             self.mass.config.set(f"{conf_key}/provider", player.provider_id)
         if stored.get("player_type") != player.type:
             self.mass.config.set(f"{conf_key}/player_type", player.type)
+        player.store_protocol_defaults()
 
     async def _restore_players(self) -> None:
         """Bring back every stored player that is enabled."""
