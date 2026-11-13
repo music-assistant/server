@@ -74,3 +74,33 @@ async def test_a_dj_goes_with_its_player_when_that_is_removed(
     await scenario.idle()
 
     assert player_id not in dj._dj_queues
+
+
+async def test_a_dj_keeps_a_browser_player_whose_client_disconnects(
+    scenario: Scenario, tmp_path: Path
+) -> None:
+    """
+    A DJ switched on for the queue of a browser player keeps that player while it is away.
+
+    Its queue is empty; the player stays, unavailable, and when its client connects again its
+    queue still has the DJ.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True)
+    await scenario.attach(browser)
+    dj = _queue_dj(scenario, tmp_path)
+    await dj.set_queue_dj("sendspin_web_3f2a", "rick")
+    await scenario.idle()
+
+    await scenario.detach(browser)
+    await scenario.idle()
+
+    away = scenario.player("sendspin_web_3f2a")
+    assert away is not None
+    assert away.available is False
+    assert scenario.removals() == []
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert dj._dj_queues["sendspin_web_3f2a"].host_id == "rick"

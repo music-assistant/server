@@ -239,6 +239,24 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             raise ActionUnavailable(msg)
         return removed
 
+    def keep_player(self, player_id: str) -> None:
+        """
+        Keep a player that only exists while its device is connected, also while it is away.
+
+        Call it when something was set up for the player that its user expects to find again,
+        such as a DJ on its queue: it is stored from then on, like the player of a device.
+        Nothing happens for a player that is stored already, or that is not there.
+
+        :param player_id: Id of the player.
+        """
+        player_id = self.resolve_player_id(player_id)
+        if self.mass.config.get(f"{CONF_PLAYERS}/{player_id}") is not None:
+            return
+        if player_id not in self._players:
+            return
+        self.mass.config.store_session_player(player_id)
+        self.logger.debug("Player %s is kept from now on", player_id)
+
     def schedule_protocol_roles_of_provider(self, provider_id: str) -> None:
         """
         Attach the protocols again whose role changed now that a provider is enabled or disabled.

@@ -377,6 +377,7 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
 | The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player leaves the registry with a last `PLAYER_UPDATED`, unavailable; it is not removed. Its config, its id and its saved queue stay. |
 | The user enables a player | It is created from its record, unavailable until a protocol attaches. |
+| A plugin keeps a player (`keep_player`) | A player that only exists while connected and has no record gets one, as on the first save of its config: from then on it stays, unavailable, while its client is away. Nothing happens for a player that has a record. |
 | Two players turn out to be one device, or a protocol sits on the wrong player | The user merges them, or takes the protocol off; see [One device, two players](#one-device-two-players). |
 
 An attach that waits on the provider (a hook, an address lookup) is stopped by a detach of its
@@ -416,8 +417,9 @@ The edge lives on the protocol record and nowhere else: a player finds its proto
 records that name it.
 
 A protocol that only exists while connected gets no record of its own until the user changes
-something about its player; until then it holds its config in memory, and provider writes go there,
-and the player exists only while the protocol is connected. From then on the player is stored like
+something about its player, or a plugin keeps the player (`keep_player()`, for something the user
+set up for it, such as a DJ on its queue); until then it holds its config in memory, and provider
+writes go there, and the player exists only while the protocol is connected. From then on the player is stored like
 the player of a device: it is created at startup and stays, unavailable, while its client is away.
 Its record keeps `session_only`, so no protocol of a device joins it.
 A record the same protocol has as an output of a device stays, and does not apply to it while it

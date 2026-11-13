@@ -928,6 +928,16 @@ disconnects: the player stays shown and exposed, also after a restart, and is st
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_a_value_the_user_set_on_a_kept_browser_player_wins_over_its_client`
 
+### WEB-11 · A browser player with a DJ stays while its browser is away
+
+The user switches on an AI radio DJ for the queue of a browser player that has not played yet.
+The browser disconnects: the player stays, unavailable, and is not removed. When the browser
+connects again the queue still has its DJ.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player and the AI
+  radio plugin.
+- Proven by: `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_keeps_a_browser_player_whose_client_disconnects`
+
 ## Commands to a busy player
 
 Commands to one player run one at a time: a command waits for the one before it.

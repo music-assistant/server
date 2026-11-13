@@ -816,16 +816,7 @@ class PlayerConfigMixin:
                 else:
                     self.set(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", record)
             raise
-        for protocol_id, record in previous.items():
-            if (
-                record
-                and (other_id := record.get("player_id"))
-                and other_id != player_id
-                and (other := self.mass.players.get_player(other_id))
-            ):
-                # the config of the protocol names this player now, no longer the other one
-                other.protocol_ids.discard(protocol_id)
-                other.refresh_state()
+        self._release_promoted_protocols(player_id, previous)
         return saved
 
     async def save_protocol_config(
@@ -884,6 +875,19 @@ class PlayerConfigMixin:
             raise KeyError(msg)
         # removing the player wipes its config (incl. DSP and the configs of its protocols)
         await self.mass.players.remove(player_id)
+
+    def store_session_player(self, player_id: str) -> None:
+        """
+        Store the config of a player that only exists while its device is connected.
+
+        From now on the player is kept like the player of a device: it stays, unavailable,
+        while its device is away, and it is there after a restart.
+
+        :param player_id: ID of the player, which has no stored config.
+        :raises KeyError: If there is no such player.
+        """
+        previous = self._promote_session_player(player_id)
+        self._release_promoted_protocols(player_id, previous)
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""
@@ -1135,6 +1139,26 @@ class PlayerConfigMixin:
         player.protocol_ids.update(player.protocols)
         player.store_protocol_defaults()
         return previous
+
+    def _release_promoted_protocols(
+        self, player_id: str, previous: dict[str, dict[str, Any] | None]
+    ) -> None:
+        """
+        Let the other players whose protocol configs a promoted player took over know.
+
+        :param player_id: ID of the promoted player.
+        :param previous: The config each protocol had before, as the promotion returned it.
+        """
+        for protocol_id, record in previous.items():
+            if (
+                record
+                and (other_id := record.get("player_id"))
+                and other_id != player_id
+                and (other := self.mass.players.get_player(other_id))
+            ):
+                # the config of the protocol names this player now, no longer the other one
+                other.protocol_ids.discard(protocol_id)
+                other.refresh_state()
 
     def _get_stored_value(
         self, conf_key: str, key: str, default: ConfigValueType

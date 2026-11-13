@@ -126,6 +126,9 @@ class FakeMass:
         self.timers: list[tuple[float, Callable[..., Any], tuple[Any, ...], str | None]] = []
         # (queue_id, required) for every boundary-mix requirement the DJ placed or released
         self.boundary_mix_calls: list[tuple[str, bool]] = []
+        # the players the DJ asked to keep
+        self.kept_players: list[str] = []
+        self.players = SimpleNamespace(keep_player=self.kept_players.append)
         self.streams = SimpleNamespace(
             set_boundary_mix_required=lambda queue_id, _owner, required: (
                 self.boundary_mix_calls.append((queue_id, required))
@@ -405,6 +408,7 @@ async def test_set_queue_dj_enables_and_persists(tmp_path: Path) -> None:
     assert dummy._dj_queues["queue-1"].dj_session_id
     assert dummy._dj_queues["queue-1"].ready is True
     assert dummy.replanned == ["queue-1"]
+    assert dummy.mass.kept_players == ["queue-1"]
     assert dummy._dj_file.exists()
 
     fresh = DummyQueueDJ(tmp_path)
