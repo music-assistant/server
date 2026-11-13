@@ -13,14 +13,11 @@ from music_assistant.providers.milkdrop_visualizer.provider import (
     MAX_REPORT_FIELD_LEN,
     PREF_PALETTE_COLORS,
     PREF_PALETTE_RAMP,
-    UNKNOWN_DISPLAY,
     MilkdropVisualizerProvider,
 )
 
 
-def _provider(
-    sessions: list[Any] | None = None,
-) -> tuple[MilkdropVisualizerProvider, Mock, AsyncMock]:
+def _provider() -> tuple[MilkdropVisualizerProvider, Mock, AsyncMock]:
     """Return a provider instance (with its logger and config-read mocks) without full setup."""
     provider = MilkdropVisualizerProvider.__new__(MilkdropVisualizerProvider)
     logger = Mock()
@@ -31,20 +28,11 @@ def _provider(
     mass.config.remove_provider_config_value = AsyncMock()
     mass.webserver.auth.list_users = AsyncMock(return_value=[])
     mass.webserver.auth.update_user_preferences = AsyncMock()
-    mass.dashboard.get_dashboard_sessions = AsyncMock(return_value=sessions or [])
     mocked = cast("Any", provider)
     mocked.logger = logger
     mocked.config = Mock()
     mocked.mass = mass
-    mocked._last_report = {}
     return provider, logger, config_value
-
-
-def _session(dashboard_id: str) -> Mock:
-    """Return a dashboard-session-shaped mock for the given endpoint."""
-    session = Mock()
-    session.dashboard_id = dashboard_id
-    return session
 
 
 async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
@@ -107,167 +95,29 @@ async def test_visualizer_config_reflects_dashboard_setting() -> None:
     assert await provider.get_visualizer_config() == {CONF_SHOW_ON_DASHBOARDS: False}
 
 
-async def test_capability_report_is_logged() -> None:
-    """A capability report is logged with all its fields."""
-    provider, logger, _config_value = _provider()
-    await provider.report_capability(webgl2=False, renderer="none", user_agent="CrKey/1.56")
-    assert logger.info.called
-    logged_args = logger.info.call_args.args
-    assert False in logged_args
-    assert "none" in logged_args
-    assert "CrKey/1.56" in logged_args
-
-
-async def test_capability_report_tolerates_missing_fields() -> None:
-    """A capability report with no fields at all must not raise."""
-    provider, logger, _config_value = _provider()
-    await provider.report_capability()
-    assert logger.info.called
-
-
-async def test_capability_report_tolerates_malformed_render_fields() -> None:
-    """A render report with a non-numeric late_ratio is still logged, not raised."""
-    provider, logger, _config_value = _provider()
-    await provider.report_capability(render={"note": "steady", "late_ratio": "not-a-number"})
-    assert logger.info.called
-    assert 0 in logger.info.call_args.args
-
-
-async def test_capability_report_zeroes_malformed_ratios_instead_of_raising() -> None:
-    """An infinite, NaN, boolean or string ratio is malformed and logs as 0, not a raise."""
-    # blocked_ratio is pinned to a distinct value so late_pct=0 is unambiguous in the log line
-    for late_ratio in (float("inf"), float("nan"), True, "0.5"):
-        provider, logger, _config_value = _provider()
-        await provider.report_capability(
-            render={"note": "steady", "late_ratio": late_ratio, "blocked_ratio": 0.5}
-        )
-        assert logger.info.called, late_ratio
-        assert 0 in logger.info.call_args.args, late_ratio
-
-
-async def test_capability_report_clamps_out_of_range_ratios_to_a_hundred_percent() -> None:
-    """A ratio above 1, finite-but-huge (1e308) or otherwise, clamps to 100 without raising."""
-    for late_ratio in (1.5, 1e308):
-        provider, logger, _config_value = _provider()
-        await provider.report_capability(
-            render={"note": "steady", "late_ratio": late_ratio, "blocked_ratio": 0.5}
-        )
-        assert logger.info.called, late_ratio
-        assert 100 in logger.info.call_args.args, late_ratio
-
-
-async def test_capability_report_converts_a_well_formed_ratio_to_a_percentage() -> None:
-    """A well-formed ratio converts straightforwardly to a whole percentage."""
-    provider, logger, _config_value = _provider()
-    await provider.report_capability(
-        render={"note": "steady", "late_ratio": 0.25, "blocked_ratio": 0.5}
-    )
-    assert 25 in logger.info.call_args.args
-
-
-async def test_capability_report_flattens_and_caps_viewer_strings() -> None:
-    """A viewer cannot forge log lines or flood the log through the fields it reports."""
-    provider, logger, _config_value = _provider()
-    await provider.report_capability(error="boom\nViewer error: forged", user_agent="x" * 900)
-    logged_args = logger.warning.call_args.args
-    assert logged_args[2] == "boom Viewer error: forged"
-    assert logged_args[3] == "x" * MAX_REPORT_FIELD_LEN
-
-
-async def test_render_report_flattens_and_caps_every_viewer_field() -> None:
-    """Every render field is viewer-supplied, so none of them may forge a log line."""
+async def test_capability_report_is_logged_at_debug_with_trimmed_fields() -> None:
+    """A report is one debug line, and a viewer cannot forge log lines or flood the log."""
     provider, logger, _config_value = _provider()
 
     await provider.report_capability(
-        render={
-            "note": "steady\nViewer render forged",
-            "level": "x" * 900,
-            "gpu_warp": "1\n2",
-            "preset": "a\nb",
-        }
+        webgl2=False,
+        renderer="none",
+        user_agent="x" * 900,
+        gpu="gpu\nforged",
+        error="boom\nViewer error: forged",
+        dashboard_id="chromecast_abc",
     )
 
-    logged_args = logger.info.call_args.args
-    assert "steady Viewer render forged" in logged_args
-    assert "x" * MAX_REPORT_FIELD_LEN in logged_args
-    assert "\n" not in "".join(str(arg) for arg in logged_args)
-
-
-async def test_render_report_names_the_reporting_display() -> None:
-    """A dashboard id with a live session identifies the display it reported for."""
-    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
-
-    await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
-
-    assert "chromecast_abc" in logger.info.call_args.args
-
-
-async def test_report_from_an_unknown_display_shares_one_bucket() -> None:
-    """Minting fresh ids must not buy fresh cooldowns: an unknown id is never its own key."""
-    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
-
-    await provider.report_capability(webgl2=True, dashboard_id="made-up")
-
-    assert "made-up" not in logger.info.call_args.args
-    assert UNKNOWN_DISPLAY in logger.info.call_args.args
-
-    # a second, different made-up id lands in the same bucket, so it is already spent
-    await provider.report_capability(webgl2=True, dashboard_id="also-made-up")
-
-    assert logger.info.call_count == 1
-    assert logger.debug.call_count == 1
-
-
-async def test_an_error_is_not_buried_by_a_chatty_renderer() -> None:
-    """Errors are the only evidence these displays produce: render reports must not spend them."""
-    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
-
-    await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
-    await provider.report_capability(error="boom", dashboard_id="chromecast_abc")
-
-    logger.warning.assert_called_once()
-
-
-async def test_repeat_reports_within_the_cooldown_drop_to_debug() -> None:
-    """A display cannot flood the log: only the first report in a cooldown window is logged."""
-    provider, logger, _config_value = _provider(sessions=[_session("chromecast_abc")])
-
-    for _ in range(3):
-        await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
-
-    assert logger.info.call_count == 1
-    assert logger.debug.call_count == 2
-
-
-async def test_the_cooldown_is_kept_per_display() -> None:
-    """One noisy display must not silence another one's first report."""
-    provider, logger, _config_value = _provider(
-        sessions=[_session("chromecast_abc"), _session("kiosk_1")]
+    logger.debug.assert_called_once()
+    logged_args = logger.debug.call_args.args[1:]
+    assert logged_args == (
+        "chromecast_abc",
+        False,
+        "none",
+        "gpu forged",
+        "x" * MAX_REPORT_FIELD_LEN,
+        "boom Viewer error: forged",
     )
-
-    await provider.report_capability(webgl2=True, dashboard_id="chromecast_abc")
-    await provider.report_capability(webgl2=True, dashboard_id="kiosk_1")
-
-    assert logger.info.call_count == 2
-    logger.debug.assert_not_called()
-
-
-async def test_unload_clears_the_report_cooldown_cache() -> None:
-    """Unload must not leave rate-limit state behind for a later load of the same instance."""
-    provider, _logger, _config_value = _provider()
-    mocked = cast("Any", provider)
-    mocked._relay = Mock()
-    mocked._relay.close = AsyncMock()
-    handle1, handle2 = Mock(), Mock()
-    mocked._unregister_handles = [handle1, handle2]
-    mocked._last_report = {("chromecast_abc", "render"): 123.0}
-
-    await provider.unload()
-
-    handle1.assert_called_once_with()
-    handle2.assert_called_once_with()
-    assert mocked._unregister_handles == []
-    assert mocked._last_report == {}
 
 
 async def test_color_tint_migration_is_a_noop_without_the_old_key() -> None:

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import math
-import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -34,13 +32,6 @@ CONFIG_COMMAND = "milkdrop_visualizer/config"
 CAPABILITY_COMMAND = "milkdrop_visualizer/report_capability"
 # viewer-reported strings go straight into the server log, cap what a display can write
 MAX_REPORT_FIELD_LEN = 500
-# a display reporting more often than this is logged at debug, so it cannot flood the log
-REPORT_COOLDOWN = 30.0
-# bucket every display we cannot place under one name, so it shares a single cooldown
-UNKNOWN_DISPLAY = "unknown"
-# errors cool down apart from render reports, so a chatty renderer cannot bury one
-REPORT_KIND_ERROR = "error"
-REPORT_KIND_RENDER = "render"
 
 
 class MilkdropVisualizerProvider(PluginProvider):
@@ -57,7 +48,6 @@ class MilkdropVisualizerProvider(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._relay = MilkdropRelay(self)
         self._unregister_handles: list[Callable[[], None]] = []
-        self._last_report: dict[tuple[str, str], float] = {}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the (options) config entries for the MilkDrop Visualizer provider."""
@@ -105,7 +95,6 @@ class MilkdropVisualizerProvider(PluginProvider):
         renderer: str | None = None,
         user_agent: str | None = None,
         gpu: str | None = None,
-        render: dict[str, Any] | None = None,
         error: str | None = None,
         dashboard_id: str | None = None,
     ) -> None:
@@ -120,55 +109,18 @@ class MilkdropVisualizerProvider(PluginProvider):
         :param renderer: What the display ended up rendering with.
         :param user_agent: The display browser's user agent string.
         :param gpu: What the display's GL context reports it draws with.
-        :param render: Measured render performance, for displays whose quality adapts.
-        :param error: Failure the display hit, logged as a warning instead of a report.
+        :param error: Failure the display hit.
         :param dashboard_id: The reporting display's dashboard id, so several displays
             stay apart in the log.
         """
-        display = await self._resolve_display(dashboard_id)
-        user_agent = _trim(user_agent)
-        if error is not None:
-            due = self._report_is_due(display, REPORT_KIND_ERROR)
-            log = self.logger.warning if due else self.logger.debug
-            log("Viewer error on %s: %s (user_agent=%s)", display, _trim(error), user_agent)
-            return
-        due = self._report_is_due(display, REPORT_KIND_RENDER)
-        log = self.logger.info if due else self.logger.debug
-        if render is None:
-            log(
-                "Viewer capability on %s: webgl2=%s renderer=%s gpu=%s user_agent=%s",
-                display,
-                webgl2,
-                _trim(renderer),
-                _trim(gpu),
-                user_agent,
-            )
-            return
-        # best-effort observability: a malformed field must not fail the report
-        late_pct = _ratio_pct(render.get("late_ratio"))
-        blocked_pct = _ratio_pct(render.get("blocked_ratio"))
-        gpu_part = ""
-        if render.get("gpu_warp") is not None:
-            gpu_part = (
-                f" gpu={_trim(render.get('gpu_warp'))}/{_trim(render.get('gpu_blur')) or '-'}"
-                f"/{_trim(render.get('gpu_comp')) or '-'}ms"
-            )
-        preset = _trim(render.get("preset") or "")
-        preset_part = f' preset="{preset}"' if preset else ""
-        log(
-            "Viewer render %s on %s: level=%s pixels=%s fps=%s/%s"
-            " late=%s%% blocked=%s%% render=%sms%s%s",
-            _trim(render.get("note")),
-            display,
-            _trim(render.get("level")),
-            _trim(render.get("pixels")),
-            _trim(render.get("fps")),
-            _trim(render.get("target_fps")),
-            late_pct,
-            blocked_pct,
-            _trim(render.get("render_ms")),
-            gpu_part,
-            preset_part,
+        self.logger.debug(
+            "Viewer capability on %s: webgl2=%s renderer=%s gpu=%s user_agent=%s error=%s",
+            _trim(dashboard_id),
+            webgl2,
+            _trim(renderer),
+            _trim(gpu),
+            _trim(user_agent),
+            _trim(error),
         )
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -181,37 +133,6 @@ class MilkdropVisualizerProvider(PluginProvider):
             unregister()
         self._unregister_handles.clear()
         await self._relay.close()
-        self._last_report.clear()
-
-    async def _resolve_display(self, dashboard_id: str | None) -> str:
-        """
-        Name the reporting display, keeping the log key out of a viewer's hands.
-
-        Only an id with a live dashboard session is taken at face value; everything else
-        shares one bucket, so a client cannot mint fresh ids to dodge the cooldown.
-
-        :param dashboard_id: The dashboard id the viewer claims to be.
-        """
-        if dashboard_id is None:
-            return UNKNOWN_DISPLAY
-        sessions = await self.mass.dashboard.get_dashboard_sessions()
-        if any(session.dashboard_id == dashboard_id for session in sessions):
-            return dashboard_id
-        return UNKNOWN_DISPLAY
-
-    def _report_is_due(self, display: str, kind: str) -> bool:
-        """
-        Whether this display's report is worth a log line, or is coming in too fast.
-
-        :param display: The reporting display, as resolved by `_resolve_display`.
-        :param kind: Which cooldown the report draws on, one of the REPORT_KIND_* values.
-        """
-        now = time.monotonic()
-        last = self._last_report.get((display, kind))
-        if last is not None and now - last < REPORT_COOLDOWN:
-            return False
-        self._last_report[display, kind] = now
-        return True
 
     async def _migrate_color_tint(self) -> None:
         """
@@ -252,10 +173,3 @@ def _trim(value: object) -> str | None:
     if value is None:
         return None
     return str(value).replace("\n", " ").replace("\r", " ")[:MAX_REPORT_FIELD_LEN]
-
-
-def _ratio_pct(value: Any) -> int:
-    """Clamp a viewer-reported 0..1 ratio into a whole percentage, 0 for anything malformed."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return 0
-    return round(min(max(value, 0.0), 1.0) * 100)
