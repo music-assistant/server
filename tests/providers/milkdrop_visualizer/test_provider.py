@@ -5,12 +5,15 @@ from __future__ import annotations
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from music_assistant.providers.milkdrop_visualizer.provider import (
     CAPABILITY_COMMAND,
     CONF_COLOR_TINT,
     CONF_SHOW_ON_DASHBOARDS,
     CONFIG_COMMAND,
     MAX_REPORT_FIELD_LEN,
+    PALETTE_OFF_PREFERENCES,
     PREF_PALETTE_COLORS,
     PREF_PALETTE_RAMP,
     MilkdropVisualizerProvider,
@@ -68,20 +71,20 @@ async def test_loaded_in_mass_registers_the_viewer_commands() -> None:
     assert len(provider._unregister_handles) == 2
 
 
-async def test_loaded_in_mass_runs_the_color_tint_migration_before_setup() -> None:
-    """The migration must settle before the relay (and thus viewer traffic) comes up."""
+async def test_a_failing_color_tint_migration_leaves_the_plugin_working() -> None:
+    """The migration runs last, so its failure cannot cost the relay or the commands."""
     provider, _logger, _config_value = _provider()
     mocked = cast("Any", provider)
     mocked.unloading = False
     mocked._unregister_handles = []
-    order: list[str] = []
-    mocked._migrate_color_tint = AsyncMock(side_effect=lambda: order.append("migrate"))
     mocked._relay = Mock()
-    mocked._relay.setup = Mock(side_effect=lambda: order.append("setup"))
+    mocked._migrate_color_tint = AsyncMock(side_effect=ValueError("boom"))
 
-    await provider.loaded_in_mass()
+    with pytest.raises(ValueError, match="boom"):
+        await provider.loaded_in_mass()
 
-    assert order == ["migrate", "setup"]
+    mocked._relay.setup.assert_called_once_with()
+    assert len(provider._unregister_handles) == 2
 
 
 async def test_visualizer_config_reflects_dashboard_setting() -> None:
@@ -185,16 +188,34 @@ async def test_color_tint_migration_only_removes_the_key_when_tint_was_enabled()
     )
 
 
+async def test_color_tint_migration_skips_disabled_users_and_still_removes_the_key() -> None:
+    """A disabled user cannot be updated, so it is skipped instead of aborting the migration."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.mass.config.get_raw_provider_config_value = Mock(return_value=False)
+    disabled = Mock(user_id="u1", enabled=False, preferences={})
+    enabled = Mock(user_id="u2", enabled=True, preferences={})
+    mocked.mass.webserver.auth.list_users = AsyncMock(return_value=[disabled, enabled])
+
+    await provider._migrate_color_tint()
+
+    update = mocked.mass.webserver.auth.update_user_preferences
+    update.assert_awaited_once_with(enabled, PALETTE_OFF_PREFERENCES)
+    mocked.mass.config.remove_provider_config_value.assert_awaited_once_with(
+        provider.instance_id, CONF_COLOR_TINT
+    )
+
+
 async def test_color_tint_migration_keeps_the_key_when_a_user_update_fails() -> None:
-    """A failed per-user update must not raise, nor drop the key that would retry it."""
-    provider, logger, _config_value = _provider()
+    """A failed per-user update propagates and leaves the key, so the next load retries it."""
+    provider, _logger, _config_value = _provider()
     mocked = cast("Any", provider)
     mocked.mass.config.get_raw_provider_config_value = Mock(return_value=False)
     user = Mock(user_id="u1", preferences={})
     mocked.mass.webserver.auth.list_users = AsyncMock(return_value=[user])
-    mocked.mass.webserver.auth.update_user_preferences = AsyncMock(side_effect=RuntimeError("boom"))
+    mocked.mass.webserver.auth.update_user_preferences = AsyncMock(side_effect=ValueError("boom"))
 
-    await provider._migrate_color_tint()
+    with pytest.raises(ValueError, match="boom"):
+        await provider._migrate_color_tint()
 
-    logger.warning.assert_called_once()
     mocked.mass.config.remove_provider_config_value.assert_not_called()

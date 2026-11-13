@@ -67,7 +67,6 @@ class MilkdropVisualizerProvider(PluginProvider):
         # commands and then tear them down with itself, as both unregister by name.
         if self.unloading:
             return
-        await self._migrate_color_tint()
         self._relay.setup()
         # PROVIDERS_READ (held by guests) so the dashboard viewer user can use these
         for command, handler in (
@@ -81,6 +80,8 @@ class MilkdropVisualizerProvider(PluginProvider):
                     required_scope=Scope.PROVIDERS_READ,
                 )
             )
+        # last, so a failing migration (retried on the next load) cannot take the plugin down
+        await self._migrate_color_tint()
 
     async def get_visualizer_config(self) -> dict[str, bool]:
         """Return the visualizer settings that apply to every viewer."""
@@ -138,32 +139,21 @@ class MilkdropVisualizerProvider(PluginProvider):
         """
         Fold a stored color_tint opt-out into every user's palette preferences, once.
 
-        Removes the old provider setting once every user carries its replacement, so a
+        Removes the old provider setting once every enabled user carries its replacement, so a
         server that never had it (or already migrated it) does nothing here.
         """
         stored = self.mass.config.get_raw_provider_config_value(self.instance_id, CONF_COLOR_TINT)
         if stored is None:
             return
         if stored is False:
-            try:
-                auth = self.mass.webserver.auth
-                for user in await auth.list_users():
-                    preferences = user.preferences if isinstance(user.preferences, dict) else {}
-                    missing = {
-                        key: value
-                        for key, value in PALETTE_OFF_PREFERENCES.items()
-                        if key not in preferences
-                    }
-                    if not missing:
-                        continue
-                    await auth.update_user_preferences(user, {**preferences, **missing})
-            except Exception:
-                # keep the old key so the migration is retried on the next load
-                self.logger.warning(
-                    "Could not migrate the color tint setting into user preferences",
-                    exc_info=True,
+            auth = self.mass.webserver.auth
+            for user in await auth.list_users():
+                # a disabled user cannot be updated, and gets the defaults if re-enabled
+                if not user.enabled or PALETTE_OFF_PREFERENCES.keys() <= user.preferences.keys():
+                    continue
+                await auth.update_user_preferences(
+                    user, {**PALETTE_OFF_PREFERENCES, **user.preferences}
                 )
-                return
             self.logger.info("Migrated the disabled color tint into the users' palette preferences")
         await self.mass.config.remove_provider_config_value(self.instance_id, CONF_COLOR_TINT)
 
