@@ -17,6 +17,7 @@ from music_assistant.constants import (
     CONF_UNLINKED_FROM,
     SETUP_REASON_PROVIDER_NOT_INSTALLED,
 )
+from music_assistant.controllers.players.lifecycle import REMOVE_UNAVAILABLE_GRACE
 from music_assistant.helpers.config_entries import (
     create_connected_players_entry,
     create_player_selector,
@@ -653,6 +654,50 @@ async def test_a_player_the_user_removes_is_announced_as_removed(scenario: Scena
     await scenario.idle()
 
     assert scenario.removals() == [(player_id, None)]
+
+
+@pytest.mark.parametrize(
+    "state", ["disabled", "provider_not_loaded", "unavailable", "browser_away"]
+)
+async def test_a_player_that_is_not_there_is_announced_once_when_it_is_removed(
+    scenario: Scenario, state: str
+) -> None:
+    """
+    A player that is disabled, away or without its provider is removed for good, announced once.
+
+    Its record and its saved queue go with it.
+    """
+    wiim = await scenario.add_provider("wiim")
+    sendspin = await scenario.add_provider("sendspin")
+    if state == "browser_away":
+        protocol = sendspin.protocol(
+            "sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER
+        )
+    else:
+        protocol = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(protocol)
+    player_id = scenario.single_player(protocol).player_id
+    await scenario.play(player_id)
+    await scenario.idle()
+    if state == "disabled":
+        await scenario.disable(player_id)
+    elif state == "provider_not_loaded":
+        await scenario.mass.unload_provider(wiim.instance_id)
+    else:
+        await scenario.detach(protocol)
+    await scenario.idle()
+    scenario.clear_events()
+
+    if state == "unavailable":
+        await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+        assert await scenario.mass.players.remove_unavailable() == [player_id]
+    else:
+        await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert scenario.removals() == [(player_id, None)]
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None
+    assert await scenario.saved_queue(player_id) is None
 
 
 async def test_the_player_that_goes_in_a_merge_is_announced_as_removed(

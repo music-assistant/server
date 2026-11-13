@@ -841,6 +841,18 @@ looks for groups again.
   - `tests/providers/sync_group/test_lifecycle.py::test_removing_a_group_forgets_it`
   - `tests/providers/universal_group/test_lifecycle.py::test_removing_a_group_forgets_it`
 
+### REMOVE-7 · A player that is not there is announced once when it is removed
+
+The Living player played and is then disabled, or its provider is unloaded, or its speaker is
+away and the user removes all unavailable players; or a browser player that played is away. The
+user removes it: clients are told once that it is removed, its record and its saved queue are
+gone, and so is the DJ of the AI radio on the queue of the disabled one.
+
+- End-to-end: **yes**. Disable a virtual player that played, then remove it.
+- Proven by:
+  - `test_lifecycle.py::test_a_player_that_is_not_there_is_announced_once_when_it_is_removed`
+  - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_goes_with_a_disabled_player_that_is_removed`
+
 ## Browser and app players
 
 A browser or app player has the id of its client and is the same player in every session. Until

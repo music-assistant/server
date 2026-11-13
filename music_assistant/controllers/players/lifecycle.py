@@ -851,6 +851,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             # its persisted membership is settled by the config cleanup below.
             if player is not None:
                 await self._drop_player(player)
+            elif stored is not None and not self.mass.closing:
+                # a disabled player is not in the registry, but it is gone for good all the same
+                self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
             # a protocol found again during the awaits above belongs to another player now
             self._delete_player_config(
                 player_id, set(self.mass.config.get_protocol_ids_of_player(player_id))

@@ -111,3 +111,22 @@ async def test_a_dj_keeps_a_browser_player_whose_client_disconnects(
 
     assert scenario.player("sendspin_web_3f2a") is not None
     assert scenario.removals() == []
+
+
+async def test_a_dj_goes_with_a_disabled_player_that_is_removed(
+    scenario: Scenario, tmp_path: Path
+) -> None:
+    """A disabled player that is then removed is gone: its queue loses its DJ."""
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    dj = _queue_dj(scenario, tmp_path)
+    await dj.set_queue_dj(player_id, "rick")
+    await scenario.disable(player_id)
+    await scenario.idle()
+
+    await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert player_id not in dj._dj_queues
