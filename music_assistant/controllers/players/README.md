@@ -578,10 +578,11 @@ announcement that plays, or a power on that still waits for the device, holds th
   that owns it; the queue keeps its items and goes inactive meanwhile.
 - **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
   player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
-  another audio protocol is its active output, its own protocol plays (a paused player keeps its
-  place until the app plays), it is synced or in a group, or a live source plays on it. The playback
-  state, position, media, source, its entry in the source list and its transport features then come
-  from that protocol, the transport commands go to it, and it is the protocol marked `active`.
+  an audio protocol is its active output, its own protocol plays (a paused player keeps its place
+  until the app plays), it is synced or in a group, or it has a live source session. The playback
+  state, position, media, source and its entry in the source list then come from that protocol,
+  the pause, seek and next and previous it supports are added to the features of the player, the
+  transport commands go to it, and it is the protocol marked `active`.
 
 ## Grouping
 
