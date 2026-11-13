@@ -1365,14 +1365,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(target_queue_id)
         # a switched-off target the transfer plays on is powered on before the locks are taken,
         # as a play action does: waiting for its device outlasts the wait for a player's lock
+        plays_on_target = auto_play
+        if plays_on_target is None:
+            source = self.get(source_queue_id)
+            plays_on_target = source is not None and source.state == PlaybackState.PLAYING
+        target_player = self.mass.players.get_player(target_queue_id)
         if (
-            (
-                auto_play
-                if auto_play is not None
-                else (source := self.get(source_queue_id)) is not None
-                and source.state == PlaybackState.PLAYING
-            )
-            and (target_player := self.mass.players.get_player(target_queue_id)) is not None
+            plays_on_target
+            and target_player is not None
             and target_player.offline_by_power_control
             and target_player.state.type in PLAYBACK_TARGET_TYPES
         ):

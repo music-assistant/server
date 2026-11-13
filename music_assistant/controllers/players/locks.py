@@ -128,7 +128,9 @@ class PlayerLocksMixin(_PlayerControllerBase):
         player is held the way get_group_and_player_lock holds it, until the body is done. The
         command never waits for a player's lock while it holds that of another player that does
         not own it, so it never waits for a command that waits for it, and commands over other
-        players do not wait for it at all.
+        players do not wait for it at all. The locks the caller holds already stay held while it
+        waits, so the caller must hold none of a player that is not one of these players or their
+        owners.
 
         :param player_ids: The players to lock.
         :raises ResourceBusyError: When the locks are not all held within the timeout of one
