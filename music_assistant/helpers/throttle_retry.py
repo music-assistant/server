@@ -140,6 +140,8 @@ class ThrottlerManager:
         :raises RateLimited: When a server-imposed cooldown holds for longer than MAX_WAIT_TIME.
         """
         if BYPASS_THROTTLER.get():
+            # a bypass skips the rate limit, but not a long cooldown the server asked for
+            self._raise_on_long_cooldown()
             yield 0
             return
         delay = 0.0
@@ -147,9 +149,7 @@ class ThrottlerManager:
         while True:
             # each deadline is waited out once, however often it is extended meanwhile
             while (target := self._cooldown_until) > honored:
-                if (remaining := self.cooldown_remaining) > MAX_WAIT_TIME:
-                    msg = f"Rate limited for another {remaining:.0f} seconds"
-                    raise RateLimited(msg, backoff_time=round(remaining))
+                self._raise_on_long_cooldown()
                 delay += await self._wait_until(target)
                 honored = target
             delay += await self.throttler.acquire()
@@ -161,7 +161,7 @@ class ThrottlerManager:
 
     @asynccontextmanager
     async def bypass(self) -> AsyncGenerator[None]:
-        """Bypass the throttler."""
+        """Bypass the rate limit, a cooldown longer than MAX_WAIT_TIME still fails the call."""
         try:
             token = BYPASS_THROTTLER.set(True)
             yield None
@@ -185,6 +185,12 @@ class ThrottlerManager:
         """
         self.throttler.rate_limit = rate_limit
         self.throttler.period = period
+
+    def _raise_on_long_cooldown(self) -> None:
+        """Raise RateLimited when a cooldown holds for longer than MAX_WAIT_TIME."""
+        if (remaining := self.cooldown_remaining) > MAX_WAIT_TIME:
+            msg = f"Rate limited for another {remaining:.0f} seconds"
+            raise RateLimited(msg, backoff_time=round(remaining))
 
     async def _wait_until(self, deadline: float) -> float:
         """Sleep until the given monotonic deadline, return the time waited."""
