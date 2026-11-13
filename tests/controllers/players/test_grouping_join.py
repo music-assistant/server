@@ -86,7 +86,8 @@ class _Devices:
     The players controller over a world, every call recorded in order.
 
     A call runs the change a test set for it (``during``) or fails as a test said (``failing``),
-    both by the call's name and the id of what it is called on.
+    both by the call's name and the id of what it is called on. The next read of the state
+    raises ``read_error`` when a test set one.
     """
 
     def __init__(self, world: _World) -> None:
@@ -99,6 +100,7 @@ class _Devices:
         self.translation_owner = "players"
         self.protocol_objects: dict[str, _Protocol] = {}
         self.player_objects: dict[str, _Player] = {}
+        self.read_error: Exception | None = None
 
     def get_protocol(self, protocol_id: str) -> _Protocol | None:
         """Return the protocol object of an id in the world."""
@@ -111,6 +113,13 @@ class _Devices:
         if player_id not in self.world.players:
             return None
         return self.player_objects.setdefault(player_id, _Player(self, player_id))
+
+    def snapshot(self) -> GroupingSnapshot:
+        """Return the world as it is now, or raise the read error a test set, once."""
+        if (error := self.read_error) is not None:
+            self.read_error = None
+            raise error
+        return self.world.snapshot()
 
     async def call(self, *call: Any) -> None:
         """Record a device call; run the change set for it, then fail as set."""
@@ -157,7 +166,7 @@ def _reading() -> Iterator[None]:
     """Let the change read the world of the fake controller as it is at each read."""
 
     def _snapshot(players: _Devices, *_args: Any, **_kwargs: Any) -> GroupingSnapshot:
-        return players.world.snapshot()
+        return players.snapshot()
 
     with patch.object(grouping, "grouping_snapshot", _snapshot):
         yield
@@ -648,6 +657,59 @@ async def test_a_failure_after_the_hook_aborts_the_takeover_it_opened(
     with pytest.raises(PlayerCommandFailed, match="refused"):
         await _join(devices, "s", ("w",), new_content=True)
     assert (("takeover_aborted", "airplay_s", "token") in devices.calls) is aborted
+
+
+@pytest.mark.parametrize("ending", ["completes", "call_fails", "read_fails", "refused"])
+async def test_a_takeover_is_aborted_once_by_anything_that_fails_after_the_hook(
+    ending: str,
+) -> None:
+    """
+    A takeover the hook opened goes to the caller, or is aborted once when the join fails.
+
+    The join fails on a device call that raises, on a read of the state that raises after a
+    device call, or on a refusal; the same error reaches the caller, and nothing is called after
+    the failure but the abort.
+    """
+    world = _World()
+    if ending == "refused":
+        _switching(world, PLAYING)
+        leader, protocol_id, add = "l", "sendspin_l", ("y",)
+    else:
+        _mixed(world)
+        leader, protocol_id, add = "s", "airplay_s", ("w",)
+    devices = _Devices(world)
+    protocol = devices.get_protocol(protocol_id)
+    assert protocol is not None
+    protocol.token = "token"
+    error = PlayerCommandFailed("failed")
+    if ending == "call_fails":
+        devices.failing["set_members", protocol_id] = error
+
+    def _read_fails() -> None:
+        devices.read_error = error
+
+    if ending == "read_fails":
+        devices.during["set_members", protocol_id] = _read_fails
+    if ending == "completes":
+        assert await _join(devices, leader, add, new_content=True) == (protocol, "token")
+        assert not any(call[0] == "takeover_aborted" for call in devices.calls)
+        return
+    with pytest.raises(PlayerCommandFailed) as err:
+        await _join(devices, leader, add, new_content=True)
+    if ending == "refused":
+        assert err.value.translation_key == "member_cannot_follow_protocol"
+        assert _device_calls(devices) == [
+            ("takeover", protocol_id),
+            ("takeover_aborted", protocol_id, "token"),
+        ]
+        return
+    assert err.value is error
+    assert _device_calls(devices) == [
+        ("takeover", protocol_id),
+        ("set_output", "w", "airplay_w"),
+        _joins(protocol_id, "airplay_w"),
+        ("takeover_aborted", protocol_id, "token"),
+    ]
 
 
 async def test_a_refused_switch_calls_no_device_and_aborts_the_takeover() -> None:
