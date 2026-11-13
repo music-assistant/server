@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
+from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.providers.kion_music.constants import MY_WAVE_PLAYLIST_ID
 from music_assistant.providers.kion_music.provider import KionMusicProvider
@@ -111,3 +112,24 @@ async def test_my_mix_fetch_is_shared_between_callers(
 
     assert await asyncio.gather(*tasks) == [[], [], []]
     assert mock_client.get_my_wave_tracks.await_count == 1
+
+
+async def test_collection_plays_only_the_tracks_folder() -> None:
+    """Only the tracks folder of the Collection is playable, not the artists/albums/playlists."""
+    provider = KionMusicProvider.__new__(KionMusicProvider)
+    provider.config = _StubConfig()  # type: ignore[assignment]
+    provider._supported_features = {
+        ProviderFeature.LIBRARY_TRACKS,
+        ProviderFeature.LIBRARY_ARTISTS,
+        ProviderFeature.LIBRARY_ALBUMS,
+        ProviderFeature.LIBRARY_PLAYLISTS,
+    }
+
+    folders = await provider._browse_collection("kion_music_test://collection")
+
+    assert {f.item_id: f.is_playable for f in folders} == {
+        "tracks": True,
+        "artists": False,
+        "albums": False,
+        "playlists": False,
+    }
