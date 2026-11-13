@@ -84,6 +84,22 @@ jobs:
           --channel "${{ steps.channel.outputs.channel }}"
           --github-output "$GITHUB_OUTPUT"
 
+      # The backport workflow keeps one open backport/* PR per upcoming patch release.
+      # Check before capturing the source commit so a merge in between cannot slip past.
+      - name: Require merged backport PR
+        if: steps.channel.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          open_backports=$(gh pr list --repo "$GITHUB_REPOSITORY" --base stable --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("backport/"))] | map("#\(.number) (\(.headRefName))") | join(", ")')
+          if [ -n "$open_backports" ]; then
+            echo "::error::Open backport PR into stable: $open_backports. Merge or close it before releasing."
+            exit 1
+          fi
+          echo "No open backport PR into stable"
+
       - name: Check out release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -123,22 +139,6 @@ jobs:
           else
             echo "Skipping $CHANNEL release with only $COMMITS_SINCE new commit(s)"
           fi
-
-      # The backport workflow keeps one open backport/* PR per upcoming patch release.
-      # Releasing while it is open ships the previous commit under the new version.
-      - name: Require merged backport PR
-        if: steps.channel.outputs.channel == 'stable' && steps.version.outputs.should_release == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          open_backports=$(gh pr list --repo "$GITHUB_REPOSITORY" --base stable --state open \
-            --json number,headRefName \
-            --jq '[.[] | select(.headRefName | startswith("backport/"))] | map("#\(.number) (\(.headRefName))") | join(", ")')
-          if [ -n "$open_backports" ]; then
-            echo "::error::Open backport PR into stable: $open_backports. Merge or close it before releasing."
-            exit 1
-          fi
-          echo "No open backport PR into stable"
 
   trigger-release:
     name: Create release
