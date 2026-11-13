@@ -183,8 +183,8 @@ async def test_a_declined_input_stays_declined(
     """
     The decline of the input of a display that only exists while connected is kept.
 
-    The display still leaves the list when it disconnects; when it reconnects, also after a
-    restart, it plays without asking about its input, until the user approves the input.
+    The display stays listed, unavailable, while it is disconnected; when it reconnects, also
+    after a restart, it plays without asking about its input, until the user approves the input.
     """
     approvals: Approvals = {CLIENT_ID: approved_before}
     await scenario.add_provider("sendspin")
@@ -203,7 +203,9 @@ async def test_a_declined_input_stays_declined(
     assert scenario.mass.config.get_protocol_value(CLIENT_ID, CONF_SOURCE_INPUT_DECLINED) is True
     await scenario.mass.players.detach(CLIENT_ID)
     await scenario.settle()
-    assert scenario.mass.players.get_player(CLIENT_ID) is None
+    state = scenario.player(CLIENT_ID)
+    assert state is not None
+    assert state.available is False
 
     again = _connect(sendspin, approvals, guest_access=guest_access)
     await _attach(scenario, again)

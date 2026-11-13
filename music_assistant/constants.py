@@ -208,6 +208,8 @@ CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available 
 CONF_SESSION_ONLY: Final[str] = "session_only"
 # the device info a player last published, for when none of its protocols is attached
 CONF_DEVICE_INFO: Final[str] = "device_info"
+# the defaults the own protocol of a player last gave it, for when that is not attached
+CONF_PROTOCOL_DEFAULTS: Final[str] = "protocol_defaults"
 # the identifiers a player from before the protocols kept their own stored for its device
 CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
 # the identifiers a protocol reported for its device, as [type, value] pairs

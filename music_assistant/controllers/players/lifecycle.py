@@ -119,7 +119,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
         The player stays and keeps its queue; it is unavailable while none of its other
         protocols is available. A player that only exists while its device is connected
-        goes with its last protocol. Silently ignored for a protocol that is not attached.
+        goes with its last protocol, unless it is kept: the user changed its config, a
+        plugin keeps it (see keep_player), or its queue has items. Silently ignored for a
+        protocol that is not attached.
 
         :param protocol_id: Id of the protocol to detach.
         """
@@ -127,6 +129,16 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         self._attaching.pop(protocol_id, None)
         if (protocol := self._protocols.get(protocol_id)) is None:
             return
+        if (
+            (player := protocol.player) is not None
+            and player.session_only
+            and player.protocols.keys() == {protocol_id}
+            and (queue := self.mass.player_queues.get(player.player_id)) is not None
+            and queue.items
+        ):
+            # a player that was played on is kept like one the user changed, before its
+            # last protocol goes and takes its config with it
+            self.keep_player(player.player_id)
         if player := await self._unbind(protocol):
             self.logger.info(
                 "Protocol %s detached from player %s", protocol_id, player.display_name
@@ -237,6 +249,24 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             msg = f"Players are still being found, try again in {math.ceil(max(waits))} seconds"
             raise ActionUnavailable(msg)
         return removed
+
+    def keep_player(self, player_id: str) -> None:
+        """
+        Keep a player that only exists while its device is connected, also while it is away.
+
+        Call it when something was set up for the player that its user expects to find again,
+        such as a DJ on its queue: it is stored from then on, like the player of a device.
+        Nothing happens for a player that is stored already, or that is not there.
+
+        :param player_id: Id of the player.
+        """
+        player_id = self.resolve_player_id(player_id)
+        if self.mass.config.get(f"{CONF_PLAYERS}/{player_id}") is not None:
+            return
+        if player_id not in self._players:
+            return
+        self.mass.config.store_session_player(player_id)
+        self.logger.debug("Player %s is kept from now on", player_id)
 
     def schedule_protocol_roles_of_provider(self, provider_id: str) -> None:
         """
@@ -605,8 +635,12 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         if self._players.get(player.player_id) is not player or not player.initialized.is_set():
             # an attach that is still setting the player up drops it
             return
-        if player.session_only and not player.protocols:
-            await self._drop_player(player, permanent=False)
+        if (
+            player.session_only
+            and not player.protocols
+            and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}") is None
+        ):
+            await self._drop_player(player.player_id, player)
             self.logger.info("Player removed: %s", player.display_name)
             return
         player.set_config(await self.mass.config.get_player_object_config(player))
@@ -736,13 +770,30 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player_id, data=player)
         await self.mass.player_queues.on_player_register(player)
 
-    async def _drop_player(self, player: Player, *, permanent: bool) -> None:
+    async def _drop_player(self, player_id: str, player: Player | None) -> None:
         """
-        Take a player out of the registry and let clients know that it is gone.
+        Take a player away for good, with its saved queue, and let clients know it is gone.
 
-        :param player: The player to drop, whose protocols are detached already.
-        :param permanent: The player is removed for good: also delete its saved queue, and
-            say so in the event (a player dropped for now comes back with the same id).
+        Every permanent removal of a player that is live or has a stored record goes here.
+
+        :param player_id: Id of the player.
+        :param player: The live player, whose protocols are detached already; None for a
+            player that only has a stored record, such as a disabled one.
+        """
+        if player is not None:
+            await self._unregister_player(player)
+            self.mass.player_queues.on_player_remove(player_id, permanent=True)
+        else:
+            self.mass.player_queues.purge_saved_queue(player_id)
+        # a live player nobody was told about yet goes unannounced
+        if (player is None or player.initialized.is_set()) and not self.mass.closing:
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+
+    async def _unregister_player(self, player: Player) -> None:
+        """
+        Take a player out of the registry, with its locks, timers and live source.
+
+        :param player: The player, whose protocols are detached already.
         """
         player_id = player.player_id
         # a player that is going away is done with any live source it was playing,
@@ -758,11 +809,6 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         # once the player is gone its id can be a legacy id of another player, whose queue
         # this update must not reach
         self.mass.cancel_timer(f"queue_on_player_update_{player_id}")
-        self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
-        if player.initialized.is_set() and not self.mass.closing:
-            self.mass.signal_event(
-                EventType.PLAYER_REMOVED, player_id, data={"permanent": permanent}
-            )
 
     async def _remove_player(self, player_id: str, *, rediscover: bool) -> None:
         """
@@ -810,8 +856,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             # No group detach is issued for its persisted memberships: the player is out of
             # the registry, so it is filtered out of every group's live member list, and
             # its persisted membership is settled by the config cleanup below.
-            if player is not None:
-                await self._drop_player(player, permanent=True)
+            if player is not None or stored is not None:
+                await self._drop_player(player_id, player)
             # a protocol found again during the awaits above belongs to another player now
             self._delete_player_config(
                 player_id, set(self.mass.config.get_protocol_ids_of_player(player_id))
@@ -842,8 +888,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         """
         Permanently delete everything stored about a player.
 
-        That is its own config and those of its protocols, its DSP and queue settings and
-        its saved queue, so a device that returns starts out fresh. Any group that lists
+        That is its own config and those of its protocols and its DSP and queue settings,
+        so a device that returns starts out fresh. Any group that lists
         the player as a member loses the member, and so do the user access filters.
 
         :param player_id: Id of the player to delete the configuration of.
@@ -858,8 +904,6 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             f"{CONF_PLAYER_QUEUES}/{player_id}",
         ):
             self.mass.config.remove(key)
-        if player_id not in self._players:
-            self.mass.player_queues.purge_saved_queue(player_id)
         self._build_legacy_id_index()
         # a user access filter is an allow-list of player ids, so it must not be left
         # pointing at a player whose config was just wiped
@@ -869,7 +913,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
     def _store_player_base(self, player: Player) -> None:
         """
-        Store the provider and type a player has now, for when none of its protocols is attached.
+        Store what a player has from its protocols now, for when none of them is attached.
+
+        That is its provider and type, and what store_protocol_defaults() keeps.
 
         :param player: The player, which may have no stored config at all.
         """
@@ -880,9 +926,10 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             self.mass.config.set(f"{conf_key}/provider", player.provider_id)
         if stored.get("player_type") != player.type:
             self.mass.config.set(f"{conf_key}/player_type", player.type)
+        player.store_protocol_defaults()
 
     async def _restore_players(self) -> None:
-        """Bring back every stored player that is enabled and kept while its device is away."""
+        """Bring back every stored player that is enabled."""
         stored_players = self.mass.config.get(CONF_PLAYERS, {})
         for player_id, stored in list(stored_players.items()):
             if not isinstance(stored, dict) or not stored.get("enabled", True):
@@ -890,8 +937,6 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if player_id in self._players:
                 continue
             try:
-                if (stored.get("values") or {}).get(CONF_SESSION_ONLY):
-                    continue
                 await self._publish_player(self._create_player(player_id))
             except Exception:
                 self.logger.exception("Could not restore player %s", player_id)
@@ -899,7 +944,10 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
     async def _disable_player(self, player: Player) -> None:
         """
-        Take a player the user disabled out of use: the player goes, its config stays.
+        Take a player the user disabled out of use.
+
+        It leaves the players with a last update that it is unavailable; its config and its
+        saved queue stay.
 
         :param player: The player to disable.
         """
@@ -909,7 +957,15 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             await self._unbind(protocol)
             # its provider keeps the object, which a removal of the player still has to reach
             self._unattached[protocol.protocol_id] = protocol
-        await self._drop_player(player, permanent=False)
+        await self._unregister_player(player)
+        self.mass.player_queues.on_player_remove(player.player_id, permanent=False)
+        if player.initialized.is_set() and not self.mass.closing:
+            # its last update carries the disabled config, which also makes it unavailable
+            player.set_config(await self.mass.config.get_player_object_config(player))
+            player.update_state(signal_event=False)
+            self.mass.signal_event(
+                EventType.PLAYER_UPDATED, object_id=player.player_id, data=player
+            )
         self.logger.info("Player disabled: %s", player.display_name)
         self._schedule_update_all_players()
 
@@ -968,9 +1024,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if not isinstance(stored, dict):
             return
-        # a player that only exists while its device is connected comes back when it attaches
-        if not (stored.get("values") or {}).get(CONF_SESSION_ONLY):
-            await self._publish_player(self._create_player(player_id))
+        await self._publish_player(self._create_player(player_id))
         provider_ids = {
             str(record.get("provider"))
             for protocol_id in self.mass.config.get_protocol_ids_of_player(player_id)

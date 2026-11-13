@@ -194,8 +194,7 @@ class PlayerConfigMixin:
             # optional provider filter
             if provider is not None and raw_conf.get("provider") != provider:
                 continue
-            # filter out the players that are not there: one that only exists while its
-            # device is connected and is away
+            # filter out unavailable players
             # (unless disabled, otherwise there is no way to re-enable them)
             # note that we only check for missing players in the player controller,
             # and we do allow players that are temporary unavailable
@@ -817,16 +816,7 @@ class PlayerConfigMixin:
                 else:
                     self.set(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}", record)
             raise
-        for protocol_id, record in previous.items():
-            if (
-                record
-                and (other_id := record.get("player_id"))
-                and other_id != player_id
-                and (other := self.mass.players.get_player(other_id))
-            ):
-                # the config of the protocol names this player now, no longer the other one
-                other.protocol_ids.discard(protocol_id)
-                other.refresh_state()
+        self._release_promoted_protocols(player_id, previous)
         return saved
 
     async def save_protocol_config(
@@ -885,6 +875,19 @@ class PlayerConfigMixin:
             raise KeyError(msg)
         # removing the player wipes its config (incl. DSP and the configs of its protocols)
         await self.mass.players.remove(player_id)
+
+    def store_session_player(self, player_id: str) -> None:
+        """
+        Store the config of a player that only exists while its device is connected.
+
+        From now on the player is kept like the player of a device: it stays, unavailable,
+        while its device is away, and it is there after a restart.
+
+        :param player_id: ID of the player, which has no stored config.
+        :raises KeyError: If there is no such player.
+        """
+        previous = self._promote_session_player(player_id)
+        self._release_promoted_protocols(player_id, previous)
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""
@@ -980,12 +983,6 @@ class PlayerConfigMixin:
         self.set(conf_key, new_raw)
         for values_key, protocol_values in values_by_key.items():
             self.set(values_key, protocol_values)
-        player_disabled = CONF_ENABLED in changed_keys and not config.enabled
-        if player_disabled:
-            # clients get the config of a player that is disabled before the player goes
-            self.mass.signal_event(
-                EventType.PLAYER_CONFIG_UPDATED, object_id=config.player_id, data=config
-            )
         try:
             # validate/handle the update in the players controller
             await self.mass.players.on_player_config_change(config, changed_keys)
@@ -999,13 +996,12 @@ class PlayerConfigMixin:
                 else:
                     self.set(values_key, existing_protocol)
             raise
-        if not player_disabled:
-            # send config updated event
-            self.mass.signal_event(
-                EventType.PLAYER_CONFIG_UPDATED,
-                object_id=config.player_id,
-                data=config,
-            )
+        # send config updated event
+        self.mass.signal_event(
+            EventType.PLAYER_CONFIG_UPDATED,
+            object_id=config.player_id,
+            data=config,
+        )
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
@@ -1096,9 +1092,9 @@ class PlayerConfigMixin:
         """
         Store the config of a player that only existed while its device is connected.
 
-        Its config is kept from now on, while the player itself still goes when its
-        device disconnects. Returns the config each protocol stored with it had before,
-        by protocol id: None for a protocol that had none.
+        From now on the player is kept like the player of a device: it stays, unavailable,
+        while its device is away, and it is there after a restart. Returns the config each
+        protocol stored with it had before, by protocol id: None for a protocol that had none.
 
         :param player_id: ID of the player, which has no stored config.
         :raises KeyError: If there is no such player.
@@ -1134,7 +1130,28 @@ class PlayerConfigMixin:
                 },
             )
         player.protocol_ids.update(player.protocols)
+        player.store_protocol_defaults()
         return previous
+
+    def _release_promoted_protocols(
+        self, player_id: str, previous: dict[str, dict[str, Any] | None]
+    ) -> None:
+        """
+        Let the other players whose protocol configs a promoted player took over know.
+
+        :param player_id: ID of the promoted player.
+        :param previous: The config each protocol had before, as the promotion returned it.
+        """
+        for protocol_id, record in previous.items():
+            if (
+                record
+                and (other_id := record.get("player_id"))
+                and other_id != player_id
+                and (other := self.mass.players.get_player(other_id))
+            ):
+                # the config of the protocol names this player now, no longer the other one
+                other.protocol_ids.discard(protocol_id)
+                other.refresh_state()
 
     def _get_stored_value(
         self, conf_key: str, key: str, default: ConfigValueType
@@ -1290,7 +1307,6 @@ class PlayerConfigMixin:
         This does not return audio/protocol specific entries, those are handled elsewhere.
         """
         entries: list[ConfigEntry] = []
-        own = player.own_protocol
 
         icon_entry = deepcopy(
             CONF_ENTRY_PLAYER_ICON_GROUP
@@ -1319,7 +1335,7 @@ class PlayerConfigMixin:
             ConfigEntry(
                 key=CONF_HIDE_IN_UI,
                 type=ConfigEntryType.BOOLEAN,
-                default_value=own.hidden_by_default if own else False,
+                default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
             ),
@@ -1329,7 +1345,7 @@ class PlayerConfigMixin:
                 type=ConfigEntryType.BOOLEAN,
                 category="generic",
                 advanced=False,
-                default_value=own.expose_to_ha_by_default if own else True,
+                default_value=player.expose_to_ha_by_default,
             ),
         ]
         # group-player config entries

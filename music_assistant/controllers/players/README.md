@@ -102,11 +102,13 @@ stored record or when a device is new. It holds:
 What a player reports for its device comes from its `device_protocol`: its own protocol, else its
 most preferred audio protocol. Its device info also carries the identifiers its other protocols
 add. While no protocol is attached, its device info and provider are what was stored, and it has
-no extra attributes. Its name is the custom name, else its stored name. The stored name follows the
-name its own protocol reports while that is attached; an audio protocol sets it only for a player
-without a protocol of its own, or one that has no name stored yet. Its default icon is the one its
-device model names, else that of the provider of its own protocol (also while that is away), else
-the neutral speaker icon.
+no extra attributes. So are the defaults its own protocol gives it for hiding it in the UI, exposing
+it to Home Assistant and keeping it private: what the user set wins, and a protocol that attaches
+with other defaults stores those. Its name is the custom name, else its stored name. The stored name
+follows the name its own protocol reports while that is attached; an audio protocol sets it only for
+a player without a protocol of its own, or one that has no name stored yet. Its default icon is the
+one its device model names, else that of the provider of its own protocol (also while that is
+away), else the neutral speaker icon.
 
 The remembered MA source is cleared five seconds after the player went idle.
 Returning to playing or paused, or selecting a source, before that timeout cancels the reset,
@@ -369,12 +371,13 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 | What happens | What it means for the player and its protocols |
 |---|---|
 | A provider finds a device, or finds it again (`attach`) | The protocol is bound to the player of its device, which is created when the device is new. `on_config_updated()` and `on_attach(player)` run. Another object under the same id replaces the attached one. Nothing attaches for a disabled player or an output the user switched off. |
-| A device goes away, or its provider unloads (`detach`) | `on_detach()` runs. The player stays, unavailable while no other protocol is, and keeps its queue; the queue only stops when this protocol was the one that played. A player that only exists while connected goes with its last protocol, for now. |
+| A device goes away, or its provider unloads (`detach`) | `on_detach()` runs. The player stays, unavailable while no other protocol is, and keeps its queue; the queue only stops when this protocol was the one that played. A player that only exists while connected and has no record goes with its last protocol, unless its queue has items: then it gets its record first (as `keep_player` gives it) and stays. |
 | A provider forgets a device (`remove_protocol`) | The protocol record goes, and so do the protocols that ride on it. An output or control choice of the player that names it falls back to its default. The player goes for good when no protocol record of it is left. |
-| The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
+| The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries; `PLAYER_REMOVED` is sent once, also for a disabled player, which is not live. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
-| The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player goes for now. Its config stays. |
-| The user enables a player | It is created from its record. A player that only exists while connected comes back when its protocol connects. |
+| The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player leaves the registry with a last `PLAYER_UPDATED` that says it is disabled and unavailable, whatever its power control, followed by the `PLAYER_CONFIG_UPDATED` of the save; it is not removed. Its config, its id and its saved queue stay. |
+| The user enables a player | It is created from its record, unavailable until a protocol attaches. |
+| A plugin keeps a player (`keep_player`) | A player that only exists while connected and has no record gets one, as on the first save of its config: from then on it stays, unavailable, while its client is away. Nothing happens for a player that has a record. |
 | Two players turn out to be one device, or a protocol sits on the wrong player | The user merges them, or takes the protocol off; see [One device, two players](#one-device-two-players). |
 
 An attach that waits on the provider (a hook, an address lookup) is stopped by a detach of its
@@ -392,9 +395,9 @@ output.
 1. The config controller loads the settings and runs the migrations, with the conversion of
    player records of the older single-record shape at the end.
 2. The core controllers set up; `players.post_setup` creates a player for every stored player that
-   is enabled and not session-only, announces it with its queue, unavailable until a protocol
-   attaches. A player without protocols whose provider is not installed says so in its
-   `setup_reason` (`provider_not_installed`).
+   is enabled, announces it with its queue, unavailable until a protocol attaches. A player without
+   protocols whose provider is not installed says so in its `setup_reason`
+   (`provider_not_installed`).
 3. The webserver starts: clients get one complete list, unavailable players included.
 4. The providers load and attach their protocols.
 
@@ -402,8 +405,8 @@ output.
 
 Every player has a record under `players/{player_id}` (base keys, its name, and the values of the
 entries every player gets: controls, volume limits, announcement settings, icon, visibility,
-preferred output, plus what the player stores itself: legacy ids, last seen, device info,
-`session_only`, `created_at`). Every protocol has a record under `player_protocols/{protocol_id}`:
+preferred output, plus what the player stores itself: legacy ids, last seen, device info, the defaults of its own
+protocol (`protocol_defaults`), `session_only`, `created_at`). Every protocol has a record under `player_protocols/{protocol_id}`:
 its provider, the id of its player (the edge), its role, whether it is used as an output of its
 player (`enabled`), the values of the entries it declares, the audio settings of its output, what
 its provider stores for it (MAC addresses, identifiers, the protocol it rides on) and its setup data.
@@ -414,7 +417,12 @@ The edge lives on the protocol record and nowhere else: a player finds its proto
 records that name it.
 
 A protocol that only exists while connected gets no record of its own until the user changes
-something about its player; until then it holds its config in memory, and provider writes go there.
+something about its player, a plugin keeps the player (`keep_player()`, for something the user set
+up for it, such as a DJ on its queue), or its client disconnects while the queue of the player has
+items; until then it holds its config in memory, and provider writes go there, and the player
+exists only while the protocol is connected. From then on the player is stored like the player of
+a device: it is created at startup and stays, unavailable, while its client is away.
+Its record keeps `session_only`, so no protocol of a device joins it.
 A record the same protocol has as an output of a device stays, and does not apply to it while it
 connects on its own.
 
@@ -459,25 +467,26 @@ that is published, the controller ([state_updates.py](state_updates.py)):
 
 | Event | When |
 |---|---|
-| `PLAYER_ADDED` | a player object is published: at startup from its config, for a new device or a protocol taken off its player, when the user enables a player, when a player that only exists while connected connects |
+| `PLAYER_ADDED` | a player object is published: at startup from its config, for a new device or a protocol taken off its player, when the user enables a player, when a player that only exists while connected and has no record connects |
 | `PLAYER_UPDATED` | every published change of a player, attach and detach included; a device that goes away or comes back is a change of `available` |
 | `PLAYER_OPTIONS_UPDATED` | the options of a player changed |
-| `PLAYER_REMOVED` | the player object goes; `data={"permanent": True}` when it is removed for good |
+| `PLAYER_REMOVED` | the player object goes: it is removed or merged into another player, or it only exists while connected and its client disconnected while it had no record and an empty queue |
 | `PLAYER_SLEEP_TIMER_UPDATED` | the sleep timer of a player changed; the data is when it expires, `None` when it was cleared or waits for paused playback |
 | `PLAYER_CONFIG_UPDATED` | a config of the player was saved; also when its features or its power, volume or mute control change, for the Home Assistant integration, which only re-reads them on that event |
 
-`PLAYER_REMOVED` says whether the player is removed for good (read with
-`helpers.player.player_removed_for_good`): after a removal by the user (`remove`,
-`remove_unavailable`) or by its provider (`remove_protocol` of its last protocol), and for the
-player that goes in a merge. A disabled player and a player that only exists while connected
-whose client disconnected are gone for now: they come back with the same id and their saved
-queue, so a subscriber keeps what it stores about them.
+`PLAYER_REMOVED` is only sent for a player that is gone for good, and carries no data: a
+subscriber drops what it keeps about it. A device that goes away is no removal: its player stays,
+unavailable. Neither is disabling a player: it leaves the registry with a last `PLAYER_UPDATED`,
+disabled and unavailable, and comes back under the same id when the user enables it, announced with
+`PLAYER_ADDED`. A player that only exists while connected stays when its client disconnects,
+unavailable, once it has a record or its queue has items; else it is removed, and a client that
+connects again is a new player under the same id, announced with `PLAYER_ADDED`.
 
 The queue of a player lives as long as the player object. It is created and restored from the
 saved queue right after `PLAYER_ADDED`, so a subscriber of that event can not count on the queue
 yet. When the protocol that rendered the audio of the player is detached, the queue releases its
 audio and pending work and keeps its items and position. It goes with the player object, and its
-saved state only when the player is removed for good.
+saved state when the player is removed (not when it is disabled).
 
 ## Commands, Outputs, Volume and Power
 

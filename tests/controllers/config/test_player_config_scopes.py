@@ -31,6 +31,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_DEFAULTS,
     CONF_PROTOCOL_KEY_SPLITTER,
 )
 from music_assistant.controllers.config.constants import PLAYER_VALUE_KEYS
@@ -219,7 +220,9 @@ def _stored_values(mass: MusicAssistant, tree: str, config_id: str) -> dict[str,
     """Return the stored values of one config, without what a player stores about its device."""
     values: dict[str, Any] = mass.config.get(f"{tree}/{config_id}/values")
     return {
-        key: value for key, value in values.items() if key not in (CONF_DEVICE_INFO, CONF_LAST_SEEN)
+        key: value
+        for key, value in values.items()
+        if key not in (CONF_DEVICE_INFO, CONF_LAST_SEEN, CONF_PROTOCOL_DEFAULTS)
     }
 
 

@@ -14,7 +14,6 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
-from music_assistant.helpers.player import player_removed_for_good
 
 from .constants import (
     ATTR_GAP_NEXT_ID,
@@ -114,6 +113,8 @@ class AIRadioQueueDJMixin:
                 # only if we're still the live state: a newer switch may have replaced us.
                 # flipped after cleanup so a racing pass doesn't mark old clips' gaps served
                 armed.ready = True
+            # the DJ is set up for its player, which is kept also while a browser or app is away
+            self.mass.players.keep_player(queue_id)
             self._schedule_replan(queue_id)
         return await self.get_queue_dj_status()
 
@@ -233,7 +234,7 @@ class AIRadioQueueDJMixin:
             return
         queue = self.mass.player_queues.get(queue_id)
         if queue is None:
-            # a player gone for now comes back with its queue, only a removal for good drops the DJ
+            # a dropped player comes back with its queue, only PLAYER_REMOVED drops the DJ
             return
         if self._queue_show_station(queue_id) == state.station_id and not queue.ended:
             return
@@ -247,7 +248,7 @@ class AIRadioQueueDJMixin:
             return
         queue = None if queue_removed else self.mass.player_queues.get(queue_id)
         if not queue_removed and queue is None:
-            # a dropped player keeps its record until it is back or removed for good
+            # a dropped player keeps its record until it is back or removed
             return
         if (
             queue is not None
@@ -259,9 +260,6 @@ class AIRadioQueueDJMixin:
 
     async def _on_dj_queue_event(self, event: MassEvent) -> None:
         """Handle queue and player events for the queues that run a DJ."""
-        if event.event == EventType.PLAYER_REMOVED and not player_removed_for_good(event):
-            # disabled, or its client disconnected: it comes back with its queue and its DJ
-            return
         queue_id = str(event.object_id or "")
         await self._ensure_show_dj(queue_id)
         if queue_id in self._dj_queues:
@@ -334,7 +332,7 @@ class AIRadioQueueDJMixin:
             queue = self.mass.player_queues.get(queue_id)
             if queue is None:
                 # usually the queue just hasn't registered yet (players appear seconds after
-                # load); state is kept, QUEUE_ADDED resumes it, a removal for good drops it
+                # load); state is kept, QUEUE_ADDED resumes it, PLAYER_REMOVED is what drops it
                 self.logger.debug("Queue %s is not registered (yet), skipping replan", queue_id)
                 return
             items = self._dj_queue_items(queue_id)

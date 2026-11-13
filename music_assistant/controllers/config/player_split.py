@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_PLAYER_SPLIT_SESSION_ONLY,
     CONF_PLAYER_SPLIT_TREE,
     CONF_PLAYERS,
+    CONF_PROTOCOL_DEFAULTS,
     CONF_SESSION_ONLY,
     PROTOCOL_PRIORITY,
 )
@@ -61,6 +62,32 @@ LEGACY_UNIVERSAL_PLAYER = "universal_player"
 
 # the domains whose players are no device: their protocol has the virtual role
 VIRTUAL_DOMAINS = frozenset({"sync_group", "universal_group"})
+
+# what the Sendspin protocol of each kind of client that only exists while connected gives
+# its player by default, by the type its record from before the split stores; keep in line
+# with the Sendspin provider (providers/sendspin/player.py)
+SESSION_ONLY_DEFAULTS: dict[str, dict[str, bool]] = {
+    # a browser, app or virtual player
+    PlayerType.PLAYER.value: {
+        "hidden_by_default": True,
+        "expose_to_ha_by_default": False,
+        "private": True,
+    },
+    # a display, visualizer or light (SendspinVisualizerPlayer) and a source
+    **{
+        player_type.value: {
+            "hidden_by_default": True,
+            "expose_to_ha_by_default": False,
+            "private": False,
+        }
+        for player_type in (
+            PlayerType.DISPLAY,
+            PlayerType.VISUALIZER,
+            PlayerType.LIGHT,
+            PlayerType.SOURCE,
+        )
+    },
+}
 
 # values the server or a provider stores by itself, which do not make a record one the
 # user customised
@@ -243,9 +270,10 @@ def _migrate_session_only_players(
 
     Those are the Sendspin players that are no protocol of a device: browser and app
     players, virtual players, displays, visualizers, lights and sources. One the user
-    customised is kept and marked; of the others only the player record is deleted:
-    they come back by themselves, with the same id, when they connect. Returns the ids
-    of the deleted and of the marked players.
+    customised is kept and marked, with the defaults its client gives it when the record
+    tells its kind; of the others only the player record is deleted: they come back by
+    themselves, with the same id, when they connect. Returns the ids of the deleted and
+    of the marked players.
 
     :param data: The persistent settings data.
     :param left_alone: Ids of the players that are no candidates.
@@ -268,6 +296,9 @@ def _migrate_session_only_players(
                 if not isinstance(record.get("values"), dict):
                     record["values"] = {}
                 record["values"][CONF_SESSION_ONLY] = True
+                # it is listed before its client connects, as its client has it
+                if defaults := SESSION_ONLY_DEFAULTS.get(str(record.get("player_type"))):
+                    record["values"].setdefault(CONF_PROTOCOL_DEFAULTS, dict(defaults))
                 marked.append(player_id)
             else:
                 del players[player_id]

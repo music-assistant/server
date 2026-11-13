@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType
+from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -17,12 +17,13 @@ from music_assistant.constants import (
     CONF_UNLINKED_FROM,
     SETUP_REASON_PROVIDER_NOT_INSTALLED,
 )
+from music_assistant.controllers.players.lifecycle import REMOVE_UNAVAILABLE_GRACE
 from music_assistant.helpers.config_entries import (
     create_connected_players_entry,
     create_player_selector,
 )
 
-from .harness import Event, Role, Scenario, VisiblePlayer
+from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, Event, Role, Scenario, VisiblePlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -228,43 +229,241 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     assert await scenario.player_configs() == []
 
 
-async def test_customised_session_only_player_keeps_its_config(scenario: Scenario) -> None:
+async def test_a_customised_browser_player_stays_listed_while_its_browser_is_away(
+    scenario: Scenario,
+) -> None:
     """
-    A session-only player the user customised keeps its config while it is away.
+    A web player the user customised stays a player, unavailable, while its client is away.
 
-    It comes back with the config, and still exists only while attached: it goes again once
-    it detaches, its config stays.
+    Its client disconnecting is no removal, also not after a restart; when it connects again
+    the player is available under the same id, with its settings and its queue.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
     player_id = scenario.single_player(browser).player_id
     await scenario.configure_player(player_id, name="Den browser")
+    await scenario.play(player_id)
+    await scenario.idle()
+    scenario.clear_events()
 
     await scenario.detach(browser)
+    await scenario.idle()
+
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
+        (player_id, "Den browser", False)
+    ]
+    assert scenario.events(EventType.PLAYER_UPDATED, object_id=player_id) != []
+
     await scenario.restart()
     await scenario.idle()
 
-    assert scenario.visible_players() == []
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
+        (player_id, "Den browser", False)
+    ]
     assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
         (player_id, "Den browser")
     ]
 
-    returned = scenario.protocol("sendspin_web_3f2a")
-    await scenario.attach(returned)
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
-    assert [(p.player_id, p.name) for p in scenario.visible_players()] == [
-        (player_id, "Den browser")
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
+        (player_id, "Den browser", True)
     ]
+    assert [item.uri for item in scenario.mass.player_queues.items(player_id)] == [TEST_TRACK_URI]
+    assert scenario.removals() == []
 
-    await scenario.detach(returned)
+
+async def test_the_settings_list_every_stored_player_and_every_connected_one(
+    scenario: Scenario,
+) -> None:
+    """
+    The settings list every player with a stored config and every connected player without one.
+
+    A customised web player whose client is away is listed like any other stored player.
+    """
+    wiim = await scenario.add_provider("wiim")
+    sendspin = await scenario.add_provider("sendspin")
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    customised = sendspin.protocol(
+        "sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER
+    )
+    uncustomised = sendspin.protocol("sendspin_app_9c1d", "Phone app", session_only=True)
+    for protocol in (living, customised, uncustomised):
+        await scenario.attach(protocol)
+    living_id = scenario.single_player(living).player_id
+    await scenario.configure_player("sendspin_web_3f2a", name="Den browser")
+    await scenario.detach(customised)
     await scenario.idle()
 
-    assert scenario.visible_players() == []
-    assert [(c.player_id, c.name) for c in await scenario.player_configs()] == [
-        (player_id, "Den browser")
-    ]
+    assert sorted((c.player_id, c.name) for c in await scenario.player_configs()) == sorted(
+        [(living_id, None), ("sendspin_web_3f2a", "Den browser"), ("sendspin_app_9c1d", None)]
+    )
+
+
+def _defaults(scenario: Scenario, player_id: str) -> tuple[Any, ...]:
+    """
+    Return what a player has from what its protocol supplies.
+
+    Whether it is hidden in the UI, exposed to Home Assistant and private, its device info
+    and its icon.
+
+    :param scenario: The running server.
+    :param player_id: ID of the player.
+    """
+    state = scenario.player(player_id)
+    assert state is not None
+    return (
+        state.hide_in_ui,
+        state.expose_to_ha,
+        state.private,
+        state.device_info.manufacturer,
+        state.device_info.model,
+        state.icon,
+    )
+
+
+async def test_a_kept_browser_player_keeps_the_defaults_of_its_client_while_away(
+    scenario: Scenario,
+) -> None:
+    """
+    A kept web player is hidden, not exposed and private while away, as its client has it.
+
+    The same after a restart and when its client connects again.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol(
+        "sendspin_web_3f2a",
+        "Web Browser",
+        session_only=True,
+        expose_to_ha_by_default=False,
+        **WEB_PLAYER,
+    )
+    await scenario.attach(browser)
+    await scenario.configure_player("sendspin_web_3f2a", name="Den browser")
+    connected = _defaults(scenario, "sendspin_web_3f2a")
+    assert connected[:3] == (True, False, True)
+
+    await scenario.detach(browser)
+    await scenario.idle()
+    away = _defaults(scenario, "sendspin_web_3f2a")
+    await scenario.restart()
+    await scenario.idle()
+    restarted = _defaults(scenario, "sendspin_web_3f2a")
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [away, restarted, _defaults(scenario, "sendspin_web_3f2a")] == [connected] * 3
+
+
+async def test_a_value_the_user_set_on_a_kept_browser_player_wins_over_its_client(
+    scenario: Scenario,
+) -> None:
+    """A web player the user showed and exposed stays shown and exposed while its client is away."""
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol(
+        "sendspin_web_3f2a",
+        "Web Browser",
+        session_only=True,
+        expose_to_ha_by_default=False,
+        **WEB_PLAYER,
+    )
+    await scenario.attach(browser)
+    await scenario.configure_player("sendspin_web_3f2a", hide_in_ui=False, expose_player_to_ha=True)
+    chosen = _defaults(scenario, "sendspin_web_3f2a")
+    assert chosen[:3] == (False, True, True)
+
+    await scenario.detach(browser)
+    await scenario.idle()
+    away = _defaults(scenario, "sendspin_web_3f2a")
+    await scenario.restart()
+    await scenario.idle()
+
+    assert [away, _defaults(scenario, "sendspin_web_3f2a")] == [chosen] * 2
+
+
+async def test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_away(
+    scenario: Scenario,
+) -> None:
+    """
+    A player its device hides, keeps from Home Assistant and keeps private stays so while away.
+
+    A device that comes back with other defaults gives the player those from then on.
+    """
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol(
+        "wiim_living",
+        "Living",
+        identifiers=LIVING,
+        hidden_by_default=True,
+        expose_to_ha_by_default=False,
+        private=True,
+    )
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    connected = _defaults(scenario, player_id)
+    assert connected[:3] == (True, False, True)
+
+    await scenario.detach(living)
+    await scenario.idle()
+    away = _defaults(scenario, player_id)
+    await scenario.restart()
+    await scenario.idle()
+
+    assert [away, _defaults(scenario, player_id)] == [connected] * 2
+
+    updated = scenario.provider("wiim").protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(updated)
+    await scenario.detach(updated)
+    await scenario.idle()
+
+    assert _defaults(scenario, player_id)[:3] == (False, True, False)
+
+
+async def test_only_the_own_protocol_of_a_player_gives_it_its_defaults(
+    scenario: Scenario,
+) -> None:
+    """
+    An audio protocol or a bridge that hides itself gives its player none of that.
+
+    The Den player has no protocol of its own, the Living player has one that gives the
+    generic defaults: both keep those, attached, away and after a restart, and nothing of
+    the audio protocols is stored as their defaults.
+    """
+    hiding: dict[str, Any] = {
+        "hidden_by_default": True,
+        "expose_to_ha_by_default": False,
+        "private": True,
+    }
+    wiim = await scenario.add_provider("wiim")
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    den = airplay.protocol("ap_den", "Den", role="audio", identifiers=DEN, **hiding)
+    den_bridge = sendspin.protocol(
+        "spb_den", "Den", role="audio", underlying_protocol_id="ap_den", **hiding
+    )
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    living_airplay = airplay.protocol(
+        "ap_living", "Living", role="audio", identifiers=LIVING, **hiding
+    )
+    for protocol in (den, den_bridge, living, living_airplay):
+        await scenario.attach(protocol)
+    den_id = scenario.single_player(den, den_bridge).player_id
+    living_id = scenario.single_player(living, living_airplay).player_id
+    generic = (False, True, False)
+
+    attached = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
+    for protocol in (den_bridge, den, living, living_airplay):
+        await scenario.detach(protocol)
+    await scenario.idle()
+    away = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
+    await scenario.restart()
+    await scenario.idle()
+    restarted = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
+
+    assert [attached, away, restarted] == [[generic, generic]] * 3
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{den_id}/values/protocol_defaults") is None
 
 
 async def test_session_only_player_has_the_same_id_in_every_session(scenario: Scenario) -> None:
@@ -292,56 +491,195 @@ async def test_session_only_player_has_the_same_id_in_every_session(scenario: Sc
     )
 
 
-async def test_a_disabled_player_is_gone_for_now_and_comes_back_with_its_id(
+async def test_disabling_a_player_takes_it_out_and_enabling_brings_it_back(
     scenario: Scenario,
 ) -> None:
-    """Disabling a player removes it for now: enabling it brings it back under the same id."""
+    """
+    A disabled player leaves the players with a last update that it is unavailable.
+
+    It is not announced as removed and stays listed in the settings, disabled, with its
+    queue saved. Enabling it announces it as added under the same id, with that queue.
+    """
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
     player_id = scenario.single_player(living).player_id
+    await scenario.play(player_id)
+    await scenario.idle()
     scenario.clear_events()
 
     await scenario.disable(player_id)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert [(c.player_id, c.enabled) for c in await scenario.player_configs()] == [
+        (player_id, False)
+    ]
+    assert scenario.removals() == []
+    # as on dev: the last update of the player, then the config event of the save
+    assert scenario.events(
+        EventType.PLAYER_UPDATED,
+        EventType.PLAYER_CONFIG_UPDATED,
+        EventType.PLAYER_REMOVED,
+        object_id=player_id,
+    )[-2:] == [
+        Event(EventType.PLAYER_UPDATED, player_id),
+        Event(EventType.PLAYER_CONFIG_UPDATED, player_id),
+    ]
+    assert scenario.availability_updates(player_id)[-1] is False
+    scenario.clear_events()
+
     await scenario.enable(player_id)
     await scenario.idle()
 
-    assert scenario.removals() == [(player_id, {"permanent": False})]
     assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
-        Event(EventType.PLAYER_REMOVED, player_id),
         Event(EventType.PLAYER_ADDED, player_id),
     ]
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, True)]
+    assert [item.uri for item in scenario.mass.player_queues.items(player_id)] == [TEST_TRACK_URI]
 
 
-@pytest.mark.parametrize("customised", [False, True], ids=["uncustomised", "customised"])
-async def test_a_session_only_player_whose_client_disconnects_is_gone_for_now(
-    scenario: Scenario, customised: bool
+@pytest.mark.parametrize("power", ["native", "external", "none"])
+async def test_the_last_update_of_a_disabled_player_says_it_is_disabled_and_unavailable(
+    scenario: Scenario, power: str
 ) -> None:
     """
-    A web player whose client disconnects is removed for now: it returns under the same id.
+    A player that is disabled leaves with an update that it is disabled and unavailable.
 
-    Also when nothing of it is stored, as it was never customised.
+    Also when its power control switched it off just before, which otherwise shows a player
+    as available and powered off.
+    """
+    features = set(DEFAULT_FEATURES)
+    if power == "native":
+        features.add(PlayerFeature.POWER)
+    wiim = await scenario.add_provider("wiim")
+    living = wiim.protocol(
+        "wiim_living", "Living", identifiers=LIVING, supported_features=features, powered=True
+    )
+    await scenario.attach(living)
+    player_id = scenario.single_player(living).player_id
+    if power == "external":
+        plug = await scenario.add_power_control("switch.living_plug", "Living plug", powered=True)
+        await scenario.configure_player(player_id, power_control=plug.control_id)
+    await scenario.idle()
+    scenario.clear_events()
+
+    await scenario.disable(player_id)
+    await scenario.idle()
+
+    last = scenario.player_updates(player_id)[-1]
+    assert (last.enabled, last.available) == (False, False)
+
+
+async def test_a_browser_player_that_was_only_seen_is_removed_when_its_client_disconnects(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player that was never changed nor played on is removed when its client disconnects.
+
+    Nothing of it is listed anymore. When the client connects again it is announced as added
+    under the same id.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
-    if customised:
-        await scenario.configure_player("sendspin_web_3f2a", name="Study browser")
+    await scenario.idle()
     scenario.clear_events()
 
     await scenario.detach(browser)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert await scenario.player_configs() == []
+    assert scenario.removals() == [("sendspin_web_3f2a", None)]
+
     await scenario.attach(browser)
     await scenario.idle()
 
-    assert scenario.removals() == [("sendspin_web_3f2a", {"permanent": False})]
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", True)
+    ]
     assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
         Event(EventType.PLAYER_REMOVED, "sendspin_web_3f2a"),
         Event(EventType.PLAYER_ADDED, "sendspin_web_3f2a"),
     ]
 
 
-async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario) -> None:
-    """A player the user removes is announced as removed for good."""
+async def test_a_browser_player_that_played_stays_listed_while_its_browser_is_away(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player that was played on stays a player, unavailable, while its client is away.
+
+    Its client disconnects right after the play, before the queue was saved. Clients are told
+    it is updated, not removed; the settings list it, also after a restart; when its client
+    connects again it is available under the same id, with its queue.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+    await scenario.idle()
+    scenario.clear_events()
+    await scenario.play("sendspin_web_3f2a")
+
+    await scenario.detach(browser)
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", False)
+    ]
+    assert scenario.removals() == []
+    assert scenario.availability_updates("sendspin_web_3f2a")[-1] is False
+    assert [c.player_id for c in await scenario.player_configs()] == ["sendspin_web_3f2a"]
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", False)
+    ]
+    assert [c.player_id for c in await scenario.player_configs()] == ["sendspin_web_3f2a"]
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", True)
+    ]
+    assert [item.uri for item in scenario.mass.player_queues.items("sendspin_web_3f2a")] == [
+        TEST_TRACK_URI
+    ]
+    assert scenario.removals() == []
+
+
+async def test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_client_disconnects(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player that played, but whose queue was cleared, has nothing to keep.
+
+    It is removed for good when its client disconnects: nothing of its queue stays saved.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+    await scenario.play("sendspin_web_3f2a")
+    await scenario.idle()
+    scenario.mass.player_queues.clear("sendspin_web_3f2a")
+    await scenario.idle()
+    scenario.clear_events()
+
+    await scenario.detach(browser)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert await scenario.player_configs() == []
+    assert scenario.removals() == [("sendspin_web_3f2a", None)]
+    assert await scenario.saved_queue("sendspin_web_3f2a") is None
+
+
+async def test_a_player_the_user_removes_is_announced_as_removed(scenario: Scenario) -> None:
+    """A player the user removes is announced as removed, without data, as before the split."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
@@ -351,11 +689,57 @@ async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario)
     await scenario.remove(player_id)
     await scenario.idle()
 
-    assert scenario.removals() == [(player_id, {"permanent": True})]
+    assert scenario.removals() == [(player_id, None)]
 
 
-async def test_a_player_merged_into_another_one_is_removed_for_good(scenario: Scenario) -> None:
-    """The player that goes in a merge is announced as removed for good."""
+@pytest.mark.parametrize(
+    "state", ["disabled", "provider_not_loaded", "unavailable", "browser_away"]
+)
+async def test_a_player_that_is_not_there_is_announced_once_when_it_is_removed(
+    scenario: Scenario, state: str
+) -> None:
+    """
+    A player that is disabled, away or without its provider is removed for good, announced once.
+
+    Its record and its saved queue go with it.
+    """
+    wiim = await scenario.add_provider("wiim")
+    sendspin = await scenario.add_provider("sendspin")
+    if state == "browser_away":
+        protocol = sendspin.protocol(
+            "sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER
+        )
+    else:
+        protocol = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    await scenario.attach(protocol)
+    player_id = scenario.single_player(protocol).player_id
+    await scenario.play(player_id)
+    await scenario.idle()
+    if state == "disabled":
+        await scenario.disable(player_id)
+    elif state == "provider_not_loaded":
+        await scenario.mass.unload_provider(wiim.instance_id)
+    else:
+        await scenario.detach(protocol)
+    await scenario.idle()
+    scenario.clear_events()
+
+    if state == "unavailable":
+        await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
+        assert await scenario.mass.players.remove_unavailable() == [player_id]
+    else:
+        await scenario.remove(player_id)
+    await scenario.idle()
+
+    assert scenario.removals() == [(player_id, None)]
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None
+    assert await scenario.saved_queue(player_id) is None
+
+
+async def test_the_player_that_goes_in_a_merge_is_announced_as_removed(
+    scenario: Scenario,
+) -> None:
+    """The player that goes in a merge is announced as removed."""
     airplay = await scenario.add_provider("airplay")
     chromecast = await scenario.add_provider("chromecast")
     tv_airplay = airplay.protocol(
@@ -376,7 +760,40 @@ async def test_a_player_merged_into_another_one_is_removed_for_good(scenario: Sc
     await scenario.mass.players.merge(absorb_id, keep_id)
     await scenario.idle()
 
-    assert scenario.removals() == [(absorb_id, {"permanent": True})]
+    assert scenario.removals() == [(absorb_id, None)]
+
+
+async def test_a_disabled_player_that_goes_in_a_merge_is_announced_as_removed(
+    scenario: Scenario,
+) -> None:
+    """A disabled player merged into another one is gone for good: announced once, queue gone."""
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    tv_airplay = airplay.protocol(
+        "ap_tv", "Living TV", role="audio", identifiers={IdentifierType.AIRPLAY_ID: "C0:FF:EE:01"}
+    )
+    tv_cast = chromecast.protocol(
+        "cast_tv", "Living TV", role="audio", identifiers={IdentifierType.CAST_UUID: "6f0c1a2b"}
+    )
+    await scenario.attach(tv_airplay)
+    await scenario.advance(15)
+    await scenario.attach(tv_cast)
+    await scenario.advance(15)
+    await scenario.idle()
+    keep_id = scenario.single_player(tv_airplay).player_id
+    absorb_id = scenario.single_player(tv_cast).player_id
+    await scenario.play(absorb_id)
+    await scenario.idle()
+    await scenario.disable(absorb_id)
+    await scenario.idle()
+    scenario.clear_events()
+
+    await scenario.mass.players.merge(absorb_id, keep_id)
+    await scenario.idle()
+
+    assert scenario.removals() == [(absorb_id, None)]
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{absorb_id}") is None
+    assert await scenario.saved_queue(absorb_id) is None
 
 
 # the stored config of a web player as written before the split, where every player was stored
@@ -401,7 +818,8 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
     """
     A web player stored before the split has the same id when it next connects.
 
-    Its config is only kept when the user customised it, and then it comes back with it.
+    Its config is only kept when the user customised it: then it is a player from the start,
+    unavailable until its client connects, with its config.
     """
     sendspin = await scenario.add_provider("sendspin")
     sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
@@ -411,7 +829,9 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
     )
     await scenario.idle()
 
-    assert scenario.visible_players() == []
+    assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == (
+        [("sendspin_web_3f2a", stored_name, False)] if stored_name else []
+    )
     assert [(c.player_id, c.name) for c in await scenario.player_configs()] == (
         [("sendspin_web_3f2a", stored_name)] if stored_name else []
     )
@@ -422,6 +842,125 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
     assert [(player.player_id, player.name) for player in scenario.visible_players()] == [
         ("sendspin_web_3f2a", stored_name or "Web Browser")
     ]
+
+
+async def test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_connects(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player an older version stored without changes, whose queue was saved, loses nothing.
+
+    The upgrade deletes its stored config, not its saved queue: when its client connects it
+    is a player under the same id with that queue, and it stays when the client disconnects.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+    await scenario.play("sendspin_web_3f2a")
+    await scenario.idle()
+    await scenario.detach(browser)
+    await scenario.idle()
+    await scenario.seed_config({CONF_PLAYERS: {"sendspin_web_3f2a": None}})
+    await scenario.seed_pre_split_config({"sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER})
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert await scenario.player_configs() == []
+    assert await scenario.saved_queue("sendspin_web_3f2a") == [TEST_TRACK_URI]
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [item.uri for item in scenario.mass.player_queues.items("sendspin_web_3f2a")] == [
+        TEST_TRACK_URI
+    ]
+
+    scenario.clear_events()
+    await scenario.detach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", False)
+    ]
+    assert scenario.removals() == []
+
+
+async def test_pre_split_browser_players_keep_the_defaults_of_their_client_from_the_start(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player an older version stored and the upgrade keeps is hidden, not exposed, private.
+
+    It is so right after the upgrade, before its client connected, and stays so when it
+    does; a value the user set wins. One the user never touched is gone.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    for client_id in ("sendspin_web_renamed", "sendspin_web_untouched", "sendspin_web_exposed"):
+        sendspin.protocol(
+            client_id,
+            "Web Browser",
+            session_only=True,
+            expose_to_ha_by_default=False,
+            **WEB_PLAYER,
+        )
+    await scenario.seed_pre_split_config(
+        {
+            "sendspin_web_renamed": PRE_SPLIT_WEB_PLAYER
+            | {"player_id": "sendspin_web_renamed", "name": "Study browser"},
+            "sendspin_web_untouched": PRE_SPLIT_WEB_PLAYER
+            | {"player_id": "sendspin_web_untouched"},
+            "sendspin_web_exposed": PRE_SPLIT_WEB_PLAYER
+            | {
+                "player_id": "sendspin_web_exposed",
+                "values": {"sendspin_static_delay": 120, "expose_player_to_ha": True},
+            },
+        }
+    )
+    await scenario.idle()
+
+    def _listed() -> list[tuple[Any, ...]]:
+        return sorted(
+            (p.player_id, p.available, *_defaults(scenario, p.player_id)[:3])
+            for p in scenario.visible_players()
+        )
+
+    assert _listed() == [
+        ("sendspin_web_exposed", False, True, True, True),
+        ("sendspin_web_renamed", False, True, False, True),
+    ]
+    assert sorted(c.player_id for c in await scenario.player_configs()) == [
+        "sendspin_web_exposed",
+        "sendspin_web_renamed",
+    ]
+
+    for client_id in ("sendspin_web_renamed", "sendspin_web_exposed"):
+        await scenario.attach(scenario.protocol(client_id))
+    await scenario.idle()
+
+    assert _listed() == [
+        ("sendspin_web_exposed", True, True, True, True),
+        ("sendspin_web_renamed", True, True, False, True),
+    ]
+
+
+async def test_a_stored_player_with_part_of_its_defaults_has_the_generic_rest(
+    scenario: Scenario,
+) -> None:
+    """A kept web player whose record holds only some of its defaults has the others generic."""
+    sendspin = await scenario.add_provider("sendspin")
+    sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.seed_pre_split_config(
+        {
+            "sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER
+            | {
+                "name": "Study browser",
+                "values": {"protocol_defaults": {"hidden_by_default": True}},
+            }
+        }
+    )
+    await scenario.idle()
+
+    assert _defaults(scenario, "sendspin_web_3f2a")[:3] == (True, True, False)
 
 
 async def test_pre_split_session_only_player_the_user_disabled_stays_disabled(

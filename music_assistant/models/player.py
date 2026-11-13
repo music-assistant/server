@@ -62,6 +62,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_DEFAULTS,
     CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     PLAYER_CONTROL_PROTOCOL,
@@ -961,10 +962,7 @@ class Player:
 
         This is a convenience property based on the config entry.
         """
-        own = self._own_protocol
-        return bool(
-            self._config.get_value(CONF_HIDE_IN_UI, own.hidden_by_default if own else False)
-        )
+        return bool(self._config.get_value(CONF_HIDE_IN_UI, self.hidden_by_default))
 
     @cached_property
     def expose_to_ha(self) -> bool:
@@ -974,12 +972,17 @@ class Player:
         This is a convenience property that returns True if the player is set to be exposed
         to Home Assistant, based on the config entry.
         """
-        own = self._own_protocol
-        return bool(
-            self._config.get_value(
-                CONF_EXPOSE_PLAYER_TO_HA, own.expose_to_ha_by_default if own else True
-            )
-        )
+        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA, self.expose_to_ha_by_default))
+
+    @property
+    def hidden_by_default(self) -> bool:
+        """Return if the player is hidden in the UI unless the user chose otherwise."""
+        return self._protocol_default("hidden_by_default", False)
+
+    @property
+    def expose_to_ha_by_default(self) -> bool:
+        """Return if the player is exposed to Home Assistant unless the user chose otherwise."""
+        return self._protocol_default("expose_to_ha_by_default", True)
 
     @property
     def flow_mode(self) -> bool:
@@ -1426,7 +1429,7 @@ class Player:
             self._config.default_name = effects.default_name
             self.mass.config.set_player_default_name(self.player_id, effects.default_name)
         if "device_info.model" in changed_values or "device_info.manufacturer" in changed_values:
-            self._store_device_info()
+            self.store_protocol_defaults()
         if effects.position_jumped and signal_event:
             # the corrected playback position jumped (seek or buffer correction):
             # this is not an event by itself (only current_media is event-relevant)
@@ -1441,6 +1444,36 @@ class Player:
             self.mass.players.signal_player_state_update(
                 self, changed_values, media_position_jumped=effects.media_position_jumped
             )
+
+    def store_protocol_defaults(self) -> None:
+        """
+        Store what the protocols of the player give it, for when none of them is attached.
+
+        That is its device info, and whether its own protocol hides it in the UI, exposes it to
+        Home Assistant and keeps it private by default. Nothing is stored for a player without
+        a stored config.
+        """
+        if not self._protocols:
+            return
+        conf_key = f"{CONF_PLAYERS}/{self.player_id}"
+        if self.mass.config.get(conf_key) is None:
+            # a player that only exists while its device is connected has no config to keep it in
+            return
+        device_info = self.device_info
+        stored_info = {"model": device_info.model, "manufacturer": device_info.manufacturer}
+        for key in ("software_version", "model_id", "manufacturer_id"):
+            if value := getattr(device_info, key):
+                stored_info[key] = value
+        values: dict[str, Any] = {CONF_DEVICE_INFO: stored_info}
+        if (own := self._own_protocol) is not None:
+            values[CONF_PROTOCOL_DEFAULTS] = {
+                "hidden_by_default": own.hidden_by_default,
+                "expose_to_ha_by_default": own.expose_to_ha_by_default,
+                "private": own.private,
+            }
+        for key, value in values.items():
+            if self.mass.config.get(f"{conf_key}/values/{key}") != value:
+                self.mass.config.set(f"{conf_key}/values/{key}", value)
 
     def mark_external_source_ended(self) -> None:
         """
@@ -1860,20 +1893,19 @@ class Player:
                 setattr(device_info, key, value)
         return device_info
 
-    def _store_device_info(self) -> None:
-        """Store the device info of the player, for when none of its protocols is attached."""
-        if not self._protocols:
-            return
-        conf_key = f"{CONF_PLAYERS}/{self.player_id}"
-        if self.mass.config.get(conf_key) is None:
-            # a player that only exists while its device is connected has no config to keep it in
-            return
-        device_info = self._state.device_info
-        stored = {"model": device_info.model, "manufacturer": device_info.manufacturer}
-        for key in ("software_version", "model_id", "manufacturer_id"):
-            if value := getattr(device_info, key):
-                stored[key] = value
-        self.mass.config.set(f"{conf_key}/values/{CONF_DEVICE_INFO}", stored)
+    def _protocol_default(self, key: str, default: bool) -> bool:
+        """
+        Return a default the own protocol gives the player, else the one it gave last.
+
+        :param key: Name of the property of the protocol.
+        :param default: The value for a player whose own protocol never gave one.
+        """
+        if (own := self._own_protocol) is not None:
+            return bool(getattr(own, key))
+        stored = self.mass.config.get(
+            f"{CONF_PLAYERS}/{self.player_id}/values/{CONF_PROTOCOL_DEFAULTS}"
+        )
+        return bool(stored.get(key, default)) if isinstance(stored, dict) else default
 
     def _offline_by_power_control(self, reachable: bool) -> bool:
         """
@@ -2213,7 +2245,7 @@ class Player:
             offline_by_power_control=self._offline_by_power_control(reachable),
             own=own,
             device_info=self.device_info,
-            private=own_protocol.private if own_protocol else False,
+            private=self._protocol_default("private", False),
             trusts_reported_source=(own_protocol.trusts_reported_source if own_protocol else False),
             grouping_locked=grouping_locked,
             active_sound_mode=own_protocol.active_sound_mode if own_protocol else None,

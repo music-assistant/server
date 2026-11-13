@@ -1057,10 +1057,10 @@ async def test_derived_protocol_that_connects_while_its_player_is_removed_waits(
     dropping = asyncio.Event()
     drop_player = players._drop_player
 
-    async def _drop_slowly(player: Player, *, permanent: bool) -> None:
+    async def _drop_slowly(player_id: str, player: Player | None) -> None:
         # releasing what the player played takes a while
         await dropping.wait()
-        await drop_player(player, permanent=permanent)
+        await drop_player(player_id, player)
 
     with patch.object(players, "_drop_player", _drop_slowly):
         removal = await scenario.command(players.remove(player_id))
@@ -1346,9 +1346,9 @@ async def test_discovery_after_a_removal_is_dropped_when_its_provider_unloads(
 
 async def test_disable_and_enable_announce_the_player_going_and_coming(scenario: Scenario) -> None:
     """
-    A disabled player is removed for clients and keeps its config; enabling brings it back.
+    A disabled player leaves the players, unavailable; enabling it brings it back.
 
-    Every protocol of the player goes with it, its audio protocols as well as its own.
+    It keeps its config. Every protocol of the player goes with it, its audio protocols as well as its own.
     """
     sonos = await scenario.add_provider("sonos")
     airplay = await scenario.add_provider("airplay")
@@ -1372,9 +1372,10 @@ async def test_disable_and_enable_announce_the_player_going_and_coming(scenario:
     assert scenario.mass.players.wants_protocol("ap_kitchen") is False
     assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN", "ap_kitchen"])
     assert scenario.events(*LIFECYCLE_EVENTS, EventType.PLAYER_CONFIG_UPDATED) == [
+        Event(EventType.PLAYER_UPDATED, player_id),
         Event(EventType.PLAYER_CONFIG_UPDATED, player_id),
-        Event(EventType.PLAYER_REMOVED, player_id),
     ]
+    assert scenario.availability_updates(player_id) == [False]
     with pytest.raises(PlayerUnavailableError):
         await scenario.mass.players.cmd_stop(player_id)
     # the providers find the device again, which attaches nothing for a disabled player

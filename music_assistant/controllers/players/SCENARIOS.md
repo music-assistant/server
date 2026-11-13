@@ -253,6 +253,26 @@ is Study. A name the user gives the player stays, whatever its protocols report.
   while its DLNA renderer stays up.
 - Proven by: `test_attach_detach.py::test_a_player_keeps_its_stored_name_while_only_another_protocol_is_there`
 
+### AWAY-9 · A player keeps the defaults of its device while the device is away
+
+The Living speaker's protocol hides it in the UI, keeps it from Home Assistant and keeps it
+private by default. The speaker goes away: the player is still hidden, not exposed and private,
+with the same device info and icon, also after a restart. When the speaker comes back with other
+defaults, the player has those from then on, also while it is away again.
+
+- End-to-end: **no**: no player provider of the lab gives a device these defaults.
+- Proven by: `test_lifecycle.py::test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_away`
+
+### AWAY-10 · Only the player's own protocol gives it those defaults
+
+The Den player has only an AirPlay receiver and a Sendspin bridge on it, and the Living player has
+a WiiM protocol of its own and an AirPlay receiver. Their AirPlay receivers and the bridge would
+hide the player, keep it from Home Assistant and keep it private. Neither player is: both are
+shown, exposed and not private, while attached, while away and after a restart.
+
+- End-to-end: **no**: no audio protocol of the lab gives a device these defaults.
+- Proven by: `test_lifecycle.py::test_only_the_own_protocol_of_a_player_gives_it_its_defaults`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
@@ -573,14 +593,14 @@ stay apart.
 - End-to-end: **no**: it needs identifiers that arrive late.
 - Proven by: `test_identity.py::test_used_duplicate_is_not_merged`
 
-### MERGE-3 · The player that goes in a merge is removed for good
+### MERGE-3 · The player that goes in a merge is announced as removed
 
 The user merges the player of a TV's Cast receiver into the player of its AirPlay receiver.
-Clients are told the Cast receiver's player is removed for good.
+Clients are told the Cast receiver's player is removed.
 
 - End-to-end: **possible with** two players that may be one, such as an AirPlay and a DLNA
   receiver.
-- Proven by: `test_lifecycle.py::test_a_player_merged_into_another_one_is_removed_for_good`
+- Proven by: `test_lifecycle.py::test_the_player_that_goes_in_a_merge_is_announced_as_removed`
 
 ### MERGE-4 · The user merges a speaker and its twin
 
@@ -678,6 +698,18 @@ is back on Kitchen.
   - `tests/controllers/players/test_unlink.py::test_unlinked_protocol_stays_on_its_player`
   - `tests/controllers/players/test_unlink.py::test_unlink_then_merge_back_puts_the_protocol_back`
 
+### MERGE-11 · A disabled player that goes in a merge is announced as removed
+
+The user disables the player of a TV's Cast receiver, which played, and merges it into the
+player of its AirPlay receiver. Clients are told once that the Cast receiver's player is removed,
+its saved queue is gone, and so is the DJ of the AI radio on its queue.
+
+- End-to-end: **possible with** two players that may be one, such as an AirPlay and a DLNA
+  receiver, one of them disabled.
+- Proven by:
+  - `test_lifecycle.py::test_a_disabled_player_that_goes_in_a_merge_is_announced_as_removed`
+  - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_goes_with_a_disabled_player_that_goes_in_a_merge`
+
 ## Restart and upgrade
 
 Players are stored. After a restart a player is back with its id, name and settings, unavailable
@@ -744,10 +776,10 @@ gives no setup reason.
 
 ## Removing and disabling
 
-What goes when the user removes a provider, removes a player or disables one. Clients learn
-whether a player is removed for good, after a removal or a merge (MERGE-3), or is gone for now,
-when it is disabled or a browser disconnects; a player that is gone for now comes back under the
-same id.
+What goes when the user removes a provider, removes a player or disables one. Clients are told
+a player is removed, with no data besides its id, only when it is gone for good: removed or merged
+into another player (MERGE-3), or a browser player that was only seen (WEB-4); a device that goes
+away is no removal (AWAY-1), and neither is disabling a player (REMOVE-4).
 
 ### REMOVE-1 · A player outlives the removal of its vendor's provider on its other protocols
 
@@ -769,22 +801,27 @@ its queue and its settings go, and clients are told it is removed.
 
 ### REMOVE-3 · A removed player whose device is still there comes back with its defaults
 
-The user named the Living player Kitchen, then removes it. Clients are told it is removed for
-good. Its provider finds the device again, and clients are told about a player added under a new
+The user named the Living player Kitchen, then removes it. Clients are told it is removed. Its
+provider finds the device again, and clients are told about a player added under a new
 id, available, with the default name Living.
 
 - End-to-end: **yes**. Remove a virtual player whose container keeps running.
 - Proven by:
   - `test_lifecycle.py::test_removed_player_of_a_present_device_comes_back_as_new`
-  - `test_lifecycle.py::test_a_player_the_user_removes_is_removed_for_good`
+  - `test_lifecycle.py::test_a_player_the_user_removes_is_announced_as_removed`
 
-### REMOVE-4 · A disabled player is gone for now and comes back with its id
+### REMOVE-4 · A disabled player leaves the players and comes back with its id when enabled
 
-The user disables the Living player and enables it again. Clients are told it is removed for now,
-not for good, and then that it is added again under the same id.
+The Living player played a track. The user disables it: clients get a last update that it is
+disabled and unavailable, also when its power control just switched it off, not that it is
+removed; it is no player anymore, and the settings still list it, disabled. The user enables it again: clients are told it is added under the same id, available,
+with its queue. A DJ of the AI radio on its queue is still there.
 
 - End-to-end: **yes**. Disable a virtual player and enable it again.
-- Proven by: `test_lifecycle.py::test_a_disabled_player_is_gone_for_now_and_comes_back_with_its_id`
+- Proven by:
+  - `test_lifecycle.py::test_disabling_a_player_takes_it_out_and_enabling_brings_it_back`
+  - `test_lifecycle.py::test_the_last_update_of_a_disabled_player_says_it_is_disabled_and_unavailable`
+  - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_stays_on_the_queue_of_a_player_that_is_disabled_and_enabled`
 
 ### REMOVE-5 · "Remove all unavailable players" removes only players nothing finds
 
@@ -817,11 +854,25 @@ looks for groups again.
   - `tests/providers/sync_group/test_lifecycle.py::test_removing_a_group_forgets_it`
   - `tests/providers/universal_group/test_lifecycle.py::test_removing_a_group_forgets_it`
 
+### REMOVE-7 · A player that is not there is announced once when it is removed
+
+The Living player played and is then disabled, or its provider is unloaded, or its speaker is
+away and the user removes all unavailable players; or a browser player that played is away. The
+user removes it: clients are told once that it is removed, its record and its saved queue are
+gone, and so is the DJ of the AI radio on the queue of the disabled one.
+
+- End-to-end: **yes**. Disable a virtual player that played, then remove it.
+- Proven by:
+  - `test_lifecycle.py::test_a_player_that_is_not_there_is_announced_once_when_it_is_removed`
+  - `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_goes_with_a_disabled_player_that_is_removed`
+
 ## Browser and app players
 
-Browser and app players exist only while they are connected. A player of one has the id of its
-client, nothing is stored of it until the user customises it, and it is the same player in every
-session. The examples use a browser connected through Sendspin.
+A browser or app player has the id of its client and is the same player in every session. Until
+it is used, nothing of it is stored and it exists only while it is connected. Once it is used (the
+user customised it, it played, or a plugin keeps it for something the user set up), it is stored
+and stays like the player of a device: unavailable while its client is away. The examples use a
+browser connected through Sendspin.
 
 ### WEB-1 · A browser player exists while it is connected and leaves nothing stored
 
@@ -833,15 +884,15 @@ stored. After a restart there is no player and no stored player.
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_session_only_web_player_exists_while_attached`
 
-### WEB-2 · A customised browser player keeps its settings while it is away
+### WEB-2 · A customised browser player stays listed, unavailable, while its browser is away
 
-The user renames a browser player. The browser disconnects and the server restarts: there is no
-player, but the settings list it with its name. When the browser connects again, the player is
-back under the same id with that name. When it disconnects again, the player is gone again and
-the settings still list it.
+The user renames a browser player and plays on it. The browser disconnects: the player stays,
+unavailable, with its name, and clients are told it is updated, not removed. After a restart it is
+still listed, unavailable, in the players and in the settings. When the browser connects again,
+the player is available under the same id, with its name and its queue.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
-- Proven by: `test_lifecycle.py::test_customised_session_only_player_keeps_its_config`
+- Proven by: `test_lifecycle.py::test_a_customised_browser_player_stays_listed_while_its_browser_is_away`
 
 ### WEB-3 · A browser player has the same id in every session
 
@@ -851,19 +902,21 @@ time its player has the id of its client, and clients are told about it as added
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_session_only_player_has_the_same_id_in_every_session`
 
-### WEB-4 · A browser that disconnects is gone for now
+### WEB-4 · A browser player that was only seen is removed when its browser disconnects
 
-A browser disconnects and connects again. Clients are told its player is removed for now, not for
-good, and then added again under the same id. That holds whether the user customised it or not.
+A browser connects and disconnects without playing; nobody changed its player. Clients are told
+the player is removed, and the settings do not list it. The browser connects again: clients are
+told the player is added under the same id.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
-- Proven by: `test_lifecycle.py::test_a_session_only_player_whose_client_disconnects_is_gone_for_now`
+- Proven by: `test_lifecycle.py::test_a_browser_player_that_was_only_seen_is_removed_when_its_client_disconnects`
 
 ### WEB-5 · A browser player stored by an older version keeps its id
 
-An older version stored a browser player. After the upgrade it is no player until it connects,
-and the settings list it only when the user had named it. When it connects it is a player under
-its client id, with the stored name, or else its default name.
+An older version stored a browser player. When the user had named it, it is a player after the
+upgrade, unavailable, and the settings list it; otherwise it is no player and nothing is listed
+until it connects. When it connects it is an available player under its client id, with the
+stored name, or else its default name.
 
 - End-to-end: **no**: the lab has no settings of an older version.
 - Proven by: `test_lifecycle.py::test_pre_split_session_only_player_comes_back_with_its_id`
@@ -886,6 +939,88 @@ form keeps it.
 - End-to-end: **possible with** a Sendspin client that connects as a browser player, and the
   settings form of a plugin that uses these pickers.
 - Proven by: `test_lifecycle.py::test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choice`
+
+### WEB-8 · The settings list every stored player and every connected player without a record
+
+The settings list the Living speaker, a browser player the user named whose browser is away, and
+an app player that is connected and was never changed.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_the_settings_list_every_stored_player_and_every_connected_one`
+
+### WEB-9 · A kept browser player keeps the defaults of its browser while it is away
+
+A browser player is hidden in the UI, not exposed to Home Assistant and private. The user renames
+it, and the browser disconnects: the player is still hidden, not exposed and private, with the
+same device info and icon, also after a restart and when the browser connects again.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_kept_browser_player_keeps_the_defaults_of_its_client_while_away`
+
+### WEB-10 · What the user set on a browser player wins over what its browser gives it
+
+The user shows a browser player in the UI and exposes it to Home Assistant. The browser
+disconnects: the player stays shown and exposed, also after a restart, and is still private.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_value_the_user_set_on_a_kept_browser_player_wins_over_its_client`
+
+### WEB-11 · A browser player with a DJ stays while its browser is away
+
+The user switches on an AI radio DJ for the queue of a browser player that has not played yet.
+The browser disconnects: the player stays, unavailable, and is not removed. When the browser
+connects again the queue still has its DJ. Switching the DJ off again does not undo that.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player and the AI
+  radio plugin.
+- Proven by: `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_keeps_a_browser_player_whose_client_disconnects`
+
+### WEB-12 · A browser player that played stays listed, unavailable, while its browser is away
+
+A browser plays and disconnects right after, before its queue was saved. Clients are told its
+player is updated, unavailable, not removed, and the settings list it, also after a restart. When
+the browser connects again, the player is available under the same id, with its queue.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_browser_player_that_played_stays_listed_while_its_browser_is_away`
+
+### WEB-13 · A browser player whose queue was cleared is removed when its browser disconnects
+
+A browser plays, and its queue is cleared. When the browser disconnects, there is nothing to keep:
+clients are told its player is removed, the settings do not list it, and nothing of its queue
+stays saved.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_client_disconnects`
+
+### WEB-14 · A browser player an older version stored without changes keeps its saved queue
+
+An older version stored a browser player the user never changed, and the queue it played. After
+the upgrade it is no player and the settings do not list it, but its queue is still saved. When
+the browser connects, its player has that queue under the same id, and when the browser
+disconnects again, the player stays, unavailable.
+
+- End-to-end: **no**: the lab has no settings of an older version.
+- Proven by: `test_lifecycle.py::test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_connects`
+
+### WEB-15 · A browser player an older version stored is hidden, not exposed and private from the start
+
+An older version stored three browser players: one the user renamed, one the user never touched,
+and one the user exposed to Home Assistant. After the upgrade, before any browser connected, the
+untouched one is gone, the renamed one is listed, unavailable, hidden, not exposed and private,
+and the exposed one is listed the same but exposed. When their browsers connect, nothing of that
+changes.
+
+- End-to-end: **no**: the lab has no settings of an older version.
+- Proven by: `test_lifecycle.py::test_pre_split_browser_players_keep_the_defaults_of_their_client_from_the_start`
+
+### WEB-16 · A stored browser player with part of its defaults has the generic rest
+
+The record of a browser player holds only that it is hidden, of the defaults its browser gives it.
+While the browser is away, the player is hidden, exposed to Home Assistant and not private.
+
+- End-to-end: **no**: no version stores part of these defaults.
+- Proven by: `test_lifecycle.py::test_a_stored_player_with_part_of_its_defaults_has_the_generic_rest`
 
 ## Commands to a busy player
 

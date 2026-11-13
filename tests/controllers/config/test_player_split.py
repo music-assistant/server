@@ -47,6 +47,14 @@ SENDSPIN = "sendspin"
 UNIVERSAL_PLAYER = "universal_player"
 
 FLAGS = {CONF_PLAYER_SPLIT_SESSION_ONLY: True, CONF_PLAYER_SPLIT_TREE: True}
+# what a kept browser or app player gets as the defaults its client gives it
+WEB_DEFAULTS = {
+    "protocol_defaults": {
+        "hidden_by_default": True,
+        "expose_to_ha_by_default": False,
+        "private": True,
+    }
+}
 
 
 def _record(
@@ -629,12 +637,16 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
         "ss_value",
     ]
     assert result[CONF_PLAYERS]["ss_disabled"] == _record(
-        "ss_disabled", SENDSPIN, enabled=False, values={"session_only": True}
+        "ss_disabled", SENDSPIN, enabled=False, values={"session_only": True, **WEB_DEFAULTS}
     )
     assert result[CONF_PLAYERS]["ss_named"] == _record(
-        "ss_named", SENDSPIN, name="Tablet", values={"session_only": True}
+        "ss_named", SENDSPIN, name="Tablet", values={"session_only": True, **WEB_DEFAULTS}
     )
-    assert result[CONF_PLAYERS]["ss_value"]["values"] == {"hide_in_ui": True, "session_only": True}
+    assert result[CONF_PLAYERS]["ss_value"]["values"] == {
+        "hide_in_ui": True,
+        "session_only": True,
+        **WEB_DEFAULTS,
+    }
     assert result[CONF_PLAYER_PROTOCOLS]["ss_value"] == _protocol_record(
         "ss_value", SENDSPIN, "ss_value", role="native", values={"sendspin_static_delay": 5}
     )
@@ -677,7 +689,13 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
                     },
                 )
             ],
-            {"ss_50": _record("ss_50", SENDSPIN, values={"created_at": 1, "session_only": True})},
+            {
+                "ss_50": _record(
+                    "ss_50",
+                    SENDSPIN,
+                    values={"created_at": 1, "session_only": True, **WEB_DEFAULTS},
+                )
+            },
             {
                 "ss_50": _protocol_record(
                     "ss_50",
@@ -703,7 +721,7 @@ def test_session_only_players_are_deleted_unless_customised() -> None:
                     "ss_51",
                     SENDSPIN,
                     name="Tablet",
-                    values={"hide_in_ui": True, "session_only": True},
+                    values={"hide_in_ui": True, "session_only": True, **WEB_DEFAULTS},
                 )
             },
             {
@@ -745,6 +763,109 @@ def test_a_declined_audio_input_stays_with_the_protocol_of_its_client(
     assert result[CONF_PLAYER_PROTOCOLS] == protocols
 
 
+def _without_values(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a stored record that holds no values at all."""
+    return {key: value for key, value in record.items() if key != "values"}
+
+
+@pytest.mark.parametrize(
+    ("record", "values"),
+    [
+        (
+            _record("ss_vis", SENDSPIN, "visualizer", name="Lights"),
+            {
+                "session_only": True,
+                "protocol_defaults": {
+                    "hidden_by_default": True,
+                    "expose_to_ha_by_default": False,
+                    "private": False,
+                },
+            },
+        ),
+        (
+            _record("ss_src", SENDSPIN, "source", name="Turntable"),
+            {
+                "session_only": True,
+                "protocol_defaults": {
+                    "hidden_by_default": True,
+                    "expose_to_ha_by_default": False,
+                    "private": False,
+                },
+            },
+        ),
+        (
+            _record("ss_display", SENDSPIN, "display", name="Kitchen display"),
+            {
+                "session_only": True,
+                "protocol_defaults": {
+                    "hidden_by_default": True,
+                    "expose_to_ha_by_default": False,
+                    "private": False,
+                },
+            },
+        ),
+        (
+            _record("ss_light", SENDSPIN, "light", name="Strip"),
+            {
+                "session_only": True,
+                "protocol_defaults": {
+                    "hidden_by_default": True,
+                    "expose_to_ha_by_default": False,
+                    "private": False,
+                },
+            },
+        ),
+        # a kind of client whose record does not tell what its client gives it
+        (_record("ss_unknown", SENDSPIN, "unknown", name="Gadget"), {"session_only": True}),
+        (
+            {**_record("ss_untyped", SENDSPIN, name="Tablet"), "player_type": None},
+            {"session_only": True},
+        ),
+        (
+            _without_values(_record("ss_bare", SENDSPIN, name="Tablet")),
+            {"session_only": True, **WEB_DEFAULTS},
+        ),
+        (
+            _record("ss_garbled", SENDSPIN, name="Tablet", values="garbled"),
+            {"session_only": True, **WEB_DEFAULTS},
+        ),
+        # defaults that are stored already are never overwritten, whatever they hold
+        (
+            _record(
+                "ss_stored",
+                SENDSPIN,
+                name="Tablet",
+                values={"protocol_defaults": {"hidden_by_default": False}},
+            ),
+            {"session_only": True, "protocol_defaults": {"hidden_by_default": False}},
+        ),
+        (
+            _record("ss_odd", SENDSPIN, name="Tablet", values={"protocol_defaults": "odd"}),
+            {"session_only": True, "protocol_defaults": "odd"},
+        ),
+    ],
+    ids=[
+        "visualizer",
+        "source",
+        "display",
+        "light",
+        "unknown",
+        "untyped",
+        "no_values",
+        "garbled",
+        "stored",
+        "odd",
+    ],
+)
+def test_a_kept_session_only_player_gets_the_defaults_of_its_kind_of_client(
+    record: dict[str, Any], values: dict[str, Any]
+) -> None:
+    """A browser, app, visualizer or source player the split keeps gets what its client gives."""
+    result = _migrated(_settings(record))
+
+    assert result[CONF_PLAYERS][record["player_id"]]["values"] == values
+
+
 @pytest.mark.parametrize("tree", [None, ["ss_40"]], ids=["null", "list"])
 def test_dsp_and_queue_trees_that_are_no_mapping_hold_no_customisation(
     tree: list[str] | None,
@@ -762,7 +883,9 @@ def test_dsp_and_queue_trees_that_are_no_mapping_hold_no_customisation(
         result = _migrated(data)
 
     assert result[CONF_PLAYERS] == {
-        "ss_41": _record("ss_41", SENDSPIN, name="Tablet", values={"session_only": True})
+        "ss_41": _record(
+            "ss_41", SENDSPIN, name="Tablet", values={"session_only": True, **WEB_DEFAULTS}
+        )
     }
     assert (result[CONF_PLAYER_DSP], result[CONF_PLAYER_QUEUES]) == (tree, tree)
     assert [record.getMessage() for record in records if record.levelno > logging.INFO] == []
@@ -924,7 +1047,7 @@ def test_records_an_older_version_stored_for_a_split_config_are_removed() -> Non
     data[CONF_PLAYER_DSP] |= {"upa1b2c3d4": {"enabled": True}, "ss_web_1": {"enabled": False}}
     data[CONF_PLAYER_QUEUES] |= {"upa1b2c3d4": {"values": {}}}
     expected[CONF_PLAYERS]["ss_web_2"] = _record(
-        "ss_web_2", SENDSPIN, name="Tablet", values={"session_only": True}
+        "ss_web_2", SENDSPIN, name="Tablet", values={"session_only": True, **WEB_DEFAULTS}
     )
     # a browser player keeps what is stored next to it: its id comes back when it connects
     expected[CONF_PLAYER_DSP]["ss_web_1"] = {"enabled": False}
