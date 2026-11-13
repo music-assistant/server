@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -67,8 +68,8 @@ async def test_visualizer_config_reflects_dashboard_setting() -> None:
     assert await provider.get_visualizer_config() == {CONF_SHOW_ON_DASHBOARDS: False}
 
 
-async def test_capability_report_is_logged_at_debug_with_trimmed_fields() -> None:
-    """A report is one debug line, and a viewer cannot forge log lines or flood the log."""
+async def test_failed_capability_report_is_logged_as_a_warning_with_trimmed_fields() -> None:
+    """A report with an error is one warning line, and a viewer cannot forge or flood log lines."""
     provider, logger, _config_value = _provider()
 
     await provider.report_capability(
@@ -80,9 +81,9 @@ async def test_capability_report_is_logged_at_debug_with_trimmed_fields() -> Non
         dashboard_id="chromecast_abc",
     )
 
-    logger.debug.assert_called_once()
-    logged_args = logger.debug.call_args.args[1:]
-    assert logged_args == (
+    logger.log.assert_called_once()
+    assert logger.log.call_args.args[0] == logging.WARNING
+    assert logger.log.call_args.args[2:] == (
         "chromecast_abc",
         False,
         "none",
@@ -90,3 +91,13 @@ async def test_capability_report_is_logged_at_debug_with_trimmed_fields() -> Non
         "x" * MAX_REPORT_FIELD_LEN,
         "boom Viewer error: forged",
     )
+
+
+async def test_capability_report_without_an_error_is_logged_at_debug() -> None:
+    """A healthy report stays a debug line."""
+    provider, logger, _config_value = _provider()
+
+    await provider.report_capability(webgl2=True, renderer="milkdrop", dashboard_id="dash1")
+
+    logger.log.assert_called_once()
+    assert logger.log.call_args.args[0] == logging.DEBUG

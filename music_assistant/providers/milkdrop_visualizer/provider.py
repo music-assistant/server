@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import Scope
@@ -103,7 +104,9 @@ class MilkdropVisualizerProvider(PluginProvider):
         :param dashboard_id: The reporting display's dashboard id, so several displays
             stay apart in the log.
         """
-        self.logger.debug(
+        level = logging.WARNING if error else logging.DEBUG
+        self.logger.log(
+            level,
             "Viewer capability on %s: webgl2=%s renderer=%s gpu=%s user_agent=%s error=%s",
             _trim(dashboard_id),
             webgl2,
