@@ -24,7 +24,7 @@ Flag it in review, and never write it yourself, when a change would:
   the size. Never walk a catalogue to build what a service has no endpoint for (an artist's
   tracks from all of its albums), and cap paginated listings (an artist's albums stop at 100
   releases)
-- bypass a throttler or a server-imposed cooldown for anything but the single playback call
+- bypass a throttler, or keep sending requests while a service has asked us to wait
 - write decoded audio from a streaming provider to disk
 - bypass a subscription tier, regional availability, or a service's stated concurrent-stream
   limit (see `max_concurrent_streams` in `music_assistant/models/music_provider.py`)
