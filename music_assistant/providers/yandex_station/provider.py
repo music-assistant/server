@@ -676,23 +676,9 @@ class YandexStationProvider(PlayerProvider):
                 device_info=device_info,
                 glagol=glagol,
             )
-            # Register BEFORE starting Glagol.  The WS connect callback can
-            # fire `update_handler` very quickly, and the resulting
-            # `player.update_state()` would otherwise run for an unknown
-            # player and trigger queue/state side-effects on something the
-            # players controller doesn't know about yet.
+            # Glagol is started when the protocol attaches, if host/port are
+            # available (mDNS or glagol API)
             await self.mass.players.attach(player)
-            if player.player is None:
-                # not attached: the user disabled the player meanwhile
-                return
-            # Only start Glagol if host/port are available (mDNS or glagol API)
-            host = device_info.get("host")
-            port = device_info.get("port")
-            if host and port:
-                self.logger.info("Starting Glagol for %s at %s:%s", protocol_id, host, port)
-                await player.async_setup()
-            else:
-                self.logger.info("No host/port for %s — cloud-only", protocol_id)
 
         except Exception:
             self.logger.exception("Failed to create player %s", protocol_id)
