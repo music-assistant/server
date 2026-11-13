@@ -14,20 +14,13 @@ from __future__ import annotations
 import re
 import secrets
 import time
-from contextlib import suppress
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import (
     IdentifierType,
-    PlaybackState,
     PlayerType,
     ProtocolRole,
-)
-from music_assistant_models.errors import (
-    InvalidCommand,
-    InvalidDataError,
-    MusicAssistantError,
 )
 
 from music_assistant.constants import (
@@ -36,20 +29,17 @@ from music_assistant.constants import (
     CONF_DEVICE_IDENTIFIERS,
     CONF_GROUP_MEMBERS,
     CONF_MUTE_CONTROL,
-    CONF_PLAYER_DSP,
     CONF_PLAYER_PROTOCOLS,
-    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_IDENTIFIERS,
     CONF_REPORTED_MAC,
     CONF_SESSION_ONLY,
     CONF_UNDERLYING_PLAYER_ID,
-    CONF_UNLINKED_FROM,
     CONF_VOLUME_CONTROL,
     NATIVE_PRIORITY,
 )
-from music_assistant.controllers.config.constants import AUTOMATIC_VALUE_KEYS, GROUP_MEMBER_KEYS
+from music_assistant.controllers.config.constants import GROUP_MEMBER_KEYS
 from music_assistant.controllers.players.matching import (
     DeviceIdentity,
     has_hardware_mac,
@@ -476,283 +466,6 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
             domains=frozenset().union(*(part.domains for part in parts)),
             native=any(part.native for part in parts),
         )
-
-    def _check_merge(self, keep_id: str, absorb_id: str) -> None:
-        """
-        Check that one player can take over the protocols of another by the attach rules.
-
-        :param keep_id: Id of the player that stays.
-        :param absorb_id: Id of the player that goes.
-        :raises InvalidDataError: When a player does not exist, or both ids are the same.
-        :raises InvalidCommand: When the two can not be one player.
-        """
-        if error := self._merge_refusal(keep_id, absorb_id):
-            raise error
-
-    def _merge_refusal(self, keep_id: str, absorb_id: str) -> MusicAssistantError | None:
-        """
-        Return why the attach rules do not let one player take over the protocols of another.
-
-        :param keep_id: Id of the player that stays.
-        :param absorb_id: Id of the player that goes.
-        """
-        if keep_id == absorb_id:
-            return InvalidDataError(f"Player {keep_id} can not be merged into itself")
-        names = [self._stored_player_name(player_id) for player_id in (keep_id, absorb_id)]
-        for player_id, name in zip((keep_id, absorb_id), names, strict=True):
-            player = self._players.get(player_id)
-            stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
-            values = stored.get("values") if isinstance(stored, dict) else None
-            if (player and player.session_only) or (
-                isinstance(values, dict) and values.get(CONF_SESSION_ONLY)
-            ):
-                msg = f"{name} only exists while it is connected and can not be merged"
-                return self._refused(msg, "merge_session_only", name)
-            if not isinstance(stored, dict):
-                return InvalidDataError(f"No player with id {player_id}")
-            if player_id in self._removing:
-                return InvalidCommand(f"{name} is being removed")
-            player_type = player.type if player else stored.get("player_type")
-            if player_type == PlayerType.GROUP or ProtocolRole.VIRTUAL in self._roles_of(player_id):
-                return self._refused(
-                    f"{name} is a group and can not be merged", "merge_group", name
-                )
-        if self._own_ranks(keep_id) & self._own_ranks(absorb_id):
-            # of two protocols that stand for the device, one has to rank above the other
-            msg = f"{names[0]} and {names[1]} each stand for a device of their own"
-            return self._refused(msg, "merge_two_own_protocols", *names)
-        if shared := self._domains_of(keep_id) & self._domains_of(absorb_id):
-            domain = min(shared)
-            with suppress(KeyError):
-                domain = self.mass.get_provider_manifest(domain).name
-            msg = f"{names[0]} and {names[1]} both have a {domain} output"
-            return self._refused(msg, "merge_shared_domain", *names, domain)
-        if vetoes_device(self._merged_identity(absorb_id), self._identity_parts(keep_id)):
-            msg = f"{names[0]} and {names[1]} report different devices"
-            return self._refused(msg, "merge_identifiers_differ", *names)
-        return None
-
-    def _refused(self, msg: str, translation_key: str, *args: str) -> InvalidCommand:
-        """
-        Return the error of a merge or an unlink the attach rules do not allow.
-
-        :param msg: What stands in the way.
-        :param translation_key: Key of the translated message.
-        :param args: The arguments of the translated message.
-        """
-        return InvalidCommand(
-            msg,
-            translation_key=translation_key,
-            translation_owner=self.translation_owner,
-            translation_args=list(args),
-        )
-
-    def _roles_of(self, player_id: str) -> set[ProtocolRole]:
-        """
-        Return the roles of the protocols of a player, attached or not.
-
-        :param player_id: Id of the player.
-        """
-        player = self._players.get(player_id)
-        roles: set[ProtocolRole] = set()
-        for protocol_id in self._get_protocol_ids(player_id):
-            if player and (role := player.get_role(protocol_id)):
-                roles.add(role)
-            elif (record := self.mass.config.get_protocol_record(protocol_id)) and (
-                stored_role := record.get("role")
-            ):
-                roles.add(ProtocolRole(stored_role))
-        return roles
-
-    def _own_ranks(self, player_id: str) -> set[int]:
-        """
-        Return the ranks of the protocols of a player that stand for the device, attached or not.
-
-        :param player_id: Id of the player.
-        """
-        ranks: set[int] = set()
-        for protocol_id in self._get_protocol_ids(player_id):
-            if protocol := self._protocols.get(protocol_id):
-                stands_for_device = protocol.role in OWN_PROTOCOL_ROLES
-                provider_id = protocol.provider_id
-            else:
-                record = self.mass.config.get_protocol_record(protocol_id) or {}
-                stands_for_device = record.get("role") in OWN_PROTOCOL_ROLES
-                provider_id = str(record.get("provider"))
-            if stands_for_device:
-                ranks.add(_native_rank(provider_id))
-        return ranks
-
-    def _domains_of(self, player_id: str) -> set[str]:
-        """
-        Return the domains of the protocols of a player, attached or not.
-
-        :param player_id: Id of the player.
-        """
-        domains: set[str] = set()
-        for protocol_id in self._get_protocol_ids(player_id):
-            if protocol := self._protocols.get(protocol_id):
-                domains.add(protocol.provider.domain)
-            elif record := self.mass.config.get_protocol_record(protocol_id):
-                domains.add(str(record.get("provider") or "").split("--", maxsplit=1)[0])
-        return domains
-
-    def _stored_player_name(self, player_id: str) -> str:
-        """
-        Return the name of a player, also of one that is not live.
-
-        :param player_id: Id of the player.
-        """
-        if player := self._players.get(player_id):
-            return player.display_name
-        stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
-        if isinstance(stored, dict):
-            return str(stored.get("name") or stored.get("default_name") or player_id)
-        return player_id
-
-    def _check_unlink(self, protocol_id: str) -> str:
-        """
-        Check that a protocol can be taken off its player, and return the id of that player.
-
-        :param protocol_id: Id of the protocol.
-        :raises InvalidDataError: When no protocol has the id.
-        :raises InvalidCommand: When the protocol can not stand on its own.
-        """
-        protocol = self._protocols.get(protocol_id)
-        record = self.mass.config.get_protocol_record(protocol_id)
-        if protocol is None and record is None:
-            raise InvalidDataError(f"No protocol with id {protocol_id}")
-        record = record or {}
-        name = str(
-            (protocol.name if protocol else None) or record.get("default_name") or protocol_id
-        )
-        if (protocol and protocol.session_only) or not record:
-            msg = f"{name} only exists while it is connected and can not stand on its own"
-            raise self._refused(msg, "unlink_session_only", name)
-        if not (player_id := self.get_player_id_of_protocol(protocol_id)):
-            raise InvalidDataError(f"Protocol {protocol_id} belongs to no player")
-        if (protocol and protocol.underlying_protocol_id) or (record.get("values") or {}).get(
-            CONF_UNDERLYING_PLAYER_ID
-        ):
-            msg = f"{name} rides on another protocol and follows it"
-            raise self._refused(msg, "unlink_derived", name)
-        if (protocol.role if protocol else record.get("role")) == ProtocolRole.VIRTUAL:
-            msg = f"{name} is the protocol of a group"
-            raise self._refused(msg, "unlink_group", name)
-        if player_id in self._removing:
-            raise InvalidCommand(f"{self._stored_player_name(player_id)} is being removed")
-        moved = {protocol_id, *self.mass.config.get_protocol_ids_derived_from(protocol_id)}
-        if not self._get_protocol_ids(player_id) - moved:
-            msg = f"{name} is the only protocol of its player"
-            raise self._refused(msg, "unlink_only_protocol", name)
-        return player_id
-
-    def _duplicates_of(self, player_id: str) -> list[str]:
-        """
-        Return the ids of the other live players that turn out to stand for a player's device.
-
-        That is every player the attach rules let take over the protocols of the player (or
-        the other way round) and whose identifiers it matches, unless the user took a
-        protocol of one of the two off the other.
-
-        :param player_id: Id of the player.
-        """
-        identity = self._merged_identity(player_id)
-        return [
-            other_id
-            for other_id in self._players
-            if other_id != player_id
-            and matches_device(identity, self._identity_parts(other_id))
-            and self._merge_refusal(other_id, player_id) is None
-            and not self._taken_apart(player_id, other_id)
-        ]
-
-    def _taken_apart(self, player_id: str, other_id: str) -> bool:
-        """
-        Return whether the user took a protocol of one of two players off the other one.
-
-        :param player_id: Id of one of the players.
-        :param other_id: Id of the other player.
-        """
-        for holder_id, from_id in ((player_id, other_id), (other_id, player_id)):
-            for protocol_id in self._get_protocol_ids(holder_id):
-                record = self.mass.config.get_protocol_record(protocol_id) or {}
-                unlinked_from = (record.get("values") or {}).get(CONF_UNLINKED_FROM)
-                if (
-                    isinstance(unlinked_from, str)
-                    and self.resolve_player_id(unlinked_from) == from_id
-                ):
-                    return True
-        return False
-
-    def _merge_rank(self, player_id: str) -> tuple[int, bool, str]:
-        """
-        Return the sort key of a player in a merge, lowest is kept.
-
-        The oldest player is kept, as the one clients have been bound to the longest. A
-        record without a creation moment is older than any with one, and of two equally old
-        players the one with an id from before the player split is kept.
-
-        :param player_id: Id of the player.
-        """
-        created_at = self.mass.config.get_player_value(player_id, CONF_CREATED_AT)
-        minted = MINTED_PLAYER_ID.fullmatch(player_id) is not None
-        return (created_at if isinstance(created_at, int) else 0, minted, player_id)
-
-    def _is_unused(self, player: Player) -> bool:
-        """
-        Return whether nothing about a player is the user's own yet, so it may merge by itself.
-
-        A player is used once it has any of:
-        - a custom name, or a value the user set on it or on one of its protocols;
-        - DSP that is switched on, or settings of its queue;
-        - items in its queue (restored from the saved queue, if any), or playback right now,
-          which a plugin source starts without queue items;
-        - a place in the member list of a group, a sync leader or members synced to it, or
-          a group that holds it.
-
-        :param player: The player.
-        """
-        player_id = player.player_id
-        config = self.mass.config
-        record = config.get(f"{CONF_PLAYERS}/{player_id}") or {}
-        records = [
-            record,
-            *filter(None, map(config.get_protocol_record, self._get_protocol_ids(player_id))),
-        ]
-        dsp = config.get(f"{CONF_PLAYER_DSP}/{player_id}")
-        state = player.state
-        return not (
-            record.get("name")
-            or any(
-                key not in AUTOMATIC_VALUE_KEYS
-                for stored in records
-                for key in stored.get("values") or {}
-            )
-            or (isinstance(dsp, dict) and dsp.get("enabled"))
-            or config.get(f"{CONF_PLAYER_QUEUES}/{player_id}") is not None
-            or self.mass.player_queues.items(player_id, limit=1)
-            or state.playback_state != PlaybackState.IDLE
-            or self._is_group_member(player_id)
-            or state.synced_to
-            or state.group_members
-            or state.active_group
-        )
-
-    def _is_group_member(self, player_id: str) -> bool:
-        """
-        Return whether a group lists a player as a member, or as one it allows.
-
-        :param player_id: Id of the player.
-        """
-        for record in self.mass.config.get(CONF_PLAYER_PROTOCOLS, {}).values():
-            values = record.get("values") if isinstance(record, dict) else None
-            if isinstance(values, dict) and any(
-                isinstance(members := values.get(key), list) and player_id in members
-                for key in GROUP_MEMBER_KEYS
-            ):
-                return True
-        return False
 
     def _awaits_identity(self, protocol: PlayerProtocol) -> bool:
         """
