@@ -903,12 +903,13 @@ def test_a_service_we_did_not_map_is_replaced_when_another_source_takes_over() -
 def test_a_service_we_did_not_map_leaves_the_templates_untouched() -> None:
     """Test the templates shared between players keep their defaults."""
     player, _ = _speaker_reporting_paused_qobuz()
+    templates = set(PLAYER_SOURCE_MAP)
 
     player.on_player_event(None)
 
     assert PLAYER_SOURCE_MAP[SOURCE_LINE_IN].shuffle_enabled is None
     assert PLAYER_SOURCE_MAP[SOURCE_SPOTIFY].can_shuffle is False
-    assert len(PLAYER_SOURCE_MAP) == 5
+    assert set(PLAYER_SOURCE_MAP) == templates
 
 
 def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports() -> None:

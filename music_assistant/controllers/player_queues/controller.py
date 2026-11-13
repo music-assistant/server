@@ -289,9 +289,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        # stop all playback
-        for queue in self.all():
-            if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        # stop all playback we started: a queue without a stream session of ours can read as
+        # playing while its player plays what another app or server started
+        for queue_data in list(self._queue_data.values()):
+            queue = queue_data.queue
+            if queue_data.session_id is not None and queue.state in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
+            ):
                 try:
                     async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
                         await self.stop(queue.queue_id)
