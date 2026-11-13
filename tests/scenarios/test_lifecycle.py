@@ -420,6 +420,51 @@ async def test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_awa
     assert _defaults(scenario, player_id)[:3] == (False, True, False)
 
 
+async def test_only_the_own_protocol_of_a_player_gives_it_its_defaults(
+    scenario: Scenario,
+) -> None:
+    """
+    An audio protocol or a bridge that hides itself gives its player none of that.
+
+    The Den player has no protocol of its own, the Living player has one that gives the
+    generic defaults: both keep those, attached, away and after a restart, and nothing of
+    the audio protocols is stored as their defaults.
+    """
+    hiding: dict[str, Any] = {
+        "hidden_by_default": True,
+        "expose_to_ha_by_default": False,
+        "private": True,
+    }
+    wiim = await scenario.add_provider("wiim")
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    den = airplay.protocol("ap_den", "Den", role="audio", identifiers=DEN, **hiding)
+    den_bridge = sendspin.protocol(
+        "spb_den", "Den", role="audio", underlying_protocol_id="ap_den", **hiding
+    )
+    living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
+    living_airplay = airplay.protocol(
+        "ap_living", "Living", role="audio", identifiers=LIVING, **hiding
+    )
+    for protocol in (den, den_bridge, living, living_airplay):
+        await scenario.attach(protocol)
+    den_id = scenario.single_player(den, den_bridge).player_id
+    living_id = scenario.single_player(living, living_airplay).player_id
+    generic = (False, True, False)
+
+    attached = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
+    for protocol in (den_bridge, den, living, living_airplay):
+        await scenario.detach(protocol)
+    await scenario.idle()
+    away = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
+    await scenario.restart()
+    await scenario.idle()
+    restarted = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
+
+    assert [attached, away, restarted] == [[generic, generic]] * 3
+    assert scenario.mass.config.get(f"{CONF_PLAYERS}/{den_id}/values/protocol_defaults") is None
+
+
 async def test_session_only_player_has_the_same_id_in_every_session(scenario: Scenario) -> None:
     """A web player is known by the id of its protocol, in every session and after a restart."""
     sendspin = await scenario.add_provider("sendspin")

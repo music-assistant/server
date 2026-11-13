@@ -263,6 +263,16 @@ defaults, the player has those from then on, also while it is away again.
 - End-to-end: **no**: no player provider of the lab gives a device these defaults.
 - Proven by: `test_lifecycle.py::test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_away`
 
+### AWAY-8 · Only the player's own protocol gives it those defaults
+
+The Den player has only an AirPlay receiver and a Sendspin bridge on it, and the Living player has
+a WiiM protocol of its own and an AirPlay receiver. Their AirPlay receivers and the bridge would
+hide the player, keep it from Home Assistant and keep it private. Neither player is: both are
+shown, exposed and not private, while attached, while away and after a restart.
+
+- End-to-end: **no**: no audio protocol of the lab gives a device these defaults.
+- Proven by: `test_lifecycle.py::test_only_the_own_protocol_of_a_player_gives_it_its_defaults`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
