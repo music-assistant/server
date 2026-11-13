@@ -315,6 +315,7 @@
   "common.errors.playlist_not_owned": "Only the owner of this playlist may change it.",
   "common.errors.playlist_owner_must_be_member": "Only a member can own a playlist",
   "common.errors.provider_can_not_be_disabled": "{0} cannot be disabled",
+  "common.errors.provider_no_longer_available": "This provider is no longer available.",
   "common.errors.provider_permission_denied": "The provider denied this action due to insufficient permissions.",
   "common.errors.provider_stream_held": "{0} is already playing on {1}. Stop playback there first.",
   "common.errors.provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",

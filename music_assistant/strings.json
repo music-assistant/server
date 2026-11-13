@@ -1209,6 +1209,7 @@
   "errors": {
     "setup_required": "Music Assistant is not set up yet.",
     "provider_unavailable": "The provider is currently unavailable.",
+    "provider_no_longer_available": "This provider is no longer available.",
     "media_not_found": "The requested media item could not be found.",
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",

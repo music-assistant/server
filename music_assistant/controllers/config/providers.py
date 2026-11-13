@@ -51,6 +51,7 @@ from music_assistant.controllers.config.helpers import (
     _mask_encrypted,
     _provider_status,
     _reject_encrypted_values,
+    _unavailable_provider_config,
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
@@ -99,6 +100,7 @@ class ProviderConfigMixin:
         provider_type: ProviderType | None = None,
         provider_domain: str | None = None,
         include_values: bool = False,
+        include_unavailable: bool = False,
     ) -> list[ProviderConfig]:
         """
         Return all known provider configurations, optionally filtered by ProviderType.
@@ -109,6 +111,8 @@ class ProviderConfigMixin:
         :param provider_type: Optionally only return providers of this type.
         :param provider_domain: Optionally only return providers of this domain.
         :param include_values: Include the resolved config entries of each provider.
+        :param include_unavailable: Also return configs of providers that are no longer
+            available, with status UNAVAILABLE and the reason in last_error.
         """
         raw_values = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
@@ -119,10 +123,12 @@ class ProviderConfigMixin:
                 continue
             if provider_domain is not None and prov_conf["domain"] != provider_domain:
                 continue
+            if self._is_hidden_source(prov_conf, visible_sources):
+                continue
             # guard for deleted providers
             if prov_conf["domain"] not in prov_entries:
-                continue
-            if self._is_hidden_source(prov_conf, visible_sources):
+                if include_unavailable:
+                    configs.append(_unavailable_provider_config(prov_conf))
                 continue
             if include_values:
                 # get_provider_config already stamps the derived status
@@ -137,11 +143,16 @@ class ProviderConfigMixin:
         return configs
 
     @api_command("config/providers/get", required_scope=Scope.CONFIG_PROVIDERS_READ)
-    async def get_provider_config(self, instance_id: str) -> ProviderConfig:
+    async def get_provider_config(
+        self, instance_id: str, include_unavailable: bool = False
+    ) -> ProviderConfig:
         """
         Return configuration for a single provider.
 
         :param instance_id: The provider instance id.
+        :param include_unavailable: Return the config of a provider that is no longer
+            available, with status UNAVAILABLE and the reason in last_error, instead of
+            raising KeyError.
         :raises InsufficientPermissions: The caller may not use this music source.
         """
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
@@ -150,6 +161,8 @@ class ProviderConfigMixin:
                 if prov.domain == raw_conf["domain"]:
                     break
             else:
+                if include_unavailable:
+                    return _unavailable_provider_config(raw_conf)
                 msg = f"Unknown provider domain: {raw_conf['domain']}"
                 raise KeyError(msg)
             config_entries = await self.get_provider_config_entries(instance_id)
@@ -489,8 +502,12 @@ class ProviderConfigMixin:
             msg = f"Provider {instance_id} does not exist"
             raise KeyError(msg)
         self._check_provider_manage_permission(instance_id)
-        prov_manifest = self.mass.get_provider_manifest(existing["domain"])
-        if prov_manifest.builtin:
+        # no manifest means the provider is no longer available, its config can still go
+        prov_manifest = next(
+            (x for x in self.mass.get_provider_manifests() if x.domain == existing["domain"]),
+            None,
+        )
+        if prov_manifest is not None and prov_manifest.builtin:
             msg = f"Builtin provider {prov_manifest.name} can not be removed."
             raise RuntimeError(msg)
         self.remove(conf_key)
