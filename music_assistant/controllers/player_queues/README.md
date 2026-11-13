@@ -119,7 +119,7 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
   with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
   pool of tracks. An artist counts as sequenced too when it plays its albums under an album
-  order. Top tracks, an artist without albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  order. Top tracks, an artist without library albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
   a batch decides for the whole batch — it is the only media type known before the items are
   resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
   are restored to their original order rather than left shuffled behind a queue that now reads
@@ -296,7 +296,7 @@ Close choices keep some randomness, and Smart Fades still decides the actual tra
 
 Non-track media must be expanded into the actual tracks or episodes to enqueue. Each source type
 (artist, album, genre, playlist, podcast, audiobook, browse folder) resolves into a concrete track
-list, applying the configured selection rules (e.g. top tracks vs library tracks vs all tracks),
+list, applying the configured selection rules (e.g. top tracks vs library tracks),
 resolving library-versus-provider variants, and optionally ordering the result. The same concern
 also builds the `PlayerMedia` payload handed to the player, using the Metadata Controller for
 images.
@@ -425,12 +425,13 @@ mechanism) that configure default enqueue behaviour, in three groups:
 - **Per-media-type default enqueue option** — for artist, album, track, genre, live sources, and
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
-- **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks), and the order an artist plays in: shuffled tracks, or its albums
-  in random or release order. The artist selection picks the artist's own albums, and each album
-  plays as it does on its own, following the album selection. The album orders leave out singles,
-  and the compilations found only on a provider. They fall back to shuffled tracks for the top
-  tracks selection or an artist without albums.
+- **Selection modes** — how artists and albums expand into tracks (top tracks, library tracks,
+  prefer library, or the tracks of the artist's library albums), and the order an artist plays in:
+  shuffled tracks, or its library albums in random or release order. Each album plays as it does
+  on its own, following the album selection. The album orders leave out singles. They fall back
+  to shuffled tracks for the top tracks selection or an artist without library albums. An artist
+  that is not in the library plays its top tracks. Playing an artist never lists or expands the
+  albums a provider has of it, as that costs a request per release.
 - **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
   clicked (*browse* or *play*), and what the play button on a track row inside an album
   or playlist starts (*play from here* or *play track*).

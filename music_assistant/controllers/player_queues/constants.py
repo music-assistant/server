@@ -14,7 +14,7 @@ from music_assistant.controllers.streams.constants import (
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
-ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
+ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "prefer_library"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 
 CONF_DEFAULT_ENQUEUE_ORDER_ARTIST = "default_enqueue_order_artist"
@@ -35,9 +35,8 @@ class ArtistOrder(StrEnum):
 
 ENQUEUE_ORDER_ARTIST_DEFAULT_VALUE = ArtistOrder.SHUFFLED_TRACKS.value
 # the album types an album order leaves out, as their songs are mostly on the artist's albums.
-# A local collection may hold only an artist's compilation, so a library one still plays
+# A local collection may hold only an artist's compilation, so a compilation still plays
 LIBRARY_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE})
-PROVIDER_ALBUM_SKIPPED_TYPES = frozenset({AlbumType.SINGLE, AlbumType.COMPILATION})
 
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
