@@ -2011,6 +2011,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param playback_speed: The current playback speed to persist (audiobooks/podcasts).
             If None, any previously stored speed for the item is preserved.
         :param provider_instance_id: The provider instance reporting the play, whose user it is.
+            A report equal to the stored progress keeps its timestamp.
         """
         timestamp = utc_timestamp()
         # we deliberately skip one-off items: sound effects and live inputs whoever owns
@@ -2071,6 +2072,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 params["playback_speed"] = playback_speed
             for user_id in user_ids:
                 params["userid"] = user_id
+                params["timestamp"] = timestamp
+                # provider syncs repeat unchanged progress, which must not stamp it as just
+                # played: the timestamp orders the in progress items
+                if (
+                    provider_instance_id
+                    and (
+                        row := await self.database.get_row(
+                            DB_TABLE_MEDIA_PROGRESS,
+                            {key: params[key] for key in PLAYLOG_CONFLICT_KEYS},
+                        )
+                    )
+                    and bool(row["fully_played"]) == fully_played
+                    and row["seconds_played"] == seconds_played
+                ):
+                    params["timestamp"] = row["timestamp"]
                 recorded_play = await self._record_completed_play(
                     params, user_is_resolved=user is not None
                 )
