@@ -282,13 +282,15 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         dispatch_menu = path_parts[1] if len(path_parts) > 1 else ""
 
         if dispatch_menu == "live":
-            return await self._browse_live()
+            return await self._browse_live(path_parts)
+        if dispatch_menu == "catch_up":
+            return await self._browse_catch_up(path_parts)
+        if dispatch_menu in _STATION_DATE_MENUS:
+            return await self._browse_schedules(path_parts)
         if dispatch_menu == "categories":
             return await self._browse_categories(path_parts)
         if dispatch_menu == "collections":
             return await self._browse_collections(path_parts)
-        if dispatch_menu == "stations":
-            return await self._browse_stations(path_parts)
         if dispatch_menu == "playlists":
             if len(path_parts) < 3:
                 raise KeyError("Invalid subpath")
@@ -427,9 +429,29 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             return await self._get_menu()
         return await self._get_subpath_menu(path_parts[1:])
 
-    async def _browse_live(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+    async def _browse_live(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) >= 3 and path_parts[2] == "local":
+            self.logger.debug("Getting local stations")
+            return await self._station_list(
+                path_parts=path_parts,
+                include_national=False,
+                include_local=True,
+                show_current_programme=True,
+            )
+        if len(path_parts) >= 3 and path_parts[2] == "international":
+            self.logger.debug("Getting international stations")
+            return await self._station_list(
+                path_parts=path_parts,
+                include_national=False,
+                include_local=False,
+                include_international=True,
+                show_current_programme=False,
+            )
+        self.logger.debug("Getting national stations")
         return await self._station_list(
-            include_local=self.show_local_stations, show_current_programme=True
+            path_parts=path_parts, include_local=False, show_current_programme=True
         )
 
     async def _browse_categories(
@@ -450,24 +472,51 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         # bbc_sounds://collections/
         return await self._get_subpath_menu(path_parts[1:])
 
-    async def _browse_stations(
+    async def _browse_catch_up(
         self, path_parts: list[str]
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         if len(path_parts) == 4:
-            # bbc_sounds://stations/<station_id>/<date>
-            return await self._get_station_schedule_menu(
+            # bbc_sounds://catch_up/<station_id>/<date>
+            return await self._get_station_catch_up_menu(
                 path_parts=path_parts,
                 station_id=path_parts[2],
                 date=path_parts[3],
             )
         if len(path_parts) == 3:
-            # bbc_sounds://stations/<station_id>
+            # bbc_sounds://catch_up/<station_id> OR
+            # bbc_sounds://catch_up/local
+            if path_parts[2] == "local":
+                return await self._station_list_as_folders(
+                    path_parts=path_parts,
+                    include_national=False,
+                    include_local=True,
+                    include_international=False,
+                )
+            return await self._get_station_menu(path_parts)
+
+        # bbc_sounds://catch_up
+        return await self._station_list_as_folders(path_parts=path_parts)
+
+    async def _browse_schedules(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 4:
+            # bbc_sounds://schedules/<station_id>/<date>
+            return await self._get_station_catch_up_menu(
+                path_parts=path_parts,
+                station_id=path_parts[2],
+                date=path_parts[3],
+            )
+        if len(path_parts) == 3:
+            # bbc_sounds://schedules/<station_id> OR bbc_sounds://schedules/local
+            if path_parts[2] == "local":
+                return await self._station_list_as_folders(
+                    path_parts=path_parts, include_national=False, include_local=True
+                )
             return await self._get_station_menu(path_parts)
 
         # bbc_sounds://stations
-        return await self._station_list_as_folders(
-            path_parts=path_parts, include_local=self.show_local_stations
-        )
+        return await self._station_list_as_folders(path_parts=path_parts)
 
     async def _get_station_menu(
         self,
@@ -718,13 +767,34 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         self,
         path_parts: list[str],
         include_local: bool = False,
+        include_national: bool = True,
+        include_international: bool = False,
     ) -> list[BrowseFolder]:
         """Get list of stations as BrowseFolders."""
         radio_list: list[BrowseFolder] = []
-        for station in await self.client.stations.get_stations(
-            include_local_stations=include_local
-        ):
-            if station and station.item_id:
+        if include_national:
+            radio_list.extend(
+                [
+                    BrowseFolder(
+                        item_id="local",
+                        translation_key="local_radio",
+                        name="Local Radio",
+                        provider=self.domain,
+                        path="/".join([*path_parts, "local"]),
+                    ),
+                ]
+            )
+            path = "/".join([*path_parts])
+        else:
+            path = "/".join([*path_parts[:-1]])
+        stations = await self.client.stations.get_stations(
+            include_national_stations=include_national,
+            include_local_stations=include_local,
+            include_international_stations=include_international,
+        )
+        self.logger.debug("Output: %s", stations)
+        for station in stations:
+            if station:
                 radio_list.append(
                     BrowseFolder(
                         item_id=station.id,
@@ -747,64 +817,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 )
         return radio_list
 
-    @use_cache(expiration=_Constants.DYNAMIC_EXPIRATION)
-    async def _station_list(
-        self,
-        include_local: bool = False,
-        show_current_programme: bool = False,
-    ) -> list[Radio]:
-        """
-        Get list of stations as Radios.
-
-        We do this manually so we can append the current programme. We don't want this by
-        default as it gets cached in other places.
-        """
-        radio_list: list[Radio] = []
-        for station in await self.client.stations.get_stations(
-            include_local_stations=include_local
-        ):
-            if isinstance(station, LiveStation) and station.item_id:
-                station_info = _station_programme_display(station=station)
-                description = (
-                    station_info.title if station_info and show_current_programme else None
-                )
-                radio_list.append(
-                    Radio(
-                        item_id=station.item_id,
-                        name=(
-                            station.network.short_title
-                            if station.network and station.network.short_title
-                            else "Unknown station"
-                        ),
-                        provider=self.domain,
-                        metadata=MediaItemMetadata(
-                            description=description,
-                            images=(
-                                UniqueList(
-                                    [
-                                        MediaItemImage(
-                                            type=ImageType.THUMB,
-                                            provider=self.domain,
-                                            path=station.network.logo_url,
-                                            remotely_accessible=True,
-                                        ),
-                                    ]
-                                )
-                                if station.network and station.network.logo_url
-                                else None
-                            ),
-                        ),
-                        provider_mappings={
-                            ProviderMapping(
-                                item_id=station.item_id,
-                                provider_domain=self.domain,
-                                provider_instance=self.instance_id,
-                            )
-                        },
-                    )
-                )
-        return radio_list
-
     async def _render_browse_item(
         self,
         item: SoundsTypes,
@@ -817,6 +829,112 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         ):
             return new_item
         return None
+
+    @use_cache(expiration=Constants.DYNAMIC_EXPIRATION)
+    async def _station_list(
+        self,
+        path_parts: list[str],
+        include_local: bool = False,
+        include_national: bool = True,
+        include_international: bool = False,
+        show_current_programme: bool = False,
+    ) -> list[Radio | BrowseFolder]:
+        """
+        Get list of stations as Radios.
+
+        We do this manually so we can append the current programme. We don't want this by
+        default as it gets cached in other places.
+        """
+        # National is the default, so only show the extra folders there
+        radio_list: list[Radio | BrowseFolder] = []
+        if include_national:
+            radio_list.extend(
+                [
+                    BrowseFolder(
+                        item_id="local",
+                        translation_key="local_radio",
+                        name="Local Radio",
+                        provider=self.domain,
+                        path="/".join([*path_parts, "local"]),
+                    ),
+                    BrowseFolder(
+                        item_id="international",
+                        translation_key="international_radio",
+                        name="International Radio",
+                        provider=self.domain,
+                        path="/".join([*path_parts, "international"]),
+                    ),
+                ]
+            )
+
+        def _get_station_title(station: LiveStation | Station) -> str:
+            if isinstance(station, LiveStation):
+                return str(station.network.short_title) if station.network else "Unknown Station"
+            return station.title or station.id
+
+        for station in await self.client.stations.get_stations(
+            include_local_stations=include_local,
+            include_national_stations=include_national,
+            include_international_stations=include_international,
+        ):
+            if (
+                station
+                and station.id
+                and (isinstance(station, LiveStation) or not station.international)
+            ):
+                # A plain Station has no programme, so its titles and synopses are empty
+                synopsis = station.synopses.short if station.synopses else None
+                details = (station.titles.secondary, synopsis)
+                programme_details = " • ".join(filter(None, details)).replace(
+                    " - ",
+                    "–",  # ruff: ignore[RUF001]
+                )
+                station_title = _get_station_title(station)
+                programme_title = station.titles.primary
+                if not programme_title:
+                    display_name = station_title
+                elif station_title in programme_title:
+                    display_name = programme_title
+                else:
+                    display_name = f"{station_title}: {programme_title}"
+                metadata = MediaItemMetadata(
+                    description=programme_details or None,
+                    images=(
+                        UniqueList(
+                            [
+                                MediaItemImage(
+                                    type=ImageType.THUMB,
+                                    provider=self.domain,
+                                    path=station.network.logo_url,
+                                    remotely_accessible=True,
+                                ),
+                            ]
+                        )
+                        if station and station.network and station.network.logo_url
+                        else None
+                    ),
+                )
+            elif isinstance(station, Station) and station.international:
+                display_name = station.title if station.title is not None else station.id
+                metadata = MediaItemMetadata(description=station.description)
+            else:
+                continue
+            radio_list.append(
+                Radio(
+                    item_id=station.item_id,
+                    name=display_name,
+                    provider=self.domain,
+                    metadata=metadata,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=station.item_id,
+                            provider_domain=self.domain,
+                            provider_instance=self.instance_id,
+                        )
+                    },
+                )
+            )
+        return radio_list
 
     async def _get_subpath_menu(
         self, path_parts: list[str]
@@ -856,14 +974,14 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             self.logger.warning("Sub menu not a container: %s", sub_menu)
         return item_list
 
-    async def _get_station_schedule_menu(
+    async def _get_station_catch_up_menu(
         self,
         station_id: str,
         path_parts: list[str],
         date: str,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Lookup a date schedule for a station."""
-        self.logger.debug("Getting schedule for %s for %s", station_id, date)
+        """Lookup a catch-up menu for a station."""
+        self.logger.debug("Getting catch-up for %s for %s", station_id, date)
         schedule = await self.client.schedules.get_schedule(
             station_id=station_id,
             date=date,
