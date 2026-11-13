@@ -1101,7 +1101,8 @@ universal group that powers on. The move still completes: Kitchen plays the move
 is idle with an empty queue. Kitchen leaves Office's group again; the sync group plays its track
 on Office; the universal group is idle. When the group takes Kitchen first and the queue moves
 while Office takes 40 s to do its part, Kitchen plays the moved queue as well, and a sync group
-still lists it, at the other track.
+still lists it, at the other track. That is a limit, not the intended end: Kitchen plays its own
+queue while the sync group still lists it as a member.
 
 - End-to-end: **no**: it needs a device that takes that long over a command.
 - Proven by:
@@ -1123,7 +1124,8 @@ Kitchen, the new leader, which takes 40 s to regroup Office, or to start the que
 Kitchen joins Patio's group. The hand-over still completes, and Den is idle with an empty queue.
 When Kitchen joined during the regroup, it leaves Patio's group again, leads Office and plays the
 moved queue. When it joined during the start, Kitchen's speaker plays the moved queue while
-Kitchen is listed in Patio's group.
+Kitchen is listed in Patio's group. That is a limit, not the intended end: Kitchen plays its own
+queue while it is listed as a member of Patio's group.
 
 - End-to-end: **no**: it needs a device that takes that long over a command.
 - Proven by: `test_commands.py::test_a_hand_over_whose_new_leader_joins_another_group_meanwhile_completes`
