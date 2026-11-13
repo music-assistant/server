@@ -73,15 +73,19 @@ SESSION_ONLY_DEFAULTS: dict[str, dict[str, bool]] = {
         "expose_to_ha_by_default": False,
         "private": True,
     },
-    PlayerType.VISUALIZER.value: {
-        "hidden_by_default": True,
-        "expose_to_ha_by_default": False,
-        "private": False,
-    },
-    PlayerType.SOURCE.value: {
-        "hidden_by_default": True,
-        "expose_to_ha_by_default": False,
-        "private": False,
+    # a display, visualizer or light (SendspinVisualizerPlayer) and a source
+    **{
+        player_type.value: {
+            "hidden_by_default": True,
+            "expose_to_ha_by_default": False,
+            "private": False,
+        }
+        for player_type in (
+            PlayerType.DISPLAY,
+            PlayerType.VISUALIZER,
+            PlayerType.LIGHT,
+            PlayerType.SOURCE,
+        )
     },
 }
 

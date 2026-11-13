@@ -793,8 +793,30 @@ def _without_values(record: dict[str, Any]) -> dict[str, Any]:
                 },
             },
         ),
+        (
+            _record("ss_display", SENDSPIN, "display", name="Kitchen display"),
+            {
+                "session_only": True,
+                "protocol_defaults": {
+                    "hidden_by_default": True,
+                    "expose_to_ha_by_default": False,
+                    "private": False,
+                },
+            },
+        ),
+        (
+            _record("ss_light", SENDSPIN, "light", name="Strip"),
+            {
+                "session_only": True,
+                "protocol_defaults": {
+                    "hidden_by_default": True,
+                    "expose_to_ha_by_default": False,
+                    "private": False,
+                },
+            },
+        ),
         # a kind of client whose record does not tell what its client gives it
-        (_record("ss_light", SENDSPIN, "light", name="Strip"), {"session_only": True}),
+        (_record("ss_unknown", SENDSPIN, "unknown", name="Gadget"), {"session_only": True}),
         (
             {**_record("ss_untyped", SENDSPIN, name="Tablet"), "player_type": None},
             {"session_only": True},
@@ -822,7 +844,18 @@ def _without_values(record: dict[str, Any]) -> dict[str, Any]:
             {"session_only": True, "protocol_defaults": "odd"},
         ),
     ],
-    ids=["visualizer", "source", "light", "untyped", "no_values", "garbled", "stored", "odd"],
+    ids=[
+        "visualizer",
+        "source",
+        "display",
+        "light",
+        "unknown",
+        "untyped",
+        "no_values",
+        "garbled",
+        "stored",
+        "odd",
+    ],
 )
 def test_a_kept_session_only_player_gets_the_defaults_of_its_kind_of_client(
     record: dict[str, Any], values: dict[str, Any]
