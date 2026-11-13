@@ -132,30 +132,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         return None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return Config entries to setup this provider."""
-        return (
-            CONF_ENTRY_UNOFFICIAL_PROVIDER,
-            ConfigEntry(
-                key=_Constants.CONF_INTRO,
-                type=ConfigEntryType.LABEL,
-            ),
-            ConfigEntry(
-                key=_Constants.CONF_SHOW_LOCAL,
-                advanced=True,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-            ),
-            ConfigEntry(
-                key=_Constants.CONF_STREAM_FORMAT,
-                advanced=True,
-                type=ConfigEntryType.STRING,
-                options=[
-                    ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
-                    ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
-                ],
-                default_value=_Constants.CONF_STREAM_FORMAT_HLS,
-            ),
-        )
+        """Return Config entries to set up this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
