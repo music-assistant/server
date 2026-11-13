@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 from copy import copy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
+from mashumaro.exceptions import MissingField
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Playlist, Track
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 CACHE_CATEGORY_RESOLVED_TRACKS = 1
+CACHE_CATEGORY_PLAYLISTS = 2
 CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 30
 # Per-provider search limit (mirrors Last.fm's PROVIDER_SEARCH_LIMIT).
 SEARCH_PROVIDER_LIMIT = 5
@@ -61,6 +64,17 @@ def _search_result_matches(searched_track: Track, result: Track, artist_name: st
     return True
 
 
+@dataclass(kw_only=True)
+class PlaylistState:
+    """Provider-owned playlist snapshot and source refresh state."""
+
+    playlist: Playlist
+    tracks: tuple[Track, ...]
+    source_patch: str | None
+    raw_tracks: tuple[Track, ...] | None = None
+    modified_at: str | None = None
+
+
 class ListenBrainzPlaylistManager:
     """Manage ListenBrainz playlists and resolve their tracks."""
 
@@ -69,16 +83,47 @@ class ListenBrainzPlaylistManager:
         self.provider = provider
         self.api = provider.api
 
-        self._playlists: tuple[Playlist, ...] = ()
-        self._playlist_tracks: dict[str, tuple[Track, ...]] = {}
+        self._playlists: dict[str, PlaylistState] = {}
         self._resolved_tracks: dict[str, Track] = {}
-        self._raw_tracks: dict[str, tuple[Track, ...]] = {}
-        self._playlist_modified_at: dict[str, str | None] = {}
 
     @property
     def logger(self) -> logging.Logger:
         """Return the provider's active logger."""
         return self.provider.logger
+
+    async def load_cache(self) -> None:
+        """Restore the published playlists without fetching or resolving tracks."""
+        cached = await self.provider.mass.cache.get(
+            key="playlists",
+            category=CACHE_CATEGORY_PLAYLISTS,
+            provider=self.provider.instance_id,
+            checksum=self.provider.username,
+        )
+        if not isinstance(cached, list):
+            return
+        try:
+            playlists: dict[str, PlaylistState] = {}
+            for item in cached:
+                source_patch = item.get("source_patch")
+                if not self._is_source_patch_enabled(source_patch):
+                    continue
+                playlist = Playlist.from_dict(item["playlist"])
+                raw_tracks = item.get("raw_tracks")
+                playlists[playlist.item_id] = PlaylistState(
+                    playlist=playlist,
+                    tracks=tuple(Track.from_dict(track) for track in item["tracks"]),
+                    source_patch=source_patch,
+                    raw_tracks=(
+                        tuple(Track.from_dict(track) for track in raw_tracks)
+                        if raw_tracks is not None
+                        else None
+                    ),
+                    modified_at=item.get("modified_at"),
+                )
+        except KeyError, TypeError, ValueError, MissingField:
+            self.logger.warning("Ignoring invalid cached ListenBrainz playlists")
+            return
+        self._playlists = playlists
 
     async def refresh(self) -> None:
         """
@@ -90,76 +135,105 @@ class ListenBrainzPlaylistManager:
         cache expiry — are picked up without an extra API call.
         """
         playlists = await self.api.get_createdfor_playlists(self.provider.username)
-        refreshed: list[Playlist] = []
-        refreshed_tracks: dict[str, tuple[Track, ...]] = {}
+        refreshed: dict[str, PlaylistState] = {}
 
         for item in playlists:
             if not self._is_playlist_enabled(item):
                 continue
-            playlist = parse_playlist(item, self.provider.instance_id, self.provider.domain)
-            refreshed.append(playlist)
+            state = await self._refresh_playlist(item)
+            refreshed[state.playlist.item_id] = state
 
-            last_modified = parse_playlist_last_modified(item)
-            if last_modified is not None and self._is_playlist_unchanged(
-                playlist.item_id, last_modified
-            ):
-                # Unchanged: reuse stored raw tracks, re-resolve (no API call)
-                raw_tracks = self._raw_tracks.get(playlist.item_id, ())
-            else:
-                # Changed or new: fetch full playlist from API
-                playlist_data = await self.api.get_playlist(playlist.item_id)
-                raw_tracks = tuple(
-                    parse_track(tr, self.provider.instance_id, self.provider.domain)
-                    for tr in playlist_data["track"]
-                )
-                self._raw_tracks[playlist.item_id] = raw_tracks
-                self._playlist_modified_at[playlist.item_id] = last_modified
-
-            # Resolve (or re-resolve) tracks — cache hits for already-resolved,
-            # fresh attempts for previously unresolved
-            tracks: list[Track] = []
-            for position, raw_track in enumerate(raw_tracks, 1):
-                if resolved := await self._get_or_resolve_track(raw_track):
-                    playlist_track = copy(resolved)
-                    playlist_track.position = position
-                    tracks.append(playlist_track)
-            refreshed_tracks[playlist.item_id] = tuple(tracks)
-
-        # Evict playlists that no longer appear in the created-for list
-        active_ids = {p.item_id for p in refreshed}
-        for mbid in list(self._raw_tracks):
-            if mbid not in active_ids:
-                del self._raw_tracks[mbid]
-                self._playlist_modified_at.pop(mbid, None)
-
-        self._playlists = tuple(refreshed)
-        self._playlist_tracks = refreshed_tracks
+        self._playlists = refreshed
+        await self._store_cache()
         self.logger.debug(
             "Refreshed %d ListenBrainz playlists with %d playable tracks",
             len(refreshed),
-            sum(len(tracks) for tracks in refreshed_tracks.values()),
+            sum(len(state.tracks) for state in refreshed.values()),
         )
 
     async def browse(self) -> list[Playlist]:
         """Return the user's recommendation playlists."""
-        return list(self._playlists)
+        return [state.playlist for state in self._playlists.values()]
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Return a ListenBrainz playlist."""
-        for playlist in self._playlists:
-            if playlist.item_id == prov_playlist_id:
-                return playlist
+        if state := self._playlists.get(prov_playlist_id):
+            return state.playlist
         raise MediaNotFoundError(f"ListenBrainz playlist {prov_playlist_id} is not available")
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return resolved tracks from a ListenBrainz playlist."""
         if page > 0:
             return []
-        return list(self._playlist_tracks.get(prov_playlist_id, ()))
+        if state := self._playlists.get(prov_playlist_id):
+            return list(state.tracks)
+        return []
 
-    def _is_playlist_unchanged(self, playlist_mbid: str, last_modified: str) -> bool:
-        """Return whether the playlist's modification time matches the last refresh."""
-        return self._playlist_modified_at.get(playlist_mbid) == last_modified
+    async def _refresh_playlist(self, item: dict[str, Any]) -> PlaylistState:
+        """Refresh and publish one playlist and its resolved tracks."""
+        playlist = parse_playlist(item, self.provider.instance_id, self.provider.domain)
+        last_modified = parse_playlist_last_modified(item)
+        previous = self._playlists.get(playlist.item_id)
+        if (
+            previous is not None
+            and previous.raw_tracks is not None
+            and last_modified is not None
+            and previous.modified_at == last_modified
+        ):
+            # Unchanged: reuse stored raw tracks, re-resolve (no API call)
+            raw_tracks = previous.raw_tracks
+        else:
+            # Changed or new: fetch full playlist from API
+            playlist_data = await self.api.get_playlist(playlist.item_id)
+            raw_tracks = tuple(
+                parse_track(tr, self.provider.instance_id, self.provider.domain)
+                for tr in playlist_data["track"]
+            )
+
+        # Resolve (or re-resolve) tracks — cache hits for already-resolved,
+        # fresh attempts for previously unresolved
+        tracks: list[Track] = []
+        for position, raw_track in enumerate(raw_tracks, 1):
+            if resolved := await self._get_or_resolve_track(raw_track):
+                playlist_track = copy(resolved)
+                playlist_track.position = position
+                tracks.append(playlist_track)
+
+        state = PlaylistState(
+            playlist=playlist,
+            tracks=tuple(tracks),
+            source_patch=parse_playlist_source_patch(item),
+            raw_tracks=raw_tracks,
+            modified_at=last_modified,
+        )
+
+        # Publish each complete playlist without waiting for the remaining playlists.
+        self._playlists[playlist.item_id] = state
+        return state
+
+    async def _store_cache(self) -> None:
+        """Persist the complete state of the currently published playlists."""
+        await self.provider.mass.cache.set(
+            key="playlists",
+            data=[
+                {
+                    "playlist": state.playlist.to_dict(),
+                    "source_patch": state.source_patch,
+                    "tracks": [track.to_dict() for track in state.tracks],
+                    "raw_tracks": (
+                        [track.to_dict() for track in state.raw_tracks]
+                        if state.raw_tracks is not None
+                        else None
+                    ),
+                    "modified_at": state.modified_at,
+                }
+                for state in self._playlists.values()
+            ],
+            category=CACHE_CATEGORY_PLAYLISTS,
+            provider=self.provider.instance_id,
+            checksum=self.provider.username,
+            expiration=CACHE_EXPIRATION_SECONDS,
+        )
 
     async def _get_or_resolve_track(self, track: Track) -> Track | None:
         """Return a cached, library, or streaming-provider match for a parsed track."""
@@ -354,8 +428,11 @@ class ListenBrainzPlaylistManager:
 
     def _is_playlist_enabled(self, playlist_data: dict[str, Any]) -> bool:
         """Return whether the ListenBrainz playlist type is enabled."""
-        source_patch = parse_playlist_source_patch(playlist_data)
-        if source_patch is None:
+        return self._is_source_patch_enabled(parse_playlist_source_patch(playlist_data))
+
+    def _is_source_patch_enabled(self, source_patch: str | None) -> bool:
+        """Return whether the ListenBrainz algorithm source patch is enabled."""
+        if not isinstance(source_patch, str):
             return False
         config = {
             SOURCE_PATCH_WEEKLY_JAMS: (CONF_ENABLE_WEEKLY_JAMS, True),

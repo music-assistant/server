@@ -81,6 +81,7 @@ class ListenBrainzProvider(PluginProvider):
         self.api = ListenBrainzAPIClient(self)
         self.username = str(self.get_setup_value(CONF_USERNAME) or "")
         self.playlists_manager = ListenBrainzPlaylistManager(self)
+        await self.playlists_manager.load_cache()
 
         self.mass.tasks.register_scheduled_task(
             task_id=f"{REFRESH_TASK_ID}_{self.instance_id}",

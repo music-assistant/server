@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ConfigEntryType
@@ -29,6 +29,7 @@ def _provider() -> ListenBrainzProvider:
         MagicMock(instance_id="listenbrainz--test", name=None),
     )
     provider.mass = cast("MusicAssistant", MagicMock())
+    cast("MagicMock", provider.mass.cache).get = AsyncMock(return_value=None)
     return provider
 
 
@@ -62,19 +63,28 @@ async def test_playlist_filter_options_default_to_weekly_playlists() -> None:
 
 
 async def test_provider_initializes_and_schedules_playlist_refreshes() -> None:
-    """Provider initialization creates dependencies and schedules playlist refreshes."""
+    """Initialization restores playlists before registering the expected refresh tasks."""
     provider = _provider()
     get_value = cast("MagicMock", provider.config.get_value)
     get_value.return_value = "synthetic-user"
     cast("MagicMock", provider.mass.config.get).return_value = None
     cast("MagicMock", provider.config.values.get).return_value = None
 
-    await provider.handle_async_init()
+    async def load_cache() -> None:
+        assert isinstance(provider.api, ListenBrainzAPIClient)
+        assert isinstance(provider.playlists_manager, ListenBrainzPlaylistManager)
+        assert provider.username == "synthetic-user"
+        cast("MagicMock", provider.mass.tasks.register_scheduled_task).assert_not_called()
+        cast("MagicMock", provider.mass.call_later).assert_not_called()
 
-    assert isinstance(provider.api, ListenBrainzAPIClient)
-    assert isinstance(provider.playlists_manager, ListenBrainzPlaylistManager)
-    assert provider.username == "synthetic-user"
-    get_value.assert_called_once_with(CONF_USERNAME, None)
+    with patch.object(
+        ListenBrainzPlaylistManager, "load_cache", AsyncMock(side_effect=load_cache)
+    ) as restore:
+        await provider.handle_async_init()
+
+    restore.assert_awaited_once_with()
+
+    get_value.assert_any_call(CONF_USERNAME, None)
     register_scheduled_task = cast("MagicMock", provider.mass.tasks.register_scheduled_task)
     register_scheduled_task.assert_called_once()
     scheduled_task = register_scheduled_task.call_args.kwargs
