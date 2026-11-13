@@ -5,7 +5,6 @@
   "name": "Deezer",
   "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio.",
   "codeowners": ["@jdaberkow"],
-  "tier": "community",
   "credits": [
     "[deezer-python-gql](https://github.com/music-assistant/deezer-python-gql)"
   ],

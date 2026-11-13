@@ -28,6 +28,7 @@ from music_assistant_models.enums import (
     EventType,
     ProviderFeature,
     ProviderIconVariant,
+    ProviderTier,
     ProviderType,
 )
 from music_assistant_models.errors import (
@@ -1613,6 +1614,8 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
+                    # the tier follows from where a provider loads, not from its manifest file
+                    provider_manifest.tier = ProviderTier.CORE
                     # detect provider icon image variants (svg preferred over png)
                     icons = await detect_provider_icons(provider_path)
                     if icons:

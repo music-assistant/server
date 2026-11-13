@@ -195,7 +195,6 @@ The manifest file contains metadata and configuration about a provider. The supp
 | name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
 | description  | The full description of the provider  | string  |
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
-| tier | `core` or `community`: who builds and maintains the provider. `core` requires `@music-assistant` in `codeowners`; everything else is `community`. Required for every provider that ships. | string |
 | support_url | Optional https URL where the maintainer takes bug reports and questions, when not the project's support repository. | string |
 | stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
 | requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
@@ -212,10 +211,10 @@ The manifest file contains metadata and configuration about a provider. The supp
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
-Two more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG) and `has_setup_flow` (set when the provider folder contains a `setup_flow.py`).
+Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
 
 ## 🤝 Community providers
-Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The manifest's `tier` says who that is: `core` providers are maintained by the Music Assistant team (`@music-assistant` is a codeowner), `community` providers by the people listed in `codeowners`. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
+Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
 
 **Getting your changes merged**
 
@@ -223,7 +222,7 @@ Bot-MArley, the maintainers' review bot, reviews every PR that is ready for revi
 
 A maintainer still approves or merges:
 * a new provider, after checking it against the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md);
-* a change to your provider's `codeowners`, `tier` or `support_url`;
+* a change to your provider's `codeowners` or `support_url`;
 * a change to `requirements`, or to anything outside your provider's folders;
 * a PR of 1,000 changed lines or more;
 * a change to a player provider, or other code that talks to a device, until you say in the PR which real device you tested it on.
