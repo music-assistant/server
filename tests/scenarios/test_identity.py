@@ -60,6 +60,12 @@ SPEAKER = {
     IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0",
     IdentifierType.IP_ADDRESS: "192.168.1.90",
 }
+# the Home Assistant media player of that speaker: its MAC and the id of its entity registry
+# entry, which a rename of its entity id keeps
+TWIN = {
+    IdentifierType.MAC_ADDRESS: SPEAKER[IdentifierType.MAC_ADDRESS],
+    IdentifierType.UUID: "5d1e8c0f3a2b4e6d9c7a1f0e2b3d4c5a",
+}
 # an ESP32 speaker, identified by its MAC under any firmware
 ESP32 = {IdentifierType.MAC_ADDRESS: "A0:B7:65:00:11:22", IdentifierType.IP_ADDRESS: "192.168.1.70"}
 
@@ -402,7 +408,7 @@ async def _speaker(scenario: Scenario) -> _Speaker:
         twin=hass_players.protocol(
             "media_player.kitchen",
             "Kitchen speaker",
-            identifiers={IdentifierType.MAC_ADDRESS: SPEAKER[IdentifierType.MAC_ADDRESS]},
+            identifiers=TWIN,
         ),
         airplay=airplay.protocol(
             "airplay_kitchen",
@@ -584,7 +590,7 @@ async def test_the_settings_of_a_disabled_player_are_those_of_its_vendor_protoco
     twin = hass_players.protocol(
         "media_player.kitchen",
         "Kitchen speaker",
-        identifiers={IdentifierType.MAC_ADDRESS: SPEAKER[IdentifierType.MAC_ADDRESS]},
+        identifiers=TWIN,
     )
     linkplay = wiim.protocol("linkplay_kitchen", "Kitchen", role="control", identifiers=SPEAKER)
     await scenario.attach(twin)
@@ -793,7 +799,7 @@ async def test_a_twin_under_a_new_entity_id_returns_to_its_own_player(
     renamed = scenario.provider("hass_players").protocol(
         "media_player.kitchen_2",
         "Kitchen speaker",
-        identifiers={IdentifierType.MAC_ADDRESS: SPEAKER[IdentifierType.MAC_ADDRESS]},
+        identifiers=TWIN,
     )
     await scenario.attach(renamed)
     await scenario.idle()

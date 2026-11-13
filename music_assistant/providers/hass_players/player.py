@@ -89,6 +89,10 @@ class HomeAssistantPlayer(PlayerProtocol):
         )
         if mac_address := dev_info.get("mac_address"):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+        # the entities of one device (the zones of a receiver) share its MAC address: the
+        # registry id of the entity, which a rename of its entity id keeps, tells them apart
+        if entity_registry_id := extra_player_data.get("entity_registry_id"):
+            self._attr_device_info.add_identifier(IdentifierType.UUID, entity_registry_id)
         self._attr_playback_state = StateMap.get(hass_state["state"], PlaybackState.IDLE)
         # Work out supported features
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}

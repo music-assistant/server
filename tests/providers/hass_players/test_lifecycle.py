@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, IdentifierType, ProtocolRole
 
 from music_assistant.constants import CONF_OUTPUT_CODEC
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 BEDROOM = "media_player.bedroom"
 KITCHEN = "media_player.kitchen"
 PLAY_MEDIA = 512
+RECEIVER_MAC = "00:11:22:33:44:55"
 
 
 def _hass_prov() -> HomeAssistantProvider:
@@ -294,3 +295,88 @@ async def test_a_setting_of_a_new_player_is_its_entity_s(
     protocol = cast("HomeAssistantPlayer", provider.get_protocol(BEDROOM))
     assert protocol.get_config_value(CONF_OUTPUT_CODEC) == "flac"
     assert CONF_OUTPUT_CODEC not in (scenario.mass.config.get(f"players/{player_id}/values") or {})
+
+
+def _entity_of_receiver(entity_id: str, registry_id: str) -> dict[str, Any]:
+    """
+    Return the entity registry entry of a media player of an AV receiver.
+
+    :param entity_id: The entity id of the media player.
+    :param registry_id: The id of its entity registry entry.
+    """
+    return {
+        "entity_id": entity_id,
+        "id": registry_id,
+        "device_id": "receiver",
+        "platform": "denonavr",
+        "config_entry_id": "denonavr_entry",
+    }
+
+
+def _state(entity_id: str) -> Any:
+    """Return the state of an idle media player that can play media."""
+    return {
+        "entity_id": entity_id,
+        "state": "idle",
+        "attributes": {"friendly_name": entity_id, "supported_features": PLAY_MEDIA},
+    }
+
+
+async def _receiver_provider(scenario: Scenario) -> HomeAssistantPlayerProvider:
+    """Return a real provider with the two zones of an AV receiver selected, not set up yet."""
+    fake = await scenario.add_provider("hass_players")
+    scenario.mass.config.set_raw_provider_config_value(
+        fake.instance_id, CONF_PLAYERS, [BEDROOM, KITCHEN]
+    )
+    return _register(scenario, fake.instance_id, _hass_prov())
+
+
+async def test_two_entities_of_one_device_stay_two_players(scenario: Scenario) -> None:
+    """
+    An entity first set up while another entity of its device is away gets a player of its own.
+
+    The zones of an AV receiver are entities of one device, so they share its MAC address.
+    """
+    provider = await _receiver_provider(scenario)
+    registry = {
+        BEDROOM: _entity_of_receiver(BEDROOM, "6f1c2a9e0b7d4c3e8a5f1b2c3d4e5f60"),
+        KITCHEN: _entity_of_receiver(KITCHEN, "0a1b2c3d4e5f60718293a4b5c6d7e8f9"),
+    }
+    devices: Any = {"receiver": {"id": "receiver", "connections": [["mac", RECEIVER_MAC]]}}
+    await provider._setup_player(_state(BEDROOM), registry, devices)
+    await scenario.settle()
+    bedroom_player = _player(provider, BEDROOM).player_id
+    await scenario.mass.players.detach(BEDROOM)
+    await scenario.settle()
+
+    await provider._setup_player(_state(KITCHEN), registry, devices)
+    await scenario.settle()
+
+    assert _player(provider, KITCHEN).player_id != bedroom_player
+    record = scenario.mass.config.get_protocol_record(BEDROOM)
+    assert record is not None
+    assert record["player_id"] == bedroom_player
+
+
+async def test_the_entity_of_a_speaker_is_a_control_of_its_player(scenario: Scenario) -> None:
+    """The media player Home Assistant has for a speaker joins the player of the speaker."""
+    sonos = await scenario.add_provider("sonos")
+    vendor = sonos.protocol(
+        "RINCON_001122334455",
+        "Kitchen",
+        identifiers={
+            IdentifierType.MAC_ADDRESS: RECEIVER_MAC,
+            IdentifierType.UUID: "RINCON_001122334455",
+        },
+    )
+    await scenario.attach(vendor)
+    provider = await _receiver_provider(scenario)
+    registry = {KITCHEN: _entity_of_receiver(KITCHEN, "0a1b2c3d4e5f60718293a4b5c6d7e8f9")}
+    devices: Any = {"receiver": {"id": "receiver", "connections": [["mac", RECEIVER_MAC]]}}
+
+    await provider._setup_player(_state(KITCHEN), registry, devices)
+    await scenario.settle()
+
+    player = _player(provider, KITCHEN)
+    assert player.player_id == scenario.player_of(vendor)
+    assert player.get_role(KITCHEN) == ProtocolRole.CONTROL
