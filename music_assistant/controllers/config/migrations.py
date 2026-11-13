@@ -34,6 +34,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
 )
 from music_assistant.controllers.player_queues.constants import (
+    CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     CONF_SMART_SHUFFLE_ARTIST_RECENCY,
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
@@ -684,6 +685,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # artists; the provider heals and clears the marker on its next album sync.
     # TODO: remove after 2.13 release
     if _migrate_emby_album_artists_heal(data):
+        changed = True
+
+    # Move an artist selection that listed the artist's whole catalogue to the tracks of the
+    # artist's albums in the library.
+    # TODO: remove after 2.13 release
+    if _migrate_artist_catalogue_selection(data):
         changed = True
 
     return changed
@@ -2001,4 +2008,21 @@ def _migrate_emby_album_artists_heal(data: dict[str, Any]) -> bool:
         return False
     LOGGER.info("Scheduled an album artist heal for %d Emby provider(s)", marked)
     data[CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED] = True
+    return True
+
+
+def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
+    """Move a stored artist selection that is no longer offered to the library album tracks."""
+    core_cfg = data.get(CONF_CORE)
+    queues_cfg = core_cfg.get("player_queues") if isinstance(core_cfg, dict) else None
+    queue_values = queues_cfg.get("values") if isinstance(queues_cfg, dict) else None
+    if not isinstance(queue_values, dict):
+        return False
+    if queue_values.get(CONF_DEFAULT_ENQUEUE_SELECT_ARTIST) not in (
+        "all_tracks",
+        "all_album_tracks",
+    ):
+        return False
+    queue_values[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST] = "library_album_tracks"
+    LOGGER.info("Moved the artist playback selection to the tracks of the library albums")
     return True

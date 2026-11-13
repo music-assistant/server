@@ -55,6 +55,8 @@ if TYPE_CHECKING:
 
 _LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
 _START_ITEM_SUBSTRING_MIN_LEN = 3
+# caps the album track lookups in flight, so a large discography does not flood a provider
+ALBUM_LOOKUP_BATCH = 5
 
 
 def _start_item_matches(start_item: str, item: Any) -> bool:
@@ -123,38 +125,23 @@ class MediaResolver:
         )
         if artist_items_conf == "top_tracks":
             tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            random.shuffle(tracks)
-            return tracks
-        # legacy "library_album_tracks" also resolves to the in-library tracks
-        if artist_items_conf in ("library_tracks", "library_album_tracks"):
+        elif artist_items_conf == "library_tracks":
             tracks = await self._library_artist_tracks(artist)
-            random.shuffle(tracks)
-            return tracks
-        if artist_items_conf == "prefer_library":
-            tracks = await self._library_artist_tracks(artist)
+        else:
+            # library_album_tracks falls back like prefer_library, the default: to the library
+            # tracks, then to the top tracks
+            tracks = []
+            if artist_items_conf == "library_album_tracks":
+                tracks = await self._library_album_tracks(artist)
+            if not tracks:
+                tracks = await self._library_artist_tracks(artist)
             if not tracks:
                 tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            random.shuffle(tracks)
-            return tracks
-        result: list[Track] = []
-        seen: set[str] = set()
-        sources = await asyncio.gather(
-            self._library_artist_tracks(artist),
-            self._provider_artist_tracks(artist),
-            return_exceptions=True,
-        )
-        for source in sources:
-            if isinstance(source, BaseException):
-                self.logger.warning(
-                    "Error resolving some tracks for artist %s", artist.name, exc_info=source
-                )
-                continue
-            for track in source:
-                unique_id = f"{track.name}.{track.version}"
-                if unique_id in seen:
-                    continue
-                seen.add(unique_id)
-                result.append(track)
+        # a song on several albums, such as an album and a compilation, plays once
+        unique_tracks: dict[str, Track] = {}
+        for track in tracks:
+            unique_tracks.setdefault(f"{track.name}.{track.version}", track)
+        result = list(unique_tracks.values())
         random.shuffle(result)
         return result
 
@@ -674,29 +661,33 @@ class MediaResolver:
             return []
         return await self.mass.music.artists.tracks(library_artist.item_id, "library")
 
-    async def _provider_artist_tracks(self, artist: Artist) -> list[Track]:
+    async def _library_album_tracks(self, artist: Artist) -> list[Track]:
         """
-        Return all of the artist's tracks across its (streaming) providers.
+        Return the tracks of the artist's library albums.
 
-        :param artist: The artist to resolve provider tracks for.
+        Each album plays as it does on its own; empty if the artist is not saved.
+
+        :param artist: The artist to resolve the library album tracks for.
         """
-        unique_providers = self.mass.music.get_unique_providers()
+        if (library_artist := await self._resolve_library_artist(artist)) is None:
+            return []
+        albums = await self.mass.music.artists.albums(library_artist.item_id, "library")
         tracks: list[Track] = []
-        for mapping in artist.provider_mappings:
-            if mapping.provider_instance not in unique_providers:
-                continue
-            try:
-                tracks.extend(
-                    await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
-                )
-            except PROVIDER_FETCH_ERRORS as err:
-                # one failing provider must not drop the tracks of the artist's other providers
-                self.logger.warning(
-                    "Unable to fetch tracks for artist %s from provider %s: %s",
-                    artist.name,
-                    mapping.provider_instance,
-                    err,
-                )
+        for start in range(0, len(albums), ALBUM_LOOKUP_BATCH):
+            batch = albums[start : start + ALBUM_LOOKUP_BATCH]
+            results = await asyncio.gather(
+                *(self.get_album_tracks(album, None) for album in batch),
+                return_exceptions=True,
+            )
+            for album, result in zip(batch, results, strict=True):
+                if isinstance(result, PROVIDER_FETCH_ERRORS):
+                    self.logger.warning(
+                        "Unable to fetch the tracks of album %s: %s", album.name, result
+                    )
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+                tracks.extend(result)
         return tracks
 
     async def _resolve_media_items(

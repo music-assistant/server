@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import ArtistType, ExternalID, MediaType
@@ -201,6 +201,7 @@ def _harness(
     album_search = AsyncMock(return_value=list(album_results))
     mass = Mock()
     mass.music.artists.tracks = AsyncMock(side_effect=_artist_tracks)
+    mass.music.artists.top_tracks = AsyncMock(return_value=[])
     mass.music.artists.albums = AsyncMock(side_effect=_artist_albums)
     mass.music.tracks.search = track_search
     mass.music.albums.search = album_search
@@ -279,6 +280,30 @@ async def test_accent_drift_on_artist_name_matches() -> None:
         matches = await harness.match(_library_artist(name="Sigur Rós"))
 
     assert matches == [CANDIDATE_MAPPING]
+
+
+async def test_provider_reference_tracks_are_the_top_tracks() -> None:
+    """The artist's providers are asked for their top tracks, never for every track."""
+    db_artist = _library_artist()
+    db_artist.provider_mappings.add(
+        ProviderMapping(item_id="other-prov", provider_domain="plex", provider_instance="plex_1")
+    )
+    providers = {
+        "tidal_1": Mock(supports_feature=Mock(return_value=True)),
+        "plex_1": Mock(supports_feature=Mock(return_value=False)),
+    }
+    with _harness(
+        track_results=[_track("s1", "spotify_1")],
+        provider_artists=[_provider_artist()],
+    ) as harness:
+        mass = cast("Mock", harness.ctrl.mass)
+        mass.get_provider = Mock(side_effect=lambda instance, **_kwargs: providers[instance])
+        mass.music.artists.top_tracks.return_value = [_track("top", "tidal_1")]
+        matches = await harness.match(db_artist)
+
+    assert matches == [CANDIDATE_MAPPING]
+    assert {call.args[1] for call in mass.music.artists.tracks.await_args_list} == {"library"}
+    assert {call.args[1] for call in mass.music.artists.top_tracks.await_args_list} == {"tidal_1"}
 
 
 # ---------------------------------------------------------------------------

@@ -72,6 +72,20 @@ def test_core_config_entries_enqueue_defaults() -> None:
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_TRACK].category == CATEGORY_DEFAULT_ENQUEUE_OPTION
 
 
+def test_core_config_entries_artist_selection() -> None:
+    """An artist prefers its library tracks by default; no selection lists its whole catalogue."""
+    entry = _by_key(core_config_entries(_mass(similar_tracks=True, smart_fades=True)))[
+        CONF_DEFAULT_ENQUEUE_SELECT_ARTIST
+    ]
+    assert entry.default_value == "prefer_library"
+    assert [option.value for option in entry.options] == [
+        "top_tracks",
+        "library_tracks",
+        "prefer_library",
+        "library_album_tracks",
+    ]
+
+
 def test_core_config_entries_click_actions() -> None:
     """
     The click actions clients read: browsing by default, and a track playing on from where it sits.

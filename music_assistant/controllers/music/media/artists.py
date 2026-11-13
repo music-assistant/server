@@ -701,41 +701,21 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> list[Track]:
-        """Return all tracks for an artist on given provider."""
+        """
+        Return all tracks for an artist on given provider.
+
+        Empty when the provider has no artist tracks listing of its own.
+        """
         provider = self.mass.get_provider(
             provider_instance_id_or_domain, provider_type=MusicProvider
         )
         if provider is None or not provider.available:
             return []  # guard against unavailable provider
-        if provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
-            return await provider.get_artist_tracks(item_id)
-        # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
-        result: list[Track] = []
-        unique_ids: set[str] = set()
-        provider_error: Exception | None = None
-        for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
-            try:
-                album_tracks = await self.mass.music.albums.tracks(album.item_id, album.provider)
-            except PROVIDER_FETCH_ERRORS as err:
-                # one failing album must not drop the artist's other tracks on this provider
-                provider_error = err
-                self.logger.warning(
-                    "Unable to fetch tracks for album %s from provider %s: %s",
-                    album.name,
-                    provider_instance_id_or_domain,
-                    err,
-                )
-                continue
-            for track in album_tracks:
-                unique_id = f"{track.name}.{track.version}"
-                if unique_id in unique_ids:
-                    continue
-                unique_ids.add(unique_id)
-                result.append(track)
-        if provider_error is not None and not any(track.available for track in result):
-            # nothing could be played at all, so surface the reason instead of an empty list
-            raise provider_error
-        return result
+        # no fallback to the tracks of the artist's albums: that costs a request per release,
+        # which our usage policy rules out
+        if not provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
+            return []
+        return await provider.get_artist_tracks(item_id)
 
     async def get_library_artist_tracks(
         self,
@@ -936,8 +916,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
+                mapped_provider = self.mass.get_provider(
+                    provider_mapping.provider_instance, provider_type=MusicProvider
+                )
+                if not mapped_provider or not mapped_provider.supports_feature(
+                    ProviderFeature.ARTIST_TOPTRACKS
+                ):
+                    continue
                 with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
-                    ref_tracks += await self.mass.music.artists.tracks(
+                    ref_tracks += await self.mass.music.artists.top_tracks(
                         provider_mapping.item_id, provider_mapping.provider_instance
                     )
         for ref_track in ref_tracks:
