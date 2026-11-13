@@ -202,7 +202,7 @@ async def test_random_albums_varies_the_album_order(mass: MusicAssistant) -> Non
 
 
 async def test_artist_order_defaults_to_shuffled_tracks(mass: MusicAssistant) -> None:
-    """Without an order set, the artist's library songs play shuffled."""
+    """Without an order set, the artist's songs play shuffled, a song on two albums only once."""
     artist = await _add_artist(mass)
     await _add_album(mass, artist, "Arrival", 1976, ("When I Kissed", "Dancing Queen", "My Love"))
     await _add_album(mass, artist, "Gold", 1992, ("Dancing Queen", "Knowing Me", "Take a Chance"))
@@ -212,6 +212,26 @@ async def test_artist_order_defaults_to_shuffled_tracks(mass: MusicAssistant) ->
 
     assert sorted(_names(result)) == [
         "Dancing Queen",
+        "Knowing Me",
+        "My Love",
+        "Take a Chance",
+        "When I Kissed",
+    ]
+
+
+@pytest.mark.parametrize("selection", ["library_tracks", "library_album_tracks"])
+async def test_shuffled_tracks_play_a_song_on_two_albums_once(
+    mass: MusicAssistant, selection: str
+) -> None:
+    """Each library selection plays a song on two of the artist's albums only once."""
+    artist = await _add_artist(mass)
+    await _add_album(mass, artist, "Arrival", 1976, ("When I Kissed", "Dancing Queen", "My Love"))
+    await _add_album(mass, artist, "Gold", 1992, ("Dancing Queen", "Knowing Me", "Take a Chance"))
+    _set_selection(mass, selection)
+
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
+
+    assert sorted(_names(result)) == [
         "Dancing Queen",
         "Knowing Me",
         "My Love",

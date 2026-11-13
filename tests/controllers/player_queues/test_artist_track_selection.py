@@ -154,6 +154,21 @@ async def test_library_album_tracks_plays_the_tracks_of_the_library_albums(
     assert sorted(t.name for t in result) == ["Fernando", "Honey Honey", "Waterloo"]
 
 
+async def test_library_album_tracks_without_albums_falls_back_like_prefer_library(
+    mass: MusicAssistant,
+) -> None:
+    """library_album_tracks plays the library tracks of an artist without library albums."""
+    artist = await _add_artist(mass, "ABBA")
+    mass.music.artists.top_tracks = AsyncMock(return_value=[_track_obj("Top")])  # type: ignore[method-assign]
+    _select(mass, "library_album_tracks")
+    resolver = mass.player_queues._media_resolver
+
+    # without library tracks either, it plays the top tracks
+    assert {t.name for t in await resolver.get_artist_tracks(artist)} == {"Top"}
+    await _add_track(mass, "Chiquitita", [artist])
+    assert {t.name for t in await resolver.get_artist_tracks(artist)} == {"Chiquitita"}
+
+
 async def test_top_tracks_excludes_library_tracks(mass: MusicAssistant) -> None:
     """top_tracks returns only provider top tracks, never the in-library tracks."""
     artist = await _add_artist(mass, "ABBA")

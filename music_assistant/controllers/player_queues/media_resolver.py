@@ -816,7 +816,7 @@ class MediaResolver:
 
     async def _shuffled_artist_tracks(self, artist: Artist, artist_items_conf: str) -> list[Track]:
         """
-        Return the artist's selected tracks, shuffled.
+        Return the artist's selected tracks shuffled, each song once.
 
         :param artist: The artist to play.
         :param artist_items_conf: The artist selection setting.
@@ -827,17 +827,25 @@ class MediaResolver:
             )
         elif artist_items_conf == "library_tracks":
             tracks = await self._library_artist_tracks(artist)
-        elif artist_items_conf == "library_album_tracks":
-            tracks = await self._library_album_tracks(artist)
         else:
-            # prefer_library, the default
-            tracks = await self._library_artist_tracks(artist)
+            # library_album_tracks falls back like prefer_library, the default: to the library
+            # tracks, then to the top tracks
+            tracks = []
+            if artist_items_conf == "library_album_tracks":
+                tracks = await self._library_album_tracks(artist)
+            if not tracks:
+                tracks = await self._library_artist_tracks(artist)
             if not tracks:
                 tracks = await self.mass.music.artists.top_tracks(
                     artist.item_id, artist.provider, limit=None
                 )
-        random.shuffle(tracks)
-        return tracks
+        # a song on several albums, such as an album and a compilation, plays once
+        unique_tracks: dict[str, Track] = {}
+        for track in tracks:
+            unique_tracks.setdefault(f"{track.name}.{track.version}", track)
+        result = list(unique_tracks.values())
+        random.shuffle(result)
+        return result
 
     async def _album_tracks_in_turn(self, albums: list[Album]) -> list[Track]:
         """
@@ -894,7 +902,7 @@ class MediaResolver:
 
     async def _library_album_tracks(self, artist: Artist) -> list[Track]:
         """
-        Return the tracks of the artist's library albums, each track once.
+        Return the tracks of the artist's library albums.
 
         Each album plays as it does on its own; empty if the artist is not saved.
 
@@ -903,10 +911,7 @@ class MediaResolver:
         if (library_artist := await self._resolve_library_artist(artist)) is None:
             return []
         albums = await self.mass.music.artists.albums(library_artist.item_id, "library", limit=None)
-        # a track on several of the albums, such as an album and a compilation, plays once
-        return list(
-            {track.uri: track for track in await self._album_tracks_in_turn(albums)}.values()
-        )
+        return await self._album_tracks_in_turn(albums)
 
     async def _resolve_media_items(  # noqa: PLR0915
         self,
