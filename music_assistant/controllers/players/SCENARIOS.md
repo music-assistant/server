@@ -1191,3 +1191,13 @@ command.
   - `tests/controllers/players/test_routing.py::test_level_the_player_had_is_kept_while_its_native_can_not_be_reached`
   - `tests/controllers/players/test_routing.py::test_output_that_takes_over_is_never_made_louder_than_the_device_was_left`
   - `tests/controllers/players/test_routing.py::test_native_that_can_be_reached_again_takes_the_controls_back_at_its_own_level`
+
+### VOLUME-4 · A device shows the level it reported before its protocol was attached
+
+A Sendspin voice device connects after a restart and reports level 28, unmuted, while its provider
+still sets it up. From the moment its player has it, the player shows level 28 and unmuted, and a
+volume command reaches the device; the level it reports back shows.
+
+- End-to-end: **possible with** a Sendspin client of the lab that reports its volume right after
+  its hello, checked after a restart of the server.
+- Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_shows_the_volume_it_reported_before_its_protocol_was_attached`

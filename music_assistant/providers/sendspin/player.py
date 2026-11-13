@@ -2179,6 +2179,19 @@ class SendspinPlayer(SendspinBasePlayer):
 
         return entries
 
+    async def on_attach(self, player: Player) -> None:
+        """Follow the client, starting from the volume, mute and controls it reported so far."""
+        await super().on_attach(player)
+        if (role := self._player_role) is None:
+            return
+        # a client/state that arrived before the attach found no listener
+        if (volume := role.get_player_volume()) is not None:
+            self._attr_volume_level = volume
+        if (muted := role.get_player_muted()) is not None:
+            self._attr_volume_muted = muted
+        if not self.control_features_pinned:
+            self._sync_control_features(role.state_supported_commands)
+
     async def on_detach(self) -> None:
         """End the playback session of the protocol when it is detached from its player."""
         await self.playback_session.close()
