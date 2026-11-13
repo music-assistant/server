@@ -37,6 +37,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    RetriesExhausted,
     SetupFailedError,
     UnplayableMediaError,
 )
@@ -737,7 +738,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             start_seconds = await get_episode_start_seconds(
                 video_id, headers=self._headers, user=self._yt_user
             )
-        except (YTMusicError, RequestException, KeyError, MediaNotFoundError) as err:
+        except (
+            YTMusicError,
+            RequestException,
+            KeyError,
+            MediaNotFoundError,
+            RetriesExhausted,
+        ) as err:
             # without YouTube's progress the episode resumes from Music Assistant's own
             self.logger.debug("Unable to get the progress of episode %s: %s", video_id, err)
             raise NotImplementedError from err

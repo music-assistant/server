@@ -10,7 +10,7 @@ import requests
 import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import AlbumType, MediaType
-from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.errors import LoginFailed, RetriesExhausted, SetupFailedError
 from requests.exceptions import ReadTimeout
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
@@ -1375,6 +1375,7 @@ async def test_get_resume_position_from_progress(
         YTMusicServerError("Server returned HTTP 500"),
         ReadTimeout("timed out"),
         KeyError("progress"),
+        RetriesExhausted("rate limited"),
     ],
 )
 async def test_get_resume_position_unavailable(
