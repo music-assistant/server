@@ -11,6 +11,8 @@ from music_assistant.constants import (
     CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
+    CONF_PLAYER_SPLIT_SESSION_ONLY,
+    CONF_PLAYER_SPLIT_TREE,
     ENCRYPT_SUFFIX,
 )
 from music_assistant.controllers.config.migrations import (
@@ -20,6 +22,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_apple_music_sync_schedule,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
+    _migrate_drop_http_profile,
     _migrate_emby_album_artists_heal,
     _migrate_nicovideo_drop_mail_login,
     _migrate_player_icons,
@@ -62,7 +65,7 @@ def test_migrate_bluesound_http_profile_drops_stored_pick() -> None:
     assert _migrate_bluesound_http_profile(data) is True
     assert data["players"]["b1"]["values"] == {"flow_mode": True}
     assert data["players"]["b2"]["values"] == {}
-    # other providers still offer the setting, so their pick is left alone
+    # other providers are left to the step that drops the setting everywhere
     assert data["players"]["c1"]["values"] == {"http_profile": "chunked"}
 
 
@@ -80,6 +83,166 @@ def test_migrate_bluesound_http_profile_noop_when_already_required() -> None:
         }
     }
     assert _migrate_bluesound_http_profile(data) is False
+
+
+def test_migrate_drop_http_profile_drops_every_stored_value() -> None:
+    """The HTTP profile is dropped from every player, protocol players included."""
+    data: dict[str, Any] = {
+        "players": {
+            "sonos_1": {
+                "provider": "sonos",
+                "values": {
+                    "http_profile": "chunked",
+                    "dlna_1||protocol||http_profile": "forced_content_length",
+                    "dlna_1||protocol||flow_mode": True,
+                    "output_codec": "mp3",
+                },
+            },
+            "dlna_1": {
+                "provider": "dlna",
+                "player_type": "protocol",
+                "values": {"http_profile": "forced_content_length", "flow_mode": True},
+            },
+            "cast_1": {"provider": "chromecast", "values": {"http_profile": "chunked"}},
+            "ap_1": {"provider": "airplay", "values": {"output_codec": "flac"}},
+        }
+    }
+    players = data["players"]
+
+    assert _migrate_drop_http_profile(data) is True
+    assert players["sonos_1"]["values"] == {
+        "dlna_1||protocol||flow_mode": True,
+        "output_codec": "mp3",
+    }
+    assert players["dlna_1"]["values"] == {"flow_mode": True}
+    assert players["cast_1"]["values"] == {}
+    assert players["ap_1"]["values"] == {"output_codec": "flac"}
+
+
+async def test_migrate_drop_http_profile_idempotent() -> None:
+    """The settings migration drops the HTTP profile once and reports no change after."""
+    data: dict[str, Any] = {
+        "players": {"dlna_1": {"provider": "dlna", "values": {"http_profile": "chunked"}}}
+    }
+    assert await migrate(data) is True
+    assert await migrate(data) is False
+    assert data["players"]["dlna_1"]["values"] == {}
+    # the split gave the value to the record of the player's own protocol, where it is gone too
+    assert data["player_protocols"]["dlna_1"]["values"] == {}
+
+
+async def test_migrate_drops_the_http_profile_of_a_config_from_before_the_split() -> None:
+    """A config from before the split keeps no HTTP profile in any record the split makes."""
+    data: dict[str, Any] = {
+        "players": {
+            # a player with the copy it held of its protocol player's value
+            "sonos_1": {
+                "provider": "sonos",
+                "player_type": "player",
+                "values": {
+                    "http_profile": "chunked",
+                    "dlna_1||protocol||http_profile": "forced_content_length",
+                    "output_codec": "mp3",
+                },
+            },
+            "dlna_1": {
+                "provider": "dlna",
+                "player_type": "protocol",
+                "values": {
+                    "protocol_parent_id": "sonos_1",
+                    "http_profile": "forced_content_length",
+                    "flow_mode": True,
+                },
+            },
+            # a universal player, whose values stay on the record of its player
+            "up_cast": {
+                "provider": "universal_player",
+                "player_type": "player",
+                "values": {
+                    "linked_protocol_ids": ["cast_1"],
+                    "cast_1||protocol||http_profile": "chunked",
+                    "cast_1||protocol||output_codec": "flac",
+                },
+            },
+            "cast_1": {
+                "provider": "chromecast",
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": "up_cast", "http_profile": "chunked"},
+            },
+        }
+    }
+
+    assert await migrate(data) is True
+
+    records = [*data["players"].values(), *data["player_protocols"].values()]
+    assert not [key for record in records for key in record["values"] if "http_profile" in key]
+    assert data["player_protocols"]["sonos_1"]["values"] == {"output_codec": "mp3"}
+    assert data["player_protocols"]["dlna_1"]["values"] == {"flow_mode": True}
+    assert data["player_protocols"]["cast_1"]["values"] == {}
+    assert data["players"]["up_cast"]["values"] == {"cast_1||protocol||output_codec": "flac"}
+    assert await migrate(data) is False
+
+
+async def test_migrate_drops_the_http_profile_of_a_split_config() -> None:
+    """A config split before this step existed loses the HTTP profile its protocols hold."""
+    data: dict[str, Any] = {
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        "players": {
+            "pl_a": {"player_id": "pl_a", "provider": "dlna", "values": {"hide_in_ui": True}}
+        },
+        "player_protocols": {
+            "dlna_a": {
+                "protocol_id": "dlna_a",
+                "provider": "dlna",
+                "player_id": "pl_a",
+                "role": "native",
+                "enabled": True,
+                "values": {"http_profile": "chunked", "flow_mode": True},
+            }
+        },
+    }
+
+    assert await migrate(data) is True
+
+    assert data["player_protocols"]["dlna_a"]["values"] == {"flow_mode": True}
+    assert data["players"]["pl_a"]["values"] == {"hide_in_ui": True}
+    assert await migrate(data) is False
+
+
+def test_migrate_drop_http_profile_tolerates_malformed_protocol_records() -> None:
+    """Missing or non-dict protocol records and values are skipped without raising."""
+    assert _migrate_drop_http_profile({"player_protocols": "broken"}) is False
+    data: dict[str, Any] = {
+        "player_protocols": {
+            "a": "broken",
+            "b": {"provider": "dlna"},
+            "c": {"provider": "dlna", "values": None},
+            "d": {"provider": "dlna", "values": {"http_profile": None}},
+        }
+    }
+    assert _migrate_drop_http_profile(data) is True
+    assert data["player_protocols"]["a"] == "broken"
+    assert "values" not in data["player_protocols"]["b"]
+    assert data["player_protocols"]["d"]["values"] == {}
+
+
+def test_migrate_drop_http_profile_tolerates_malformed_data() -> None:
+    """Missing or non-dict player configs and values are skipped without raising."""
+    assert _migrate_drop_http_profile({}) is False
+    assert _migrate_drop_http_profile({"players": "broken"}) is False
+    data: dict[str, Any] = {
+        "players": {
+            "p1": "broken",
+            "p2": {"provider": "dlna"},
+            "p3": {"provider": "dlna", "values": None},
+            "p4": {"provider": "dlna", "values": {"http_profile": None}},
+        }
+    }
+    assert _migrate_drop_http_profile(data) is True
+    assert data["players"]["p1"] == "broken"
+    assert "values" not in data["players"]["p2"]
+    assert data["players"]["p4"]["values"] == {}
 
 
 def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:

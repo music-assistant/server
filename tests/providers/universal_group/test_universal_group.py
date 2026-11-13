@@ -19,7 +19,8 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import HttpVersion11
+from aiohttp import HttpVersion, HttpVersion10, HttpVersion11, web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
@@ -39,7 +40,12 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAY_MEDIA_OVERRIDES_GROUP
+from music_assistant.constants import (
+    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
+    CONF_GROUP_MEMBERS,
+    CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
+)
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -938,3 +944,55 @@ class TestCommandOnAMemberOfAHeldGroup:
 
         assert sorted(played_on) == ["m1", "m2"]
         assert took < LOCK_BUDGET
+
+
+class TestStreamContentLength:
+    """The group stream follows the fixed content length setting of the member fetching it."""
+
+    UGP_CONTENT_LENGTH = 4294967296
+
+    async def _serve(
+        self, member_setting: bool, member_id: str, version: HttpVersion = HttpVersion11
+    ) -> web.StreamResponse:
+        """Serve a probe of the group stream to member_id and return the prepared response."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass, members=["m1"])
+        ugp.stream = MagicMock(done=False)
+        # the setting is one of the protocol that renders the member's audio
+        _member, protocol = attach_mock(
+            MockProvider("sonos", mass=mass), "proto_m1", player_id="m1"
+        )
+        config = PlayerConfig.parse(
+            [CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH],
+            {
+                "player_id": "proto_m1",
+                "provider": "sonos",
+                "values": {CONF_REQUIRES_FIXED_CONTENT_LENGTH: member_setting},
+            },
+        )
+        protocol.set_config(cast("PlayerConfig", config))
+        request = make_mocked_request(
+            "HEAD", f"/ugp/{GROUP_PROTOCOL_ID}.mp3?player_id={member_id}", version=version
+        )
+        return await ugp._serve_ugp_stream(request)
+
+    async def test_member_that_requires_it_gets_a_content_length(self) -> None:
+        """A member whose output protocol needs a fixed length gets one."""
+        resp = await self._serve(member_setting=True, member_id="m1")
+
+        assert resp.content_length == self.UGP_CONTENT_LENGTH
+
+    @pytest.mark.parametrize("version", [HttpVersion10, HttpVersion11], ids=["http10", "http11"])
+    async def test_member_without_the_setting_gets_no_length(self, version: HttpVersion) -> None:
+        """Other members get no length and no forced chunking, on any HTTP version."""
+        resp = await self._serve(member_setting=False, member_id="m1", version=version)
+
+        assert resp.prepared
+        assert resp.content_length is None
+        assert not resp.chunked
+
+    async def test_unknown_member_gets_no_length(self) -> None:
+        """A stale member id in the stream url falls back to no fixed length."""
+        resp = await self._serve(member_setting=True, member_id="ghost")
+
+        assert resp.content_length is None

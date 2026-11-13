@@ -19,11 +19,12 @@ from music_assistant.constants import (
     CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED,
     CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING,
     CONF_ENABLE_ICY_METADATA,
-    CONF_HTTP_PROFILE,
     CONF_ICON,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
+    CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROVIDERS,
     CONF_RAUMFELD_ICY_BASIC_MIGRATED,
     CONF_SMART_FADES_MODE,
@@ -57,6 +58,9 @@ LEGACY_MSX_BRIDGE_KEYS = ("enable_player_grouping", "enable_sendspin_bridge")
 
 # player id prefix of the Sendspin clients the removed MSX Sendspin bridge registered
 LEGACY_MSX_SENDSPIN_BRIDGE_PREFIX = "spb_msx_"
+
+# removed player HTTP profile config key, only referenced by its migrations
+LEGACY_HTTP_PROFILE_KEY = "http_profile"
 
 
 # Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
@@ -589,12 +593,18 @@ async def migrate(data: dict[str, Any]) -> bool:
         changed = True
 
     # Split the player configs into one record per player and one per protocol. This runs
-    # last: the steps above work on the records as they were before the split.
+    # after the steps above, which work on the records as they were before the split.
     if migrate_player_split(data):
         changed = True
 
     # Remove the player records an older version stored in the old shape after the split.
     if remove_player_records_of_older_versions(data):
+        changed = True
+
+    # Drop the stored value of the removed HTTP profile setting from every player and protocol.
+    # It reads both trees, so it also reaches a config that was split before this step existed.
+    # TODO: remove after 2.13 release
+    if _migrate_drop_http_profile(data):
         changed = True
 
     return changed
@@ -1102,11 +1112,40 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
         player_values = player_cfg.get("values")
         if not isinstance(player_values, dict):
             continue
-        if player_values.get(CONF_HTTP_PROFILE, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
-            del player_values[CONF_HTTP_PROFILE]
+        if player_values.get(LEGACY_HTTP_PROFILE_KEY, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
+            del player_values[LEGACY_HTTP_PROFILE_KEY]
             changed = True
     if changed:
         LOGGER.info("Restored the required HTTP profile on the Bluesound player configuration(s)")
+    return changed
+
+
+def _migrate_drop_http_profile(data: dict[str, Any]) -> bool:
+    """Drop the stored value of the removed HTTP profile setting from every player and protocol."""
+    # a player record can hold a copy of a protocol's value under a prefixed key: a parent
+    # player stored one for a linked protocol player, and the split keeps the values of a
+    # universal player on its player record
+    protocol_key_suffix = f"{CONF_PROTOCOL_KEY_SPLITTER}{LEGACY_HTTP_PROFILE_KEY}"
+    changed = False
+    for tree in (CONF_PLAYERS, CONF_PLAYER_PROTOCOLS):
+        records = data.get(tree)
+        if not isinstance(records, dict):
+            continue
+        for record in records.values():
+            if not isinstance(record, dict):
+                continue
+            values = record.get("values")
+            if not isinstance(values, dict):
+                continue
+            for key in [
+                key
+                for key in values
+                if key == LEGACY_HTTP_PROFILE_KEY or key.endswith(protocol_key_suffix)
+            ]:
+                del values[key]
+                changed = True
+    if changed:
+        LOGGER.info("Dropped the removed HTTP profile from the player configuration(s)")
     return changed
 
 

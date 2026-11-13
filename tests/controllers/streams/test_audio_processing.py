@@ -2200,7 +2200,7 @@ def _native_stream_handler_context(
     protocol = MagicMock(protocol_id="protocol-1", display_name="Player")
     protocol.group_members = group_members
     protocol.supported_features = set()
-    protocol.get_config_value.return_value = "default"
+    protocol.get_config_value.return_value = False
     mass.players.get_output_protocol.return_value = protocol
     # the queue's player is no group that shares one stream with its members
     mass.players.get_player.return_value.own_protocol.get_shared_stream.return_value = None

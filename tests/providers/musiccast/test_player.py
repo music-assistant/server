@@ -145,3 +145,8 @@ async def test_end_of_track_advances_the_queue_of_the_player(network: MusicCastN
     )
     network.mass.call_later.assert_called_once()
     network.mass.player_queues.next.assert_awaited_once_with("pl_living")
+
+
+def test_a_musiccast_player_gets_the_gapless_burst(network: MusicCastNetwork) -> None:
+    """A MusicCast device only plays a track gapless once it holds a whole opening chunk of it."""
+    assert network.player("A___main").needs_gapless_burst

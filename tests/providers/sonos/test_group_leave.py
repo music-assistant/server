@@ -65,9 +65,9 @@ class _Household:
         # what the household looks like after the next change on the leader
         self.next_groups = LEFT
 
-        async def _modify_group_members(*_args: object) -> None:
-            # the leader reports a change in its groups event right away
-            self.leader.client._handle_groups_event(cast("Any", self.next_groups))
+        async def _modify_group_members(*_args: object) -> dict[str, Any]:
+            # the leader answers with the resulting group; its own groups event follows later
+            return self.group_info(self.next_groups)
 
         self.apis[LEADER].groups.modify_group_members.side_effect = _modify_group_members
 
@@ -80,6 +80,15 @@ class _Household:
     def member(self) -> SonosPlayer:
         """The speaker that is taken out of the group."""
         return self.players[MEMBER]
+
+    @staticmethod
+    def group_info(groups: dict[str, Any]) -> dict[str, Any]:
+        """Build the groupInfo the leader answers a group command with."""
+        group = next(x for x in groups["groups"] if x["coordinatorId"] == LEADER)
+        return {
+            "_objectType": "groupInfo",
+            "group": {**group, "playerIds": list(group["playerIds"])},
+        }
 
     def answer_groups(self, player_id: str, groups: dict[str, Any]) -> None:
         """Let a speaker answer getGroups with the given household."""
@@ -178,6 +187,41 @@ async def test_a_member_added_back_right_away_is_synced_again() -> None:
     assert synced_to_after_removal is None
     assert home.member.synced_to == LEADER
     assert home.member.client.player.is_passive
+
+
+@pytest.mark.asyncio
+async def test_a_removal_returns_as_soon_as_the_leader_answers() -> None:
+    """The leader's answer to the command carries the new group, ahead of its late groups event."""
+    home = _Household()
+    home.answer_groups(MEMBER, LEFT)
+
+    start = time.monotonic()
+    await home.leader.set_members(player_ids_to_remove=[MEMBER])
+    elapsed = time.monotonic() - start
+    await asyncio.sleep(0)
+
+    assert elapsed < 1
+    assert home.leader.client.player.group_members == [LEADER, OTHER]
+    assert home.member.synced_to is None
+
+
+@pytest.mark.asyncio
+async def test_an_answer_without_the_group_waits_for_the_leaders_groups_event() -> None:
+    """Without the group in the answer, the change waits for the leader to report it."""
+    home = _Household()
+    home.apis[LEADER].groups.modify_group_members.side_effect = None
+    home.apis[LEADER].groups.modify_group_members.return_value = {"_objectType": "groupInfo"}
+    home.answer_groups(MEMBER, LEFT)
+    asyncio.get_running_loop().call_later(0.3, home.deliver_own_event, LEADER, LEFT)
+
+    start = time.monotonic()
+    await home.leader.set_members(player_ids_to_remove=[MEMBER])
+    elapsed = time.monotonic() - start
+    await asyncio.sleep(0)
+
+    assert 0.3 <= elapsed < 1
+    assert home.leader.client.player.group_members == [LEADER, OTHER]
+    assert home.member.synced_to is None
 
 
 @pytest.mark.asyncio

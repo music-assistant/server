@@ -41,7 +41,6 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
-    CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_IDLE_POWER_OFF,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
@@ -1260,7 +1259,6 @@ class PlayerConfigMixin:
                 default_entries += [
                     CONF_ENTRY_OUTPUT_CODEC,
                     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
-                    CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
                 # only inject the sample-rates config when the player can't declare its rates itself

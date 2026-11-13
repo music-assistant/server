@@ -26,7 +26,6 @@ from pychromecast import IDLE_APP_ID
 from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.controllers.media import (
     MEDIA_PLAYER_ERROR_CODES,
-    MEDIA_PLAYER_STATE_BUFFERING,
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
@@ -57,7 +56,6 @@ from .helpers import (
     CastStatusListener,
     ChromecastInfo,
     disconnect_cast,
-    http_profile_entry,
     is_google_device,
 )
 from .receiver_commands import MassCastCommandController
@@ -161,13 +159,11 @@ class ChromecastPlayer(PlayerProtocol):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
-                http_profile_entry(self.cast_info),
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
-            http_profile_entry(self.cast_info),
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
@@ -565,12 +561,7 @@ class ChromecastPlayer(PlayerProtocol):
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             return  # another app took over the device
         status = self.cc.media_controller.status
-        # a device that ran dry at the end of the flow stream keeps reporting buffering,
-        # which counts as playing. no audio is coming for it, so it is not really in use.
-        ran_dry = (
-            status.player_state == MEDIA_PLAYER_STATE_BUFFERING and self._flow_stream_underrun()
-        )
-        if (status.player_is_playing or status.player_is_paused) and not ran_dry:
+        if status.player_is_playing or status.player_is_paused:
             # something is loaded again, e.g. the keepalive media of a dashboard
             return
         await self._quit_app()
@@ -676,19 +667,10 @@ class ChromecastPlayer(PlayerProtocol):
         if group_player is None and self._in_app_track_change(status):
             return
 
-        # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
-        # LIVE flow stream at EOF never goes idle. Treat that case as idle so the queue
-        # can resume/restart.
-        flow_underrun = (
-            status.player_state == MEDIA_PLAYER_STATE_BUFFERING and self._flow_stream_underrun()
-        )
-        is_playing = status.player_is_playing and not flow_underrun
-        is_idle = status.player_is_idle or flow_underrun
-
-        self._update_playback_state(status, is_playing)
-        self._update_elapsed_time(status, is_playing)
+        self._update_playback_state(status, status.player_is_playing)
+        self._update_elapsed_time(status, status.player_is_playing)
         self._update_active_source(status, group_player)
-        self._update_current_media(status, is_idle)
+        self._update_current_media(status, status.player_is_idle)
         self._update_multichannel_group_members()
         self.update_state()
 
@@ -757,7 +739,7 @@ class ChromecastPlayer(PlayerProtocol):
         # player itself reports the error
         if group_player is not None:
             return
-        if self._media_error_reported or self._flow_stream_underrun():
+        if self._media_error_reported:
             return
         self._media_error_reported = True
         self.logger.warning(
@@ -995,18 +977,6 @@ class ChromecastPlayer(PlayerProtocol):
             "metadata": metadata,
             "duration": media.stream_duration or media.duration,
         }
-
-    def _flow_stream_underrun(self) -> bool:
-        """Return whether the active queue's flow stream has been fully consumed."""
-        # Resolve the queue-owning player: a Cast group child mirrors the group's
-        # status, any other Cast plays the queue of its own player.
-        owner = self.player
-        if self.active_cast_group is not None:
-            group = self.provider.get_protocol(self.active_cast_group)
-            owner = group.player if group is not None else None
-        if owner is None:
-            return False
-        return self.mass.player_queues.flow_stream_finished(owner.player_id)
 
     def _handle_receiver_command(self, command: str) -> None:
         """

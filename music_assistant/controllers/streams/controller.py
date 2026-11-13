@@ -13,9 +13,10 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
+from functools import wraps
 from ipaddress import ip_address
 from math import ceil
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
@@ -51,12 +52,12 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_HTTP_PROFILE,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CODEC,
     CONF_PLAYER_QUEUES,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PUBLISH_IP,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_VALUE_AUTO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -141,6 +142,8 @@ from music_assistant.models.music_provider import MusicProvider, ProviderStreamL
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.player_queue import PlayerQueue
@@ -226,6 +229,24 @@ def _get_publish_addresses(
     # auto-detected: keep the whole ranked list - publish_ip takes the best of them and
     # the network fingerprint watches all of them to spot an interface change
     return list(publish_candidates)
+
+
+def _log_not_found(
+    handler: Callable[[StreamsController, web.Request], Coroutine[Any, Any, web.StreamResponse]],
+) -> Callable[[StreamsController, web.Request], Coroutine[Any, Any, web.StreamResponse]]:
+    """Log at debug level why the decorated stream handler answers a request with a 404."""
+
+    @wraps(handler)
+    async def _handle(self: StreamsController, request: web.Request) -> web.StreamResponse:
+        try:
+            return await handler(self, request)
+        except web.HTTPNotFound as err:
+            self.logger.debug(
+                "Refusing %s request to %s: %s", request.method, request.path, err.reason
+            )
+            raise
+
+    return _handle
 
 
 class AbortFlowStream(Exception):
@@ -872,6 +893,18 @@ class StreamsController(CoreController):
             if (transport := request.transport) is not None:
                 transport.abort()
 
+    def requested_item_ids(self, queue_id: str, session_id: str) -> set[str]:
+        """
+        Return the ids of the queue items that players have an open GET request for.
+
+        A requested item can still be waiting for its first audio.
+
+        :param queue_id: The queue whose stream requests to look at.
+        :param session_id: The playback session the requests must belong to.
+        """
+        return self._requested_item_ids(queue_id, session_id)
+
+    @_log_not_found
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: C901, PLR0912, PLR0915
         """Stream single queueitem audio to a player."""
         self._log_request(request)
@@ -1101,11 +1134,13 @@ class StreamsController(CoreController):
 
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             resp.content_type = get_mime_type(output_format.output_format_str)
-            http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
-            if http_profile == "forced_content_length" and not queue_item.duration:
+            fixed_content_length = player.get_config_value(
+                CONF_REQUIRES_FIXED_CONTENT_LENGTH, False
+            )
+            if fixed_content_length and not queue_item.duration:
                 # just set an insane high content length to make sure the player keeps playing
                 resp.content_length = calculate_content_length(output_format, 12 * 3600)
-            elif http_profile == "forced_content_length" and queue_item.duration:
+            elif fixed_content_length and queue_item.duration:
                 # estimate content length based on effective duration
                 # account for seek position (e.g., crossfade from previous track)
                 seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
@@ -1114,8 +1149,6 @@ class StreamsController(CoreController):
                 resp.content_length = await get_content_length(
                     self.mass, queue_item.uri, output_format, effective_duration
                 )
-            elif http_profile == "chunked":
-                resp.enable_chunked_encoding()
 
             await resp.prepare(request)
 
@@ -1198,10 +1231,10 @@ class StreamsController(CoreController):
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
                     pacing = PacingProfile.LOW_LATENCY
-                elif queue_item.streamdetails.is_realtime:
-                    pacing = PacingProfile.NEAR_REALTIME
+                elif not queue_item.streamdetails.is_realtime and player.needs_gapless_burst:
+                    pacing = PacingProfile.GAPLESS_BURST
                 else:
-                    pacing = PacingProfile.DEFAULT
+                    pacing = PacingProfile.REALTIME
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -1571,12 +1604,10 @@ class StreamsController(CoreController):
             headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
-        if http_profile == "forced_content_length":
+        fixed_content_length = player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
+        if fixed_content_length:
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
 
         await resp.prepare(request)
 
@@ -1629,7 +1660,7 @@ class StreamsController(CoreController):
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
             # one continuous stream, so the player gains nothing from running far ahead
-            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
+            extra_input_args=output_pacing_args(),
             # without ICY framing, pass on whatever ffmpeg has encoded: an exact 1s read
             # holds back FLAC on quiet passages until the player gives up waiting.
             # with ICY framing the write loop counts bytes towards the metadata interval
@@ -1685,7 +1716,7 @@ class StreamsController(CoreController):
                 if not entries:
                     del self._open_item_streams[queue_id]
 
-        if not client_disconnected and http_profile == "forced_content_length":
+        if not client_disconnected and fixed_content_length:
             await self._finish_flow_stream(request, resp, queue_id, session_id, player)
 
         return resp
@@ -1705,7 +1736,9 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile = self._get_announcement_http_profile(player_id, announce_data)
+        fixed_content_length = self._announcement_requires_fixed_content_length(
+            player_id, announce_data
+        )
 
         # return early if this is not a GET request:
         # players often probe the url with a HEAD request before fetching it and
@@ -1714,12 +1747,10 @@ class StreamsController(CoreController):
         if request.method != "GET":
             resp = web.StreamResponse(status=200, reason="OK", headers=DEFAULT_STREAM_HEADERS)
             resp.content_type = get_mime_type(audio_format.output_format_str)
-            if http_profile == "chunked":
-                resp.enable_chunked_encoding()
             await resp.prepare(request)
             return resp
 
-        if http_profile == "forced_content_length":
+        if fixed_content_length:
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
             data = bytearray()
@@ -1738,9 +1769,6 @@ class StreamsController(CoreController):
 
         resp = web.StreamResponse(status=200, reason="OK", headers=DEFAULT_STREAM_HEADERS)
         resp.content_type = get_mime_type(audio_format.output_format_str)
-        if http_profile == "chunked":
-            resp.enable_chunked_encoding()
-
         await resp.prepare(request)
 
         # all checks passed, start streaming!
@@ -2172,12 +2200,9 @@ class StreamsController(CoreController):
             headers=_audio_source_headers(session, output_format.output_format_str),
         )
         resp.content_type = get_mime_type(output_format.output_format_str)
-        http_profile = player.get_config_value(CONF_HTTP_PROFILE, "default")
-        if http_profile == "forced_content_length":
+        if player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False):
             # a live source has no length, so advertise one it will never reach
             resp.content_length = calculate_content_length(output_format, 12 * 3600)
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         audio_input = self.audio.get_audio_source_stream(
@@ -2504,12 +2529,14 @@ class StreamsController(CoreController):
             volume_normalization_enabled=provider.delivers_normalized_audio(session.streamdetails),
         )
 
-    def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:
+    def _announcement_requires_fixed_content_length(
+        self, player_id: str, announce_data: AnnounceData
+    ) -> bool:
         """
-        Resolve the http profile for serving an announcement stream.
+        Return whether an announcement stream must be served with a fixed content length.
 
         Announcement urls are registered under the id of the player, but the stream
-        may be fetched by one of its protocols; the profile is the one of the protocol
+        may be fetched by one of its protocols; the setting is the one of the protocol
         that performs the fetch.
         """
         announce_player = None
@@ -2518,8 +2545,8 @@ class StreamsController(CoreController):
         if announce_player is None and (player := self.mass.players.get_player(player_id)):
             announce_player = player.resolve_output_protocol()
         if announce_player is None:
-            return "default"
-        return cast("str", announce_player.config.get_value(CONF_HTTP_PROFILE, "default"))
+            return False
+        return announce_player.get_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
 
     def _get_flow_start_item(self, queue: PlayerQueue, queue_item_id: str) -> QueueItem | None:
         """

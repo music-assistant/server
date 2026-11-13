@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
-from deezer_python_gql.generated.fragments import AlbumFieldsSubtypes
-from music_assistant_models.enums import AlbumType, ExternalID, ImageType
+from deezer_python_gql.generated.fragments import (
+    AlbumFieldsSubtypes,
+    TrackFieldsMediaEstimatedSizes,
+)
+from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType
 
 from music_assistant.providers.deezer.parsers import (
     map_album_type,
     parse_artist,
     parse_audiobook,
+    parse_track,
 )
 from music_assistant.providers.deezer.provider import DeezerProvider
 
 PICTURE = "https://cdn-images.dzcdn.net/images/artist/abc/500x500-000000-80-0-0.jpg"
 HERO = "https://cdn-images.dzcdn.net/images/hero/def/1080x1920-000000-80-0-0.jpg"
+ACCOUNT_FORMATS = ["FLAC_24", "FLAC", "MP3_320", "MP3_128"]
+ALL_SIZES = {"MP3_128": 1, "MP3_320": 1, "FLAC": 1, "FLAC_24": 1}
 
 
 def _subtypes(*, live: bool = False, compilation: bool = False) -> AlbumFieldsSubtypes:
@@ -116,3 +123,44 @@ def test_audiobook_from_a_list_has_no_barcode(provider: DeezerProvider) -> None:
     """Audiobooks from lists carry no UPC."""
     parsed = parse_audiobook(provider, _audiobook())  # type: ignore[arg-type]
     assert parsed.external_ids == set()
+
+
+def _track(sizes: dict[str, int]) -> SimpleNamespace:
+    """Build a track as Deezer lists it, with the file sizes it has."""
+    no_files = dict.fromkeys(ALL_SIZES)
+    return SimpleNamespace(
+        id="1",
+        title="Loser",
+        duration=223,
+        is_explicit=False,
+        album=None,
+        contributors=SimpleNamespace(edges=[]),
+        media=SimpleNamespace(
+            rights=SimpleNamespace(sub=SimpleNamespace(available=True)),
+            estimated_sizes=TrackFieldsMediaEstimatedSizes.model_validate(no_files | sizes),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("sizes", "account", "expected"),
+    [
+        (ALL_SIZES, ACCOUNT_FORMATS, (ContentType.FLAC, 24, None)),
+        ({"MP3_128": 1, "MP3_320": 1, "FLAC": 1}, ACCOUNT_FORMATS, (ContentType.FLAC, 16, None)),
+        (ALL_SIZES, ["MP3_320", "MP3_128"], (ContentType.MP3, 16, 320)),
+        ({"MP3_128": 1}, ACCOUNT_FORMATS, (ContentType.MP3, 16, 128)),
+        ({}, ACCOUNT_FORMATS, (ContentType.UNKNOWN, 16, None)),
+    ],
+)
+def test_track_lists_the_best_format_it_has(
+    provider: DeezerProvider,
+    sizes: dict[str, int],
+    account: list[str],
+    expected: tuple[ContentType, int, int | None],
+) -> None:
+    """A track carries the best format it has among those the account asks for."""
+    provider.gw_client = Mock(formats=[{"format": name} for name in account])
+    track = parse_track(provider, _track(sizes))  # type: ignore[arg-type]
+
+    audio_format = next(iter(track.provider_mappings)).audio_format
+    assert (audio_format.content_type, audio_format.bit_depth, audio_format.bit_rate) == expected

@@ -275,13 +275,7 @@ class AudioPipeline:
         """Return the pacing profile for the audio delivered to the TV."""
         if media.media_type == MediaType.AUDIO_SOURCE:
             return PacingProfile.LOW_LATENCY
-        if media.media_type in (MediaType.RADIO, MediaType.FLOW_STREAM):
-            return PacingProfile.NEAR_REALTIME
-        if media.source_id and media.queue_item_id:
-            item = self.provider.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            if item and item.streamdetails and item.streamdetails.is_realtime:
-                return PacingProfile.NEAR_REALTIME
-        return PacingProfile.DEFAULT
+        return PacingProfile.REALTIME
 
 
 def rewrite_stream_host(request: web.Request, url: str) -> str:

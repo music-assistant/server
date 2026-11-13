@@ -13,10 +13,7 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-)
+from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.player_protocol import PlayerProtocol
 
@@ -89,7 +86,7 @@ class MSXPlayer(PlayerProtocol):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return per-player config entries — codec is configurable per TV."""
-        return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3, CONF_ENTRY_HTTP_PROFILE_DEFAULT_1]
+        return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3]
 
     async def on_detach(self) -> None:
         """Report the TV idle until it plays again; stop it when its player is disabled."""

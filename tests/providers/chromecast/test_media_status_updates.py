@@ -44,7 +44,6 @@ def _fake_player(
     fake.logger = MagicMock()
     fake.cc = MagicMock(app_id=MASS_APP_ID)
     fake.update_state = MagicMock()
-    fake._flow_stream_underrun = MagicMock(return_value=False)
     fake._media_error_reported = False
     fake._app_quit_task_id = "cast_quit_app_test"
     fake._app_track_change_task_id = "cast_app_track_change_test"

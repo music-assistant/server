@@ -4,19 +4,39 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import (
+    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_FLOW_MODE_SAMPLE_RATE,
-    CONF_HTTP_PROFILE,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
 )
 
 # the real server with fake providers, for a player whose id is also that of its protocol
 from tests.scenarios.conftest import scenario  # noqa: F401
+from tests.scenarios.harness import FakeProtocol
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
     from tests.scenarios.harness import Scenario
+
+
+@pytest.fixture(autouse=True)
+def dlna_declares_fixed_content_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the fake DLNA protocols declare the fixed content length setting, as DLNA does."""
+    entries = FakeProtocol.get_config_entries
+
+    async def _entries(protocol: FakeProtocol) -> list[ConfigEntry]:
+        own = await entries(protocol)
+        if protocol.provider.domain != "dlna":
+            return own
+        return [*own, CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH]
+
+    monkeypatch.setattr(FakeProtocol, "get_config_entries", _entries)
+
 
 # a player from before the split keeps the id of its native protocol
 PLAYER_ID = "RINCON_KITCHEN"
@@ -51,7 +71,7 @@ async def _playing_through_dlna(
                 "default_name": "Kitchen",
                 "values": {
                     "protocol_parent_id": PLAYER_ID,
-                    CONF_HTTP_PROFILE: "chunked",
+                    CONF_REQUIRES_FIXED_CONTENT_LENGTH: True,
                     CONF_FLOW_MODE_SAMPLE_RATE: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
                 },
             },
@@ -65,13 +85,13 @@ async def _playing_through_dlna(
     assert player.active_output_protocol == "dlna_kitchen"
 
 
-async def test_announcement_is_served_with_the_http_profile_of_the_output_that_renders(
+async def test_announcement_is_served_with_the_content_length_of_the_output_that_renders(
     scenario: Scenario,  # noqa: F811
 ) -> None:
     """An announcement for the player is served as its rendering protocol expects."""
     await _playing_through_dlna(scenario)
 
-    profile = scenario.mass.streams._get_announcement_http_profile(
+    fixed_content_length = scenario.mass.streams._announcement_requires_fixed_content_length(
         PLAYER_ID,
         {
             "announcement_url": "",
@@ -81,7 +101,7 @@ async def test_announcement_is_served_with_the_http_profile_of_the_output_that_r
         },
     )
 
-    assert profile == "chunked"
+    assert fixed_content_length is True
 
 
 async def test_flow_restart_follows_the_settings_of_the_output_that_renders(

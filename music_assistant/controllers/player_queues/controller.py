@@ -289,9 +289,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        # stop all playback
-        for queue in self.all():
-            if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        # stop all playback we started: a queue without a stream session of ours can read as
+        # playing while its player plays what another app or server started
+        for queue_data in list(self._queue_data.values()):
+            queue = queue_data.queue
+            if queue_data.session_id is not None and queue.state in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
+            ):
                 try:
                     async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
                         await self.stop(queue.queue_id)
@@ -1682,6 +1687,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     await self._get_resume_position(queue_item) if next_index > cur_index else 0
                 )
                 await self._load_item(queue_item, seek_position=seek_position)
+                if (
+                    self.index_by_id(queue_id, queue_item.queue_item_id) is None
+                    and (rebuilt_index := self.index_by_id(queue_id, current_item_id)) is not None
+                ):
+                    # the upcoming items were replaced while this one loaded (a mix that
+                    # refilled), so go on with the item that took its place
+                    cur_index, idx = rebuilt_index, 0
+                    continue
                 # we're all set, this is our next item
                 next_item = queue_item
                 break

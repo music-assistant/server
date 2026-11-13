@@ -30,6 +30,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     CONF_UNDERLYING_PLAYER_ID,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
     FLOW_MODE_SAMPLE_RATE_SMART,
@@ -326,3 +327,20 @@ async def test_live_source_wav_preference_is_only_exposed_for_http_players(
     entries = await mass_minimal.config._get_protocol_config_entries(sendspin)
 
     assert CONF_PREFER_WAV_FOR_LIVE_SOURCES not in {entry.key for entry in entries}
+
+
+async def test_http_players_get_no_fixed_content_length_entry_by_default(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The fixed content length setting is only there where a provider offers it itself."""
+    _setup_parent_with_protocol_child(mass_minimal)
+    child = mass_minimal.players.get_protocol(CHILD_ID)
+    assert child is not None
+
+    entries = await mass_minimal.config.get_player_config_entries(PARENT_ID)
+    child_entries = await mass_minimal.config._get_protocol_config_entries(child)
+
+    # the form of the player holds the entries of its own protocol and, prefixed, of the child
+    keys = {entry.key for entry in entries}
+    assert not [key for key in keys if key.endswith(CONF_REQUIRES_FIXED_CONTENT_LENGTH)]
+    assert CONF_REQUIRES_FIXED_CONTENT_LENGTH not in {entry.key for entry in child_entries}

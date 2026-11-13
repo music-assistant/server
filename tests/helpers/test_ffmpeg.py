@@ -22,8 +22,8 @@ from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
+    CACHE_ATTR_FFMPEG_VERSION,
     CACHE_ATTR_HLS_CMAF_BLOCKED,
-    CACHE_ATTR_READRATE_CATCHUP,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
@@ -1600,20 +1600,8 @@ hls demuxer AVOptions:
   -max_reload        <int>        .D......... Maximum number of times a insufficient list is attempted to be reloaded (from 0 to INT_MAX) (default 100)
 """
 _FFMPEG_VERSION_OUTPUT = (
-    b"ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers\n"
-    b"configuration: --enable-libsoxr\n"
-)
-
-
-# Trimmed `ffmpeg -h long` output before and from 8.0 on, which added -readrate_catchup.
-_LONG_HELP_WITHOUT_CATCHUP = b"""-re <>              read input at native frame rate; equivalent to -readrate 1
--readrate <speed>   read input at specified rate
--readrate_initial_burst <seconds>  The initial amount of input to burst read before imposing any readrate
-"""
-_LONG_HELP_WITH_CATCHUP = (
-    _LONG_HELP_WITHOUT_CATCHUP
-    + b"-readrate_catchup <speed>  Temporary readrate used to catch up if an input lags behind"
-    b" the specified readrate\n"
+    "ffmpeg version {} Copyright (c) 2000-2025 the FFmpeg developers\n"
+    "configuration: --enable-libsoxr\n"
 )
 
 
@@ -1621,19 +1609,16 @@ def _fake_ffmpeg_probes(
     monkeypatch: pytest.MonkeyPatch,
     hls_options: bytes,
     hls_returncode: int = 0,
-    long_help: bytes = _LONG_HELP_WITHOUT_CATCHUP,
-    long_help_returncode: int = 0,
+    version: str = "8.0",
 ) -> None:
-    """Answer the version, HLS demuxer and option help probes with canned output."""
+    """Answer the version and HLS demuxer probes with canned output."""
 
     async def _check_output(
         *args: str, _env: dict[str, str] | None = None, _timeout: float | None = None
     ) -> tuple[int, bytes]:
-        if "long" in args:
-            return (long_help_returncode, long_help)
         if "-h" in args:
             return (hls_returncode, hls_options)
-        return (0, _FFMPEG_VERSION_OUTPUT)
+        return (0, _FFMPEG_VERSION_OUTPUT.format(version).encode())
 
     monkeypatch.setattr("music_assistant.helpers.ffmpeg.check_output", _check_output)
 
@@ -1693,29 +1678,27 @@ async def test_check_ffmpeg_version_keeps_the_check_when_the_probe_exits_nonzero
     assert get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED) is False
 
 
-@pytest.mark.parametrize(
-    ("long_help", "returncode", "expected"),
-    [
-        (_LONG_HELP_WITH_CATCHUP, 0, True),
-        (_LONG_HELP_WITHOUT_CATCHUP, 0, False),
-        (_LONG_HELP_WITH_CATCHUP, 1, False),
-    ],
-    ids=["from 8.0", "before 8.0", "failed probe"],
-)
-async def test_check_ffmpeg_version_finds_the_readrate_catchup_option(
-    monkeypatch: pytest.MonkeyPatch, long_help: bytes, returncode: int, expected: bool
+@pytest.mark.parametrize("version", ["7.0", "7.1.1"])
+async def test_check_ffmpeg_version_refuses_a_build_before_8(
+    monkeypatch: pytest.MonkeyPatch, version: str
 ) -> None:
-    """Only a build that lists the option may be handed it: any other refuses to start."""
-    _fake_ffmpeg_probes(
-        monkeypatch,
-        _HLS_OPTIONS_ALLOWING_CMAF,
-        long_help=long_help,
-        long_help_returncode=returncode,
-    )
+    """A build before 8.0 lacks `-readrate_catchup`, which every pacing profile passes."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_ALLOWING_CMAF, version=version)
+
+    with pytest.raises(AudioError, match="is not supported"):
+        await check_ffmpeg_version()
+
+
+@pytest.mark.parametrize("version", ["8.0", "9.0.1"])
+async def test_check_ffmpeg_version_accepts_a_build_from_8_on(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """A build from 8.0 on passes the check and has its version cached."""
+    _fake_ffmpeg_probes(monkeypatch, _HLS_OPTIONS_ALLOWING_CMAF, version=version)
 
     await check_ffmpeg_version()
 
-    assert get_global_cache_value(CACHE_ATTR_READRATE_CATCHUP) is expected
+    assert get_global_cache_value(CACHE_ATTR_FFMPEG_VERSION) == version
 
 
 # -- probe_audio_stream --

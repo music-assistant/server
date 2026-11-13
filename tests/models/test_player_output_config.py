@@ -9,7 +9,7 @@ import pytest
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
 from music_assistant_models.enums import ConfigEntryType, ProtocolRole
 
-from music_assistant.constants import CONF_HTTP_PROFILE
+from music_assistant.constants import CONF_OUTPUT_CODEC
 from music_assistant.models.player import Player
 from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
@@ -22,9 +22,9 @@ def mock_mass() -> MagicMock:
     return mass
 
 
-def _http_profile_entry(default_value: str) -> ConfigEntry:
+def _output_codec_entry(default_value: str) -> ConfigEntry:
     return ConfigEntry(
-        key=CONF_HTTP_PROFILE,
+        key=CONF_OUTPUT_CODEC,
         type=ConfigEntryType.STRING,
         default_value=default_value,
     )
@@ -85,16 +85,14 @@ class TestGetOutputConfigValue:
         native.set_config(
             _player_config(
                 "parent",
-                [_http_profile_entry("default")],
-                {CONF_HTTP_PROFILE: "chunked"},
+                [_output_codec_entry("default")],
+                {CONF_OUTPUT_CODEC: "mp3"},
             )
         )
-        audio.set_config(_player_config("child", [_http_profile_entry("forced_content_length")]))
+        audio.set_config(_player_config("child", [_output_codec_entry("wav")]))
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_HTTP_PROFILE, "default") == (
-            "forced_content_length"
-        )
+        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "wav"
 
     def test_protocol_stored_value_wins(self, mock_mass: MagicMock) -> None:
         """A value stored on the output protocol wins over its entry default."""
@@ -102,13 +100,13 @@ class TestGetOutputConfigValue:
         audio.set_config(
             _player_config(
                 "child",
-                [_http_profile_entry("forced_content_length")],
-                {CONF_HTTP_PROFILE: "no_content_length"},
+                [_output_codec_entry("wav")],
+                {CONF_OUTPUT_CODEC: "aac"},
             )
         )
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_HTTP_PROFILE, "default") == "no_content_length"
+        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "aac"
 
     def test_own_value_used_without_active_protocol(self, mock_mass: MagicMock) -> None:
         """Without an active output protocol the player's own value applies."""
@@ -116,12 +114,12 @@ class TestGetOutputConfigValue:
         native.set_config(
             _player_config(
                 "parent",
-                [_http_profile_entry("default")],
-                {CONF_HTTP_PROFILE: "chunked"},
+                [_output_codec_entry("default")],
+                {CONF_OUTPUT_CODEC: "mp3"},
             )
         )
 
-        assert player.get_output_config_value(CONF_HTTP_PROFILE, "default") == "chunked"
+        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "mp3"
 
     def test_falls_back_to_own_value_when_protocol_lacks_entry(self, mock_mass: MagicMock) -> None:
         """A key the output protocol has no entry for falls back to the native protocol's value."""
@@ -129,14 +127,14 @@ class TestGetOutputConfigValue:
         native.set_config(
             _player_config(
                 "parent",
-                [_http_profile_entry("default")],
-                {CONF_HTTP_PROFILE: "chunked"},
+                [_output_codec_entry("default")],
+                {CONF_OUTPUT_CODEC: "mp3"},
             )
         )
         audio.set_config(_player_config("child"))
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_HTTP_PROFILE, "default") == "chunked"
+        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "mp3"
 
     def test_default_for_unknown_key(self, mock_mass: MagicMock) -> None:
         """A key present on neither player resolves to the given default."""
@@ -145,4 +143,4 @@ class TestGetOutputConfigValue:
         audio.set_config(_player_config("child"))
         player.set_active_output_protocol("child")
 
-        assert player.get_output_config_value(CONF_HTTP_PROFILE, "default") == "default"
+        assert player.get_output_config_value(CONF_OUTPUT_CODEC, "default") == "default"

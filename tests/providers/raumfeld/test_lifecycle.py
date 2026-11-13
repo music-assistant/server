@@ -75,7 +75,14 @@ async def _sync(
     provider.host = RaumfeldHost(MagicMock(), f"http://{HOST_IP}:47365")
     provider.host._zone_config = ZoneConfig(
         rooms={
-            name: Room(name, speaker.room_udn, speaker.renderer_udn, "ACTIVE", False)
+            name: Room(
+                name,
+                speaker.room_udn,
+                speaker.renderer_udn,
+                "ACTIVE",
+                False,
+                renderer_udns=(speaker.renderer_udn,),
+            )
             for name, speaker in rooms.items()
         },
         zones={},
@@ -89,7 +96,7 @@ async def _sync(
     )
     for name, speaker in rooms.items():
         provider._room_serials[name] = speaker.serial
-        provider._room_renderers[name] = speaker.renderer_udn
+        provider._room_serial_renderers[name] = speaker.renderer_udn
         provider._versions_read.add(name)
     await provider._sync_rooms()
     await scenario.settle()

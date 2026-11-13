@@ -8,7 +8,7 @@ from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import HttpVersion11, web
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
@@ -30,10 +30,9 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_GROUP_MEMBERS,
-    CONF_HTTP_PROFILE,
     CONF_POWER_CONTROL,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
 )
@@ -218,7 +217,6 @@ class UniversalGroupPlayer(PlayerProtocol):
                 required=False,
             ),
             CONF_ENTRY_UGP_OUTPUT_FORMAT,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
         ]
 
     async def stop(self) -> None:
@@ -692,27 +690,15 @@ class UniversalGroupPlayer(PlayerProtocol):
             "Content-Type": get_mime_type(output_format_str),
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = self.get_config_value(CONF_HTTP_PROFILE, "chunked")
-        # prefer the configuration of the player that actually renders the audio
+        # use the configuration of the player that actually renders the audio
         # (the member's active protocol player when it outputs via a protocol);
-        # child player_id may be stale/invalid, then fall back to the group profile
+        # child player_id may be stale/invalid, then no fixed content length is sent
         child_player = self.mass.players.get_player(child_player_id) if child_player_id else None
-        if child_player:
-            http_profile = child_player.get_output_config_value(CONF_HTTP_PROFILE, http_profile)
-        if http_profile == "chunked" and request.version < HttpVersion11:
-            # chunked encoding is not allowed on HTTP/1.0; fall back to
-            # connection-close streaming to avoid raising in resp.prepare()
-            self.logger.debug(
-                "Disabling chunked encoding for UGP stream to HTTP/1.0 client %s",
-                child_player_id or request.remote,
-            )
-            http_profile = "no_content_length"
-        if http_profile == "forced_content_length":
-            # some clients (notably older Chromecast firmware) refuse to play unless
-            # they see a Content-Length header up front
+        if child_player and child_player.get_output_config_value(
+            CONF_REQUIRES_FIXED_CONTENT_LENGTH, False
+        ):
+            # some clients refuse to play unless they see a Content-Length header up front
             resp.content_length = 4294967296
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # return early if this is not a GET request
