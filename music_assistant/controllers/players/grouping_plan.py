@@ -1,10 +1,11 @@
 """
-Plan how a group change reaches the devices, from a snapshot of the players.
+Decide how a group change reaches the devices, from a snapshot of the players.
 
 Nothing here reads anything but the snapshot it is given: no server, no config, no provider and
 no clock. ``plan_group_change`` returns the steps of a change up to the next point where the
 outcome of a step decides what follows; the executor runs them, takes a new snapshot and plans
-again from the progress the plan handed back.
+again from the progress the plan handed back. The join that completes a member change asks
+``GroupRules`` for each of its decisions, on the snapshot taken after its last device call.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from music_assistant_models.errors import (
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 
 if TYPE_CHECKING:
-    from collections.abc import Container, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 
     from music_assistant_models.errors import MusicAssistantError
 
@@ -300,110 +301,137 @@ class MemberStage(IntEnum):
     DISSOLVED = 2
 
 
-class JoinPhase(StrEnum):
-    """
-    Where the join of a member change got to.
-
-    A join runs through the phases in this order. Each phase ends with the device call whose
-    outcome the next one reads, and a phase with nothing to do passes straight on. With new
-    content the takeover hook of the group's protocol runs before the first phase.
-
-    - FORWARD: each joining member's output moves to the group's protocol, then that
-      protocol's ``set_members`` adds and removes the members (the join call).
-    - JOINED: the members that left have their output cleared, and the leader's output moves
-      to the group's protocol.
-    - LEADER_ACTIVE: members that rode the leader's own stream are released from its own
-      protocol (``set_members``), which is stopped when the leader hands its output over.
-    - NATIVE_RELEASED: on a hand-over, the protocol the leader rendered on before is stopped.
-    - OLD_STOPPED: that protocol's members are removed from it (``set_members``).
-    - OLD_LEFT: their outputs are cleared, the leader resumes when it played, and those
-      members are added back through a member change.
-    - NATIVE: the members that group natively join on the leader's own protocol
-      (``set_members``), and a dissolved leader is stopped.
-    """
-
-    FORWARD = "forward"
-    JOINED = "joined"
-    LEADER_ACTIVE = "leader_active"
-    NATIVE_RELEASED = "native_released"
-    OLD_STOPPED = "old_stopped"
-    OLD_LEFT = "old_left"
-    NATIVE = "native"
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class JoinProgress:
-    """
-    The join of a member change between two plans, with what it carries.
-
-    :param phase: Where it got to.
-    :param protocol_id: The protocol that carries the group, if any.
-    :param protocol_add: Protocol ids that join it.
-    :param protocol_remove: Protocol ids that leave it.
-    :param native_add: Ids the own protocol adds.
-    :param native_remove: Ids the own protocol removes.
-    :param stop_after: Stop the leader at the end.
-    :param next_activation: Index in protocol_add of the next member to activate.
-    :param stranded: Native members moved to the protocol, to release from the own protocol.
-    :param previous_output: The leader's output before the join call.
-    :param was_playing: The leader played before its output moved.
-    :param handing_over: The leader rendered on another output, which is handed over.
-    :param old_protocol_id: The protocol it rendered on before.
-    :param old_members: The old protocol's members as (protocol id, player id), frozen
-        before it stopped.
-    :param old_removed: The protocol ids its removal call passed, whose outputs are cleared
-        after it.
-    """
-
-    phase: JoinPhase
-    protocol_id: str | None = None
-    protocol_add: tuple[str, ...] = ()
-    protocol_remove: tuple[str, ...] = ()
-    native_add: tuple[str, ...] = ()
-    native_remove: tuple[str, ...] = ()
-    stop_after: bool = False
-    next_activation: int = 0
-    stranded: tuple[str, ...] = ()
-    previous_output: str | None = None
-    was_playing: bool = False
-    handing_over: bool = False
-    old_protocol_id: str | None = None
-    old_members: tuple[tuple[str, str], ...] = ()
-    old_removed: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class RegroupProgress:
-    """
-    A regroup at a fresh start, once the protocol it leaves was called.
-
-    :param protocol_id: The protocol the members left.
-    :param member_ids: The players that join afresh.
-    :param removed: The protocol ids its removal call passed.
-    """
-
-    protocol_id: str
-    member_ids: tuple[str, ...]
-    removed: tuple[str, ...]
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GroupProgress:
     """
-    How far a change got between two plans.
+    How far the admission of a change got between two plans.
 
     :param next_add: Index in GroupChange.add of the member being admitted.
     :param stage: How far that member got.
     :param admitted: The members that join, in order.
-    :param join: The join, once it started.
-    :param regroup: REGROUP_FOR_START, once the protocol it leaves was called.
     """
 
     next_add: int = 0
     stage: MemberStage | None = None
     admitted: tuple[str, ...] = ()
-    join: JoinProgress | None = None
-    regroup: RegroupProgress | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Join:
+    """
+    The join of a member change on a leader, once its members are admitted.
+
+    :param target_id: The leader.
+    :param add: The members that join.
+    :param remove: The members that leave.
+    :param stop_after: Stop the leader once its members left: its group dissolves.
+    """
+
+    target_id: str
+    add: tuple[str, ...] = ()
+    remove: tuple[str, ...] = ()
+    stop_after: bool = False
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Regroup:
+    """
+    The regroup of a leader at a fresh start, off a protocol none of its members needs anymore.
+
+    :param leader_id: The leader.
+    :param protocol_id: The protocol its group leaves.
+    :param removed: The protocol ids removed from it; empty when it is not called.
+    :param member_ids: The players that join the leader afresh.
+    """
+
+    leader_id: str
+    protocol_id: str
+    removed: tuple[str, ...]
+    member_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JoinLists:
+    """
+    The members of a join, per protocol that carries them.
+
+    :param protocol_id: The protocol that carries the group, if any.
+    :param protocol_add: Protocol ids that join it.
+    :param protocol_remove: Protocol ids that leave it.
+    :param native_add: Ids the leader's own protocol adds.
+    :param native_remove: Ids the leader's own protocol removes.
+    """
+
+    protocol_id: str | None = None
+    protocol_add: tuple[str, ...] = ()
+    protocol_remove: tuple[str, ...] = ()
+    native_add: tuple[str, ...] = ()
+    native_remove: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProtocolLeg:
+    """
+    The join call of the protocol that carries a group.
+
+    :param protocol_id: The protocol.
+    :param add: Protocol ids that join it, the stranded members included.
+    :param remove: Protocol ids that leave it.
+    :param stranded: Members of the leader's own protocol that move along, to release from it
+        once the leader renders on the protocol.
+    """
+
+    protocol_id: str
+    add: tuple[str, ...]
+    remove: tuple[str, ...]
+    stranded: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Handover:
+    """
+    How the leader's output follows its group onto the protocol that carries it.
+
+    :param moves: Its output moves to the protocol.
+    :param previous_output: Its output before.
+    :param was_playing: It played, so it resumes once the old protocol let go.
+    :param handing_over: It rendered on another output, which is handed over.
+    :param note: The line for the log once its output moved.
+    """
+
+    moves: bool
+    previous_output: str | None
+    was_playing: bool
+    handing_over: bool
+    note: Note | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OldProtocol:
+    """
+    The protocol a leader rendered on before its output was handed over.
+
+    :param protocol_id: The protocol.
+    :param members: Its members other than the leader, as (protocol id, player id).
+    """
+
+    protocol_id: str
+    members: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NativeLeg:
+    """
+    The call that groups the members of the leader's own protocol.
+
+    :param protocol_id: The own protocol.
+    :param add: Ids it adds.
+    :param remove: Ids it removes.
+    """
+
+    protocol_id: str
+    add: tuple[str, ...]
+    remove: tuple[str, ...]
 
 
 class Failure(StrEnum):
@@ -419,7 +447,6 @@ class Failure(StrEnum):
 class MemberLists(StrEnum):
     """How a set_members call passes its lists."""
 
-    NONE_WHEN_EMPTY = "none_when_empty"
     AS_THEY_ARE = "as_they_are"
     REMOVE_ONLY = "remove_only"
 
@@ -431,7 +458,7 @@ class SetMembers:
     protocol_id: str
     add: tuple[str, ...] = ()
     remove: tuple[str, ...] = ()
-    lists: MemberLists = MemberLists.NONE_WHEN_EMPTY
+    lists: MemberLists
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -441,35 +468,6 @@ class Ungroup:
     protocol_id: str
     failure: Failure = Failure.RAISE
     message: str = ""
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class StopProtocol:
-    """Stop a protocol itself, past every redirect."""
-
-    protocol_id: str
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Hold:
-    """Keep the protocol object of an id for the rest of the change."""
-
-    protocol_id: str
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class SetOutput:
-    """Make an output the active one of a player (its level handed over first), or clear it."""
-
-    player_id: str
-    output_id: str | None
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class OpenTakeover:
-    """Prepare a protocol group for a new content owner; a token goes to the caller."""
-
-    protocol_id: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -519,20 +517,6 @@ class ReleaseSession:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class StopLeader:
-    """Stop a dissolved leader, ending its queue when it plays its own."""
-
-    player_id: str
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Resume:
-    """Resume a player whose output was handed over."""
-
-    player_id: str
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
 class TransferLeadership:
     """Hand a group whose leader leaves it to one of its members."""
 
@@ -562,17 +546,11 @@ class Refuse:
 type GroupStep = (
     SetMembers
     | Ungroup
-    | StopProtocol
-    | Hold
-    | SetOutput
-    | OpenTakeover
     | PrepareForPlayback
     | MemberChange
     | Detach
     | GroupCommand
     | ReleaseSession
-    | StopLeader
-    | Resume
     | TransferLeadership
     | Note
     | Refuse
@@ -589,19 +567,26 @@ class GroupPlan:
     :param progress_left_out: Where it is when the last step failed in a way that leaves the
         member being admitted out.
     :param passed_on: ROUTE only: the change went to another player.
+    :param join: The join that follows the steps of a complete plan, if any.
+    :param regroup: The regroup that follows the steps of a complete plan, if any.
     """
 
     steps: tuple[GroupStep, ...]
     progress: GroupProgress | None = None
     progress_left_out: GroupProgress | None = None
     passed_on: bool = False
+    join: Join | None = None
+    regroup: Regroup | None = None
 
 
 def plan_group_change(
     snapshot: GroupingSnapshot, change: GroupChange, progress: GroupProgress | None = None
 ) -> GroupPlan:
     """
-    Return the steps that carry out a group change, up to the next point that needs a new look.
+    Return the steps of a group change, up to the next point that needs a new look.
+
+    A complete plan of a member change, or of a regroup at a fresh start, names the join or
+    the regroup that follows its steps.
 
     :param snapshot: The players as they are now.
     :param change: The change a command asks for.
@@ -702,7 +687,752 @@ class _Refused(Exception):
     """The plan ends with a refusal."""
 
 
-class _Planner:
+class GroupRules:
+    """
+    The decisions of a group change, on one snapshot of the players.
+
+    A join asks a new instance after each device call, as the call may have changed what the
+    next decision reads. The lines for the log go to the callback as they are decided.
+    """
+
+    def __init__(self, snapshot: GroupingSnapshot, note: Callable[[Note], object]) -> None:
+        """
+        Initialize the decisions on a snapshot.
+
+        :param snapshot: The players as they are now.
+        :param note: Takes each line for the log.
+        """
+        self.snapshot = snapshot
+        self._note_to = note
+        # the active outputs set on the strength of these decisions, by player id
+        self.outputs: dict[str, str | None] = {}
+
+    def held_player(self, player_id: str) -> PlayerView:
+        """
+        Return a player the change holds, else the live one.
+
+        :param player_id: Id of the player.
+        """
+        player = self.snapshot.held_player(player_id)
+        assert player is not None  # the entries pass a player that exists
+        return player
+
+    def active_output(self, player: PlayerView) -> str | None:
+        """
+        Return the active output of a player, as these decisions left it.
+
+        :param player: The player.
+        """
+        if player.player_id in self.outputs:
+            return self.outputs[player.player_id]
+        return player.active_output
+
+    def translate(self, leader: PlayerView, add: Sequence[str], remove: Sequence[str]) -> JoinLists:
+        """
+        Translate the members of a join to the protocols that carry them.
+
+        :param leader: The leader.
+        :param add: The members that join.
+        :param remove: The members that leave.
+        """
+        protocol: ProtocolView | None = None
+        domain: str | None = None
+        active = self.active_output(leader)
+        if active and active != "native" and (protocol := self.snapshot.attached(leader, active)):
+            domain = protocol.domain
+        protocol_add, native_add, protocol, domain = self._translate_adds(
+            leader, add, protocol, domain
+        )
+        protocol_remove, native_remove = self._translate_removals(leader, remove, protocol, domain)
+        return JoinLists(
+            protocol_id=protocol.protocol_id if protocol else None,
+            protocol_add=tuple(protocol_add),
+            protocol_remove=tuple(protocol_remove),
+            native_add=tuple(native_add),
+            native_remove=tuple(native_remove),
+        )
+
+    def protocol_leg(self, leader: PlayerView, lists: JoinLists) -> ProtocolLeg | Refuse | None:
+        """
+        Return the join call of the group's protocol, or why the join is refused.
+
+        Members of another domain are left out. A join that switches protocols moves every
+        member along, silencing those without it: it is refused while the leader renders.
+        Members that ride the leader's own stream are stranded by the switch, so they join the
+        protocol group in the same call and are released from the own protocol afterwards.
+
+        :param leader: The leader.
+        :param lists: The members per protocol.
+        :return: None when the protocol has no call to make.
+        """
+        protocol = self.snapshot.held_protocol(lists.protocol_id) if lists.protocol_id else None
+        if protocol is None or not (lists.protocol_add or lists.protocol_remove):
+            return None
+        add = self._of_domain(lists.protocol_add, protocol)
+        remove = self._of_domain(lists.protocol_remove, protocol)
+        if not add and not remove:
+            return None
+        if PlayerFeature.SET_MEMBERS not in protocol.features:
+            self._note_unsupported(protocol)
+            return None
+        if add and (refusal := self._stranding_refusal(leader, protocol, add)):
+            return refusal
+        stranded = self._migrate_stranded(leader, protocol, add) if add else []
+        return ProtocolLeg(
+            protocol_id=protocol.protocol_id,
+            add=tuple(add),
+            remove=tuple(remove),
+            stranded=tuple(stranded),
+        )
+
+    def member_output(self, protocol_id: str) -> str | None:
+        """
+        Return the player of a joining protocol when its output has to move to that protocol.
+
+        :param protocol_id: The protocol that joins.
+        """
+        if (protocol := self.snapshot.protocols.get(protocol_id)) is None:
+            return None
+        if (
+            protocol.player_id is None
+            or (player := self.snapshot.players.get(protocol.player_id)) is None
+        ):
+            return None
+        if protocol_id == player.own_protocol or self.active_output(player) == protocol_id:
+            return None
+        self.outputs[player.player_id] = protocol_id
+        return player.player_id
+
+    def leaving_outputs(self, protocol_ids: Iterable[str]) -> list[str]:
+        """
+        Return the players whose active output is cleared, as their protocol left the group.
+
+        :param protocol_ids: The protocols that left.
+        """
+        cleared: list[str] = []
+        for protocol_id in protocol_ids:
+            if (protocol := self.snapshot.protocols.get(protocol_id)) is None:
+                continue
+            if (
+                protocol.player_id is None
+                or (player := self.snapshot.players.get(protocol.player_id)) is None
+            ):
+                continue
+            if protocol_id == player.own_protocol:
+                continue
+            if self.active_output(player) == protocol_id:
+                cleared.append(player.player_id)
+                self.outputs[player.player_id] = None
+        return cleared
+
+    def handover(self, leader: PlayerView, protocol_id: str) -> Handover:
+        """
+        Return how the leader's output follows its members onto the protocol they joined.
+
+        :param leader: The leader.
+        :param protocol_id: The protocol they joined.
+        """
+        previous = self.active_output(leader)
+        was_playing = leader.playback_state == PlaybackState.PLAYING
+        # A paused player still holds its output, so the handover has to run for it too.
+        was_rendering = leader.playback_state in RENDERING
+        # the group is on the parent's own protocol
+        is_own = protocol_id == leader.own_protocol
+        already_native = previous in (None, "native")
+        already_this = previous == protocol_id
+        switching = not ((is_own and already_native) or already_this)
+        handing_over = was_rendering and switching
+        moves = not (is_own and already_native)
+        if moves:
+            self.outputs[leader.player_id] = "native" if is_own else protocol_id
+        note: Note | None = None
+        if handing_over:
+            protocol = self.snapshot.held_protocol(protocol_id)
+            note = Note(
+                level=logging.INFO,
+                message="Handing the output of %s over to the %s protocol%s",
+                args=(
+                    leader.state_name,
+                    protocol.domain if protocol else "",
+                    " and resuming playback" if was_playing else "",
+                ),
+            )
+        return Handover(
+            moves=moves,
+            previous_output=previous,
+            was_playing=was_playing,
+            handing_over=handing_over,
+            note=note,
+        )
+
+    def own_protocol(self, leader: PlayerView) -> str | None:
+        """
+        Return the id of the leader's own protocol, while it is attached.
+
+        :param leader: The leader.
+        """
+        own = self.snapshot.own(leader)
+        return own.protocol_id if own is not None else None
+
+    def old_protocol(
+        self, leader: PlayerView, previous_output: str | None, protocol_id: str
+    ) -> OldProtocol | None:
+        """
+        Return the audio protocol the leader rendered on before its output was handed over.
+
+        :param leader: The leader.
+        :param previous_output: Its active output before.
+        :param protocol_id: The protocol that took the output over.
+        """
+        if (old := self._previous_protocol(leader, previous_output, protocol_id)) is None:
+            return None
+        return OldProtocol(
+            protocol_id=old.protocol_id,
+            members=tuple(self._protocol_group_members(leader, old)),
+        )
+
+    def removal(self, protocol_id: str, protocol_ids: Sequence[str]) -> list[str]:
+        """
+        Return the members a protocol group can be called to remove.
+
+        :param protocol_id: The protocol.
+        :param protocol_ids: The protocol members to remove.
+        :return: The protocol ids to pass; empty when there is no call to make.
+        """
+        if (protocol := self.snapshot.held_protocol(protocol_id)) is None:
+            return []
+        return self._removal(protocol, protocol_ids)
+
+    def native_leg(
+        self, leader: PlayerView, add: Sequence[str], remove: Sequence[str]
+    ) -> NativeLeg | None:
+        """
+        Return the call that groups the native members on the leader's own protocol.
+
+        :param leader: The leader.
+        :param add: The native members that join.
+        :param remove: The native members that leave.
+        :return: None when the own protocol has no call to make.
+        """
+        own = self.snapshot.own(leader)
+        if not (add or remove) or own is None:
+            return None
+        native_add = self._native_additions(add, leader, own)
+        # For removal, allow the audio protocol of a member only if it is actually in the
+        # group_members of the parent's own protocol. This handles a native protocol of an
+        # audio domain (e.g. native AirPlay) where group_members contains the audio
+        # protocols of other players
+        native_remove = [
+            protocol_id
+            for protocol_id in remove
+            if (member := self.snapshot.player_of(protocol_id))
+            and (
+                protocol_id in own.group_members
+                or protocol_id == self._native_member_id(leader, member)
+            )
+        ]
+        if not (native_add or native_remove) or PlayerFeature.SET_MEMBERS not in own.features:
+            return None
+        self._note(
+            logging.INFO,
+            "Calling set_members on native player %s with add=%s, remove=%s",
+            leader.state_name,
+            native_add,
+            native_remove,
+        )
+        return NativeLeg(
+            protocol_id=own.protocol_id, add=tuple(native_add), remove=tuple(native_remove)
+        )
+
+    # -- translation --
+
+    def _translate_adds(
+        self,
+        parent: PlayerView,
+        player_ids: Sequence[str],
+        protocol: ProtocolView | None,
+        domain: str | None,
+    ) -> tuple[list[str], list[str], ProtocolView | None, str | None]:
+        """
+        Translate the members that join to the protocols that carry them.
+
+        :param parent: The leader.
+        :param player_ids: The members that join.
+        :param protocol: The protocol the group is on so far.
+        :param domain: Its domain.
+        :return: The protocol members, the native members, the group protocol and its domain.
+        """
+        protocol_members: list[str] = []
+        native_members: list[str] = []
+        parent_own = self.snapshot.own(parent)
+        supports_native = (
+            parent_own is not None and PlayerFeature.SET_MEMBERS in parent_own.features
+        )
+        ordered = list(player_ids)
+        if self._live_native_session(parent):
+            ordered.sort(
+                key=lambda player_id: bool(
+                    (child := self.snapshot.player(player_id))
+                    and self._groups_natively(child, parent, supports_native)
+                )
+            )
+        for child_id in ordered:
+            if (child := self.snapshot.player(child_id)) is None:
+                continue
+            protocol, domain = self._select_grouping(
+                child, parent, protocol, domain, supports_native, protocol_members, native_members
+            )
+        # the protocol selected for the group is only known once every child has been
+        # processed, so the members picked for native grouping are corrected here
+        if (
+            native_members
+            and domain
+            and protocol
+            and parent_own is not None
+            and protocol.protocol_id != parent_own.protocol_id
+            and parent_own.needs_own_stream
+        ):
+            protocol_members.extend(self._move_to_domain(parent, domain, native_members))
+            native_members.clear()
+        return protocol_members, native_members, protocol, domain
+
+    def _select_grouping(
+        self,
+        child: PlayerView,
+        parent: PlayerView,
+        protocol: ProtocolView | None,
+        domain: str | None,
+        supports_native: bool,
+        protocol_members: list[str],
+        native_members: list[str],
+    ) -> tuple[ProtocolView | None, str | None]:
+        """
+        Pick how one member joins, and add it to the matching list.
+
+        :param child: The member.
+        :param parent: The leader.
+        :param protocol: The protocol the group is on so far.
+        :param domain: Its domain.
+        :param supports_native: Whether the leader groups natively.
+        :param protocol_members: The protocol members so far.
+        :param native_members: The native members so far.
+        :return: The protocol the group is on, and its domain.
+        """
+        natively = self._groups_natively(child, parent, supports_native)
+        # The parent is already playing natively and the child can join that native
+        # session directly - adopt it before considering the child's own preferred output
+        # protocol (a child joining an existing group must not force the whole group onto
+        # it). Skipped once a protocol has been selected, so mixed batches stay cohesive.
+        if self._live_native_session(parent) and not domain and natively:
+            native_members.append(self._native_member_id(parent, child))
+            return protocol, domain
+        child_own = self.snapshot.own(child)
+        # a player that runs its own multiroom (e.g. a LinkPlay control shell) keeps
+        # grouping on its native path rather than routing it through an audio protocol that
+        # is merely its preferred playback output. Native compatibility still decides
+        # whether this is possible, so an incompatible/cross-backend pair falls through.
+        if child_own is not None and child_own.prefers_native and natively:
+            native_members.append(self._native_member_id(parent, child))
+            return protocol, domain
+        grouped, protocol, domain = self._via_preferred(
+            child, parent, protocol, domain, protocol_members
+        )
+        if grouped:
+            return protocol, domain
+        # the protocol the group is already on; dropped when it can not group members
+        # itself, so a later grouping method can select a new protocol
+        if protocol is not None and domain and PlayerFeature.SET_MEMBERS not in protocol.features:
+            protocol, domain = None, None
+        elif protocol is not None and domain:
+            output = child.output_by_domain(domain)
+            if output and output.available:
+                protocol_members.append(self._member_protocol_id(child, output))
+                return protocol, domain
+        if natively:
+            native_members.append(self._native_member_id(parent, child))
+            return protocol, domain
+        common = self._common_output(child, parent)
+        if common is not None:
+            parent_output, child_output = common
+            if protocol is None or domain != parent_output.domain:
+                protocol = self.snapshot.output_protocol(parent, parent_output.output_id)
+                if protocol is not None:
+                    domain = protocol.domain
+            protocol_members.append(self._member_protocol_id(child, child_output))
+            return protocol, domain
+        self._note(
+            logging.WARNING,
+            "Cannot group %s with %s: no compatible grouping method found "
+            "(tried: child preferred protocol, parent active protocol, "
+            "native grouping, common protocols)",
+            child.state_name,
+            parent.state_name,
+        )
+        return protocol, domain
+
+    def _via_preferred(
+        self,
+        child: PlayerView,
+        parent: PlayerView,
+        protocol: ProtocolView | None,
+        domain: str | None,
+        protocol_members: list[str],
+    ) -> tuple[bool, ProtocolView | None, str | None]:
+        """
+        Group a member through the output it prefers, when the group can be on it.
+
+        :param child: The member.
+        :param parent: The leader.
+        :param protocol: The protocol the group is on so far.
+        :param domain: Its domain.
+        :param protocol_members: The protocol members so far.
+        :return: Whether it was grouped, and the protocol the group is on with its domain.
+        """
+        preferred = child.preferred_output
+        if not preferred or preferred in {"auto", "native"}:
+            return False, protocol, domain
+        child_output = next(
+            (output for output in child.outputs if output.output_id == preferred), None
+        )
+        if not child_output or not child_output.available:
+            return False, protocol, domain
+        parent_output = parent.output_by_domain(child_output.domain)
+        if not parent_output or not parent_output.available:
+            return False, protocol, domain
+        parent_protocol = self.snapshot.output_protocol(parent, parent_output.output_id)
+        if not parent_protocol or PlayerFeature.SET_MEMBERS not in parent_protocol.features:
+            return False, protocol, domain
+        if domain and child_output.domain != domain:
+            return False, protocol, domain
+        if not protocol or domain != child_output.domain:
+            protocol = parent_protocol
+            domain = child_output.domain
+        protocol_members.append(child_output.output_id)
+        return True, protocol, domain
+
+    def _translate_removals(
+        self,
+        parent: PlayerView,
+        player_ids: Sequence[str],
+        protocol: ProtocolView | None,
+        domain: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """
+        Translate the members that leave to the protocols that hold them.
+
+        :param parent: The leader.
+        :param player_ids: The members that leave.
+        :param protocol: The protocol the group is on.
+        :param domain: Its domain.
+        :return: The protocol members and the native members to remove.
+        """
+        protocol_members: list[str] = []
+        native_members: list[str] = []
+        parent_own = self.snapshot.own(parent)
+        native_group_members = parent_own.group_members if parent_own else ()
+        for child_id in player_ids:
+            if (child := self.snapshot.player(child_id)) is None:
+                continue
+            if domain and protocol:
+                output = child.output_by_domain(domain)
+                if output and output.available:
+                    member_id = self._member_protocol_id(child, output)
+                    if member_id in protocol.group_members:
+                        protocol_members.append(member_id)
+                        continue
+            # one of the child's audio protocols in the parent's native group_members: a
+            # native protocol of an audio domain (e.g. a native AirPlay player like Apple TV)
+            # groups the audio protocols of other players
+            native_id = next(
+                (pid for pid in child.audio_protocols if pid in native_group_members), None
+            )
+            native_members.append(native_id or self._native_member_id(parent, child))
+        return protocol_members, native_members
+
+    # -- the join's rules --
+
+    def _stranding_refusal(
+        self, parent: PlayerView, protocol: ProtocolView, add: Sequence[str]
+    ) -> Refuse | None:
+        """
+        Return the refusal of a join that switches protocols while old members can not follow.
+
+        :param parent: The leader.
+        :param protocol: The protocol the members join.
+        :param add: The protocol members that join.
+        """
+        if parent.playback_state not in RENDERING:
+            return None
+        old = self._previous_protocol(parent, self.active_output(parent), protocol.protocol_id)
+        if old is None:
+            return None
+        unable: list[str] = []
+        for _, member_id in self._protocol_group_members(parent, old):
+            member = self.snapshot.player(member_id)
+            output = member.output_by_domain(protocol.domain) if member else None
+            if not output or not output.available:
+                unable.append(member.name if member else member_id)
+        if not unable:
+            return None
+        added_names = ", ".join(
+            player.name if (player := self.snapshot.player_of(member_id)) else member_id
+            for member_id in add
+        )
+        stranded_names = ", ".join(unable)
+        return Refuse(
+            error=PlayerCommandFailed,
+            message=f"Cannot add {added_names} to {parent.state_name}: "
+            f"{stranded_names} cannot play over {protocol.provider_name}",
+            translation_key="member_cannot_follow_protocol",
+            translation_args=(
+                added_names,
+                parent.state_name,
+                stranded_names,
+                protocol.provider_name,
+            ),
+        )
+
+    def _migrate_stranded(
+        self, parent: PlayerView, protocol: ProtocolView, add: list[str]
+    ) -> list[str]:
+        """
+        Move the native members a switch to the protocol strands onto it.
+
+        :param parent: The leader.
+        :param protocol: The protocol the leader will render through.
+        :param add: The protocol members that join, extended with the moved ones.
+        :return: The native members to release from the own protocol.
+        """
+        own = self.snapshot.own(parent)
+        if own is None or protocol.protocol_id == own.protocol_id or not own.needs_own_stream:
+            return []
+        if self.active_output(parent) not in (None, "native"):
+            return []
+        stranded = [member_id for member_id in own.group_members if member_id != own.protocol_id]
+        for protocol_id in self._move_to_domain(parent, protocol.domain, stranded):
+            if protocol_id not in add:
+                add.append(protocol_id)
+        return stranded
+
+    def _removal(self, protocol: ProtocolView, protocol_ids: Sequence[str]) -> list[str]:
+        """
+        Return the members a protocol group can be called to remove, as the join's call does.
+
+        :param protocol: The protocol.
+        :param protocol_ids: The protocol members to remove.
+        :return: The protocol ids to pass; empty when there is no call to make.
+        """
+        remove = self._of_domain(protocol_ids, protocol)
+        if not remove:
+            return []
+        if PlayerFeature.SET_MEMBERS not in protocol.features:
+            self._note_unsupported(protocol)
+            return []
+        return remove
+
+    def _previous_protocol(
+        self, parent: PlayerView, previous: str | None, protocol_id: str | None
+    ) -> ProtocolView | None:
+        """
+        Return the audio protocol the leader renders through before switching to another one.
+
+        :param parent: The leader.
+        :param previous: Its active output before the switch.
+        :param protocol_id: The protocol taking the output over.
+        """
+        if previous is None or previous == "native":
+            return None
+        old = self.snapshot.attached(parent, previous)
+        if old is None or old.protocol_id == protocol_id:
+            return None
+        return old
+
+    def _protocol_group_members(
+        self, parent: PlayerView, protocol: ProtocolView
+    ) -> list[tuple[str, str]]:
+        """
+        Return the members of a protocol group other than the leader, as (protocol id, player id).
+
+        :param parent: The leader.
+        :param protocol: The protocol that holds the group.
+        """
+        members: list[tuple[str, str]] = []
+        for member_id in protocol.group_members:
+            if member_id == protocol.protocol_id:
+                continue
+            if (member := self.snapshot.player_of(member_id)) is None:
+                continue
+            if member.player_id != parent.player_id:
+                members.append((member_id, member.player_id))
+        return members
+
+    def _move_to_domain(
+        self, parent: PlayerView, domain: str, member_ids: Sequence[str]
+    ) -> list[str]:
+        """
+        Translate natively grouped members onto a protocol domain, leaving out who lacks it.
+
+        :param parent: The leader.
+        :param domain: The domain of the group's protocol.
+        :param member_ids: The native member ids.
+        """
+        translated: list[str] = []
+        for member_id in member_ids:
+            if (member := self.snapshot.player_of(member_id)) is None:
+                continue
+            output = member.output_by_domain(domain)
+            if not output or not output.available:
+                self._note(
+                    logging.WARNING,
+                    "Cannot group %s with %s: the group plays through the %s protocol, "
+                    "which %s does not support",
+                    member.state_name,
+                    parent.state_name,
+                    domain,
+                    member.state_name,
+                )
+                continue
+            translated.append(self._member_protocol_id(member, output))
+        return translated
+
+    def _native_additions(
+        self, member_ids: Sequence[str], parent: PlayerView, own: ProtocolView
+    ) -> list[str]:
+        """
+        Return the native members the leader's own protocol can group.
+
+        :param member_ids: The native member ids.
+        :param parent: The leader.
+        :param own: Its own protocol.
+        """
+        if own.role == ProtocolRole.VIRTUAL:
+            return [member_id for member_id in member_ids if self.snapshot.player(member_id)]
+        return [
+            member_id
+            for member_id in member_ids
+            if (protocol := self.snapshot.protocols.get(member_id))
+            and (
+                protocol.provider_id == own.provider_id
+                or member_id in own.can_group_with
+                or protocol.provider_id in own.can_group_with
+            )
+        ]
+
+    # -- small rules --
+
+    def _groups_natively(
+        self, child: PlayerView, parent: PlayerView, supports_native: bool
+    ) -> bool:
+        """
+        Return whether a member can group natively with the leader.
+
+        :param child: The member.
+        :param parent: The leader.
+        :param supports_native: Whether the leader groups natively.
+        """
+        parent_own = self.snapshot.own(parent)
+        child_own = self.snapshot.own(child)
+        if not supports_native or parent_own is None or child_own is None:
+            return False
+        return (
+            child_own.protocol_id in parent_own.native_peers
+            or child_own.protocol_id in parent_own.can_group_with
+            or child_own.provider_id in parent_own.can_group_with
+        )
+
+    def _live_native_session(self, parent: PlayerView) -> bool:
+        """
+        Return whether the leader plays natively right now.
+
+        :param parent: The leader.
+        """
+        return self.active_output(parent) == "native" and parent.playback_state in RENDERING
+
+    def _common_output(
+        self, child: PlayerView, parent: PlayerView
+    ) -> tuple[OutputView, OutputView] | None:
+        """
+        Return the first output of the leader that the member shares and that groups.
+
+        :param child: The member.
+        :param parent: The leader.
+        """
+        for parent_output in parent.outputs:
+            if not parent_output.available:
+                continue
+            child_output = child.output_by_domain(parent_output.domain)
+            if not child_output or not child_output.available:
+                continue
+            protocol = self.snapshot.output_protocol(parent, parent_output.output_id)
+            if protocol and PlayerFeature.SET_MEMBERS in protocol.features:
+                return parent_output, child_output
+        return None
+
+    def _member_protocol_id(self, player: PlayerView, output: OutputView) -> str:
+        """
+        Return the id of the protocol behind an output of a player.
+
+        :param player: The player.
+        :param output: One of its outputs.
+        """
+        if output.is_native and player.own_protocol is not None and self.snapshot.own(player):
+            return player.own_protocol
+        return output.output_id
+
+    def _native_member_id(self, parent: PlayerView, member: PlayerView) -> str:
+        """
+        Return the id the leader's own protocol knows a member by.
+
+        :param parent: The leader.
+        :param member: The member.
+        """
+        parent_own = self.snapshot.own(parent)
+        member_own = self.snapshot.own(member)
+        if parent_own is not None and parent_own.role != ProtocolRole.VIRTUAL and member_own:
+            return member_own.protocol_id
+        return member.player_id
+
+    def _of_domain(self, protocol_ids: Iterable[str], protocol: ProtocolView | None) -> list[str]:
+        """
+        Return the protocol ids of attached protocols of the domain of a protocol.
+
+        :param protocol_ids: The ids to filter.
+        :param protocol: The protocol whose domain counts.
+        """
+        if protocol is None:
+            return []
+        return [
+            protocol_id
+            for protocol_id in protocol_ids
+            if (member := self.snapshot.protocols.get(protocol_id))
+            and member.domain == protocol.domain
+        ]
+
+    def _note(self, level: int, message: str, *args: object) -> None:
+        """
+        Add a line for the log.
+
+        :param level: The log level.
+        :param message: The message, with %s for the args.
+        :param args: The args.
+        """
+        self._note_to(Note(level=level, message=message, args=args))
+
+    def _note_unsupported(self, protocol: ProtocolView) -> None:
+        """
+        Note that a protocol picked for a group can not group members.
+
+        :param protocol: The protocol.
+        """
+        self._note(
+            logging.ERROR,
+            "Protocol %s does not support SET_MEMBERS, cannot perform grouping. "
+            "This should have been caught earlier in the flow.",
+            protocol.protocol_id,
+        )
+
+
+class _Planner(GroupRules):
     """The planning of one group change from one snapshot."""
 
     def __init__(
@@ -715,15 +1445,15 @@ class _Planner:
         :param change: The change.
         :param progress: Where the change got to.
         """
-        self.snapshot = snapshot
+        self.steps: list[GroupStep] = []
+        super().__init__(snapshot, self.steps.append)
         self.change = change
         self.progress = progress
-        self.steps: list[GroupStep] = []
         self.next_progress: GroupProgress | None = None
         self.left_out_progress: GroupProgress | None = None
         self.passed_on = False
-        # the active outputs the steps of this plan set, by player id
-        self.outputs: dict[str, str | None] = {}
+        self.join: Join | None = None
+        self.regroup: Regroup | None = None
 
     def plan(self) -> GroupPlan:
         """Return the plan of the change from the snapshot."""
@@ -744,6 +1474,8 @@ class _Planner:
             progress=self.next_progress,
             progress_left_out=self.left_out_progress,
             passed_on=self.passed_on,
+            join=self.join,
+            regroup=self.regroup,
         )
 
     # -- the kinds of change --
@@ -779,9 +1511,6 @@ class _Planner:
     def _members(self) -> None:
         """Plan a member change on a leader or a group player."""
         target = self._held_target()
-        if (join := self.progress.join) is not None:
-            self._continue_join(target, join)
-            return
         add = list(self.change.add or ())
         remove = list(self.change.remove or ())
         stop_after = False
@@ -817,7 +1546,12 @@ class _Planner:
                 )
             )
             return
-        self._start_join(target, admitted, accepted, stop_after=stop_after)
+        self.join = Join(
+            target_id=target.player_id,
+            add=tuple(admitted),
+            remove=tuple(accepted),
+            stop_after=stop_after,
+        )
 
     def _ungroup(self) -> None:
         """Take a player out of whatever holds it."""
@@ -954,13 +1688,6 @@ class _Planner:
     def _regroup_for_start(self) -> None:
         """Regroup the group a player leads off a protocol none of its members needs anymore."""
         player = self._held_target()
-        if (join := self.progress.join) is not None:
-            self._continue_join(player, join)
-            return
-        if (regroup := self.progress.regroup) is not None:
-            self._release_leaving_outputs(regroup.removed)
-            self._regroup_join(player, regroup.protocol_id, regroup.member_ids)
-            return
         protocol = self._grouped_output_protocol(player)
         if not protocol or protocol.synced_to or len(protocol.group_members) < 2:
             return
@@ -996,18 +1723,13 @@ class _Planner:
         )
         # Removed on the protocol itself: the player's active output protocol may
         # already be cleared after its last session, so a regular removal would not find them.
-        if removed := self._remove_from_protocol(protocol, protocol_member_ids):
-            self._boundary(
-                replace(
-                    self.progress,
-                    regroup=RegroupProgress(
-                        protocol_id=protocol.protocol_id,
-                        member_ids=tuple(member_ids),
-                        removed=tuple(removed),
-                    ),
-                )
-            )
-        self._regroup_join(player, protocol.protocol_id, tuple(member_ids))
+        removed = self._removal(protocol, protocol_member_ids)
+        self.regroup = Regroup(
+            leader_id=player.player_id,
+            protocol_id=protocol.protocol_id,
+            removed=tuple(removed),
+            member_ids=tuple(member_ids),
+        )
 
     def _leave_protocol(self) -> None:
         """Let a protocol an external source took over leave its group."""
@@ -1242,804 +1964,7 @@ class _Planner:
                 accepted.append(child_id)
         return accepted
 
-    # -- the join --
-
-    def _start_join(
-        self,
-        target: PlayerView,
-        add: Sequence[str],
-        remove: Sequence[str],
-        *,
-        stop_after: bool,
-    ) -> None:
-        """
-        Translate the members to the protocols that carry them, and run the join from there.
-
-        :param target: The leader.
-        :param add: The members that join.
-        :param remove: The members that leave.
-        :param stop_after: Stop the leader at the end.
-        """
-        protocol: ProtocolView | None = None
-        domain: str | None = None
-        active = self._active_output(target)
-        if active and active != "native" and (protocol := self.snapshot.attached(target, active)):
-            domain = protocol.domain
-        protocol_add, native_add, protocol, domain = self._translate_adds(
-            target, add, protocol, domain
-        )
-        protocol_remove, native_remove = self._translate_removals(target, remove, protocol, domain)
-        join = JoinProgress(
-            phase=JoinPhase.FORWARD,
-            protocol_id=protocol.protocol_id if protocol else None,
-            protocol_add=tuple(protocol_add),
-            protocol_remove=tuple(protocol_remove),
-            native_add=tuple(native_add),
-            native_remove=tuple(native_remove),
-            stop_after=stop_after,
-        )
-        if protocol is not None:
-            self.steps.append(Hold(protocol_id=protocol.protocol_id))
-        if protocol_add and protocol is not None and self.change.new_content:
-            self.steps.append(OpenTakeover(protocol_id=protocol.protocol_id))
-            self._boundary_join(join)
-        self._continue_join(target, join)
-
-    def _continue_join(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Plan the join from where it got to.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        phases = {
-            JoinPhase.FORWARD: self._join_forward,
-            JoinPhase.JOINED: self._join_joined,
-            JoinPhase.LEADER_ACTIVE: self._join_leader_active,
-            JoinPhase.NATIVE_RELEASED: self._join_native_released,
-            JoinPhase.OLD_STOPPED: self._join_old_stopped,
-            JoinPhase.OLD_LEFT: self._join_old_left,
-            JoinPhase.NATIVE: self._join_native,
-        }
-        phases[join.phase](target, join)
-
-    def _join_forward(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Filter, refuse or strand, then activate the joining members and call the join.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        protocol = self.snapshot.held_protocol(join.protocol_id) if join.protocol_id else None
-        if protocol is None or not (join.protocol_add or join.protocol_remove):
-            self._join_native(target, join)
-            return
-        if join.next_activation == 0:
-            add = self._of_domain(join.protocol_add, protocol)
-            remove = self._of_domain(join.protocol_remove, protocol)
-            if not add and not remove:
-                self._join_native(target, join)
-                return
-            if PlayerFeature.SET_MEMBERS not in protocol.features:
-                self._note_unsupported(protocol)
-                self._join_native(target, join)
-                return
-            # a join that switches protocols moves every member along, silencing those
-            # without it. Members that ride the parent's own stream are stranded by the
-            # switch, so they join the protocol group in this very same call and are released
-            # from the parent's native grouping afterwards.
-            if add:
-                self._refuse_stranding(target, protocol, add)
-            stranded = self._migrate_stranded(target, protocol, add) if add else []
-            join = replace(
-                join,
-                protocol_add=tuple(add),
-                protocol_remove=tuple(remove),
-                stranded=tuple(stranded),
-            )
-        # This runs before set_members because a member's own stream starts inside that
-        # call and the provider resolves the member's volume control as it starts: unless
-        # its player already points at this protocol, that resolution picks another
-        # interface of the same device (e.g. its cast side) over the one carrying the audio.
-        for index in range(join.next_activation, len(join.protocol_add)):
-            if self._activate_member(join.protocol_add[index]) and index + 1 < len(
-                join.protocol_add
-            ):
-                self._boundary_join(replace(join, next_activation=index + 1))
-        self.steps.append(
-            SetMembers(
-                protocol_id=protocol.protocol_id, add=join.protocol_add, remove=join.protocol_remove
-            )
-        )
-        self._boundary_join(replace(join, phase=JoinPhase.JOINED))
-
-    def _join_joined(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Clear the outputs of the members that left, and move the leader's output to the protocol.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        protocol_id = join.protocol_id
-        assert protocol_id is not None  # for type checking
-        self._release_leaving_outputs(join.protocol_remove)
-        if not join.protocol_add:
-            self._join_native(target, join)
-            return
-        previous = self._active_output(target)
-        was_playing = target.playback_state == PlaybackState.PLAYING
-        # A paused player still holds its output, so the handover has to run for it too.
-        was_rendering = target.playback_state in RENDERING
-        # the group is on the parent's own protocol
-        is_own = protocol_id == target.own_protocol
-        already_native = previous in (None, "native")
-        already_this = previous == protocol_id
-        switching = not ((is_own and already_native) or already_this)
-        handing_over = was_rendering and switching
-        join = replace(
-            join,
-            phase=JoinPhase.LEADER_ACTIVE,
-            previous_output=previous,
-            was_playing=was_playing,
-            handing_over=handing_over,
-        )
-        activated = not (is_own and already_native)
-        if activated:
-            self._set_output(target, protocol_id)
-        if handing_over:
-            protocol = self.snapshot.held_protocol(protocol_id)
-            self._note(
-                logging.INFO,
-                "Handing the output of %s over to the %s protocol%s",
-                target.state_name,
-                protocol.domain if protocol else "",
-                " and resuming playback" if was_playing else "",
-            )
-        if activated:
-            self._boundary_join(join)
-        self._join_leader_active(target, join)
-
-    def _join_leader_active(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Release the stranded members from the leader's own protocol, stopping it when handing over.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        # The members already joined the protocol group, so the native session only has
-        # to release them, and stop when it is live. Releasing them first also clears the
-        # native group, which keeps a later native playback command from resurrecting it.
-        # Both calls take the provider's own lock, so they run one after the other.
-        if join.stranded and (own := self.snapshot.own(target)) is not None:
-            self.steps.append(Hold(protocol_id=own.protocol_id))
-            self.steps.append(
-                SetMembers(
-                    protocol_id=own.protocol_id,
-                    remove=join.stranded,
-                    lists=MemberLists.REMOVE_ONLY,
-                )
-            )
-            if join.handing_over:
-                self.steps.append(StopProtocol(protocol_id=own.protocol_id))
-            self._boundary_join(replace(join, phase=JoinPhase.NATIVE_RELEASED))
-        self._join_native_released(target, join)
-
-    def _join_native_released(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Stop the protocol the leader rendered on before, keeping who was in its group.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        if not join.handing_over:
-            self._join_native(target, join)
-            return
-        old = self._previous_protocol(target, join.previous_output, join.protocol_id)
-        if old is None:
-            self._join_old_left(target, join)
-            return
-        members = self._protocol_group_members(target, old)
-        self.steps.append(Hold(protocol_id=old.protocol_id))
-        # Stop the specific protocol itself, bypassing group/sync redirect and queue
-        # redirect logic. A stopped protocol keeps its group, which would win the output
-        # selection of the resume over the protocol that takes over, so its members are
-        # removed from it next.
-        self.steps.append(StopProtocol(protocol_id=old.protocol_id))
-        self._boundary_join(
-            replace(
-                join,
-                phase=JoinPhase.OLD_STOPPED,
-                old_protocol_id=old.protocol_id,
-                old_members=tuple(members),
-            )
-        )
-
-    def _join_old_stopped(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Remove the old protocol's members from it.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        assert join.old_protocol_id is not None  # for type checking
-        after = replace(join, phase=JoinPhase.OLD_LEFT)
-        if (old := self.snapshot.held_protocol(join.old_protocol_id)) is not None and (
-            removed := self._remove_from_protocol(
-                old, [protocol_id for protocol_id, _ in join.old_members]
-            )
-        ):
-            self._boundary_join(replace(after, old_removed=tuple(removed)))
-        self._join_old_left(target, after)
-
-    def _join_old_left(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Clear the old members' outputs, resume the leader, and add the old members back.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        self._release_leaving_outputs(join.old_removed)
-        after = replace(join, phase=JoinPhase.NATIVE)
-        if join.was_playing:
-            self.steps.append(Resume(player_id=target.player_id))
-        if old_player_ids := tuple(player_id for _, player_id in join.old_members):
-            self.steps.append(MemberChange(target_id=target.player_id, add=old_player_ids))
-        if join.was_playing or old_player_ids:
-            self._boundary_join(after)
-        self._join_native(target, after)
-
-    def _join_native(self, target: PlayerView, join: JoinProgress) -> None:
-        """
-        Group the native members on the leader's own protocol, then stop a dissolved leader.
-
-        :param target: The leader.
-        :param join: Where the join got to.
-        """
-        own = self.snapshot.own(target)
-        if (join.native_add or join.native_remove) and own is not None:
-            add = self._native_additions(join.native_add, target, own)
-            # For removal, allow the audio protocol of a member only if it is actually in the
-            # group_members of the parent's own protocol. This handles a native protocol of an
-            # audio domain (e.g. native AirPlay) where group_members contains the audio
-            # protocols of other players
-            remove = [
-                protocol_id
-                for protocol_id in join.native_remove
-                if (member := self.snapshot.player_of(protocol_id))
-                and (
-                    protocol_id in own.group_members
-                    or protocol_id == self._native_member_id(target, member)
-                )
-            ]
-            if (add or remove) and PlayerFeature.SET_MEMBERS in own.features:
-                self._note(
-                    logging.INFO,
-                    "Calling set_members on native player %s with add=%s, remove=%s",
-                    target.state_name,
-                    add,
-                    remove,
-                )
-                self.steps.append(
-                    SetMembers(protocol_id=own.protocol_id, add=tuple(add), remove=tuple(remove))
-                )
-        if join.stop_after:
-            self.steps.append(StopLeader(player_id=target.player_id))
-
-    def _regroup_join(
-        self, player: PlayerView, protocol_id: str, member_ids: Sequence[str]
-    ) -> None:
-        """
-        Join the members afresh once the protocol they were grouped on let them go.
-
-        :param player: The leader.
-        :param protocol_id: The protocol they left.
-        :param member_ids: The players that join.
-        """
-        if self._active_output(player) == protocol_id:
-            self.steps.append(SetOutput(player_id=player.player_id, output_id=None))
-            self.outputs[player.player_id] = None
-        self._start_join(player, list(member_ids), [], stop_after=False)
-
-    # -- translation --
-
-    def _translate_adds(
-        self,
-        parent: PlayerView,
-        player_ids: Sequence[str],
-        protocol: ProtocolView | None,
-        domain: str | None,
-    ) -> tuple[list[str], list[str], ProtocolView | None, str | None]:
-        """
-        Translate the members that join to the protocols that carry them.
-
-        :param parent: The leader.
-        :param player_ids: The members that join.
-        :param protocol: The protocol the group is on so far.
-        :param domain: Its domain.
-        :return: The protocol members, the native members, the group protocol and its domain.
-        """
-        protocol_members: list[str] = []
-        native_members: list[str] = []
-        parent_own = self.snapshot.own(parent)
-        supports_native = (
-            parent_own is not None and PlayerFeature.SET_MEMBERS in parent_own.features
-        )
-        ordered = list(player_ids)
-        if self._live_native_session(parent):
-            ordered.sort(
-                key=lambda player_id: bool(
-                    (child := self.snapshot.player(player_id))
-                    and self._groups_natively(child, parent, supports_native)
-                )
-            )
-        for child_id in ordered:
-            if (child := self.snapshot.player(child_id)) is None:
-                continue
-            protocol, domain = self._select_grouping(
-                child, parent, protocol, domain, supports_native, protocol_members, native_members
-            )
-        # the protocol selected for the group is only known once every child has been
-        # processed, so the members picked for native grouping are corrected here
-        if (
-            native_members
-            and domain
-            and protocol
-            and parent_own is not None
-            and protocol.protocol_id != parent_own.protocol_id
-            and parent_own.needs_own_stream
-        ):
-            protocol_members.extend(self._move_to_domain(parent, domain, native_members))
-            native_members.clear()
-        return protocol_members, native_members, protocol, domain
-
-    def _select_grouping(
-        self,
-        child: PlayerView,
-        parent: PlayerView,
-        protocol: ProtocolView | None,
-        domain: str | None,
-        supports_native: bool,
-        protocol_members: list[str],
-        native_members: list[str],
-    ) -> tuple[ProtocolView | None, str | None]:
-        """
-        Pick how one member joins, and add it to the matching list.
-
-        :param child: The member.
-        :param parent: The leader.
-        :param protocol: The protocol the group is on so far.
-        :param domain: Its domain.
-        :param supports_native: Whether the leader groups natively.
-        :param protocol_members: The protocol members so far.
-        :param native_members: The native members so far.
-        :return: The protocol the group is on, and its domain.
-        """
-        natively = self._groups_natively(child, parent, supports_native)
-        # The parent is already playing natively and the child can join that native
-        # session directly - adopt it before considering the child's own preferred output
-        # protocol (a child joining an existing group must not force the whole group onto
-        # it). Skipped once a protocol has been selected, so mixed batches stay cohesive.
-        if self._live_native_session(parent) and not domain and natively:
-            native_members.append(self._native_member_id(parent, child))
-            return protocol, domain
-        child_own = self.snapshot.own(child)
-        # a player that runs its own multiroom (e.g. a LinkPlay control shell) keeps
-        # grouping on its native path rather than routing it through an audio protocol that
-        # is merely its preferred playback output. Native compatibility still decides
-        # whether this is possible, so an incompatible/cross-backend pair falls through.
-        if child_own is not None and child_own.prefers_native and natively:
-            native_members.append(self._native_member_id(parent, child))
-            return protocol, domain
-        grouped, protocol, domain = self._via_preferred(
-            child, parent, protocol, domain, protocol_members
-        )
-        if grouped:
-            return protocol, domain
-        # the protocol the group is already on; dropped when it can not group members
-        # itself, so a later grouping method can select a new protocol
-        if protocol is not None and domain and PlayerFeature.SET_MEMBERS not in protocol.features:
-            protocol, domain = None, None
-        elif protocol is not None and domain:
-            output = child.output_by_domain(domain)
-            if output and output.available:
-                protocol_members.append(self._member_protocol_id(child, output))
-                return protocol, domain
-        if natively:
-            native_members.append(self._native_member_id(parent, child))
-            return protocol, domain
-        common = self._common_output(child, parent)
-        if common is not None:
-            parent_output, child_output = common
-            if protocol is None or domain != parent_output.domain:
-                protocol = self.snapshot.output_protocol(parent, parent_output.output_id)
-                if protocol is not None:
-                    domain = protocol.domain
-            protocol_members.append(self._member_protocol_id(child, child_output))
-            return protocol, domain
-        self._note(
-            logging.WARNING,
-            "Cannot group %s with %s: no compatible grouping method found "
-            "(tried: child preferred protocol, parent active protocol, "
-            "native grouping, common protocols)",
-            child.state_name,
-            parent.state_name,
-        )
-        return protocol, domain
-
-    def _via_preferred(
-        self,
-        child: PlayerView,
-        parent: PlayerView,
-        protocol: ProtocolView | None,
-        domain: str | None,
-        protocol_members: list[str],
-    ) -> tuple[bool, ProtocolView | None, str | None]:
-        """
-        Group a member through the output it prefers, when the group can be on it.
-
-        :param child: The member.
-        :param parent: The leader.
-        :param protocol: The protocol the group is on so far.
-        :param domain: Its domain.
-        :param protocol_members: The protocol members so far.
-        :return: Whether it was grouped, and the protocol the group is on with its domain.
-        """
-        preferred = child.preferred_output
-        if not preferred or preferred in {"auto", "native"}:
-            return False, protocol, domain
-        child_output = next(
-            (output for output in child.outputs if output.output_id == preferred), None
-        )
-        if not child_output or not child_output.available:
-            return False, protocol, domain
-        parent_output = parent.output_by_domain(child_output.domain)
-        if not parent_output or not parent_output.available:
-            return False, protocol, domain
-        parent_protocol = self.snapshot.output_protocol(parent, parent_output.output_id)
-        if not parent_protocol or PlayerFeature.SET_MEMBERS not in parent_protocol.features:
-            return False, protocol, domain
-        if domain and child_output.domain != domain:
-            return False, protocol, domain
-        if not protocol or domain != child_output.domain:
-            protocol = parent_protocol
-            domain = child_output.domain
-        protocol_members.append(child_output.output_id)
-        return True, protocol, domain
-
-    def _translate_removals(
-        self,
-        parent: PlayerView,
-        player_ids: Sequence[str],
-        protocol: ProtocolView | None,
-        domain: str | None,
-    ) -> tuple[list[str], list[str]]:
-        """
-        Translate the members that leave to the protocols that hold them.
-
-        :param parent: The leader.
-        :param player_ids: The members that leave.
-        :param protocol: The protocol the group is on.
-        :param domain: Its domain.
-        :return: The protocol members and the native members to remove.
-        """
-        protocol_members: list[str] = []
-        native_members: list[str] = []
-        parent_own = self.snapshot.own(parent)
-        native_group_members = parent_own.group_members if parent_own else ()
-        for child_id in player_ids:
-            if (child := self.snapshot.player(child_id)) is None:
-                continue
-            if domain and protocol:
-                output = child.output_by_domain(domain)
-                if output and output.available:
-                    member_id = self._member_protocol_id(child, output)
-                    if member_id in protocol.group_members:
-                        protocol_members.append(member_id)
-                        continue
-            # one of the child's audio protocols in the parent's native group_members: a
-            # native protocol of an audio domain (e.g. a native AirPlay player like Apple TV)
-            # groups the audio protocols of other players
-            native_id = next(
-                (pid for pid in child.audio_protocols if pid in native_group_members), None
-            )
-            native_members.append(native_id or self._native_member_id(parent, child))
-        return protocol_members, native_members
-
-    # -- forward and handover helpers --
-
-    def _refuse_stranding(
-        self, parent: PlayerView, protocol: ProtocolView, add: Sequence[str]
-    ) -> None:
-        """
-        Refuse a join that switches protocols while members of the old one can not follow.
-
-        :param parent: The leader.
-        :param protocol: The protocol the members join.
-        :param add: The protocol members that join.
-        """
-        if parent.playback_state not in RENDERING:
-            return
-        old = self._previous_protocol(parent, self._active_output(parent), protocol.protocol_id)
-        if old is None:
-            return
-        unable: list[str] = []
-        for _, member_id in self._protocol_group_members(parent, old):
-            member = self.snapshot.player(member_id)
-            output = member.output_by_domain(protocol.domain) if member else None
-            if not output or not output.available:
-                unable.append(member.name if member else member_id)
-        if not unable:
-            return
-        added_names = ", ".join(
-            player.name if (player := self.snapshot.player_of(member_id)) else member_id
-            for member_id in add
-        )
-        stranded_names = ", ".join(unable)
-        self._refuse(
-            PlayerCommandFailed,
-            f"Cannot add {added_names} to {parent.state_name}: "
-            f"{stranded_names} cannot play over {protocol.provider_name}",
-            "member_cannot_follow_protocol",
-            (added_names, parent.state_name, stranded_names, protocol.provider_name),
-        )
-
-    def _migrate_stranded(
-        self, parent: PlayerView, protocol: ProtocolView, add: list[str]
-    ) -> list[str]:
-        """
-        Move the native members a switch to the protocol strands onto it.
-
-        :param parent: The leader.
-        :param protocol: The protocol the leader will render through.
-        :param add: The protocol members that join, extended with the moved ones.
-        :return: The native members to release from the own protocol.
-        """
-        own = self.snapshot.own(parent)
-        if own is None or protocol.protocol_id == own.protocol_id or not own.needs_own_stream:
-            return []
-        if self._active_output(parent) not in (None, "native"):
-            return []
-        stranded = [member_id for member_id in own.group_members if member_id != own.protocol_id]
-        for protocol_id in self._move_to_domain(parent, protocol.domain, stranded):
-            if protocol_id not in add:
-                add.append(protocol_id)
-        return stranded
-
-    def _activate_member(self, protocol_id: str) -> bool:
-        """
-        Point the player of a joining protocol at it, unless it already is.
-
-        :param protocol_id: The protocol that joins.
-        :return: Whether a step was added.
-        """
-        if (protocol := self.snapshot.protocols.get(protocol_id)) is None:
-            return False
-        if (
-            protocol.player_id is None
-            or (player := self.snapshot.players.get(protocol.player_id)) is None
-        ):
-            return False
-        if protocol_id == player.own_protocol or self._active_output(player) == protocol_id:
-            return False
-        self._set_output(player, protocol_id)
-        return True
-
-    def _release_leaving_outputs(self, protocol_ids: Iterable[str]) -> None:
-        """
-        Clear the active output of the players whose protocol left the group.
-
-        :param protocol_ids: The protocols that left.
-        """
-        for protocol_id in protocol_ids:
-            if (protocol := self.snapshot.protocols.get(protocol_id)) is None:
-                continue
-            if (
-                protocol.player_id is None
-                or (player := self.snapshot.players.get(protocol.player_id)) is None
-            ):
-                continue
-            if protocol_id == player.own_protocol:
-                continue
-            if self._active_output(player) == protocol_id:
-                self.steps.append(SetOutput(player_id=player.player_id, output_id=None))
-                self.outputs[player.player_id] = None
-
-    def _remove_from_protocol(
-        self, protocol: ProtocolView, protocol_ids: Sequence[str]
-    ) -> list[str]:
-        """
-        Remove members from a protocol group, as a removal through the forward does.
-
-        :param protocol: The protocol.
-        :param protocol_ids: The protocol members to remove.
-        :return: The protocol ids the removal passed, empty when it was not called.
-        """
-        remove = self._of_domain(protocol_ids, protocol)
-        if not remove:
-            return []
-        if PlayerFeature.SET_MEMBERS not in protocol.features:
-            self._note_unsupported(protocol)
-            return []
-        self.steps.append(SetMembers(protocol_id=protocol.protocol_id, remove=tuple(remove)))
-        return remove
-
-    def _previous_protocol(
-        self, parent: PlayerView, previous: str | None, protocol_id: str | None
-    ) -> ProtocolView | None:
-        """
-        Return the audio protocol the leader renders through before switching to another one.
-
-        :param parent: The leader.
-        :param previous: Its active output before the switch.
-        :param protocol_id: The protocol taking the output over.
-        """
-        if previous is None or previous == "native":
-            return None
-        old = self.snapshot.attached(parent, previous)
-        if old is None or old.protocol_id == protocol_id:
-            return None
-        return old
-
-    def _protocol_group_members(
-        self, parent: PlayerView, protocol: ProtocolView
-    ) -> list[tuple[str, str]]:
-        """
-        Return the members of a protocol group other than the leader, as (protocol id, player id).
-
-        :param parent: The leader.
-        :param protocol: The protocol that holds the group.
-        """
-        members: list[tuple[str, str]] = []
-        for member_id in protocol.group_members:
-            if member_id == protocol.protocol_id:
-                continue
-            if (member := self.snapshot.player_of(member_id)) is None:
-                continue
-            if member.player_id != parent.player_id:
-                members.append((member_id, member.player_id))
-        return members
-
-    def _move_to_domain(
-        self, parent: PlayerView, domain: str, member_ids: Sequence[str]
-    ) -> list[str]:
-        """
-        Translate natively grouped members onto a protocol domain, leaving out who lacks it.
-
-        :param parent: The leader.
-        :param domain: The domain of the group's protocol.
-        :param member_ids: The native member ids.
-        """
-        translated: list[str] = []
-        for member_id in member_ids:
-            if (member := self.snapshot.player_of(member_id)) is None:
-                continue
-            output = member.output_by_domain(domain)
-            if not output or not output.available:
-                self._note(
-                    logging.WARNING,
-                    "Cannot group %s with %s: the group plays through the %s protocol, "
-                    "which %s does not support",
-                    member.state_name,
-                    parent.state_name,
-                    domain,
-                    member.state_name,
-                )
-                continue
-            translated.append(self._member_protocol_id(member, output))
-        return translated
-
-    def _native_additions(
-        self, member_ids: Sequence[str], parent: PlayerView, own: ProtocolView
-    ) -> list[str]:
-        """
-        Return the native members the leader's own protocol can group.
-
-        :param member_ids: The native member ids.
-        :param parent: The leader.
-        :param own: Its own protocol.
-        """
-        if own.role == ProtocolRole.VIRTUAL:
-            return [member_id for member_id in member_ids if self.snapshot.player(member_id)]
-        return [
-            member_id
-            for member_id in member_ids
-            if (protocol := self.snapshot.protocols.get(member_id))
-            and (
-                protocol.provider_id == own.provider_id
-                or member_id in own.can_group_with
-                or protocol.provider_id in own.can_group_with
-            )
-        ]
-
     # -- small rules --
-
-    def _groups_natively(
-        self, child: PlayerView, parent: PlayerView, supports_native: bool
-    ) -> bool:
-        """
-        Return whether a member can group natively with the leader.
-
-        :param child: The member.
-        :param parent: The leader.
-        :param supports_native: Whether the leader groups natively.
-        """
-        parent_own = self.snapshot.own(parent)
-        child_own = self.snapshot.own(child)
-        if not supports_native or parent_own is None or child_own is None:
-            return False
-        return (
-            child_own.protocol_id in parent_own.native_peers
-            or child_own.protocol_id in parent_own.can_group_with
-            or child_own.provider_id in parent_own.can_group_with
-        )
-
-    def _live_native_session(self, parent: PlayerView) -> bool:
-        """
-        Return whether the leader plays natively right now.
-
-        :param parent: The leader.
-        """
-        return self._active_output(parent) == "native" and parent.playback_state in RENDERING
-
-    def _common_output(
-        self, child: PlayerView, parent: PlayerView
-    ) -> tuple[OutputView, OutputView] | None:
-        """
-        Return the first output of the leader that the member shares and that groups.
-
-        :param child: The member.
-        :param parent: The leader.
-        """
-        for parent_output in parent.outputs:
-            if not parent_output.available:
-                continue
-            child_output = child.output_by_domain(parent_output.domain)
-            if not child_output or not child_output.available:
-                continue
-            protocol = self.snapshot.output_protocol(parent, parent_output.output_id)
-            if protocol and PlayerFeature.SET_MEMBERS in protocol.features:
-                return parent_output, child_output
-        return None
-
-    def _member_protocol_id(self, player: PlayerView, output: OutputView) -> str:
-        """
-        Return the id of the protocol behind an output of a player.
-
-        :param player: The player.
-        :param output: One of its outputs.
-        """
-        if output.is_native and player.own_protocol is not None and self.snapshot.own(player):
-            return player.own_protocol
-        return output.output_id
-
-    def _native_member_id(self, parent: PlayerView, member: PlayerView) -> str:
-        """
-        Return the id the leader's own protocol knows a member by.
-
-        :param parent: The leader.
-        :param member: The member.
-        """
-        parent_own = self.snapshot.own(parent)
-        member_own = self.snapshot.own(member)
-        if parent_own is not None and parent_own.role != ProtocolRole.VIRTUAL and member_own:
-            return member_own.protocol_id
-        return member.player_id
-
-    def _of_domain(self, protocol_ids: Iterable[str], protocol: ProtocolView | None) -> list[str]:
-        """
-        Return the protocol ids of attached protocols of the domain of a protocol.
-
-        :param protocol_ids: The ids to filter.
-        :param protocol: The protocol whose domain counts.
-        """
-        if protocol is None:
-            return []
-        return [
-            protocol_id
-            for protocol_id in protocol_ids
-            if (member := self.snapshot.protocols.get(protocol_id))
-            and member.domain == protocol.domain
-        ]
 
     def _linked(self, player: PlayerView, protocol_id: str) -> ProtocolView | None:
         """
@@ -2064,26 +1989,6 @@ class _Planner:
             if (protocol := self.snapshot.protocols.get(protocol_id)) is not None
         )
 
-    def _active_output(self, player: PlayerView) -> str | None:
-        """
-        Return the active output of a player, as the steps of this plan left it.
-
-        :param player: The player.
-        """
-        if player.player_id in self.outputs:
-            return self.outputs[player.player_id]
-        return player.active_output
-
-    def _set_output(self, player: PlayerView, output_id: str) -> None:
-        """
-        Make an output the active one of a player.
-
-        :param player: The player.
-        :param output_id: The protocol id of the output.
-        """
-        self.steps.append(SetOutput(player_id=player.player_id, output_id=output_id))
-        self.outputs[player.player_id] = "native" if output_id == player.own_protocol else output_id
-
     def _held_target(self) -> PlayerView:
         """Return the player the change is about, held by the change."""
         target = self.snapshot.held_player(self.change.target_id)
@@ -2099,29 +2004,6 @@ class _Planner:
         player = self.snapshot.player(player_id)
         assert player is not None  # the entries pass a player that exists
         return player
-
-    def _note(self, level: int, message: str, *args: object) -> None:
-        """
-        Add a line for the log.
-
-        :param level: The log level.
-        :param message: The message, with %s for the args.
-        :param args: The args.
-        """
-        self.steps.append(Note(level=level, message=message, args=args))
-
-    def _note_unsupported(self, protocol: ProtocolView) -> None:
-        """
-        Note that a protocol picked for a group can not group members.
-
-        :param protocol: The protocol.
-        """
-        self._note(
-            logging.ERROR,
-            "Protocol %s does not support SET_MEMBERS, cannot perform grouping. "
-            "This should have been caught earlier in the flow.",
-            protocol.protocol_id,
-        )
 
     def _refuse(
         self,
@@ -2156,11 +2038,3 @@ class _Planner:
         """
         self.next_progress = progress
         raise _Boundary
-
-    def _boundary_join(self, join: JoinProgress) -> None:
-        """
-        End the plan here, in the join, to plan again from that point.
-
-        :param join: Where the join is once the steps ran.
-        """
-        self._boundary(replace(self.progress, join=join))

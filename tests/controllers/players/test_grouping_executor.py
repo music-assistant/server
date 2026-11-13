@@ -1,4 +1,4 @@
-"""The executor of a group plan: failures, cancellation, the takeover and how calls are made."""
+"""The executor of a group plan: failures, cancellation and how calls are made."""
 
 from __future__ import annotations
 
@@ -20,14 +20,11 @@ from music_assistant.controllers.players.grouping_plan import (
     GroupingSnapshot,
     GroupPlan,
     GroupProgress,
-    Hold,
     MemberChange,
     MemberLists,
     MemberStage,
-    OpenTakeover,
     Refuse,
     SetMembers,
-    StopProtocol,
     Ungroup,
 )
 
@@ -91,41 +88,6 @@ def _plans(*plans: GroupPlan) -> Iterator[MagicMock]:
         patch.object(grouping, "grouping_snapshot", MagicMock(return_value=EMPTY)),
     ):
         yield scripted
-
-
-async def test_an_opened_takeover_goes_to_the_caller() -> None:
-    """A token from the hook is handed back once the change is done."""
-    players = _Players()
-    protocol = players.protocols["airplay"] = _protocol(token="token")
-    with _plans(GroupPlan((OpenTakeover(protocol_id="airplay"),))):
-        result = await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
-    assert result == (protocol, "token")
-
-
-async def test_a_failure_after_the_hook_aborts_the_takeover() -> None:
-    """The takeover is aborted before the error propagates."""
-    players = _Players()
-    protocol = players.protocols["airplay"] = _protocol(token="token")
-    protocol.set_members.side_effect = PlayerCommandFailed("refused")
-    plan = GroupPlan(
-        (OpenTakeover(protocol_id="airplay"), SetMembers(protocol_id="airplay", add=("x",)))
-    )
-    with _plans(plan), pytest.raises(PlayerCommandFailed):
-        await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
-    protocol.on_group_content_takeover_aborted.assert_awaited_once_with("token")
-
-
-async def test_a_hook_that_returns_none_opens_nothing() -> None:
-    """Nothing to abort and nothing handed back."""
-    players = _Players()
-    protocol = players.protocols["airplay"] = _protocol(token=None)
-    protocol.set_members.side_effect = PlayerCommandFailed("refused")
-    plan = GroupPlan(
-        (OpenTakeover(protocol_id="airplay"), SetMembers(protocol_id="airplay", add=("x",)))
-    )
-    with _plans(plan), pytest.raises(PlayerCommandFailed):
-        await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
-    protocol.on_group_content_takeover_aborted.assert_not_awaited()
 
 
 async def test_a_failing_release_is_warned_and_the_change_goes_on() -> None:
@@ -220,10 +182,6 @@ async def test_a_failing_own_side_ungroup_is_an_unavailable_player() -> None:
     ("step", "expected"),
     [
         (
-            SetMembers(protocol_id="p", add=("a",)),
-            {"player_ids_to_add": ["a"], "player_ids_to_remove": None},
-        ),
-        (
             SetMembers(protocol_id="p", lists=MemberLists.AS_THEY_ARE),
             {"player_ids_to_add": [], "player_ids_to_remove": []},
         ),
@@ -236,7 +194,7 @@ async def test_a_failing_own_side_ungroup_is_an_unavailable_player() -> None:
 async def test_set_members_passes_its_lists_in_the_shape_the_step_names(
     step: SetMembers, expected: dict[str, Any]
 ) -> None:
-    """The call shapes: None for an empty list, the lists as they are, or the removals only."""
+    """The call shapes: the lists as they are, or the removals only."""
     players = _Players()
     protocol = players.protocols["p"] = _protocol()
     with _plans(GroupPlan((step,))):
@@ -257,24 +215,13 @@ async def test_a_nested_change_passes_only_the_lists_it_has() -> None:
 async def test_a_held_protocol_is_called_after_it_was_replaced() -> None:
     """The protocol object a change holds is the one it calls, also after it was replaced."""
     players = _Players()
-    held = players.protocols["old"] = _protocol()
-    snapshots = 0
-
-    def _snapshot(*_args: Any, **_kwargs: Any) -> GroupingSnapshot:
-        nonlocal snapshots
-        snapshots += 1
-        if snapshots == 2:
-            # replaced by a new object under the same id before the second plan
-            players.protocols["old"] = _protocol()
-        return EMPTY
-
-    first = GroupPlan((Hold(protocol_id="old"),), progress=GroupProgress())
-    with (
-        _plans(first, GroupPlan((StopProtocol(protocol_id="old"),))),
-        patch.object(grouping, "grouping_snapshot", _snapshot),
-    ):
-        await grouping.apply_group_change(players, CHANGE)  # type: ignore[arg-type]
-    held.stop.assert_awaited_once()
+    held = _protocol()
+    held.protocol_id = "old"
+    # replaced by a new object under the same id once the change holds it
+    players.protocols["old"] = _protocol()
+    with _plans(GroupPlan((Ungroup(protocol_id="old"),))):
+        await grouping.apply_group_change(players, CHANGE, protocol=held)  # type: ignore[arg-type]
+    held.ungroup.assert_awaited_once()
 
 
 async def test_a_refusal_raises_with_its_translation() -> None:
