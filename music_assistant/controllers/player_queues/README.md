@@ -161,8 +161,14 @@ lock, obtained from the Player Controller. That lock is re-entrant, so nested ac
 queue do not deadlock. Play actions take it strictly: a request waits for the running one to finish,
 up to 120 seconds per lock, and then fails with a busy error rather than run alongside it (the player
 controller's own commands fall back to running without the lock after 30 seconds, to survive a hung
-provider call). The next-track handover takes the same strict lock and only checks the queue once it
-holds it, so a track handed to the player after a wait is still the one that follows the playing one.
+provider call). The lookup of what a play request plays (a big artist, playlist or folder fetched
+through a throttled provider can take minutes) runs under that lock, so it has a deadline of its own
+(`PLAY_REQUEST_RESOLVE_TIMEOUT`): when it runs out the request fails and releases the lock before it
+has changed the queue, so the queue keeps its items, enqueued items, shuffle state and playback. The
+deadline does not cover filling the managed pool of a queue that stays dynamic, which fetches the
+tracks of each new source once the queue's sources are stored. The next-track handover takes the
+same strict lock and only checks the queue once it holds it, so a track handed to the player after a
+wait is still the one that follows the playing one.
 Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
 the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
