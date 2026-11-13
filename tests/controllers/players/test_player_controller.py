@@ -69,7 +69,10 @@ from music_assistant.constants import (
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import group_commands as players_group_commands
+from music_assistant.controllers.players import locks as players_locks
+from music_assistant.controllers.players import playback as players_playback
+from music_assistant.controllers.players import power as players_power
 from music_assistant.controllers.players.constants import (
     PLAYER_LOCK_OWNER_ATTEMPTS,
     PlayerLockPurpose,
@@ -1655,7 +1658,7 @@ class TestSyncLeaderPowerOffUngroup:
         controller, leader, _protocol = self._sync_leader(mock_mass, PlayerType.PLAYER)
         controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
         leader.set_power_off_issued_at(
-            time.monotonic() - players_controller.POWER_OFF_IN_PROGRESS_EXPIRY - 1
+            time.monotonic() - players_group_commands.POWER_OFF_IN_PROGRESS_EXPIRY - 1
         )
 
         controller.signal_player_state_update(leader, {"powered": (True, False)})
@@ -1907,7 +1910,7 @@ class TestExternalPowerOffEndsTheQueue:
 
         assert len(scheduled := _scheduled_queue_stops(mock_mass)) == 1
         assert scheduled[0].args == (
-            players_controller.EXTERNAL_POWER_OFF_STOP_DELAY,
+            players_power.EXTERNAL_POWER_OFF_STOP_DELAY,
             controller._stop_queue_on_external_power_off,
             "p1",
         )
@@ -2233,8 +2236,8 @@ class TestStaticGroupReleaseUnderTheGroupLock:
 
     @pytest.fixture(autouse=True)
     def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.05)
 
     @staticmethod
     def _static_member(
@@ -2330,8 +2333,8 @@ class TestOwnerChangesWhileWaitingForTheLock:
 
     @pytest.fixture(autouse=True)
     def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.5)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.5)
 
     @staticmethod
     def _member(
@@ -2500,11 +2503,11 @@ class TestReleaseWaitForPlayMedia:
 
     # the bound of the wait in these tests, in seconds of the fast clock, and that of the server
     BOUND = 60.0
-    SERVER_BOUND = players_controller.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
+    SERVER_BOUND = players_playback.RELEASE_FOR_PLAY_MEDIA_TIMEOUT
 
     @pytest.fixture(autouse=True)
     def _wide_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(players_controller, "RELEASE_FOR_PLAY_MEDIA_TIMEOUT", self.BOUND)
+        monkeypatch.setattr(players_playback, "RELEASE_FOR_PLAY_MEDIA_TIMEOUT", self.BOUND)
 
     @pytest.fixture(autouse=True)
     async def _fast_clock(self) -> AsyncIterator[None]:
@@ -2973,7 +2976,7 @@ class TestExternalPowerControl:
         assert player.state.powered is False
 
         with patch(
-            "music_assistant.controllers.players.controller.wait_for_power_on", AsyncMock()
+            "music_assistant.controllers.players.power.wait_for_power_on", AsyncMock()
         ) as wait_for_power_on:
             await controller._handle_cmd_power("player_1", True)
 
@@ -3163,7 +3166,7 @@ class TestOfflinePowerControl:
         controller, player, _protocol, _control = self._setup(mock_mass, comes_online=False)
 
         with (
-            patch.object(players_controller, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
+            patch.object(players_power, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
             pytest.raises(PlayerUnavailableError),
         ):
             await controller.cmd_power("player_1", True)
@@ -3622,7 +3625,7 @@ class TestOfflinePowerControl:
         controller._run_announcement = AsyncMock()  # type: ignore[method-assign]
 
         with (
-            patch.object(players_controller, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
+            patch.object(players_power, "OFFLINE_POWER_ON_TIMEOUT", 0.05),
             pytest.raises(PlayerUnavailableError),
         ):
             await controller.play_announcement("player_1", "http://test/announcement.mp3")
@@ -3847,8 +3850,8 @@ class TestIdlePowerOff:
         self, mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A power off that can't get the player lock in time gives up and keeps the count."""
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.05)
         controller, player, _protocol, power_off = self._setup(mock_mass)
         player.extra_data[ATTR_IDLE_SINCE] = time.monotonic() - 30 * 60
         controller._check_idle_power_off(player)
@@ -4264,7 +4267,7 @@ class TestAddCurrentlyPlayingToFavorites:
             with (
                 patch.object(controller, "get_active_queue", return_value=queue),
                 patch.object(
-                    players_controller,
+                    players_playback,
                     "resolve_playback_user",
                     AsyncMock(return_value=playback_user),
                 ),
@@ -4281,8 +4284,8 @@ class TestPlayerLockTimeouts:
 
     @pytest.fixture(autouse=True)
     def _shrink_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-        monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+        monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.05)
 
     async def test_a_nested_acquisition_keeps_its_holder_named(
         self, controller: PlayerController, caplog: pytest.LogCaptureFixture

@@ -13,7 +13,6 @@ served by the streams controller (see controllers/streams/announcements.py).
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from math import ceil
 from typing import TYPE_CHECKING, cast
@@ -57,16 +56,11 @@ from music_assistant.helpers.util import TaskManager, validate_announcement_chim
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import AnnouncementFeature, PlayerProtocol
 
+from .base import _PlayerControllerBase
 from .constants import PlayerLockPurpose, SwitchedOffAction
 from .helpers import AnnounceData, handle_player_command
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-    from contextlib import AbstractAsyncContextManager
-
-    from music_assistant_models.player_queue import PlayerQueue
-
-    from music_assistant import MusicAssistant
     from music_assistant.controllers.streams.announcements import AnnouncementRender
 
 # the caller waits for this command and it holds the player's playback lock while it runs,
@@ -74,7 +68,7 @@ if TYPE_CHECKING:
 ANNOUNCEMENT_TTS_TIMEOUT = 30
 
 
-class AnnouncementsMixin:
+class AnnouncementsMixin(_PlayerControllerBase):
     """
     Mixin class providing announcement playback for PlayerController.
 
@@ -83,100 +77,9 @@ class AnnouncementsMixin:
     - Forwarding a group announcement to its individual members, when they can start it together
     - Native announcement support (on the own protocol of a player or an audio protocol)
     - The fallback implementation for players without native support
-
-    This mixin expects to be mixed with a class that provides:
-    - mass: MusicAssistant instance
-    - logger: logging.Logger instance
-    - get_player(): method to get a player by ID
-    - iter_group_members(): method to iterate the members of a group player
-    - _get_control_target(): method to resolve the player to send a command to
-    - the _handle_cmd_* / cmd_* playback and grouping commands used below
     """
 
-    # Type hints for attributes provided by the class this mixin is used with
-    if TYPE_CHECKING:
-        mass: MusicAssistant
-        logger: logging.Logger
-        domain: str
-        _players: dict[str, Player]
-
-        def get_player(  # noqa: D102
-            self, player_id: str, raise_unavailable: bool = False
-        ) -> Player | None: ...
-
-        def get_active_queue(  # noqa: D102
-            self, player: Player
-        ) -> PlayerQueue | None: ...
-
-        def iter_group_members(  # noqa: D102
-            self,
-            group_player: Player,
-            only_powered: bool = False,
-            only_playing: bool = False,
-            active_only: bool = False,
-            exclude_self: bool = True,
-        ) -> Iterator[Player]: ...
-
-        def get_player_lock(  # noqa: D102
-            self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
-        ) -> AbstractAsyncContextManager[None]: ...
-
-        def get_group_and_player_lock(  # noqa: D102
-            self, player_id: str
-        ) -> AbstractAsyncContextManager[None]: ...
-
-        def _get_control_target(
-            self,
-            player: Player,
-            required_feature: PlayerFeature,
-            require_active: bool = False,
-        ) -> PlayerProtocol | None: ...
-
-        async def _wait_for_playback_state(
-            self,
-            player: Player,
-            wanted_state: PlaybackState,
-            timeout: float,
-            minimal_time: float = 0,
-        ) -> None: ...
-
-        async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None: ...
-
-        async def _handle_cmd_stop(self, player_id: str) -> None: ...
-
-        async def _handle_cmd_volume_set(
-            self, player_id: str, volume_level: int, *, record_target: bool = True
-        ) -> None: ...
-
-        async def _handle_cmd_volume_mute(
-            self, player: Player, mute_control: str, muted: bool
-        ) -> None: ...
-
-        async def _handle_cmd_power(
-            self, player_id: str, powered: bool, skip_auto_play: bool = False
-        ) -> None: ...
-
-        async def _power_on_switched_off_player(self, player_id: str) -> Player: ...
-
-        async def _handle_cmd_resume(
-            self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
-        ) -> None: ...
-
-        async def cmd_play(self, player_id: str) -> None: ...  # noqa: D102
-
-        async def cmd_ungroup(self, player_id: str) -> None: ...  # noqa: D102
-
-        async def cmd_set_members(  # noqa: D102
-            self,
-            target_player: str,
-            player_ids_to_add: list[str] | None = None,
-            player_ids_to_remove: list[str] | None = None,
-        ) -> None: ...
-
-    # handle_player_command is typed against PlayerController, which this mixin only
-    # becomes once mixed in; the attributes it needs are declared in the block above.
-    # mypy reports that on the outermost decorator, hence the ignore below.
-    @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)  # type: ignore[type-var]
+    @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(switched_off=SwitchedOffAction.RUN)
     async def play_announcement(
         self,

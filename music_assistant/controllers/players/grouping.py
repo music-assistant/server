@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
 
-    from .controller import PlayerController
+    from .base import _PlayerControllerBase
 
 type Takeover = tuple[PlayerProtocol, object]
 
@@ -69,7 +69,7 @@ RELEASE_UPDATE_TIMEOUT = 5
 
 
 def grouping_snapshot(
-    players: PlayerController,
+    players: _PlayerControllerBase,
     held: Mapping[str, PlayerProtocol] | None = None,
     held_players: Mapping[str, Player] | None = None,
 ) -> GroupingSnapshot:
@@ -100,7 +100,7 @@ def grouping_snapshot(
 
 
 async def apply_group_change(
-    players: PlayerController,
+    players: _PlayerControllerBase,
     change: GroupChange,
     target: Player | None = None,
     protocol: PlayerProtocol | None = None,
@@ -134,7 +134,7 @@ async def apply_group_change(
         run.left_out = False
 
 
-async def route_group_change(players: PlayerController, change: GroupChange) -> bool:
+async def route_group_change(players: _PlayerControllerBase, change: GroupChange) -> bool:
     """
     Route a member change before its target is locked.
 
@@ -152,7 +152,7 @@ class _GroupRun:
     """The run of one group change: the objects it holds and the takeover it opened."""
 
     def __init__(
-        self, players: PlayerController, change: GroupChange, target: Player | None
+        self, players: _PlayerControllerBase, change: GroupChange, target: Player | None
     ) -> None:
         """
         Initialize the run.
@@ -378,7 +378,7 @@ def _lists(add: tuple[str, ...] | None, remove: tuple[str, ...] | None) -> dict[
     return lists
 
 
-def _player_view(players: PlayerController, player: Player) -> PlayerView:
+def _player_view(players: _PlayerControllerBase, player: Player) -> PlayerView:
     """
     Return what grouping reads of a player.
 
@@ -440,7 +440,7 @@ def _output_view(player: Player, output: OutputProtocol) -> OutputView:
     )
 
 
-def _protocol_view(players: PlayerController, protocol: PlayerProtocol) -> ProtocolView:
+def _protocol_view(players: _PlayerControllerBase, protocol: PlayerProtocol) -> ProtocolView:
     """
     Return what grouping reads of a protocol.
 
@@ -469,7 +469,7 @@ def _protocol_view(players: PlayerController, protocol: PlayerProtocol) -> Proto
     )
 
 
-def _is_own_protocol(players: PlayerController, protocol: PlayerProtocol) -> bool:
+def _is_own_protocol(players: _PlayerControllerBase, protocol: PlayerProtocol) -> bool:
     """
     Return whether a protocol is the own protocol of a live player.
 
@@ -520,7 +520,7 @@ class _Views[T, V](Mapping[str, V]):
 class _NativePeers(Container[str]):
     """The own protocols of other players a protocol groups with natively, asked per pair."""
 
-    def __init__(self, players: PlayerController, protocol: PlayerProtocol) -> None:
+    def __init__(self, players: _PlayerControllerBase, protocol: PlayerProtocol) -> None:
         """
         Initialize the peers of a protocol.
 

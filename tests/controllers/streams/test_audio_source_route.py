@@ -20,6 +20,7 @@ from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat, AudioSource
 
 from music_assistant.controllers.players.audio_sources import AudioSourceMixin, AudioSourceSession
+from music_assistant.controllers.players.state_updates import PLAYER_UPDATE_DEBOUNCE
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider
@@ -48,7 +49,12 @@ class _SessionStore(AudioSourceMixin):
         self.logger = MagicMock()
         self.updated_players: list[str] = []
 
-    def trigger_player_update(self, player_id: str) -> None:
+    def trigger_player_update(
+        self,
+        player_id: str,
+        force_update: bool = False,
+        debounce_delay: float = PLAYER_UPDATE_DEBOUNCE,
+    ) -> None:
         """Record that a player update was signalled."""
         self.updated_players.append(player_id)
 

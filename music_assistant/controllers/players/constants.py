@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Final
 
+from music_assistant_models.enums import PlayerType
+
 # Waiting for a player lock (see PlayerController.get_player_lock): a debug line once the
 # wait exceeds the slow threshold; at the timeout the command fails as the player is busy.
 # The timeout outlasts what a command legitimately holds a player for (a play request that
@@ -40,3 +42,13 @@ class SwitchedOffAction(StrEnum):
 
     RUN = "run"
     """Run the command as is, for commands that handle the switched off player themselves."""
+
+
+CACHE_CATEGORY_PLAYER_POWER = 1
+
+# Player types that must be detached from their (sync)group when they power off.
+# A stereo pair joins a group and leads a sync session exactly like a single speaker does.
+# A GROUP player has no group of its own to leave: its members are released by its own
+# power off, and ungrouping one is defined as powering it off - which is what already
+# brought it here.
+UNGROUP_ON_POWER_OFF_TYPES = {PlayerType.PLAYER, PlayerType.STEREO_PAIR}

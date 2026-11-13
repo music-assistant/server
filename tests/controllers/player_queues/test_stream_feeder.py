@@ -17,7 +17,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
-from music_assistant.controllers.players import controller as players_controller
+from music_assistant.controllers.players import locks as players_locks
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
@@ -195,8 +195,8 @@ async def test_enqueue_next_item_gives_up_on_a_player_that_stays_busy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A handover that cannot get the lock in time is dropped quietly."""
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
-    monkeypatch.setattr(players_controller, "PLAYER_LOCK_TIMEOUT", 0.05)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_SLOW_THRESHOLD", 0.01)
+    monkeypatch.setattr(players_locks, "PLAYER_LOCK_TIMEOUT", 0.05)
     controller, mass, players, items = _handover_controller()
 
     async with players.get_player_lock("q1", PlayerLockPurpose.PLAYBACK):

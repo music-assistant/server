@@ -19,8 +19,8 @@ from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.audio_sources import AUDIO_SOURCE_CLAIM_TIMEOUT
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.controllers.players.controller import AUDIO_SOURCE_CLAIM_TIMEOUT
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.player_state import derive_player_state
 from music_assistant.models.plugin import PluginProvider

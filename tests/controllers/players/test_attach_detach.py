@@ -18,7 +18,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import ActionUnavailable, PlayerUnavailableError
 
 from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
-from music_assistant.controllers.players.controller import REMOVE_UNAVAILABLE_GRACE
+from music_assistant.controllers.players.lifecycle import REMOVE_UNAVAILABLE_GRACE
 from tests.common import as_user
 from tests.scenarios.harness import DEFAULT_FEATURES, Event, FakeProtocol, Scenario
 
