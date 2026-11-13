@@ -97,7 +97,8 @@ async def test_a_player_that_stays_busy_fails_as_busy_and_holds_nothing(busy: st
             release.set()
             await holder
 
-    assert waited == PLAYER_LOCK_TIMEOUT
+    # the loop clock is a float that has run for a while, so a sum of waits rounds
+    assert waited == pytest.approx(PLAYER_LOCK_TIMEOUT, abs=1e-3)
     assert error.value.translation_key == "player_busy"
     assert error.value.translation_args == [busy]
     assert busy in cast("MagicMock", players.logger).warning.call_args.args
