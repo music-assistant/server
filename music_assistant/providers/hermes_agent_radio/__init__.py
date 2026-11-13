@@ -162,10 +162,10 @@ class HermesAgentRadio(MusicProvider):
                 NOW_PLAYING_ENDPOINT, timeout=HTTP_TIMEOUT
             ) as resp:
                 resp.raise_for_status()
-                data = await resp.json()
+                now_data: dict[str, Any] = await resp.json()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise ProviderUnavailableError("Hermes Agent Radio feed unavailable") from err
-        return data
+        return now_data
 
     async def _parse_radio(self, station: dict[str, Any]) -> Radio:
         """Build a Radio object from a station payload."""
