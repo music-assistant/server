@@ -167,7 +167,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
             for protocol_id in protocol_ids - {protocol.protocol_id for protocol in moving}
             if (record := self.mass.config.get_protocol_record(protocol_id))
         }
-        # a moving protocol is attaching: a detach by its provider meanwhile takes this away
+        # a moving protocol is attaching: its provider unregistering it meanwhile takes this away
         moves = {protocol.protocol_id: _Attach() for protocol in moving}
         self._attaching.update(moves)
         for protocol in moving:

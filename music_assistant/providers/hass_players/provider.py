@@ -239,7 +239,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
 
     async def _setup_players(self, entity_ids: list[str]) -> None:
         """
-        Set up and attach the players of the entities that have none attached or in setup.
+        Set up and register the players of the entities that have none registered or in setup.
 
         :param entity_ids: The entity ids of the media players.
         """

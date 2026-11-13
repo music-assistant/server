@@ -92,8 +92,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         The controller attaches the protocol to the player it belongs to, which it creates
         for a new device, or holds it until it knows which player that is. It leaves it
         unattached for a player the user disabled or a protocol the user switched off.
-        Registering the registered object again publishes what it reports now; another
-        object under the same id takes its place. The protocol is told through on_attach
+        Registering an object that is attached already publishes what it reports now;
+        another object under the same id takes its place. The protocol is told through on_attach
         and on_detach when it is actually attached to a player or detached from it, so do
         not assume it is attached when this returns.
 
@@ -121,11 +121,13 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         Unregister a protocol: its provider lost the device, or unloads.
 
         The controller detaches the protocol from its player, which tells it through
-        on_detach. The player stays and keeps its queue; it is unavailable while none of
-        its other protocols is available. A player that only exists while its device is
-        connected goes with its last protocol, unless it is kept: the user changed its
-        config, a plugin keeps it (see keep_player), or its queue has items. Silently
-        ignored for a protocol that is neither attached nor held.
+        on_detach, and calls off a registration of it that is still in progress. The
+        player stays and keeps its queue; it is unavailable while none of its other
+        protocols is available, unless it is switched off at its external power control.
+        A player that only exists while its device is connected goes with its last
+        protocol, unless it is kept: the user changed its config, a plugin keeps it (see
+        keep_player), or its queue has items. Silently ignored for a protocol the
+        controller does not know.
 
         :param protocol_id: Id of the protocol to unregister.
         """

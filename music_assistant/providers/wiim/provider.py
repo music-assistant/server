@@ -176,8 +176,8 @@ class WiimProvider(PlayerProvider):
         )
         await player.setup()
         await self.mass.players.register(player)
-        # read the live topology now the protocol is attached (setup runs before the
-        # attach, so the coordinator would discard a read taken there), then
+        # read the live topology now the protocol is registered (the coordinator discards
+        # a read for a protocol that is not attached, as it is during setup), then
         # reconcile so any leader that already lists this device, or that it leads,
         # self-heals regardless of discovery order.
         await self.native_groups.refresh_leader(player, force=True)

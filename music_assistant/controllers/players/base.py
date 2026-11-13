@@ -113,10 +113,10 @@ class _PlayerControllerBase(CoreController):
 
     def iter_protocols(self, provider_filter: str | None = None) -> Iterator[PlayerProtocol]:
         """
-        Iterate over the protocol objects that are attached to a player.
+        Iterate over the protocol objects that are attached to a player or held.
 
-        A protocol that is held until it is known which player it belongs to is
-        included; its ``player`` is None.
+        A protocol is held until it is known which player it belongs to; its
+        ``player`` is None meanwhile.
 
         :param provider_filter: Only the protocols of this provider instance.
         """
@@ -220,7 +220,7 @@ class _PlayerControllerBase(CoreController):
 
     def get_protocol(self, protocol_id: str) -> PlayerProtocol | None:
         """
-        Return the attached protocol object of any player provider by its id.
+        Return the attached or held protocol object of any player provider by its id.
 
         Meant for provider code that needs a protocol object of another provider;
         a provider looks up its own protocol objects through its own `get_protocol`.

@@ -521,7 +521,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 player.set_available(False)
 
     async def _resync(self) -> None:
-        """Periodic re-sync: attach rooms that (re)appeared and detach vanished ones."""
+        """Periodic re-sync: register rooms that (re)appeared and unregister vanished ones."""
         await self._sync_rooms()
         await self._refresh_room_events()
         await self._refresh_zone_events()
