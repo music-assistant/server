@@ -153,6 +153,7 @@ def _mass(source_items: Mapping[str, object]) -> MagicMock:
     mass.music.playlists.tracks = MagicMock(return_value=_yield_tracks([]))
     mass.music.albums.tracks = AsyncMock(return_value=[])
     mass.music.artists.tracks = AsyncMock(return_value=[])
+    mass.music.artists.top_tracks = AsyncMock(return_value=[])
     mass.music.genres.tracks = AsyncMock(return_value=[])
     mass.music.search = AsyncMock(return_value=SimpleNamespace(tracks=[]))
     mass.music.tracks.get = AsyncMock()
@@ -250,6 +251,24 @@ async def test_artist_source_uses_all_artist_tracks() -> None:
 
     assert list(pool.values()) == tracks
     mass.music.artists.tracks.assert_awaited_once_with(
+        item_id=source.item_id,
+        provider_instance_id_or_domain=source.provider,
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_source_without_a_tracks_listing_uses_the_top_tracks() -> None:
+    """Resolve an artist whose provider has no artist tracks listing through its top tracks."""
+    source = _artist()
+    tracks = [_track("one"), _track("two")]
+    source_uri = _uri(source)
+    mass = _mass({source_uri: source})
+    mass.music.artists.top_tracks.return_value = tracks
+
+    pool = await _guess_quiz(mass, [source_uri])._get_source_track_pool()
+
+    assert list(pool.values()) == tracks
+    mass.music.artists.top_tracks.assert_awaited_once_with(
         item_id=source.item_id,
         provider_instance_id_or_domain=source.provider,
     )

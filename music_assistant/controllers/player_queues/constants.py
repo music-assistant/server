@@ -9,7 +9,7 @@ from music_assistant.controllers.streams.constants import FLOW_STREAM_MAX_LEAD_O
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
-ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
+ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "prefer_library"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"

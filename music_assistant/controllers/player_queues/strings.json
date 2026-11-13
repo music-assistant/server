@@ -132,8 +132,8 @@
       "options": {
         "top_tracks": "Artist top tracks only",
         "library_tracks": "In-library tracks for the artist only",
-        "prefer_library": "Prefer library, fall back to top",
-        "all_tracks": "All tracks from all providers"
+        "prefer_library": "Prefer library, fall back to top tracks",
+        "library_album_tracks": "All tracks of the artist's albums in your library"
       }
     },
     "default_enqueue_select_album": {

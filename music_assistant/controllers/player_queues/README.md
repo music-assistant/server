@@ -238,7 +238,7 @@ the next episode/book → appended `QueueItem`s.
 
 Non-track media must be expanded into the actual tracks or episodes to enqueue. Each source type
 (artist, album, genre, playlist, podcast, audiobook, browse folder) resolves into a concrete track
-list, applying the configured selection rules (e.g. top tracks vs library tracks vs all tracks),
+list, applying the configured selection rules (e.g. top tracks vs library tracks),
 resolving library-versus-provider variants, and optionally ordering the result. The same concern
 also builds the `PlayerMedia` payload handed to the player, using the Metadata Controller for
 images.
@@ -314,8 +314,10 @@ mechanism) that configure default enqueue behaviour, in three groups:
 - **Per-media-type default enqueue option** — for artist, album, track, genre, live sources, and
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
-- **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks).
+- **Selection modes** — how artists and albums expand into tracks (top tracks, library tracks,
+  prefer library, or the tracks of the artist's library albums). Each album plays as it does on its
+  own, following the album selection. Playing an artist never lists or expands the albums a
+  provider has of it, as that costs a request per release.
 - **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
   clicked (*browse* or *play*), and what the play button on a track row inside an album
   or playlist starts (*play from here* or *play track*).

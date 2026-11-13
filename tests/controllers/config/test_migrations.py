@@ -24,6 +24,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
     _migrate_apple_music_sync_schedule,
+    _migrate_artist_catalogue_selection,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
     _migrate_emby_album_artists_heal,
@@ -1778,6 +1779,37 @@ def test_migrate_emby_album_artists_heal_survives_malformed_config() -> None:
     data: dict[str, Any] = {"providers": {"emby--a": {"domain": "emby", "values": "broken"}}}
     _migrate_emby_album_artists_heal(data)
     assert data["providers"]["emby--a"]["values"] == "broken"
+
+
+async def test_migrate_artist_catalogue_selection_moves_to_library_album_tracks() -> None:
+    """A stored artist selection that listed the whole catalogue plays the library albums."""
+    for stored in ("all_tracks", "all_album_tracks"):
+        values: dict[str, Any] = {"default_enqueue_select_artist": stored, "other": "kept"}
+        data: dict[str, Any] = {"core": {"player_queues": {"values": values}}}
+
+        assert await migrate(data) is True
+        assert values == {
+            "default_enqueue_select_artist": "library_album_tracks",
+            "other": "kept",
+        }
+        assert _migrate_artist_catalogue_selection(data) is False
+
+
+def test_migrate_artist_catalogue_selection_leaves_other_data_alone() -> None:
+    """An offered selection, or a missing or malformed config, is left as it is."""
+    cases: list[dict[str, Any]] = [
+        {},
+        {"core": "broken"},
+        {"core": {"player_queues": "broken"}},
+        {"core": {"player_queues": {"values": None}}},
+        {"core": {"player_queues": {"values": {}}}},
+        {"core": {"player_queues": {"values": {"default_enqueue_select_artist": ["odd"]}}}},
+        {"core": {"player_queues": {"values": {"default_enqueue_select_artist": "top_tracks"}}}},
+    ]
+    for data in cases:
+        before = deepcopy(data)
+        assert _migrate_artist_catalogue_selection(data) is False
+        assert data == before
 
 
 def test_migrate_provider_setup_data_moves_opensubsonic_legacy_auth() -> None:
