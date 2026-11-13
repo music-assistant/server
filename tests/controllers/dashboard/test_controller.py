@@ -1239,3 +1239,15 @@ async def test_preferences_change_ignores_settings_a_viewer_never_sees() -> None
     controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
         EventType.DASHBOARD_SESSIONS_UPDATED, data=[]
     )
+
+
+async def test_preferences_change_signals_a_revert_and_a_removal() -> None:
+    """Reverting a visualizer key, or dropping it from the replacement, each signal."""
+    controller = _make_controller()
+    controller._session_owners["dash1"] = "user-1"
+
+    controller.notify_user_preferences_changed(
+        "user-1", {"visualizer_preset": "two"}, {"visualizer_preset": "one"}
+    )
+    controller.notify_user_preferences_changed("user-1", {"visualizer_preset": "one"}, {})
+    assert controller.mass.signal_event.call_count == 2  # type: ignore[attr-defined]

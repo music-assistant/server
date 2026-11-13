@@ -502,6 +502,33 @@ async def test_update_user_profile_notifies_dashboard_viewers(
     )
 
 
+async def test_update_user_profile_diffs_against_stored_preferences(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that a stale context user does not hide a revert to the login-time value.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(
+        username="revertuser",
+        role=UserRole.USER,
+        preferences={"visualizer_preset": "one"},
+    )
+    set_current_user(user)
+    dashboard = MagicMock()
+    auth_manager.mass.dashboard = dashboard
+
+    await auth_manager.update_user_profile(preferences={"visualizer_preset": "two"})
+    await auth_manager.update_user_profile(preferences={"visualizer_preset": "one"})
+
+    assert dashboard.notify_user_preferences_changed.call_args_list[-1].args == (
+        user.user_id,
+        {"visualizer_preset": "two"},
+        {"visualizer_preset": "one"},
+    )
+
+
 async def test_update_user_profile_leaves_dashboards_alone_without_preferences(
     auth_manager: AuthenticationManager,
 ) -> None:
