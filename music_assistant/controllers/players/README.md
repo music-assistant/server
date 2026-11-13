@@ -200,9 +200,9 @@ to a player of its own.
 
 ## Identity
 
-A player id and a protocol id are different things. A player has one of two kinds of id:
-- a minted id (`pl` and twelve hex digits), for a player the controller creates;
-- an id an older version stored for it, which it keeps.
+A player id and a protocol id are different things. When the controller creates a player, it
+mints its id (`pl` and twelve hex digits). A player that already has an id in the stored config
+keeps that id, which can be the id of one of its protocols.
 
 A protocol that only exists while connected (a browser or app player) gives the player it creates
 its own protocol id, so that player has the same id in every session. Nothing may assume that a
@@ -400,8 +400,8 @@ preferred output, plus what the player stores itself: legacy ids, last seen, dev
 its provider, the id of its player (the edge), its role, whether it is used as an output of its
 player (`enabled`), the values of the entries it declares, the audio settings of its output, what
 its provider stores for it (MAC addresses, identifiers, the protocol it rides on) and its setup data.
-DSP and queue settings stay per player under `player_dsp/` and `player_queues/`. A player id an
-older version stored can also be the id of one of its protocols; both records then have that id.
+DSP and queue settings stay per player under `player_dsp/` and `player_queues/`. A player id that
+is not minted can also be the id of one of its protocols; both records then have that id.
 
 The edge lives on the protocol record and nowhere else: a player finds its protocols through the
 records that name it.
@@ -534,7 +534,8 @@ is refused.
 
 A player whose power is turned off outside of Music Assistant while it plays its own queue has that
 queue stopped shortly after; a group member leaves its group instead. A player with an idle power
-off time is powered off once it was available, powered on and stopped for that long.
+off time is powered off once it was available, powered on and stopped for that long. An
+announcement that plays, or a power on that still waits for the device, holds that off.
 
 ### Sleep Timer, Announcements and Audio Sources
 
@@ -543,8 +544,10 @@ off time is powered off once it was available, powered on and stopped for that l
   timer to the end of the item or chapter is kept by its queue.
 - **Announcements** ([announcements.py](announcements.py)): played natively by the own protocol when
   it supports that, else by the output that plays, or by any audio protocol while nothing plays.
-  Without such a protocol, or when it would ignore the requested volume, the controller plays the
-  announcement as media and restores what the player did before. A group announcement goes to the
+  Without such a protocol the controller plays the announcement as media and restores what the
+  player did before. It does that too when the native route would ignore a requested volume, as
+  long as it can set and restore that volume itself: the player has a volume control and a known
+  level. A group announcement goes to the
   members when they can start it together. An announcement holds the player (and its group) for as
   long as it plays.
 - **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a plugin (an
@@ -572,7 +575,8 @@ A change, and a join in particular, is planned in phases, because some of its st
 outcome that decides what follows. The plan stops after each of these:
 - a member released from another leader, giving up a group of its own, or powered on;
 - the content takeover hook;
-- a joining member's output activated;
+- a joining member's output activated, when another member follows (the last one is activated in
+  the plan of the join call);
 - the protocol's join call;
 - the leader's output moved;
 - the protocol it rendered on before stopped and left by its members;

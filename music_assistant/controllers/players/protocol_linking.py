@@ -62,7 +62,7 @@ IDENTITY_COLLECT_WINDOW = 15.0
 # The prefix of the id of a player that is created for a new device.
 PLAYER_ID_PREFIX = "pl"
 
-# The id of a player the controller created, as opposed to one an older version stored.
+# The format of a minted player id.
 MINTED_PLAYER_ID = re.compile(rf"{PLAYER_ID_PREFIX}[0-9a-f]{{12}}")
 
 

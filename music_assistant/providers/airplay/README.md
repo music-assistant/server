@@ -176,8 +176,8 @@ disappear from mDNS is detached: its player stays, unavailable, until the device
 ### Protocol ID Format
 
 Protocol IDs follow the format: `ap{mac_address}` (e.g., `ap1a2b3c4d5e6f`). The player a
-protocol belongs to has an id of its own, which only equals the protocol id for a player that
-kept the id an older version stored for it.
+protocol belongs to has an id of its own, minted when the controller creates it. Only a player
+that keeps an id it already has in the stored config can have the protocol id as its id.
 
 ## Pairing for Apple Devices
 

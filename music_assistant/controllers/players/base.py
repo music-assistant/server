@@ -236,8 +236,8 @@ class _PlayerControllerBase(CoreController):
         A protocol fetches its stream under its own id. An id that names no attached
         protocol is taken as that of a player: the protocol that renders for it now.
         Code that holds a player id asks the player instead
-        (``get_player(player_id).resolve_output_protocol()``): a player id an older version
-        stored can be the id of one of its protocols, which this returns also while another
+        (``get_player(player_id).resolve_output_protocol()``): a player id that is not
+        minted can be the id of one of its protocols, which this returns also while another
         of its protocols renders.
 
         :param protocol_or_player_id: ID of an attached protocol, else of a player or one
