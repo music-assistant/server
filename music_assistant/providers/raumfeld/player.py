@@ -431,6 +431,26 @@ class RaumfeldPlayer(PlayerProtocol):
         self._attr_device_info.model = model
         self.update_state()
 
+    async def set_renderer(self, renderer_uuid: str | None, renderer_ip: str | None) -> None:
+        """
+        Report the renderer the room plays through, as the host lists it now.
+
+        :param renderer_uuid: The UUID of the room's renderer, or ``None`` to keep the known one.
+        :param renderer_ip: The IP address of the room's renderer, or ``None`` to keep the known one.
+        """
+        identifiers = self._attr_device_info.identifiers
+        changed = False
+        for identifier_type, value in (
+            (IdentifierType.UUID, renderer_uuid),
+            (IdentifierType.IP_ADDRESS, renderer_ip),
+        ):
+            if value and identifiers.get(identifier_type) != value:
+                self._attr_device_info.add_identifier(identifier_type, value)
+                changed = True
+        if changed:
+            # publishes the identity of the room under its renderer's new address
+            await self.mass.players.attach(self)
+
     def set_line_in(self, line_in: tuple[str, str] | None) -> None:
         """
         Offer the Line-In of the speaker the room plays through, or none if it has none.
