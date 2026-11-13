@@ -6,16 +6,11 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from music_assistant_models.enums import ContentType
-from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
 from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
-from music_assistant.helpers.ffmpeg import (
-    CACHE_ATTR_READRATE_CATCHUP,
-    check_ffmpeg_version,
-    get_ffmpeg_stream,
-)
+from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -85,16 +80,17 @@ def test_the_near_realtime_pacing_is_the_measured_one() -> None:
         "1.02",
         "-readrate_initial_burst",
         "3",
+        "-readrate_catchup",
+        "2",
     ]
 
 
-async def test_a_player_regains_the_lead_a_stall_drained_in_about_the_stalls_time() -> None:
+def test_a_player_regains_the_lead_a_stall_drained_in_about_the_stalls_time() -> None:
     """
     A player with a small lead runs dry when stalls of the server follow each other.
 
     ffmpeg's own catch-up of 1.05x the pace takes over a minute to refill a stall of a few seconds.
     """
-    await set_global_cache_values({CACHE_ATTR_READRATE_CATCHUP: True})
     args = output_pacing_args(PacingProfile.NEAR_REALTIME)
     readrate = _value(args, "-readrate")
 
@@ -105,17 +101,9 @@ async def test_a_player_regains_the_lead_a_stall_drained_in_about_the_stalls_tim
     assert catch_up_per_stall_second <= MAX_CATCH_UP_PER_STALL_SECOND
 
 
-async def test_an_ffmpeg_without_the_catch_up_option_is_not_handed_it() -> None:
-    """An ffmpeg before 8.0 refuses the unknown option and would serve nothing at all."""
-    await set_global_cache_values({CACHE_ATTR_READRATE_CATCHUP: False})
-
-    for profile in PacingProfile:
-        assert "-readrate_catchup" not in output_pacing_args(profile)
-
-
 @pytest.mark.parametrize("profile", list(PacingProfile))
 async def test_the_installed_ffmpeg_streams_with_the_pacing_of(profile: PacingProfile) -> None:
-    """Whatever the startup check found, the installed ffmpeg streams with the pacing it yields."""
+    """An ffmpeg that passes the startup check streams with the pacing of every profile."""
     await check_ffmpeg_version()
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2

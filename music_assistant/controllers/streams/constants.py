@@ -12,7 +12,6 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_SETTINGS,
 )
-from music_assistant.helpers.ffmpeg import get_ffmpeg_readrate_catchup_args
 from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
 
 # What the volume normalization preference falls back to.
@@ -141,7 +140,7 @@ def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[s
     readrate, burst = _PACING[profile]
     args = ["-readrate", readrate, "-readrate_initial_burst", burst]
     if catchup := _CATCHUP.get(profile):
-        args += get_ffmpeg_readrate_catchup_args(catchup)
+        args += ["-readrate_catchup", catchup]
     return args
 
 
