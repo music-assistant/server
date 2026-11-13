@@ -124,6 +124,9 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 - Is derived by `derive_player_state` ([player_state.py](../../models/player_state.py)), a function of a snapshot of everything the state depends on
 - Lists the protocols of the player (`protocols`: id, domain, provider, role, available, active),
   its legacy ids, when the player was last seen and since when it is unavailable
+- Marks one of those protocols `active`, its current playback path: the protocol of an app from
+  outside that the player shows, else the one of its active output (the own protocol for
+  `"native"`), none without either; `active_output_protocol` only names Music Assistant's own output
 - Contains only serializable data suitable for API consumers
 
 A player is available while it is enabled and one of its protocols that can render audio reaches
@@ -573,6 +576,12 @@ announcement that plays, or a power on that still waits for the device, holds th
   `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. The
   controller keeps the session per player and passes the transport commands for it to the plugin
   that owns it; the queue keeps its items and goes inactive meanwhile.
+- **An app from outside**: an app Music Assistant did not start can play on an audio protocol of the
+  player, such as a stream cast from a phone to its Chromecast receiver. The player shows it unless
+  another audio protocol is its active output, its own protocol plays (a paused player keeps its
+  place until the app plays), it is synced or in a group, or a live source plays on it. The playback
+  state, position, media, source, its entry in the source list and its transport features then come
+  from that protocol, the transport commands go to it, and it is the protocol marked `active`.
 
 ## Grouping
 

@@ -1388,8 +1388,9 @@ AirPlay receiver, which otherwise ranks higher.
 ### OUTPUT-2 · Transport commands follow the app that plays on the device
 
 A Spotify Connect session plays on the DLNA renderer of a LinkPlay device. The player names
-Spotify as its source and offers next and previous. Pause, play and next reach the renderer, in
-that order, and the player shows paused after the pause.
+Spotify as its source, shows the renderer as its active protocol and offers next and previous.
+Pause, play and next reach the renderer, in that order, and the player shows paused after the
+pause.
 
 - End-to-end: **possible with** a LinkPlay device that is no WiiM (the server controls a WiiM
   through its own protocol), with its DLNA renderer and a Spotify Connect session started on it.
