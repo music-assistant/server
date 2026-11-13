@@ -741,8 +741,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         Take a player out of the registry and let clients know that it is gone.
 
         :param player: The player to drop, whose protocols are detached already.
-        :param permanent: The player is removed for good: also delete its saved queue, and
-            say so in the event (a player dropped for now comes back with the same id).
+        :param permanent: The player is removed for good: also delete its saved queue.
         """
         player_id = player.player_id
         # a player that is going away is done with any live source it was playing,
@@ -760,9 +759,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         self.mass.cancel_timer(f"queue_on_player_update_{player_id}")
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         if player.initialized.is_set() and not self.mass.closing:
-            self.mass.signal_event(
-                EventType.PLAYER_REMOVED, player_id, data={"permanent": permanent}
-            )
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     async def _remove_player(self, player_id: str, *, rediscover: bool) -> None:
         """

@@ -22,7 +22,7 @@ from music_assistant.helpers.config_entries import (
     create_player_selector,
 )
 
-from .harness import Event, Role, Scenario, VisiblePlayer
+from .harness import TEST_TRACK_URI, Event, Role, Scenario, VisiblePlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -292,10 +292,14 @@ async def test_session_only_player_has_the_same_id_in_every_session(scenario: Sc
     )
 
 
-async def test_a_disabled_player_is_gone_for_now_and_comes_back_with_its_id(
+async def test_disabling_a_player_removes_it_and_enabling_brings_it_back(
     scenario: Scenario,
 ) -> None:
-    """Disabling a player removes it for now: enabling it brings it back under the same id."""
+    """
+    A disabled player is announced as removed and stays listed in the settings, disabled.
+
+    Enabling it brings it back under the same id.
+    """
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
@@ -303,45 +307,62 @@ async def test_a_disabled_player_is_gone_for_now_and_comes_back_with_its_id(
     scenario.clear_events()
 
     await scenario.disable(player_id)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert [(c.player_id, c.enabled) for c in await scenario.player_configs()] == [
+        (player_id, False)
+    ]
+
     await scenario.enable(player_id)
     await scenario.idle()
 
-    assert scenario.removals() == [(player_id, {"permanent": False})]
+    assert scenario.removals() == [(player_id, None)]
     assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
         Event(EventType.PLAYER_REMOVED, player_id),
         Event(EventType.PLAYER_ADDED, player_id),
     ]
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, True)]
 
 
-@pytest.mark.parametrize("customised", [False, True], ids=["uncustomised", "customised"])
-async def test_a_session_only_player_whose_client_disconnects_is_gone_for_now(
-    scenario: Scenario, customised: bool
+async def test_a_browser_player_without_changes_is_removed_when_its_client_disconnects(
+    scenario: Scenario,
 ) -> None:
     """
-    A web player whose client disconnects is removed for now: it returns under the same id.
+    A web player the user never changed is announced as removed when its client disconnects.
 
-    Also when nothing of it is stored, as it was never customised.
+    When the client connects again it is announced as added under the same id, with its queue.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
-    if customised:
-        await scenario.configure_player("sendspin_web_3f2a", name="Study browser")
+    await scenario.play("sendspin_web_3f2a")
+    await scenario.idle()
     scenario.clear_events()
 
     await scenario.detach(browser)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert scenario.removals() == [("sendspin_web_3f2a", None)]
+
     await scenario.attach(browser)
     await scenario.idle()
 
-    assert scenario.removals() == [("sendspin_web_3f2a", {"permanent": False})]
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", True)
+    ]
     assert scenario.events(EventType.PLAYER_REMOVED, EventType.PLAYER_ADDED) == [
         Event(EventType.PLAYER_REMOVED, "sendspin_web_3f2a"),
         Event(EventType.PLAYER_ADDED, "sendspin_web_3f2a"),
     ]
+    assert [item.uri for item in scenario.mass.player_queues.items("sendspin_web_3f2a")] == [
+        TEST_TRACK_URI
+    ]
 
 
-async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario) -> None:
-    """A player the user removes is announced as removed for good."""
+async def test_a_player_the_user_removes_is_announced_as_removed(scenario: Scenario) -> None:
+    """A player the user removes is announced as removed, without data, as before the split."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     await scenario.attach(living)
@@ -351,11 +372,13 @@ async def test_a_player_the_user_removes_is_removed_for_good(scenario: Scenario)
     await scenario.remove(player_id)
     await scenario.idle()
 
-    assert scenario.removals() == [(player_id, {"permanent": True})]
+    assert scenario.removals() == [(player_id, None)]
 
 
-async def test_a_player_merged_into_another_one_is_removed_for_good(scenario: Scenario) -> None:
-    """The player that goes in a merge is announced as removed for good."""
+async def test_the_player_that_goes_in_a_merge_is_announced_as_removed(
+    scenario: Scenario,
+) -> None:
+    """The player that goes in a merge is announced as removed."""
     airplay = await scenario.add_provider("airplay")
     chromecast = await scenario.add_provider("chromecast")
     tv_airplay = airplay.protocol(
@@ -376,7 +399,7 @@ async def test_a_player_merged_into_another_one_is_removed_for_good(scenario: Sc
     await scenario.mass.players.merge(absorb_id, keep_id)
     await scenario.idle()
 
-    assert scenario.removals() == [(absorb_id, {"permanent": True})]
+    assert scenario.removals() == [(absorb_id, None)]
 
 
 # the stored config of a web player as written before the split, where every player was stored

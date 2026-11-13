@@ -373,7 +373,7 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 | A provider forgets a device (`remove_protocol`) | The protocol record goes, and so do the protocols that ride on it. An output or control choice of the player that names it falls back to its default. The player goes for good when no protocol record of it is left. |
 | The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
-| The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player goes for now. Its config stays. |
+| The user disables a player | It is powered off (or stopped, without a power control), its protocols are detached and the player goes (`PLAYER_REMOVED`). Its config and its id stay. |
 | The user enables a player | It is created from its record. A player that only exists while connected comes back when its protocol connects. |
 | Two players turn out to be one device, or a protocol sits on the wrong player | The user merges them, or takes the protocol off; see [One device, two players](#one-device-two-players). |
 
@@ -462,22 +462,20 @@ that is published, the controller ([state_updates.py](state_updates.py)):
 | `PLAYER_ADDED` | a player object is published: at startup from its config, for a new device or a protocol taken off its player, when the user enables a player, when a player that only exists while connected connects |
 | `PLAYER_UPDATED` | every published change of a player, attach and detach included; a device that goes away or comes back is a change of `available` |
 | `PLAYER_OPTIONS_UPDATED` | the options of a player changed |
-| `PLAYER_REMOVED` | the player object goes; `data={"permanent": True}` when it is removed for good |
+| `PLAYER_REMOVED` | the player object goes: it is removed, disabled or merged into another player, or it only exists while connected and its client disconnected |
 | `PLAYER_SLEEP_TIMER_UPDATED` | the sleep timer of a player changed; the data is when it expires, `None` when it was cleared or waits for paused playback |
 | `PLAYER_CONFIG_UPDATED` | a config of the player was saved; also when its features or its power, volume or mute control change, for the Home Assistant integration, which only re-reads them on that event |
 
-`PLAYER_REMOVED` says whether the player is removed for good (read with
-`helpers.player.player_removed_for_good`): after a removal by the user (`remove`,
-`remove_unavailable`) or by its provider (`remove_protocol` of its last protocol), and for the
-player that goes in a merge. A disabled player and a player that only exists while connected
-whose client disconnected are gone for now: they come back with the same id and their saved
-queue, so a subscriber keeps what it stores about them.
+`PLAYER_REMOVED` carries no data: the player is gone, and a subscriber drops what it keeps about
+it. A device that goes away is no removal: its player stays, unavailable. A disabled player comes
+back under the same id when the user enables it, and so does a player that only exists while
+connected when its client connects again; both are announced with `PLAYER_ADDED` then.
 
 The queue of a player lives as long as the player object. It is created and restored from the
 saved queue right after `PLAYER_ADDED`, so a subscriber of that event can not count on the queue
 yet. When the protocol that rendered the audio of the player is detached, the queue releases its
 audio and pending work and keeps its items and position. It goes with the player object, and its
-saved state only when the player is removed for good.
+saved state only when the player is removed (not when it is disabled or its client disconnects).
 
 ## Commands, Outputs, Volume and Power
 

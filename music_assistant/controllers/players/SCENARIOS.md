@@ -573,14 +573,14 @@ stay apart.
 - End-to-end: **no**: it needs identifiers that arrive late.
 - Proven by: `test_identity.py::test_used_duplicate_is_not_merged`
 
-### MERGE-3 · The player that goes in a merge is removed for good
+### MERGE-3 · The player that goes in a merge is announced as removed
 
 The user merges the player of a TV's Cast receiver into the player of its AirPlay receiver.
-Clients are told the Cast receiver's player is removed for good.
+Clients are told the Cast receiver's player is removed.
 
 - End-to-end: **possible with** two players that may be one, such as an AirPlay and a DLNA
   receiver.
-- Proven by: `test_lifecycle.py::test_a_player_merged_into_another_one_is_removed_for_good`
+- Proven by: `test_lifecycle.py::test_the_player_that_goes_in_a_merge_is_announced_as_removed`
 
 ### MERGE-4 · The user merges a speaker and its twin
 
@@ -744,10 +744,9 @@ gives no setup reason.
 
 ## Removing and disabling
 
-What goes when the user removes a provider, removes a player or disables one. Clients learn
-whether a player is removed for good, after a removal or a merge (MERGE-3), or is gone for now,
-when it is disabled or a browser disconnects; a player that is gone for now comes back under the
-same id.
+What goes when the user removes a provider, removes a player or disables one. Clients are told
+a player is removed, with no data besides its id, when it is removed, disabled or merged into
+another player (MERGE-3); a device that goes away is no removal (AWAY-1).
 
 ### REMOVE-1 · A player outlives the removal of its vendor's provider on its other protocols
 
@@ -769,22 +768,23 @@ its queue and its settings go, and clients are told it is removed.
 
 ### REMOVE-3 · A removed player whose device is still there comes back with its defaults
 
-The user named the Living player Kitchen, then removes it. Clients are told it is removed for
-good. Its provider finds the device again, and clients are told about a player added under a new
+The user named the Living player Kitchen, then removes it. Clients are told it is removed. Its
+provider finds the device again, and clients are told about a player added under a new
 id, available, with the default name Living.
 
 - End-to-end: **yes**. Remove a virtual player whose container keeps running.
 - Proven by:
   - `test_lifecycle.py::test_removed_player_of_a_present_device_comes_back_as_new`
-  - `test_lifecycle.py::test_a_player_the_user_removes_is_removed_for_good`
+  - `test_lifecycle.py::test_a_player_the_user_removes_is_announced_as_removed`
 
-### REMOVE-4 · A disabled player is gone for now and comes back with its id
+### REMOVE-4 · A disabled player is removed and comes back with its id when enabled
 
-The user disables the Living player and enables it again. Clients are told it is removed for now,
-not for good, and then that it is added again under the same id.
+The user disables the Living player. Clients are told it is removed, and the settings still list
+it, disabled. The user enables it again: clients are told it is added again under the same id,
+available.
 
 - End-to-end: **yes**. Disable a virtual player and enable it again.
-- Proven by: `test_lifecycle.py::test_a_disabled_player_is_gone_for_now_and_comes_back_with_its_id`
+- Proven by: `test_lifecycle.py::test_disabling_a_player_removes_it_and_enabling_brings_it_back`
 
 ### REMOVE-5 · "Remove all unavailable players" removes only players nothing finds
 
@@ -851,13 +851,13 @@ time its player has the id of its client, and clients are told about it as added
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_session_only_player_has_the_same_id_in_every_session`
 
-### WEB-4 · A browser that disconnects is gone for now
+### WEB-4 · A browser player the user never changed is removed when its browser disconnects
 
-A browser disconnects and connects again. Clients are told its player is removed for now, not for
-good, and then added again under the same id. That holds whether the user customised it or not.
+A browser plays and disconnects. Clients are told its player is removed. The browser connects
+again: clients are told the player is added under the same id, and its queue is back.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
-- Proven by: `test_lifecycle.py::test_a_session_only_player_whose_client_disconnects_is_gone_for_now`
+- Proven by: `test_lifecycle.py::test_a_browser_player_without_changes_is_removed_when_its_client_disconnects`
 
 ### WEB-5 · A browser player stored by an older version keeps its id
 
