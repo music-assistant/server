@@ -231,7 +231,7 @@ def determine_auto_release(
     version = _ensure_unique(version, channel, all_tags)
     return AutoRelease(
         version=version,
-        should_release=channel != "nightly" or commits_since >= 2,
+        should_release=commits_since >= (2 if channel == "nightly" else 1),
         previous_tag=previous_tag,
         commits_since=commits_since,
     )

@@ -52,6 +52,11 @@ if TYPE_CHECKING:
     from .provider import TidalProvider
 
 
+SEARCH_MEDIA_TYPES = frozenset(
+    {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST}
+)
+
+
 class TidalMediaManager:
     """Handles retrieval of media items from Tidal."""
 
@@ -69,18 +74,23 @@ class TidalMediaManager:
         wanted = set(media_types)
 
         # Build the includes for the requested types only, keeping under the
-        # official API's 10-included-resource cap. Track album covers are
-        # included so track results carry artwork; standalone album results
-        # trade artist names for staying within the cap.
+        # official API's include cap. Track album covers are included so track
+        # results carry artwork; album artist names and playlist owners only fit
+        # when not every type is requested.
+        enrich = not wanted >= SEARCH_MEDIA_TYPES
         includes: list[str] = []
         if MediaType.TRACK in wanted:
             includes += ["tracks.artists", "tracks.albums.coverArt"]
         if MediaType.ALBUM in wanted:
             includes.append("albums.coverArt")
+            if enrich:
+                includes.append("albums.artists")
         if MediaType.ARTIST in wanted:
             includes.append("artists.profileArt")
         if MediaType.PLAYLIST in wanted:
             includes.append("playlists.coverArt")
+            if enrich:
+                includes.append("playlists.owners")
         if not includes:
             return results
 
