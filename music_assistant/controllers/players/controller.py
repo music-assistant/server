@@ -13,6 +13,17 @@ and the functions for controlling the device (e.g. play, pause, etc).
 The playerstate is the (final) state of the player, derived from what its protocols
 report, including any user customizations and transformations that are applied to it.
 The playerstate is the object that is exposed to the outside world (via the API).
+
+The controller is composed of one mixin per concern, over the registry in base.py:
+- lifecycle.py: attaching and detaching protocols, creating, removing, enabling and
+  disabling players
+- protocol_linking.py: finding the player a protocol belongs to
+- merging.py: merging two players, taking a protocol off its player
+- state_updates.py: publishing the state of a player and acting on its changes
+- config_changes.py: what a changed player, protocol or DSP config does
+- locks.py: the player command locks
+- playback.py, outputs.py, audio_sources.py, power.py, volume.py, group_commands.py,
+  sleep_timer.py and announcements.py: the player commands
 """
 
 from __future__ import annotations
@@ -23,10 +34,7 @@ import weakref
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ProviderType,
-)
+from music_assistant_models.enums import ConfigEntryType, ProviderType
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -56,9 +64,7 @@ from .volume import VolumeMixin
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from music_assistant_models.config_entries import (
-        CoreConfig,
-    )
+    from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -66,20 +72,20 @@ if TYPE_CHECKING:
 
 
 class PlayerController(
-    AnnouncementsMixin,
-    AudioSourceMixin,
+    PlayerLifecycleMixin,
     ProtocolLinkingMixin,
-    PlayerLocksMixin,
-    SleepTimerMixin,
-    VolumeMixin,
-    PowerMixin,
-    OutputsMixin,
-    PlaybackMixin,
-    GroupCommandsMixin,
+    PlayerMergingMixin,
     StateUpdatesMixin,
     ConfigChangesMixin,
-    PlayerLifecycleMixin,
-    PlayerMergingMixin,
+    PlayerLocksMixin,
+    PlaybackMixin,
+    OutputsMixin,
+    AudioSourceMixin,
+    PowerMixin,
+    VolumeMixin,
+    GroupCommandsMixin,
+    SleepTimerMixin,
+    AnnouncementsMixin,
 ):
     """Controller holding all logic to control registered players."""
 

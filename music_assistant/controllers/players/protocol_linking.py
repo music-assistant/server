@@ -1,9 +1,9 @@
 """
 Protocol Linking Mixin for the Player Controller.
 
-Handles all logic for the protocols of a player: which player a protocol that
-attaches belongs to, which of its protocols a player plays and is controlled
-through, and how a group of players is formed over them.
+Handles which player a protocol that attaches belongs to: the attach rules and the
+roles of its protocols, the identity of its device, a protocol held until that is known,
+the player created for a new device and the stored records of the protocols.
 
 This module provides the ProtocolLinkingMixin class which is inherited by
 PlayerController to add these capabilities.
@@ -74,8 +74,6 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
     Handles the complex logic of:
     - Finding the player a protocol belongs to via its device identifiers
     - Creating a player for a device that is new
-    - Selecting the best output protocol for playback
-    - Translating a group of players to the protocols that carry it
     """
 
     def _resolve_player_id(self, protocol: PlayerProtocol) -> str | None:
