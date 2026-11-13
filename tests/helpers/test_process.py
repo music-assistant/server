@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncGenerator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,6 +30,26 @@ _WEDGED_CHILD = (
 _NOISY_CHILD = (
     "import sys, time; sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(30)"
 )
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_communicate_releases_streams(timeout: bool) -> None:
+    """Communication releases its streams for cleanup, including on timeout."""
+    proc = AsyncProcess(["ffprobe"], stdout=True, stderr=True)
+    proc.proc = MagicMock(returncode=None)
+    proc.proc.communicate = AsyncMock(
+        side_effect=TimeoutError if timeout else None, return_value=(b"output", b"error")
+    )
+    if timeout:
+        with pytest.raises(TimeoutError):
+            await proc.communicate()
+    else:
+        assert await proc.communicate() == (b"output", b"error")
+    assert proc.proc is not None
+    proc.proc.stdout.read = AsyncMock(return_value=b"")
+    proc.proc.stderr.readline = AsyncMock(return_value=b"")
+    assert await asyncio.wait_for(proc.read(-1), 0.1) == b""
+    assert await asyncio.wait_for(proc.read_stderr(), 0.1) == b""
 
 
 @pytest.fixture(name="piped_process")
