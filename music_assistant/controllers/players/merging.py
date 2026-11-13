@@ -598,7 +598,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
 
         The oldest player is kept, as the one clients have been bound to the longest. A
         record without a creation moment is older than any with one, and of two equally old
-        players the one with an id from before the player split is kept.
+        players the one whose id is not minted is kept.
 
         :param player_id: Id of the player.
         """

@@ -87,7 +87,7 @@ class PlayerController(
     SleepTimerMixin,
     AnnouncementsMixin,
 ):
-    """Controller holding all logic to control registered players."""
+    """Controller holding all logic to control the players it owns."""
 
     domain: str = "players"
 

@@ -559,8 +559,9 @@ class StateUpdatesMixin(_PlayerControllerBase):
         """
         Schedule a debounced update of all players' state.
 
-        Used when a new player is registered to ensure all existing players
-        update their dynamic properties (like can_group_with) that may have changed.
+        Used when protocols are attached or detached, or players come or go, to ensure all
+        existing players update their dynamic properties (like can_group_with) that may have
+        changed.
         """
         if self.mass.closing:
             return

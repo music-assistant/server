@@ -129,55 +129,42 @@ it sends anything to the device.
 
 ## Core Components
 
-### 1. PlayerController ([controller.py](controller.py))
+The controller is one class, `PlayerController` ([controller.py](controller.py)), composed of one
+mixin per concern. Every mixin builds on the typed base in [base.py](base.py). `controller.py`
+keeps the composition, the state the controller sets up, and its setup and teardown.
 
-The controller is one class, composed of a mixin per concern over a typed base. `controller.py`
-holds its state and its setup and teardown, and lists the concerns.
+The modules, by concern:
+- [base.py](base.py): the registry of the players and the protocols attached to them, and the
+  lookups on it, the owner of a player's playback, the access check and the player controls. It
+  declares the operations one concern calls on another, so each mixin type-checks on its own.
+- [lifecycle.py](lifecycle.py): attaching and detaching protocols; creating, publishing, removing,
+  enabling and disabling players.
+- [protocol_linking.py](protocol_linking.py): which player a protocol belongs to: the attach rules
+  and roles, the identity of its device, holding it until that is known, and its stored record.
+- [merging.py](merging.py): merging two players, and taking a protocol off its player.
+- [state_updates.py](state_updates.py): publishing the state of a player, acting on its changes,
+  and polling.
+- [config_changes.py](config_changes.py): what a changed player, protocol or DSP config does.
+- [locks.py](locks.py): the player command locks.
+- The player commands: [playback.py](playback.py), [outputs.py](outputs.py) (the output that
+  renders), [audio_sources.py](audio_sources.py) (selecting a source, and live source sessions),
+  [power.py](power.py), [volume.py](volume.py), [group_commands.py](group_commands.py) (the entries
+  of a group change), [sleep_timer.py](sleep_timer.py) and [announcements.py](announcements.py).
+- [grouping_plan.py](grouping_plan.py) and [grouping.py](grouping.py): the plan of a group change
+  and the executor that carries it out.
+- [matching.py](matching.py): whether a protocol stands for the device of a player.
+- [helpers.py](helpers.py): the `handle_player_command` decorator.
+  [constants.py](constants.py): the lock timeouts and purposes, and `SwitchedOffAction`.
 
-### 2. The Registry ([base.py](base.py))
-
-The players and, next to them, the protocols the providers attached (also those that still wait for
-their player), their lookups, the owner of a player's playback, the access check and the player
-controls. It also declares the operations one concern calls on another, so each mixin type-checks
-on its own.
-
-### 3. Lifecycle and Identity
-
-- [lifecycle.py](lifecycle.py): attaching and detaching protocols (`attach`, `detach`,
-  `remove_protocol`), creating and dropping players, removing (`remove`), enabling and disabling them.
-- [protocol_linking.py](protocol_linking.py): finding the player a protocol belongs to, creating the
-  player of a new device and holding a protocol until it is known which player it belongs to.
-- [merging.py](merging.py): merging two players and taking a protocol off its player.
-
-### 4. State ([state_updates.py](state_updates.py), [config_changes.py](config_changes.py))
-
-Publishing the state of a player, acting on what changed in it and polling the protocols that need
-it; what a changed player, protocol or DSP config does.
-
-### 5. Commands
-
-- [locks.py](locks.py): the player command locks (see [Locking](#locking)).
-- [playback.py](playback.py): play, pause, stop, seek, next and previous, play media.
-- [outputs.py](outputs.py): the output that renders the audio (see
-  [Output Protocol Selection](#output-protocol-selection)).
-- [audio_sources.py](audio_sources.py): selecting a source, and the live source sessions.
-- [power.py](power.py), [volume.py](volume.py), [sleep_timer.py](sleep_timer.py) and
-  [announcements.py](announcements.py).
-- [group_commands.py](group_commands.py): the entries of a group change (see [Grouping](#grouping)).
-
-### 6. Identifier Matching ([matching.py](matching.py))
-
-The pure function that decides whether a protocol stands for the device of a player, with every
-veto and precedence rule in one table (see [Device Identifier Matching](#device-identifier-matching)).
-
-### 7. Grouping ([grouping_plan.py](grouping_plan.py), [grouping.py](grouping.py))
-
-The plan of a group change, a pure function of a snapshot of the players, and the executor that
-carries a plan out (see [Grouping](#grouping)).
-
-### 8. Helper Utilities ([helpers.py](helpers.py))
-
-The `handle_player_command` decorator for command validation, and `AnnounceData`.
+Dependencies point one way:
+- `controller.py` imports the mixins, and every mixin imports the base; within the package only
+  `__init__.py` imports `controller.py`.
+- A mixin reaches another concern through `self`, as the base declares it, not through its
+  module. `merging.py` is the one exception: it uses a few module-level names of `lifecycle.py`
+  and `protocol_linking.py`.
+- `matching.py`, `grouping_plan.py` and `constants.py` import nothing of the controller.
+  `grouping.py` builds the snapshot from the controller and runs the plan through it; the mixins
+  that start a group change call it.
 
 ## Player Types and Protocol Roles
 
@@ -229,8 +216,8 @@ protocol ids and never goes through the legacy-id resolver.
 ### Legacy Ids
 
 A player keeps answering to its legacy ids: ids it was known under before, such as the id of a
-player that was merged into it. They are stored with the player's config (`values.legacy_ids`)
-and resolved in one place, `PlayerController.resolve_player_id`. They resolve in:
+player that was merged into it. They are stored with the player's config (`values.legacy_ids`) and
+resolved in one place, `PlayerController.resolve_player_id` ([base.py](base.py)). They resolve in:
 
 - the id-bearing arguments of an API command (`PLAYER_ID_ARGUMENTS`), which every API
   transport rewrites before the handler runs (`run_api_command` in
@@ -254,7 +241,8 @@ lists it only while no player is registered under that id and no config is store
 
 ### Finding the Player of a Protocol
 
-When a protocol attaches, the controller looks for its player in this order:
+When a protocol attaches, the controller ([protocol_linking.py](protocol_linking.py)) looks for its
+player in this order:
 1. The player its record names, as long as none of the protocols attached to that player rules it out.
 2. A player whose device the protocol matches. A player holding an offline protocol record of
    the same provider is tried first: the device came back under another id, and the protocol takes
@@ -280,7 +268,7 @@ connected never wait.
 
 ### Device Identifier Matching
 
-Whether a protocol stands for the device of a player is decided in one place: `matches_device`, a pure function over what each side reports about its device:
+Whether a protocol stands for the device of a player is decided in one place: `matches_device` ([matching.py](matching.py)), a pure function over what each side reports about its device:
 
 - its identifiers as a set of `(type, value)` pairs, so a device with two MAC addresses (the one its provider reported and the one ARP resolved) holds a pair for each
 - the protocol domains that reported them
@@ -326,7 +314,7 @@ Which player a protocol belongs to is decided when it attaches, and that can tur
 device ends up as two players when its second protocol was first seen while the first was away, or
 before the identifiers that tie them together were known, and a protocol can end up on the player
 of another device. So two players can be merged into one (`players/merge`), and a protocol can be
-taken off its player again (`players/unlink_protocol`).
+taken off its player again (`players/unlink_protocol`), both in [merging.py](merging.py).
 
 **Merging.** The player that goes hands its protocols to the player that stays, which answers to
 its id from then on: that id and the legacy ids of the player that goes become legacy ids of the
@@ -369,6 +357,8 @@ protocol that rides on another, the protocol of a group, a protocol that only ex
 connected and the only protocol of a player are not taken off.
 
 ## Lifecycle
+
+The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 
 | What happens | What it means for the player and its protocols |
 |---|---|
@@ -421,11 +411,11 @@ something about its player; until then it holds its config in memory, and provid
 A record the same protocol has as an output of a device stays, and does not apply to it while it
 connects on its own.
 
-The config controller reads and writes stored config per scope. What is set for the device as a
-whole belongs to the player (`PLAYER_VALUE_KEYS`): controls, volume limits, announcement settings,
-preferred output and what the controller keeps about the player. What belongs to one way of
-reaching the device belongs to its protocol: the entries it declares, the audio settings of its
-output, what its provider stores for it and its setup data.
+The config controller ([players.py](../config/players.py)) reads and writes stored config per scope.
+What is set for the device as a whole belongs to the player (`PLAYER_VALUE_KEYS`): controls, volume
+limits, announcement settings, preferred output and what the controller keeps about the player. What
+belongs to one way of reaching the device belongs to its protocol: the entries it declares, the
+audio settings of its output, what its provider stores for it and its setup data.
 
 The config of a player as clients read and save it (`config/players/*`) is one form: the values of
 the player, the unprefixed values of its own protocol, and the values of its audio protocols
@@ -451,7 +441,7 @@ comes with `mark_state_dirty()`; the controller does that on all its notificatio
 (`trigger_player_update`, which also debounces, and the fan-out below).
 
 A change of the position anchor alone is published only when the position jumped. For a change
-that is published, the controller:
+that is published, the controller ([state_updates.py](state_updates.py)):
 1. schedules the update of the queue of the player;
 2. runs its reactions: membership cleanup when availability or power changed, the volume limits, a
    check for a source takeover;
@@ -489,15 +479,16 @@ player exists and is available and that the user may use it, and decides what to
 that is switched off at its external power control. A command to an unavailable player raises
 `PlayerUnavailableError`; a power on is accepted.
 
-A playback command goes to the protocol that renders the audio of the player. A transport command
-for what the device plays itself goes to the audio protocol whose app is shown on the player, else
-to its own protocol. A playback command on a player that plays along with a group or sync leader
-goes to the owner of its playback (see [Locking](#locking)). Play media instead takes the player out
-of its group while its `play_media_overrides_group` setting is on, which is the default.
+A playback command ([playback.py](playback.py)) goes to the protocol that renders the audio of the
+player. A transport command for what the device plays itself goes to the audio protocol whose app is
+shown on the player, else to its own protocol. A playback command on a player that plays along with
+a group or sync leader goes to the owner of its playback (see [Locking](#locking)). Play media
+instead takes the player out of its group while its `play_media_overrides_group` setting is on,
+which is the default.
 
 ### Output Protocol Selection
 
-When playing media, the controller selects the output:
+When playing media, the controller ([outputs.py](outputs.py)) selects the output:
 
 1. **Grouped protocol** - If a protocol is actively grouped/synced, use it
 2. **User preference** - Honor user's configured preferred protocol
@@ -512,10 +503,10 @@ else to the best available audio protocol.
 ### Volume and Mute
 
 The level and mute of a player are its own. Without a control the user picked, a volume or mute
-command goes to the protocol that renders the audio, else to the own protocol, else to an available
-protocol with the feature; level reports are only taken from that protocol. When the output changes,
-the protocol that becomes the control gets the level and mute of the player before it is made the
-active output and before the stream starts.
+command ([volume.py](volume.py)) goes to the protocol that renders the audio, else to the own
+protocol, else to an available protocol with the feature; level reports are only taken from that
+protocol. When the output changes, the protocol that becomes the control gets the level and mute of
+the player before it is made the active output and before the stream starts.
 
 While its own protocol is attached but can not be reached, a player keeps the level and mute it had
 when that began: what any of its protocols reports may be stale then. It is shown as the quieter of
@@ -529,10 +520,10 @@ members.
 
 ### Power
 
-The power control of a player is the one the user picked: native, a fake control that only keeps
-the state in Music Assistant (kept across restarts, except for a group), none, or an external
-power control (a `PlayerControl`, such as a smart plug another provider registers). Without a
-choice it is native when the own protocol supports power, else none.
+The power control of a player ([power.py](power.py)) is the one the user picked: native, a fake
+control that only keeps the state in Music Assistant (kept across restarts, except for a group),
+none, or an external power control (a `PlayerControl`, such as a smart plug another provider
+registers). Without a choice it is native when the own protocol supports power, else none.
 
 A player switched off at its external power control is published as available and powered off, so
 a client can still power it on or play to it. What a command does with it is part of the command
@@ -547,35 +538,35 @@ off time is powered off once it was available, powered on and stopped for that l
 
 ### Sleep Timer, Announcements and Audio Sources
 
-- **Sleep timer**: held by the owner of the playback of the player it is set on. A timer for a
-  duration is kept by that player and stops it when it expires; a timer to the end of the item or
-  chapter is kept by its queue.
-- **Announcements**: played natively by the own protocol when it supports that, else by the output
-  that plays, or by any audio protocol while nothing plays. Without such a protocol, or when it
-  would ignore the requested volume, the controller plays the announcement as media and restores
-  what the player did before. A group announcement goes to the members when they can start it together. An
-  announcement holds the player (and its group) for as long as it plays.
-- **Audio sources**: a live source of a plugin (an `AudioSource`, such as Spotify Connect) plays
-  on a player independently of its queue. The controller keeps the session per player and passes
-  the transport commands for it to the plugin that owns it; the queue keeps its items and goes
-  inactive meanwhile.
+- **Sleep timer** ([sleep_timer.py](sleep_timer.py)): held by the owner of the playback of the
+  player it is set on. A timer for a duration is kept by that player and stops it when it expires; a
+  timer to the end of the item or chapter is kept by its queue.
+- **Announcements** ([announcements.py](announcements.py)): played natively by the own protocol when
+  it supports that, else by the output that plays, or by any audio protocol while nothing plays.
+  Without such a protocol, or when it would ignore the requested volume, the controller plays the
+  announcement as media and restores what the player did before. A group announcement goes to the
+  members when they can start it together. An announcement holds the player (and its group) for as
+  long as it plays.
+- **Audio sources** ([audio_sources.py](audio_sources.py)): a live source of a plugin (an
+  `AudioSource`, such as Spotify Connect) plays on a player independently of its queue. The
+  controller keeps the session per player and passes the transport commands for it to the plugin
+  that owns it; the queue keeps its items and goes inactive meanwhile.
 
 ## Grouping
 
-How a group change reaches the devices is decided in one place: `plan_group_change`. It is a pure
-function of a `GroupingSnapshot`: per player and protocol what grouping reads (the published state,
-the protocols with their features, the groups they report and what they can group with, the
-outputs, the active and the preferred output, the queue it plays). It returns the steps of the
-change: which protocol of each member carries it, who leads, what is released first, what is
-refused and why, the lines for the log.
-The snapshot builds the view of a player or protocol when the plan first reads it, and asks
-whether two protocols group natively only for the pair the plan asks about, so a change costs
-what it reads. A playback start whose player has no grouped audio protocol has nothing to
-regroup and takes no snapshot at all.
-`apply_group_change` runs the steps, and is the only code of the controller that calls a
-protocol's grouping methods. The entries stay what callers use: `cmd_set_members`, `cmd_ungroup`,
-and `_handle_set_members` and `_detach_member` for a group provider or a protocol that changes the
-group of its leader itself.
+How a group change reaches the devices is decided in one place: `plan_group_change`
+([grouping_plan.py](grouping_plan.py)). It is a pure function of a `GroupingSnapshot`: per player
+and protocol what grouping reads (the published state, the protocols with their features, the groups
+they report and what they can group with, the outputs, the active and the preferred output, the
+queue it plays). It returns the steps of the change: which protocol of each member carries it, who
+leads, what is released first, what is refused and why, the lines for the log. The snapshot builds
+the view of a player or protocol when the plan first reads it, and asks whether two protocols group
+natively only for the pair the plan asks about, so a change costs what it reads. A playback start
+whose player has no grouped audio protocol has nothing to regroup and takes no snapshot at all.
+`apply_group_change` ([grouping.py](grouping.py)) runs the steps, and is the only code of the
+controller that calls a protocol's grouping methods. The entries stay what callers use:
+`cmd_set_members`, `cmd_ungroup`, and `_handle_set_members` and `_detach_member` for a group
+provider or a protocol that changes the group of its leader itself.
 
 A change, and a join in particular, is planned in phases, because some of its steps have an
 outcome that decides what follows. The plan stops after each of these:
@@ -610,15 +601,15 @@ its leader.
 
 ## Locking
 
-Player commands are serialized per player and purpose with `get_player_lock`: playback, volume and
-group volume each have a lock of their own (`PlayerLockPurpose`), so a volume command does not wait
-for a play command. A command that takes a lock never runs without it. It waits for the command
-that holds it, up to 120 seconds per lock (a grouped player's group lock first, then its own), and
-then fails with a `ResourceBusyError` ("still busy with a previous command"): two commands running
-at once on one player or queue corrupt it. That wait outlasts what most commands hold a player for,
-such as a play request that loads a large playlist. It can also turn away a command behind long
-work that is legitimate: an announcement holds the player for as long as it plays. The warning
-logged at the timeout shows where the holder waits.
+Player commands are serialized per player and purpose with `get_player_lock` ([locks.py](locks.py)):
+playback, volume and group volume each have a lock of their own (`PlayerLockPurpose`), so a volume
+command does not wait for a play command. A command that takes a lock never runs without it. It
+waits for the command that holds it, up to 120 seconds per lock (a grouped player's group lock
+first, then its own), and then fails with a `ResourceBusyError` ("still busy with a previous
+command"): two commands running at once on one player or queue corrupt it. That wait outlasts what
+most commands hold a player for, such as a play request that loads a large playlist. It can also
+turn away a command behind long work that is legitimate: an announcement holds the player for as
+long as it plays. The warning logged at the timeout shows where the holder waits.
 
 Attaching protocols is serialized by one lock of the controller, so an object that replaces
 another under the same protocol id waits for an attach of that id that is still running. A detach
