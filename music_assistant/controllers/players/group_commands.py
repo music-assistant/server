@@ -378,21 +378,25 @@ class GroupCommandsMixin(_PlayerControllerBase):
             new_leader_id,
             len(remaining_members),
         )
-        # Move the queue to the new leader. transfer_queue frees the new leader from
-        # the old leader's group and stops the old leader; the playback position
-        # survives because stop() stores it in resume_pos.
-        # The user's permission was checked on the player they acted on; the new leader
-        # is the server's choice, so these steps run as the server.
-        with system_auth_context():
-            await self.mass.player_queues.transfer_queue(
-                leader.player_id, new_leader_id, auto_play=False
-            )
-            # regroup the other remaining members under the new leader
-            other_members = [m for m in remaining_members if m != new_leader_id]
-            if other_members:
-                await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
-            if was_playing:
-                await self.mass.player_queues.resume(new_leader_id)
+        # both leaders stay locked from the transfer to the resume: the transfer alone lets go
+        # of the new leader when it returns, where a command on it would cut in before the
+        # regroup and the resume here
+        async with self.get_playback_locks(leader.player_id, new_leader_id):
+            # Move the queue to the new leader. transfer_queue frees the new leader from
+            # the old leader's group and stops the old leader; the playback position
+            # survives because stop() stores it in resume_pos.
+            # The user's permission was checked on the player they acted on; the new leader
+            # is the server's choice, so these steps run as the server.
+            with system_auth_context():
+                await self.mass.player_queues.transfer_queue(
+                    leader.player_id, new_leader_id, auto_play=False
+                )
+                # regroup the other remaining members under the new leader
+                other_members = [m for m in remaining_members if m != new_leader_id]
+                if other_members:
+                    await self.cmd_set_members(new_leader_id, player_ids_to_add=other_members)
+                if was_playing:
+                    await self.mass.player_queues.resume(new_leader_id)
 
     async def _release_group_session(self, group_id: str) -> None:
         """
