@@ -849,6 +849,12 @@ class _MemberQueue:
         """Ignore the player updates."""
 
 
+async def _transfer_to_the_group(players: PlayerController, member_id: str) -> None:
+    """Start the group the way a transfer of a member's queue to it does, under both locks."""
+    async with players.get_playback_locks(member_id, GROUP_PLAYER_ID):
+        await players.play_media(GROUP_PLAYER_ID, PlayerMedia(uri="x", source_id=GROUP_PLAYER_ID))
+
+
 class TestCommandOnAMemberOfAHeldGroup:
     """A playback command addressed to a member of a group that holds it plays on every member."""
 
@@ -921,7 +927,14 @@ class TestCommandOnAMemberOfAHeldGroup:
         return players, ugp, played_on
 
     @pytest.mark.parametrize(
-        "command", ["cmd_play", "cmd_resume", "play_media", "play action on its queue"]
+        "command",
+        [
+            "cmd_play",
+            "cmd_resume",
+            "play_media",
+            "play action on its queue",
+            "transfer of its queue to the group",
+        ],
     )
     async def test_every_member_plays_and_the_command_returns_at_once(
         self, monkeypatch: pytest.MonkeyPatch, command: str
@@ -940,6 +953,9 @@ class TestCommandOnAMemberOfAHeldGroup:
         elif command == "play action on its queue":
             # a play action holds the member's own queue, and with it the member's lock
             call = _MemberQueue(cast("MagicMock", players.mass), "m1").play_index("m1")
+        elif command == "transfer of its queue to the group":
+            # a transfer holds the player of either queue until the group plays
+            call = _transfer_to_the_group(players, "m1")
         else:
             call = getattr(players, command)("m1")
 

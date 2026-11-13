@@ -1024,7 +1024,8 @@ While the browser is away, the player is hidden, exposed to Home Assistant and n
 
 ## Commands to a busy player
 
-Commands to one player run one at a time: a command waits for the one before it.
+Commands to one player run one at a time: a command waits for the one before it. Moving a queue
+to another player holds both players until the other one plays.
 
 ### BUSY-1 · A command waits for the command that holds the player
 
@@ -1043,6 +1044,41 @@ again: the input switch reaches the speaker.
 
 - End-to-end: **no**: it needs a device that never answers a command.
 - Proven by: `test_commands.py::test_a_command_behind_a_command_that_never_returns_fails_as_busy`
+
+### BUSY-3 · A stop sent to the player a queue moves to stops what the move started
+
+The queue of Den moves to Kitchen, and Den takes 40 s to stop. A stop sent to Kitchen meanwhile
+waits for the move. Once Kitchen plays the queue, the stop reaches it, and Kitchen is stopped.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_stop_sent_to_the_target_of_a_transfer_stops_what_the_transfer_started`
+
+### BUSY-4 · A queue that is still starting moves once it plays
+
+A resume of Den takes 40 s at the speaker. The queue of Den, moved to Kitchen meanwhile, moves
+once Den plays: Den stops, Kitchen plays the queue, and Den's queue is empty. Den does not go on
+playing an empty queue next to Kitchen.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_resume_that_is_still_starting_is_done_before_a_transfer_moves_its_queue`
+
+### BUSY-5 · A queue moved to a player that is still starting a play replaces it after the play
+
+A play takes 40 s at Kitchen. The queue of Den, moved to Kitchen meanwhile, waits for the play:
+until it is done Kitchen's queue is the one the play started and Den plays on. Then Kitchen plays
+Den's queue, and Den is stopped.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_play_on_the_target_that_is_still_starting_is_done_before_a_transfer_replaces_it`
+
+### BUSY-6 · A queue moved to a player that stays busy stays where it was
+
+A play on Kitchen never returns. The queue of Den, moved to Kitchen, fails with a busy error that
+names Kitchen after 120 s. Nothing has moved: Den plays its queue on, and Kitchen keeps the queue
+of its play.
+
+- End-to-end: **no**: it needs a device that never answers a command.
+- Proven by: `test_commands.py::test_a_transfer_to_a_player_that_stays_busy_fails_and_leaves_both_as_they_were`
 
 ## What a stopped player keeps for a moment
 
