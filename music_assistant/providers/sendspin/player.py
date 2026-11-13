@@ -464,15 +464,6 @@ class SendspinBasePlayer(PlayerProtocol):
         self._attr_session_only = False
 
     @property
-    def available(self) -> bool:
-        """Return if the client is usable: a bridge only while the protocol it rides on is attached."""
-        if (underlying_protocol_id := self.underlying_protocol_id) is not None:
-            underlying = self.mass.players.get_protocol(underlying_protocol_id)
-            if underlying is None or underlying.player is None:
-                return False
-        return self._attr_available
-
-    @property
     def needs_setup(self) -> bool:
         """
         Whether the device is encrypted but not yet usable for playback.

@@ -122,8 +122,9 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 - Contains only serializable data suitable for API consumers
 
 A player is available while it is enabled and one of its protocols that can render audio reaches
-its device (a control protocol alone does not count), or while it is switched off at its external
-power control; not while it only has a protocol that still needs setup. It is available for
+its device (a control protocol alone does not count, nor a protocol that rides on another one
+while that one can not play), or while it is switched off at its external power control; not
+while it only has a protocol that still needs setup. It is available for
 playback while such a protocol is reachable and set up; that is what internal code checks before
 it sends anything to the device.
 

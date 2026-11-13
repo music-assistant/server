@@ -211,6 +211,18 @@ the queue still has that item at that position. A resume plays the item from the
 - End-to-end: **yes**. Stop the container of a playing virtual player, start it again, resume.
 - Proven by: `test_attach_detach.py::test_a_returning_device_resumes_where_its_queue_was`
 
+### AWAY-7 · A bridge alone does not make a player available
+
+The Den device is an AirPlay receiver with a Sendspin bridge that rides on it. While the receiver
+can not be reached, or still needs pairing, the player is unavailable, however available the
+bridge reports itself: its bridge output shows as unavailable and play fails as unavailable. Once
+the receiver can play, the player is available and plays through the bridge when the user prefers
+it.
+
+- End-to-end: **possible with** an AirPlay receiver of the lab that needs pairing, with its
+  Sendspin bridge.
+- Proven by: `test_availability.py::test_bridge_alone_does_not_make_its_player_available`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.

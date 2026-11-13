@@ -170,7 +170,10 @@ def _carrier(scenario: Scenario, domain: str) -> PlayerProtocol:
             is_multichannel_group=False,
         )
         provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
-        return ChromecastPlayer(provider, str(CAST_UUID), cast_info)
+        cast_player = ChromecastPlayer(provider, str(CAST_UUID), cast_info)
+        # connected, as a device that runs the receiver app is
+        cast_player._attr_available = True
+        return cast_player
     provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock(), remove_bridge=AsyncMock())
     provider.get_players = lambda: list(provider.protocols)
     return GenericAirPlayPlayer(
