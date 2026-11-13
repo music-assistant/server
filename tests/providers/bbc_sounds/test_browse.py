@@ -25,16 +25,25 @@ def incorrect_provider_domain() -> str:
         "stations",
         "stations/bbc_radio_one",
         "stations/bbc_radio_one/2020-01-01",
-        "catch_up",
-        "catch_up/bbc_radio_one",
-        "catch_up/bbc_radio_one/2020-01-01",
-        "schedule",
-        "schedule/bbc_radio_one",
-        "schedule/bbc_radio_one/2020-01-01",
     ]
 )
 def station_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
     """Return a parameterised set of valid station browse paths."""
+    return f"{provider_domain}{request.param}"
+
+
+@pytest.fixture(
+    params=[
+        "catch_up",
+        "catch_up/bbc_radio_one",
+        "catch_up/bbc_radio_one/2020-01-01",
+        "schedules",
+        "schedules/bbc_radio_one",
+        "schedules/bbc_radio_one/2020-01-01",
+    ]
+)
+def station_menu_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
+    """Return a parameterised set of catch-up and schedule paths, which come from the menu."""
     return f"{provider_domain}{request.param}"
 
 
@@ -99,7 +108,7 @@ class TestBrowse:
         self, provider: BBCSoundsProvider, provider_domain: str
     ) -> None:
         """Test valid listen live paths are dispatched into the right browse branch."""
-        browse_string = f"{provider_domain}radio"
+        browse_string = f"{provider_domain}live"
         provider._browse_live = AsyncMock()  # type: ignore[method-assign]
         await provider.browse(browse_string)
         provider._browse_live.assert_awaited_once()
@@ -111,6 +120,14 @@ class TestBrowse:
         provider._browse_stations = AsyncMock()  # type: ignore[method-assign]
         await provider.browse(station_paths)
         provider._browse_stations.assert_awaited_once()
+
+    async def test_valid_station_menu_strings(
+        self, provider: BBCSoundsProvider, station_menu_paths: str
+    ) -> None:
+        """Test catch-up and schedule paths are dispatched into the menu browse branch."""
+        provider._browse_menu = AsyncMock()  # type: ignore[method-assign]
+        await provider.browse(station_menu_paths)
+        provider._browse_menu.assert_awaited_once()
 
     async def test_valid_category_strings(
         self, provider: BBCSoundsProvider, category_paths: str

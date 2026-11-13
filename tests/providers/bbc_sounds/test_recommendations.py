@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from auntie_sounds import SoundsClient
-from auntie_sounds.auth import AuthService
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, RecommendationFolder
 from music_assistant_models.unique_list import UniqueList
@@ -53,9 +52,7 @@ def _stub_api(provider: BBCSoundsProvider, payload: list[RecommendationFolder]) 
     # through its existing attribute catches a rename here instead of at runtime
     client = Mock(spec=SoundsClient)
     client.get_recommendation_folders.return_value = sub_items
-    # auth is created in start(), so the class spec doesn't include it
-    client.auth = Mock(spec=AuthService)
-    client.auth.is_signed_in = True
+    client.is_signed_in = True
     provider.client = client
     conversions = dict(zip(sub_items, payload, strict=True))
     adaptor = Mock()
@@ -147,7 +144,7 @@ async def test_not_logged_in_returns_empty_without_backend_calls(
     """Without a login, both methods return empty and never touch the backend."""
     _install_cache_mocks(provider)
     client = _stub_api(provider, _make_payload())
-    client.auth.is_signed_in = False
+    client.is_signed_in = False
 
     rows = await provider.get_recommendations()
     items = await provider.get_recommendation_items(MUSIC_ROW_ID)

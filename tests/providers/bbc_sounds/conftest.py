@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from auntie_sounds.auth import AuthService
 from auntie_sounds.client import SoundsClient
 from auntie_sounds.content import ContentService
 from auntie_sounds.models import Menu, MenuItem
@@ -26,8 +25,7 @@ def client() -> SoundsClient:
     client.playback = AsyncMock(spec=PlaybackService)
     client.stations = AsyncMock(spec=StationService)
     client.schedules = AsyncMock(spec=ScheduleService)
-    client.auth = Mock(spec=AuthService)
-    client.auth.is_signed_in = True
+    client.is_signed_in = True
     return client
 
 
