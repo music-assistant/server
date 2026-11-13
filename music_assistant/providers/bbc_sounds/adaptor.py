@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from auntie_sounds import SCHEDULE_TIMEZONE
 from auntie_sounds.models import (
     Category,
     Collection,
@@ -53,8 +54,7 @@ from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.helpers.datetime as dt
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.datetime import LOCAL_TIMEZONE
-from music_assistant.providers.bbc_sounds.constants import ValidMenuIDs, _Constants
+from music_assistant.providers.bbc_sounds.constants import Constants, ValidMenuIDs
 from music_assistant.providers.bbc_sounds.live_rewind import LiveProgrammeId
 
 if TYPE_CHECKING:
@@ -62,10 +62,15 @@ if TYPE_CHECKING:
 
 
 def _date_convertor(
-    timestamp: str | datetime,
-    date_format: str,
-    timezone: tzinfo | None = LOCAL_TIMEZONE,
+    timestamp: str | datetime, date_format: str, timezone: tzinfo | None = SCHEDULE_TIMEZONE
 ) -> str:
+    """
+    Convert a timestamp string or datetime to its date component as string.
+
+    :arg timestamp string or datetime version of the timestamp, e.g. "2020-02-02 18:00:00"
+    :arg date_format strfttime format to read the timestamp, e.g. "%d/%m/%Y, %H:%M:%S"
+
+    """
     if isinstance(timestamp, str):
         timestamp = dt.from_iso_string(timestamp)
     else:
@@ -263,7 +268,6 @@ class StationConverter(BaseConverter):
         """Convert the source object to a stream."""
         if not isinstance(source_obj, (Station, LiveStation)):
             return None
-        # TODO: can't seek this stream
         station = await self.convert(source_obj)
         if not station or not source_obj.stream:
             return None
@@ -283,33 +287,22 @@ class StationConverter(BaseConverter):
         show_time = self._get_attr(source_obj, "titles.secondary")
         show_title = self._get_attr(source_obj, "titles.primary")
         programme_name = f"{show_time} • {show_title}"
-        stream_details = None
-        if station and source_obj.stream:
-            stream_metadata = StreamMetadata(
-                title=programme_name,
-            )
 
-            if station.image is not None:
-                stream_metadata.image_url = station.image.path
-
-            stream_details = StreamDetails(
-                stream_metadata=stream_metadata,
-                media_type=MediaType.RADIO,
-                stream_type=StreamType.HLS
-                if self.context.provider.stream_format == _Constants.HLS
-                else StreamType.HTTP,
-                path=str(source_obj.stream),
-                item_id=station.item_id,
-                provider=station.provider,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(str(source_obj.stream))
-                ),
-                data={
-                    "provider": self.context.provider_domain,
-                    "station": station.item_id,
-                },
-            )
-        return stream_details
+        return StreamDetails(
+            stream_metadata=StreamMetadata(
+                image_url=station.image.path if station.image else None, title=programme_name
+            ),
+            media_type=MediaType.RADIO,
+            stream_type=StreamType.HLS,
+            path=str(source_obj.stream),
+            item_id=station.item_id,
+            provider=station.provider,
+            audio_format=_audio_format(source_obj.stream),
+            data={
+                "provider": self.context.provider_domain,
+                "station": station.item_id,
+            },
+        )
 
     async def convert(self, source_obj: Any) -> Radio:
         """Convert the source object to target type."""
@@ -442,11 +435,9 @@ class PodcastConverter(BaseConverter):
                     uri=source_obj.stream,
                 ),
                 media_type=MediaType.PODCAST_EPISODE,
-                stream_type=StreamType.HLS
-                if self.context.provider.stream_format == _Constants.HLS
-                else StreamType.HTTP,
+                stream_type=StreamType.HLS,
                 path=source_obj.stream,
-                item_id=source_obj.id,
+                item_id=source_obj.pid,
                 provider=self.context.provider_domain,
                 audio_format=_audio_format(source_obj.stream),
                 allow_seek=True,
@@ -476,9 +467,7 @@ class PodcastConverter(BaseConverter):
             stream_details = StreamDetails(
                 stream_metadata=metadata,
                 media_type=MediaType.TRACK,
-                stream_type=StreamType.HLS
-                if self.context.provider.stream_format == _Constants.HLS
-                else StreamType.HTTP,
+                stream_type=StreamType.HLS,
                 path=source_obj.stream,
                 item_id=episode.item_id,
                 provider=self.context.provider_domain,
@@ -534,9 +523,7 @@ class PodcastConverter(BaseConverter):
         # Handle parent podcast
         podcast = None
         if hasattr(episode, "container") and episode.container:
-            podcast = await PodcastConverter(self.context).convert(
-                cast("Podcast", episode.container)
-            )
+            podcast = await PodcastConverter(self.context).convert(episode.container)
 
         if not podcast or not isinstance(podcast, MAPodcast):
             raise ConversionError(f"No podcast for episode {episode}")
@@ -551,9 +538,9 @@ class PodcastConverter(BaseConverter):
             position=0,
             resume_position_ms=resume_position_ms,
             metadata=ImageProvider.create_metadata_with_image(
-                episode.image_url,
-                self.context.provider_domain,
-                description,
+                url=episode.image_url,
+                provider=self.context.provider_domain,
+                description=description,
             ),
             podcast=podcast,
             provider_mappings={self._create_provider_mapping(episode.pid)},
@@ -564,7 +551,7 @@ class PodcastConverter(BaseConverter):
 
     def _show_is_a_track(self, show: RadioShow) -> bool:
         """
-        Determine if this should be an track instead of a podcast episode based on duration/context.
+        Determine if this should be a track instead of a podcast episode based on duration/context.
 
         A sensible, but arbitrary duration was picked for this.
         Track example: latest BBC News, PodcastEpisode: latest episode of a radio show.
@@ -841,11 +828,9 @@ class BrowseConverter(BaseConverter):
         if not item or not item.sub_items or not item.title:
             raise ConversionError(f"Incorrect format for item {item}")
 
-        # TODO this is messy
-        new_adaptor = Adaptor(provider=self.context.provider)
         items: list[Track | Radio | MAPodcast | MAPodcastEpisode | BrowseFolder] = []
         for sub_item in item.sub_items:
-            new_item = await new_adaptor.new_object(sub_item)
+            new_item = await self.context.provider.adaptor.new_object(sub_item)
             if (
                 new_item is not None
                 and not isinstance(new_item, RecommendationFolder)
@@ -928,7 +913,7 @@ class Adaptor:
             return None
         context = self._create_context(path_parts, force_type)
 
-        converters = [
+        converters: list[BaseConverter] = [
             StationConverter(context),
             PodcastConverter(context),
             BrowseConverter(context),
@@ -993,7 +978,7 @@ class Adaptor:
             return None
         context = self._create_context(path_parts, force_type)
 
-        converters = [
+        converters: list[BaseConverter] = [
             StationConverter(context),
             LiveProgrammeConverter(context),
             PodcastConverter(context),
@@ -1019,7 +1004,7 @@ class Adaptor:
                     )
                     raise ConversionError(msg)
                 msg = "Successfully converted %s to %s"
-                args = [type(source_obj).__name__, type(result).__name__]
+                args: list[Any] = [type(source_obj).__name__, type(result).__name__]
                 if hasattr(result, "item_id") and result.item_id is not None:
                     msg += " item_id: %s"
                     args.append(result.item_id)
