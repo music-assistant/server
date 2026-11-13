@@ -22,7 +22,7 @@ from music_assistant_models.media_items import (
     Radio,
     SearchResults,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 BASE_URL: Final = "https://hermesagentradio.com"
 STATIONS_ENDPOINT: Final = f"{BASE_URL}/stations.json"
 NOW_PLAYING_ENDPOINT: Final = f"{BASE_URL}/now-playing.json"
+
+# the main mount's now-playing feed is re-read this often while its stream plays
+STREAM_METADATA_UPDATE_INTERVAL: Final = 60
 
 # bound each request; the shared session's default timeout is too long for a metadata fetch
 HTTP_TIMEOUT: Final = aiohttp.ClientTimeout(total=10)
@@ -86,14 +89,14 @@ class HermesAgentRadio(MusicProvider):
         if (subpath := path.split("://", 1)[1] if "://" in path else "") != "":
             msg = f"Invalid subpath: {subpath}"
             raise KeyError(msg)
-        return [await self._parse_radio(station) for station in await self._get_stations()]
+        return [self._parse_radio(station) for station in await self._get_stations()]
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         station = await self._get_station(prov_radio_id)
         if not station:
             raise MediaNotFoundError(f"Radio station {prov_radio_id} not found")
-        return await self._parse_radio(station)
+        return self._parse_radio(station)
 
     async def search(
         self,
@@ -106,7 +109,7 @@ class HermesAgentRadio(MusicProvider):
             return SearchResults()
         query = search_query.lower()
         radios = [
-            await self._parse_radio(station)
+            self._parse_radio(station)
             for station in await self._get_stations()
             if query in f"{station.get('name', '')} {station.get('tagline', '')}".lower()
         ][:limit]
@@ -120,7 +123,7 @@ class HermesAgentRadio(MusicProvider):
         # the feed gives relative mount paths like /stream and /stream/techno
         path = station.get("stream") or "/stream"
         url = f"{BASE_URL}{path}" if path.startswith("/") else str(path)
-        return StreamDetails(
+        streamdetails = StreamDetails(
             provider=self.domain,
             item_id=item_id,
             media_type=media_type,
@@ -132,6 +135,12 @@ class HermesAgentRadio(MusicProvider):
             # radio is live linear audio: never treated as a fixed-duration item
             is_realtime=True,
         )
+        # the now-playing feed only describes the main mount, so live metadata
+        # is attached to that one station's stream and never to the genre mounts
+        if item_id == "main":
+            streamdetails.stream_metadata_update_callback = self._update_stream_metadata
+            streamdetails.stream_metadata_update_interval = STREAM_METADATA_UPDATE_INTERVAL
+        return streamdetails
 
     @use_cache(3600)  # station list may gain genre mounts; refresh hourly
     async def _get_stations(self) -> list[dict[str, Any]]:
@@ -139,7 +148,7 @@ class HermesAgentRadio(MusicProvider):
         try:
             async with self.mass.http_session.get(STATIONS_ENDPOINT, timeout=HTTP_TIMEOUT) as resp:
                 resp.raise_for_status()
-                data = await resp.json()
+                data: dict[str, Any] = await resp.json()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise ProviderUnavailableError("Hermes Agent Radio feed unavailable") from err
         stations: list[dict[str, Any]] = data.get("stations", [])
@@ -154,21 +163,36 @@ class HermesAgentRadio(MusicProvider):
             None,
         )
 
-    @use_cache(60)  # keep 'on air now' fresh without hammering the station
-    async def _get_now_playing(self) -> dict[str, Any]:
-        """Fetch the station's now-playing/next feed."""
+    async def _update_stream_metadata(self, streamdetails: StreamDetails, _elapsed: int) -> None:
+        """Refresh the main station's live metadata from its now-playing feed."""
         try:
             async with self.mass.http_session.get(
                 NOW_PLAYING_ENDPOINT, timeout=HTTP_TIMEOUT
             ) as resp:
                 resp.raise_for_status()
-                now_data: dict[str, Any] = await resp.json()
+                data: dict[str, Any] = await resp.json()
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            raise ProviderUnavailableError("Hermes Agent Radio feed unavailable") from err
-        return now_data
+            # says nothing about what plays, so the last known metadata stays
+            self.logger.debug("Could not fetch the now-playing feed: %s", err)
+            return
+        current: dict[str, Any] = data.get("now") or {}
+        title = str(current.get("title") or "").strip()
+        if not title:
+            return
+        description: str | None = None
+        if upcoming := (data.get("up_next") or [None])[0]:
+            if next_title := upcoming.get("title"):
+                description = f"Up next: {next_title}"
+        duration_s = current.get("duration_s")
+        streamdetails.stream_metadata = StreamMetadata(
+            title=title,
+            artist=str(current["artist"]) if current.get("artist") else None,
+            duration=int(duration_s) if duration_s else None,
+            description=description,
+        )
 
-    async def _parse_radio(self, station: dict[str, Any]) -> Radio:
-        """Build a Radio object from a station payload."""
+    def _parse_radio(self, station: dict[str, Any]) -> Radio:
+        """Build a Radio object from a station payload (no network I/O)."""
         station_id: str = station.get("id") or "main"
         name: str = station.get("name") or "Hermes Agent Radio"
         lines: list[str] = []
@@ -176,17 +200,6 @@ class HermesAgentRadio(MusicProvider):
             lines.append(str(tagline))
         if songs := station.get("songs"):
             lines.append(f"{songs} community songs in rotation")
-        # put the live broadcast state on the detail page: what's on air and what's next
-        try:
-            now = await self._get_now_playing()
-            if current := now.get("now"):
-                title = current.get("title") or "unknown"
-                artist = current.get("artist")
-                lines.append(f"On air: {title} — {artist}" if artist else f"On air: {title}")
-            if upcoming := (now.get("up_next") or [None])[0]:
-                lines.append(f"Up next: {upcoming.get('title', '')}")
-        except ProviderUnavailableError:
-            pass  # metadata enrichment must never block the station listing
         radio = Radio(
             name=name,
             item_id=station_id,
