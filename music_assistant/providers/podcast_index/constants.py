@@ -2,7 +2,7 @@
 
 # Configuration keys
 CONF_API_KEY = "api_key"
-CONF_API_SECRET = "api_secret"
+CONF_API_SECRET = "api_secret"  # noqa: S105 - config key
 CONF_STORED_PODCASTS = "stored_podcasts"
 
 # API settings

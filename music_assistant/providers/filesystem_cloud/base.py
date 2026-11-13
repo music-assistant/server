@@ -25,7 +25,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.tags import get_embedded_image
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, get_embedded_image
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -62,8 +62,8 @@ AUDIO_STREAM_EXTENSIONS = TRACK_EXTENSIONS | AUDIOBOOK_EXTENSIONS | PODCAST_EPIS
 
 # config keys shared by the cloud filesystem providers, all collected by the setup flow
 CONF_CLIENT_ID = "client_id"
-CONF_CLIENT_SECRET = "client_secret"
-CONF_REFRESH_TOKEN = "refresh_token"
+CONF_CLIENT_SECRET = "client_secret"  # noqa: S105 - config key
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
 CONF_FOLDER_ID = "folder_id"
 
 
@@ -100,7 +100,7 @@ async def run_cloud_setup(
         stored_secret = client_secret
         try:
             if not client_secret:
-                raise SetupFlowError("A client secret is required", translation_key="required")
+                raise SetupFlowError("A client secret is required", translation_key="required")  # noqa: TRY301 - shown as form error
             setup_data[CONF_REFRESH_TOKEN] = await authorize(session, client_id, client_secret)
             await session.finish(setup_data)
             return
@@ -219,6 +219,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             raise MediaNotFoundError(f"No embedded image found: {path}")
         return await self._read_file(path)
 
+    async def open_local_file(self, path: str) -> int | None:
+        """Return None: the stream path of a cloud file is its URL, which ffmpeg opens itself."""
+        return None
+
     # ------------------------------------------------------------------
     # API hooks (implemented by the concrete cloud provider); hooks must
     # translate client library errors into MA errors: ProviderUnavailableError
@@ -275,6 +279,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         # an outage (or expired credentials) surfaces as a raised error
         await self._scandir("", use_cache=False)
         return True
+
+    async def _unreachable_folders(self) -> list[str]:
+        """Return no folders: a cloud drive has no storage locations below its root."""
+        return []
 
     async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """
@@ -384,6 +392,10 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             return await self._api_download_bytes(file_id)
         except ProviderUnavailableError as err:
             raise MediaNotFoundError(f"Unable to read cloud file {path}: {err}") from err
+
+    async def _parse_tags(self, file_item: FileSystemItem) -> AudioTags:
+        """Parse the tags of a cloud file from its stream URL."""
+        return await async_parse_tags(file_item.absolute_path, file_item.file_size)
 
     def _get_chapter_path(self, relative_path: str) -> str:
         """Return the streamable URL for an audiobook chapter file."""

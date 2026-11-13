@@ -14,8 +14,10 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncGenerator, Iterable, Mapping
+from collections import defaultdict
+from collections.abc import AsyncGenerator, Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from itertools import batched
 from math import isfinite
 from typing import TYPE_CHECKING, Any
 
@@ -24,7 +26,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
-from music_assistant_models.media_items import AudioMetadata
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
@@ -45,7 +46,9 @@ from music_assistant.controllers.streams.constants import (
     AA_TABLE_ANALYSIS,
     AA_TABLE_FAILURES,
 )
+from music_assistant.controllers.streams.stream_sources import rank_provider_mappings
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.audio import pcm_container_bit_depth
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -98,13 +101,20 @@ MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
 # candidate query runs; filled in batches of this size.
 _CANDIDATE_TRACKS_TABLE = "candidate_tracks"
 _CANDIDATE_KEYS_BATCH_SIZE = 5000
+# Item ids per audio-metadata lookup query, well below SQLite's bound-variable limit.
+_AUDIO_METADATA_BATCH_SIZE = 500
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.media_items import AudioFormat, Track
+    from music_assistant_models.media_items import (
+        AudioFormat,
+        AudioMetadata,
+        ProviderMapping,
+        Track,
+    )
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
@@ -123,15 +133,18 @@ def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
 def _parse_row(
     row: Mapping[str, Any],
     unparsable_ids: list[Any] | None = None,
+    *,
+    arrays: Collection[str] | None = None,
 ) -> AudioAnalysisData | None:
     """
     Parse a single audio_analysis row's packed record, logging and skipping on error.
 
     :param row: The audio_analysis row to parse.
     :param unparsable_ids: When given, the id of a row that fails to parse is appended.
+    :param arrays: The array fields to unpack (see :func:`decode`); None unpacks them all.
     """
     try:
-        return decode(row["header"], row["payload"])
+        return decode(row["header"], row["payload"], arrays=arrays)
     except (IndexError, KeyError, TypeError, ValueError) as err:
         row_id = _get_row_value(row, "id")
         # the error itself may embed the full (huge) field value, so log only
@@ -155,6 +168,8 @@ def _merged_from_rows(
     available_aa_domains: set[str],
     priority: tuple[str, ...] | None = None,
     unparsable_ids: list[Any] | None = None,
+    *,
+    arrays: Collection[str] | None = None,
 ) -> AudioAnalysisData | None:
     """
     Fold audio_analysis rows into one merged result.
@@ -170,6 +185,7 @@ def _merged_from_rows(
         are considered and the first-listed domain wins each per-field conflict.
     :param unparsable_ids: When given, ids of rows whose packed record fails to parse
         are appended.
+    :param arrays: The array fields to unpack (see :func:`decode`); None unpacks them all.
     """
     merged = AudioAnalysisData()
     found = False
@@ -177,7 +193,7 @@ def _merged_from_rows(
         for row in rows:
             if row["aa_provider_domain"] not in available_aa_domains:
                 continue
-            if (row_data := _parse_row(row, unparsable_ids)) is None:
+            if (row_data := _parse_row(row, unparsable_ids, arrays=arrays)) is None:
                 continue
             merged.update(row_data)
             found = True
@@ -191,7 +207,7 @@ def _merged_from_rows(
         domain = row["aa_provider_domain"]
         if domain not in wanted_set or domain in by_domain:
             continue
-        if (row_data := _parse_row(row, unparsable_ids)) is None:
+        if (row_data := _parse_row(row, unparsable_ids, arrays=arrays)) is None:
             continue
         by_domain[domain] = row_data
     for domain in reversed(wanted):
@@ -579,6 +595,28 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 {"media_type": media_type.value, "item_id": item_id, "provider": provider_key},
             )
 
+    async def delete_measured_loudness(self, provider_mappings: Iterable[ProviderMapping]) -> None:
+        """
+        Delete the measured loudness of a track, keeping the loudness its tags or source supply.
+
+        :param provider_mappings: The provider mappings of the track.
+        """
+        if not self._database_ready:
+            return
+        for mapping in provider_mappings:
+            # analysis is stored under the domain or the instance id of the music source
+            for provider_key in {mapping.provider_domain, mapping.provider_instance}:
+                for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+                    await self.database.delete(
+                        table,
+                        {
+                            "media_type": MediaType.TRACK.value,
+                            "item_id": mapping.item_id,
+                            "provider": provider_key,
+                            "aa_provider_domain": LOUDNESS_ANALYSIS_DOMAIN,
+                        },
+                    )
+
     async def get_audio_analysis(
         self,
         item_id: str,
@@ -605,10 +643,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         if not self._database_ready:
             return None
-        provider = self.mass.get_provider(provider_instance_id_or_domain)
-        if not isinstance(provider, MusicProvider):
+        if (prov_key := self._analysis_provider_key(provider_instance_id_or_domain)) is None:
             return None
-        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         rows = await self.database.get_rows_from_query(
             f"SELECT id, aa_provider_domain, CAST(header AS BLOB) AS header, payload "
             f"FROM {AA_TABLE_ANALYSIS} "
@@ -644,23 +680,123 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         """
         Return AudioMetadata (bpm, musical key) for a track, or None when no analysis exists.
 
-        Provider mappings are tried best-quality first; per field the Smart Fades AA
-        provider is preferred over other AA providers.
+        Provider mappings are tried in the order playback would pick them; per field the
+        Smart Fades AA provider is preferred over other AA providers.
 
         :param track: The track to look up stored analysis data for.
         """
         priority = TRACK_EXPORT_AA_PRIORITY
-        for mapping in sorted(track.provider_mappings, key=lambda m: m.quality, reverse=True):
+        for mapping in rank_provider_mappings(track.provider_mappings):
             analysis = await self.get_audio_analysis(
                 mapping.item_id, mapping.provider_instance, priority=priority
             )
-            if analysis is None or (analysis.bpm is None and analysis.key is None):
-                continue
-            musical_key: str | None = None
-            if analysis.key is not None:
-                musical_key = f"{analysis.key} {analysis.mode}" if analysis.mode else analysis.key
-            return AudioMetadata(bpm=analysis.bpm, musical_key=musical_key)
+            if analysis is not None and (metadata := analysis.as_audio_metadata()) is not None:
+                return metadata
         return None
+
+    async def get_tracks_audio_metadata(
+        self, tracks: Sequence[Track]
+    ) -> list[AudioMetadata | None]:
+        """
+        Return AudioMetadata (bpm, musical key) for many tracks at once.
+
+        Each entry matches what get_track_audio_metadata returns for that track. Only the
+        scalars are read from the stored headers, in a few queries instead of one per track.
+
+        :param tracks: The tracks to look up stored analysis data for.
+        :returns: One entry per given track, in the same order; None where no analysis exists.
+        """
+        results: list[AudioMetadata | None] = [None] * len(tracks)
+        if not self._database_ready or not tracks:
+            return results
+        available_aa_domains = self._available_aa_domains()
+        wanted_domains = [d for d in TRACK_EXPORT_AA_PRIORITY if d in available_aa_domains]
+        if not wanted_domains:
+            return results
+
+        prov_keys: dict[str, str | None] = {}
+        ranked_keys: list[list[tuple[str, str]]] = []
+        item_ids_by_prov_key: dict[str, set[str]] = defaultdict(set)
+        for track in tracks:
+            track_keys: list[tuple[str, str]] = []
+            for mapping in rank_provider_mappings(track.provider_mappings):
+                instance = mapping.provider_instance
+                if instance not in prov_keys:
+                    prov_keys[instance] = self._analysis_provider_key(instance)
+                if (prov_key := prov_keys[instance]) is None:
+                    continue
+                track_keys.append((prov_key, mapping.item_id))
+                item_ids_by_prov_key[prov_key].add(mapping.item_id)
+            ranked_keys.append(track_keys)
+
+        domain_params = {f"domain{i}": domain for i, domain in enumerate(wanted_domains)}
+        domain_placeholders = ",".join(f":{name}" for name in domain_params)
+        # rows arrive lowest priority first, so folding them in order lets the
+        # first-listed domain win each field, as in _merged_from_rows
+        priority_order = " ".join(f"WHEN :{name} THEN {i}" for i, name in enumerate(domain_params))
+        analysis_by_key: dict[tuple[str, str], AudioAnalysisData] = defaultdict(AudioAnalysisData)
+        for prov_key, item_ids in item_ids_by_prov_key.items():
+            for chunk in batched(item_ids, _AUDIO_METADATA_BATCH_SIZE, strict=False):
+                params: dict[str, Any] = {f"id{i}": item_id for i, item_id in enumerate(chunk)}
+                id_placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
+                rows = await self.database.get_rows_from_query(
+                    "SELECT item_id, json_extract(header, '$.bpm') AS bpm, "
+                    "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode "
+                    f"FROM {AA_TABLE_ANALYSIS} "
+                    "WHERE provider = :provider AND media_type = :media_type "
+                    f"AND aa_provider_domain IN ({domain_placeholders}) "
+                    f"AND item_id IN ({id_placeholders}) AND json_valid(header) "
+                    f"ORDER BY CASE aa_provider_domain {priority_order} END DESC",
+                    {
+                        **params,
+                        **domain_params,
+                        "provider": prov_key,
+                        "media_type": MediaType.TRACK.value,
+                    },
+                    limit=0,
+                )
+                for row in rows:
+                    analysis_by_key[(prov_key, row["item_id"])].update(
+                        AudioAnalysisData(
+                            bpm=None if row["bpm"] is None else float(row["bpm"]),
+                            key=row["key"],
+                            mode=row["mode"],
+                        )
+                    )
+
+        metadata_by_key: dict[tuple[str, str], AudioMetadata | None] = {}
+        for index, track_keys in enumerate(ranked_keys):
+            for key in track_keys:
+                if key not in metadata_by_key:
+                    analysis = analysis_by_key.get(key)
+                    metadata_by_key[key] = analysis.as_audio_metadata() if analysis else None
+                if (metadata := metadata_by_key[key]) is not None:
+                    results[index] = metadata
+                    break
+        return results
+
+    async def get_vocal_onset(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> float | None:
+        """
+        Return the second at which singing starts, from the stored analysis, or None when unknown.
+
+        :param item_id: Provider-native item ID from streamdetails.item_id.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param media_type: The media type of the item.
+        """
+        # imported here: the smart_fades package imports this module
+        from music_assistant.controllers.streams.smart_fades.vocal import (  # noqa: PLC0415
+            first_vocal_onset,
+        )
+
+        analysis = await self.get_audio_analysis(
+            item_id, provider_instance_id_or_domain, media_type
+        )
+        return first_vocal_onset(analysis) if analysis is not None else None
 
     @api_command("audio_analysis/wave_form")
     async def get_wave_form(
@@ -868,6 +1004,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         primary_aa_domain: str,
         media_type: MediaType = MediaType.TRACK,
         priority: tuple[str, ...] | None = None,
+        *,
+        arrays: Collection[str] | None = None,
     ) -> AsyncGenerator[tuple[str, str, AudioAnalysisData]]:
         """
         Yield one merged AudioAnalysisData per track present in primary_aa_domain.
@@ -892,6 +1030,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         :param priority: AA provider domains the merged values must come from, first-listed
             wins per-field conflicts (see get_audio_analysis). When None, all available
             providers are merged latest-write-wins.
+        :param arrays: The array fields to unpack; every other array field is left None on
+            the yielded records. None unpacks them all. A consumer that needs only a few
+            arrays saves most of the decode work of a fully analysed track.
         """
         self._require_database()
         available_aa_domains = self._available_aa_domains()
@@ -929,14 +1070,16 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         ):
             key = (row["item_id"], row["provider"])
             if current_key is not None and key != current_key:
-                merged = _merged_from_rows(current_group, available_aa_domains, priority)
+                merged = _merged_from_rows(
+                    current_group, available_aa_domains, priority, arrays=arrays
+                )
                 if merged is not None:
                     yield (*current_key, merged)
                 current_group = []
             current_key = key
             current_group.append(row)
         if current_key is not None:
-            merged = _merged_from_rows(current_group, available_aa_domains, priority)
+            merged = _merged_from_rows(current_group, available_aa_domains, priority, arrays=arrays)
             if merged is not None:
                 yield (*current_key, merged)
 
@@ -1205,9 +1348,11 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
             return
 
         # Override content_type so ffmpeg decodes rather than re-muxing the source codec.
+        source_bit_depth = streamdetails.audio_format.bit_depth
         pcm_format = dataclasses.replace(
             streamdetails.audio_format,
-            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
+            content_type=ContentType.from_bit_depth(source_bit_depth),
+            bit_depth=pcm_container_bit_depth(source_bit_depth),
         )
 
         accepted = await self._start_analysis_on_providers(
@@ -1554,7 +1699,7 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                 )
                 return prov_id, (err.reason, err.retry_at)
             except Exception as err:
-                # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
+                # process_pcm_chunk is implemented by the provider (torch/numpy/ffmpeg), so evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
                 return prov_id, (
@@ -1589,8 +1734,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
 
         Reads at its own pace from the buffer's retained window. On clean end-of-stream the
         providers are finalized, unless the source ended far short of the expected duration.
-        If the reader falls a full window behind playback (the chunk it needs has been
-        evicted) or the buffer is torn down first, the session is dropped.
+        If the reader falls behind the played audio the buffer keeps (the chunk it needs has
+        been evicted) or the buffer is torn down first, the session is dropped.
 
         :param session_key: Active-session key for this worker.
         :param audio_buffer: The shared playback buffer to read PCM from.
@@ -1668,6 +1813,13 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         except ValueError, TypeError:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
+
+    def _analysis_provider_key(self, provider_instance_id_or_domain: str) -> str | None:
+        """Return the provider key analysis rows are stored under, or None when not loaded."""
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
+            return None
+        return provider.domain if provider.is_streaming_provider else provider.instance_id
 
     def _available_aa_domains(self) -> set[str]:
         """Return available AA provider domains plus the virtual provider-loudness domain."""

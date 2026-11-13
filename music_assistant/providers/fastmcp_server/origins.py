@@ -18,6 +18,7 @@ includes:
 * The normalised origin of ``mass.webserver.base_url``. If the base URL is
   ``http://``, the ``https://`` mirror is added too — MA may be behind a
   TLS-terminating reverse proxy.
+* The normalised origin of ``mass.webserver.external_url``, when configured.
 * For every loopback host plus the configured ``publish_ip``, both
   ``http://`` and ``https://`` on the MA port (``http://localhost:8095``,
   ``https://localhost:8095``, etc.). Browsers serialize the port in Origin
@@ -113,6 +114,10 @@ def compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "") 
         # cannot induce browsers to downgrade.
         if base_norm.startswith("http://"):
             allow.add("https://" + base_norm[len("http://") :])
+
+    external_norm = _normalize_origin(str(mass.webserver.external_url or ""))
+    if external_norm:
+        allow.add(external_norm)
 
     # Browsers send the MA port in Origin even for loopback access. Adding
     # both schemes on the MA port keeps the allowlist consistent across

@@ -8,14 +8,21 @@ underruns the LIVE flow stream at EOF and keeps reporting buffering/playing).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
+
+    from music_assistant.models.player import Player
 
 
 def _fake_controller(queue: MagicMock) -> MagicMock:
@@ -138,3 +145,92 @@ def test_flow_queue_exhausted_false_for_unknown_queue() -> None:
     fake = _fake_controller(queue)
 
     assert _exhausted(fake, "other", "sess-1") is False
+
+
+def _streamed_session(state: PlaybackState = PlaybackState.PLAYING) -> MagicMock:
+    """Return a fake controller whose queue streamed 150 seconds in session sess-1."""
+    queue = MagicMock(queue_id="q", session_id="sess-1", state=state)
+    fake = _fake_controller(queue)
+    fake._queue_data["q"].flow_mode_stream_log = [
+        PlayLogEntry("first", seconds_streamed=100),
+        PlayLogEntry("last", seconds_streamed=50),
+    ]
+    return fake
+
+
+def _played_out(
+    fake: MagicMock, elapsed: float | None, queue_id: str = "q", session_id: str = "sess-1"
+) -> bool:
+    player = SimpleNamespace(state=SimpleNamespace(corrected_elapsed_time=elapsed))
+    return PlayerQueuesController.flow_stream_played_out(
+        cast("PlayerQueuesController", fake), queue_id, session_id, cast("Player", player)
+    )
+
+
+@pytest.mark.parametrize("elapsed", [140.0, None])
+def test_flow_stream_not_played_out_while_the_player_holds_audio(elapsed: float | None) -> None:
+    """A player that has not reached the end of what the session streamed still needs it."""
+    assert _played_out(_streamed_session(), elapsed) is False
+
+
+def test_flow_stream_played_out_once_the_player_reached_its_end() -> None:
+    """A player that played everything the session streamed is done with it."""
+    assert _played_out(_streamed_session(), 149.6) is True
+
+
+@pytest.mark.parametrize("state", [PlaybackState.IDLE, PlaybackState.PAUSED])
+def test_flow_stream_played_out_when_the_queue_stopped_playing(state: PlaybackState) -> None:
+    """A queue that no longer plays needs nothing more of the session."""
+    assert _played_out(_streamed_session(state), 10.0) is True
+
+
+def test_flow_stream_played_out_when_a_newer_session_took_over() -> None:
+    """The audio of a superseded session is no longer played."""
+    fake = _streamed_session()
+    fake._queue_data["q"].session_id = "sess-2"
+
+    assert _played_out(fake, 10.0) is True
+
+
+def test_flow_stream_played_out_for_unknown_queue() -> None:
+    """There is nothing to hold for a queue that does not exist."""
+    assert _played_out(_streamed_session(), 10.0, queue_id="other") is True
+
+
+async def test_queue_resumes_items_added_while_a_long_buffer_plays_out() -> None:
+    """
+    Items added while the player plays out a long buffer still start once it goes idle.
+
+    A held-open flow stream lets the player play its whole buffer, which takes minutes after a
+    long session, before it reports idle.
+    """
+    queue = MagicMock(
+        queue_id="q",
+        session_id="sess-1",
+        active=True,
+        state=PlaybackState.PLAYING,
+        current_index=0,
+        display_name="Queue",
+    )
+    fake = _fake_controller(queue)
+    scheduled: list[Any] = []
+    fake.mass.create_task = MagicMock(side_effect=lambda coro, **_kw: scheduled.append(coro))
+    fake.mass.players.get_player.return_value = MagicMock(offline_by_power_control=False)
+    fake.get_next_item.return_value = MagicMock(queue_item_id="added")
+    fake.index_by_id.return_value = 1
+    fake.play_index = AsyncMock()
+    polls = 0
+
+    async def _sleep(_seconds: float) -> None:
+        nonlocal polls
+        polls += 1
+        if polls == 120:
+            queue.state = PlaybackState.IDLE
+
+    PlayerQueuesController.queue_buffer_completed(
+        cast("PlayerQueuesController", fake), "q", queue_exhausted=True
+    )
+    with patch("music_assistant.controllers.player_queues.controller.asyncio.sleep", _sleep):
+        await scheduled[0]
+
+    fake.play_index.assert_awaited_once_with("q", 1)

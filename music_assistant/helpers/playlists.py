@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
@@ -53,6 +54,8 @@ _LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
 # playlist content-type does not pull an endless body into memory
 MAX_PLAYLIST_SIZE = 64 * 1024
 PLAYLIST_READ_TIMEOUT = 5
+# the only image references a playlist file may contribute: fetched over http(s) or inline
+_REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = ("http://", "https://", "data:image")
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -392,6 +395,13 @@ def sanitize_m3u_value(value: str) -> str:
     return value.translate(_LINE_BREAK_TABLE)
 
 
+def sanitize_playlist_filename(name: str) -> str:
+    """Return the playlist name made safe to use as a file name."""
+    sanitized = re.sub(r'[<>:"/\\|?*]', "_", name)
+    sanitized = sanitized.strip(" .")
+    return sanitized or "untitled"
+
+
 def escape_markdown(value: str, table: bool = False) -> str:
     """
     Escape provider text before adding it to a Markdown import/migration report.
@@ -606,6 +616,13 @@ def construct_media_item_from_playlist_item(
             image_type = ImageType(img.type)
         except ValueError:
             continue
+        # nothing in the file proves who owns a local path, so only remote references are
+        # imported, and only from builtin or a provider that is loaded
+        if not img.path.startswith(_REMOTE_IMAGE_PREFIXES) or not (
+            img.provider == "builtin" or mass.get_provider(img.provider) is not None
+        ):
+            LOGGER.debug("Skipping playlist image %s of provider %s", img.path, img.provider)
+            continue
         media_item.metadata.add_image(
             MediaItemImage(
                 type=image_type,
@@ -615,6 +632,85 @@ def construct_media_item_from_playlist_item(
             )
         )
     return media_item
+
+
+def validate_playlist_block_move(
+    length: int, positions: Sequence[int], to_position: int
+) -> list[int]:
+    """
+    Return the positions of a block move in playlist order, after checking they fit.
+
+    :param length: The number of items in the playlist.
+    :param positions: The current positions of the items to move, 1-based.
+    :param to_position: The position of the block's first item after the move, 1-based.
+    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+    """
+    selected = sorted(set(positions))
+    if not selected:
+        raise InvalidDataError("No playlist positions to move")
+    if len(selected) != len(positions):
+        raise InvalidDataError("Each playlist position can only be moved once")
+    if selected[0] < 1 or selected[-1] > length:
+        msg = f"Position out of range for a playlist of {length} item(s)"
+        raise InvalidDataError(msg)
+    if not 1 <= to_position <= length - len(selected) + 1:
+        msg = f"{len(selected)} item(s) do not fit at position {to_position} of {length}"
+        raise InvalidDataError(msg)
+    return selected
+
+
+def move_playlist_block[ItemT](
+    items: Sequence[ItemT], positions: Sequence[int], to_position: int
+) -> list[ItemT]:
+    """
+    Return the items of a playlist after moving some of them as one block.
+
+    The moved items keep their order and the block starts at to_position.
+
+    :param items: The playlist items, in order.
+    :param positions: The current positions of the items to move, 1-based.
+    :param to_position: The position of the block's first item after the move, 1-based.
+    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+    """
+    selected = validate_playlist_block_move(len(items), positions, to_position)
+    chosen = set(selected)
+    moved = [items[position - 1] for position in selected]
+    rest = [item for position, item in enumerate(items, start=1) if position not in chosen]
+    return rest[: to_position - 1] + moved + rest[to_position - 1 :]
+
+
+def playlist_block_move_steps(
+    length: int, positions: Sequence[int], to_position: int
+) -> list[tuple[int, int]]:
+    """
+    Return the single-track moves that together move some tracks as one block.
+
+    Each step is a (from_position, to_position) pair, both 1-based, where to_position is
+    the track's final position; the steps apply in order.
+
+    :param length: The number of tracks in the playlist.
+    :param positions: The current positions of the tracks to move, 1-based.
+    :param to_position: The position of the block's first track after the move, 1-based.
+    :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+    """
+    selected = validate_playlist_block_move(length, positions, to_position)
+    chosen = set(selected)
+    # Track every item by its original position. Each selected item is placed right after
+    # the item that precedes it in the result (the item before the block, then the item
+    # moved before it), which only ever moves selected items and keeps the others in order.
+    current = list(range(1, length + 1))
+    rest = [position for position in current if position not in chosen]
+    previous = rest[to_position - 2] if to_position > 1 else None
+    steps: list[tuple[int, int]] = []
+    for original in selected:
+        source = current.index(original)
+        current.pop(source)
+        target = 0 if previous is None else current.index(previous) + 1
+        current.insert(target, original)
+        if target != source:
+            steps.append((source + 1, target + 1))
+        previous = original
+    return steps
 
 
 def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[ProviderMapping]:
@@ -887,10 +983,16 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         "media_type": full_item.media_type.value,
         "name": full_item.name,
     }
-    if hasattr(full_item, "authors") and full_item.authors:
-        metadata["authors"] = "; ".join(full_item.authors)
-    if hasattr(full_item, "narrators") and full_item.narrators:
-        metadata["narrators"] = "; ".join(full_item.narrators)
+    if isinstance(full_item, Audiobook) and full_item.authors:
+        metadata["authors"] = "; ".join(
+            author.name if isinstance(author, Artist | ItemMapping) else author
+            for author in full_item.authors
+        )
+    if isinstance(full_item, Audiobook) and full_item.narrators:
+        metadata["narrators"] = "; ".join(
+            narrator.name if isinstance(narrator, Artist | ItemMapping) else narrator
+            for narrator in full_item.narrators
+        )
     if full_item.version:
         metadata["version"] = full_item.version
     if isrc := _unambiguous_external_id(full_item, ExternalID.ISRC):
@@ -937,18 +1039,19 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     album_info = collect_album_info(full_item, preferred_instance=preferred_instance)
     podcast_info = collect_podcast_info(full_item, preferred_instance=preferred_instance)
 
-    # collect images
-    images: list[ImageInfo] = []
-    if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
-        for img in full_item.metadata.images:
-            images.append(
-                ImageInfo(
-                    type=img.type.value,
-                    path=img.path,
-                    provider=img.provider,
-                    remotely_accessible=img.remotely_accessible,
-                )
-            )
+    # collect images, for a track the image of its album first as that is the image it shows
+    item_images = UniqueList(full_item.metadata.images or [])
+    if isinstance(full_item, Track) and full_item.album and full_item.album.image:
+        item_images = UniqueList([full_item.album.image, *item_images])
+    images = [
+        ImageInfo(
+            type=img.type.value,
+            path=img.path,
+            provider=img.provider,
+            remotely_accessible=img.remotely_accessible,
+        )
+        for img in item_images
+    ]
 
     return PlaylistItem(
         path=primary_uri,

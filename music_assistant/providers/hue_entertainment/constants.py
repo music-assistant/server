@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Final
 
+CONF_BACKEND: Final[str] = "backend"
+CONF_ZIGBEE_NAME: Final[str] = "zigbee_name"
+# the ZHA lamps as "<ieee>/<zones>" strings, in the order of their channels
+CONF_ZIGBEE_LIGHTS: Final[str] = "zigbee_lights"
 CONF_BRIDGE_HOST: Final[str] = "bridge_host"
 CONF_BRIDGE_ID: Final[str] = "bridge_id"
 CONF_ACTION_PAIR: Final[str] = "pair"
@@ -12,6 +16,10 @@ CONF_CLIENTKEY: Final[str] = "hue_clientkey"
 CONF_BRIGHTNESS: Final[str] = "brightness"
 CONF_COLOR_MODE: Final[str] = "color_mode"
 CONF_HUE_LATENCY_MS: Final[str] = "hue_latency_ms"
+
+# Where the lights are streamed to; an instance without a stored backend uses the Hue bridge.
+BACKEND_HUE_BRIDGE: Final[str] = "hue_bridge"
+BACKEND_ZHA: Final[str] = "zha"
 
 # Visualization modes; first entry is the default. Used to build the config
 # options and to migrate away orphaned stored values from older versions.

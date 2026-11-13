@@ -9,23 +9,26 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from math import ceil
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from hass_client.exceptions import BaseHassClientError
+from aiohttp import ClientResponseError
+from hass_client.exceptions import BaseHassClientError, FailedCommand, NotConnected
+from multidict import CIMultiDict
 from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import (
     MusicAssistantError,
+    ProviderUnavailableError,
+    RateLimited,
     SetupFailedError,
     UnsupportedFeaturedException,
 )
 
-from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_VERIFY_SSL
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
     CONF_URL,
-    CONF_VERIFY_SSL,
     STATE_FETCH_BATCH_SIZE,
     HassRegistryEntity,
     HomeAssistantProvider,
@@ -129,6 +132,7 @@ def _mass() -> MagicMock:
     # falls through to the provider config mock's get_value for the persisted test values
     mass.config.get = MagicMock(return_value={})
     mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
+    mass.metadata.locale = "en_US"
     return mass
 
 
@@ -142,6 +146,7 @@ class _HomeAssistantClient:
         listener_error: Exception | None = None,
         connect_error: Exception | None = None,
         block_registry: bool = False,
+        tts_languages: dict[str, list[str]] | None = None,
     ) -> None:
         self.connected = False
         self.disconnected = False
@@ -166,6 +171,9 @@ class _HomeAssistantClient:
         self.disabled_entities: set[str] = set()
         # devices as returned in full by the device registry listing
         self.devices: list[dict[str, Any]] = []
+        # supported languages per tts entity as listed by tts/engine/list, which fails
+        # (as on a Home Assistant without the command) when None
+        self.tts_languages = tts_languages
         # events delivered ahead of a subscription's initial state message
         self.leading_events: list[dict[str, Any]] = []
         self.deliver_initial_states = True
@@ -267,6 +275,15 @@ class _HomeAssistantClient:
         self.calls.append(command)
         if command == REGISTRY_ENTRIES_COMMAND:
             return self._registry_entries(cast("list[str]", kwargs["entity_ids"]))
+        if command == "tts/engine/list":
+            if self.tts_languages is None:
+                raise FailedCommand("Unknown command.")
+            return {
+                "providers": [
+                    {"engine_id": entity_id, "supported_languages": languages}
+                    for entity_id, languages in self.tts_languages.items()
+                ]
+            }
         return {"response": {"data": "answer"}}
 
     async def _registry_for_display(self) -> dict[str, Any]:
@@ -313,10 +330,19 @@ class _HomeAssistantClient:
 
 @asynccontextmanager
 async def _start_provider(
-    states: list[dict[str, Any]], **config_values: Any
+    states: list[dict[str, Any]],
+    tts_languages: dict[str, list[str]] | None = None,
+    /,
+    **config_values: Any,
 ) -> AsyncIterator[tuple[HomeAssistantProvider, _HomeAssistantClient]]:
-    """Start the provider with a connected mocked Home Assistant client."""
-    hass = _HomeAssistantClient(states)
+    """
+    Start the provider with a connected mocked Home Assistant client.
+
+    :param states: The entity states Home Assistant reports.
+    :param tts_languages: The supported languages per tts entity, for tts/engine/list.
+    :param config_values: Provider config values overriding the test defaults.
+    """
+    hass = _HomeAssistantClient(states, tts_languages=tts_languages)
     mass = _mass()
     manifest = MagicMock()
     manifest.domain = "hass"
@@ -581,6 +607,23 @@ async def test_lost_connection_arms_the_reconnect_under_the_load_task_id() -> No
         assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_hass--test"}
 
 
+async def test_unexpected_listener_error_still_arms_the_reconnect() -> None:
+    """A listener crash on an error the client does not wrap still arms the reconnect."""
+    async with _start_provider([]) as (provider, hass):
+        mass = cast("MagicMock", provider.mass)
+        mass.call_later.reset_mock()
+        assert provider._listen_task is not None
+
+        hass.connection_lost.set_exception(AttributeError("unexpected"))
+        async with asyncio.timeout(1):
+            await provider._listen_task
+
+        assert provider.available is False
+        retry = mass.call_later.call_args
+        assert retry.args == (5, mass.load_provider, "hass--test")
+        assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_hass--test"}
+
+
 async def test_engines_are_listed_for_every_feature_entity() -> None:
     """Expose every Home Assistant TTS and AI Task entity as an engine."""
     states = [
@@ -659,6 +702,250 @@ async def test_ai_query_not_advertised_without_entity() -> None:
             await provider.ai_query("What is this song?")
 
 
+async def test_only_ai_tasks_that_generate_images_become_image_engines() -> None:
+    """Offer an AI Task entity for image generation only when it advertises that feature."""
+    states = [
+        _image_state("ai_task.images", "Images", supported_features=1 | 4),
+        _image_state("ai_task.text_only", "Text", supported_features=1),
+        _image_state("ai_task.broken", "Broken", supported_features="4"),
+        _state("ai_task.no_features", "None"),
+        _image_state("tts.piper", "Piper", supported_features=4),
+    ]
+
+    async with _start_provider(states) as (provider, _):
+        image_engines = await provider.get_image_engines()
+
+        assert [engine.id for engine in image_engines] == ["ai_task.images"]
+        assert image_engines[0].uid == "hass--test/ai_task.images"
+        # every ai_task entity stays a text engine, as before
+        assert len(await provider.get_ai_engines()) == 4
+
+
+async def test_an_image_only_ai_task_still_advertises_ai_query() -> None:
+    """Image engines are collected from AI_QUERY plugins, so they must declare it."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, _):
+        assert ProviderFeature.AI_QUERY in provider.supported_features
+
+
+async def test_ai_generate_image_downloads_the_returned_image() -> None:
+    """Generate via ai_task.generate_image and fetch the signed URL it answers with."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=abc"}}
+        )
+        with patch.object(provider, "_fetch_image", AsyncMock(return_value=b"png")) as fetch_image:
+            assert await provider.ai_generate_image("A sunset") == b"png"
+
+        hass.send_command.assert_awaited_once_with(
+            "call_service",
+            domain="ai_task",
+            service="generate_image",
+            service_data={
+                "task_name": ANY,
+                "instructions": "A sunset",
+                "entity_id": "ai_task.images",
+            },
+            return_response=True,
+        )
+        fetch_image.assert_awaited_once_with("/ai_task/image/x.png?authSig=abc")
+
+
+async def test_ai_generate_image_uses_a_task_name_per_image() -> None:
+    """Images generated at the same time get their own task name, so HA stores both."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=abc"}}
+        )
+        with patch.object(provider, "_fetch_image", AsyncMock(return_value=b"png")):
+            await asyncio.gather(provider.ai_generate_image("A"), provider.ai_generate_image("B"))
+
+        task_names = {
+            call.kwargs["service_data"]["task_name"] for call in hass.send_command.await_args_list
+        }
+        assert len(task_names) == 2
+        assert all(name.startswith("music_assistant_") for name in task_names)
+
+
+async def test_ai_generate_image_fetches_an_absolute_url_from_the_connected_instance() -> None:
+    """An image URL prefixed with Home Assistant's own URL is fetched by its signed path."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={
+                "response": {"url": "https://ha.example.com/ai_task/image/x.png?authSig=abc"}
+            }
+        )
+        with patch.object(provider, "_fetch_image", AsyncMock(return_value=b"png")) as fetch_image:
+            await provider.ai_generate_image("A sunset")
+
+        fetch_image.assert_awaited_once_with("/ai_task/image/x.png?authSig=abc")
+
+
+async def test_ai_generate_image_is_fetched_although_not_an_entity_picture() -> None:
+    """The generated image is fetched, while resolve_image keeps refusing its path."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=abc"}}
+        )
+        get = _mock_image_response(provider, [b"png"], content_type="image/png")
+
+        assert await provider.ai_generate_image("A sunset") == b"png"
+        with pytest.raises(FileNotFoundError):
+            await provider.resolve_image("/ai_task/image/x.png?authSig=abc")
+
+        get.assert_called_once_with(
+            "http://homeassistant.local:8123/ai_task/image/x.png?authSig=abc",
+            headers={"Authorization": "Bearer token"},
+        )
+
+
+async def test_ai_generate_image_keeps_the_signature_out_of_errors() -> None:
+    """A failed or unexpected image link never puts its signed query in the error."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/api/elsewhere/x.png?authSig=secret"}}
+        )
+        with pytest.raises(MusicAssistantError) as unexpected:
+            await provider.ai_generate_image("A sunset")
+
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=secret"}}
+        )
+        failed = ClientResponseError(
+            MagicMock(real_url="http://ha/ai_task/image/x.png?authSig=secret"),
+            (),
+            status=403,
+            message="Forbidden",
+        )
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),
+            pytest.raises(MusicAssistantError) as forbidden,
+        ):
+            await provider.ai_generate_image("A sunset")
+
+    assert "secret" not in str(unexpected.value)
+    assert "403" in str(forbidden.value)
+    assert "secret" not in str(forbidden.value)
+    assert forbidden.value.__cause__ is None
+    assert not isinstance(forbidden.value, ProviderUnavailableError)
+
+
+@pytest.mark.parametrize("status", [408, 500, 503])
+async def test_ai_generate_image_reports_a_failing_image_download_as_unavailable(
+    status: int,
+) -> None:
+    """Home Assistant failing to hand out the image is an outage, without the signature."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=secret"}}
+        )
+        failed = ClientResponseError(
+            MagicMock(real_url="http://ha/ai_task/image/x.png?authSig=secret"),
+            (),
+            status=status,
+            message="Unavailable",
+        )
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),
+            pytest.raises(ProviderUnavailableError) as unavailable,
+        ):
+            await provider.ai_generate_image("A sunset")
+
+    assert str(status) in str(unavailable.value)
+    assert "secret" not in str(unavailable.value)
+    assert unavailable.value.__cause__ is None
+
+
+async def test_ai_generate_image_reports_a_rate_limited_image_download() -> None:
+    """Home Assistant rate limiting the image is reported with its wait, without the signature."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=secret"}}
+        )
+        failed = ClientResponseError(
+            MagicMock(real_url="http://ha/ai_task/image/x.png?authSig=secret"),
+            (),
+            status=429,
+            message="Too Many Requests",
+            headers=CIMultiDict({"Retry-After": "120"}),
+        )
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),
+            pytest.raises(RateLimited) as limited,
+        ):
+            await provider.ai_generate_image("A sunset")
+
+    assert limited.value.backoff_time == 120
+    assert "secret" not in str(limited.value)
+    assert limited.value.__cause__ is None
+
+
+async def test_ai_generate_image_refuses_a_link_outside_the_ai_task_images() -> None:
+    """Only the path Home Assistant serves generated images from is fetched."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(return_value={"response": {"url": "/api/states"}})
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock()) as fetch_image,
+            pytest.raises(MusicAssistantError),
+        ):
+            await provider.ai_generate_image("A sunset")
+
+        fetch_image.assert_not_awaited()
+
+
+async def test_ai_generate_image_reports_an_unreachable_home_assistant() -> None:
+    """A lost connection is reported as unavailable, not as a failed generation."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(side_effect=NotConnected("gone"))
+
+        with pytest.raises(ProviderUnavailableError):
+            await provider.ai_generate_image("A sunset")
+
+
+async def test_ai_generate_image_raises_without_an_image() -> None:
+    """A response without an image URL is an error, not empty image data."""
+    states = [_image_state("ai_task.images", "Images", supported_features=4)]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(return_value={"response": {}})
+
+        with pytest.raises(MusicAssistantError):
+            await provider.ai_generate_image("A sunset")
+
+
+async def test_ai_generate_image_raises_without_an_image_engine() -> None:
+    """Refuse to generate images when no AI Task entity supports it."""
+    async with _start_provider([_state("ai_task.text", "Text")]) as (provider, _):
+        with pytest.raises(UnsupportedFeaturedException):
+            await provider.ai_generate_image("A sunset")
+
+
+def _image_state(entity_id: str, friendly_name: str, *, supported_features: Any) -> dict[str, Any]:
+    """Return a Home Assistant entity state that reports the given supported_features."""
+    state = _state(entity_id, friendly_name)
+    state["attributes"]["supported_features"] = supported_features
+    return state
+
+
 def _mock_tts_response(provider: HomeAssistantProvider) -> MagicMock:
     """Let the Home Assistant tts_get_url endpoint return a URL and return the post mock."""
     response = AsyncMock()
@@ -704,6 +991,21 @@ async def test_tts_uses_the_first_engine_by_default() -> None:
         assert request.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
 
 
+@pytest.mark.parametrize("verify_ssl", [True, False])
+async def test_tts_clip_follows_the_ssl_verification_setting(verify_ssl: bool) -> None:
+    """The clip's certificate is verified only when the provider verifies SSL."""
+    async with _start_provider([_state("tts.first", "First")], **{CONF_VERIFY_SSL: verify_ssl}) as (
+        provider,
+        _,
+    ):
+        provider.mass.running_as_hass_addon = False
+        _mock_tts_response(provider)
+
+        stream = await provider.get_tts_message("Hello")
+
+        assert stream.verify_ssl is verify_ssl
+
+
 async def test_tts_uses_the_requested_engine() -> None:
     """Render speech on the requested engine."""
     states = [_state("tts.first", "First"), _state("tts.second", "Second")]
@@ -718,9 +1020,10 @@ async def test_tts_uses_the_requested_engine() -> None:
 
 async def test_tts_not_advertised_without_entity() -> None:
     """Do not advertise TTS when Home Assistant has no TTS entity."""
-    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, hass):
         assert ProviderFeature.TTS not in provider.supported_features
 
+        assert "tts/engine/list" not in hass.calls
         with pytest.raises(UnsupportedFeaturedException):
             await provider.get_tts_message("Hello")
 
@@ -749,6 +1052,81 @@ async def test_tts_omits_options_from_the_payload_when_empty() -> None:
         await provider.get_tts_message("Hello", options={})
 
         assert post.call_args.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
+
+
+async def test_tts_engine_languages_are_read_once_per_refresh() -> None:
+    """Read the engines' languages when the engines are listed, never per request."""
+    states = [_state("tts.cloud", "Cloud"), _state("tts.piper", "Piper")]
+    languages = {"tts.cloud": ["nl-NL"], "tts.piper": ["nl_NL"]}
+
+    async with _start_provider(states, languages) as (provider, hass):
+        assert hass.calls.count("tts/engine/list") == 1
+        _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hallo", language="nl", engine_id="tts.cloud")
+        await provider.get_tts_message("Hallo", language="nl", engine_id="tts.piper")
+
+        assert hass.calls.count("tts/engine/list") == 1
+
+
+async def test_tts_bare_language_is_sent_as_the_engines_regional_code() -> None:
+    """A bare language code is sent as the regional variant the engine lists for it."""
+    languages = {"tts.cloud": ["en-US", "nl-BE", "nl-NL"]}
+
+    async with _start_provider([_state("tts.cloud", "Cloud")], languages) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hallo", language="nl")
+
+        assert post.call_args.kwargs["json"]["language"] == "nl-NL"
+
+
+async def test_tts_bare_language_prefers_the_server_locales_region() -> None:
+    """A bare language code picks the regional variant of the server locale when listed."""
+    languages = {"tts.cloud": ["en-GB", "en-US"]}
+
+    async with _start_provider([_state("tts.cloud", "Cloud")], languages) as (provider, _):
+        cast("MagicMock", provider.mass.metadata).locale = "en_GB"
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hello", language="en")
+
+        assert post.call_args.kwargs["json"]["language"] == "en-GB"
+
+
+async def test_tts_regional_language_is_sent_in_the_engines_spelling() -> None:
+    """A regional code is sent spelled the way the engine lists it."""
+    languages = {"tts.piper": ["en_US", "nl_NL"]}
+
+    async with _start_provider([_state("tts.piper", "Piper")], languages) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hallo", language="nl-NL")
+
+        assert post.call_args.kwargs["json"]["language"] == "nl_NL"
+
+
+async def test_tts_unknown_language_is_left_out_of_the_payload() -> None:
+    """A language the engine lacks is left out, so the engine speaks in its default."""
+    languages = {"tts.cloud": ["en-US", "nl-NL"]}
+
+    async with _start_provider([_state("tts.cloud", "Cloud")], languages) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hello", language="xx")
+
+        assert post.call_args.kwargs["json"] == {"engine_id": "tts.cloud", "message": "Hello"}
+
+
+async def test_tts_language_passes_through_when_the_languages_cannot_be_read() -> None:
+    """An engine whose languages could not be read gets the requested language unchanged."""
+    async with _start_provider([_state("tts.first", "First")]) as (provider, hass):
+        assert "tts/engine/list" in hass.calls
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hallo", language="nl")
+
+        assert post.call_args.kwargs["json"]["language"] == "nl"
 
 
 async def test_tts_invalid_option_raises_music_assistant_error() -> None:
@@ -828,6 +1206,60 @@ async def test_tts_bare_500_without_language_raises_generic_error() -> None:
         assert not isinstance(excinfo.value, TTSLanguageNotSupportedError)
         assert "tts_get_url" in str(excinfo.value)
         assert "500" in str(excinfo.value)
+
+
+def _mock_image_response(
+    provider: HomeAssistantProvider, chunks: list[bytes], content_type: str = "image/jpeg"
+) -> MagicMock:
+    """Let Home Assistant answer an image request with the given body and return the get mock."""
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.content_type = content_type
+    response.content_length = None
+    response.content.read = AsyncMock(side_effect=[*chunks, b""])
+    get = cast("MagicMock", provider.mass.http_session.get)
+    get.return_value.__aenter__.return_value = response
+    return get
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/media_player_proxy/media_player.kitchen?token=abc&cache=123",
+        "/local/cover..jpg?v=1..2",
+    ],
+)
+async def test_resolve_image_fetches_an_entity_picture_with_the_token(path: str) -> None:
+    """An entity picture path is fetched from Home Assistant with the access token."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        get = _mock_image_response(provider, [b"\xff\xd8", b"jpeg"])
+
+        assert await provider.resolve_image(path) == b"\xff\xd8jpeg"
+
+        get.assert_called_once_with(
+            f"http://homeassistant.local:8123{path}",
+            headers={"Authorization": "Bearer token"},
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/states",
+        "/api/media_player_proxy/../states",
+        "/api/media_player_proxy/%2e%2e/states",
+        "api/media_player_proxy/media_player.kitchen",
+    ],
+)
+async def test_resolve_image_rejects_paths_outside_the_image_endpoints(path: str) -> None:
+    """A path that is not an HA image endpoint is refused before anything is requested."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
+        get = _mock_image_response(provider, [b"{}"])
+
+        with pytest.raises(FileNotFoundError):
+            await provider.resolve_image(path)
+
+        get.assert_not_called()
 
 
 async def test_registry_update_refreshes_the_engines() -> None:
@@ -1679,3 +2111,22 @@ async def test_other_config_change_reloads_provider(changed_keys: set[str]) -> N
 
         mass.call_later.assert_called_once()
         assert mass.call_later.call_args[0][1] is mass.load_provider_config
+
+
+async def test_init_cancelled_during_connect_unregisters_search_command() -> None:
+    """Test a setup timeout while connecting releases the search command for the next init."""
+    hass = _HomeAssistantClient([])
+    hass.connect = AsyncMock(side_effect=asyncio.Event().wait)  # type: ignore[method-assign]
+    mass = _mass()
+    unregister = MagicMock()
+    mass.register_api_command = MagicMock(return_value=unregister)
+    manifest = MagicMock()
+    manifest.domain = "hass"
+    manifest.name = "Home Assistant"
+    with patch("music_assistant.providers.hass.HomeAssistantClient", return_value=hass):
+        provider = await setup(mass, manifest, _config())
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.1):
+                await provider.handle_async_init()
+
+    unregister.assert_called_once()

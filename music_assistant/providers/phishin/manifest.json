@@ -5,7 +5,7 @@
   "documentation": "https://music-assistant.io/music-providers/phishin/",
   "type": "music",
   "requirements": [],
-  "codeowners": ["@ozgav"],
+  "codeowners": ["@OzGav"],
   "multi_instance": false,
   "stage": "stable"
 }

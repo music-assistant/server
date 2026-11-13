@@ -545,7 +545,7 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
             yield selected_track
 
         playlist_tracks = MagicMock(side_effect=_playlist_tracks)
-        mass.music.playlists.tracks = playlist_tracks
+        mass.music.playlists.iter_tracks = playlist_tracks
     mass.music.get_item = AsyncMock(return_value=source)
     assert source.uri is not None
     quiz = TriviaQuizType(

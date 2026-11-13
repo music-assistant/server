@@ -19,7 +19,8 @@
       "description": "Your code is {0}. Use the button below to open Tidal with the code already filled in, or go to link.tidal.com on another device and enter it there. This screen updates automatically once you approve."
     },
     "abort": {
-      "login_failed": "Could not link your Tidal account. Please start the setup again."
+      "login_failed": "Could not link your Tidal account. Please start the setup again.",
+      "account_already_configured": "This Tidal account is already used by another Tidal provider in Music Assistant. Each account can only be added once. Sign in with a different account, or remove the other Tidal provider first."
     }
   },
   "media": {

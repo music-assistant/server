@@ -19,12 +19,19 @@ import base64
 import binascii
 import json
 import logging
-from typing import TYPE_CHECKING, TypeGuard
+from typing import TYPE_CHECKING, Any, TypeGuard
+from urllib.parse import urlsplit
 
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.auth import AccessToken
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from starlette.requests import Request
+
     from music_assistant.mass import MusicAssistant
 
     from .token_identity import TokenIdentityRegistry
@@ -126,6 +133,7 @@ class MASTokenVerifier(TokenVerifier):
         public_resource_uri: str | None = None,
         enforce_audience: bool = False,
         identity_registry: TokenIdentityRegistry | None = None,
+        resource_metadata: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         """
         Bind the verifier to a MusicAssistant instance.
@@ -143,6 +151,9 @@ class MASTokenVerifier(TokenVerifier):
             migrate gracefully once MA-side issues audience-bound tokens.
         :param identity_registry: Shared bounded token-identity registry. A
             private registry is created when omitted.
+        :param resource_metadata: Builds the RFC 9728 protected resource metadata
+            document for ``public_resource_uri``. When given, 401 responses name
+            its URL in ``WWW-Authenticate``.
         """
         # ``base_url`` is optional on TokenVerifier — passing ``None`` is
         # equivalent to not setting it. Forward verbatim so FastMCP can later
@@ -150,7 +161,9 @@ class MASTokenVerifier(TokenVerifier):
         super().__init__(base_url=base_url)
         self._mass = mass
         self._public_resource_uri = public_resource_uri
+        self._resource_metadata = resource_metadata
         self._enforce_audience = enforce_audience
+        self._audience_mismatch_reported = False
         if identity_registry is None:
             from .token_identity import TokenIdentityRegistry  # noqa: PLC0415
 
@@ -184,6 +197,7 @@ class MASTokenVerifier(TokenVerifier):
         if user is None or not getattr(user, "enabled", True):
             self._identity_registry.discard(token)
             return None
+        self._report_soft_audience_mismatch(token)
 
         client_id = LOOKUP_FAILURE_CLIENT_ID
         try:
@@ -219,12 +233,37 @@ class MASTokenVerifier(TokenVerifier):
             resource=self._public_resource_uri,
         )
 
+    def get_routes(self, mcp_path: str | None = None) -> list[Route]:
+        """
+        Return the protected resource metadata route for FastMCP's HTTP app.
+
+        :param mcp_path: Path the MCP endpoint is mounted at.
+        """
+        if self._resource_metadata is None or not self._public_resource_uri:
+            return []
+        build_document = self._resource_metadata
+
+        async def metadata(_request: Request) -> JSONResponse:
+            return JSONResponse(build_document(), headers={"Cache-Control": "no-store"})
+
+        # FastMCP only names a metadata URL in its 401 challenge when the auth
+        # provider contributes a route at that path. MA's webserver answers the
+        # public URL (mount_well_known); the bridge forwards only the MCP mount
+        # to this app, so this route declares the document rather than serving it.
+        resource_path = urlsplit(self._public_resource_uri).path.rstrip("/")
+        return [
+            Route(
+                f"/.well-known/oauth-protected-resource{resource_path}",
+                endpoint=metadata,
+                methods=["GET"],
+            )
+        ]
+
     def _check_audience(self, token: str) -> bool:
         """
         Return ``True`` if the token's audience is acceptable for this server.
 
-        In soft mode (``enforce_audience=False``) — always returns ``True`` and
-        only emits a warning when a JWT's ``aud`` is missing or mismatched.
+        In soft mode (``enforce_audience=False``) — always returns ``True``.
         In strict mode — rejects tokens missing or with a wrong ``aud``.
         Non-JWT (legacy hash) tokens have no claim to inspect: they pass in
         soft mode and fail in strict mode.
@@ -242,15 +281,31 @@ class MASTokenVerifier(TokenVerifier):
                 expected,
             )
             return False
+        return True
+
+    def _report_soft_audience_mismatch(self, token: str) -> None:
+        """Log that an authenticated token was accepted despite its audience."""
+        expected = self._public_resource_uri
+        if not expected or self._enforce_audience:
+            return
+        aud = _extract_jwt_audience(token)
+        if _audience_matches(aud, expected):
+            return
         if aud is None:
             LOGGER.debug(
                 "Token has no `aud` claim; accepting because enforce_audience=False",
             )
-        else:
-            LOGGER.warning(
-                "Token aud=%r does not match resource URI %r; accepting because "
-                "enforce_audience=False (set CONF_ENFORCE_AUDIENCE to enforce).",
-                aud,
-                expected,
-            )
-        return True
+            return
+        # Every MA-issued token carries the same non-resource audience, so a
+        # per-request warning would fire on every MCP message. Tell the
+        # operator once per verifier, and only for authenticated tokens so a
+        # forged JWT cannot consume the warning; the ``aud`` is never stored.
+        level = logging.DEBUG if self._audience_mismatch_reported else logging.WARNING
+        self._audience_mismatch_reported = True
+        LOGGER.log(
+            level,
+            "Token aud=%r does not match resource URI %r; accepting because "
+            "enforce_audience=False (set CONF_ENFORCE_AUDIENCE to enforce).",
+            aud,
+            expected,
+        )

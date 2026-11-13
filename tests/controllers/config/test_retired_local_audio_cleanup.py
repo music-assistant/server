@@ -24,7 +24,7 @@ from music_assistant.constants import (
     CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
-    DB_TABLE_PLAYLOG,
+    DB_TABLE_MEDIA_PROGRESS,
 )
 from music_assistant.controllers.config.retired_local_audio import cleanup_retired_local_audio
 from music_assistant.controllers.player_queues.constants import (
@@ -103,7 +103,7 @@ def _store_install(mass: MusicAssistant, provider_enabled: bool = True) -> None:
 async def _store_playlog_entry(mass: MusicAssistant, player_id: str) -> None:
     """Store a playlog row that credits the given player/queue with a playback."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": "track_1",
             "provider": "spotify",

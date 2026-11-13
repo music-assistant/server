@@ -115,6 +115,16 @@ class StorageInfo(DataClassDictMixin):
 
 
 @dataclass
+class SourceFolder(DataClassDictMixin):
+    """The folder a music source reads its files from, and the storage location holding it."""
+
+    path: str
+    # the most specific storage location that contains the folder, as last seen; None when
+    # there is none or the caller may not see it
+    location: StorageLocation | None
+
+
+@dataclass
 class NetworkShareSpec(DataClassDictMixin):
     """A network share Music Assistant mounts, as stored in the settings (never sent as is)."""
 

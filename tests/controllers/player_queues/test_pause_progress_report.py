@@ -67,6 +67,7 @@ def _controller(item: QueueItem) -> PlayerQueuesController:
     ctrl._get_next_index = Mock(return_value=None)  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)
     ctrl.mass.players.play_media = AsyncMock()
@@ -106,6 +107,8 @@ async def test_pause_keeps_the_last_played_position(
     """A pause outside MA moves neither the progress nor the resume behind where it played."""
     ctrl = _controller(_book())
     await ctrl.play_index(QUEUE_ID, 0, seek_position=RESUMED_AT)
+    # the stream server records the book once its first chunk went out to the player
+    ctrl.mark_item_served(QUEUE_ID, "book")
     for stream_elapsed in (0, 91, 121):
         _player_reports(ctrl, PlaybackState.PLAYING, stream_elapsed)
     session_start, last_reported = RESUMED_AT, 121

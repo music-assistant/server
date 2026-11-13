@@ -196,9 +196,8 @@ RUN set -x \
         libjemalloc2 \
         tzdata \
         wget \
-        # cifs utils and libnfs are needed to mount smb and nfs network shares
+        # cifs-utils and nfs-common are needed to mount smb and nfs network shares
         cifs-utils \
-        libnfs14 \
         nfs-common \
         # airplay libraries
         openssl \

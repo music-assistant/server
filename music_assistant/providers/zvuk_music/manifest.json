@@ -4,7 +4,7 @@
   "stage": "stable",
   "name": "Zvuk Music",
   "description": "Stream music from Zvuk Music service.",
-  "codeowners": ["@TrudenBoy"],
+  "codeowners": ["@trudenboy"],
   "documentation": "https://music-assistant.io/music-providers/zvuk/",
   "requirements": ["zvuk-music[async]==0.6.3"],
   "multi_instance": true

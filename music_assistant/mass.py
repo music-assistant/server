@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import random
+import shutil
 import threading
 import time
 from base64 import b64encode
@@ -27,6 +28,7 @@ from music_assistant_models.enums import (
     EventType,
     ProviderFeature,
     ProviderIconVariant,
+    ProviderTier,
     ProviderType,
 )
 from music_assistant_models.errors import (
@@ -50,6 +52,7 @@ from music_assistant.constants import (
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_PROVIDERS,
     MASS_LOGGER_NAME,
+    MASS_VERSION,
     MIN_SCHEMA_VERSION,
     VERBOSE_LOG_LEVEL,
 )
@@ -71,6 +74,7 @@ from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
@@ -79,12 +83,13 @@ from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
+from music_assistant.helpers.build_info import get_official_build_info
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.helpers.runtime_dir import prepare_runtime_dir
 from music_assistant.helpers.util import (
     TaskManager,
-    get_package_version,
     is_hass_supervisor,
     load_provider_module,
     warn_if_missing_x86_64_v2,
@@ -220,6 +225,8 @@ class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
     loop: asyncio.AbstractEventLoop
+    # private dir for the FIFOs and sockets the server and its providers create
+    runtime_path: str
     config: ConfigController
     webserver: WebserverController
     cache: CacheController
@@ -233,6 +240,7 @@ class MusicAssistant:
     translations: TranslationController
     diagnostics: DiagnosticsController
     dashboard: DashboardController
+    statistics: StatisticsController
     storage: StorageController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
@@ -255,6 +263,7 @@ class MusicAssistant:
         self._provider_ready_events: dict[str, asyncio.Event] = {}
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
+        self.build_info: dict[str, str] | None = None
         self.logger = LOGGER
         self.dev_mode = (
             os.environ.get("PYTHONDEVMODE") == "1"
@@ -263,7 +272,7 @@ class MusicAssistant:
         self._http_session: ClientSession | None = None
         self._http_session_no_ssl: ClientSession | None = None
 
-    async def start(self) -> None:
+    async def start(self) -> None:  # noqa: PLR0915
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
         # start() runs on the event loop thread, so this is the loop's thread id.
@@ -273,7 +282,8 @@ class MusicAssistant:
         # __main__ but embedded usage boots the server directly)
         install_diagnostics_log_handler()
         self.running_as_hass_addon = await is_hass_supervisor()
-        self.version = await get_package_version("music_assistant") or "0.0.0"
+        self.version = MASS_VERSION
+        self.build_info = await get_official_build_info()
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
         await self.config.setup()
@@ -292,6 +302,12 @@ class MusicAssistant:
             self.running_as_hass_addon,
             self.safe_mode,
         )
+        if self.unsupported_install:
+            LOGGER.warning(
+                "This server is not installed through one of the supported installation methods "
+                "(see https://music-assistant.io/installation/). Some features may not work as "
+                "expected, and issues reported from it may be closed without support."
+            )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
         await self._load_core_controllers()
@@ -318,6 +334,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
             tg.create_task(setup_controller(self.dashboard))
+            tg.create_task(setup_controller(self.statistics))
             tg.create_task(setup_controller(self.storage))
 
         for controller_name in (
@@ -384,14 +401,29 @@ class MusicAssistant:
         LOGGER.info("Stop called, cleaning up...")
         # set state to stopping to signal we're shutting down
         self._set_state(CoreState.STOPPING)
-        # cancel all running tasks
+        # the queues are closed first: unloading a player provider removes the queues of its
+        # players (and their pending state to persist), while stopping their playback still
+        # needs the providers' running tasks and the pending player updates
+        if (player_queues := getattr(self, "player_queues", None)) is not None:
+            try:
+                await player_queues.close()
+            except Exception:
+                LOGGER.exception("Error while closing the player_queues controller")
+        # cancel all running tasks and pending timers
         for task in list(self._tracked_tasks.values()):
             task.cancel()
+        self._cancel_tracked_timers()
         # cleanup all providers
-        await asyncio.gather(
-            *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
+        prov_ids = list(self._providers)
+        results = await asyncio.gather(
+            *[self.unload_provider(prov_id) for prov_id in prov_ids],
             return_exceptions=True,
         )
+        for prov_id, result in zip(prov_ids, results, strict=True):
+            if isinstance(result, Exception):
+                LOGGER.error(
+                    "Error while unloading provider %s: %s", prov_id, result, exc_info=result
+                )
         # stop core controllers, cache and config last because the others rely on them.
         # a failed startup may not have created (or fully set up) every controller, so
         # each one is closed independently: leaving a database open here would keep its
@@ -403,7 +435,6 @@ class MusicAssistant:
             "tasks",
             "metadata",
             "music",
-            "player_queues",
             "players",
             "translations",
             "diagnostics",
@@ -423,6 +454,10 @@ class MusicAssistant:
             await self._http_session.close()
         if self._http_session_no_ssl and not self._http_session_no_ssl.closed:
             await self._http_session_no_ssl.close()
+        # the teardown above can schedule new timers (e.g. when stopping playback)
+        self._cancel_tracked_timers()
+        if (runtime_path := getattr(self, "runtime_path", None)) is not None:
+            await asyncio.to_thread(shutil.rmtree, runtime_path, ignore_errors=True)
         self._set_state(CoreState.STOPPED)
 
     @property
@@ -434,6 +469,11 @@ class MusicAssistant:
     def closing(self) -> bool:
         """Return true if the server is (in the process of) closing."""
         return self._state in (CoreState.STOPPING, CoreState.STOPPED)
+
+    @property
+    def unsupported_install(self) -> bool:
+        """Return whether the server does not run from an official release build."""
+        return self.build_info is None
 
     @property
     def server_id(self) -> str:
@@ -477,6 +517,7 @@ class MusicAssistant:
             internal_url=self.webserver.base_url,
             external_url=self.webserver.external_url,
             has_remote_access=self.webserver.remote_access.is_enabled,
+            unsupported_install=self.unsupported_install,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
             status=self._state,
@@ -1004,6 +1045,8 @@ class MusicAssistant:
                 continue
             if manifest.depends_on != prov_conf.domain:
                 continue
+            if self.safe_mode and not manifest.builtin:
+                continue
             try:
                 # the scan above skipped the config values, but the load path does need them:
                 # a provider reads config (e.g. its log level) while it is being constructed.
@@ -1112,7 +1155,7 @@ class MusicAssistant:
                 return
             retry_delay = round(
                 PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
-                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)
+                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)  # noqa: S311 - retry jitter
             )
             self.call_later(
                 retry_delay,
@@ -1255,6 +1298,7 @@ class MusicAssistant:
             self.streams.audio_analysis,
             self.diagnostics,
             self.dashboard,
+            self.statistics,
             self.storage,
         ):
             for attr_name in dir(cls):
@@ -1292,6 +1336,7 @@ class MusicAssistant:
         self.translations = TranslationController(self)
         self.diagnostics = DiagnosticsController(self)
         self.dashboard = DashboardController(self)
+        self.statistics = StatisticsController(self)
         self.storage = StorageController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
@@ -1569,6 +1614,8 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
+                    # the tier follows from where a provider loads, not from its manifest file
+                    provider_manifest.tier = ProviderTier.CORE
                     # detect provider icon image variants (svg preferred over png)
                     icons = await detect_provider_icons(provider_path)
                     if icons:
@@ -1639,6 +1686,13 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
+        self.runtime_path = await asyncio.to_thread(prepare_runtime_dir, self.cache_path)
+
+    def _cancel_tracked_timers(self) -> None:
+        """Cancel all pending timers scheduled with call_later."""
+        for timer in self._tracked_timers.values():
+            timer.cancel()
+        self._tracked_timers.clear()
 
     def _set_state(self, new_state: CoreState) -> None:
         """Set new state and signal state change."""

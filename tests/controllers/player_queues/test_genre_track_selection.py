@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,7 +44,7 @@ async def test_genre_tracks_skip_failing_artist() -> None:
     """One artist whose tracks cannot be fetched is skipped; the other artists still contribute."""
     fake = _fake_resolver([], [_artist("Broken"), _artist("Fine")])
 
-    async def _top_tracks(item_id: str, _provider: str) -> list[Track]:
+    async def _top_tracks(item_id: str, _provider: str, **_kwargs: Any) -> list[Track]:
         if item_id == "Broken":
             raise MediaNotFoundError("provider returned garbage")
         return [_track("Song")]
@@ -68,7 +68,7 @@ async def test_genre_tracks_fall_back_when_top_tracks_are_unavailable() -> None:
     result = await MediaResolver.get_genre_tracks(cast("MediaResolver", fake), _genre(), None)
 
     assert [track.name for track in result] == ["Song"]
-    fake.mass.music.artists.tracks.assert_awaited_once_with("Artist", "test")
+    fake.mass.music.artists.tracks.assert_awaited_once_with("Artist", "test", limit=None)
     fake.logger.log.assert_not_called()
 
 

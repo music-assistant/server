@@ -62,6 +62,7 @@ def _controller(resolved: Any = None) -> tuple[Any, MagicMock, MagicMock]:
     player.player_id = PLAYER_ID
     player.display_name = "Player 1"
     player.available = True
+    player.offline_by_power_control = False
     player.state.active_source = None
     player.state.active_group = None
     player.state.synced_to = None

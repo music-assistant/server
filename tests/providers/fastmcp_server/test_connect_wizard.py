@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 from aiohttp.test_utils import TestClient, TestServer
+from music_assistant_models.auth import UserRole
 
 from music_assistant.controllers.webserver.auth import TOKEN_LIST_LIMIT
 from music_assistant.providers.fastmcp_server._init_helpers import (
@@ -692,6 +693,33 @@ async def test_token_endpoint_invalid_session_401(
     wizard_mass.webserver.auth.create_token.assert_not_called()
 
 
+# MA's User model is typed role: str and UserRole is a StrEnum, so a role can
+# arrive as either value; both must be refused.
+@pytest.mark.parametrize("role", [UserRole.GUEST, "guest"], ids=["enum", "str"])
+async def test_token_endpoint_refuses_guest_accounts(
+    wizard_client: TestClient, wizard_mass: MagicMock, mock_user: MagicMock, role: str
+) -> None:
+    """A guest session gets 403 and neither a token nor a dedup revoke happens."""
+    mock_user.role = role
+    wizard_mass.webserver.auth.create_token.reset_mock()
+    wizard_mass.webserver.auth.get_user_tokens.reset_mock()
+    wizard_mass.webserver.auth.revoke_token.reset_mock()
+
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/token",
+        json={"session_token": "guest-session", "client_id": "cursor"},
+        headers={"Origin": "http://localhost:8095"},
+    )
+
+    assert resp.status == 403
+    assert (await resp.json()) == {
+        "error": "Long-lived tokens cannot be created for guest accounts"
+    }
+    wizard_mass.webserver.auth.create_token.assert_not_called()
+    wizard_mass.webserver.auth.get_user_tokens.assert_not_called()
+    wizard_mass.webserver.auth.revoke_token.assert_not_called()
+
+
 async def test_token_endpoint_server_dedup_revokes_same_name(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
@@ -1249,6 +1277,28 @@ async def test_dispatch_falls_back_to_config_override(
     assert url.startswith("https://override.example.com/mcp/v1/connect")
 
 
+async def test_dispatch_falls_back_to_server_external_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a WS match or override, the server's External URL beats its base URL."""
+    user = _matching_user()
+    _install_fake_ma_auth_middleware(monkeypatch, user)
+
+    mass = MagicMock()
+    mass.webserver.clients = []
+    mass.webserver.external_url = "https://music.example.com"
+    mass.webserver.base_url = "http://192.168.1.10:8095"
+    mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+    mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])
+    url = await _dispatch_open_connect(
+        mass,
+        {"mount_path": "/mcp/v1"},
+    )
+
+    assert url is not None
+    assert url.startswith("https://music.example.com/mcp/v1/connect")
+
+
 async def test_dispatch_rejects_unsafe_override_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1308,6 +1358,7 @@ async def test_dispatch_uses_server_base_url_for_direct_access(
 
     mass = MagicMock()
     mass.webserver.clients = []
+    mass.webserver.external_url = None
     mass.webserver.base_url = "http://192.0.2.20:8095"
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
     mass.webserver.auth.get_user_tokens = AsyncMock(return_value=[])

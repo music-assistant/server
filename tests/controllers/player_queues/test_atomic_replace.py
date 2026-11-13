@@ -26,6 +26,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.models.player import Player
 
@@ -68,7 +69,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
-    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    ctrl.mass.players.get_player = Mock(
+        return_value=Mock(extra_data={}, offline_by_power_control=False)
+    )
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
@@ -86,7 +89,7 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl._smart_shuffle.is_enabled = Mock(return_value=False)
     ctrl._media_resolver = Mock()
     ctrl._media_resolver._resolve_media_items = AsyncMock(
-        side_effect=lambda *_a, **_kw: [_track(item_id) for item_id in NEW_TRACKS]
+        side_effect=lambda *_a, **_kw: [ResolvedItem(_track(item_id)) for item_id in NEW_TRACKS]
     )
     queue = PlayerQueue(
         queue_id="q1", active=True, display_name="Q1", available=True, items=0, **queue_kwargs
@@ -254,11 +257,10 @@ async def test_replace_starting_at_a_chosen_track_never_advertises_a_partial_que
 
 async def test_replacing_a_dynamic_queue_hides_the_rebuild_from_clients() -> None:
     """
-    The pool is fetched over the network with the queue already emptied, so updates are held off.
+    Player updates are held off while the pool is fetched over the network.
 
-    Player updates would otherwise reconcile against the half-built queue and publish it as empty
-    with nothing playing - the very state this is meant to remove, and on the dynamic path the
-    fetch is the slowest part of the whole operation.
+    A track change picked up during the fetch, the slowest part of the whole operation, would
+    otherwise start a refill of the tail the rebuild is about to replace.
     """
     ctrl = _controller(is_dynamic=True, shuffle_enabled=True)
     _load_playing_queue(ctrl)

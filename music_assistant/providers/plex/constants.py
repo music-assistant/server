@@ -8,7 +8,7 @@ CONF_ACTION_CLEAR_AUTH = "auth"
 CONF_ACTION_LIBRARY = "library"
 CONF_ACTION_GDM = "gdm"
 
-CONF_AUTH_TOKEN = "token"
+CONF_AUTH_TOKEN = "token"  # noqa: S105 - config key
 CONF_LIBRARY_ID = "library_id"
 CONF_LOCAL_SERVER_IP = "local_server_ip"
 CONF_LOCAL_SERVER_PORT = "local_server_port"
@@ -39,7 +39,7 @@ MAX_TOP_TRACKS = 25
 METADATA_BATCH_SIZE = 500
 
 # sentinel token value for local (unauthenticated) connections, not via plex.tv
-AUTH_TOKEN_UNAUTH = "local_auth"
+AUTH_TOKEN_UNAUTH = "local_auth"  # noqa: S105 - placeholder value
 
 # item_id prefix used for Plex collections imported as playlists
 COLLECTION_ID_PREFIX = "collection:"
@@ -73,7 +73,7 @@ ERR_INVALID_CREDENTIALS = "Invalid login credentials"
 ERR_AUTH_FAILED = "Authentication failed"
 ERR_SERVER_ACCESS_DENIED = "No verified access to the Plex server for this Plex account: {reason}"
 ERR_MYPLEX_AUTH_FAILED = "Authentication to MyPlex failed"
-ERR_MYPLEX_TOKEN_NOT_RECEIVED = "Authentication to MyPlex failed: token not received"
+ERR_MYPLEX_TOKEN_NOT_RECEIVED = "Authentication to MyPlex failed: token not received"  # noqa: S105 - error message
 ERR_NO_LIBRARIES = "Unable to retrieve Servers and/or Music Libraries"
 ERR_ITEM_NOT_FOUND = "Item {item_id} not found"
 ERR_ARTIST_NOT_FOUND = "Artist not found: {item_id}"

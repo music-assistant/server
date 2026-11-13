@@ -7,7 +7,7 @@
   "codeowners": ["@music-assistant"],
   "credits": ["[Cover Art Archive](https://coverartarchive.org)"],
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/metadata/artwork/",
   "multi_instance": false,
   "builtin": true
 }

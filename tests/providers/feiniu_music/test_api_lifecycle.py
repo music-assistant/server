@@ -57,6 +57,8 @@ def make_mass(tmp_path: Path) -> Any:
         remote_access=SimpleNamespace(is_enabled=False),
     )
     mass.music.albums.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    # nor does the library hold anyone's favorite state for the listed tracks
+    mass.music._database = SimpleNamespace(get_rows_from_query=AsyncMock(return_value=[]))
     mass.register_api_command("info", mass.get_server_info, authenticated=False)
     assert mass.command_handlers["music/albums/album_tracks"].target == mass.music.albums.tracks
     return mass

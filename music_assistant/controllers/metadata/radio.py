@@ -564,8 +564,18 @@ class RadioArtworkMixin:
         if not metadata.images:
             return None
         for img in metadata.images:
-            if img.type == ImageType.THUMB:
+            if img.type != ImageType.THUMB:
+                continue
+            if img.remotely_accessible:
                 return MediaItemMetadata(images=UniqueList([img]))
+            # a local file reaches the stream only through the image proxy
+            proxied = MediaItemImage(
+                type=ImageType.THUMB,
+                path=self.get_image_url(img, prefer_proxy=True),
+                provider="library",
+                remotely_accessible=True,
+            )
+            return MediaItemMetadata(images=UniqueList([proxied]))
         return None
 
     async def _get_library_track_metadata(
@@ -656,11 +666,9 @@ class RadioArtworkMixin:
 
         :param track: Track to get image for.
         """
-        # Try track image
-        if track.metadata and track.metadata.images:
-            for img in track.metadata.images:
-                if img.type == ImageType.THUMB:
-                    return self.get_image_url(img, prefer_proxy=True)
+        # Try track image (which prefers the image of its album)
+        if image := track.image:
+            return self.get_image_url(image, prefer_proxy=True)
 
         # Try album image
         if track.album:

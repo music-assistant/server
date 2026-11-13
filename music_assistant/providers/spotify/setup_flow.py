@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlencode
 
-import pkce
 from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
@@ -25,6 +24,7 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_url,
     hosted_bounce_redirect,
 )
+from music_assistant.helpers.pkce import generate_pkce_pair
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 from music_assistant.providers.spotify_connect.soloist import (
@@ -77,7 +77,7 @@ LOGGER = logging.getLogger(__name__)
 ACCOUNT_LOOKUP_TIMEOUT = 30
 
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
-TOKEN_URL = "https://accounts.spotify.com/api/token"
+TOKEN_URL = "https://accounts.spotify.com/api/token"  # noqa: S105 - URL
 
 # the developer client id is a public OAuth identifier (not a secret), so it is a plain
 # STRING that can be prefilled on reconfigure
@@ -138,8 +138,9 @@ async def run_setup(session: SetupSession) -> None:
         )
         setup_data[CONF_REFRESH_TOKEN_GLOBAL] = str(token_result["refresh_token"])
         # an account that cannot work is turned away before the playback authorization
-        account_id = await _verify_account(session, str(token_result["access_token"]))
-        setup_data[CONF_ACCOUNT_ID] = account_id
+        # an unanswered lookup keeps the stored account id, the provider falls back on it
+        if account_id := await _verify_account(session, str(token_result["access_token"])):
+            setup_data[CONF_ACCOUNT_ID] = account_id
         # playback authorization is separate from the Web API tokens and depends on
         # the explicitly chosen playback backend
         await _setup_playback(session, setup_data, account_id)
@@ -194,6 +195,7 @@ async def _authorize_developer_key(
         step_id="developer",
         last_step=True,
         translation_params=[HOSTED_CALLBACK_URL],
+        copy_text=HOSTED_CALLBACK_URL,
     )
     client_id = str(dev_values.get(CONF_CLIENT_ID) or "").strip()
     try:
@@ -332,12 +334,13 @@ async def _setup_playback(
     :param setup_data: The setup data collected so far, updated in place.
     :param account_id: The signed-in Spotify user id, when known.
     """
-    # The stored choice wins; everything else preselects librespot. It is the
-    # short path (no consent step, no API key, no pairing), and an instance
-    # predating the choice runs it already, so a routine reconfigure cannot nudge
-    # anyone onto another playback path. An account librespot cannot serve
-    # (created since late 2024) has to switch, which the choice step explains.
-    preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or BACKEND_LIBRESPOT
+    # The stored choice wins. Without one, a new setup lands on soloist, the
+    # engine that serves every account, while an instance predating the choice
+    # already runs librespot, so a routine reconfigure keeps it there instead of
+    # nudging it onto another playback path.
+    preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or (
+        BACKEND_LIBRESPOT if session.context.kind == "reconfigure" else BACKEND_SOLOIST
+    )
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
         selected = await _choose_playback_backend(session, preselect, errors)
@@ -379,7 +382,7 @@ async def _choose_playback_backend(
                     key=CONF_PLAYBACK_BACKEND,
                     type=ConfigEntryType.STRING,
                     required=True,
-                    default_value=BACKEND_LIBRESPOT,
+                    default_value=BACKEND_SOLOIST,
                     value=preselect,
                     options=[
                         ConfigValueOption(BACKEND_SOLOIST),
@@ -711,7 +714,7 @@ async def _authorize_playback_via_browser(session: SetupSession, librespot_bin: 
     :param session: The setup session driving the flow.
     :param librespot_bin: Path to the librespot binary.
     """
-    code_verifier, code_challenge = pkce.generate_pkce_pair()
+    code_verifier, code_challenge = generate_pkce_pair()
     params = {
         "response_type": "code",
         "client_id": KEYMASTER_CLIENT_ID,
@@ -764,7 +767,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str
     :param client_id: The Spotify client id to authenticate with.
     :param step_id: The external step id (also the i18n key segment).
     """
-    code_verifier, code_challenge = pkce.generate_pkce_pair()
+    code_verifier, code_challenge = generate_pkce_pair()
     redirect_uri, state = hosted_bounce_redirect(session.callback_url)
     params = {
         "response_type": "code",

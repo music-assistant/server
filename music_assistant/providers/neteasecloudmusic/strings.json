@@ -30,10 +30,13 @@
   "media": {
     "playlist": {
       "heart_mode": { "name": "Heart Mode" },
-      "personal_fm": { "name": "Personal FM" }
+      "personal_fm": { "name": "Personal FM" },
+      "daily_recommendations": { "name": "Daily Recommendations" }
     },
     "recommendations": {
-      "personal_radio": { "name": "Personal Radio" }
+      "personal_recommend": { "name": "Personal Recommendations" },
+      "recommended_new_tracks": { "name": "[%key:common::media::recommendations::recommended_new_tracks::name%]" },
+      "recommended_playlists": { "name": "[%key:common::media::recommendations::recommended_playlists::name%]" }
     }
   },
   "manifest": {

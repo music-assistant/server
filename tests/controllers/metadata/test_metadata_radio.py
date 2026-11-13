@@ -11,6 +11,7 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
     Radio,
+    Track,
 )
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
@@ -100,13 +101,37 @@ class TestGetThumbImage:
     def test_returns_only_thumb(self) -> None:
         """A THUMB image is returned in isolation, dropping other image types."""
         ctrl = _controller()
-        thumb = MediaItemImage(type=ImageType.THUMB, path="thumb.jpg", provider="theaudiodb")
+        thumb = MediaItemImage(
+            type=ImageType.THUMB,
+            path="https://img/thumb.jpg",
+            provider="theaudiodb",
+            remotely_accessible=True,
+        )
         fanart = MediaItemImage(type=ImageType.FANART, path="fanart.jpg", provider="theaudiodb")
         metadata = MediaItemMetadata(images=UniqueList([fanart, thumb]))
         result = ctrl._get_thumb_image(metadata)
         assert result is not None
         assert result.images is not None
         assert list(result.images) == [thumb]
+
+    def test_local_thumb_is_served_through_the_image_proxy(self) -> None:
+        """A THUMB that is a local file is returned as its image proxy URL."""
+        ctrl = _controller()
+        ctrl.get_image_url = MagicMock(return_value="http://ma/imageproxy/abc")  # type: ignore[method-assign]
+        thumb = MediaItemImage(
+            type=ImageType.THUMB, path="Radiohead/folder.jpg", provider="local_metadata"
+        )
+        result = ctrl._get_thumb_image(MediaItemMetadata(images=UniqueList([thumb])))
+        assert result is not None
+        assert list(result.images or []) == [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path="http://ma/imageproxy/abc",
+                provider="library",
+                remotely_accessible=True,
+            )
+        ]
+        ctrl.get_image_url.assert_called_once_with(thumb, prefer_proxy=True)
 
     def test_returns_none_without_thumb(self) -> None:
         """Metadata with only non-THUMB images yields None."""
@@ -196,3 +221,32 @@ class TestGetRadioStreamStationImage:
         """No image is returned while the queue still reports another item as current."""
         ctrl = self._setup(_streamdetails())
         assert ctrl.get_radio_stream_station_image(_streamdetails()) is None
+
+
+class TestGetLibraryItemThumb:
+    """Tests for _get_library_item_thumb."""
+
+    async def test_prefers_the_album_image_of_a_library_track(self) -> None:
+        """A library track matched to the stream shows the image of its album."""
+        album_thumb = MediaItemImage(type=ImageType.THUMB, path="album.jpg", provider="fs")
+        track = Track(
+            item_id="1",
+            provider="library",
+            name="So What",
+            provider_mappings=set(),
+            album=ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id="2",
+                provider="library",
+                name="Kind of Blue",
+                image=album_thumb,
+            ),
+            metadata=MediaItemMetadata(
+                images=UniqueList(
+                    [MediaItemImage(type=ImageType.THUMB, path="track.jpg", provider="fs")]
+                )
+            ),
+        )
+        ctrl = _controller()
+        ctrl.get_image_url = MagicMock(side_effect=lambda img, **_: img.path)  # type: ignore[method-assign]
+        assert await ctrl._get_library_item_thumb(track) == album_thumb.path

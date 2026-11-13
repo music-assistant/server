@@ -35,7 +35,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
-from music_assistant.models.core_controller import CoreController
+from music_assistant.models.core_controller import CORE_DOCS_URL, CoreController
 
 from .constants import (
     ACTIVE_TASK_ID,
@@ -86,6 +86,7 @@ class TasksController(CoreController):
         self.manifest.name = "Background tasks"
         self.manifest.description = "Manage long running scheduled, user and system tasks."
         self.manifest.icon = "playlist-play"
+        self.manifest.documentation = f"{CORE_DOCS_URL}#background-tasks-configuration"
         self._tasks: dict[str, ManagedTask] = {}
         self._pending_task_ids: deque[str] = deque()
         self._log_handler: TaskLogHandler | None = None

@@ -33,6 +33,7 @@ def _make_player_mock(ready: asyncio.Future[None]) -> MagicMock:
     member.display_name = MEMBER_NAME
     mock.mass.players.get_player.return_value = member
     bridge = MagicMock()
+    bridge.refresh_cast_app_state = AsyncMock()
     bridge.reset_cast_app_ready.return_value = ready
     mock._get_cast_bridge_manager.return_value.get_bridge_by_client_id.return_value = bridge
     return mock
@@ -100,3 +101,23 @@ async def test_timeout_names_the_members_that_never_reported_ready() -> None:
         await SendspinPlayer.set_members(mock, player_ids_to_add=[MEMBER_ID])
 
     assert ready.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_stream_ending_during_the_refresh_does_not_wait_for_the_member() -> None:
+    """A member added after the stream ended during its status refresh joins without a wait."""
+    ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    mock = _make_player_mock(ready)
+    bridge = mock._get_cast_bridge_manager.return_value.get_bridge_by_client_id.return_value
+
+    async def stream_ends() -> None:
+        mock.api.group.has_active_stream = False
+
+    bridge.refresh_cast_app_state = AsyncMock(side_effect=stream_ends)
+
+    with patch.object(player_module, "CAST_APP_READY_TIMEOUT", 0.01):
+        await SendspinPlayer.set_members(mock, player_ids_to_add=[MEMBER_ID])
+
+    bridge.reset_cast_app_ready.assert_not_called()
+    mock.api.group.add_client.assert_awaited_once()
+    mock.api.group.remove_client.assert_not_awaited()

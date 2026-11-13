@@ -22,17 +22,18 @@ from music_assistant.models.core_controller import CoreController
 class TestRequiresReload:
     """Tests to verify requires_reload is set correctly on config entries."""
 
-    def test_zeroconf_interfaces_requires_reload(self) -> None:
+    @pytest.mark.asyncio
+    async def test_discovery_entries_do_not_reload(self, mock_mass: MockMass) -> None:
         """
-        Test that CONF_ENTRY_ZEROCONF_INTERFACES has requires_reload=True.
+        Test that no discovery controller entry has requires_reload=True.
 
-        This entry is read at MusicAssistant startup to configure the zeroconf instance,
-        so changes require a reload.
+        Its zeroconf instance lives for the whole server run and is held by providers and the
+        shared http sessions, so a change must apply on the next restart instead of a reload.
         """
-        assert CONF_ENTRY_ZEROCONF_INTERFACES.requires_reload is True, (
-            f"CONF_ENTRY_ZEROCONF_INTERFACES ({CONF_ZEROCONF_INTERFACES}) should have "
-            "requires_reload=True because it's read at startup time"
-        )
+        entries = await DiscoveryController(mock_mass).get_config_entries()
+
+        assert CONF_ENTRY_ZEROCONF_INTERFACES in entries
+        assert not any(entry.requires_reload for entry in entries)
 
     @pytest.mark.asyncio
     async def test_zeroconf_interfaces_entry_lives_on_discovery_controller(

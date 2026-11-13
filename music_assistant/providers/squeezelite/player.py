@@ -27,7 +27,6 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidCommand, MusicAssistantError
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
@@ -47,6 +46,7 @@ from music_assistant.models.player import (
 from .constants import (
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
+    CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
     DEVIATION_JUMP_IGNORE,
     MAX_SKIP_AHEAD_MS,
@@ -143,17 +143,22 @@ class SqueezelitePlayer(Player):
         # update all dynamic attributes
         self.update_attributes()
         # restore volume state
-        if last_state := await self.mass.cache.get(
-            key=player_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_PREV_STATE
-        ):
-            init_muted = last_state[0]
-            init_volume = last_state[1]
-        else:
-            init_muted = False
-            init_volume = DEFAULT_PLAYER_VOLUME
+        init_volume = cast(
+            "int | None",
+            self.mass.config.get_raw_player_config_value(player_id, CONF_STORED_VOLUME),
+        )
+        if init_volume is None:
+            # older versions kept it in an (expiring) cache entry
+            last_state = await self.mass.cache.get(
+                key=player_id,
+                provider=self.provider.instance_id,
+                category=CACHE_CATEGORY_PREV_STATE,
+            )
+            init_volume = last_state[1] if last_state else DEFAULT_PLAYER_VOLUME
         await self.client.stop()
-        await self.client.mute(init_muted)
         await self.client.volume_set(init_volume)
+        # carries a volume from the legacy cache over before that entry expires
+        self._store_volume()
         await self.mass.players.register_or_update(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
@@ -184,31 +189,16 @@ class SqueezelitePlayer(Player):
             CONF_ENTRY_SYNC_ADJUST,
             CONF_ENTRY_DISPLAY,
             CONF_ENTRY_VISUALIZATION,
-            CONF_ENTRY_HTTP_PROFILE_FORCED_2,
             CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
         ]
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         await self.client.volume_set(volume_level)
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=[self.client.muted, volume_level],
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_STATE,
-        )
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         await self.client.mute(muted)
-        # store last state in cache
-        await self.mass.cache.set(
-            key=self.player_id,
-            data=[muted, self.client.volume_level],
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_PREV_STATE,
-        )
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
@@ -248,6 +238,10 @@ class SqueezelitePlayer(Player):
             msg = "A synced player cannot receive play commands directly"
             raise InvalidCommand(msg)
 
+        # don't report the old stream's position until the new stream's first heartbeat
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
+
         # Clean up any existing multi-client stream before starting a new one
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
@@ -268,6 +262,7 @@ class SqueezelitePlayer(Player):
                 send_flush=True,
                 auto_play=False,
             )
+            self._sync_elapsed_after_flush()
             return
 
         # this is a syncgroup; we need to handle this with a multi client stream.
@@ -328,6 +323,7 @@ class SqueezelitePlayer(Player):
                         mime_type=get_mime_type(member_codec),
                     )
                 )
+        self._sync_elapsed_after_flush()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
@@ -398,7 +394,25 @@ class SqueezelitePlayer(Player):
         ):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
-            self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
+            # a back-to-back restart reads the position of the one before it, so the newest wins
+            self.mass.create_task(
+                self.mass.players.cmd_resume(self.player_id),
+                task_id=f"squeezelite_regroup_resume_{self.player_id}",
+                abort_existing=True,
+            )
+
+    def remove_disconnected_member(self, player_id: str) -> None:
+        """
+        Remove a group member whose slimproto connection dropped.
+
+        :param player_id: The player id of the disconnected member.
+        """
+        if player_id not in self._attr_group_members:
+            return
+        self._attr_group_members.remove(player_id)
+        if self._attr_group_members == [self.player_id]:
+            self._attr_group_members.clear()
+        self.update_state()
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""
@@ -417,6 +431,7 @@ class SqueezelitePlayer(Player):
         # all other: update attributes and update state
         self.update_attributes()
         self.update_state()
+        self._store_volume()
 
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
@@ -487,8 +502,13 @@ class SqueezelitePlayer(Player):
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        low_latency_stream = media.media_type in (MediaType.AUDIO_SOURCE, MediaType.RADIO)
-        # live streams start on a smaller buffer (KB, tenths of a second) to cut latency
+        # live streams and announcements start on a smaller buffer (KB, tenths of a second) to cut
+        # latency; a short announcement would never fill the default 2 second output buffer
+        low_latency_stream = media.media_type in (
+            MediaType.AUDIO_SOURCE,
+            MediaType.RADIO,
+            MediaType.ANNOUNCEMENT,
+        )
         stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
         await slimplayer.play_url(
             url=url,
@@ -774,6 +794,19 @@ class SqueezelitePlayer(Player):
         return self.mass.config.get_raw_player_config_value(
             member_player_id, CONF_OUTPUT_CODEC, "flac"
         )
+
+    def _sync_elapsed_after_flush(self) -> None:
+        """Drop an old-stream heartbeat that landed before the flush."""
+        self._attr_elapsed_time = self.client.elapsed_seconds
+        self._attr_elapsed_time_last_updated = time.time()
+
+    def _store_volume(self) -> None:
+        """Keep the current volume in the player config so it survives a reconnect."""
+        volume = self.client.volume_level
+        if volume != self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_STORED_VOLUME
+        ):
+            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:

@@ -75,7 +75,7 @@ as `BackendEvent`s through a single async callback and answers `get_stream_sourc
 | Pause behavior | Pipe delivers silence → provider stops the player | Stream ends cleanly (EOF) |
 | Queue control | Session-side queue verbs (add-to-queue, shuffle, repeat) + queue/options events | Transport only |
 | Volume | Two modes: pin at 100% (default) or sync with compensation | `external_volume`: MA owns volume |
-| Risk profile | Binary downloaded from Spotify's CDN, 90-day build expiry, ToS grey area | May break when Spotify changes the protocol |
+| Risk profile | Binary downloaded from Spotify's CDN, 90-day build expiry | May break when Spotify changes the protocol |
 
 The setup flow defaults new setups to Soloist and presents both engines as expanded
 choices. Existing pre-backend-split configs migrate to go-librespot. Loudness normalization,

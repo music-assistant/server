@@ -316,6 +316,7 @@ def _controller_with_sources(
             side_effect=lambda domain, **_kwargs: [prov for prov in loaded if prov.domain == domain]
         ),
     )
+    controller.mass.cache.delete = AsyncMock()
     set_music_source_access(controller.mass, access)
     return controller
 
@@ -630,19 +631,19 @@ async def test_a_play_report_never_reaches_another_members_account() -> None:
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_refresh_item_skips_a_mapping_served_by_a_hidden_account(mock_get_user: Mock) -> None:
-    """A mapping now served by another member's private account is left alone, search stands in."""
+    """A mapping now served only by another member's private account is left alone, search stands in."""
     mock_get_user.return_value = _user(USER_A)
-    mine = _music_source_prov("spotify--mine")
     theirs = _music_source_prov("spotify--theirs")
     controller = _controller_with_sources(
-        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine, theirs]
+        {"tidal--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [theirs]
     )
     controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
     substitute = Track(
         item_id="sub",
-        provider="spotify--mine",
+        provider="tidal--mine",
         name="Track",
-        provider_mappings={_mapping("spotify--mine")},
+        provider_mappings={_mapping("tidal--mine")},
     )
     ctrl = AsyncMock()
     ctrl.get_provider_item = AsyncMock(return_value=substitute)
@@ -661,7 +662,43 @@ async def test_refresh_item_skips_a_mapping_served_by_a_hidden_account(mock_get_
     ):
         await controller.refresh_item(_library_track("spotify--gone"))
 
-    ctrl.get_provider_item.assert_awaited_once_with("sub", "spotify--mine", force_refresh=True)
+    ctrl.get_provider_item.assert_awaited_once_with("sub", "tidal--mine", force_refresh=True)
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_refresh_item_fetches_from_the_users_own_account_of_the_service(
+    mock_get_user: Mock,
+) -> None:
+    """A mapping whose lookup lands on a hidden account is fetched from the user's own one."""
+    mock_get_user.return_value = _user(USER_A)
+    mine = _music_source_prov("spotify--mine")
+    theirs = _music_source_prov("spotify--theirs")
+    controller = _controller_with_sources(
+        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine, theirs]
+    )
+    controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
+    library_track = _library_track("spotify--gone")
+    mapping = next(iter(library_track.provider_mappings))
+    fresh = Track(
+        item_id=mapping.item_id,
+        provider="spotify--mine",
+        name="Track",
+        provider_mappings={_mapping("spotify--mine")},
+    )
+    ctrl = AsyncMock()
+    ctrl.get_provider_item = AsyncMock(return_value=fresh)
+    ctrl.update_item_in_library = AsyncMock(return_value=fresh)
+
+    with (
+        patch.object(controller.mass, "get_provider", return_value=theirs),
+        patch.object(controller, "get_controller", return_value=ctrl),
+        patch.object(controller, "search", new_callable=AsyncMock) as search,
+    ):
+        await controller.refresh_item(library_track)
+
+    search.assert_not_awaited()
+    assert all(call.args[1] == "spotify--mine" for call in ctrl.get_provider_item.await_args_list)
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
@@ -675,6 +712,7 @@ async def test_refresh_item_fetches_from_the_account_serving_the_mapping(
         {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)}, [mine]
     )
     controller.mass.metadata = AsyncMock()
+    controller.mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()  # type: ignore[method-assign]
     library_track = _library_track("spotify--gone")
     mapping = next(iter(library_track.provider_mappings))
     fresh = Track(
@@ -879,6 +917,53 @@ async def test_library_count_unchanged_for_unrestricted_user(
     total_rows = await counted_mass.music.database.get_count("tracks")
     with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
         assert await counted_mass.music.tracks.library_count() == total_rows
+
+
+async def test_album_artists_only_ignores_albums_on_hidden_sources(
+    music_mass: MusicAssistant,
+) -> None:
+    """An album on a music source the user may not see does not make an album artist."""
+    set_music_source_access(
+        music_mass,
+        {
+            PROV_A: ProviderAccess(
+                owner=USER_A, sharing=ProviderSharing.SELECTED, shared_users=[USER_ALL]
+            ),
+            PROV_B: ProviderAccess(
+                owner=USER_B, sharing=ProviderSharing.SELECTED, shared_users=[USER_ALL]
+            ),
+        },
+    )
+    # both artists are on the visible source, only their albums differ
+    for artist_name, album_provider in (("Visible Artist", PROV_A), ("Hidden Artist", PROV_B)):
+        artist = await music_mass.music.artists.add_item_to_library(
+            Artist(
+                item_id="0",
+                provider="library",
+                name=artist_name,
+                provider_mappings={_mapping(PROV_A)},
+            )
+        )
+        await music_mass.music.albums.add_item_to_library(
+            Album(
+                item_id="0",
+                provider="library",
+                name=f"{artist_name} Album",
+                provider_mappings={_mapping(album_provider)},
+                artists=UniqueList([artist]),
+            )
+        )
+    artists = music_mass.music.artists
+
+    for user_id, expected in (
+        (USER_A, ["Visible Artist"]),
+        (USER_ALL, ["Hidden Artist", "Visible Artist"]),
+    ):
+        with patch(GET_CURRENT_USER, return_value=_user(user_id)):
+            items = await artists.library_items(album_artists_only=True)
+            count = await artists.library_count(album_artists_only=True)
+        assert sorted(artist.name for artist in items) == expected
+        assert count == len(expected)
 
 
 async def test_genre_library_count_ignores_music_sources(

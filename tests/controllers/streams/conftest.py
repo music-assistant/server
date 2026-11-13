@@ -84,12 +84,13 @@ async def streams_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[Str
     await mass_minimal.tasks.setup(await mass_minimal.config.get_core_config("tasks"))
     streams = StreamsController(mass_minimal)
     mass_minimal.streams = streams
-    # setup() overwrites the level of these process-global loggers with the controller
-    # level, so snapshot them and restore afterwards to keep a level a test raised out
-    # of unrelated tests
+    # setup() and a log level change overwrite the level of these process-global loggers,
+    # so snapshot them and restore afterwards to keep a level a test raised out of
+    # unrelated tests
     saved_levels = [
         (logger, logger.level)
         for logger in (
+            streams.logger,
             FFMPEG_LOGGER,
             streams.audio.logger,
             streams.logger.getChild("smart_fades_mixer"),

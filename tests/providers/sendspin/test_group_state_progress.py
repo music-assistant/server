@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 from aiosendspin.models.types import PlaybackStateType
@@ -55,7 +56,12 @@ def test_resume_from_pause_pushes_progress_and_refreshes_anchors() -> None:
         playback_state=PlaybackState.PAUSED, current_media=stale_media
     )
 
-    with patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock) as synced_to:
+    with (
+        patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(
+            SendspinPlayer, "protocol_parent_id", new_callable=PropertyMock, return_value=None
+        ),
+    ):
         synced_to.return_value = None
         before = time.time()
         SendspinPlayer.group_event_cb(
@@ -134,7 +140,12 @@ def test_fresh_play_from_idle_does_not_refresh_anchors() -> None:
         playback_state=PlaybackState.IDLE, current_media=fresh_media
     )
 
-    with patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock) as synced_to:
+    with (
+        patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(
+            SendspinPlayer, "protocol_parent_id", new_callable=PropertyMock, return_value=None
+        ),
+    ):
         synced_to.return_value = None
         SendspinPlayer.group_event_cb(
             player, Mock(), GroupStateChangedEvent(state=PlaybackStateType.PLAYING)
@@ -143,3 +154,28 @@ def test_fresh_play_from_idle_does_not_refresh_anchors() -> None:
     assert player._attr_elapsed_time_last_updated == 1.0
     assert fresh_media.elapsed_time_last_updated == 42.0
     send_metadata.assert_called_once()
+
+
+def test_resume_behind_idle_protocol_parent_leaves_push_to_parent() -> None:
+    """A group resume doesn't push the position a parent that isn't playing yet still holds."""
+    media = PlayerMedia(
+        uri="track-1", media_type=MediaType.TRACK, elapsed_time=19, elapsed_time_last_updated=1.0
+    )
+    player, _create_task, send_metadata = _player(
+        playback_state=PlaybackState.IDLE, current_media=media
+    )
+    cast("Mock", player.mass).players.get_player.return_value = Mock(
+        state=SimpleNamespace(playback_state=PlaybackState.IDLE)
+    )
+
+    with (
+        patch.object(SendspinPlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SendspinPlayer, "protocol_parent_id", new_callable=PropertyMock, return_value="parent"
+        ),
+    ):
+        SendspinPlayer.group_event_cb(
+            player, Mock(), GroupStateChangedEvent(state=PlaybackStateType.PLAYING)
+        )
+
+    send_metadata.assert_not_called()

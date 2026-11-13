@@ -36,11 +36,17 @@ from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.api import (
+    APICommandHandler,
+    parse_arguments,
+    redact_json_secrets,
+    redact_secrets,
+)
 from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 from .helpers.auth_middleware import (
+    INGRESS_CLIENT_KEY,
     has_scope,
     is_request_from_ingress,
     is_request_from_ingress_proxy,
@@ -53,6 +59,7 @@ from .helpers.auth_middleware import (
     set_impersonated_user,
     set_sendspin_player_id,
 )
+from .helpers.login_flow import AuthTransport
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -85,11 +92,19 @@ class WebsocketClientHandler:
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._is_ingress_proxy = is_request_from_ingress_proxy(request)
+        # Home Assistant user and browser key an Ingress connection came in with
+        self._ingress_user_id: str | None = None
+        self._ingress_client_key: str | None = None
+        if self._is_ingress_proxy:
+            self._ingress_user_id = request.headers.get("X-Remote-User-ID") or None
+            self._ingress_client_key = request.query.get(INGRESS_CLIENT_KEY) or None
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # uris of the personal playlists this client was told are gone
         self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
+        peername = request.transport.get_extra_info("peername") if request.transport else None
+        self._peer_address: str | None = peername[0] if peername else None
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -112,6 +127,22 @@ class WebsocketClientHandler:
         """Return the id of the WebRTC session this client connected through, if any."""
         return self._webrtc_session_id
 
+    @property
+    def auth_transport(self) -> AuthTransport:
+        """Return how this client reaches the server."""
+        if self._is_ingress_proxy:
+            return AuthTransport.INGRESS
+        if self.webserver.remote_access.is_gateway_connection(
+            self._webrtc_session_id, self._peer_address
+        ):
+            return AuthTransport.REMOTE
+        return AuthTransport.DIRECT
+
+    @property
+    def request_host(self) -> str:
+        """Return the host (and any port) the client says it used to reach the server."""
+        return self.request.headers.get("X-Forwarded-Host") or self.request.host
+
     def matches_token(self, token: str) -> bool:
         """
         Return True if this client authenticated with the given access token.
@@ -119,6 +150,15 @@ class WebsocketClientHandler:
         :param token: The access token to compare against.
         """
         return self._current_token == token
+
+    def matches_ingress_client(self, ha_user_id: str, client_key: str) -> bool:
+        """
+        Return True if this client came in through Home Assistant Ingress from the given browser.
+
+        :param ha_user_id: Id of the Home Assistant user the browser is signed in as.
+        :param client_key: The key the browser identifies itself with.
+        """
+        return self._ingress_user_id == ha_user_id and self._ingress_client_key == client_key
 
     def bind_sendspin_player(self, player_id: str) -> None:
         """
@@ -190,12 +230,15 @@ class WebsocketClientHandler:
                 if msg.type != WSMsgType.TEXT:
                     continue
 
-                self._logger.log(VERBOSE_LOG_LEVEL, "Received: %s", msg.data)
+                if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL, "Received: %s", redact_json_secrets(msg.data)
+                    )
 
                 try:
                     command_msg = CommandMessage.from_json(msg.data)
                 except ValueError:
-                    disconnect_warn = f"Received invalid JSON: {msg.data}"
+                    disconnect_warn = "Received invalid JSON"
                     break
 
                 await self._handle_command(command_msg)
@@ -310,7 +353,9 @@ class WebsocketClientHandler:
         try:
             # handle the optional impersonation argument for impersonation-enabled commands
             if handler.allow_impersonation and msg.args:
-                if impersonation_user := await resolve_command_impersonation(self.mass, msg.args):
+                if impersonation_user := await resolve_command_impersonation(
+                    self.mass, msg.args, handler.required_scope
+                ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
@@ -343,11 +388,14 @@ class WebsocketClientHandler:
                     translation_key=err.translation_key,
                     translation_args=err.translation_args,
                     translation_owner=err.translation_owner,
+                    data=err.data,
                 )
             )
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
-                self._logger.exception("Error handling message: %s", msg)
+                self._logger.exception(
+                    "Error handling message: %s", replace(msg, args=redact_secrets(msg.args))
+                )
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
             err_msg = str(err) or err.__class__.__name__
@@ -367,7 +415,8 @@ class WebsocketClientHandler:
                     message: str = process()
                 else:
                     message = process
-                self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
+                if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                    self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", redact_json_secrets(message))
                 await self.wsock.send_str(message)
 
     async def _send_message(self, message: MessageType) -> None:
@@ -615,6 +664,12 @@ class WebsocketClientHandler:
                 or event.data.user_id != self._authenticated_user.user_id
             ):
                 # a like or dislike is the business of its own user only
+                return
+
+            if event.event == EventType.BOOKMARKS_UPDATED and (
+                self._authenticated_user is None or event.data != self._authenticated_user.user_id
+            ):
+                # as are bookmarks; the data is the id of the user they belong to
                 return
 
             if isinstance(event.data, MediaItem) and event.data.favorite is not None:

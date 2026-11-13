@@ -123,6 +123,7 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
             return_value=zc_args,
         ) as mock_get_zeroconf_args,
     ):
+        await mass_minimal.discovery.start_zeroconf()
         await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
         assert mass_minimal.discovery.aiozc is mock_zc
 

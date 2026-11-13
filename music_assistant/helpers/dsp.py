@@ -67,7 +67,7 @@ class ComplexFilter:
     inputs: list[ComplexFilterInput] = field(default_factory=list)
 
 
-def filter_to_ffmpeg_params(
+def filter_to_ffmpeg_params(  # noqa: C901, PLR0912
     dsp_filter: DSPFilter, input_format: AudioFormat, *, ir_dir: str
 ) -> list[str | ComplexFilter]:
     """

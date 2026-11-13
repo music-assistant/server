@@ -25,12 +25,16 @@ from music_assistant_models.errors import (
     RetriesExhausted,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.errors import (
+    ProviderStreamHeldError as ProviderStreamHeldErrorBase,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemBookmark,
     MediaItemImage,
     MediaItemTranscriptCue,
     MediaItemType,
@@ -54,6 +58,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
 )
+from music_assistant.helpers.playlists import playlist_block_move_steps
 
 from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, RecommendationsMixin
 from .provider import Provider
@@ -62,6 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -110,6 +116,10 @@ LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
     MediaType.AUDIOBOOK: ProviderFeature.LIBRARY_AUDIOBOOKS,
     MediaType.PODCAST: ProviderFeature.LIBRARY_PODCASTS,
 }
+
+
+class NothingToSync(Exception):
+    """Raised from sync_library when the provider found nothing changed since its last sync."""
 
 
 @dataclass
@@ -166,6 +176,43 @@ class ProviderStreamLimitError(AudioError):
             f"{provider.name} has reached its limit of {limit} "
             f"concurrent source streams{wait_text}.",
             translation_args=[provider.name, limit],
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = limit
+
+
+class ProviderStreamHeldError(ProviderStreamLimitError, ProviderStreamHeldErrorBase):
+    """
+    Raised when another player's playback holds the last source-stream slot of a provider.
+
+    A realtime source keeps its slot until its item ends, so waiting for one is pointless:
+    the request is refused right away, naming the player to stop. Callers handle it like any
+    ProviderStreamLimitError; API clients get its own error code and ``data`` naming the
+    holding player.
+    """
+
+    translation_key = "provider_stream_held"
+
+    def __init__(self, provider: MusicProvider, holder: PlayerQueue) -> None:
+        """
+        Initialize the error.
+
+        :param provider: Provider instance whose source-stream slots are all held.
+        :param holder: The queue whose playback holds the slot.
+        """
+        limit = provider.max_concurrent_streams
+        assert limit is not None
+        # skips ProviderStreamLimitError.__init__, which phrases the message in terms
+        # of the budget and the time spent waiting for it
+        MusicAssistantError.__init__(
+            self,
+            f"{provider.name} is already playing on {holder.display_name}",
+            translation_args=[provider.name, holder.display_name],
+            data={
+                "queue_id": holder.queue_id,
+                "player_name": holder.display_name,
+                "provider_instance": provider.instance_id,
+            },
         )
         self.provider_instance = provider.instance_id
         self.limit = limit
@@ -660,6 +707,52 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         raise NotImplementedError
 
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_MOVE.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
+        """
+        raise NotImplementedError
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_MOVE. The moved tracks
+        keep their order. Override it when the provider can move several tracks in one call.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based. None
+            moves the tracks to the end of the playlist.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        # replay the block as single moves, which every provider with the feature implements.
+        # The listing can leave out entries it cannot resolve while keeping the positions of
+        # the others, so the highest listed position bounds the playlist too. Entries left out
+        # after the last listed track stay unknown, and "the end" is then after that track.
+        length = 0
+        page = 0
+        while page_items := await self.get_playlist_tracks(prov_playlist_id, page=page):
+            length = max(length + len(page_items), *(item.position or 0 for item in page_items))
+            page += 1
+        if to_position is None:
+            to_position = length - len(positions) + 1
+        for from_position, step_to_position in playlist_block_move_steps(
+            length, positions, to_position
+        ):
+            await self.move_playlist_track(prov_playlist_id, from_position, step_to_position)
+
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """
         Create a new playlist on provider with given name and targeting media_types.
@@ -720,6 +813,49 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         raise NotImplementedError
 
+    async def get_bookmarks(
+        self, media_type: MediaType, prov_item_id: str
+    ) -> list[MediaItemBookmark]:
+        """
+        Get the user's bookmarks of the given audiobook or podcast episode.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        """
+        raise NotImplementedError
+
+    async def set_bookmark(
+        self, media_type: MediaType, prov_item_id: str, start: float, name: str
+    ) -> None:
+        """
+        Add a bookmark to the given item, or rename the one at the same start.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        :param start: Position of the bookmark in seconds.
+        :param name: Name of the bookmark.
+        """
+        raise NotImplementedError
+
+    async def remove_bookmark(self, media_type: MediaType, prov_item_id: str, start: float) -> None:
+        """
+        Remove the bookmark at the given start of the given item.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        :param start: Position of the bookmark in seconds.
+        """
+        raise NotImplementedError
+
     async def on_stream_started(
         self,
         streamdetails: StreamDetails,
@@ -729,6 +865,19 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
         Called once per playback, so unlike get_stream_details never for a preload.
         A playback that triggers this callback is followed by at least one on_streamed.
+        """
+
+    async def hint_next_item(self, playing: StreamDetails, upcoming: StreamDetails) -> None:
+        """
+        Handle a hint about the item that follows the one being streamed.
+
+        Called instead of preparing the upcoming item when the streamed item holds
+        this provider's only stream slot, so a provider that plays a queue itself
+        can line the upcoming item up. It may be called more than once for the same
+        pair; a call for a different upcoming item means the queue changed.
+
+        :param playing: Stream details of the item being streamed.
+        :param upcoming: Stream details of the item that follows it.
         """
 
     async def on_streamed(
@@ -784,7 +933,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         :param item: The updated library item.
         """
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: C901, PLR0911, PLR0912
         """
         Browse this provider's items.
 
@@ -1028,6 +1177,114 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             state.skipped_item_ids.setdefault(media_type, set()).add(item_id)
         else:
             state.incomplete_media_types.add(media_type)
+
+    def library_sync_album_tracks_enabled(self) -> bool:
+        """Return whether all tracks of an album should be imported into the library."""
+        return bool(
+            self.config.get_value(
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
+            )
+        )
+
+    async def import_album_tracks(self, prov_album_id: str, album: Album | None = None) -> None:
+        """
+        Import all tracks of the given (provider) album into the Music Assistant library.
+
+        :param prov_album_id: The provider item id of the album.
+        :param album: The album the tracks belong to.
+            Fetched from the provider when not given.
+        """
+        self.logger.debug(
+            "Importing Album Tracks into the Music Assistant library for album %s.",
+            album.name if album else prov_album_id,
+        )
+        prov_tracks = await self.get_album_tracks(prov_album_id)
+        # some providers leave the (redundant) album off the tracks in an album listing.
+        # without it the track is stored unfiled, so resolve it once for the whole import.
+        if album is None and any(prov_track.album is None for prov_track in prov_tracks):
+            with suppress(MusicAssistantError, NotImplementedError):
+                album = await self.get_album(prov_album_id)
+        album_mapping = ItemMapping.from_item(album) if album else None
+        for item_count, prov_track in enumerate(prov_tracks, start=1):
+            self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
+            try:
+                if prov_track.album is None and album_mapping is not None:
+                    prov_track.album = album_mapping
+                sync_details = cast(
+                    "TrackSyncDetails | None",
+                    await self.mass.music.tracks.get_library_item_sync_details(
+                        prov_track.provider_mappings,
+                    ),
+                )
+                # batch all writes for this item into a single commit
+                async with self.mass.music.database.deferred_commit():
+                    if not sync_details:
+                        # add item to the library
+                        for prov_map in prov_track.provider_mappings:
+                            prov_map.in_library = True
+                        library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
+                        db_id = int(library_track.item_id)
+                    elif (
+                        not self._check_provider_mappings(sync_details, prov_track, True)
+                        # existing library track but provider mapping doesn't match
+                        # or backfill a missing album(_tracks) link for existing tracks
+                        or (prov_track.album and not sync_details.has_album)
+                    ):
+                        library_track = await self.mass.music.tracks.update_item_in_library(
+                            sync_details.item_id, prov_track
+                        )
+                        db_id = int(library_track.item_id)
+                    else:
+                        db_id = sync_details.item_id
+                    fallback_genres = (
+                        set(prov_track.metadata.genres)
+                        if prov_track.metadata and prov_track.metadata.genres
+                        else None
+                    )
+                    await self._sync_item_genres(
+                        MediaType.TRACK,
+                        prov_track.item_id,
+                        db_id,
+                        fallback_genres,
+                    )
+                await asyncio.sleep(0)  # yield to eventloop
+            except Exception as err:
+                self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
+
+    # DO NOT OVERRIDE BELOW
+
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the default recurring schedule for library sync tasks of this provider."""
+        if not self.mass.music.library_supported(self, media_type):
+            raise UnsupportedFeaturedException(
+                f"Library sync is not supported for {media_type} on {self.instance_id}"
+            )
+        return TaskSchedule.hourly(every=12)
+
+    def library_sync_deletions_enabled(self) -> bool:
+        """Return if Library sync deletions is enabled for this provider."""
+        conf_value = self.config.get_value(
+            CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key, CONF_ENTRY_LIBRARY_SYNC_DELETIONS.default_value
+        )
+        return bool(conf_value)
+
+    async def iter_playlist_tracks(
+        self,
+        prov_playlist_id: str,
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
+        """Iterate playlist tracks for the given provider playlist id."""
+        page = 0
+        while True:
+            tracks = await self.get_playlist_tracks(
+                prov_playlist_id,
+                page=page,
+            )
+            if not tracks:
+                break
+            for track in tracks:
+                yield track
+            page += 1
 
     async def _run_library_sync(self, media_type: MediaType) -> None:  # noqa: PLR0915
         """Sync the given media type into the library and process its deletions."""
@@ -1335,15 +1592,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 )
         return cur_db_ids
 
-    def library_sync_album_tracks_enabled(self) -> bool:
-        """Return whether all tracks of an album should be imported into the library."""
-        return bool(
-            self.config.get_value(
-                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
-                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
-            )
-        )
-
     async def _sync_library_albums(self) -> set[int]:
         """Sync Library Albums to Music Assistant library."""
         self.logger.debug("Start sync of Albums to Music Assistant library.")
@@ -1406,71 +1654,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 except Exception as err:
                     self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
-
-    async def import_album_tracks(self, prov_album_id: str, album: Album | None = None) -> None:
-        """
-        Import all tracks of the given (provider) album into the Music Assistant library.
-
-        :param prov_album_id: The provider item id of the album.
-        :param album: The album the tracks belong to.
-            Fetched from the provider when not given.
-        """
-        self.logger.debug(
-            "Importing Album Tracks into the Music Assistant library for album %s.",
-            album.name if album else prov_album_id,
-        )
-        prov_tracks = await self.get_album_tracks(prov_album_id)
-        # some providers leave the (redundant) album off the tracks in an album listing.
-        # without it the track is stored unfiled, so resolve it once for the whole import.
-        if album is None and any(prov_track.album is None for prov_track in prov_tracks):
-            with suppress(MusicAssistantError, NotImplementedError):
-                album = await self.get_album(prov_album_id)
-        album_mapping = ItemMapping.from_item(album) if album else None
-        for item_count, prov_track in enumerate(prov_tracks, start=1):
-            self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
-            try:
-                if prov_track.album is None and album_mapping is not None:
-                    prov_track.album = album_mapping
-                sync_details = cast(
-                    "TrackSyncDetails | None",
-                    await self.mass.music.tracks.get_library_item_sync_details(
-                        prov_track.provider_mappings,
-                    ),
-                )
-                # batch all writes for this item into a single commit
-                async with self.mass.music.database.deferred_commit():
-                    if not sync_details:
-                        # add item to the library
-                        for prov_map in prov_track.provider_mappings:
-                            prov_map.in_library = True
-                        library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
-                        db_id = int(library_track.item_id)
-                    elif (
-                        not self._check_provider_mappings(sync_details, prov_track, True)
-                        # existing library track but provider mapping doesn't match
-                        # or backfill a missing album(_tracks) link for existing tracks
-                        or (prov_track.album and not sync_details.has_album)
-                    ):
-                        library_track = await self.mass.music.tracks.update_item_in_library(
-                            sync_details.item_id, prov_track
-                        )
-                        db_id = int(library_track.item_id)
-                    else:
-                        db_id = sync_details.item_id
-                    fallback_genres = (
-                        set(prov_track.metadata.genres)
-                        if prov_track.metadata and prov_track.metadata.genres
-                        else None
-                    )
-                    await self._sync_item_genres(
-                        MediaType.TRACK,
-                        prov_track.item_id,
-                        db_id,
-                        fallback_genres,
-                    )
-                await asyncio.sleep(0)  # yield to eventloop
-            except Exception as err:
-                self._handle_sync_item_failure(MediaType.TRACK, prov_track.uri, err)
 
     def _validate_audiobook_author_narrator_types(self, prov_item: Audiobook) -> None:
         """
@@ -1541,37 +1724,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                             prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
-                    elif self._library_item_needs_update(
-                        sync_details, prov_item
-                    ) or sync_details.authors_narrators_changed(prov_item):
+                    elif (
+                        self._library_item_needs_update(sync_details, prov_item)
+                        or sync_details.authors_narrators_changed(prov_item)
+                        or sync_details.resume_point_changed(prov_item)
+                    ):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
                     else:
                         db_id = sync_details.item_id
-                        lib_fully_played = sync_details.fully_played
-                        lib_resume_position_ms = sync_details.resume_position_ms
 
                     cur_db_ids.add(db_id)
                     if prov_item.favorite is not None:
                         await self.mass.music.favorites.record_from_provider(
                             self.instance_id, MediaType.AUDIOBOOK, db_id, prov_item.favorite
                         )
-                    # check if resume_position_ms or fully_played changed
-                    if (
-                        prov_item.resume_position_ms is not None
-                        and prov_item.fully_played is not None
-                        and (
-                            lib_resume_position_ms != prov_item.resume_position_ms
-                            or lib_fully_played != prov_item.fully_played
-                        )
-                    ):
-                        await self.mass.music.audiobooks.update_item_in_library(db_id, prov_item)
 
                     fallback_genres = (
                         set(prov_item.metadata.genres)
@@ -1705,7 +1874,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         else None
                     )
                     await self._sync_item_genres(
-                        MediaType.TRACK,
+                        prov_track.media_type,
                         prov_track.item_id,
                         db_id,
                         fallback_genres,
@@ -1849,7 +2018,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             # episodes does not make the podcast result set incomplete
             try:
                 # precache podcast episodes
-                async for _ in self.mass.music.podcasts.episodes(str(db_id), "library"):
+                async for _ in self.mass.music.podcasts.iter_episodes(str(db_id), "library"):
                     await asyncio.sleep(0)  # yield to eventloop
             except Exception as err:
                 self._handle_sync_item_failure(MediaType.PODCAST, prov_item.uri, err)
@@ -1877,21 +2046,25 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True
                         library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                    elif prov_item.is_dynamic and (
-                        not library_item.is_dynamic
+                    elif (prov_item.is_dynamic or not prov_item.is_endless) and (
+                        prov_item.is_dynamic != library_item.is_dynamic
+                        or prov_item.is_endless != library_item.is_endless
                         or prov_item.name != library_item.name
                         or prov_item.metadata.images != library_item.metadata.images
                     ):
-                        # must overwrite: merging keeps mappings that serve the wrong tracks
+                        # a tracklisted station is provider-owned, so it must overwrite:
+                        # merging keeps mappings that serve the wrong tracks
                         for prov_map in prov_item.provider_mappings:
                             prov_map.in_library = True  # overwrite re-inserts the rows
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item, overwrite=True
                         )
                     elif self._library_item_needs_update(library_item, prov_item) or (
-                        library_item.is_dynamic and not prov_item.is_dynamic
+                        (not prov_item.is_dynamic and prov_item.is_endless)
+                        and (library_item.is_dynamic or not library_item.is_endless)
                     ):
-                        # a station leaving dynamic mode is no longer provider-owned, so merge
+                        # a station that became a plain stream again is no longer
+                        # provider-owned, so merge
                         library_item = await self.mass.music.radio.update_item_in_library(
                             library_item.item_id, prov_item
                         )
@@ -1909,40 +2082,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     MediaType.RADIO, prov_item.item_id, db_id, cur_db_ids
                 )
         return cur_db_ids
-
-    # DO NOT OVERRIDE BELOW
-
-    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
-        """Return the default recurring schedule for library sync tasks of this provider."""
-        if not self.mass.music.library_supported(self, media_type):
-            raise UnsupportedFeaturedException(
-                f"Library sync is not supported for {media_type} on {self.instance_id}"
-            )
-        return TaskSchedule.hourly(every=12)
-
-    def library_sync_deletions_enabled(self) -> bool:
-        """Return if Library sync deletions is enabled for this provider."""
-        conf_value = self.config.get_value(
-            CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key, CONF_ENTRY_LIBRARY_SYNC_DELETIONS.default_value
-        )
-        return bool(conf_value)
-
-    async def iter_playlist_tracks(
-        self,
-        prov_playlist_id: str,
-    ) -> AsyncGenerator[PlaylistPlayableItem]:
-        """Iterate playlist tracks for the given provider playlist id."""
-        page = 0
-        while True:
-            tracks = await self.get_playlist_tracks(
-                prov_playlist_id,
-                page=page,
-            )
-            if not tracks:
-                break
-            for track in tracks:
-                yield track
-            page += 1
 
     def _library_item_needs_update(
         self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType

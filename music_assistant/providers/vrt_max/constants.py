@@ -239,7 +239,7 @@ REQUEST_RATE_LIMIT = 5
 # ---------------------------------------------------------------------------
 
 TOKEN_URL = (
-    "https://media-services-public.vrt.be/vualto-video-aggregator-web/rest/external/v2/tokens"
+    "https://media-services-public.vrt.be/vualto-video-aggregator-web/rest/external/v2/tokens"  # noqa: S105 - URL
 )
 AGGREGATOR_URL = "https://media-services-public.vrt.be/media-aggregator/v2"
 AGGREGATOR_CLIENT = "vrtnu-web@PROD"

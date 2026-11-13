@@ -142,6 +142,21 @@ async def test_poll_counts_the_app_in_front_as_powered() -> None:
     assert player._attr_powered is False
 
 
+async def test_power_off_skips_the_remote_when_the_state_read_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Roku that does not answer gets no key presses, and only the state error is logged."""
+    player = _make_player(MEDIA_ASSISTANT)
+    player.roku.update.side_effect = OSError("offline")  # type: ignore[attr-defined]
+    player.roku.remote = AsyncMock()  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR):
+        await player.power(False)
+
+    player.roku.remote.assert_not_awaited()
+    assert "Failed to get app state" in caplog.text
+    assert "Failed to change Power state" not in caplog.text
+
+
 async def test_enqueue_goes_to_the_app_in_front() -> None:
     """The next item is enqueued in the app in front."""
     player = _make_player("dev", in_front="dev")

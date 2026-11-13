@@ -4,7 +4,7 @@
 # Kept as-is from the previous implementation so existing setups keep working.
 
 CONF_SXM_USERNAME = "sxm_email_address"
-CONF_SXM_PASSWORD = "sxm_password"
+CONF_SXM_PASSWORD = "sxm_password"  # noqa: S105 - config key
 CONF_BITRATE = "bitrate"
 
 # -- Streaming --
@@ -12,10 +12,11 @@ CONF_BITRATE = "bitrate"
 # Bitrates SiriusXM offers. Not every channel carries every one, so the
 # requested bitrate is matched against what the channel actually reports.
 BITRATE_256 = "256k"
+BITRATE_128 = "128k"
 BITRATE_96 = "96k"
 BITRATE_64 = "64k"
 BITRATE_32 = "32k"
-BITRATES = (BITRATE_256, BITRATE_96, BITRATE_64, BITRATE_32)
+BITRATES = (BITRATE_256, BITRATE_128, BITRATE_96, BITRATE_64, BITRATE_32)
 
 # The local proxy binds to loopback: the SiriusXM CDN needs an Authorization
 # header that ffmpeg won't send, so playback goes through the proxy instead.

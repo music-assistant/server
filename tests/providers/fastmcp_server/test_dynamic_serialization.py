@@ -144,7 +144,7 @@ def test_cyclic_dataclass_uses_a_stable_cycle_marker() -> None:
 
 def test_bounded_json_value_matches_seeded_reference_policy() -> None:
     """Bounded normalization preserves deterministic list, depth, and string policy."""
-    random = Random(20260805)
+    random = Random(20260805)  # noqa: S311 - test data
 
     def payload(depth: int) -> Any:
         if depth == 0:

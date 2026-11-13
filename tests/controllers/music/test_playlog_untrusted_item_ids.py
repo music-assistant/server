@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from music_assistant_models.enums import MediaType
 
-from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.mass import MusicAssistant
 
 ABS_INSTANCE = "audiobookshelf--AbCd"
@@ -14,7 +14,7 @@ INJECTION_ITEM_ID = "1 UNION SELECT sqlite_version(),2,3,4,5,6,7,8,9,10--"
 async def _add_playlog_row(mass: MusicAssistant, item_id: str, userid: str) -> None:
     """Insert an in-progress library audiobook playlog row."""
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": item_id,
             "provider": "library",

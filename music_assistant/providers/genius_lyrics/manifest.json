@@ -7,7 +7,7 @@
   "codeowners": ["@robert-alfaro"],
   "credits": ["[LyricsGenius](https://github.com/johnwmillr/LyricsGenius)"],
   "requirements": ["lyricsgenius==3.12.2"],
-  "documentation": "https://www.music-assistant.io/metadata/",
+  "documentation": "https://music-assistant.io/metadata/lyrics/",
   "multi_instance": false,
   "icon": "mdi-script-text"
 }

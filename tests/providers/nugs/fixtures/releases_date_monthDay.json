@@ -1,0 +1,145 @@
+{
+  "items": [
+    {
+      "hasVideoOnDemand": false,
+      "audioFormatTypes": [
+        "mp3",
+        "lossless",
+        "hd"
+      ],
+      "videoFormatTypes": [],
+      "groups": [],
+      "catalogIds": [
+        "nugs"
+      ],
+      "id": "34178",
+      "status": "available",
+      "type": "show",
+      "title": "5-11-2023 5 Points Music Sanctuary Roanoke, VA",
+      "performanceDate": "2023-05-11T00:00:00",
+      "albumTitle": null,
+      "albumAbbreviation": null,
+      "albumReleaseDate": null,
+      "coverImage": null,
+      "image": {
+        "url": "https://assets-01.nugscdn.net/livedownloads/images/shows/cts230511_01.jpg",
+        "width": 290,
+        "height": 160,
+        "caption": ""
+      },
+      "venue": {
+        "id": "9586",
+        "title": "5 Points Music Sanctuary Roanoke, VA",
+        "name": "5 Points Music Sanctuary",
+        "city": "Roanoke",
+        "state": "VA",
+        "country": ""
+      },
+      "artist": {
+        "id": "1421",
+        "name": "Consider the Source",
+        "abbreviation": "cts",
+        "avatarImage": {
+          "id": null,
+          "url": "https://catalog.nugs.net/api/v1/artists/1421/images/avatar/9df082105ca94151ab6cf7fba0797a5f"
+        }
+      },
+      "isInSubscriptionCatalog": true
+    },
+    {
+      "hasVideoOnDemand": false,
+      "audioFormatTypes": [
+        "mp3",
+        "lossless",
+        "hd"
+      ],
+      "videoFormatTypes": [],
+      "groups": [],
+      "catalogIds": [
+        "nugs"
+      ],
+      "id": "33595",
+      "status": "available",
+      "type": "show",
+      "title": "5-11-2023 High Rock Outfitters Lexington, NC",
+      "performanceDate": "2023-05-11T00:00:00",
+      "albumTitle": null,
+      "albumAbbreviation": null,
+      "albumReleaseDate": null,
+      "coverImage": null,
+      "image": {
+        "url": "https://assets-01.nugscdn.net/livedownloads/images/shows/dogs230511_01.jpg",
+        "width": 290,
+        "height": 160,
+        "caption": ""
+      },
+      "venue": {
+        "id": "10675",
+        "title": "High Rock Outfitters Lexington, NC",
+        "name": "High Rock Outfitters",
+        "city": "Lexington",
+        "state": "NC",
+        "country": ""
+      },
+      "artist": {
+        "id": "1475",
+        "name": "Dogs In A Pile",
+        "abbreviation": "dogs",
+        "avatarImage": {
+          "id": null,
+          "url": "https://catalog.nugs.net/api/v1/artists/1475/images/avatar/2d114d5f4cd9438180dde2f888270001"
+        }
+      },
+      "isInSubscriptionCatalog": true
+    },
+    {
+      "hasVideoOnDemand": false,
+      "audioFormatTypes": [
+        "mp3",
+        "lossless",
+        "hd"
+      ],
+      "videoFormatTypes": [],
+      "groups": [],
+      "catalogIds": [
+        "nugs"
+      ],
+      "id": "32952",
+      "status": "available",
+      "type": "show",
+      "title": "5-11-2023 529 Bar Atlanta, GA",
+      "performanceDate": "2023-05-11T00:00:00",
+      "albumTitle": null,
+      "albumAbbreviation": null,
+      "albumReleaseDate": null,
+      "coverImage": null,
+      "image": {
+        "url": "https://assets-01.nugscdn.net/livedownloads/images/shows/eggy230511_01.jpg",
+        "width": 290,
+        "height": 160,
+        "caption": ""
+      },
+      "venue": {
+        "id": "10502",
+        "title": "529 Bar Atlanta, GA",
+        "name": "529 Bar",
+        "city": "Atlanta",
+        "state": "GA",
+        "country": ""
+      },
+      "artist": {
+        "id": "1440",
+        "name": "Eggy",
+        "abbreviation": "eggy",
+        "avatarImage": {
+          "id": null,
+          "url": "https://catalog.nugs.net/api/v1/artists/1440/images/avatar/1f49388d76ec42ca903f1b2ee8aa1cb5"
+        }
+      },
+      "isInSubscriptionCatalog": true
+    }
+  ],
+  "offset": 0,
+  "limit": 3,
+  "total": 6
+}

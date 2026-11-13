@@ -6,8 +6,10 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any, cast
 
 import podcastparser
-from aiohttp.client import ClientError
+import pytest
+from aiohttp.client import ClientConnectionError, ClientError, ClientResponseError
 from music_assistant_models.enums import LinkType
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from music_assistant.helpers.podcast_parsers import (
     _MAX_TRANSCRIPT_BYTES,
@@ -177,6 +179,20 @@ def test_description_is_populated() -> None:
     mass_episode = _parse(_episode(description="All about parsing podcasts."))
     assert mass_episode is not None
     assert mass_episode.metadata.description == "All about parsing podcasts."
+
+
+def test_description_prefers_full_show_notes() -> None:
+    """The full show notes win over a summary the feed cut short."""
+    mass_episode = _parse(
+        _episode(
+            description="A bombed out runwayFailing communications equi...",
+            description_html="<ul><li>A bombed out runway</li><li>Failing equipment</li></ul>",
+        )
+    )
+    assert mass_episode is not None
+    assert mass_episode.metadata.description == (
+        "<ul><li>A bombed out runway</li><li>Failing equipment</li></ul>"
+    )
 
 
 def test_empty_description_left_unset() -> None:
@@ -759,6 +775,34 @@ async def test_get_podcastparser_dict_releases_the_response() -> None:
     assert session.calls == 2
     assert session.released == 1
     assert session.headers[0] == {"User-Agent": "Mozilla/5.0"}
+
+
+def _status_error(status: int) -> ClientResponseError:
+    return ClientResponseError(cast("Any", None), (), status=status)
+
+
+@pytest.mark.parametrize("status", [404, 410])
+async def test_get_podcastparser_dict_gone_feed_is_not_found(status: int) -> None:
+    """A host answering that the feed is gone reports it as not found."""
+    session = _FakeFeedSession(errors=[_status_error(403), _status_error(status)])
+    with pytest.raises(MediaNotFoundError):
+        await get_podcastparser_dict(
+            session=cast("aiohttp.ClientSession", session), feed_url=FEED_URL
+        )
+
+
+@pytest.mark.parametrize(
+    "error", [_status_error(500), ClientConnectionError("connection refused"), TimeoutError()]
+)
+async def test_get_podcastparser_dict_outage_is_unavailable(
+    error: ClientError | TimeoutError,
+) -> None:
+    """A host that is down or failing reports the feed as unavailable, not as gone."""
+    session = _FakeFeedSession(errors=[error, error])
+    with pytest.raises(ProviderUnavailableError):
+        await get_podcastparser_dict(
+            session=cast("aiohttp.ClientSession", session), feed_url=FEED_URL
+        )
 
 
 async def test_get_cached_podcast_stores_and_reuses_the_feed() -> None:

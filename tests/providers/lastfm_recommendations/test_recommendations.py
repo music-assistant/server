@@ -9,12 +9,18 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, RecommendationFolder, UniqueList
+from music_assistant_models.media_items import (
+    Artist,
+    ItemMapping,
+    RecommendationFolder,
+    UniqueList,
+)
 
 from music_assistant.providers.lastfm_recommendations import (
     SUPPORTED_FEATURES,
     LastFMRecommendationsProvider,
 )
+from tests.common import use_real_create_task
 
 INSTANCE_ID = "lastfm_recommendations--test1"
 
@@ -210,3 +216,23 @@ async def test_refresh_recommendations_serves_previous_generation_during_rebuild
     # After the swap: only the newly built generation is served.
     new_rows = await provider.get_recommendations()
     assert [row.item_id for row in new_rows] == [f"{INSTANCE_ID}_new_row"]
+
+
+async def test_artist_toptrack_titles_are_listed_without_resolving_them(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """Top track titles come in Last.fm's ranking, nameless entries dropped, nothing resolved."""
+    mass_mock.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass_mock.cache.set = AsyncMock()
+    use_real_create_task(mass_mock)
+    provider.api.get_artist_top_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"name": "Creep"}, {"name": ""}, {"playcount": "1"}, {"name": "Nude"}]
+    )
+    resolve = AsyncMock()
+    provider.recommendations_manager.get_or_resolve_track = resolve  # type: ignore[method-assign]
+    artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
+
+    assert await provider.get_artist_toptrack_titles(artist, 10) == ["Creep", "Nude"]
+
+    provider.api.get_artist_top_tracks.assert_awaited_once_with("Radiohead", None, 10)
+    resolve.assert_not_awaited()

@@ -18,7 +18,7 @@ seen once in a capture but never verified to register anything, so it's not sent
 from __future__ import annotations
 
 import json
-import random
+import secrets
 import string
 import time
 from collections import deque
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 EVENT_BATCH_URL = "https://desktop.tidal.com/api/event-batch"
 APP_VERSION = "2026.08.18"
+# mimics the TIDAL desktop app that this play reporting endpoint belongs to (#5835)
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
     "TIDAL/2.39.5 Chrome/140.0.7339.249 Electron/38.5.0 Safari/537.36"
@@ -52,7 +53,9 @@ class TidalPlayReportingManager:
         self.logger = provider.logger
         # Opaque per-instance device token, reused across reports (mirrors a real
         # desktop install's persistent client id).
-        self._device_token = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+        self._device_token = "".join(
+            secrets.choice(string.ascii_letters + string.digits) for _ in range(16)
+        )
         # Format info captured at stream start, keyed by track id, consumed by on_played.
         # A deque per track (not a single dict) so back-to-back repeats of the same
         # track each get their own slot instead of clobbering one another; on_played

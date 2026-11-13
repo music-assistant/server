@@ -51,7 +51,7 @@ CONF_PLAYER_NAME = "player_name"
 CONF_DEVICE_CLASS = "device_class"
 CONF_PORT = "port"
 # plex.tv device token, stored in setup_data (encrypted) once the player is linked
-CONF_PLEXTV_TOKEN = "plextv_token"
+CONF_PLEXTV_TOKEN = "plextv_token"  # noqa: S105 - config key
 CONF_ACTION_START_LINK = "start_link"
 CONF_ACTION_COMPLETE_LINK = "complete_link"
 CONF_ACTION_UNLINK = "unlink"
@@ -464,12 +464,15 @@ class PlexConnectProvider(PluginProvider):
         configured_port = self.config.get_value(CONF_PORT)
         # Probe on IPv4 all-interfaces, matching how the remote control server binds
         if isinstance(configured_port, int) and not await is_port_in_use(
-            configured_port, host="0.0.0.0"
+            configured_port,
+            host="0.0.0.0",  # noqa: S104 - probe matches the server bind
         ):
             return configured_port
 
         port = await select_free_port(
-            PORT_RANGE_START, PORT_RANGE_START + PORT_RANGE_ATTEMPTS, host="0.0.0.0"
+            PORT_RANGE_START,
+            PORT_RANGE_START + PORT_RANGE_ATTEMPTS,
+            host="0.0.0.0",  # noqa: S104 - probe matches the server bind
         )
         if port != configured_port:
             try:

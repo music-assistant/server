@@ -22,14 +22,15 @@ When a user plays a source, the provider sends the client a
 streams timestamped encoded audio up to the server, and the Sendspin server
 library decodes it back to PCM. This provider feeds that PCM into a clock
 bridge (`aiosendspin.audio.AsrcSourceBridge`) and serves Music Assistant a
-steady 48 kHz / 16-bit / stereo stream.
+steady stream in the source's own format.
 
 ## Design notes
 
-- **Fixed output format.** A source's native format is only known once the
-  client starts streaming, but Music Assistant needs the stream format before
-  that. The bridge converts whatever the client sends to the fixed declared
-  format, so format discovery never blocks stream setup.
+- **Output format.** A source's native format is only known once the
+  client starts streaming, so the stream details wait for its first audio
+  (falling back to 48 kHz / 24-bit / stereo when none arrives). The bridge
+  keeps converting to that declared format when the source later restarts
+  in another one, so the stream never changes format mid-play.
 - **Clock bridge.** The client's capture clock (its ADC) and the consuming
   player's clock drift relative to each other, and capture timestamps can be
   gappy. The bridge holds a configurable target latency and folds drift
@@ -67,7 +68,7 @@ without acting, so a restart with the needle already down starts nothing. A
 source that is already streaming is never re-targeted, so moving it by hand
 survives the next transition. Autostop also closes a gap that exists without
 line-sense: a client keeps streaming silence after a record ends, so the
-30-second no-audio timeout never fires and the queue would otherwise sit
+no-audio timeout never fires and the queue would otherwise sit
 playing silence indefinitely.
 
 Devices without `line_sense` have no trigger to offer, so they get no setting

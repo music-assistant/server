@@ -44,11 +44,13 @@ class FakeWebserver:
         *,
         base_url: str = "http://localhost:8095",
         publish_ip: str = "127.0.0.1",
+        external_url: str | None = None,
     ) -> None:
         """Initialise an empty registry with the given advertised endpoints."""
         self.routes: list[tuple[str, Any, str]] = []
         self.base_url = base_url
         self.publish_ip = publish_ip
+        self.external_url = external_url
 
     def register_dynamic_route(self, path: str, handler: Any, method: str = "*") -> Any:
         """Mirror ``mass.webserver.register_dynamic_route``: store + return unregister."""

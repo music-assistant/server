@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import pytest
 from fastmcp import Client, FastMCP
-from fastmcp.exceptions import ToolError
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError, ToolError
 
 from music_assistant.providers.fastmcp_server.capabilities import Capability
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware

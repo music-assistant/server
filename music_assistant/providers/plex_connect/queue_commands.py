@@ -336,7 +336,7 @@ class QueueCommandsMixin:
 
             queue_id_match = re.search(r"/playQueues/(\d+)", container_key)
             if not queue_id_match:
-                raise ValueError(f"Invalid container_key format: {container_key}")
+                raise ValueError(f"Invalid container_key format: {container_key}")  # noqa: TRY301 - handled by except below
 
             queue_id = queue_id_match.group(1)
 

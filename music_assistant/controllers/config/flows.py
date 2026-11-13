@@ -213,6 +213,7 @@ class SetupFlowMixin:
             reason="user",
             domain=provider_domain,
             manages_all_sources=manages_all_sources,
+            user=user,
         )
         return await self._start_flow(
             flow_coro=flow_module.run_setup,
@@ -248,7 +249,7 @@ class SetupFlowMixin:
             # flow-less providers have nothing to reconfigure;
             # their failures are environmental (reload/retry covers them)
             return self._synthesized_step(FlowStepType.ABORT, owner, reason="nothing_to_configure")
-        _, manages_all_sources = self._access_caller()
+        user, manages_all_sources = self._access_caller()
         context = SetupFlowContext(
             kind="reconfigure",
             reason=self._reconfigure_reason(raw_conf.get("last_error")),
@@ -257,6 +258,7 @@ class SetupFlowMixin:
             setup_data=self._decrypt_values(raw_conf.get("setup_data") or {}),
             values=self._decrypt_values(raw_conf.get("values") or {}),
             manages_all_sources=manages_all_sources,
+            user=user,
         )
         return await self._start_flow(
             flow_coro=flow_module.run_setup,

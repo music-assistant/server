@@ -59,6 +59,7 @@ def test_multiple_providers_sorted(repo: Path) -> None:
         "music_assistant/translations/en.json",
         "pyproject.toml",
         ".github/workflows/test.yml",
+        ".github/workflows/release.yml",
         "scripts/ci_test_scope.py",
     ],
 )
@@ -74,7 +75,7 @@ def test_provider_without_tests_forces_full(repo: Path) -> None:
 
 def test_docs_only_skips(repo: Path) -> None:
     """A PR touching only docs / unrelated workflows runs nothing."""
-    assert decide(["README.md", ".github/workflows/release.yml"], repo) == ("skip", [])
+    assert decide(["README.md", ".github/workflows/pr-labels.yaml"], repo) == ("skip", [])
 
 
 def test_no_changes_skips(repo: Path) -> None:

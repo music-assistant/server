@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, SortDirection, SortField
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import PodcastEpisode, RecommendationFolder, UniqueList
 
@@ -259,34 +259,45 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.RECENTLY_ADDED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="timestamp_added_desc", reachable_via=providers
+                    limit=10,
+                    sort_field=SortField.TIMESTAMP_ADDED,
+                    sort_direction=SortDirection.DESC,
+                    reachable_via=providers,
                 )
             case LibraryRowID.RECENTLY_ADDED_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="timestamp_added_desc", reachable_via=providers
+                    limit=10,
+                    sort_field=SortField.TIMESTAMP_ADDED,
+                    sort_direction=SortDirection.DESC,
+                    reachable_via=providers,
                 )
             case LibraryRowID.RANDOM_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10, order_by="random_play_count", reachable_via=providers
+                    limit=10, sort_field=SortField.RANDOM_PLAY_COUNT, reachable_via=providers
                 )
             case LibraryRowID.RANDOM_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="random_play_count", reachable_via=providers
+                    limit=10, sort_field=SortField.RANDOM_PLAY_COUNT, reachable_via=providers
                 )
             case LibraryRowID.RECENT_FAVORITE_TRACKS:
                 items = await self.mass.music.tracks.library_items(
                     favorite=True,
                     limit=10,
-                    order_by="favorite_timestamp_desc",
+                    sort_field=SortField.FAVORITE_TIMESTAMP,
+                    sort_direction=SortDirection.DESC,
                     reachable_via=providers,
                 )
             case LibraryRowID.FAVORITE_PLAYLISTS:
                 items = await self.mass.music.playlists.library_items(
-                    favorite=True, limit=10, order_by="random", reachable_via=providers
+                    favorite=True, limit=10, sort_field=SortField.RANDOM, reachable_via=providers
                 )
             case LibraryRowID.FAVORITE_RADIO:
                 items = await self.mass.music.radio.library_items(
-                    favorite=True, limit=10, order_by="play_count_desc", reachable_via=providers
+                    favorite=True,
+                    limit=10,
+                    sort_field=SortField.PLAY_COUNT,
+                    sort_direction=SortDirection.DESC,
+                    reachable_via=providers,
                 )
             case LibraryRowID.RECENT_ARTISTS:
                 items = await self.mass.music.recently_played(
@@ -304,23 +315,41 @@ class LibraryRecommendationsProvider(PluginProvider):
                 )
             case LibraryRowID.FORGOTTEN_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
+                    limit=10,
+                    sort_field=SortField.LAST_PLAYED,
+                    sort_direction=SortDirection.ASC,
+                    played_only=True,
+                    reachable_via=providers,
                 )
             case LibraryRowID.FORGOTTEN_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
+                    limit=10,
+                    sort_field=SortField.LAST_PLAYED,
+                    sort_direction=SortDirection.ASC,
+                    played_only=True,
+                    reachable_via=providers,
                 )
             case LibraryRowID.FORGOTTEN_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
+                    limit=10,
+                    sort_field=SortField.LAST_PLAYED,
+                    sort_direction=SortDirection.ASC,
+                    played_only=True,
+                    reachable_via=providers,
                 )
             case LibraryRowID.MOST_PLAYED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="play_count_desc", reachable_via=providers
+                    limit=10,
+                    sort_field=SortField.PLAY_COUNT,
+                    sort_direction=SortDirection.DESC,
+                    reachable_via=providers,
                 )
             case LibraryRowID.NEVER_PLAYED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="play_count", reachable_via=providers
+                    limit=10,
+                    sort_field=SortField.PLAY_COUNT,
+                    sort_direction=SortDirection.ASC,
+                    reachable_via=providers,
                 )
             case LibraryRowID.LATEST_EPISODES:
                 items = await self._get_latest_episodes(providers)
@@ -343,15 +372,9 @@ class LibraryRecommendationsProvider(PluginProvider):
             ):
                 continue
             seen_podcasts.add(podcast_id)
-            # MA's own play history wins, the state the provider reported at the last
-            # refresh covers progress made outside MA
+            # the state the provider reported at the last refresh, against MA's own play history
             episode = copy(stored)
-            episode.fully_played = None
-            episode.resume_position_ms = None
             await self.mass.music.podcasts.restore_resume_position(episode, episode.provider)
-            if episode.fully_played is None and not episode.resume_position_ms:
-                episode.fully_played = stored.fully_played
-                episode.resume_position_ms = stored.resume_position_ms
             result.append(episode)
         return result
 

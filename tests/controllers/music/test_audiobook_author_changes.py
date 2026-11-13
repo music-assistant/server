@@ -30,6 +30,12 @@ INSTANCE_A = "test--a"
 INSTANCE_B = "test--b"
 
 
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
+
+
 class _Provider(MusicProvider):
     """A provider whose library is whatever the test hands it."""
 

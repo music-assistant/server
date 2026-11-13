@@ -137,9 +137,13 @@ class RadioPlaylistProvider(PluginProvider):
         for seed in random.sample(seeds, len(seeds)):
             # artist seeds only feed the base-track sample, so the bounded top tracks suffice
             if seed.media_type == MediaType.ARTIST:
-                seed_tracks = await self.mass.music.artists.top_tracks(seed.item_id, seed.provider)
+                seed_tracks = await self.mass.music.artists.top_tracks(
+                    seed.item_id, seed.provider, limit=None
+                )
                 if not seed_tracks:
-                    seed_tracks = await self.mass.music.artists.tracks(seed.item_id, seed.provider)
+                    seed_tracks = await self.mass.music.artists.tracks(
+                        seed.item_id, seed.provider, limit=None
+                    )
             else:
                 seed_tracks = await self.mass.player_queues.get_tracks_for_playback(seed)
             for track in seed_tracks:
@@ -173,6 +177,7 @@ class RadioPlaylistProvider(PluginProvider):
                         similar = await self.mass.music.tracks.similar_tracks(
                             base_track.item_id,
                             base_track.provider,
+                            limit=None,
                             allow_lookup=allow_lookup,
                             preferred_provider_instances=preferred_provider_instances,
                         )
@@ -222,6 +227,7 @@ class RadioPlaylistProvider(PluginProvider):
                 similar = await self.mass.music.tracks.similar_tracks(
                     walk_track.item_id,
                     walk_track.provider,
+                    limit=None,
                     allow_lookup=True,
                     preferred_provider_instances=preferred_provider_instances,
                 )
@@ -240,7 +246,7 @@ class RadioPlaylistProvider(PluginProvider):
                 break
             # the walk deliberately ignores recency: a recently played track is still a valid
             # stepping stone, and when the mix is exhausted every direct neighbor is recent
-            walk_track = random.choice(similar)
+            walk_track = random.choice(similar)  # noqa: S311 - track selection
         return dynamic_tracks
 
     async def _resolve_seed(self, prov_playlist_id: str) -> MediaItemType:

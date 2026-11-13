@@ -9,8 +9,7 @@ from urllib.parse import urlencode
 
 import pytest
 from fastmcp import Client, FastMCP
-from fastmcp.exceptions import ToolError
-from mcp.shared.exceptions import McpError
+from fastmcp.exceptions import McpError, ToolError
 
 from music_assistant.providers.fastmcp_server import meta_discovery
 from music_assistant.providers.fastmcp_server.catalog import (
@@ -282,8 +281,8 @@ async def test_call_tool_schema_keeps_container_only_contract() -> None:
     async with Client(mcp) as client:
         tool = next(item for item in await client.list_tools() if item.name == "call_tool")
 
-    arguments = tool.inputSchema["properties"]["arguments"]
-    fields = tool.inputSchema["properties"]["fields"]
+    arguments = tool.input_schema["properties"]["arguments"]
+    fields = tool.input_schema["properties"]["fields"]
     assert {variant["type"] for variant in arguments["anyOf"]} == {"object", "null"}
     assert {variant["type"] for variant in fields["anyOf"]} == {"array", "null"}
     array_schema = next(variant for variant in fields["anyOf"] if variant["type"] == "array")
@@ -298,7 +297,7 @@ async def test_catalog_resource_template_is_discoverable_and_matches_tool_browse
         dynamic_adapter=_Adapter(),
     )
     async with Client(mcp) as client:
-        templates = {str(item.uriTemplate) for item in await client.list_resource_templates()}
+        templates = {str(item.uri_template) for item in await client.list_resource_templates()}
         tool_page = await client.call_tool("search_tools", {"query": "", "limit": 25})
         contents = await client.read_resource("catalog://commands?limit=25")
     payload = json.loads(next(item.text for item in contents if hasattr(item, "text")))
@@ -404,7 +403,7 @@ async def test_untagged_catalog_resource_survives_empty_tag_middleware() -> None
     """The catalog resource remains visible as untagged infrastructure."""
     mcp = _catalog_server(entry_count=0, middleware=True)
     async with Client(mcp) as client:
-        templates = {str(item.uriTemplate) for item in await client.list_resource_templates()}
+        templates = {str(item.uri_template) for item in await client.list_resource_templates()}
         contents = await client.read_resource("catalog://commands")
     page = json.loads(next(item.text for item in contents if hasattr(item, "text")))
     assert "catalog://commands{?cursor,limit}" in templates

@@ -5,12 +5,15 @@ import contextlib
 import inspect
 import logging
 import pathlib
+import weakref
 from collections.abc import AsyncGenerator, Iterator, Mapping
+from functools import partial
 from types import CoroutineType, MethodType
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import (
     EventType,
     IdentifierType,
@@ -22,8 +25,13 @@ from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
+from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver import controller as webserver_controller
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
+    sendspin_player_id,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.provider import SendspinProvider
@@ -259,9 +267,13 @@ async def wait_for_boot_to_settle(mass: MusicAssistant) -> None:
     """
     for provider in mass.providers:
         await provider.initialized.wait()
-    # twice the window: the debounce a registration already armed, plus the tail of the
-    # post-load work that runs after a provider marks itself initialized
-    await asyncio.sleep(TASK_LIFECYCLE_UPDATE_DEBOUNCE * 2)
+        # the post-load task keeps working after it marks the provider initialized
+        if post_load := mass.get_task(f"post_load_provider_{provider.instance_id}"):
+            await asyncio.wait({post_load})
+    # emit the debounced task list now rather than waiting out its timer
+    if mass.tasks._scheduled_task_update_at is not None:
+        mass.cancel_timer(TASK_UPDATE_TIMER_ID)
+        mass.tasks._signal_task_update()
 
 
 @contextlib.contextmanager
@@ -323,6 +335,96 @@ def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
 
     # kept a mock so tests can still assert on the calls it received
     mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+
+def bare_player_controller() -> PlayerController:
+    """Return a bare players controller, carrying just enough state for its real player locks."""
+    players = PlayerController.__new__(PlayerController)
+    players._player_command_locks = {}
+    players._players = {}
+    players._task_held_locks = weakref.WeakKeyDictionary()
+    players.logger = MagicMock()
+    return players
+
+
+def use_api_command_registry(mass: MagicMock, *command_owners: object) -> None:
+    """
+    Give a mocked mass the server's API command registry, with the commands of the given objects.
+
+    Commands that a provider registers with ``mass.register_api_command`` land in it too, so a
+    test reaches a command through ``mass.command_handlers[<command>].target`` like a client.
+
+    :param mass: The mocked MusicAssistant instance.
+    :param command_owners: Controllers whose ``api_command`` methods to register.
+    """
+    mass.command_handlers = {}
+    mass.register_api_command = partial(MusicAssistant.register_api_command, mass)
+    for owner in command_owners:
+        for attr_name in dir(owner):
+            if attr_name.startswith("__") or isinstance(
+                getattr(type(owner), attr_name, None), property
+            ):
+                continue
+            if hasattr(handler := getattr(owner, attr_name), "api_cmd"):
+                mass.register_api_command(
+                    handler.api_cmd, handler, required_scope=handler.api_required_scope
+                )
+
+
+def grouping_player_controller(*player_ids: str) -> PlayerController:
+    """
+    Return a players controller over ungrouped players that can all group with each other.
+
+    The players are named "Player <ID>" and the controller's commands are in the command
+    registry of its mocked mass (see use_api_command_registry). The member change itself is
+    stubbed (``_handle_set_members``), so a test can see whether one was made, and how.
+
+    :param player_ids: The ids of the players to register.
+    """
+    mass = MagicMock()
+    mass.closing = False
+    mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, _key, default=None: default
+    )
+    mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
+    controller = PlayerController(mass)
+    provider = MockProvider("test", instance_id="test", mass=mass)
+    for player_id in player_ids:
+        player = MockPlayer(provider, player_id, f"Player {player_id.upper()}")
+        player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        player._attr_can_group_with = set(player_ids) - {player_id}
+        controller._players[player_id] = player
+    mass.players = controller
+    for registered in controller._players.values():
+        registered.set_initialized()
+        registered.update_state(signal_event=False)
+    controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+    use_api_command_registry(mass, controller)
+    return controller
+
+
+@contextlib.contextmanager
+def as_user(
+    player_filter: list[str],
+    role: UserRole = UserRole.USER,
+    client_player_id: str | None = None,
+) -> Iterator[None]:
+    """
+    Run the block as a user limited to the given players.
+
+    :param player_filter: The players the user may use, none means all of them.
+    :param role: The role of the user.
+    :param client_player_id: The (private) client player the user is connected on.
+    """
+    token = current_user.set(
+        User(user_id="user_1", username="limited", role=role, player_filter=player_filter)
+    )
+    client_token = sendspin_player_id.set(client_player_id)
+    try:
+        yield
+    finally:
+        sendspin_player_id.reset(client_token)
+        current_user.reset(token)
 
 
 def set_music_source_access(

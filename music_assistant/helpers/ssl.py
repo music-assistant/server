@@ -67,6 +67,15 @@ SSL_CIPHER_LISTS = {
 ALPN_PROTOCOLS = ("http/1.1",)
 
 
+def _apply_client_hello_defaults(sslcontext: ssl.SSLContext) -> None:
+    # Bot protection on CDNs fingerprints the ClientHello: Fastly (Bandcamp) challenges one
+    # without ALPN, and Cloudflare (Patreon feeds) one without the post-handshake auth
+    # extension that urllib and requests always send.
+    # https://github.com/music-assistant/support/issues/6708
+    sslcontext.set_alpn_protocols(ALPN_PROTOCOLS)
+    sslcontext.post_handshake_auth = True
+
+
 @cache
 def _client_context_no_verify(ssl_cipher_list: SSLCipherList) -> ssl.SSLContext:
     # This is a copy of aiohttp's create_default_context() function, with the
@@ -82,7 +91,7 @@ def _client_context_no_verify(ssl_cipher_list: SSLCipherList) -> ssl.SSLContext:
     sslcontext.set_default_verify_paths()
     if ssl_cipher_list != SSLCipherList.PYTHON_DEFAULT:
         sslcontext.set_ciphers(SSL_CIPHER_LISTS[ssl_cipher_list])
-    sslcontext.set_alpn_protocols(ALPN_PROTOCOLS)
+    _apply_client_hello_defaults(sslcontext)
 
     return sslcontext
 
@@ -105,7 +114,7 @@ def _create_client_context(
         sslcontext.load_verify_locations(cafile=certifi.where())
     if ssl_cipher_list != SSLCipherList.PYTHON_DEFAULT:
         sslcontext.set_ciphers(SSL_CIPHER_LISTS[ssl_cipher_list])
-    sslcontext.set_alpn_protocols(ALPN_PROTOCOLS)
+    _apply_client_hello_defaults(sslcontext)
 
     return sslcontext
 
