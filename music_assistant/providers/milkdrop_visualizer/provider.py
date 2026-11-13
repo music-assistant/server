@@ -59,6 +59,7 @@ class MilkdropVisualizerProvider(PluginProvider):
         await super().loaded_in_mass()
         # An unload can land before the post-load task exists, so nothing could cancel this
         # run; it would take the live instance's route and commands, which unregister by name.
+        # TODO: remove once the core fix that skips post-load work after such an unload ships
         if self.unloading:
             return
         self._relay.setup()
