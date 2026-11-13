@@ -78,6 +78,8 @@ from music_assistant.controllers.player_queues.constants import (
     DEFAULT_AUTOPLAY_ENABLED,
     DEFAULT_CROSSFADE_ENABLED,
     DEFAULT_PAUSE_TIMEOUT,
+    FLOW_PLAYED_OUT_MARGIN,
+    FLOW_PLAYOUT_IDLE_TIMEOUT,
     PAUSE_TIMEOUT_RANGE,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
@@ -287,9 +289,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        # stop all playback
-        for queue in self.all():
-            if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        # stop all playback we started: a queue without a stream session of ours can read as
+        # playing while its player plays what another app or server started
+        for queue_data in list(self._queue_data.values()):
+            queue = queue_data.queue
+            if queue_data.session_id is not None and queue.state in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
+            ):
                 try:
                     async with asyncio.timeout(QUEUE_SHUTDOWN_STOP_TIMEOUT):
                         await self.stop(queue.queue_id)
@@ -1643,6 +1650,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     await self._get_resume_position(queue_item) if next_index > cur_index else 0
                 )
                 await self._load_item(queue_item, seek_position=seek_position)
+                if (
+                    self.index_by_id(queue_id, queue_item.queue_item_id) is None
+                    and (rebuilt_index := self.index_by_id(queue_id, current_item_id)) is not None
+                ):
+                    # the upcoming items were replaced while this one loaded (a mix that
+                    # refilled), so go on with the item that took its place
+                    cur_index, idx = rebuilt_index, 0
+                    continue
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
@@ -1752,7 +1767,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         async def _resume_on_idle() -> None:
             # wait for the player to finish playing the buffered audio and go idle
             idle_detected = False
-            for _ in range(60):
+            for _ in range(FLOW_PLAYOUT_IDLE_TIMEOUT):
                 await asyncio.sleep(1)
                 if not queue.active or queue_data.session_id != original_session_id:
                     return
@@ -1814,6 +1829,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_data is None or queue_data.session_id != session_id:
             return False
         return queue_data.flow_queue_exhausted == session_id
+
+    def flow_stream_played_out(self, queue_id: str, session_id: str, player: Player) -> bool:
+        """
+        Return whether a player is done with the audio of the given flow stream session.
+
+        True once the player has played everything the session streamed, and as soon as the
+        queue no longer plays that session: a newer session took over, or the queue is no
+        longer playing.
+
+        :param queue_id: The queue ID.
+        :param session_id: The stream session to check.
+        :param player: The player the session streams to.
+        """
+        queue_data = self.queue_data_or_none(queue_id)
+        if (
+            queue_data is None
+            or queue_data.session_id != session_id
+            or queue_data.queue.state != PlaybackState.PLAYING
+        ):
+            return True
+        streamed = sum(entry.seconds_streamed or 0 for entry in queue_data.flow_mode_stream_log)
+        played = player.state.corrected_elapsed_time or 0
+        return played >= streamed - FLOW_PLAYED_OUT_MARGIN
 
     # Main queue manipulation methods
 

@@ -1,5 +1,30 @@
 {
   "config_entries": {
+    "backend": {
+      "label": "Where are your Hue lights connected?",
+      "options": {
+        "hue_bridge": "Hue Bridge",
+        "zha": "ZHA via Ziggurat (experimental)"
+      },
+      "option_descriptions": {
+        "hue_bridge": "Sync the lights of the entertainment areas on your Hue Bridge.",
+        "zha": "Sync Hue lamps in Home Assistant's Zigbee integration (ZHA) directly, without a Hue Bridge."
+      },
+      "disabled_reasons": {
+        "zha": "Requires the Home Assistant plugin, with ZHA running on Ziggurat."
+      }
+    },
+    "zigbee_warning": {
+      "label": "Music Assistant streams to all chosen lamps through one of them, so pick lamps within radio range of each other, such as the lamps in one room. A lamp follows one light sync at a time: while another app syncs one of the chosen lamps, this player waits until it is free."
+    },
+    "zigbee_name": {
+      "label": "Name",
+      "description": "Name of the light player. Leave empty to name it after the rooms of the chosen lamps."
+    },
+    "zigbee_lights": {
+      "label": "Lamps",
+      "description": "The Hue lamps in ZHA that support light sync."
+    },
     "bridge_host": {
       "label": "Bridge IP Address",
       "description": "IP address of the Philips Hue bridge."
@@ -17,10 +42,14 @@
     },
     "hue_latency_ms": {
       "label": "Light latency (ms)",
-      "description": "Milliseconds to render light updates ahead of the audio, to offset the Hue bridge and DTLS delay. Increase if the lights lag the music, decrease if they run ahead of it."
+      "description": "Milliseconds to render light updates ahead of the audio, to offset the delay of the Hue bridge or the Zigbee network. Increase if the lights lag the music, decrease if they run ahead of it."
     }
   },
   "setup_flow": {
+    "backend": {
+      "title": "Choose your Hue lights",
+      "description": "Music Assistant can sync Hue lights through a Hue Bridge, or directly when they are connected to Home Assistant's Zigbee integration (ZHA)."
+    },
     "user": {
       "title": "Pair with your Hue Bridge",
       "description": "Enter your Hue Bridge IP address, press the round link button on top of the bridge, then continue within 30 seconds."
@@ -28,12 +57,27 @@
     "pairing": {
       "title": "Pairing with the Hue Bridge",
       "progress_text": "Press the round link button on top of your Hue Bridge now..."
+    },
+    "zigbee_lights": {
+      "title": "Choose the lamps",
+      "description": "These lamps together become one light player. To sync lamps in other rooms separately, add Hue Lights Sync again."
+    },
+    "zigbee_check": {
+      "title": "Checking the lamps",
+      "progress_text": "Connecting to Ziggurat and checking the chosen lamps..."
+    },
+    "abort": {
+      "zha_unavailable": "The Home Assistant plugin is not connected, or ZHA does not run on Ziggurat.",
+      "no_zigbee_lights": "No Hue lamps that support light sync were found in ZHA."
     }
   },
   "manifest": {
-    "description": "Sync Philips Hue lights to music using Entertainment Mode."
+    "description": "Sync Philips Hue lights to music, through a Hue bridge's Entertainment Mode or straight to Hue lamps on ZHA via Ziggurat."
   },
   "errors": {
-    "button_not_pressed": "The link button was not pressed in time. Press the round button on top of your Hue Bridge, then try again."
+    "button_not_pressed": "The link button was not pressed in time. Press the round button on top of your Hue Bridge, then try again.",
+    "zha_unavailable": "ZHA via Ziggurat is not available. Connect the Home Assistant plugin, with ZHA running on Ziggurat, or choose Hue Bridge.",
+    "ziggurat_unreachable": "Could not reach Ziggurat. If Music Assistant does not run as a Home Assistant add-on, make sure it can reach port 9999 on Home Assistant.",
+    "lights_not_found": "One or more of the chosen lamps are no longer in ZHA. Choose the lamps again."
   }
 }

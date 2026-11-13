@@ -152,6 +152,11 @@ class MusicCastPlayer(Player):
         self._last_playing_elapsed_time: float = 0.0
 
     @property
+    def needs_gapless_burst(self) -> bool:
+        """Return if the player must hold a whole opening chunk of a track before it plays gapless."""
+        return True
+
+    @property
     def avt(self) -> AVTransport:
         """UPnP AVTransport of the physical device."""
         host = format_ip_for_url(self.physical_device.device.device.ip)

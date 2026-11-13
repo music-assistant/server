@@ -50,6 +50,10 @@ BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
 
+# -- Stream quality --
+
+CONF_QUALITY = "quality"
+
 # -- Track decryption --
 
 DECRYPT_KEY_LENGTH = 16

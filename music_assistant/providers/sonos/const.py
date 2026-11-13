@@ -30,6 +30,8 @@ SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
 SOURCE_TV = "tv"
 SOURCE_RADIO = "radio"
+# a Music Assistant session this server did not start, such as another server's
+SOURCE_MUSIC_ASSISTANT = "music_assistant"
 
 PLAYER_SOURCE_MAP = {
     SOURCE_LINE_IN: PlayerSource(
@@ -71,6 +73,15 @@ PLAYER_SOURCE_MAP = {
         can_play_pause=True,
         can_next_previous=True,
         can_seek=True,
+    ),
+    SOURCE_MUSIC_ASSISTANT: PlayerSource(
+        id=SOURCE_MUSIC_ASSISTANT,
+        name="Music Assistant",
+        passive=True,
+        can_play_pause=True,
+        can_next_previous=True,
+        # a Music Assistant queue offers no seeking on Sonos
+        can_seek=False,
     ),
 }
 

@@ -113,7 +113,6 @@ AUDIOBOOK_GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
 )
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
-SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
 SILENCE_FILE_LONG: Final[str] = str(RESOURCES_DIR.joinpath("silence_long.ogg"))
 VARIOUS_ARTISTS_FANART: Final[str] = str(RESOURCES_DIR.joinpath("fallback_fanart.jpeg"))
 MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
@@ -184,7 +183,7 @@ CONF_ANNOUNCE_TTS_ENGINE: Final[str] = "announce_tts_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
-CONF_HTTP_PROFILE: Final[str] = "http_profile"
+CONF_REQUIRES_FIXED_CONTENT_LENGTH: Final[str] = "requires_fixed_content_length"
 CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
 CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
@@ -677,50 +676,19 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
 )
 
 
-CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
-    key=CONF_HTTP_PROFILE,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("chunked"),
-        ConfigValueOption("no_content_length"),
-        ConfigValueOption("forced_content_length"),
-    ],
-    default_value="no_content_length",
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH = ConfigEntry(
+    key=CONF_REQUIRES_FIXED_CONTENT_LENGTH,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
-
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked"}
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True}
 )
-
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
-)
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_3 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "forced_content_length"}
-)
-
-CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_1.to_dict(), "hidden": True}
-)
-CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
-        "default_value": "no_content_length",
-        "hidden": True,
-    }
-)
-CONF_ENTRY_HTTP_PROFILE_FORCED_3 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
-        "default_value": "forced_content_length",
-        "hidden": True,
-    }
-)
-CONF_ENTRY_HTTP_PROFILE_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "hidden": True}
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True, "hidden": True}
 )
 
 
