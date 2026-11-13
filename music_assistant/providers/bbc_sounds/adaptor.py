@@ -908,7 +908,7 @@ class Adaptor:
 
     async def new_streamable_object(
         self,
-        source_obj: SoundsTypes,
+        source_obj: SoundsTypes | None,
         force_type: type[Track | Radio | MAPodcastEpisode] | None = None,
         path_parts: list[str] | None = None,
     ) -> StreamDetails | None:
@@ -923,6 +923,8 @@ class Adaptor:
         Returns:
             Converted Music Assistant media item or None if no converter found
         """
+        if source_obj is None:
+            return None
         context = self._create_context(path_parts, force_type)
 
         converters = [
@@ -951,7 +953,7 @@ class Adaptor:
 
     async def new_object(
         self,
-        source_obj: SoundsTypes,
+        source_obj: SoundsTypes | None,
         force_type: (
             type[
                 Track
@@ -986,6 +988,8 @@ class Adaptor:
         Returns:
             Converted Music Assistant media item or None if no converter found
         """
+        if source_obj is None:
+            return None
         context = self._create_context(path_parts, force_type)
 
         converters = [
