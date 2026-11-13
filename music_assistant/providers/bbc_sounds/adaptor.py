@@ -222,19 +222,15 @@ class BaseConverter(ABC):
 
         Supports e.g. _get_attr(object, "thing.other_thing")
         """
-        # TODO: I'm fairly sure there is existing code/libs for this?
-        try:
-            current = obj
-            for part in attr_path.split("."):
-                if hasattr(current, part):
-                    current = getattr(current, part)
-                elif isinstance(current, dict) and part in current:
-                    current = current[part]
-                else:
-                    return default
-            return default if current is None else current
-        except AttributeError, KeyError, TypeError:
-            return default
+        current = obj
+        for part in attr_path.split("."):
+            if hasattr(current, part):
+                current = getattr(current, part)
+            elif isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return default
+        return default if current is None else current
 
     def _require_id(self, item_id: str | None, obj: Any) -> str:
         """Return an id of an auntie-sounds object, raising ConversionError if None."""
