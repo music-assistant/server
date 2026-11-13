@@ -464,15 +464,6 @@ class SendspinBasePlayer(PlayerProtocol):
         self._attr_session_only = False
 
     @property
-    def available(self) -> bool:
-        """Return if the client is usable: a bridge only while the protocol it rides on is attached."""
-        if (underlying_protocol_id := self.underlying_protocol_id) is not None:
-            underlying = self.mass.players.get_protocol(underlying_protocol_id)
-            if underlying is None or underlying.player is None:
-                return False
-        return self._attr_available
-
-    @property
     def needs_setup(self) -> bool:
         """
         Whether the device is encrypted but not yet usable for playback.
@@ -2187,6 +2178,19 @@ class SendspinPlayer(SendspinBasePlayer):
             )
 
         return entries
+
+    async def on_attach(self, player: Player) -> None:
+        """Follow the client, starting from the volume, mute and controls it reported so far."""
+        await super().on_attach(player)
+        if (role := self._player_role) is None:
+            return
+        # a client/state that arrived before the attach found no listener
+        if (volume := role.get_player_volume()) is not None:
+            self._attr_volume_level = volume
+        if (muted := role.get_player_muted()) is not None:
+            self._attr_volume_muted = muted
+        if not self.control_features_pinned:
+            self._sync_control_features(role.state_supported_commands)
 
     async def on_detach(self) -> None:
         """End the playback session of the protocol when it is detached from its player."""

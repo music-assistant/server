@@ -443,7 +443,7 @@ class PlayerConfigMixin:
         """
         # prefer stored value so we don't have to retrieve all config entries every time
         raw_value = self.get_player_value(player_id, key)
-        if raw_value is None and (protocol_id := self._get_primary_protocol_id(player_id)):
+        if raw_value is None and (protocol_id := self.get_primary_protocol_id(player_id)):
             # the values of its own protocol are part of the player's own config
             raw_value = self.get_protocol_value(protocol_id, key)
         if raw_value is not None and not unpack_splitted_values:
@@ -895,6 +895,38 @@ class PlayerConfigMixin:
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
+    def get_primary_protocol_id(self, player_id: str) -> str | None:
+        """
+        Return the id of the protocol whose values are part of the player's own config.
+
+        That is the protocol that stands for the device itself: its native protocol,
+        else the one that controls it without an audio path, else the virtual protocol
+        of a group. None for a player that only has audio protocols.
+
+        :param player_id: ID of the player.
+        """
+        player = self.mass.players.get_player(player_id, False)
+        if player is not None and player.own_protocol is not None:
+            return player.own_protocol.protocol_id
+        roles = [ProtocolRole.NATIVE.value, ProtocolRole.CONTROL.value, ProtocolRole.VIRTUAL.value]
+        candidates: list[tuple[bool, int, int, str]] = []
+        for protocol_id in self.get_protocol_ids_of_player(player_id):
+            record = self.get_protocol_record(protocol_id) or {}
+            if (role := record.get("role")) not in OWN_PROTOCOL_ROLES:
+                continue
+            # the best ranked protocol the user has switched on is the own one: what is
+            # stored for a player that is not attached may hold the role of before
+            domain = str(record.get("provider")).split("--", maxsplit=1)[0]
+            candidates.append(
+                (
+                    not self.is_protocol_switched_on(protocol_id),
+                    NATIVE_PRIORITY.get(domain, 0),
+                    roles.index(str(role)),
+                    protocol_id,
+                )
+            )
+        return min(candidates)[3] if candidates else None
+
     async def _save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
@@ -977,38 +1009,6 @@ class PlayerConfigMixin:
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
-    def _get_primary_protocol_id(self, player_id: str) -> str | None:
-        """
-        Return the id of the protocol whose values are part of the player's own config.
-
-        That is the protocol that stands for the device itself: its native protocol,
-        else the one that controls it without an audio path, else the virtual protocol
-        of a group. None for a player that only has audio protocols.
-
-        :param player_id: ID of the player.
-        """
-        player = self.mass.players.get_player(player_id, False)
-        if player is not None and player.own_protocol is not None:
-            return player.own_protocol.protocol_id
-        roles = [ProtocolRole.NATIVE.value, ProtocolRole.CONTROL.value, ProtocolRole.VIRTUAL.value]
-        candidates: list[tuple[bool, int, int, str]] = []
-        for protocol_id in self.get_protocol_ids_of_player(player_id):
-            record = self.get_protocol_record(protocol_id) or {}
-            if (role := record.get("role")) not in OWN_PROTOCOL_ROLES:
-                continue
-            # the best ranked protocol the user has switched on is the own one: what is
-            # stored for a player that is not attached may hold the role of before
-            domain = str(record.get("provider")).split("--", maxsplit=1)[0]
-            candidates.append(
-                (
-                    not self.is_protocol_switched_on(protocol_id),
-                    NATIVE_PRIORITY.get(domain, 0),
-                    roles.index(str(role)),
-                    protocol_id,
-                )
-            )
-        return min(candidates)[3] if candidates else None
-
     def _get_stored_player_values(self, player_id: str) -> dict[str, Any]:
         """
         Return the stored values of a player: its own and those of its own protocol.
@@ -1016,7 +1016,7 @@ class PlayerConfigMixin:
         :param player_id: ID of the player.
         """
         protocol_values: dict[str, Any] = {}
-        if protocol_id := self._get_primary_protocol_id(player_id):
+        if protocol_id := self.get_primary_protocol_id(player_id):
             protocol_values = self._get_raw_protocol_config(protocol_id, "").get("values") or {}
         return {
             **protocol_values,
@@ -1037,7 +1037,7 @@ class PlayerConfigMixin:
         """
         player_key = f"{CONF_PLAYERS}/{player_id}/values"
         values_by_key: dict[str, dict[str, Any]] = {player_key: {}}
-        protocol_id = self._get_primary_protocol_id(player_id)
+        protocol_id = self.get_primary_protocol_id(player_id)
         if protocol_id is None or self.get_protocol_record(protocol_id) is None:
             # a player without a protocol of its own keeps every value itself
             values_by_key[player_key] = dict(values)

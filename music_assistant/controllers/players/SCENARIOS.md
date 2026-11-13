@@ -136,6 +136,25 @@ own protocol of a device never waits.
   - `tests/controllers/players/test_identity.py::test_waiting_protocol_joins_the_player_its_native_protocol_creates`
   - `tests/controllers/players/test_identity.py::test_native_protocol_never_waits`
 
+### APPEAR-8 · A player of audio receivers alone has the neutral speaker icon
+
+The Den device has an AirPlay and a Cast receiver and no protocol of its own, the Patio device an
+AirPlay receiver alone: both players show the speaker icon. The Office device, an Apple speaker
+with AirPlay as its own protocol, a Cast receiver and a Home Assistant media player as a control,
+shows the AirPlay icon, also while its AirPlay protocol is away. An icon the user picks replaces
+the default.
+
+- End-to-end: **yes**. Two receivers of different kinds on one host, and one receiver alone.
+- Proven by: `test_identity.py::test_a_player_without_a_protocol_of_its_own_has_the_neutral_icon`
+
+### APPEAR-9 · A player of an audio receiver alone takes the name the receiver reports
+
+The Den device is an AirPlay receiver with no protocol of its own. The user renames it in its own
+app: the player and its queue take the new name, and it is stored as the name of the player.
+
+- End-to-end: **yes**. Rename a shairport-sync receiver and restart it.
+- Proven by: `test_attach_detach.py::test_a_player_of_an_audio_receiver_alone_follows_its_name`
+
 ## A device goes away and comes back
 
 A device can go away: switched off, off the network, or its provider reloads. It can also stay
@@ -210,6 +229,29 @@ the queue still has that item at that position. A resume plays the item from the
 
 - End-to-end: **yes**. Stop the container of a playing virtual player, start it again, resume.
 - Proven by: `test_attach_detach.py::test_a_returning_device_resumes_where_its_queue_was`
+
+### AWAY-7 · A bridge alone does not make a player available
+
+The Den device is an AirPlay receiver with a Sendspin bridge that rides on it. While the receiver
+can not be reached, or still needs pairing, the player is unavailable, however available the
+bridge reports itself: its bridge output shows as unavailable and play fails as unavailable. Once
+the receiver can play, the player is available and plays through the bridge when the user prefers
+it.
+
+- End-to-end: **possible with** an AirPlay receiver of the lab that needs pairing, with its
+  Sendspin bridge.
+- Proven by: `test_availability.py::test_bridge_alone_does_not_make_its_player_available`
+
+### AWAY-8 · A player keeps its stored name while only another protocol of it is there
+
+The Kitchen speaker has its Sonos protocol and a DLNA renderer that reports a long technical name.
+While the Sonos protocol is away, also after a restart, the player and its queue keep the name
+Kitchen. The speaker is renamed to Study in its own app: once its Sonos protocol is back, the player
+is Study. A name the user gives the player stays, whatever its protocols report.
+
+- End-to-end: **possible with** a Sonos speaker of the lab whose Sonos connection the lab can cut
+  while its DLNA renderer stays up.
+- Proven by: `test_attach_detach.py::test_a_player_keeps_its_stored_name_while_only_another_protocol_is_there`
 
 ## Several devices on one host
 
@@ -1179,3 +1221,13 @@ command.
   - `tests/controllers/players/test_routing.py::test_level_the_player_had_is_kept_while_its_native_can_not_be_reached`
   - `tests/controllers/players/test_routing.py::test_output_that_takes_over_is_never_made_louder_than_the_device_was_left`
   - `tests/controllers/players/test_routing.py::test_native_that_can_be_reached_again_takes_the_controls_back_at_its_own_level`
+
+### VOLUME-4 · A device shows the level it reported before its protocol was attached
+
+A Sendspin voice device connects after a restart and reports level 28, unmuted, while its provider
+still sets it up. From the moment its player has it, the player shows level 28 and unmuted, and a
+volume command reaches the device; the level it reports back shows.
+
+- End-to-end: **possible with** a Sendspin client of the lab that reports its volume right after
+  its hello, checked after a restart of the server.
+- Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_shows_the_volume_it_reported_before_its_protocol_was_attached`

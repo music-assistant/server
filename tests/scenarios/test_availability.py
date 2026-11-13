@@ -55,6 +55,55 @@ async def test_player_stays_available_on_its_audio_protocols(scenario: Scenario)
     assert snapclient.commands == []
 
 
+@pytest.mark.parametrize(
+    "unusable",
+    [{"available": False}, {"needs_setup": True}],
+    ids=["unreachable", "needs_setup"],
+)
+async def test_bridge_alone_does_not_make_its_player_available(
+    scenario: Scenario, unusable: dict[str, Any]
+) -> None:
+    """
+    A bridge counts only while the protocol it rides on can play.
+
+    The player of an AirPlay receiver that is unreachable or not yet paired is unavailable,
+    and its bridge is no output then, however available the bridge itself reports. Once the
+    receiver can play, the player is available and plays through its bridge when preferred.
+    """
+    airplay = await scenario.add_provider("airplay")
+    sendspin = await scenario.add_provider("sendspin")
+    receiver = airplay.protocol("ap_den", "Den", identifiers=DEN, **unusable)
+    bridge = sendspin.protocol(
+        "sendspin_bridge_den", "Den", role="audio", underlying_protocol_id="ap_den"
+    )
+    for protocol in (receiver, bridge):
+        await scenario.attach(protocol)
+    await scenario.idle()
+    player_id = scenario.single_player(receiver, bridge).player_id
+
+    assert scenario.players_carrying(receiver)[0].available is False
+    assert scenario.players_carrying(receiver)[0].outputs == (
+        ("airplay", False),
+        ("sendspin", False),
+    )
+    with pytest.raises(PlayerUnavailableError):
+        await scenario.mass.players.play_media(player_id, MEDIA)
+
+    await scenario.report(receiver, available=True, needs_setup=False)
+    await scenario.idle()
+
+    assert scenario.players_carrying(receiver)[0].available is True
+    assert scenario.players_carrying(receiver)[0].outputs == (
+        ("airplay", True),
+        ("sendspin", True),
+    )
+    await scenario.configure_player(player_id, preferred_output_protocol="sendspin_bridge_den")
+    await scenario.mass.players.play_media(player_id, MEDIA)
+    await scenario.idle()
+    assert ("play_media", MEDIA) in bridge.commands
+    assert ("play_media", MEDIA) not in receiver.commands
+
+
 async def _switched_off_player(scenario: Scenario) -> tuple[FakeProtocol, FakePowerControl, str]:
     """
     Return a native player's protocol, its power control and its id, with the device gone.

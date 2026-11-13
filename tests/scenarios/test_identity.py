@@ -171,6 +171,47 @@ async def test_protocol_only_player_names_the_provider_of_its_protocol(scenario:
     assert [player.provider for player in scenario.players_carrying(kitchen)] == ["airplay"]
 
 
+# which stored protocol of a player comes first depends on the hash of the ids
+@pytest.mark.parametrize("room", ["office", "study", "hall", "attic", "loft", "garage"])
+async def test_a_player_without_a_protocol_of_its_own_has_the_neutral_icon(
+    scenario: Scenario, room: str
+) -> None:
+    """
+    The default icon names the provider of the own protocol only.
+
+    A player of audio receivers alone, one or more, gets the neutral speaker icon; a player with a
+    protocol of its own gets the icon of that protocol's provider, also while it is away and its
+    Home Assistant media player, a control of it, is there. An icon the user picked stays.
+    """
+    airplay = await scenario.add_provider("airplay")
+    chromecast = await scenario.add_provider("chromecast")
+    hass_players = await scenario.add_provider("hass_players")
+    den = airplay.protocol("airplay_den", "Den", role="audio", identifiers=PI)
+    den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=PI)
+    patio = airplay.protocol("airplay_patio", "Patio", role="audio", identifiers=CHASSIS)
+    office = airplay.protocol(f"ap_{room}", "Office", identifiers=SPEAKER)
+    office_cast = chromecast.protocol(f"cast_{room}", "Office", role="audio", identifiers=SPEAKER)
+    office_twin = hass_players.protocol(f"media_player.{room}", "Office speaker", identifiers=TWIN)
+    for protocol in (den, den_cast, patio, office, office_cast, office_twin):
+        await scenario.attach(protocol)
+    await scenario.advance(15)
+    await scenario.idle()
+
+    def _icon(protocol: FakeProtocol) -> str:
+        state = scenario.player(scenario.single_player(protocol).player_id)
+        assert state is not None
+        return state.icon
+
+    assert (_icon(den), _icon(patio), _icon(office)) == ("speaker", "speaker", "airplay")
+
+    await scenario.detach(office)
+    await scenario.idle()
+    assert _icon(office_cast) == "airplay"
+
+    await scenario.configure_player(scenario.single_player(den).player_id, icon="radio")
+    assert _icon(den) == "radio"
+
+
 async def test_zones_of_one_chassis_are_one_player_each(scenario: Scenario) -> None:
     """
     The zones of a multi-zone device behind one MAC and IP are one player each.

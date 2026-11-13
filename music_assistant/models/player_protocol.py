@@ -179,7 +179,20 @@ class PlayerProtocol(ABC):
 
     @property
     def available(self) -> bool:
-        """Return if the player is available."""
+        """
+        Return if the player is available.
+
+        A protocol that rides on another one is available only while that one is attached
+        and can play: it reaches its device through it.
+        """
+        if (underlying_protocol_id := self.underlying_protocol_id) is not None:
+            underlying = self.mass.players.get_protocol(underlying_protocol_id)
+            if (
+                underlying is None
+                or underlying.player is None
+                or not underlying.available_for_playback
+            ):
+                return False
         return self._attr_available
 
     @property

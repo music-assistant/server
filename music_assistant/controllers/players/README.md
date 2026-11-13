@@ -102,8 +102,11 @@ stored record or when a device is new. It holds:
 What a player reports for its device comes from its `device_protocol`: its own protocol, else its
 most preferred audio protocol. Its device info also carries the identifiers its other protocols
 add. While no protocol is attached, its device info and provider are what was stored, and it has
-no extra attributes. Its name is the custom name, else the name its own protocol reports, else the
-most user-friendly name of its audio protocols, else the stored one.
+no extra attributes. Its name is the custom name, else its stored name. The stored name follows the
+name its own protocol reports while that is attached; an audio protocol sets it only for a player
+without a protocol of its own, or one that has no name stored yet. Its default icon is the one its
+device model names, else that of the provider of its own protocol (also while that is away), else
+the neutral speaker icon.
 
 The remembered MA source is cleared five seconds after the player went idle.
 Returning to playing or paused, or selecting a source, before that timeout cancels the reset,
@@ -122,8 +125,9 @@ The `PlayerState` is a dataclass representing the final state of the player. It:
 - Contains only serializable data suitable for API consumers
 
 A player is available while it is enabled and one of its protocols that can render audio reaches
-its device (a control protocol alone does not count), or while it is switched off at its external
-power control; not while it only has a protocol that still needs setup. It is available for
+its device (a control protocol alone does not count, nor a protocol that rides on another one
+while that one can not play), or while it is switched off at its external power control; not
+while it only has a protocol that still needs setup. It is available for
 playback while such a protocol is reachable and set up; that is what internal code checks before
 it sends anything to the device.
 
@@ -508,8 +512,11 @@ else to the best available audio protocol.
 The level and mute of a player are its own. Without a control the user picked, a volume or mute
 command ([volume.py](volume.py)) goes to the protocol that renders the audio, else to the own
 protocol, else to an available protocol with the feature; level reports are only taken from that
-protocol. When the output changes, the protocol that becomes the control gets the level and mute of
-the player before it is made the active output and before the stream starts.
+protocol. The `volume_control` and `mute_control` of the player state name where such a command
+goes right now, so while another output than the own protocol renders the audio they are the id of
+that protocol. A client only reads from them whether the player has a control (`none` if not).
+When the output changes, the protocol that becomes the control gets the level and mute of the
+player before it is made the active output and before the stream starts.
 
 While its own protocol is attached but can not be reached, a player keeps the level and mute it had
 when that began: what any of its protocols reports may be stale then. It is shown as the quieter of

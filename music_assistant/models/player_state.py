@@ -177,8 +177,8 @@ class StateInputs:
     :param previous_state: The state published before this one.
     :param enabled: Whether the player is enabled in its config.
     :param name: Display name of the player.
-    :param device_name: Name the protocols of the player report for its device, None
-        while they report no usable one.
+    :param device_name: Name the protocols of the player report for its device that the
+        stored name follows, None to keep the stored name.
     :param default_name: Device name stored in the config.
     :param hide_in_ui: Whether the player is hidden in the UI.
     :param expose_to_ha: Whether the player is exposed to Home Assistant.

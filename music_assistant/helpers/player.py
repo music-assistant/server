@@ -58,7 +58,7 @@ _DEFAULT_ICON_MATCHES = (
 @lru_cache(maxsize=512)
 def get_default_player_icon(
     player_type: PlayerType,
-    provider_domain: str,
+    provider_domain: str | None,
     manufacturer: str | None,
     model: str | None,
 ) -> str:
@@ -66,7 +66,8 @@ def get_default_player_icon(
     Return the most appropriate default icon for a player.
 
     :param player_type: The player's functional type.
-    :param provider_domain: The domain of the player provider.
+    :param provider_domain: The domain of the provider of the player's own protocol, None
+        for a player without one.
     :param manufacturer: The device manufacturer reported by the provider.
     :param model: The device model reported by the provider.
     """
@@ -85,7 +86,7 @@ def get_default_player_icon(
         if any(match in device_description for match in matches):
             return icon
 
-    if provider_icon := _DEFAULT_ICONS_BY_PROVIDER.get(provider_domain):
+    if provider_domain and (provider_icon := _DEFAULT_ICONS_BY_PROVIDER.get(provider_domain)):
         return provider_icon
     return "speaker"
 
