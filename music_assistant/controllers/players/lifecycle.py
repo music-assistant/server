@@ -119,8 +119,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
         The player stays and keeps its queue; it is unavailable while none of its other
         protocols is available. A player that only exists while its device is connected
-        goes with its last protocol, unless the user changed its config. Silently ignored
-        for a protocol that is not attached.
+        goes with its last protocol, unless it is kept: the user changed its config, a
+        plugin keeps it (see keep_player), or its queue has items. Silently ignored for a
+        protocol that is not attached.
 
         :param protocol_id: Id of the protocol to detach.
         """
@@ -128,6 +129,16 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         self._attaching.pop(protocol_id, None)
         if (protocol := self._protocols.get(protocol_id)) is None:
             return
+        if (
+            (player := protocol.player) is not None
+            and player.session_only
+            and player.protocols.keys() == {protocol_id}
+            and (queue := self.mass.player_queues.get(player.player_id)) is not None
+            and queue.items
+        ):
+            # a player that was played on is kept like one the user changed, before its
+            # last protocol goes and takes its config with it
+            self.keep_player(player.player_id)
         if player := await self._unbind(protocol):
             self.logger.info(
                 "Protocol %s detached from player %s", protocol_id, player.display_name

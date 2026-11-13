@@ -834,9 +834,10 @@ looks for groups again.
 ## Browser and app players
 
 A browser or app player has the id of its client and is the same player in every session. Until
-the user customises it, nothing of it is stored and it exists only while it is connected. Once the
-user customised it, it is stored and stays like the player of a device: unavailable while its
-client is away. The examples use a browser connected through Sendspin.
+it is used, nothing of it is stored and it exists only while it is connected. Once it is used (the
+user customised it, it played, or a plugin keeps it for something the user set up), it is stored
+and stays like the player of a device: unavailable while its client is away. The examples use a
+browser connected through Sendspin.
 
 ### WEB-1 · A browser player exists while it is connected and leaves nothing stored
 
@@ -866,13 +867,14 @@ time its player has the id of its client, and clients are told about it as added
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
 - Proven by: `test_lifecycle.py::test_session_only_player_has_the_same_id_in_every_session`
 
-### WEB-4 · A browser player the user never changed is removed when its browser disconnects
+### WEB-4 · A browser player that was only seen is removed when its browser disconnects
 
-A browser plays and disconnects. Clients are told its player is removed. The browser connects
-again: clients are told the player is added under the same id, and its queue is back.
+A browser connects and disconnects without playing; nobody changed its player. Clients are told
+the player is removed, and the settings do not list it. The browser connects again: clients are
+told the player is added under the same id.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player.
-- Proven by: `test_lifecycle.py::test_a_browser_player_without_changes_is_removed_when_its_client_disconnects`
+- Proven by: `test_lifecycle.py::test_a_browser_player_that_was_only_seen_is_removed_when_its_client_disconnects`
 
 ### WEB-5 · A browser player stored by an older version keeps its id
 
@@ -932,11 +934,38 @@ disconnects: the player stays shown and exposed, also after a restart, and is st
 
 The user switches on an AI radio DJ for the queue of a browser player that has not played yet.
 The browser disconnects: the player stays, unavailable, and is not removed. When the browser
-connects again the queue still has its DJ.
+connects again the queue still has its DJ. Switching the DJ off again does not undo that.
 
 - End-to-end: **possible with** a Sendspin client that connects as a browser player and the AI
   radio plugin.
 - Proven by: `tests/providers/ai_radio/test_queue_dj_player_lifecycle.py::test_a_dj_keeps_a_browser_player_whose_client_disconnects`
+
+### WEB-12 · A browser player that played stays listed, unavailable, while its browser is away
+
+A browser plays and disconnects right after, before its queue was saved. Clients are told its
+player is updated, unavailable, not removed, and the settings list it, also after a restart. When
+the browser connects again, the player is available under the same id, with its queue.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_browser_player_that_played_stays_listed_while_its_browser_is_away`
+
+### WEB-13 · A browser player whose queue was cleared is removed when its browser disconnects
+
+A browser plays, and its queue is cleared. When the browser disconnects, there is nothing to keep:
+clients are told its player is removed, and the settings do not list it.
+
+- End-to-end: **possible with** a Sendspin client that connects as a browser player.
+- Proven by: `test_lifecycle.py::test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_client_disconnects`
+
+### WEB-14 · A browser player an older version stored without changes keeps its saved queue
+
+An older version stored a browser player the user never changed, and the queue it played. After
+the upgrade it is no player and the settings do not list it, but its queue is still saved. When
+the browser connects, its player has that queue under the same id, and when the browser
+disconnects again, the player stays, unavailable.
+
+- End-to-end: **no**: the lab has no settings of an older version.
+- Proven by: `test_lifecycle.py::test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_connects`
 
 ## Commands to a busy player
 

@@ -1169,6 +1169,9 @@ async def test_session_only_player_keeps_what_is_stored_under_its_id(scenario: S
         player_filter=["sendspin_web_1", scenario.single_player(speaker).player_id],
     )
     await scenario.detach(browser)
+    await scenario.idle()
+    # the player that played was kept: an older version stored it without that mark
+    await scenario.seed_config({CONF_PLAYERS: {"sendspin_web_1": None}})
 
     await scenario.seed_pre_split_config(
         {

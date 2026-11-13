@@ -489,18 +489,18 @@ async def test_disabling_a_player_takes_it_out_and_enabling_brings_it_back(
     assert [item.uri for item in scenario.mass.player_queues.items(player_id)] == [TEST_TRACK_URI]
 
 
-async def test_a_browser_player_without_changes_is_removed_when_its_client_disconnects(
+async def test_a_browser_player_that_was_only_seen_is_removed_when_its_client_disconnects(
     scenario: Scenario,
 ) -> None:
     """
-    A web player the user never changed is announced as removed when its client disconnects.
+    A web player that was never changed nor played on is removed when its client disconnects.
 
-    When the client connects again it is announced as added under the same id, with its queue.
+    Nothing of it is listed anymore. When the client connects again it is announced as added
+    under the same id.
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
     await scenario.attach(browser)
-    await scenario.play("sendspin_web_3f2a")
     await scenario.idle()
     scenario.clear_events()
 
@@ -508,6 +508,7 @@ async def test_a_browser_player_without_changes_is_removed_when_its_client_disco
     await scenario.idle()
 
     assert scenario.visible_players() == []
+    assert await scenario.player_configs() == []
     assert scenario.removals() == [("sendspin_web_3f2a", None)]
 
     await scenario.attach(browser)
@@ -520,9 +521,74 @@ async def test_a_browser_player_without_changes_is_removed_when_its_client_disco
         Event(EventType.PLAYER_REMOVED, "sendspin_web_3f2a"),
         Event(EventType.PLAYER_ADDED, "sendspin_web_3f2a"),
     ]
+
+
+async def test_a_browser_player_that_played_stays_listed_while_its_browser_is_away(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player that was played on stays a player, unavailable, while its client is away.
+
+    Its client disconnects right after the play, before the queue was saved. Clients are told
+    it is updated, not removed; the settings list it, also after a restart; when its client
+    connects again it is available under the same id, with its queue.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+    await scenario.idle()
+    scenario.clear_events()
+    await scenario.play("sendspin_web_3f2a")
+
+    await scenario.detach(browser)
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", False)
+    ]
+    assert scenario.removals() == []
+    assert scenario.availability_updates("sendspin_web_3f2a")[-1] is False
+    assert [c.player_id for c in await scenario.player_configs()] == ["sendspin_web_3f2a"]
+
+    await scenario.restart()
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", False)
+    ]
+    assert [c.player_id for c in await scenario.player_configs()] == ["sendspin_web_3f2a"]
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", True)
+    ]
     assert [item.uri for item in scenario.mass.player_queues.items("sendspin_web_3f2a")] == [
         TEST_TRACK_URI
     ]
+    assert scenario.removals() == []
+
+
+async def test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_client_disconnects(
+    scenario: Scenario,
+) -> None:
+    """A web player that played, but whose queue was cleared, has nothing to keep."""
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+    await scenario.play("sendspin_web_3f2a")
+    await scenario.idle()
+    scenario.mass.player_queues.clear("sendspin_web_3f2a")
+    await scenario.idle()
+    scenario.clear_events()
+
+    await scenario.detach(browser)
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert await scenario.player_configs() == []
+    assert scenario.removals() == [("sendspin_web_3f2a", None)]
 
 
 async def test_a_player_the_user_removes_is_announced_as_removed(scenario: Scenario) -> None:
@@ -612,6 +678,47 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
     assert [(player.player_id, player.name) for player in scenario.visible_players()] == [
         ("sendspin_web_3f2a", stored_name or "Web Browser")
     ]
+
+
+async def test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_connects(
+    scenario: Scenario,
+) -> None:
+    """
+    A web player an older version stored without changes, whose queue was saved, loses nothing.
+
+    The upgrade deletes its stored config, not its saved queue: when its client connects it
+    is a player under the same id with that queue, and it stays when the client disconnects.
+    """
+    sendspin = await scenario.add_provider("sendspin")
+    browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
+    await scenario.attach(browser)
+    await scenario.play("sendspin_web_3f2a")
+    await scenario.idle()
+    await scenario.detach(browser)
+    await scenario.idle()
+    await scenario.seed_config({CONF_PLAYERS: {"sendspin_web_3f2a": None}})
+    await scenario.seed_pre_split_config({"sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER})
+    await scenario.idle()
+
+    assert scenario.visible_players() == []
+    assert await scenario.player_configs() == []
+    assert await scenario.saved_queue("sendspin_web_3f2a") == [TEST_TRACK_URI]
+
+    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [item.uri for item in scenario.mass.player_queues.items("sendspin_web_3f2a")] == [
+        TEST_TRACK_URI
+    ]
+
+    scenario.clear_events()
+    await scenario.detach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.idle()
+
+    assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
+        ("sendspin_web_3f2a", False)
+    ]
+    assert scenario.removals() == []
 
 
 async def test_pre_split_session_only_player_the_user_disabled_stays_disabled(
