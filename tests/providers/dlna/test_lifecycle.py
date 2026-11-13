@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from async_upnp_client.client_factory import UpnpFactory
+from async_upnp_client.exceptions import UpnpResponseError
 from music_assistant_models.enums import IdentifierType, PlayerType, ProtocolRole
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.controllers.players.protocol_linking import PLAYER_ID_PREFIX
 from music_assistant.providers.dlna.player import DLNAPlayer
+from tests.providers.dlna.test_player_identifiers import DESCRIPTION_XML, _dmr, _Requester
 from tests.scenarios.harness import Scenario
 
 if TYPE_CHECKING:
@@ -124,6 +127,35 @@ async def test_the_renderer_of_a_cast_device_joins_its_player(scenario: Scenario
     assert renderer.player is not None
     assert renderer.player.player_id == scenario.player_of(tv)
     assert renderer.player.get_role(UDN) == ProtocolRole.AUDIO
+
+
+async def test_a_renderer_that_rejects_event_subscriptions_joins_its_player(
+    scenario: Scenario,
+) -> None:
+    """A renderer that is polled because it rejects event subscriptions joins its device's player."""
+    cast = await scenario.add_provider("chromecast")
+    tv = cast.protocol("cast-tv", "TV", identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS})
+    await scenario.attach(tv)
+    provider: Any = await scenario.add_provider("dlna")
+    provider.upnp_factory = UpnpFactory(_Requester(DESCRIPTION_XML.format(presentation="/")))
+    provider.notify_server = MagicMock()
+    scenario.arp[IP_ADDRESS] = MAC_ADDRESS
+
+    def polled_device(upnp_device: Any, handler: Any) -> MagicMock:
+        device = _dmr(upnp_device, handler)
+        device.async_subscribe_services.side_effect = UpnpResponseError(status=412, headers={})
+        device.async_unsubscribe_services = AsyncMock()
+        return device
+
+    protocol = DLNAPlayer(provider, "uuid:dlna-player", f"http://{IP_ADDRESS}/description.xml")
+    with patch("music_assistant.providers.dlna.player.DmrDevice", polled_device):
+        assert await protocol.setup() is True
+    await scenario.settle()
+
+    assert protocol.device is not None
+    assert scenario.player_of(tv) is not None
+    assert protocol.player is not None
+    assert protocol.player.player_id == scenario.player_of(tv)
 
 
 async def test_a_renderer_of_a_disabled_player_releases_its_subscriptions(
