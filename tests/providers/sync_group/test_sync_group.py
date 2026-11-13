@@ -2144,16 +2144,6 @@ class TestPowerlessLifecycle:
 
         with (
             patch.object(sgp, "update_state"),
-            patch.object(
-                controller,
-                "_translate_members_for_protocols",
-                return_value=(["spb_child"], [], protocol, "sendspin"),
-            ),
-            patch.object(
-                controller,
-                "_translate_members_to_remove_for_protocols",
-                return_value=([], []),
-            ),
             patch("music_assistant.providers.sync_group.player.PLAYBACK_START_TIMEOUT", 0.01),
         ):
             await sgp.play_media(MagicMock(source_id="src", uri="x"))
