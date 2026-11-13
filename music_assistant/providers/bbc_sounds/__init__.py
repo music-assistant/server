@@ -983,11 +983,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             raise MediaNotFoundError(f"Podcast episode {prov_episode_id} not found")
         if type(ma_episode) is not PodcastEpisode:
             raise UnplayableMediaError(f"Incorrect format for episode {prov_episode_id}")
-        ma_episode.name = (
-            episode.network.short_title
-            if episode.network and episode.network.short_title
-            else "Unknown"
-        )
         return ma_episode
 
     async def _continue_with_station(
