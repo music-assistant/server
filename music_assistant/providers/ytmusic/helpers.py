@@ -19,6 +19,7 @@ from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 from ytmusicapi.models.content.enums import PlaylistSortOrder
 
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
 # subset of ytmusicapi's accepted search filters that we use
@@ -68,7 +69,7 @@ async def get_artist_albums(
 
     def _get_artist_albums() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        return ytm.get_artist_albums(channelId=channel_id, params=params, limit=None)
+        return ytm.get_artist_albums(channelId=channel_id, params=params, limit=ARTIST_ALBUMS_LIMIT)
 
     return await _run_ytmusic(_get_artist_albums)
 

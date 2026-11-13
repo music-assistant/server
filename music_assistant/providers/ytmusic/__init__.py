@@ -80,7 +80,7 @@ from music_assistant.helpers.util import (
     install_package,
     parse_title_and_version,
 )
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .helpers import (
@@ -619,7 +619,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
 
-        # get_artist() only embeds ~10 item previews, so fetch each section in full.
+        # get_artist() only embeds ~10 item previews, so fetch each section separately.
         # "singles" covers singles and EPs, "shows" covers radio shows and audio dramas.
         sections = [
             (key, section)
@@ -680,7 +680,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     ]
                 albums.append(self._parse_album(album_obj, browse_id))
 
-        return albums
+        return albums[:ARTIST_ALBUMS_LIMIT]
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:

@@ -26,7 +26,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import now
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 
 from .constants import (
     ENDPOINTS,
@@ -168,7 +168,7 @@ class PhishInProvider(MusicProvider):
 
     @use_cache(expiration=86400)  # 24 hours - albums (ie. shows) could update daily
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
         if prov_artist_id != PHISH_ARTIST_ID:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
@@ -196,12 +196,12 @@ class PhishInProvider(MusicProvider):
                     if show.get("audio_status") in ["complete", "partial"]:
                         albums.append(show_to_album(self, show))
 
-                if len(shows) < per_page:
+                if len(shows) < per_page or len(albums) >= ARTIST_ALBUMS_LIMIT:
                     break
 
                 page += 1
 
-            return albums
+            return albums[:ARTIST_ALBUMS_LIMIT]
 
         except MediaNotFoundError, ProviderUnavailableError:
             raise

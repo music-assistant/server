@@ -356,6 +356,8 @@ class MyDemoMusicprovider(MusicProvider):
         """Get a list of all albums for the given artist."""
         # Get a list of all albums for the given artist.
         # Mandatory only if you reported ARTIST_ALBUMS in the supported_features.
+        # NOTE: When the API pages through the discography, stop at ARTIST_ALBUMS_LIMIT
+        # releases (music_assistant.models.music_provider) to keep the request count bounded.
         # NOTE: Because this is often static data, it is advised to apply caching here
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
