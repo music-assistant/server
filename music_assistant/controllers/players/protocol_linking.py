@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import (
     IdentifierType,
     PlaybackState,
-    PlayerFeature,
     PlayerType,
     ProtocolRole,
 )
@@ -29,7 +28,6 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidDataError,
     MusicAssistantError,
-    PlayerCommandFailed,
 )
 
 from music_assistant.constants import (
@@ -50,10 +48,8 @@ from music_assistant.constants import (
     CONF_UNLINKED_FROM,
     CONF_VOLUME_CONTROL,
     NATIVE_PRIORITY,
-    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.config.constants import AUTOMATIC_VALUE_KEYS, GROUP_MEMBER_KEYS
-from music_assistant.controllers.players.grouping_plan import first_grouped_protocol
 from music_assistant.controllers.players.matching import (
     DeviceIdentity,
     has_hardware_mac,
@@ -66,8 +62,6 @@ from music_assistant.models.player import OWN_PROTOCOL_ROLES, Player, get_device
 from .base import _PlayerControllerBase
 
 if TYPE_CHECKING:
-    from music_assistant_models.player import OutputProtocol
-
     from music_assistant.models.player_protocol import PlayerProtocol
 
 # How long an audio protocol that matches no player waits for the identifiers that tell
@@ -1057,190 +1051,6 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
         """
         await protocol.on_config_updated()
         protocol.update_state(force_update=True)
-
-    def _select_best_output_protocol(
-        self, player: Player
-    ) -> tuple[PlayerProtocol, OutputProtocol | None]:
-        """
-        Select the best available output protocol for a player.
-
-        Selection priority:
-        1. Output protocol that is currently grouped/synced with other players.
-        2. User's preferred output protocol (from player settings).
-        3. Native playback (if the native protocol of the player supports PLAY_MEDIA).
-        4. The player's declared default output protocol domain, if available.
-        5. Best available protocol by priority.
-
-        Returns tuple of (target_protocol, output_protocol).
-        output_protocol is None when using native playback.
-        """
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "Selecting output protocol for %s",
-            player.state.name,
-        )
-
-        # 1. Check if any output protocol is currently grouped
-        if protocol := self._get_grouped_output_protocol(player):
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Selected protocol for %s: %s (grouped)",
-                player.state.name,
-                protocol.provider.name,
-            )
-            return protocol, player.get_linked_protocol(protocol.protocol_id)
-
-        own = player.own_protocol
-        native_playback = (
-            own is not None
-            and PlayerFeature.PLAY_MEDIA in own.supported_features
-            and own.available_for_playback
-        )
-
-        # 2. Check for user's preferred output protocol.
-        # The value is only stored while it differs from the entry's default: "native" when a
-        # native output is available, otherwise "auto". A player without a native output (e.g. a
-        # LinkPlay shell) therefore has no stored preference by default and gets its default
-        # output domain applied in step 4.
-        preferred = self.mass.config.get_player_value(
-            player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
-        )
-        if preferred and preferred != "auto":
-            if preferred == "native":
-                if own is not None and native_playback:
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Selected protocol for %s: native (user preference)",
-                        player.state.name,
-                    )
-                    return own, None
-            else:
-                for protocol in player.audio_protocols:
-                    if protocol.protocol_id == preferred:
-                        if protocol.available_for_playback:
-                            self.logger.log(
-                                VERBOSE_LOG_LEVEL,
-                                "Selected protocol for %s: %s (user preference)",
-                                player.state.name,
-                                protocol.provider.name,
-                            )
-                            return protocol, player.get_linked_protocol(protocol.protocol_id)
-                        break
-
-        # 3. Use native playback if available
-        if own is not None and native_playback:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL, "Selected protocol for %s: native", player.state.name
-            )
-            return own, None
-
-        # 4. Use the player's preferred default protocol domain, if it declares one and a
-        # matching audio protocol is available (e.g. a LinkPlay shell prefers DLNA). This
-        # never influences grouping; it only steers the default output for playback. "Auto"
-        # is the entry default here, so it consistently resolves to this domain default.
-        if own is not None and (default_domain := own.default_output_protocol_domain):
-            for protocol in player.audio_protocols:
-                if protocol.provider.domain != default_domain:
-                    continue
-                if protocol.available_for_playback:
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Selected protocol for %s: %s (default domain %s)",
-                        player.state.name,
-                        protocol.provider.name,
-                        default_domain,
-                    )
-                    return protocol, player.get_linked_protocol(protocol.protocol_id)
-
-        # 5. Fall back to best protocol by priority
-        for protocol in player.audio_protocols:
-            if protocol.available_for_playback:
-                self.logger.log(
-                    VERBOSE_LOG_LEVEL,
-                    "Selected protocol for %s: %s (priority-based)",
-                    player.state.name,
-                    protocol.provider.name,
-                )
-                return protocol, player.get_linked_protocol(protocol.protocol_id)
-
-        raise PlayerCommandFailed(f"Player {player.state.name} has no available output protocols")
-
-    def _get_grouped_output_protocol(self, player: Player) -> PlayerProtocol | None:
-        """
-        Return the audio protocol that is currently grouped with other players, if any.
-
-        :param player: The player to check the audio protocols of.
-        """
-        return first_grouped_protocol(player.audio_protocols)
-
-    def _get_control_target(
-        self,
-        player: Player,
-        required_feature: PlayerFeature,
-        require_active: bool = False,
-    ) -> PlayerProtocol | None:
-        """
-        Get the best protocol to send audio-path commands to.
-
-        Resolves commands that travel with the audio (enqueue, pause, and an
-        announcement the device cannot handle itself), so the output that renders the
-        audio outranks the native protocol. Volume and mute resolve through the
-        controls of the player instead (:attr:`Player.volume_control`).
-
-        :param player: The player the command was issued on.
-        :param required_feature: The feature the resolved target has to support.
-        :param require_active: Only accept the output that is already rendering,
-            instead of falling back to an idle one.
-        """
-        # If we have an active protocol, use that
-        if (
-            player.active_output_protocol
-            and player.active_output_protocol != "native"
-            and (protocol := player.protocols.get(player.active_output_protocol))
-            and required_feature in protocol.supported_features
-        ):
-            return protocol
-
-        own = player.own_protocol
-        own_supports = own is not None and required_feature in own.supported_features
-
-        # if the native protocol renders and supports the required feature, use that
-        if player.active_output_protocol == "native" and own_supports:
-            return own
-
-        # If require_active is set, and no active protocol found, return None
-        if require_active:
-            return None
-
-        # if the native protocol supports the required feature, use that
-        if own is not None and own_supports and own.available_for_playback:
-            return own
-
-        # An output the user explicitly picked owns the audio, so a command that has to
-        # start playback on an idle player follows it rather than the priority below.
-        # The stored value survives a protocol that moved to another player, so it only
-        # counts while it still names one of this player's own outputs.
-        preferred = self.mass.config.get_player_value(
-            player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
-        )
-        if preferred and preferred not in ("auto", "native"):
-            for protocol in player.audio_protocols:
-                if protocol.protocol_id != preferred:
-                    continue
-                if (
-                    protocol.available_for_playback
-                    and required_feature in protocol.supported_features
-                ):
-                    return protocol
-                break
-
-        # Otherwise, use the best available audio protocol, ordered by the same
-        # priority that regular playback selection applies.
-        for protocol in player.audio_protocols:
-            if protocol.available_for_playback and required_feature in protocol.supported_features:
-                return protocol
-
-        return None
 
 
 def _native_rank(provider_id: str) -> int:

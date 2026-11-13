@@ -121,6 +121,7 @@ from .grouping import apply_group_change, grouping_snapshot, route_group_change
 from .grouping_plan import ChangeKind, GroupChange, elect_ad_hoc_leader, set_members_group
 from .helpers import handle_player_command
 from .locks import PlayerLocksMixin
+from .outputs import OutputsMixin
 from .power import PowerMixin
 from .protocol_linking import ProtocolLinkingMixin
 from .sleep_timer import SleepTimerMixin
@@ -175,10 +176,6 @@ QUEUE_UPDATE_DEBOUNCE = 0.5
 # passing source while a stream starts or ends.
 EXTERNAL_SOURCE_TAKEOVER_DELAY = 5
 
-# How long the active output protocol of a stopped player waits for the player to report idle
-# before it is cleared anyway: a device may keep reporting playing for a while after a stop.
-ACTIVE_OUTPUT_CLEAR_TIMEOUT = 10
-
 # How long a queue that is restarted for a changed setting waits after its stop before it
 # resumes, so the stop has reached the device before the new stream starts.
 CONFIG_CHANGE_RESUME_DELAY = 1
@@ -219,6 +216,7 @@ class PlayerController(
     SleepTimerMixin,
     VolumeMixin,
     PowerMixin,
+    OutputsMixin,
 ):
     """Controller holding all logic to control registered players."""
 
@@ -1672,24 +1670,6 @@ class PlayerController(
         await self.cmd_stop(player_id)
         await self.cmd_play(player_id)
 
-    def schedule_active_output_protocol_clear(self, player: Player) -> None:
-        """
-        Clear the player's active output protocol once it stops playing.
-
-        A device may keep reporting PLAYING for a short while after a stop
-        command, so the clear is deferred until the player reports IDLE (with a
-        timeout as fallback). Starting a new session cancels the pending clear
-        (see Player.set_active_output_protocol).
-
-        :param player: The player whose active output protocol must be cleared.
-        """
-        # Deduplicated per player via task_id: if a clear is already pending we
-        # keep it, so the single tracked task stays cancellable by a new session.
-        self.mass.create_task(
-            self._clear_active_output_protocol_when_idle(player),
-            task_id=f"clear_active_protocol_{player.player_id}",
-        )
-
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
         return iter(self._players.values())
@@ -2690,20 +2670,6 @@ class PlayerController(
                 False,
             )
 
-    def _get_transport_protocol(self, player: Player) -> PlayerProtocol:
-        """
-        Return the protocol that takes the transport commands for what the device plays itself.
-
-        That is the audio protocol whose app is shown on the player, else its own protocol.
-
-        :param player: The player the command was issued on.
-        :raises PlayerUnavailableError: When the player has neither of them attached.
-        """
-        if protocol := player.foreign_protocol or player.own_protocol:
-            return protocol
-        msg = f"Player {player.display_name} has no protocol that can take this command"
-        raise PlayerUnavailableError(msg)
-
     async def _resolve_mac_addresses(self, protocol: PlayerProtocol) -> None:
         """
         Resolve the MAC addresses used to match the protocol to its player.
@@ -2977,13 +2943,6 @@ class PlayerController(
         if elapsed < minimal_time:
             await asyncio.sleep(minimal_time - elapsed)
 
-    async def _clear_active_output_protocol_when_idle(self, player: Player) -> None:
-        """Wait for the player to stop playing, then clear its active output protocol."""
-        await self._wait_for_playback_state(
-            player, PlaybackState.IDLE, timeout=ACTIVE_OUTPUT_CLEAR_TIMEOUT
-        )
-        player.set_active_output_protocol(None)
-
     def _handle_membership_cleanup_on_state_change(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
@@ -3140,74 +3099,6 @@ class PlayerController(
                 self.logger.debug("Not restarting queue %s after DSP change: it is empty", queue_id)
                 return
             await self.mass.player_queues.resume(queue_id, False)
-
-    def _check_external_source_takeover(self, player: Player) -> None:
-        """
-        Handle when an external source takes over playback on a player.
-
-        When a player has an active grouped output protocol (e.g., AirPlay group) and
-        an external source (e.g., Spotify Connect, TV input) takes over playback,
-        we need to clear the active output protocol and ungroup the protocols.
-
-        This prevents the situation where the player appears grouped via protocol
-        but is actually playing from a different source.
-
-        :param player: The player whose active_source changed.
-        """
-        # Not a takeover if the device itself is not actively playing
-        own = player.own_protocol
-        if own is None or own.playback_state != PlaybackState.PLAYING:
-            return
-
-        # Only relevant if we have an active output protocol (not native)
-        if not player.active_output_protocol or player.active_output_protocol == "native":
-            return
-
-        new_source = player.state.active_source
-
-        # Check if new source is external (not MA-managed)
-        if self._is_ma_managed_source(player, new_source):
-            return
-
-        # Get the active protocol
-        protocol_player = player.protocols.get(player.active_output_protocol)
-        if not protocol_player:
-            return
-
-        # If the source matches the active protocol's domain, it's expected - not a takeover
-        # e.g., source "airplay" when using AirPlay protocol is normal
-        if new_source and new_source.lower() == protocol_player.provider.domain.lower():
-            return
-
-        if (
-            new_source
-            and new_source.lower() in ("airplay", "cast", "chromecast", "network")
-            and protocol_player.provider.domain.lower() == "sendspin"
-        ):
-            # Special case for Sendspin bridge: if the new source matches cast or airplay and the
-            # active protocol is Sendspin, we consider this a normal behavior and not a takeover
-            return
-
-        # Confirmed external source takeover
-        self.logger.info(
-            "External source '%s' took over on %s while playing via protocol %s - "
-            "clearing active output protocol and ungrouping",
-            new_source,
-            player.display_name,
-            protocol_player.provider.domain,
-        )
-
-        # Set active output protocol to native
-        player.set_active_output_protocol("native")
-
-        # Ungroup the protocol (async task)
-        self.mass.create_task(
-            apply_group_change(
-                self,
-                GroupChange(kind=ChangeKind.LEAVE_PROTOCOL, target_id=protocol_player.protocol_id),
-                protocol=protocol_player,
-            )
-        )
 
     def _schedule_update_all_players(self) -> None:
         """
@@ -3479,30 +3370,6 @@ class PlayerController(
                 # notify the native protocol that protocol playback started
                 assert output_protocol is not None
                 await own.on_protocol_playback(output_protocol=output_protocol)
-
-    async def _activate_output_protocol(self, player: Player, output_protocol_id: str) -> None:
-        """
-        Make an output the active output of a player, starting at the level of the player.
-
-        :param player: The player whose output is (re)selected.
-        :param output_protocol_id: Id of the output that takes the audio, "native" for
-            the own protocol of the player.
-        """
-        volume_control = player.volume_control_for_output(output_protocol_id)
-        mute_control = player.mute_control_for_output(output_protocol_id)
-        # a control that takes over, or any while the player keeps the level or mute it had
-        await self._hand_over_volume(
-            player,
-            volume_control
-            if player.holds_volume(PlayerFeature.VOLUME_SET)
-            or volume_control != player.volume_control
-            else None,
-            mute_control
-            if player.holds_volume(PlayerFeature.VOLUME_MUTE) or mute_control != player.mute_control
-            else None,
-        )
-        player.release_held_volume()
-        player.set_active_output_protocol(output_protocol_id)
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
