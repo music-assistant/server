@@ -1730,13 +1730,27 @@ class SendspinProvider(PlayerProvider):
                 # nothing is set up for a client of a disabled player or a switched off output
                 self.logger.debug("Ignoring disabled sendspin client: %s", client_id)
                 return
-            await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
-            self.logger.debug("Client %s connected", client_id)
-            await self._apply_hass_esphome_enrichment([player])
-            if not self._is_current_client_event(client_id, event_version):
-                self.logger.debug("Skipping stale add event for %s after HA enrichment", client_id)
-                return
-            await self.mass.players.attach(player)
+            # the client can report its state before the attach, while the protocol does not
+            # follow it yet, and a later connection of it may not report it again
+            if isinstance(player, SendspinPlayer):
+                player.take_volume_reports()
+            try:
+                await self._auto_trust_guest_access(client_id, sendspin_client, event_version)
+                self.logger.debug("Client %s connected", client_id)
+                await self._apply_hass_esphome_enrichment([player])
+                if not self._is_current_client_event(client_id, event_version):
+                    self.logger.debug(
+                        "Skipping stale add event for %s after HA enrichment", client_id
+                    )
+                    return
+                await self.mass.players.attach(player)
+            finally:
+                if (
+                    isinstance(player, SendspinPlayer)
+                    and self.mass.players.get_protocol(client_id) is not player
+                ):
+                    # neither attached nor held: no attach or detach of it ends this
+                    player.stop_taking_volume_reports()
         finally:
             self._finish_client_event(client_id)
 
