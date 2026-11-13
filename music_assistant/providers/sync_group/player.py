@@ -18,7 +18,11 @@ from music_assistant_models.enums import (
     PlayerType,
     ProtocolRole,
 )
-from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    PlayerCommandFailed,
+    ResourceBusyError,
+    UnsupportedFeaturedException,
+)
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
@@ -1666,47 +1670,54 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         Re-add the configured members that returned to the live leader, playback untouched.
 
-        A member that is busy with a command of its own is left out this time: the next
-        report of the leader tries again.
+        While a command works on the group nothing changes, and a member that is busy with a
+        command of its own is left out: the next report of the leader tries again.
         """
         if (leader := self.sync_leader) is None:
             return
-        async with (
-            self.mass.players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK),
-            AsyncExitStack() as member_locks,
-        ):
-            # judged again now rather than when scheduled: in the meantime a member may
-            # have joined another group, which the controller's add would take it from,
-            # or the group may have been saved without it
-            if self.sync_leader is not leader:
-                return
-            # nobody asked for this re-add, so it never takes a member a command is busy
-            # with, and never waits for one under the leader's lock: each member's lock is
-            # taken only when it is free, and held until the member is added
-            member_ids = [
-                member_id
-                for member_id in self._missing_members(leader)
-                if await member_locks.enter_async_context(
-                    self.mass.players.get_player_lock_if_free(member_id)
+        try:
+            async with AsyncExitStack() as locks:
+                # a re-add changes the group, which may hand the leader's playback over to
+                # another protocol, so it runs under the group's lock; nobody asked for it,
+                # so it takes that lock only when it is free
+                if not await locks.enter_async_context(
+                    self.mass.players.get_player_lock_if_free(self._group_player.player_id)
+                ):
+                    return
+                await locks.enter_async_context(
+                    self.mass.players.get_player_lock(leader.player_id, PlayerLockPurpose.PLAYBACK)
                 )
-            ]
-            if not member_ids:
-                return
-            self.logger.info("Re-adding %s to syncgroup %s", member_ids, self.display_name)
-            try:
+                # judged again now rather than when scheduled: in the meantime a member may
+                # have joined another group, which the controller's add would take it from,
+                # or the group may have been saved without it
+                if self.sync_leader is not leader:
+                    return
+                # nobody asked for this re-add, so it never takes a member a command is busy
+                # with, and never waits for one under the leader's lock: each member's lock
+                # is taken only when it is free, and held until the member is added
+                member_ids = [
+                    member_id
+                    for member_id in self._missing_members(leader)
+                    if await locks.enter_async_context(
+                        self.mass.players.get_player_lock_if_free(member_id)
+                    )
+                ]
+                if not member_ids:
+                    return
+                self.logger.info("Re-adding %s to syncgroup %s", member_ids, self.display_name)
                 await self.mass.players._handle_set_members(leader, player_ids_to_add=member_ids)
-            except PlayerCommandFailed as err:
-                self.logger.warning(
-                    "Could not re-add %s to syncgroup %s: %s", member_ids, self.display_name, err
-                )
-                return
-            # a form drops a member the leader can not group with at the time, and this
-            # add goes past set_members: track the member again so the next formation
-            # includes it. The leader may report the join only later, so this does not
-            # wait for it; a member the controller passed over is dropped by that form
-            for member_id in member_ids:
-                if member_id not in self._attr_group_members:
-                    self._attr_group_members.append(member_id)
+                # a form drops a member the leader can not group with at the time, and this
+                # add goes past set_members: track the member again so the next formation
+                # includes it. The leader may report the join only later, so this does not
+                # wait for it; a member the controller passed over is dropped by that form
+                for member_id in member_ids:
+                    if member_id not in self._attr_group_members:
+                        self._attr_group_members.append(member_id)
+        except (PlayerCommandFailed, ResourceBusyError) as err:
+            # the members are still missing, so the leader's next report tries again
+            self.logger.warning(
+                "Could not re-add members to syncgroup %s: %s", self.display_name, err
+            )
 
     def _schedule_reform_timer(self) -> None:
         """(Re)schedule the debounced re-form after the sync leader was removed."""
