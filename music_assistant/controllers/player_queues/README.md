@@ -155,8 +155,13 @@ are dropped.
 
 Transport and playback actions on a given queue are serialized through the player's shared playback
 lock, obtained from the Player Controller. That lock is re-entrant, so nested actions on the same
-queue do not deadlock. While an action is in progress an "action in progress" flag is surfaced on
-the queue and reported to subscribers.
+queue do not deadlock. The lookup of what a play request plays (a big artist, playlist or folder
+fetched through a throttled provider can take minutes) runs under that lock, so it has a deadline of
+its own (`PLAY_REQUEST_RESOLVE_TIMEOUT`): when it runs out the request fails and releases the lock
+before it has changed the queue, so the queue keeps its items, enqueued items, shuffle state and
+playback. The deadline does not cover filling the managed pool of a queue that stays dynamic, which
+fetches the tracks of each new source once the queue's sources are stored. While an action is in
+progress an "action in progress" flag is surfaced on the queue and reported to subscribers.
 
 A per-queue transitioning flag guards the window during track changes, so concurrent
 player-update callbacks are skipped while a queue is mid-transition. Background and delayed work —
