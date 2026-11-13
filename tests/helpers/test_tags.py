@@ -1,12 +1,17 @@
 """Tests for parsing audio file tags (ID3, MP4/AAC, Vorbis, APEv2, etc.)."""
 
+import asyncio
+import json
 import os
 import pathlib
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import mutagen
 import pytest
@@ -120,10 +125,118 @@ def test_parse_tags_identifies_as_music_assistant_on_urls(monkeypatch: pytest.Mo
     args = list(check_output.call_args.args[0])
     assert args[args.index("-user_agent") + 1] == MASS_USER_AGENT
     assert args.index("-user_agent") < args.index("-i")
+    assert args[args.index("-rw_timeout") + 1] == "10000000"
+    assert args.index("-rw_timeout") < args.index("-i")
 
     with pytest.raises(InvalidDataError):
         tags.parse_tags("/music/a.mp3")
     assert "-user_agent" not in check_output.call_args.args[0]
+    assert "-rw_timeout" not in check_output.call_args.args[0]
+
+
+@pytest.mark.parametrize("input_file", ["https://example.com/audio", FILE_MP3])
+async def test_async_parse_tags_network_options(
+    monkeypatch: pytest.MonkeyPatch, input_file: str
+) -> None:
+    """Network probes use an I/O deadline without changing local file inputs."""
+    process = MagicMock(returncode=1)
+    process.communicate = AsyncMock(return_value=(b"", b"[http] connection timed out"))
+    process.__aenter__ = AsyncMock(return_value=process)
+    process.__aexit__ = AsyncMock(return_value=None)
+    factory = MagicMock(return_value=process)
+    monkeypatch.setattr(tags, "AsyncProcess", factory)
+
+    with pytest.raises(InvalidDataError, match="connection timed out"):
+        await tags.async_parse_tags(input_file, verify_ssl=False)
+
+    args = factory.call_args.args[0]
+    if input_file.startswith("https"):
+        index = args.index("-rw_timeout")
+        assert args[index + 1] == "10000000"
+        assert index < args.index("-i")
+        assert args[args.index("-tls_verify") + 1] == "0"
+    else:
+        assert "-rw_timeout" not in args
+    process.communicate.assert_awaited_once_with(timeout=tags.FFPROBE_TIMEOUT)
+
+
+async def test_async_parse_tags_decodes_missing_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing duration can be obtained from a cancellable full decode."""
+    raw = {
+        "format": {"filename": "https://example.com/audio", "format_name": "mp3"},
+        "streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "44100"}],
+    }
+    processes = []
+    for output in (json.dumps(raw).encode(), b"time=00:03:21.25 bitrate="):
+        process = MagicMock(returncode=0)
+        process.communicate = AsyncMock(return_value=(output, b""))
+        process.__aenter__ = AsyncMock(return_value=process)
+        process.__aexit__ = AsyncMock(return_value=None)
+        processes.append(process)
+    factory = MagicMock(side_effect=processes)
+    monkeypatch.setattr(tags, "AsyncProcess", factory)
+
+    result = await tags.async_parse_tags("https://example.com/audio", require_duration=True)
+
+    assert result.duration == 201.25
+    decoder_args = factory.call_args.args[0]
+    assert decoder_args[0] == "ffmpeg"
+    assert decoder_args[decoder_args.index("-rw_timeout") + 1] == "10000000"
+    assert decoder_args.index("-rw_timeout") < decoder_args.index("-i")
+    processes[1].communicate.assert_awaited_once_with(timeout=tags.FFMPEG_DURATION_TIMEOUT)
+
+
+@pytest.mark.parametrize("command", ["ffprobe", "ffmpeg"])
+@pytest.mark.parametrize("cancel", [True, False])
+async def test_async_parse_tags_reaps_hanging_process(
+    monkeypatch: pytest.MonkeyPatch, command: str, cancel: bool
+) -> None:
+    """Cancellation and deadlines reap both probe and duration children and close the input."""
+    started = asyncio.Event()
+    children: list[asyncio.subprocess.Process] = []
+    create_subprocess = asyncio.create_subprocess_exec
+    raw = {
+        "format": {"filename": FILE_MP3, "format_name": "mp3"},
+        "streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "44100"}],
+    }
+
+    async def start_process(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        hanging = args[0] == command
+        code = "import time; time.sleep(60)" if hanging else f"print({json.dumps(raw)!r})"
+        child = await create_subprocess(sys.executable, "-c", code, **kwargs)
+        children.append(child)
+        if hanging:
+            started.set()
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_process)
+    if not cancel:
+        timeout_key = "FFPROBE_TIMEOUT" if command == "ffprobe" else "FFMPEG_DURATION_TIMEOUT"
+        monkeypatch.setattr(tags, timeout_key, 0.1)
+    fd = os.open(FILE_MP3, os.O_RDONLY)
+    task = asyncio.create_task(
+        tags.async_parse_tags("provider-file.mp3", require_duration=True, opener=lambda *_args: fd)
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(
+                InvalidDataError, match=r"no result within|Unable to retrieve duration"
+            ):
+                await task
+        assert children
+        assert all(child.returncode is not None for child in children)
+        with pytest.raises(OSError, match="Bad file descriptor"):
+            os.fstat(fd)
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError, InvalidDataError):
+                await task
 
 
 def test_parse_rejects_file_without_audio_channels() -> None:

@@ -45,6 +45,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 # so a probe gets killed once it runs past these limits.
 FFPROBE_TIMEOUT = 60
 FFMPEG_DURATION_TIMEOUT = 600
+NETWORK_READ_TIMEOUT = 10
 
 
 # the only multi-item splitter we accept is the semicolon,
@@ -767,9 +768,58 @@ async def async_parse_tags(
         returns its descriptor; the file is then only read through that descriptor.
     :param verify_ssl: Whether the certificate of an https source must be verified.
     """
-    return await asyncio.to_thread(
-        parse_tags, input_file, file_size, require_duration, opener, verify_ssl
-    )
+    try:
+        fd = await open_in_thread(opener, input_file, os.O_RDONLY) if opener else None
+    except OSError as err:
+        raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
+    source = input_file if fd is None else descriptor_path(fd)
+    pass_fds = () if fd is None else (fd,)
+    args = _get_ffprobe_args(source, verify_ssl)
+    try:
+        async with AsyncProcess(
+            args, stdin=False, stdout=True, stderr=True, pass_fds=pass_fds
+        ) as probe:
+            res, stderr = await probe.communicate(timeout=FFPROBE_TIMEOUT)
+            if probe.returncode:
+                error = subprocess.CalledProcessError(
+                    probe.returncode, args, output=res, stderr=stderr
+                )
+                raise InvalidDataError(
+                    f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(error)})"
+                )
+        parse_task = asyncio.create_task(
+            asyncio.to_thread(_parse_tags_output, res, input_file, source, file_size, fd)
+        )
+        try:
+            tags = await asyncio.shield(parse_task)
+        except asyncio.CancelledError:
+            # Mutagen must release the descriptor before the caller closes it.
+            await parse_task
+            raise
+        del res
+        if not tags.duration and require_duration:
+            try:
+                async with AsyncProcess(
+                    _get_duration_args(source, verify_ssl),
+                    stdin=False,
+                    stdout=True,
+                    stderr=subprocess.STDOUT,
+                    pass_fds=pass_fds,
+                ) as decoder:
+                    output, _ = await decoder.communicate(timeout=FFMPEG_DURATION_TIMEOUT)
+                    if decoder.returncode:
+                        raise InvalidDataError(f"Unable to retrieve duration for {input_file}")
+                tags.duration = _parse_duration_output(output)
+            except (TimeoutError, OSError, ValueError, IndexError) as err:
+                raise InvalidDataError(f"Unable to retrieve duration for {input_file}") from err
+        return tags
+    except TimeoutError as err:
+        raise InvalidDataError(
+            f"Unable to retrieve info for {input_file} (no result within {FFPROBE_TIMEOUT} seconds)"
+        ) from err
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def parse_tags(
@@ -795,24 +845,7 @@ def parse_tags(
         raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
     source = input_file if fd is None else descriptor_path(fd)
     pass_fds = () if fd is None else (fd,)
-    args = (
-        "ffprobe",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-threads",
-        "0",
-        "-show_error",
-        "-show_format",
-        "-show_streams",
-        "-show_chapters",
-        "-print_format",
-        "json",
-        *tls_verify_args(source, verify_ssl),
-        *user_agent_args(source),
-        "-i",
-        source,
-    )
+    args = _get_ffprobe_args(source, verify_ssl)
     try:
         res = subprocess.check_output(  # noqa: S603
             args,
@@ -821,39 +854,10 @@ def parse_tags(
             pass_fds=pass_fds,
             timeout=FFPROBE_TIMEOUT,
         )
-        data = json.loads(res)
-        if error := data.get("error"):
-            raise InvalidDataError(error["string"])  # noqa: TRY301 - message rebuilt below
-        if not data.get("streams"):
-            msg = "Not an audio file"
-            raise InvalidDataError(msg)  # noqa: TRY301 - message rebuilt below
-        if fd is not None:
-            # ffprobe names the descriptor path, which the tags fall back to for a title
-            data["format"]["filename"] = input_file
-        tags = AudioTags.parse(data)
+        tags = _parse_tags_output(res, input_file, source, file_size, fd)
         del res
-        del data
-        if not tags.duration and file_size and tags.bit_rate:
-            # estimate duration from filesize/bitrate
-            tags.duration = int((file_size * 8) / tags.bit_rate)
-        if not tags.duration and tags.raw.get("format", {}).get("duration"):
-            tags.duration = float(tags.raw["format"]["duration"])
-
         if not tags.duration and require_duration:
             tags.duration = get_file_duration(source, pass_fds, verify_ssl)
-
-        # we parse all (basic) tags for all file formats using ffmpeg
-        # but we also try to extract some extra tags for local files using mutagen
-        if not input_file.startswith("http") and Path(source).is_file():
-            extra_tags = parse_tags_mutagen(input_file, fd)
-            if extra_tags:
-                tags.tags.update(extra_tags)
-            # APEv2 cover art is not exposed as video streams by FFmpeg
-            # For APEv2-only formats (wv, ape, mpc, tak, ofr), assume they might have cover art
-            # We avoid calling mutagen here to prevent double file reads (blocking I/O)
-            # The actual extraction happens later in get_apev2_image() if needed
-            if not tags.has_cover_image and _format_uses_apev2(tags.format):
-                tags.has_cover_image = True
         return tags
     except subprocess.CalledProcessError as err:
         error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
@@ -862,13 +866,6 @@ def parse_tags(
         raise InvalidDataError(
             f"Unable to retrieve info for {input_file} (no result within {FFPROBE_TIMEOUT} seconds)"
         ) from err
-    except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-        try:
-            msg = f"Unable to retrieve info for {input_file}: {err!s}"
-            msg.encode("utf-8")
-        except UnicodeEncodeError:
-            msg = f"Unable to retrieve info for a file with a non-UTF-8 filename: {input_file!r}"
-        raise InvalidDataError(msg) from err
     finally:
         if fd is not None:
             os.close(fd)
@@ -886,19 +883,7 @@ def get_file_duration(
     :param pass_fds: Descriptors ffmpeg needs to open input_file.
     :param verify_ssl: Whether the certificate of an https source must be verified.
     """
-    args = (
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "info",
-        *tls_verify_args(input_file, verify_ssl),
-        *user_agent_args(input_file),
-        "-i",
-        input_file,
-        "-f",
-        "null",
-        "-",
-    )
+    args = _get_duration_args(input_file, verify_ssl)
     try:
         res = subprocess.check_output(  # noqa: S603
             args,
@@ -906,17 +891,114 @@ def get_file_duration(
             env=get_subprocess_env(),
             pass_fds=pass_fds,
             timeout=FFMPEG_DURATION_TIMEOUT,
-        ).decode()
-        # extract duration from ffmpeg output
-        duration_str = res.split("time=")[-1].split(" ")[0].strip()
-        duration_parts = duration_str.split(":")
-        duration = 0.0
-        for part in duration_parts:
-            duration = duration * 60 + float(part)
-        return duration
+        )
+        return _parse_duration_output(res)
     except Exception as err:
         error_msg = f"Unable to retrieve duration for {input_file}"
         raise InvalidDataError(error_msg) from err
+
+
+def _get_ffprobe_args(source: str, verify_ssl: bool) -> list[str]:
+    """Return the command for probing a media source."""
+    return [
+        "ffprobe",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-threads",
+        "0",
+        "-show_error",
+        "-show_format",
+        "-show_streams",
+        "-show_chapters",
+        "-print_format",
+        "json",
+        *tls_verify_args(source, verify_ssl),
+        *user_agent_args(source),
+        *(
+            ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
+            if source.startswith("http")
+            else []
+        ),
+        "-i",
+        source,
+    ]
+
+
+def _get_duration_args(input_file: str, verify_ssl: bool) -> list[str]:
+    """Return the command for decoding a source to determine its duration."""
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        *tls_verify_args(input_file, verify_ssl),
+        *user_agent_args(input_file),
+        *(
+            ["-rw_timeout", str(NETWORK_READ_TIMEOUT * 1_000_000)]
+            if input_file.startswith("http")
+            else []
+        ),
+        "-i",
+        input_file,
+        "-f",
+        "null",
+        "-",
+    ]
+
+
+def _parse_duration_output(output: bytes) -> float:
+    """Return the duration reported by a full ffmpeg decode."""
+    # extract duration from ffmpeg output
+    duration_str = output.decode().split("time=")[-1].split(" ")[0].strip()
+    duration_parts = duration_str.split(":")
+    duration = 0.0
+    for part in duration_parts:
+        duration = duration * 60 + float(part)
+    return duration
+
+
+def _parse_tags_output(
+    res: bytes, input_file: str, source: str, file_size: int | None, fd: int | None
+) -> AudioTags:
+    """Return tags from ffprobe output and any additional local metadata."""
+    try:
+        data = json.loads(res)
+        if error := data.get("error"):
+            raise InvalidDataError(error["string"])  # noqa: TRY301 - message rebuilt below
+        if not data.get("streams"):
+            msg = "Not an audio file"
+            raise InvalidDataError(msg)  # noqa: TRY301 - message rebuilt below
+        if fd is not None:
+            # ffprobe names the descriptor path, which the tags fall back to for a title
+            data["format"]["filename"] = input_file
+        tags = AudioTags.parse(data)
+        if not tags.duration and file_size and tags.bit_rate:
+            # estimate duration from filesize/bitrate
+            tags.duration = int((file_size * 8) / tags.bit_rate)
+        if not tags.duration and tags.raw.get("format", {}).get("duration"):
+            tags.duration = float(tags.raw["format"]["duration"])
+
+        # we parse all (basic) tags for all file formats using ffmpeg
+        # but we also try to extract some extra tags for local files using mutagen
+        if not input_file.startswith("http") and Path(source).is_file():
+            extra_tags = parse_tags_mutagen(input_file, fd)
+            if extra_tags:
+                tags.tags.update(extra_tags)
+            # APEv2 cover art is not exposed as video streams by FFmpeg
+            # For APEv2-only formats (wv, ape, mpc, tak, ofr), assume they might have cover art
+            # We avoid calling mutagen here to prevent double file reads (blocking I/O)
+            # The actual extraction happens later in get_apev2_image() if needed
+            if not tags.has_cover_image and _format_uses_apev2(tags.format):
+                tags.has_cover_image = True
+        return tags
+    except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
+        try:
+            msg = f"Unable to retrieve info for {input_file}: {err!s}"
+            msg.encode("utf-8")
+        except UnicodeEncodeError:
+            msg = f"Unable to retrieve info for a file with a non-UTF-8 filename: {input_file!r}"
+        raise InvalidDataError(msg) from err
 
 
 def _get_ffprobe_error(err: subprocess.CalledProcessError) -> str:
