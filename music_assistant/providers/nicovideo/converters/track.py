@@ -17,13 +17,19 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 from niconico.objects.video import EssentialVideo, Owner, VideoThumbnail
+from niconico.objects.video.watch import WatchLazyChannelOwner, WatchLazyUserOwner
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
 from music_assistant.providers.nicovideo.helpers import create_audio_format
 
 if TYPE_CHECKING:
     from niconico.objects.nvapi import Activity
-    from niconico.objects.video.watch import WatchData, WatchVideo, WatchVideoThumbnail
+    from niconico.objects.video.watch import (
+        WatchData,
+        WatchLazyData,
+        WatchVideo,
+        WatchVideoThumbnail,
+    )
 
 
 class NicovideoTrackConverter(NicovideoConverterBase):
@@ -126,12 +132,20 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             ),
         )
 
-    def convert_by_watch_data(self, watch_data: WatchData) -> Track | None:
-        """Convert a WatchData object into a Track."""
+    def convert_by_watch_data(
+        self, watch_data: WatchData, watch_lazy_data: WatchLazyData | None = None
+    ) -> Track | None:
+        """
+        Convert a WatchData object into a Track.
+
+        :param watch_data: Watch data of the video.
+        :param watch_lazy_data: Lazily loaded owner and series data of the video.
+            Without it the track has no artist and no album.
+        """
         video = watch_data.video
 
-        # Skip deleted, private, or muted videos
-        if video.is_deleted or video.is_private:
+        # Skip deleted or private videos
+        if video.permission.is_deleted or video.permission.is_private:
             return None
 
         # Calculate popularity using standard formula
@@ -140,34 +154,14 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             like_count=video.count.like,
         )
 
-        # Create owner object for artist conversion based on channel vs user video
-        if watch_data.channel:
-            # Channel video case
-            owner = Owner(
-                ownerType="channel",
-                type="channel",
-                visibility="visible",
-                id=watch_data.channel.id_,
-                name=watch_data.channel.name,
-                iconUrl=watch_data.channel.thumbnail.url if watch_data.channel.thumbnail else None,
-            )
-        else:
-            # User video case
-            owner = Owner(
-                ownerType="user",
-                type="user",
-                visibility="visible",
-                id=str(watch_data.owner.id_) if watch_data.owner else None,
-                name=watch_data.owner.nickname if watch_data.owner else None,
-                iconUrl=watch_data.owner.icon_url if watch_data.owner else None,
-            )
+        owner = self._create_owner_from_watch_lazy_data(watch_lazy_data)
 
         # Create audio format from watch data
         audio_format = self._create_audio_format_from_watch_data(watch_data)
 
         # Build artists using artist converter (avoid adding if owner id is missing)
         artists_list: UniqueList[Artist | ItemMapping] = UniqueList()
-        if owner.id_ is not None:
+        if owner is not None and owner.id_ is not None:
             artist_obj = self.converter_manager.artist.convert_by_owner_or_user(owner)
             artists_list.append(artist_obj)
 
@@ -179,7 +173,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             duration=video.duration,
             artists=artists_list,
             # Videos that cannot be played will have a duration of 0.
-            is_playable=video.duration > 0 and not video.is_authentication_required,
+            is_playable=video.duration > 0 and not video.permission.is_authentication_required,
             metadata=self._create_track_metadata_from_watch_video(
                 video=video,
                 watch_data=watch_data,
@@ -194,33 +188,53 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         )
 
         # Add album information if series data is available (prefer full Album over ItemMapping)
-        if watch_data.series is not None:
+        if watch_lazy_data is not None and watch_lazy_data.series is not None:
             track.album = self.converter_manager.album.convert_by_series(
-                watch_data.series,
+                watch_lazy_data.series,
                 artists_list=artists_list,
             )
 
         return track
 
+    def _create_owner_from_watch_lazy_data(
+        self, watch_lazy_data: WatchLazyData | None
+    ) -> Owner | None:
+        """Create an Owner for artist conversion from the lazy watch data owner, if visible."""
+        if watch_lazy_data is None:
+            return None
+        lazy_owner = watch_lazy_data.owner
+        if isinstance(lazy_owner, WatchLazyChannelOwner):
+            return Owner(
+                ownerType="channel",
+                type="channel",
+                visibility="visible",
+                id=lazy_owner.id_,
+                name=lazy_owner.name,
+                iconUrl=lazy_owner.thumbnail.url,
+            )
+        if isinstance(lazy_owner, WatchLazyUserOwner):
+            return Owner(
+                ownerType="user",
+                type="user",
+                visibility="visible",
+                id=str(lazy_owner.id_),
+                name=lazy_owner.nickname,
+                iconUrl=lazy_owner.icon.url,
+            )
+        # Hidden or missing owner
+        return None
+
     def _create_audio_format_from_watch_data(self, watch_data: WatchData) -> AudioFormat | None:
         """
-        Create AudioFormat from WatchData audio information.
+        Create AudioFormat from WatchData audio information, or None if no audio is available.
 
-        Args:
-            watch_data: WatchData object containing media information.
-
-        Returns:
-            AudioFormat object if audio information is available, None otherwise.
+        :param watch_data: WatchData object containing media information.
         """
-        if (
-            not watch_data.media
-            or not watch_data.media.domand
-            or not watch_data.media.domand.audios
-        ):
+        if not watch_data.media.contents.audios:
             return None
 
         # Use the first available audio stream (typically the highest quality)
-        audio = watch_data.media.domand.audios[0]
+        audio = watch_data.media.contents.audios[0]
 
         if not audio.is_available:
             return None
@@ -261,14 +275,8 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             metadata.popularity = popularity
 
         # Add tag information as genres
-        if watch_data.tag and watch_data.tag.items:
-            # Extract tag names from tag items and create genres set
-            tag_names: list[str] = []
-            for tag_item in watch_data.tag.items:
-                tag_names.append(tag_item.name)
-
-            if tag_names:
-                metadata.genres = set(tag_names)
+        if tag_names := [tag_item.name for tag_item in watch_data.tags.items]:
+            metadata.genres = set(tag_names)
 
         # Add thumbnail images
         if video.thumbnail:
@@ -301,12 +309,12 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             )
 
         # Add main thumbnail URLs
-        if thumbnail.url:
-            _add_thumbnail_image(thumbnail.url)
-        if thumbnail.middle_url:
-            _add_thumbnail_image(thumbnail.middle_url)
-        if thumbnail.large_url:
-            _add_thumbnail_image(thumbnail.large_url)
+        if thumbnail.normal:
+            _add_thumbnail_image(thumbnail.normal)
+        if thumbnail.middle:
+            _add_thumbnail_image(thumbnail.middle)
+        if thumbnail.large:
+            _add_thumbnail_image(thumbnail.large)
 
         return images
 
@@ -413,15 +421,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         return images
 
     def is_video_available(self, video: EssentialVideo | WatchVideo) -> bool:
-        """
-        Check if a video is available for playback.
-
-        Args:
-            video: Either EssentialVideo or WatchVideo object.
-
-        Returns:
-            True if the video is available for playback, False otherwise.
-        """
+        """Check if a video is available for playback."""
         # Common check: duration must be greater than 0
         if video.duration <= 0:
             return False
@@ -430,4 +430,4 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         if isinstance(video, EssentialVideo):
             return not video.is_payment_required and not video.is_muted
         # WatchVideo
-        return not video.is_deleted
+        return not video.permission.is_deleted

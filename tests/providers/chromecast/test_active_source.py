@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerType
-from music_assistant_models.player import PlayerSource
+from music_assistant_models.player import PlayerMedia, PlayerSource
 
 from music_assistant.providers.chromecast.constants import APP_MEDIA_RECEIVER
 from music_assistant.providers.chromecast.player import ChromecastPlayer
@@ -80,3 +80,125 @@ def test_foreign_cast_app_takes_over_the_ma_queue() -> None:
     player.update_state(signal_event=False)
 
     assert player.state.active_source == "bbc_sounds"
+
+
+def test_a_known_app_in_its_own_spelling_gets_controls() -> None:
+    """An app that names itself in its own spelling ("TIDAL") is offered its controls."""
+    fake = _fake_media_receiver_player()
+    fake.cc = MagicMock(app_id="tidal_app", app_display_name="TIDAL")
+    status = _media_status(playing=True, content_id="tidal://track/1")
+    # no media session, so only recognising the app can offer the controls
+    status.media_session_id = None
+
+    ChromecastPlayer._handle_media_status(fake, status)
+
+    source = next(source for source in fake._attr_source_list if source.id == "tidal")
+    assert source.name == "TIDAL"
+    assert source.can_play_pause
+    assert source.can_next_previous
+
+
+def test_an_unknown_app_gets_the_controls_it_reports() -> None:
+    """An app outside the known ones is offered the controls its media status announces."""
+    fake = _fake_media_receiver_player()
+    fake.cc = MagicMock(app_id="tunein_app", app_display_name="TuneIn Free")
+    status = _media_status(playing=True, content_id="https://radio.example.com/live.mp3")
+    status.media_session_id = 1
+    status.supports_pause = True
+    status.supports_seek = False
+    # next and previous share one control, so it needs both
+    status.supports_queue_next = True
+    status.supports_queue_prev = False
+
+    ChromecastPlayer._handle_media_status(fake, status)
+
+    source = next(source for source in fake._attr_source_list if source.id == "tunein_free")
+    assert source.can_play_pause
+    assert not source.can_seek
+    assert not source.can_next_previous
+
+
+def test_an_unknown_app_without_media_gets_no_controls() -> None:
+    """An app that has not loaded media yet is offered no controls, until it reports them."""
+    fake = _fake_media_receiver_player()
+    fake.cc = MagicMock(app_id="tunein_app", app_display_name="TuneIn Free")
+    status = _media_status(playing=False, content_id="")
+    status.media_session_id = None
+
+    ChromecastPlayer._handle_media_status(fake, status)
+
+    source = next(source for source in fake._attr_source_list if source.id == "tunein_free")
+    assert not source.can_play_pause
+
+    status = _media_status(playing=True, content_id="https://radio.example.com/live.mp3")
+    status.media_session_id = 1
+    status.supports_pause = True
+    status.supports_seek = False
+    status.supports_queue_next = False
+    ChromecastPlayer._handle_media_status(fake, status)
+
+    source = next(source for source in fake._attr_source_list if source.id == "tunein_free")
+    assert source.can_play_pause
+
+
+def _fake_playing_app() -> Any:
+    """Build a Cast player on which another party's app plays."""
+    fake = _fake_player()
+    fake.cc = MagicMock(app_id="some_app", app_display_name="TuneIn")
+    fake._app_track_change_task_id = "cast_app_track_change_test"
+    fake._attr_active_source = "tunein"
+    fake._attr_source_list = []
+    fake._attr_current_media = PlayerMedia(uri="https://radio.example.com/one", title="One")
+    return fake
+
+
+def test_an_app_moving_to_another_track_keeps_playing() -> None:
+    """The moment an app reports nothing playing between tracks does not end its playback."""
+    fake = _fake_playing_app()
+
+    ChromecastPlayer._handle_media_status(fake, _media_status(playing=False))
+
+    assert fake._attr_playback_state == PlaybackState.PLAYING
+    assert fake._attr_current_media.title == "One"
+    fake.mass.call_later.assert_called_once()
+
+    ChromecastPlayer._handle_media_status(
+        fake, _media_status(playing=True, content_id="https://radio.example.com/two")
+    )
+
+    assert fake._attr_playback_state == PlaybackState.PLAYING
+    fake.mass.cancel_timer.assert_called_with("cast_app_track_change_test")
+    assert fake._app_track_change_ends is None
+
+
+def test_an_app_that_does_not_reach_a_next_track_ends() -> None:
+    """Once the time for a track change has passed, the app has stopped playing."""
+    fake = _fake_playing_app()
+    idle = _media_status(playing=False)
+    fake.cc.media_controller.status = idle
+
+    ChromecastPlayer._handle_media_status(fake, idle)
+    ChromecastPlayer._end_app_track_change(fake)
+
+    assert fake._attr_playback_state == PlaybackState.IDLE
+
+
+def test_an_error_of_an_app_is_no_track_change() -> None:
+    """A media error ends the playback at once."""
+    fake = _fake_playing_app()
+    status = _media_status(playing=False)
+    status.idle_reason = "ERROR"
+
+    ChromecastPlayer._handle_media_status(fake, status)
+
+    assert fake._attr_playback_state == PlaybackState.IDLE
+
+
+def test_an_app_that_was_quit_is_no_track_change() -> None:
+    """A stop quits the app, and the player goes idle without waiting for a next track."""
+    fake = _fake_playing_app()
+    fake.app_quit_sent = True
+
+    ChromecastPlayer._handle_media_status(fake, _media_status(playing=False))
+
+    assert fake._attr_playback_state == PlaybackState.IDLE

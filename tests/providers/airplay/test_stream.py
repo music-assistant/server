@@ -17,6 +17,7 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.constants import CONF_PASSWORD
 from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
@@ -26,7 +27,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
-    CONF_PASSWORD,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
     STREAMING_MODE_AP2_PTP,
@@ -113,6 +113,7 @@ def _make_player() -> MagicMock:
     prov.mass.streams.publish_ip = "192.168.1.99"
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
+    prov.mass.runtime_path = "/ma-runtime"
     player.provider = prov
     return player
 
@@ -409,6 +410,42 @@ async def test_cli_args_raop_only_device() -> None:
     assert "--cmdpipe" in args
     assert args[-1] == "192.168.1.50"
     assert "-" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_pass_advertised_metadata_capabilities() -> None:
+    """The receiver's advertised metadata capabilities are passed on as-is."""
+    player = _make_player()
+    player.protocol = StreamingProtocol.RAOP
+    player.raop_discovery_info.decoded_properties["md"] = "0,2"
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--md") == "0,2"
+
+
+@pytest.mark.asyncio
+async def test_cli_args_raop_without_md_disables_metadata() -> None:
+    """A legacy RAOP receiver that advertises no md gets no metadata pushed."""
+    player = _make_player()
+    player.airplay_discovery_info = None
+    player.protocol = StreamingProtocol.RAOP
+    del player.raop_discovery_info.decoded_properties["md"]
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--md") == ""
+
+
+@pytest.mark.asyncio
+async def test_cli_args_airplay2_without_md_keeps_binary_default() -> None:
+    """AirPlay 2 flows keep the binary's metadata default when md is not advertised."""
+    player = _make_player()
+    del player.raop_discovery_info.decoded_properties["md"]
+
+    args = await _build_args(player)
+
+    assert "--md" not in args
 
 
 @pytest.mark.asyncio
@@ -737,6 +774,12 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
     first_stream = AirPlayStream(player)
     second_stream = AirPlayStream(player)
     assert first_stream.commands_pipe.path != second_stream.commands_pipe.path
+
+
+def test_command_pipe_lives_in_the_runtime_dir() -> None:
+    """The command pipe is created in the server's runtime dir."""
+    stream = AirPlayStream(_make_player())
+    assert Path(stream.commands_pipe.path).parent == Path("/ma-runtime")
 
 
 @pytest.mark.asyncio

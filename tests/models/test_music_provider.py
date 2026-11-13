@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.models.music_provider import (
     DEFAULT_MAX_CONCURRENT_STREAMS,
     MusicProvider,
+    ProviderStreamHeldError,
     ProviderStreamLimitError,
 )
 
@@ -102,6 +104,29 @@ async def test_stream_slot_is_scoped_per_provider_instance() -> None:
     assert first.has_available_stream_slot
 
 
+def test_a_held_stream_slot_names_the_player_and_stays_a_capacity_error() -> None:
+    """The refusal tells the user and the client which player holds the slot."""
+    provider = _make_provider(_SingleStreamProvider)
+    holder = PlayerQueue(
+        queue_id="kitchen", active=True, display_name="Kitchen", available=True, items=1
+    )
+
+    err = ProviderStreamHeldError(provider, holder)
+
+    assert isinstance(err, ProviderStreamLimitError)
+    assert err.error_code == 29
+    assert str(err) == "Test Provider is already playing on Kitchen"
+    assert err.translation_key == "provider_stream_held"
+    assert err.translation_args == ["Test Provider", "Kitchen"]
+    assert err.data == {
+        "queue_id": "kitchen",
+        "player_name": "Kitchen",
+        "provider_instance": "test_provider--1",
+    }
+    assert err.provider_instance == "test_provider--1"
+    assert err.limit == 1
+
+
 async def test_stream_slot_is_granted_once_released() -> None:
     """A waiter within its timeout is served as soon as the active source releases."""
     provider = _make_provider(_SingleStreamProvider)
@@ -135,3 +160,51 @@ async def test_cancelled_stream_slot_wait_does_not_consume_capacity() -> None:
         assert not provider.has_available_stream_slot
 
     assert provider.has_available_stream_slot
+
+
+def _listing(*positions: int) -> list[MagicMock]:
+    """Return a mocked listing page whose items carry the given playlist positions."""
+    return [MagicMock(position=position) for position in positions]
+
+
+async def test_move_playlist_tracks_replays_single_moves() -> None:
+    """Without an override, a block move becomes single moves over the counted playlist."""
+    provider = _make_provider(_StreamingProvider)
+    pages = {0: _listing(1, 2, 3), 1: _listing(4, 5)}
+    provider.get_playlist_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _id, page=0: pages.get(page, [])
+    )
+    provider.move_playlist_track = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.move_playlist_tracks("playlist_1", [4, 5], 1)
+
+    assert [call.args for call in provider.move_playlist_track.await_args_list] == [
+        ("playlist_1", 4, 1),
+        ("playlist_1", 5, 2),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("listed", "positions", "to_position", "expected"),
+    [
+        pytest.param((1, 3), [3], 1, [("playlist_1", 3, 1)], id="skipped-middle-entry"),
+        pytest.param((1, 3), [1], None, [("playlist_1", 1, 3)], id="to-end-past-skipped"),
+        pytest.param((1, 2), [1], None, [("playlist_1", 1, 2)], id="to-end-of-listing"),
+    ],
+)
+async def test_move_playlist_tracks_counts_entries_the_listing_leaves_out(
+    listed: tuple[int, ...],
+    positions: list[int],
+    to_position: int | None,
+    expected: list[tuple[str, int, int]],
+) -> None:
+    """Positions past the listed count are valid, and None moves the tracks to the end."""
+    provider = _make_provider(_StreamingProvider)
+    provider.get_playlist_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda _id, page=0: _listing(*listed) if page == 0 else []
+    )
+    provider.move_playlist_track = AsyncMock()  # type: ignore[method-assign]
+
+    await provider.move_playlist_tracks("playlist_1", positions, to_position)
+
+    assert [call.args for call in provider.move_playlist_track.await_args_list] == expected

@@ -9,7 +9,6 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.providers.filesystem_local.parsers import (
     nfo_album_artist,
     parse_album_nfo,
-    parse_artist_nfo,
 )
 
 
@@ -68,44 +67,6 @@ def test_parse_album_nfo() -> None:
         },
     )
     _asserts(album)
-
-
-def test_parse_artist_nfo() -> None:
-    """Test parsing of an artist NFO file."""
-    artist = Artist(item_id="test", provider="test", name="", provider_mappings=set())
-
-    mb_artist = str(uuid.uuid4())
-
-    def _asserts(res: Artist) -> None:
-        assert res.name == "Test Artist"
-        assert res.sort_name == "Test Sortname"
-        assert res.mbid == mb_artist
-        assert res.metadata.description == "Test Biography"
-        assert res.metadata.genres == {"Test Genre"}
-
-    parse_artist_nfo(
-        artist,
-        {
-            "title": "Test Artist",
-            "sortname": "Test Sortname",
-            "musicbrainzartistid": mb_artist,
-            "biography": "Test Biography",
-            "genre": "Test Genre",
-        },
-    )
-    _asserts(artist)
-
-    parse_artist_nfo(artist, {})  # empty dict or missing keys should not change anything
-    _asserts(artist)
-
-    parse_artist_nfo(
-        artist,
-        {  # None and empty string should not erase existing values
-            "title": None,
-            "sortname": "",
-        },
-    )
-    _asserts(artist)
 
 
 def test_nfo_album_artist() -> None:

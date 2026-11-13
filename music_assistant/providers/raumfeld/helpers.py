@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
-from urllib.parse import unquote
+from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, quote, unquote, urlparse, urlsplit
 
 import aiohttp
 import defusedxml.ElementTree as DefusedET
+from async_upnp_client.search import async_search
+from music_assistant_models.enums import RepeatMode
 
 from music_assistant.helpers.util import try_parse_duration
 
-from .constants import PLAYER_ID_PREFIX, RENDERER_QUERY_TIMEOUT
+from .constants import HOST_CHECK_TIMEOUT, PLAYER_ID_PREFIX, RENDERER_QUERY_TIMEOUT
+
+if TYPE_CHECKING:
+    from async_upnp_client.utils import CaseInsensitiveDict
+
+# Only the Raumfeld host publishes this UPnP device, so searching for it finds the host and
+# none of the speakers.
+_HOST_SEARCH_TARGET = "urn:schemas-raumfeld-com:device:ConfigDevice:1"
+# how long (seconds) to listen for the host to answer the search
+_DISCOVERY_TIMEOUT = 3
 
 # DIDL-Lite / metadata XML namespaces used in UPnP TrackMetaData.
 _DC = "{http://purl.org/dc/elements/1.1/}"
@@ -141,7 +153,7 @@ def external_source(section: str | None) -> tuple[str, str]:
 
 def parse_last_change(last_change_xml: str | None) -> dict[str, str]:
     """
-    Parse an AVTransport ``LastChange`` event into ``{state variable: value}``.
+    Parse a renderer's ``LastChange`` event into ``{state variable: value}``.
 
     Malformed or empty XML yields an empty dict (never raises).
 
@@ -180,6 +192,48 @@ def parse_control_url(description_xml: str | None, service: str) -> str | None:
         if service in fields.get("serviceType", ""):
             return fields.get("controlURL") or None
     return None
+
+
+async def discover_hosts() -> list[str]:
+    """
+    Return the addresses of the Raumfeld hosts that answer a search of the network.
+
+    :raises OSError: When the network cannot be searched.
+    """
+    found: list[str] = []
+
+    async def on_response(headers: CaseInsensitiveDict) -> None:
+        # some devices (a Hue bridge, for one) answer every search, whatever it asks for
+        if headers.get("st") != _HOST_SEARCH_TARGET:
+            return
+        if (host := urlparse(headers.get("location") or "").hostname) and host not in found:
+            found.append(host)
+
+    await async_search(on_response, timeout=_DISCOVERY_TIMEOUT, search_target=_HOST_SEARCH_TARGET)
+    return found
+
+
+async def host_is_valid(session: aiohttp.ClientSession, host: str, port: int) -> bool:
+    """
+    Return whether a Raumfeld host answers ``getHostInfo`` at the given address.
+
+    :param session: The HTTP session to use.
+    :param host: Address of the Raumfeld host.
+    :param port: Port of the host's webservice.
+    """
+    try:
+        # the host answers with a redirect to a session path first, which aiohttp follows
+        async with session.get(
+            f"http://{host}:{port}/getHostInfo",
+            timeout=aiohttp.ClientTimeout(total=HOST_CHECK_TIMEOUT),
+        ) as response:
+            if response.status != 200:
+                return False
+            body = await response.text()
+        root = DefusedET.fromstring(body)
+    except aiohttp.ClientError, OSError, TimeoutError, DefusedET.ParseError:
+        return False
+    return bool((root.findtext("hostName") or "").strip())
 
 
 async def query_last_change(session: aiohttp.ClientSession, control_url: str) -> dict[str, str]:
@@ -284,3 +338,91 @@ def _parse_description_field(description_xml: str | None, field: str) -> str | N
         if element.tag.rsplit("}", 1)[-1] == field:
             return (element.text or "").strip() or None
     return None
+
+
+def parse_library_items(didl_xml: str | None) -> list[tuple[str, str, bool]]:
+    """
+    Parse a DIDL-Lite listing of the host's library into ``(object id, title, container)``.
+
+    Malformed or empty XML yields an empty list (never raises).
+
+    :param didl_xml: The DIDL-Lite XML returned by browsing the host's media server.
+    """
+    if not didl_xml or not didl_xml.strip():
+        return []
+    try:
+        root = DefusedET.fromstring(didl_xml)
+    except DefusedET.ParseError, ValueError:
+        return []
+    result: list[tuple[str, str, bool]] = []
+    for element in root:
+        kind = element.tag.rsplit("}", 1)[-1]
+        if kind not in ("item", "container") or not (object_id := element.get("id")):
+            continue
+        title = element.find(f"{_DC}title")
+        name = title.text if title is not None and title.text else object_id
+        result.append((object_id, name, kind == "container"))
+    return result
+
+
+def library_uri(media_server_udn: str, object_id: str, container: bool) -> str:
+    """
+    Return the transport URI that has the host play an item of its own library.
+
+    :param media_server_udn: The UDN of the host's media server.
+    :param object_id: The library object to play.
+    :param container: Whether the object is a container (an album, a playlist).
+    """
+    server = quote(media_server_udn, safe="")
+    service = quote("urn:upnp-org:serviceId:ContentDirectory", safe="")
+    if container:
+        return f"dlna-playcontainer://{server}?sid={service}&cid={quote(object_id, safe='')}&md=0"
+    return f"dlna-playsingle://{server}?sid={service}&iid={quote(object_id, safe='')}"
+
+
+def container_object_id(uri: str | None) -> str | None:
+    """
+    Return the library album or playlist a ``dlna-playcontainer://`` URI plays, or ``None``.
+
+    :param uri: The transport URI the zone has loaded.
+    """
+    if not uri or not uri.startswith("dlna-playcontainer://"):
+        return None
+    container_ids = parse_qs(urlsplit(uri).query).get("cid")
+    return container_ids[0] if container_ids else None
+
+
+def parse_play_mode(play_mode: str | None) -> tuple[bool | None, RepeatMode]:
+    """
+    Return the shuffle state and repeat mode a Raumfeld play mode stands for.
+
+    :param play_mode: The renderer's play mode, such as ``SHUFFLE`` or ``REPEAT_ALL``.
+    """
+    return _PLAY_MODES.get(play_mode or "", (None, RepeatMode.UNKNOWN))
+
+
+def play_mode_for(shuffle: bool, repeat: RepeatMode) -> str:
+    """
+    Return the Raumfeld play mode for a shuffle state and repeat mode.
+
+    The renderer has no mode that shuffles and repeats one track; repeating one wins.
+
+    :param shuffle: Whether to play shuffled.
+    :param repeat: The repeat mode.
+    """
+    if repeat == RepeatMode.ONE:
+        return "REPEAT_ONE"
+    if shuffle:
+        return "RANDOM" if repeat == RepeatMode.ALL else "SHUFFLE"
+    return "REPEAT_ALL" if repeat == RepeatMode.ALL else "NORMAL"
+
+
+# the play modes as the Raumfeld app sets and the renderers report them (measured):
+# RANDOM is shuffle and repeat all together
+_PLAY_MODES: dict[str, tuple[bool | None, RepeatMode]] = {
+    "NORMAL": (False, RepeatMode.OFF),
+    "SHUFFLE": (True, RepeatMode.OFF),
+    "REPEAT_ALL": (False, RepeatMode.ALL),
+    "RANDOM": (True, RepeatMode.ALL),
+    "REPEAT_ONE": (False, RepeatMode.ONE),
+}

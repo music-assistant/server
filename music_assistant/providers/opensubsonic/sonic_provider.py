@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientConnectorCertificateError, ClientConnectorSSLError, ClientResponseError
 from libopensonic import AsyncConnection as SonicConnection
 from libopensonic import Extensions as OpenSubsonicExtensions
 from libopensonic.errors import (
@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_PASSWORD,
@@ -52,6 +53,7 @@ from music_assistant.constants import (
     UNKNOWN_ARTIST,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.playlists import move_playlist_block
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
@@ -70,7 +72,7 @@ from .parsers import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Sequence
 
     from libopensonic.media import AlbumID3 as SonicAlbum
     from libopensonic.media import ArtistWithAlbumsID3 as SonicArtist
@@ -133,12 +135,6 @@ class OpenSonicProvider(MusicProvider):
                 default_value=True,
             ),
             ConfigEntry(
-                key=CONF_ENABLE_LEGACY_AUTH,
-                type=ConfigEntryType.BOOLEAN,
-                required=True,
-                default_value=False,
-            ),
-            ConfigEntry(
                 key=CONF_RECO_FAVES,
                 type=ConfigEntryType.BOOLEAN,
                 required=True,
@@ -180,7 +176,11 @@ class OpenSonicProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
         port = self.get_setup_value(CONF_PORT)
-        port = int(str(port)) if port is not None else 443
+        if port is not None:
+            port = int(str(port))
+        else:
+            # the scheme's default port (80/443), 443 when the url carries no scheme
+            port = URL(str(self.get_setup_value(CONF_BASE_URL))).port or 443
         path = self.get_setup_value(CONF_PATH)
 
         if path is None:
@@ -204,7 +204,7 @@ class OpenSonicProvider(MusicProvider):
                 str(self.get_setup_value(CONF_BASE_URL)),
                 username=str(username),
                 password=str(password),
-                legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
+                legacy_auth=bool(self.get_setup_value(CONF_ENABLE_LEGACY_AUTH)),
                 port=port,
                 server_path=str(path),
                 use_get=True,
@@ -219,20 +219,7 @@ class OpenSonicProvider(MusicProvider):
                 translation_args=[self.get_setup_value(CONF_BASE_URL)],
             )
 
-        try:
-            success = await self.conn.ping()
-            if not success:
-                raise CredentialError  # noqa: TRY301 - converted to LoginFailed below
-        except (AuthError, CredentialError) as e:
-            msg = (
-                f"Failed to connect to {self.get_setup_value(CONF_BASE_URL)}, check your settings."
-            )
-            raise LoginFailed(
-                msg,
-                translation_key="connect_failed",
-                translation_owner=self.translation_owner,
-                translation_args=[self.get_setup_value(CONF_BASE_URL)],
-            ) from e
+        await self._verify_connection()
 
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
@@ -816,6 +803,37 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Failed to remove songs from {prov_playlist_id}, check your permissions."
             raise ProviderPermissionDenied(msg) from ex
 
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of the playlist to another position (both 1-based)."""
+        await self.move_playlist_tracks(prov_playlist_id, [from_position], to_position)
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of the playlist as one block to another position (all 1-based).
+
+        Note that the configured user must own the playlist to edit this way.
+        """
+        # the Subsonic API has no move, so the whole order is written back in one call that
+        # replaces the songs of the playlist
+        try:
+            sonic_playlist: SonicPlaylist = await self.conn.get_playlist(prov_playlist_id)
+        except (ParameterError, DataNotFoundError) as e:
+            msg = f"Playlist {prov_playlist_id} not found"
+            raise MediaNotFoundError(msg) from e
+        song_ids = [song.id for song in sonic_playlist.entry or []]
+        if to_position is None:
+            to_position = len(song_ids) - len(positions) + 1
+        song_ids = move_playlist_block(song_ids, positions, to_position)
+        try:
+            await self.conn.create_playlist(playlist_id=prov_playlist_id, song_ids=song_ids)
+        except SonicError as ex:
+            msg = f"Failed to reorder songs in {prov_playlist_id}, check your permissions."
+            raise ProviderPermissionDenied(msg) from ex
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get the details needed to process a specified track."""
         item: SonicItem | SonicEpisode
@@ -962,7 +980,7 @@ class OpenSonicProvider(MusicProvider):
                 return (
                     False,
                     mark.position,
-                    datetime.fromisoformat(mark.created) if mark.created else None,
+                    datetime.fromisoformat(mark.changed) if mark.changed else None,
                 )
         # If we get here, there is no bookmark
         return (False, 0, None)
@@ -1116,3 +1134,35 @@ class OpenSonicProvider(MusicProvider):
         for sonic_album in albums:
             recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         return recent
+
+    async def _verify_connection(self) -> None:
+        """Ping the server, raising LoginFailed with a translated reason when that fails."""
+        base_url = self.get_setup_value(CONF_BASE_URL)
+        try:
+            success = await self.conn.ping()
+            if not success:
+                raise CredentialError  # noqa: TRY301 - converted to LoginFailed below
+        except (AuthError, CredentialError) as e:
+            msg = f"Failed to connect to {base_url}, check your settings."
+            translation_key = "connect_failed"
+            cause: Exception = e
+        except ClientConnectorCertificateError as e:
+            msg = f"The certificate of {base_url} is not trusted."
+            translation_key = "certificate_not_trusted"
+            cause = e
+        except ClientConnectorSSLError as e:
+            # also raised when an https url points at a server that only speaks plain http
+            msg = (
+                f"Could not open a secure connection to {base_url}. "
+                "If the server only serves plain http, use an http:// address."
+            )
+            translation_key = "secure_connection_failed"
+            cause = e
+        else:
+            return
+        raise LoginFailed(
+            msg,
+            translation_key=translation_key,
+            translation_owner=self.translation_owner,
+            translation_args=[base_url],
+        ) from cause

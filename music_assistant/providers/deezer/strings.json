@@ -2,11 +2,24 @@
   "config_entries": {
     "arl_token": {
       "label": "ARL token",
-      "description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved. See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+      "description": "Your Deezer ARL cookie token. When changing these settings later, leave it empty to keep the token you already saved."
     },
     "family_profile": {
       "label": "Deezer profile",
       "description": "The profile of your Deezer Family whose library this source uses."
+    },
+    "quality": {
+      "label": "Stream quality",
+      "description": "The highest quality to request from Deezer. A lower one is used when a track has no file in this quality or your Deezer plan does not include it.",
+      "options": {
+        "FLAC_24": "Hi-Res (FLAC 24-bit)",
+        "FLAC": "CD quality (FLAC)",
+        "MP3_320": "MP3 320 kbps"
+      }
+    },
+    "sync_queue": {
+      "label": "Continue in the Deezer app",
+      "description": "Save what plays from Deezer in Music Assistant as your Deezer queue, so the Deezer app continues it the next time you open it. Uses an unofficial Deezer interface."
     }
   },
   "setup_flow": {
@@ -114,7 +127,7 @@
     }
   },
   "manifest": {
-    "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio."
+    "description": "Stream Deezer’s full music catalogue in FLAC audio, up to 24-bit hi-res."
   },
   "errors": {
     "no_subscription": "This Deezer account has no subscription that Music Assistant can stream from. Deezer Free accounts are not supported; check that the subscription on this specific account is still active.",

@@ -16,6 +16,7 @@ CONF_PORT = "port"
 DEFAULT_SLIMPROTO_PORT = 3483
 CONF_DISPLAY = "display"
 CONF_VISUALIZATION = "visualization"
+CONF_STORED_VOLUME = "stored_volume"
 
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_VISUALIZATION = SlimVisualisationType.NONE
@@ -46,7 +47,7 @@ CONF_ENTRY_DISPLAY = ConfigEntry(
 CONF_ENTRY_VISUALIZATION = ConfigEntry(
     key=CONF_VISUALIZATION,
     type=ConfigEntryType.STRING,
-    default_value=DEFAULT_VISUALIZATION,
+    default_value=DEFAULT_VISUALIZATION.value,
     options=[
         ConfigValueOption(x.value, title=x.name.replace("_", " ").title())
         for x in SlimVisualisationType

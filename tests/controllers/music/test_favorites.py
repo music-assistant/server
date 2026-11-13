@@ -152,8 +152,9 @@ async def test_unset_favorite_keeps_a_row_and_announces_it(
     rows = {row["user_id"]: row["favorite"] for row in await _favorite_rows(mass, track.item_id)}
     # the row stays, so a provider sync can not re-like what the user just removed
     assert rows == {USER_A: None, USER_B: 1}
-    assert signal_event.call_count == 1
-    event_type, object_id, payload = signal_event.call_args.args
+    calls = [c for c in signal_event.call_args_list if c.args[0] != EventType.TASKS_UPDATED]
+    assert len(calls) == 1
+    event_type, object_id, payload = calls[0].args
     assert event_type == EventType.FAVORITE_UPDATED
     assert object_id == track.uri
     assert payload == FavoriteUpdate(

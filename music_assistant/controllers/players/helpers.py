@@ -16,9 +16,10 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     MusicAssistantError,
     PlayerCommandFailed,
+    PlayerUnavailableError,
 )
 
-from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.players.constants import PlayerLockPurpose, SwitchedOffAction
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
@@ -56,6 +57,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: None = None,
     *,
     lock: PlayerLockPurpose | None = None,
+    switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    to_playback_owner: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -66,6 +69,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
     lock: PlayerLockPurpose | None = None,
+    switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    to_playback_owner: bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -84,6 +89,13 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     :param lock: PlayerLockPurpose to serialize commands in the same category per
         player. Commands with the same lock purpose on the same player will not run
         concurrently. None (default) means no locking.
+    :param switched_off: What the command does with a player that is switched off at its
+        external power control (see SwitchedOffAction): refused by default, ignored when
+        the command has nothing to act on (volume), ignored after calling off a power on
+        under way (stop, pause), powered on first (before any lock is taken) for commands
+        that start playback, or run as is for commands that handle it themselves.
+    :param to_playback_owner: The command acts on the owner of the player's playback (its
+        sync leader or group player), so the user needs access to that owner as well.
     """  # noqa: D401
 
     def decorator(
@@ -123,6 +135,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                     f"{current_user.username} does not have access to player {player.display_name}"
                 )
                 raise InsufficientPermissions(msg)
+            if to_playback_owner and (owner := self._resolve_playback_owner(player)) is not player:
+                self.check_player_access(owner.player_id)
 
             self.logger.debug(
                 "Handling command %s for player %s (%s)",
@@ -131,7 +145,26 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
+            is_switched_off = player.offline_by_power_control
+            if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
+                msg = f"Player {player.display_name} is switched off"
+                raise PlayerUnavailableError(msg)
+            if is_switched_off and switched_off in (
+                SwitchedOffAction.IGNORE,
+                SwitchedOffAction.CANCEL_POWER_ON,
+            ):
+                if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
+                    self._cancel_power_on(player)
+                self.logger.debug(
+                    "Ignoring command %s for player %s: it is switched off",
+                    fn.__name__,
+                    player.display_name,
+                )
+                return
+
             try:
+                if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
+                    await self._power_on_switched_off_player(player.player_id)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)
@@ -147,7 +180,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
 
         return wrapper
 
-    # Support both @handle_player_command and @handle_player_command(lock=...)
+    # Support both @handle_player_command and @handle_player_command(lock=..., ...)
     if func is not None:
         return decorator(func)
     return decorator

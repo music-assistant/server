@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.streams.controller import AudioSourceStream
     from music_assistant.helpers.dsp import ComplexFilter
 
     from .player import SendspinPlayer
@@ -59,9 +60,10 @@ _DEFAULT_SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
 # cannot grow after playback begins and their send-ahead stays at the min_buffer_ms
 # floor. Buffered types (tracks, podcasts, etc.) race ahead and fill the queue
 # naturally, so their send-ahead may extend to a larger required_lead_time_ms without
-# lasting cost. Media type alone does not settle it: a track can come from a source
-# that also feeds just-in-time, which is what StreamDetails.is_realtime marks - see
-# _is_live_source().
+# lasting cost. A track from a source that feeds just-in-time (StreamDetails.is_realtime)
+# is buffered too. Its longer lead lasts the whole stream but only delays the start,
+# while the live send-ahead makes a member that needs a long startup lead drop the
+# start of the track.
 _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
     {
         MediaType.RADIO,
@@ -85,6 +87,8 @@ _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 _JOIN_PROMOTE_TOLERANCE_US = 50_000
 # Abort join catchup if promotion hasn't completed within this.
 _JOIN_PROMOTION_TIMEOUT_S = 15.0
+# Anchor movement that publishes elapsed time and refreshes beats right away.
+ANCHOR_REBASE_SIGNIFICANT_US = 500_000
 # Retain committed history this far behind real-time for late-join backfill.
 # This pre-history also warms up ffmpeg's internal filter buffers so the DSP
 # output has settled by the time the member's channel goes live.
@@ -209,6 +213,7 @@ class _HistoryChunk:
     start_time_us: int
     duration_us: int
     pcm: bytes
+    timeline_start_us: int
 
 
 @dataclass(slots=True)
@@ -303,7 +308,6 @@ class SendspinPlaybackSession:
         self._playback_running = False
         self._producer_eof_sent = False
         self._timeline_start_us: int | None = None
-        self._first_commit_monotonic_us: int | None = None
         self._produced_audio_us = 0
         self._history: deque[_HistoryChunk] = deque()
         self._join_catchup: dict[str, _JoinCatchupState] = {}
@@ -420,7 +424,6 @@ class SendspinPlaybackSession:
             self._history.clear()
             self._produced_audio_us = 0
             self._timeline_start_us = None
-            self._first_commit_monotonic_us = None
             self._pipeline_config_cache.clear()
             self._preassigned_channels.clear()
 
@@ -717,12 +720,23 @@ class SendspinPlaybackSession:
         # push the timeline into a forward rebase.
         await import_module_in_thread("av")
         push_stream: PushStream | None = None
+        source_stream: AudioSourceStream | None = None
+        setup_done = False
         try:
+            # A line-in has no queue item, so it is opened first to learn its format.
+            if media.media_type == MediaType.AUDIO_SOURCE:
+                source_stream = await self.player.mass.streams.open_audio_source_stream(
+                    media, self.player.player_id
+                )
             # let automatic Sendspin formats follow the first item's sample rate, then
             # refresh the session PCM format from the leader's preferred output before
             # building any pipelines; member ffmpeg pipelines and pre-computed filter
             # params depend on this rate so the cache must also be cleared
-            self._start_streamdetails = self._get_start_streamdetails(media)
+            self._start_streamdetails = (
+                source_stream.streamdetails
+                if source_stream is not None
+                else self._get_start_streamdetails(media)
+            )
             await self._follow_session_sample_rate(
                 [client.client_id for client in self.player.api.group.clients]
             )
@@ -743,8 +757,8 @@ class SendspinPlaybackSession:
                 self._history.clear()
                 self._produced_audio_us = 0
                 self._timeline_start_us = None
-                self._first_commit_monotonic_us = None
                 self._mapping_dirty = True
+            setup_done = True
         except Exception:
             # A track change stops the previous stream without stream/end, so a failed
             # setup has to end this one. Cancellation propagates untouched, since there
@@ -754,6 +768,9 @@ class SendspinPlaybackSession:
                     push_stream.stop()
             await self._reset_session_state()
             raise
+        finally:
+            if not setup_done and source_stream is not None:
+                await source_stream.aclose()
         # Bounded queue between producer (stream reader) and consumer (committer).
         pending_chunks: asyncio.Queue[_PendingChunk | None] = asyncio.Queue(
             maxsize=_PRODUCER_BACKLOG_SIZE
@@ -762,11 +779,16 @@ class SendspinPlaybackSession:
         pending_backlog: deque[_PendingChunk] = deque()
         pending_duration_us = 0
         last_elapsed_update_s: float | None = None
+        reported_anchor_us: int | None = None
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
-            audio_source = self.player.mass.streams.get_stream(
-                media, self._pcm_format, self.player.player_id
+            audio_source = (
+                source_stream.stream(self._pcm_format)
+                if source_stream is not None
+                else self.player.mass.streams.get_stream(
+                    media, self._pcm_format, self.player.player_id
+                )
             )
             completed = False
             try:
@@ -818,8 +840,57 @@ class SendspinPlaybackSession:
                         await close_task
                         raise
 
+        anchor_move_task_id = f"sendspin_anchor_move_{uuid4().hex}"
+
+        async def _report_timeline(anchor_us: int, now_us: int) -> None:
+            nonlocal last_elapsed_update_s, reported_anchor_us
+            # The first commit reports too, since beats published before it were timed
+            # from an estimated start. Later moves are compared against the last reported
+            # anchor so small ones add up.
+            if (
+                reported_anchor_us is None
+                or abs(anchor_us - reported_anchor_us) >= ANCHOR_REBASE_SIGNIFICANT_US
+            ):
+                timeline_changed = True
+                reported_anchor_us = anchor_us
+            else:
+                timeline_changed = False
+            elapsed_real_s = max(0.0, (now_us - anchor_us) / 1_000_000)
+            # A rebase can step the position backward, which would keep the gate shut.
+            if (
+                timeline_changed
+                or last_elapsed_update_s is None
+                or elapsed_real_s - last_elapsed_update_s >= 1.0
+            ):
+                last_elapsed_update_s = elapsed_real_s
+                self.player._attr_elapsed_time = elapsed_real_s
+                self.player._attr_elapsed_time_last_updated = time.time()
+                self.player.update_state()
+            if timeline_changed:
+                self.player.on_flow_timeline_changed()
+            # A move queued behind the playing audio must apply even if no commit follows.
+            async with self._state_lock:
+                move_start_us = self._queued_move_start_us_locked(now_us, reported_anchor_us)
+            if move_start_us is None:
+                self.player.mass.cancel_timer(anchor_move_task_id)
+            else:
+                self.player.mass.call_later(
+                    (move_start_us - now_us) / 1_000_000,
+                    _apply_queued_move,
+                    task_id=anchor_move_task_id,
+                )
+
+        async def _apply_queued_move() -> None:
+            now_us = push_stream.now_us()
+            async with self._state_lock:
+                if not self._history:
+                    return
+                anchor_us = self._playing_timeline_start_us_locked(now_us)
+                self._timeline_start_us = anchor_us
+            await _report_timeline(anchor_us, now_us)
+
         async def _commit_pending_chunks() -> None:
-            nonlocal pending_duration_us, last_elapsed_update_s
+            nonlocal pending_duration_us
             while True:
                 pending = await pending_chunks.get()
                 if pending is None:
@@ -874,26 +945,17 @@ class SendspinPlaybackSession:
                     start_time_us=int(commit_start_us),
                     duration_us=pending.duration_us,
                     pcm=pending.pcm,
+                    # aiosendspin moves the schedule forward when the producer falls behind.
+                    timeline_start_us=int(commit_start_us) - self._produced_audio_us,
                 )
                 async with self._state_lock:
-                    if self._timeline_start_us is None:
-                        self._timeline_start_us = int(commit_start_us)
-                    if self._first_commit_monotonic_us is None:
-                        self._first_commit_monotonic_us = commit_now_us
                     self._history.append(committed_history_chunk)
+                    anchor_us = self._playing_timeline_start_us_locked(commit_now_us)
+                    self._timeline_start_us = anchor_us
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
+                await _report_timeline(anchor_us, commit_now_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
-                if self._timeline_start_us is not None:
-                    elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
-                    if (
-                        last_elapsed_update_s is None
-                        or elapsed_real_s - last_elapsed_update_s >= 1.0
-                    ):
-                        last_elapsed_update_s = elapsed_real_s
-                        self.player._attr_elapsed_time = elapsed_real_s
-                        self.player._attr_elapsed_time_last_updated = time.time()
-                        self.player.update_state()
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
         self._attach_task_exception_logger(commit_task, "commit_pending_chunks")
@@ -945,6 +1007,8 @@ class SendspinPlaybackSession:
                     # non-clean stop so we skip group.stop() below
                     # and let the new playback handle the transition.
                     producer_stopped_cleanly = False
+            self.player.mass.cancel_timer(anchor_move_task_id)
+            self.player.mass.cancel_task(anchor_move_task_id)
             with suppress(Exception):
                 # Same condition as the group.stop() below, so we snapshot on exactly the
                 # paths where a group STOP is already emitted. That stop resets the reported
@@ -1460,7 +1524,6 @@ class SendspinPlaybackSession:
             self._push_stream = None
             self._playback_running = False
             self._timeline_start_us = None
-            self._first_commit_monotonic_us = None
             self._produced_audio_us = 0
             self._history.clear()
             self._start_streamdetails = None
@@ -1482,13 +1545,29 @@ class SendspinPlaybackSession:
 
     # -- History ---------------------------------------------------------------
 
+    def _playing_timeline_start_us_locked(self, now_us: int) -> int:
+        """Return the anchor of the chunk playing at ``now_us``, or of the next one in a gap."""
+        # Speakers play audio sent before a schedule move at its old timestamps.
+        for chunk in self._history:
+            if chunk.start_time_us + chunk.duration_us > now_us:
+                return chunk.timeline_start_us
+        return self._history[-1].timeline_start_us
+
+    def _queued_move_start_us_locked(self, now_us: int, reported_anchor_us: int) -> int | None:
+        """Return when the first unplayed chunk that moves the reported anchor starts playing."""
+        for chunk in self._history:
+            if (
+                chunk.start_time_us > now_us
+                and abs(chunk.timeline_start_us - reported_anchor_us)
+                >= ANCHOR_REBASE_SIGNIFICANT_US
+            ):
+                return chunk.start_time_us
+        return None
+
     def _prune_history_locked(self, now_monotonic_us: int) -> None:
         """Drop old history chunks that are fully in the past."""
-        if self._timeline_start_us is None or self._first_commit_monotonic_us is None:
-            return
-        elapsed_real_us = max(0, now_monotonic_us - self._first_commit_monotonic_us)
-        source_now_us = self._timeline_start_us + elapsed_real_us
-        cutoff_us = source_now_us - _HISTORY_KEEP_PAST_US
+        # History start times are on the push stream clock, so this is what plays now.
+        cutoff_us = now_monotonic_us - _HISTORY_KEEP_PAST_US
         while self._history and (
             self._history[0].start_time_us + self._history[0].duration_us <= cutoff_us
         ):
@@ -1518,19 +1597,8 @@ class SendspinPlaybackSession:
 
     def _is_live_source(self, media: PlayerMedia) -> bool:
         """
-        Return whether this media is fed to the server at playback pace.
-
-        Radio and live sources always are; a track is when its provider hands
-        over the audio just-in-time (a queue flow of such items included, which
-        the media type cannot express because it names the first item).
+        Return whether this media plays as a live source.
 
         :param media: The media about to be played.
         """
-        if media.media_type in _LIVE_MEDIA_TYPES:
-            return True
-        if not media.source_id or not media.queue_item_id:
-            return False
-        queue_item = self.player.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-        return bool(
-            queue_item and queue_item.streamdetails and queue_item.streamdetails.is_realtime
-        )
+        return media.media_type in _LIVE_MEDIA_TYPES

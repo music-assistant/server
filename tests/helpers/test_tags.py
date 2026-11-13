@@ -19,7 +19,7 @@ from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TXXX, UFID
 from mutagen.mp4 import MP4, MP4FreeForm
 from PIL import Image
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import MASS_USER_AGENT, UNKNOWN_ARTIST
 from music_assistant.helpers import tags
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.tags import (
@@ -94,6 +94,22 @@ def test_parse_tags_skips_tls_verify_on_request(monkeypatch: pytest.MonkeyPatch)
     tls_index = args.index("-tls_verify")
     assert args[tls_index + 1] == "0"
     assert tls_index < args.index("-i")
+
+
+def test_parse_tags_identifies_as_music_assistant_on_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tag parsing of a URL sends the Music Assistant user agent, of a local file none."""
+    check_output = MagicMock(return_value=b'{"format": {}, "streams": []}')
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError):
+        tags.parse_tags("https://example.com/a.mp3")
+    args = list(check_output.call_args.args[0])
+    assert args[args.index("-user_agent") + 1] == MASS_USER_AGENT
+    assert args.index("-user_agent") < args.index("-i")
+
+    with pytest.raises(InvalidDataError):
+        tags.parse_tags("/music/a.mp3")
+    assert "-user_agent" not in check_output.call_args.args[0]
 
 
 def test_parse_rejects_file_without_audio_channels() -> None:
@@ -184,6 +200,28 @@ async def test_parse_metadata_from_mp4tags() -> None:
     assert _tags.tags.get("artistsort") == ["MyArtist Sort"]
     assert _tags.tags.get("albumsort") == "MyAlbum Sort"
     assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]
+
+
+def test_parse_mp4_albumartist_tags() -> None:
+    """End-to-end test for proper albumartist tag handling in MP4."""
+    mock_tags = _create_mock_mp4_tags(
+        {
+            "aART": ["Artist A"],
+            "----:com.apple.iTunes:ALBUMARTISTS": [
+                b"Explicit Artist 1",
+                b"Explicit Artist 2",
+            ],
+        }
+    )
+
+    result = _parse_mp4_tags(mock_tags)
+
+    # Both tags are parsed. Precedence is handled at the AudioTags layer
+    assert result.get("albumartists") == ["Explicit Artist 1", "Explicit Artist 2"]
+    assert result.get("albumartist") == "Artist A"
+
+    # Plural gets precedence
+    assert _tags_with(result).album_artists == ("Explicit Artist 1", "Explicit Artist 2")
 
 
 def test_parse_metadata_from_apev2tags() -> None:
@@ -472,6 +510,60 @@ def test_parse_vorbis_tags_explicit_artists_tag_takes_precedence() -> None:
     assert result.get("artists") == ["Explicit Artist 1", "Explicit Artist 2", "Explicit Artist 3"]
 
 
+def test_parse_vorbis_tags_explicit_albumartists_tag_precedence_over_multiple_albumartist() -> None:
+    """Test that explicit ALBUMARTISTS tag takes precedence over multiple ALBUMARTIST fields."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "ALBUMARTIST": ["Artist A", "Artist B"],
+            "ALBUMARTISTS": [
+                "Explicit Artist 1",
+                "Explicit Artist 2",
+                "Explicit Artist 3",
+            ],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # ALBUMARTISTS tag should take precedence
+    assert result.get("albumartists") == [
+        "Explicit Artist 1",
+        "Explicit Artist 2",
+        "Explicit Artist 3",
+    ]
+
+
+def test_parse_vorbis_tags_explicit_albumartists_tag_precedence_over_single_albumartist() -> None:
+    """Test that explicit ALBUMARTISTS tag takes precedence over single ALBUMARTIST field."""
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "ALBUMARTIST": ["Artist A x Artist B"],
+            "ALBUMARTISTS": [
+                "Explicit Artist 1",
+                "Explicit Artist 2",
+                "Explicit Artist 3",
+            ],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # Both get parsed
+    assert result.get("albumartist") == "Artist A x Artist B"
+    assert result.get("albumartists") == [
+        "Explicit Artist 1",
+        "Explicit Artist 2",
+        "Explicit Artist 3",
+    ]
+
+    # Plural gets precedence
+    assert _tags_with(result).album_artists == (
+        "Explicit Artist 1",
+        "Explicit Artist 2",
+        "Explicit Artist 3",
+    )
+
+
 def test_parse_vorbis_tags_musicbrainz_ids() -> None:
     """Test that MusicBrainz IDs are parsed correctly from Vorbis tags."""
     mock_tags = _create_mock_vorbis_tags(
@@ -612,11 +704,25 @@ def test_parse_apev2_tags_single_artist() -> None:
     assert "albumartists" not in result
 
 
+def _create_mock_mp4_tags(tag_dict: dict[str, str | list[str | bytes]]) -> MagicMock:
+    """
+    Create a mock MP4 tags object.
+
+    :param tag_dict: Dictionary mapping tag names to values.
+    """
+    mock = MagicMock()
+    mock.__contains__ = lambda _, key: key in tag_dict
+    mock.__getitem__ = lambda _, key: tag_dict[key]
+    mock.keys = lambda: tag_dict.keys()
+    mock.get = lambda key, default=None: tag_dict.get(key, default)
+    return mock
+
+
 def test_parse_mp4_multi_value_musicbrainz_albumtype() -> None:
     """Multi-value MP4 freeform album type entries are joined into a single value."""
-    mock_tags = MagicMock()
-    mock_tags.__contains__ = lambda _, key: key == "----:com.apple.iTunes:MusicBrainz Album Type"
-    mock_tags.__getitem__ = lambda _, _k: [b"album", b"live"]
+    mock_tags = _create_mock_mp4_tags(
+        {"----:com.apple.iTunes:MusicBrainz Album Type": [b"album", b"live"]}
+    )
     result = _parse_mp4_tags(mock_tags)
     assert result.get("musicbrainzalbumtype") == "album;live"
 
@@ -1099,6 +1205,70 @@ def test_release_date(raw_tags: dict[str, str], expected: str | None) -> None:
 @pytest.mark.parametrize(
     ("raw_tags", "expected"),
     [
+        # Plural always takes precedence
+        ({"artists": ["A1", "A2"], "artist": "A1"}, ("A1", "A2")),
+        # Plural undergoes splitting
+        ({"artists": "A1; A2", "artist": "A1"}, ("A1", "A2")),
+        # Plural undergoes splitting even as a (one-element) list
+        ({"artists": ["A1; A2"], "artist": "A1"}, ("A1", "A2")),
+        # We only split on semicolons
+        ({"artists": "A1/A2", "artist": "A1"}, ("A1/A2",)),
+        # Plural is not split by heuristics that should only show up in singular
+        ({"artists": "A1 feat. A2", "artist": "A1"}, ("A1 feat. A2",)),
+        # A single MB ID disables splitting
+        ({"artists": "A1;A2", "musicbrainzartistid": "id"}, ("A1;A2",)),
+        # A single MB ID does not override a list
+        ({"artists": ["A1", "A2"], "musicbrainzartistid": "id"}, ("A1", "A2")),
+        # Basic singular case
+        ({"artist": "A1"}, ("A1",)),
+        # Singular heuristic case
+        ({"artist": "A1 feat. A2"}, ("A1", "A2")),
+        # Singular standard splitting
+        ({"artist": "A1; A2"}, ("A1", "A2")),
+        # A single MB ID disables splitting for singular too
+        ({"artist": "A1;A2", "musicbrainzartistid": "id"}, ("A1;A2",)),
+    ],
+)
+def test_artist_and_artists_tags(raw_tags: dict[str, str], expected: tuple[str]) -> None:
+    """Test interplay between plural and singular artist tags."""
+    assert _tags_with(raw_tags).artists == expected
+
+
+@pytest.mark.parametrize(
+    ("raw_tags", "expected"),
+    [
+        # Plural always takes precedence
+        ({"albumartists": ["A1", "A2"], "albumartist": "A1"}, ("A1", "A2")),
+        # Plural undergoes splitting
+        ({"albumartists": "A1; A2", "albumartist": "A1"}, ("A1", "A2")),
+        # Plural undergoes splitting even as a (one-element) list
+        ({"albumartists": ["A1; A2"], "albumartist": "A1"}, ("A1", "A2")),
+        # We only split on semicolons
+        ({"albumartists": "A1/A2", "albumartist": "A1"}, ("A1/A2",)),
+        # Plural is not split by heuristics that should only show up in singular
+        ({"albumartists": "A1 feat. A2", "albumartist": "A1"}, ("A1 feat. A2",)),
+        # A single MB ID disables splitting
+        ({"albumartists": "A1;A2", "musicbrainzalbumartistid": "id"}, ("A1;A2",)),
+        # A single MB ID does not override a list
+        ({"albumartists": ["A1", "A2"], "musicbrainzalbumartistid": "id"}, ("A1", "A2")),
+        # Basic singular case
+        ({"albumartist": "A1"}, ("A1",)),
+        # Singular heuristic case
+        ({"albumartist": "A1 feat. A2"}, ("A1", "A2")),
+        # Singular standard splitting
+        ({"albumartist": "A1; A2"}, ("A1", "A2")),
+        # A single MB ID disables splitting for singular too
+        ({"albumartist": "A1;A2", "musicbrainzalbumartistid": "id"}, ("A1;A2",)),
+    ],
+)
+def test_albumartist_and_albumartists_tags(raw_tags: dict[str, str], expected: tuple[str]) -> None:
+    """Test interplay between plural and singular albumartist tags."""
+    assert _tags_with(raw_tags).album_artists == expected
+
+
+@pytest.mark.parametrize(
+    ("raw_tags", "expected"),
+    [
         # the release's own date wins, whichever tag format it arrives in
         ({"date": "2015-03-07", "originaldate": "1978-06-01"}, 2015),
         ({"date": "2015-03-07", "tdor": "1978-06-01"}, 2015),
@@ -1439,6 +1609,11 @@ async def test_get_embedded_image_extracts_cover_with_protocol_whitelist(
     assert args.index("-protocol_whitelist") < args.index("-i")
     expected_whitelist = "http,https,tcp,tls" if over_http else "file"
     assert args[args.index("-protocol_whitelist") + 1] == expected_whitelist
+    if over_http:
+        assert args[args.index("-user_agent") + 1] == MASS_USER_AGENT
+        assert args.index("-user_agent") < args.index("-i")
+    else:
+        assert "-user_agent" not in args
 
 
 def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:

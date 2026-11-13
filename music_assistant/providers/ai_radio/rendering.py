@@ -34,7 +34,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.constants import VOICE_OVER_RAMP
 from music_assistant.helpers.audio import parse_loudnorm
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream, tls_verify_args
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream, tls_verify_args, user_agent_args
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.tts import (
@@ -63,6 +63,7 @@ from .constants import (
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
     NO_WEATHER_DATA_INSTRUCTION,
+    POST_ANALYSIS_ONSET_LEAD,
     POST_LOAD_TIMEOUT,
     POST_LYRICS_TIMEOUT,
     POST_MIN_HEAD_SECONDS,
@@ -583,6 +584,7 @@ class AIRadioRenderMixin:
                 "-hide_banner",
                 "-nostats",
                 *tls_verify_args(path, verify_ssl),
+                *user_agent_args(path),
                 "-i",
                 path,
                 # measure behind speechnorm: it is what the gain is applied on top of, and it
@@ -766,9 +768,28 @@ class AIRadioRenderMixin:
 
     async def _resolve_vocal_onset(self, queue_item: QueueItem) -> tuple[float | None, str]:
         """Return the second the track's vocal enters, and the reason when there is none."""
-        media_item = cast("Track", queue_item.media_item)
-        if (onset := await self._analysis_vocal_onset(queue_item)) is not None:
-            return onset, ""
+        # asked side by side, so the slower source alone bounds the wait
+        analysis, (lyrics, reason) = await asyncio.gather(
+            self._analysis_vocal_onset(queue_item),
+            self._lyric_vocal_onset(cast("Track", queue_item.media_item)),
+        )
+        self.logger.debug(
+            "AI Radio vocal onset for %s: analysis %s, lyrics %s",
+            queue_item.name,
+            "none" if analysis is None else f"{analysis:.1f}s",
+            "none" if lyrics is None else f"{lyrics:.1f}s",
+        )
+        if lyrics is None:
+            return analysis, "" if analysis is not None else reason
+        # both sources mostly err early: the analysis on a count-in or a burst in the intro,
+        # the lyrics on a credit or ad-lib line. The lyric onset leads, and the analysis
+        # replaces it only when it hears the voice clearly later.
+        if analysis is not None and analysis - lyrics > POST_ANALYSIS_ONSET_LEAD:
+            return analysis, ""
+        return lyrics, ""
+
+    async def _lyric_vocal_onset(self, media_item: Track) -> tuple[float | None, str]:
+        """Return the second the vocal enters per synced lyrics, and the reason when unknown."""
         if (onset := lyric_onset(media_item.metadata.lrc_lyrics)) is not None:
             return onset, ""
         try:

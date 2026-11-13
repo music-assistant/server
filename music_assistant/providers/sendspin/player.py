@@ -18,10 +18,12 @@ from aiosendspin.models.management import (
     SetStaticPairingCodeConfig,
 )
 from aiosendspin.models.types import (
+    GoodbyeReason,
     PairAbortReason,
     PairMethod,
     PlaybackStateType,
     PlayerCommand,
+    has_role_family,
     role_family,
 )
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
@@ -67,10 +69,12 @@ from aiosendspin.server.roles.color.state import Color
 from aiosendspin.server.roles.metadata.state import Metadata
 from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
+from aiosendspin.server.roles.player.v1 import PlayerPersistentState
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
+    EventType,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -140,7 +144,7 @@ from .helpers import (
     pin_code_format,
     speaks_legacy_wire,
 )
-from .playback import SendspinPlaybackSession
+from .playback import ANCHOR_REBASE_SIGNIFICANT_US, SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -308,12 +312,24 @@ def _pairing_abort_reason(error: Exception | None) -> str:
     return _PAIRING_ABORT_REASONS.get(key, "pairing_failed")
 
 
+def _group_leader_id(clients: Iterable[SendspinClient]) -> str | None:
+    """Return the id of the client that leads these group clients."""
+    clients = list(clients)
+    # a display or visualizer can follow the group but only an audio player leads it
+    leader = next(
+        (c for c in clients if has_role_family("player", c.negotiated_role_ids)),
+        clients[0] if clients else None,
+    )
+    return leader.client_id if leader else None
+
+
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.noise.trust_store import ServerPairingRecord
     from aiosendspin.server.client import SendspinClient
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
@@ -399,9 +415,7 @@ class SendspinBasePlayer(Player):
                         self._on_group_stopped()
                 self.update_state()
             case GroupMemberAddedEvent(client_id=client_id):
-                is_group_leader = (
-                    bool(group.clients) and group.clients[0].client_id == self.player_id
-                )
+                is_group_leader = _group_leader_id(group.clients) == self.player_id
                 if is_group_leader and (
                     not self._attr_group_members or self._attr_group_members[0] != self.player_id
                 ):
@@ -501,7 +515,9 @@ class SendspinBasePlayer(Player):
         as a side effect of the provider pairing calls;
         declining the audio input persists via the player config. Bridge/web players
         and unencrypted (legacy) connections have nothing to pair. A device another server
-        holds is dialed for the pairing.
+        holds, or one that refused this server, is dialed for the pairing. A device whose
+        line-in was allowed and can sense a signal then picks where that line-in plays
+        automatically.
 
         :param session: The setup flow session used to interact with the user.
         """
@@ -569,47 +585,44 @@ class SendspinBasePlayer(Player):
             await self._run_pin_pairing_flow(
                 session, provider, static=method == PAIR_METHOD_STATIC_PIN
             )
+        await self._run_source_autostart_step(session)
         await session.finish({})
 
     def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
-        """Return the line-in autostart entries, for source clients that can sense a signal."""
-        if not self._supports_line_sense():
+        """Return the line-in autostart entries for source clients, or a note when they cannot sense a signal."""
+        if "source" not in self._negotiated_families():
             return []
+        if not self._supports_line_sense():
+            return [ConfigEntry(key="source_autostart_unavailable", type=ConfigEntryType.LABEL)]
         # A source that is also a player defaults to playing on itself, which for a
         # protocol player means the visible player it belongs to.
-        own_target = self.protocol_parent_id or self.player_id
+        own_target = (
+            (self.protocol_parent_id or self.player_id)
+            if "player" in self._negotiated_families()
+            else None
+        )
         options = [
             ConfigValueOption(SOURCE_AUTOSTART_OFF),
+            # Lead with the device's own player, so the default sits at the top of the list.
+            # It is offered even while unavailable, as it is during the device's own setup.
+            *([ConfigValueOption(own_target, translation_key="this_device")] if own_target else []),
             *(
-                ConfigValueOption(
-                    player.player_id,
-                    title=None if player.player_id == own_target else player.display_name,
-                    translation_key="this_device" if player.player_id == own_target else None,
-                )
+                ConfigValueOption(player.player_id, title=player.display_name)
                 for player in sorted(
                     self.mass.players.all_players(False, False),
-                    # Lead with the device's own player, so the default sits at the top
-                    # of the list rather than alphabetically among every other player.
-                    key=lambda player: (
-                        player.player_id != own_target,
-                        player.display_name.lower(),
-                    ),
+                    key=lambda player: player.display_name.lower(),
                 )
                 # Only players that render audio, so lights, displays and other
                 # capture-only clients are not offered as somewhere to play a line-in.
-                if player.type in SOURCE_AUTOSTART_TARGET_TYPES
+                if player.type in SOURCE_AUTOSTART_TARGET_TYPES and player.player_id != own_target
             ),
         ]
-        valid = {option.value for option in options}
-        default = (
-            own_target if "player" in self._negotiated_families() and own_target in valid else None
-        )
         return [
             ConfigEntry(
                 key=CONF_SOURCE_AUTOSTART_TARGET,
                 type=ConfigEntryType.STRING,
                 options=options,
-                default_value=default or SOURCE_AUTOSTART_OFF,
+                default_value=own_target or SOURCE_AUTOSTART_OFF,
             ),
         ]
 
@@ -678,7 +691,9 @@ class SendspinBasePlayer(Player):
             )
         # A device with an audio input needs its own wording; the rest of the page is shared.
         step_id = "approve_device_source" if has_input else "approve_device"
-        values = await session.form(entries, step_id=step_id, last_step=True)
+        values = await session.form(
+            entries, step_id=step_id, last_step=not self._supports_line_sense()
+        )
         method = str(values.get(CONF_CONNECT_METHOD, options[0].value))
         if method == CONNECT_METHOD_PAIR:
             return True
@@ -688,6 +703,8 @@ class SendspinBasePlayer(Player):
                 self.player_id, CONF_SOURCE_INPUT_DECLINED, not allow_input
             )
         await provider.set_trusted_unpaired(self.player_id, enabled=True, allow_input=allow_input)
+        if allow_input:
+            await self._run_source_autostart_step(session)
         return False
 
     async def _run_source_input_step(self, session: SetupSession, *, offer_pair: bool) -> bool:
@@ -713,6 +730,21 @@ class SendspinBasePlayer(Player):
         )
         self.update_state()
         return True
+
+    async def _run_source_autostart_step(self, session: SetupSession) -> None:
+        """Ask where the line-in plays automatically, for a device that can sense a signal on it."""
+        if not self._supports_line_sense():
+            return
+        entry = self._get_source_autostart_config_entries()[0]
+        entry.value = session.context.values.get(CONF_SOURCE_AUTOSTART_TARGET)
+        values = await session.form([entry], step_id="source_autostart", last_step=True)
+        target = values[CONF_SOURCE_AUTOSTART_TARGET]
+        # Keep the default unstored, as the settings page does, so it follows the device's player.
+        self.mass.config.set_raw_player_config_value(
+            self.player_id,
+            CONF_SOURCE_AUTOSTART_TARGET,
+            None if target == entry.default_value else target,
+        )
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
@@ -848,9 +880,9 @@ class SendspinBasePlayer(Player):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        group_client_ids = [client.client_id for client in group.clients]
-        is_leader = bool(group_client_ids) and group_client_ids[0] == self.player_id
-        desired_group_members = group_client_ids if is_leader else []
+        followers = [c.client_id for c in group.clients if c.client_id != self.player_id]
+        is_leader = _group_leader_id(group.clients) == self.player_id
+        desired_group_members = [self.player_id, *followers] if is_leader else []
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
             self.update_state()
@@ -908,12 +940,32 @@ class SendspinBasePlayer(Player):
         self, provider: SendspinProvider
     ) -> tuple[ConfigEntry | None, list[ConfigEntry]]:
         """Return the current security-status entry and the available action entries."""
+        refused_reason = provider.refused_reason(self.player_id)
+        if refused_reason is GoodbyeReason.UNPAIRED:
+            status_key = (
+                "security_status_was_unpaired_guest"
+                if self._offers_unpaired_consent
+                else "security_status_was_unpaired"
+            )
+            return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), []
+        if refused_reason is GoodbyeReason.PAIRING_REQUIRED:
+            return ConfigEntry(
+                key="security_status_guest_access_off", type=ConfigEntryType.LABEL
+            ), []
+        if refused_reason is not None:
+            return ConfigEntry(key="security_status_refused", type=ConfigEntryType.LABEL), []
         if provider.is_held_unapproved(self.player_id):
             return ConfigEntry(
                 key="security_status_held_unapproved", type=ConfigEntryType.LABEL
             ), []
+        # Only starting playback on a held device dials it back.
+        if (
+            provider.is_held_elsewhere(self.player_id)
+            and PlayerFeature.PLAY_MEDIA in self.supported_features
+        ):
+            return ConfigEntry(key="security_status_held_elsewhere", type=ConfigEntryType.LABEL), []
         if not self.api.is_connected:
-            # The action dropped the connection (e.g. unpair); the client will reconnect
+            # The action dropped the connection; the client will reconnect
             return ConfigEntry(key="security_status_disconnected", type=ConfigEntryType.LABEL), []
 
         security = self.api.connection_security
@@ -1772,18 +1824,18 @@ class SendspinPlayer(SendspinBasePlayer):
                 and self.playback_session.playback_task is not None
                 and not self.playback_session.playback_task.done()
             ):
-                remaining = [c for c in self.api.group.clients if c.client_id != self.player_id]
-                if remaining:
-                    new_owner_id = remaining[0].client_id
-                    new_owner = self.mass.players.get_player(new_owner_id)
-                    if isinstance(new_owner, SendspinPlayer):
-                        self.logger.info(
-                            "Transferring playback session to %s for dynamic leader switch",
-                            new_owner.display_name,
-                        )
-                        await self.playback_session.transfer_to(new_owner)
-                        new_owner.playback_session = self.playback_session
-                        self.playback_session = SendspinPlaybackSession(self)
+                new_owner_id = _group_leader_id(
+                    c for c in self.api.group.clients if c.client_id != self.player_id
+                )
+                new_owner = new_owner_id and self.mass.players.get_player(new_owner_id)
+                if isinstance(new_owner, SendspinPlayer):
+                    self.logger.info(
+                        "Transferring playback session to %s for dynamic leader switch",
+                        new_owner.display_name,
+                    )
+                    await self.playback_session.transfer_to(new_owner)
+                    new_owner.playback_session = self.playback_session
+                    self.playback_session = SendspinPlaybackSession(self)
 
             await self.api.group.remove_client(member_player.api)
             # An explicit removal ends playback for that member; a bridge among
@@ -1855,6 +1907,16 @@ class SendspinPlayer(SendspinBasePlayer):
         self.mass.create_task(
             self.send_current_media_metadata(),
             task_id=f"sendspin_metadata_{self.player_id}",
+            abort_existing=True,
+        )
+
+    def on_flow_timeline_changed(self) -> None:
+        """Re-publish the beat schedule after the flow stream's timeline was set or moved."""
+        if self.synced_to is not None:
+            return
+        self.mass.create_task(
+            self._refresh_beat_schedule(),
+            task_id=f"sendspin_beat_rebase_{self.player_id}",
             abort_existing=True,
         )
 
@@ -2018,6 +2080,17 @@ class SendspinPlayer(SendspinBasePlayer):
                     advanced=False,
                 )
             )
+        elif player_role is None and not self.api.is_connected:
+            # aiosendspin keeps the commands the device last reported after its roles detach.
+            player_state = self.api.get_role_state("player", PlayerPersistentState)
+            if player_state is not None and not _OUTPUT_DELAY_COMMANDS.isdisjoint(
+                player_state.state_supported_commands
+            ):
+                entries.append(
+                    ConfigEntry(
+                        key="sendspin_static_delay_disconnected", type=ConfigEntryType.LABEL
+                    )
+                )
 
         return entries
 
@@ -2159,10 +2232,10 @@ class SendspinPlayer(SendspinBasePlayer):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        group_client_ids = [client.client_id for client in group.clients]
-        is_leader = bool(group_client_ids) and group_client_ids[0] == self.player_id
-        desired_group_members = group_client_ids if is_leader else []
-        desired_session_members = group_client_ids[1:] if is_leader else []
+        followers = [c.client_id for c in group.clients if c.client_id != self.player_id]
+        is_leader = _group_leader_id(group.clients) == self.player_id
+        desired_group_members = [self.player_id, *followers] if is_leader else []
+        desired_session_members = followers if is_leader else []
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
             self.update_state()
@@ -2602,7 +2675,9 @@ class SendspinPlayer(SendspinBasePlayer):
         )
 
     @staticmethod
-    def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
+    def _flow_track_offset_us(
+        pq_data: PlayerQueueData | None, queue_item: QueueItem, flow_position_s: float
+    ) -> int | None:
         """
         Return the current track's flow-stream start offset (minus file seek), in µs.
 
@@ -2610,6 +2685,8 @@ class SendspinPlayer(SendspinBasePlayer):
         one in the queue-flow stream, so beats anchor to this track's start
         rather than the first track's. Returns None when the flow log hasn't
         recorded this track yet, so the caller falls back to the progress anchor.
+        A track that appears more than once resolves to its latest pass that has
+        started by ``flow_position_s``, the flow-stream position playing now.
 
         A track whose intro was crossfade-trimmed loses its raw seek position
         (only the elapsed-inflated value survives), so its anchor can be off by
@@ -2619,10 +2696,18 @@ class SendspinPlayer(SendspinBasePlayer):
         if pq_data is None or queue_item.streamdetails is None:
             return None
         log = pq_data.flow_mode_stream_log
-        if not log or log[-1].queue_item_id != queue_item.queue_item_id:
+        match_index: int | None = None
+        track_flow_start_s = 0.0
+        entry_start_s = 0.0
+        for index, entry in enumerate(log):
+            if entry.queue_item_id == queue_item.queue_item_id and (
+                match_index is None or entry_start_s <= flow_position_s
+            ):
+                match_index, track_flow_start_s = index, entry_start_s
+            entry_start_s += entry.seconds_streamed or 0.0
+        if match_index is None:
             return None
-        track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:-1])
-        file_seek_s = log[-1].seek_position
+        file_seek_s = log[match_index].seek_position
         if file_seek_s is None:
             file_seek_s = float(queue_item.streamdetails.seek_position or 0)
         return int((track_flow_start_s - file_seek_s) * 1_000_000)
@@ -2668,16 +2753,20 @@ class SendspinPlayer(SendspinBasePlayer):
         # chunk commits or while the flow log hasn't recorded this track yet.
         anchor_us: int | None = None
         pq_data = self.mass.player_queues.queue_data_or_none(queue.queue_id) if queue else None
-        offset_us = self._flow_track_offset_us(pq_data, queue_item)
-        if offset_us is not None:
-            anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
+        timeline_start_us = self.playback_session.flow_track_anchor_us(0)
+        if timeline_start_us is not None:
+            offset_us = self._flow_track_offset_us(
+                pq_data, queue_item, (now_us - timeline_start_us) / 1_000_000
+            )
+            if offset_us is not None:
+                anchor_us = timeline_start_us + offset_us
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
-        # Re-push only on track change or seek (anchor jumps beyond natural drift).
+        # Re-push only on track change, seek or timeline rebase (anchor jumps beyond natural drift).
         if (
             queue_item.queue_item_id == self._last_beat_queue_item_id
             and self._last_beat_anchor_us is not None
-            and abs(anchor_us - self._last_beat_anchor_us) < 500_000
+            and abs(anchor_us - self._last_beat_anchor_us) < ANCHOR_REBASE_SIGNIFICANT_US
         ):
             return
         sd = queue_item.streamdetails
@@ -2688,6 +2777,10 @@ class SendspinPlayer(SendspinBasePlayer):
             priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
         if not self._metadata_publish_allowed(generation):
+            return
+        # A rebase refresh is not cancelled by a track change, so drop it if the track moved on.
+        live_media = self.state.current_media
+        if live_media is None or live_media.queue_item_id != queue_item.queue_item_id:
             return
         if analysis is None or analysis.beats is None or len(analysis.beats) == 0:
             visualizer_role.clear_beat_schedule()
@@ -2824,16 +2917,98 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             if isinstance(member, SendspinBasePlayer):
                 await self.api.group.add_client(member.api)
 
+    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+        """Handle standalone display Play commands."""
+        super().group_event_cb(group, event)
+        if (
+            isinstance(event, ControllerPlayEvent)
+            and group is self.api.group
+            and self.synced_to is None
+            and _group_leader_id(group.clients) == self.player_id
+        ):
+            self.mass.create_task(self._play_static_group())
+
+    _unsub_player_events: Callable[[], None] | None = None
+
+    def _subscribe_client_callbacks(self) -> None:
+        """Subscribe to events and advertise standalone display controls."""
+        super()._subscribe_client_callbacks()
+        if self._unsub_player_events is None:
+            self._unsub_player_events = self.mass.subscribe(
+                self._on_players_changed,
+                (
+                    EventType.PLAYER_ADDED,
+                    EventType.PLAYER_UPDATED,
+                    EventType.PLAYER_REMOVED,
+                    EventType.PLAYER_CONFIG_UPDATED,
+                ),
+            )
+        self._set_display_commands(self.api.group)
+
+    def _unsubscribe_client_callbacks(self) -> None:
+        """Remove client, group, and player event listeners."""
+        super()._unsubscribe_client_callbacks()
+        if self._unsub_player_events is not None:
+            self._unsub_player_events()
+            self._unsub_player_events = None
+
+    def _on_players_changed(self, event: MassEvent) -> None:
+        """Refresh standalone controls when configured playback targets change."""
+        self._set_display_commands(self.api.group)
+
+    def _on_group_changed(self, new_group: SendspinGroup) -> None:
+        """Refresh controls when the display changes groups."""
+        self._set_display_commands(new_group)
+        super()._on_group_changed(new_group)
+
+    def _set_display_commands(self, group: SendspinGroup) -> None:
+        """Advertise standalone Play only with exactly one configured target."""
+        # Supported commands belong to the entire group, so a display follower
+        # must not replace the audio leader's controls, even before membership sync.
+        if (
+            group is self.api.group
+            and _group_leader_id(group.clients) == self.player_id
+            and (controller_role := self._controller_role) is not None
+        ):
+            controller_role.set_supported_commands(
+                [MediaCommand.PLAY] if len(self._static_group_targets()) == 1 else []
+            )
+
+    def _static_group_targets(self) -> list[Player]:
+        """Return enabled, available static groups containing this display."""
+        return [
+            player
+            for player in self.mass.players.iter_players(
+                return_unavailable=False, return_disabled=False
+            )
+            if player.type == PlayerType.GROUP
+            and self.player_id in player.state.static_group_members
+        ]
+
+    async def _play_static_group(self) -> None:
+        """Play the single available configured group containing this display."""
+        groups = self._static_group_targets()
+        if len(groups) != 1:
+            self.logger.debug(
+                "Cannot route Play from display %s: expected one available configured group, "
+                "found %s (%s)",
+                self.player_id,
+                len(groups),
+                ", ".join(player.player_id for player in groups) or "none",
+            )
+            return
+        await self.mass.players.cmd_play(groups[0].player_id)
+
 
 class SendspinSourcePlayer(SendspinBasePlayer):
     """
     A capture-only Sendspin player for clients that just feed audio in.
 
     Renders nothing and is never a playback or grouping target. It is listed as an
-    audio input so the device stays discoverable and its pairing, enabling and
-    line-in autostart settings are easy to reach. The sendspin_source plugin
-    exposes the audio itself.
+    audio input so its pairing, enabling and line-in autostart settings are easy to
+    reach. The sendspin_source plugin exposes the audio itself.
     """
 
     _attr_type = PlayerType.SOURCE
+    _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False

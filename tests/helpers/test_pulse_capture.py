@@ -123,7 +123,7 @@ def server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PulseCaptureServe
     monkeypatch.setattr(pulse_capture, "_READY_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(pulse_capture, "_RESTART_BACKOFF_INITIAL", 0.01)
     mass = Mock()
-    mass.cache_path = str(tmp_path)
+    mass.runtime_path = str(tmp_path)
     return PulseCaptureServer(mass)
 
 
@@ -365,11 +365,11 @@ async def test_release_during_restart_backoff(
 def test_get_pulse_capture_server_is_shared(tmp_path: Path) -> None:
     """The accessor returns one shared instance per mass object."""
     mass = Mock()
-    mass.cache_path = str(tmp_path)
+    mass.runtime_path = str(tmp_path)
     first = pulse_capture.get_pulse_capture_server(mass)
     assert pulse_capture.get_pulse_capture_server(mass) is first
     other_mass = Mock()
-    other_mass.cache_path = str(tmp_path)
+    other_mass.runtime_path = str(tmp_path)
     assert pulse_capture.get_pulse_capture_server(other_mass) is not first
     # a second mass must not evict the first mass's server (it may hold a
     # running daemon that would otherwise leak unreferenced)

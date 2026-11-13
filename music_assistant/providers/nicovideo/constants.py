@@ -19,6 +19,7 @@ class ApiPriority(Enum):
 
 
 # Network constants
+# TODO: check whether this can use MASS_USER_AGENT
 NICOVIDEO_USER_AGENT = "Music Assistant/1.0"
 
 # Note: "Domand" is the actual spelling used in niconico's API (not a typo).

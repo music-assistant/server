@@ -14,6 +14,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import HttpVersion, HttpVersion10, HttpVersion11, web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -21,7 +23,7 @@ from music_assistant_models.constants import (
 )
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
-from music_assistant.constants import CONF_GROUP_MEMBERS
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_REQUIRES_FIXED_CONTENT_LENGTH
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
@@ -34,12 +36,14 @@ def _make_mock_mass() -> MagicMock:
     mass.players._handle_cmd_stop = AsyncMock()
     mass.players._handle_play_media = AsyncMock()
     mass.players.cmd_power = AsyncMock()
+    mass.players._handle_cmd_power = AsyncMock()
     mass.players.iter_group_members = MagicMock(return_value=[])
 
     lock_ctx = AsyncMock()
     lock_ctx.__aenter__.return_value = None
     lock_ctx.__aexit__.return_value = False
     mass.players.get_player_lock = MagicMock(return_value=lock_ctx)
+    mass.players.get_group_and_player_lock = MagicMock(return_value=lock_ctx)
 
     wait_ctx = AsyncMock()
     wait_ctx.__aenter__.return_value = None
@@ -113,6 +117,7 @@ def _make_mock_player(
     player.display_name = player_id
     player.type = player_type
     player.available = available
+    player.available_for_playback = available
     player.enabled = enabled
     player.powered = powered
     player.power_control = "native"
@@ -442,7 +447,7 @@ class TestFakePowerLifecycle:
         ugp._attr_static_group_members = ["m1"]
         ugp._attr_group_members = ["m1", "extra"]
         ugp._attr_powered = True
-        # quietly powered-on member that should get cmd_power(False) on dissolve
+        # quietly powered-on member that should be powered off on dissolve
         member = _make_mock_player("m1", powered=True)
         mass.players.iter_group_members.side_effect = lambda *_args, **_kwargs: iter([member])
 
@@ -451,6 +456,7 @@ class TestFakePowerLifecycle:
 
         assert ugp._attr_group_members == ["m1"]
         assert ugp._attr_powered is False
+        mass.players._handle_cmd_power.assert_awaited_once_with("m1", False)
 
 
 class TestSupportedFeaturesPower:
@@ -611,3 +617,48 @@ class TestSupportedFeaturesFromMembers:
         ugp.update_state()
 
         assert ugp.mute_control == PLAYER_CONTROL_NONE
+
+
+class TestStreamContentLength:
+    """The UGP stream follows the fixed content length setting of the member fetching it."""
+
+    UGP_CONTENT_LENGTH = 4294967296
+
+    async def _serve(
+        self, member_setting: bool, member_id: str, version: HttpVersion = HttpVersion11
+    ) -> web.StreamResponse:
+        """Serve a probe of the group stream to member_id and return the prepared response."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp.stream = MagicMock(done=False)
+        member = _make_mock_player("m1")
+        member.get_output_config_value.side_effect = lambda key, default=None: (
+            member_setting if key == CONF_REQUIRES_FIXED_CONTENT_LENGTH else default
+        )
+        players = {"ugp_test": ugp, "m1": member}
+        mass.players.get_player = MagicMock(side_effect=players.get)
+        request = make_mocked_request(
+            "HEAD", f"/ugp/ugp_test.mp3?player_id={member_id}", version=version
+        )
+        return await ugp._serve_ugp_stream(request)
+
+    async def test_member_that_requires_it_gets_a_content_length(self) -> None:
+        """A member whose output player needs a fixed length gets one."""
+        resp = await self._serve(member_setting=True, member_id="m1")
+
+        assert resp.content_length == self.UGP_CONTENT_LENGTH
+
+    @pytest.mark.parametrize("version", [HttpVersion10, HttpVersion11], ids=["http10", "http11"])
+    async def test_member_without_the_setting_gets_no_length(self, version: HttpVersion) -> None:
+        """Other members get no length and no forced chunking, on any HTTP version."""
+        resp = await self._serve(member_setting=False, member_id="m1", version=version)
+
+        assert resp.prepared
+        assert resp.content_length is None
+        assert not resp.chunked
+
+    async def test_unknown_member_gets_no_length(self) -> None:
+        """A stale member id in the stream url falls back to no fixed length."""
+        resp = await self._serve(member_setting=True, member_id="ghost")
+
+        assert resp.content_length is None

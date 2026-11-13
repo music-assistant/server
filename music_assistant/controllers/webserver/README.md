@@ -372,6 +372,12 @@ only 64 KiB when it advertises nothing. On `http_proxy` that bounds the binary b
 therefore has to expect chunking well before the cap: pieces are 64 KiB by preference, sized
 down only when the cap cannot fit that much base64 plus the frame's JSON envelope.
 
+A client may split an oversized command on `ma-api` into the same frames, sent in order and one
+message at a time, and the gateway reassembles them before forwarding. A chunk frame out of
+sequence, one that does not decode, or a message of 4 MiB or more closes the session, since the
+local WebSocket would reject a message that large. Servers without this reassembly close the
+session on any chunk frame, so a client should only chunk what the channel could not carry whole.
+
 **Adding a new label** is not backwards compatible by itself: servers from before the routing
 table mistake an unknown label for the API channel, which breaks the entire remote session
 instead of just the new feature. A client must therefore feature-detect on `schema_version`
@@ -528,8 +534,8 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
    `required_scope` as well, so impersonation never grants more than that user's own role.
    Inside the handler, `get_current_user()` is the impersonated user; any music provider
    resolved for the caller must be one of that user's music sources
-   (`helpers/provider_access.py` `visible_provider`, which leaves the other provider types
-   unrestricted), never the plain `mass.get_provider` lookup
+   (`mass.music.get_visible_provider` / `resolve_visible_provider`, which leave the other
+   provider types unrestricted), never the plain `mass.get_provider` lookup
 
 ### Testing Authentication
 

@@ -8,7 +8,7 @@ import pytest
 from aiohttp import ClientError
 from aiomusiccast.exceptions import MusicCastConnectionException
 
-from music_assistant.providers.musiccast import player as player_module
+from music_assistant.helpers.upnp import AVTransport
 from music_assistant.providers.musiccast import provider as provider_module
 from music_assistant.providers.musiccast.player import MusicCastPlayer
 
@@ -88,7 +88,7 @@ async def test_player_enabled_while_receiver_unreachable(
 ) -> None:
     """A main re-enabled while its receiver is unreachable still gets registered."""
     monkeypatch.setattr(
-        player_module, "avt_get_media_info", AsyncMock(side_effect=ClientError("unreachable"))
+        AVTransport, "get_media_info", AsyncMock(side_effect=ClientError("unreachable"))
     )
     device = network.player("B___main").physical_device.device
     monkeypatch.setattr(

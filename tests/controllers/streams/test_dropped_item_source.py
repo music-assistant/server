@@ -102,12 +102,11 @@ class _Harness:
 
         player = MagicMock()
         player.stop_called = False
-        player.get_config_value.return_value = "default"
+        player.get_config_value.return_value = False
 
         self.ctrl = MagicMock()
         self.ctrl.logger = Mock()
         self.ctrl._log_request = Mock()
-        self.ctrl._raise_if_stale_item_request = Mock()
         self.ctrl._open_item_streams = {}
         self.ctrl._ended_item_streams = {}
         self.ctrl._active_output_streams = 0

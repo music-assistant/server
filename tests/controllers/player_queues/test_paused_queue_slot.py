@@ -4,6 +4,11 @@ Tests for a paused queue handing its provider stream slot to another queue.
 A queue paused on a player that really pauses keeps its session and its source buffers, and
 with them a provider's stream slot, until the pause watcher stops it. A provider that allows
 one stream would make a play on any other player fail in that window.
+
+A playing queue keeps its slot. When its source is realtime, that slot stays taken until the
+item ends, so a start on another queue is refused at once instead of waiting its budget out.
+A play command is refused that way before its tracks are fetched, unless one of the item's own
+sources has a free slot.
 """
 
 from __future__ import annotations
@@ -13,17 +18,32 @@ import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import ContentType, MediaType, PlaybackState, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    PlaybackState,
+    ProviderFeature,
+    ProviderType,
+    QueueOption,
+    StreamType,
+)
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
+from music_assistant_models.media_items import (
+    AudioFormat,
+    Playlist,
+    ProviderMapping,
+    SoundEffect,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+import music_assistant.controllers.player_queues.stream_feeder as feeder_mod
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -31,7 +51,11 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
-from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from music_assistant.models.music_provider import (
+    MusicProvider,
+    ProviderStreamHeldError,
+    ProviderStreamLimitError,
+)
 
 INSTANCE = "spotify--one"
 PAUSED_QUEUE = "living_room"
@@ -48,17 +72,28 @@ class _SingleStreamProvider(MusicProvider):
         return 1
 
 
-def _provider() -> _SingleStreamProvider:
-    """Construct a provider that lets one source stream run at a time."""
-    manifest = MagicMock(domain="spotify")
+class _TwoStreamProvider(MusicProvider):
+    """Streaming provider with two source slots."""
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Return two source slots."""
+        return 2
+
+
+def _provider(
+    provider_cls: type[MusicProvider] = _SingleStreamProvider, instance: str = INSTANCE
+) -> MusicProvider:
+    """Construct a provider of the given class, under the shared instance id by default."""
+    manifest = MagicMock(domain="spotify", type=ProviderType.MUSIC)
     manifest.name = "Spotify"
-    config = MagicMock(instance_id=INSTANCE)
+    config = MagicMock(instance_id=instance)
     config.name = "Spotify"
     config.get_value.return_value = "GLOBAL"
-    return _SingleStreamProvider(MagicMock(), manifest, config)
+    return provider_cls(MagicMock(), manifest, config)
 
 
-def _queue_item(queue_id: str) -> QueueItem:
+def _queue_item(queue_id: str, realtime: bool = False) -> QueueItem:
     """Build a queue item of the provider, with its stream details resolved."""
     mapping = ProviderMapping(
         item_id=f"track-{queue_id}",
@@ -86,6 +121,7 @@ def _queue_item(queue_id: str) -> QueueItem:
         stream_type=StreamType.CUSTOM,
         duration=600,
         queue_id=queue_id,
+        is_realtime=realtime,
     )
     return item
 
@@ -97,16 +133,23 @@ async def _endless_source(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
     await asyncio.Event().wait()
 
 
+async def _finite_source(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+    """Deliver a few seconds of audio and end, like a track whose audio has fully arrived."""
+    for _ in range(3):
+        yield b"\x00" * PCM_FORMAT.pcm_sample_size
+
+
 class _Rig:
     """A queue controller and the streams side of it, sharing one single-slot provider."""
 
     def __init__(self) -> None:
         self.provider = _provider()
+        self.other_providers: dict[str, MusicProvider] = {}
         self.players: dict[str, SimpleNamespace] = {}
         self.tasks: list[asyncio.Future[Any]] = []
         mass = MagicMock()
         mass.get_provider.side_effect = lambda instance, **_kwargs: (
-            self.provider if instance == INSTANCE else None
+            self.provider if instance == INSTANCE else self.other_providers.get(instance)
         )
         mass.config.get_raw_core_config_value.side_effect = lambda _core, _key, default: default
         mass.create_task.side_effect = self._create_task
@@ -128,9 +171,9 @@ class _Rig:
         self.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
         mass.streams.audio = self.audio
 
-    def add_queue(self, queue_id: str, state: PlaybackState) -> QueueItem:
+    def add_queue(self, queue_id: str, state: PlaybackState, realtime: bool = False) -> QueueItem:
         """Register a queue and its player in the given state, holding one item."""
-        item = _queue_item(queue_id)
+        item = _queue_item(queue_id, realtime)
         queue = PlayerQueue(
             queue_id=queue_id,
             active=state != PlaybackState.IDLE,
@@ -149,6 +192,7 @@ class _Rig:
             state=SimpleNamespace(playback_state=state, active_source=queue_id),
             extra_data={},
             private=False,
+            offline_by_power_control=False,
         )
         return item
 
@@ -289,12 +333,175 @@ async def test_a_playing_queue_keeps_its_slot(rig: _Rig) -> None:
     playing_buffer = await rig.fill(playing_item)
     starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
 
-    with pytest.raises(ProviderStreamLimitError):
+    with pytest.raises(ProviderStreamLimitError) as exc_info:
         await rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=0.2)
 
+    # a source that fills ahead of playback frees its slot soon, so the wait is worth it
+    assert not isinstance(exc_info.value, ProviderStreamHeldError)
     rig.stop_device.assert_not_awaited()
     assert playing_buffer.is_buffering
     await playing_buffer.clear()
+
+
+async def test_a_playing_realtime_holder_refuses_a_start_on_another_queue_at_once(
+    rig: _Rig,
+) -> None:
+    """A realtime source keeps its slot until its item ends: the start is refused, naming it."""
+    playing_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    playing_buffer = await rig.fill(playing_item)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(ProviderStreamHeldError) as exc_info:
+        await rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=15)
+
+    assert asyncio.get_running_loop().time() - started < 1
+    assert exc_info.value.translation_args == ["Spotify", PAUSED_QUEUE]
+    assert exc_info.value.data == {
+        "queue_id": PAUSED_QUEUE,
+        "player_name": PAUSED_QUEUE,
+        "provider_instance": INSTANCE,
+    }
+    rig.stop_device.assert_not_awaited()
+    assert playing_buffer.is_buffering
+    await playing_buffer.clear()
+
+
+async def test_a_realtime_holder_whose_session_ended_is_waited_for(rig: _Rig) -> None:
+    """A stop ends the session before its audio is released, and that release is worth the wait."""
+    stopping_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    stopping_buffer = await rig.fill(stopping_item)
+    rig.queues._queue_data[PAUSED_QUEUE].session_id = None
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    async def _release_shortly() -> None:
+        await asyncio.sleep(0.1)
+        await stopping_buffer.clear()
+
+    release = asyncio.ensure_future(_release_shortly())
+    buffer = await rig.audio.get_audio_buffer(
+        starting_item, reason="prepare", capacity_wait_timeout=2
+    )
+    await release
+
+    assert buffer is not None
+    assert buffer.is_buffering
+    await buffer.clear()
+
+
+async def test_a_paused_realtime_holder_is_taken_over_rather_than_refused(rig: _Rig) -> None:
+    """The paused takeover comes first, so the start gets the slot instead of a refusal."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED, realtime=True)
+    paused_buffer = await rig.fill(paused_item)
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    buffer = await rig.audio.get_audio_buffer(
+        starting_item, reason="prepare", capacity_wait_timeout=2
+    )
+
+    assert buffer is not None
+    rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
+    assert paused_buffer.cancelled
+    await buffer.clear()
+
+
+async def test_an_item_resuming_from_its_own_buffer_is_not_refused(rig: _Rig) -> None:
+    """Audio that already arrived needs no slot, so a held one is no reason to refuse it."""
+    rig.audio._get_media_stream = _finite_source  # type: ignore[method-assign]
+    resuming_item = rig.add_queue(STARTING_QUEUE, PlaybackState.PAUSED, realtime=True)
+    own_buffer = await rig.fill(resuming_item)
+    while own_buffer.is_buffering:
+        await asyncio.sleep(0.01)
+    assert rig.provider.has_available_stream_slot
+    rig.audio._get_media_stream = _endless_source  # type: ignore[method-assign]
+    playing_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    playing_buffer = await rig.fill(playing_item)
+
+    buffer = await rig.audio.get_audio_buffer(
+        resuming_item, reason="prepare", capacity_wait_timeout=15
+    )
+
+    assert buffer is own_buffer
+    await playing_buffer.clear()
+    await own_buffer.clear()
+
+
+async def test_a_provider_with_more_than_one_slot_keeps_the_wait(rig: _Rig) -> None:
+    """One realtime holder says nothing about the other slots, so the start waits as before."""
+    rig.provider = _provider(_TwoStreamProvider)
+    first_buffer = await rig.fill(rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True))
+    second_buffer = await rig.fill(rig.add_queue("office", PlaybackState.PLAYING, realtime=True))
+    assert not rig.provider.has_available_stream_slot
+    starting_item = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+
+    with pytest.raises(ProviderStreamLimitError) as exc_info:
+        await rig.audio.get_audio_buffer(starting_item, reason="prepare", capacity_wait_timeout=0.2)
+
+    assert not isinstance(exc_info.value, ProviderStreamHeldError)
+    await first_buffer.clear()
+    await second_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("player_filter", "named"),
+    [([STARTING_QUEUE], False), ([STARTING_QUEUE, PAUSED_QUEUE], True), ([], True)],
+    ids=["other-player-not-allowed", "other-player-allowed", "unrestricted"],
+)
+async def test_a_holder_is_named_only_to_a_user_who_may_control_it(
+    rig: _Rig, player_filter: list[str], named: bool
+) -> None:
+    """A user limited to some players is refused all the same, but learns nothing of others."""
+    playing_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True)
+    playing_buffer = await rig.fill(playing_item)
+    set_current_user(
+        User(user_id="kid", username="kid", role=UserRole.USER, player_filter=player_filter)
+    )
+    try:
+        with pytest.raises(ProviderStreamLimitError) as exc_info:
+            rig.queues.refuse_held_stream_slot(INSTANCE, STARTING_QUEUE)
+    finally:
+        set_current_user(None)
+
+    assert isinstance(exc_info.value, ProviderStreamHeldError) is named
+    assert (exc_info.value.data is not None) is named
+    await playing_buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("asking_queue", "state", "realtime", "has_session", "refused"),
+    [
+        (STARTING_QUEUE, PlaybackState.PLAYING, True, True, True),
+        (PAUSED_QUEUE, PlaybackState.PLAYING, True, True, False),
+        (STARTING_QUEUE, PlaybackState.PLAYING, False, True, False),
+        (STARTING_QUEUE, PlaybackState.PAUSED, True, True, False),
+        (STARTING_QUEUE, PlaybackState.PLAYING, True, False, False),
+    ],
+    ids=[
+        "another-queue-playing-a-realtime-source",
+        "the-asking-queue-itself",
+        "a-source-that-fills-ahead",
+        "paused-is-handed-over-instead",
+        "session-ended",
+    ],
+)
+async def test_only_another_queue_playing_a_realtime_source_holds_its_slot_for_good(
+    rig: _Rig,
+    asking_queue: str,
+    state: PlaybackState,
+    realtime: bool,
+    has_session: bool,
+    refused: bool,
+) -> None:
+    """Only a realtime source played by another queue holds its slot for the item's length."""
+    item = rig.add_queue(PAUSED_QUEUE, state, realtime=realtime)
+    buffer = await rig.fill(item)
+    if not has_session:
+        rig.queues._queue_data[PAUSED_QUEUE].session_id = None
+
+    with pytest.raises(ProviderStreamHeldError) if refused else contextlib.nullcontext():
+        rig.queues.refuse_held_stream_slot(INSTANCE, asking_queue)
+
+    await buffer.clear()
 
 
 @pytest.mark.parametrize(
@@ -464,3 +671,142 @@ async def test_a_member_starting_from_its_paused_group_takes_the_groups_slot(rig
     rig.stop_device.assert_awaited_once_with(PAUSED_QUEUE)
     assert paused_buffer.cancelled
     await buffer.clear()
+
+
+def _mapping(instance: str) -> ProviderMapping:
+    """Build the mapping of an item on the given provider instance."""
+    return ProviderMapping(
+        item_id=f"on-{instance}", provider_domain="spotify", provider_instance=instance
+    )
+
+
+def _playlist(item_id: str = "big") -> Playlist:
+    """Build a playlist straight from the single-slot provider."""
+    return Playlist(
+        item_id=item_id, provider=INSTANCE, name=item_id, provider_mappings={_mapping(INSTANCE)}
+    )
+
+
+async def _hold_the_slot(rig: _Rig) -> AudioBuffer:
+    """Let realtime playback on another queue take the provider's only slot."""
+    rig.provider.available = True
+    return await rig.fill(rig.add_queue(PAUSED_QUEUE, PlaybackState.PLAYING, realtime=True))
+
+
+async def test_a_play_on_a_held_source_is_refused_before_its_tracks_are_fetched(
+    rig: _Rig,
+) -> None:
+    """The refusal comes once the playlist itself is known, and the queue stays as it was."""
+    holder_buffer = await _hold_the_slot(rig)
+    queued = rig.add_queue(STARTING_QUEUE, PlaybackState.IDLE)
+    queue_data = rig.queues._queue_data[STARTING_QUEUE]
+    seed = _playlist("earlier")
+    queue_data.enqueued_media_items = [seed]
+    resolve = AsyncMock()
+    rig.queues._media_resolver = MagicMock(_resolve_media_items=resolve)
+
+    with pytest.raises(ProviderStreamHeldError) as exc_info:
+        await rig.queues._handle_play_media(STARTING_QUEUE, _playlist(), QueueOption.REPLACE)
+
+    assert exc_info.value.data == {
+        "queue_id": PAUSED_QUEUE,
+        "player_name": PAUSED_QUEUE,
+        "provider_instance": INSTANCE,
+    }
+    resolve.assert_not_awaited()
+    assert queue_data.items == [queued]
+    assert queue_data.enqueued_media_items == [seed]
+    await holder_buffer.clear()
+
+
+def _second_account(rig: _Rig) -> MusicProvider:
+    """Add a free second account of the provider's streaming service."""
+    second = _provider(instance="spotify--two")
+    second.available = True
+    rig.other_providers["spotify--two"] = second
+    rig.mass.providers = [rig.provider, second]
+    return second
+
+
+async def test_a_copy_on_a_free_second_account_keeps_a_play_from_being_refused_early(
+    rig: _Rig,
+) -> None:
+    """The stream itself picks the free account, so the play goes ahead."""
+    holder_buffer = await _hold_the_slot(rig)
+    _second_account(rig)
+    track = Track(
+        item_id="7",
+        provider="library",
+        name="Seven",
+        provider_mappings={_mapping(INSTANCE), _mapping("spotify--two")},
+    )
+
+    rig.queues.refuse_held_item(track, STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_free_second_account_streams_an_item_mapped_to_the_busy_one(rig: _Rig) -> None:
+    """Another account of the same service plays the same item id, so the play goes ahead."""
+    holder_buffer = await _hold_the_slot(rig)
+    _second_account(rig)
+
+    rig.queues.refuse_held_item(_playlist(), STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_free_account_the_user_may_not_use_does_not_keep_a_play_going(
+    rig: _Rig,
+) -> None:
+    """Only the sources the user may play from count as free."""
+    holder_buffer = await _hold_the_slot(rig)
+    _second_account(rig)
+    track = Track(
+        item_id="7",
+        provider="library",
+        name="Seven",
+        provider_mappings={_mapping(INSTANCE), _mapping("spotify--two")},
+    )
+
+    with (
+        patch.object(feeder_mod, "visible_playback_sources", return_value=[INSTANCE]),
+        pytest.raises(ProviderStreamHeldError),
+    ):
+        rig.queues.refuse_held_item(track, STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_play_another_streaming_service_may_find_is_not_refused_early(
+    rig: _Rig,
+) -> None:
+    """The stream itself may still find the item on a service it has no mapping on."""
+    holder_buffer = await _hold_the_slot(rig)
+    rig.mass.music.providers = [
+        SimpleNamespace(
+            available=True,
+            is_streaming_provider=True,
+            supported_features={ProviderFeature.SEARCH},
+            domain="tidal",
+            supported_media_types={MediaType.TRACK},
+            instance_id="tidal--one",
+        )
+    ]
+
+    rig.queues.refuse_held_item(_playlist(), STARTING_QUEUE, None)
+
+    await holder_buffer.clear()
+
+
+async def test_a_provider_with_more_than_one_slot_is_not_refused_early(rig: _Rig) -> None:
+    """One realtime holder says nothing about the other slots, so the play goes ahead."""
+    rig.provider = _provider(_TwoStreamProvider)
+    first_buffer = await _hold_the_slot(rig)
+    second_buffer = await rig.fill(rig.add_queue("office", PlaybackState.PLAYING, realtime=True))
+    assert not rig.provider.has_available_stream_slot
+
+    rig.queues.refuse_held_item(_playlist(), STARTING_QUEUE, None)
+
+    await first_buffer.clear()
+    await second_buffer.clear()

@@ -1,0 +1,14 @@
+{
+  "type": "plugin",
+  "stage": "experimental",
+  "domain": "audiomuse_ai",
+  "name": "AudioMuse-AI",
+  "description": "Library-wide Similar Tracks, an 'Inspired by recently played' discover row, and free-text search, powered by an external AudioMuse-AI server. Requires a running AudioMuse-AI instance pointed at the same media server you use in Music Assistant.",
+  "codeowners": ["@NeptuneHub"],
+  "requirements": [],
+  "credits": ["[AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI)"],
+  "documentation": "https://github.com/NeptuneHub/AudioMuse-AI",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "robot-happy"
+}

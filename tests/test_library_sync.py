@@ -510,6 +510,38 @@ async def test_refresh_item_non_library_item_skips_update() -> None:
     ctrl_mock.update_item_in_library.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("media_type", "cleared"), [(MediaType.TRACK, True), (MediaType.ALBUM, False)]
+)
+async def test_refresh_item_clears_the_measured_loudness_of_a_track(
+    media_type: MediaType, cleared: bool
+) -> None:
+    """Refreshing a track clears its measured loudness, refreshing an album does not."""
+    mapping = create_provider_mapping(provider_instance="spotify_1", item_id="abc")
+    item = create_mock_album(item_id="abc", provider="spotify", provider_mappings=[mapping])
+    item.media_type = media_type
+
+    ctrl_mock = AsyncMock()
+    ctrl_mock.get_provider_item = AsyncMock(return_value=item)
+
+    mass = Mock()
+    mass.get_provider.return_value = Mock()
+    mass.cache.delete = AsyncMock()
+    mass.streams.audio_analysis.delete_measured_loudness = AsyncMock()
+
+    music_ctrl = MusicController.__new__(MusicController)
+    music_ctrl.mass = mass
+
+    with patch.object(music_ctrl, "get_controller", return_value=ctrl_mock):
+        await music_ctrl.refresh_item(item)
+
+    delete = mass.streams.audio_analysis.delete_measured_loudness
+    if cleared:
+        delete.assert_awaited_once_with(item.provider_mappings)
+    else:
+        delete.assert_not_awaited()
+
+
 # --- Group 3: Sync deletions ---
 
 
@@ -1247,6 +1279,9 @@ async def test_select_provider_id_prefers_highest_priority_mapping(reverse: bool
     """The subscribed non-streaming source wins over a mapping added by provider matching."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {"spotify_1": Mock(type=ProviderType.MUSIC), "gpodder_1": Mock(type=ProviderType.MUSIC)}
+    )
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     mappings = [
@@ -1281,6 +1316,9 @@ def test_select_provider_id_breaks_priority_ties_deterministically(reverse: bool
     """Mappings of equal priority resolve to the same mapping regardless of order."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {"tidal_1": Mock(type=ProviderType.MUSIC), "spotify_1": Mock(type=ProviderType.MUSIC)}
+    )
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     mappings = [
@@ -1519,3 +1557,29 @@ def test_select_provider_id_never_substitutes_another_account_of_the_same_servic
         pytest.raises(MediaNotFoundError),
     ):
         ctrl._select_provider_id(item)
+
+
+def test_select_provider_id_skips_a_down_account_for_an_unrestricted_user() -> None:
+    """Without a source filter the first mapping with a loaded instance serves, not a down one."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    down = Mock(type=ProviderType.MUSIC)
+    ctrl.mass.get_provider = _mock_provider_lookup(
+        {"spotify_1": down, "spotify_2": Mock(type=ProviderType.MUSIC)}
+    )
+    down.available = False
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance=instance, provider_domain="spotify", item_id=f"{instance}_item"
+            )
+            for instance in ("spotify_1", "spotify_2")
+        ]
+    )
+
+    with patch("music_assistant.controllers.music.media.base.get_current_user", return_value=None):
+        assert ctrl._select_provider_id(item) == ("spotify_2", "spotify_2_item")
+        ctrl.mass.get_provider = _mock_provider_lookup({})
+        with pytest.raises(MediaNotFoundError):
+            ctrl._select_provider_id(item)

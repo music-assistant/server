@@ -207,7 +207,9 @@ else goes, including what sessions that ended earlier left behind: sessions rota
 so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
 drops the items themselves, so all of their audio goes with them.
 
-A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
+A paused queue keeps its session and its buffers until the pause watcher stops it once the
+configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
+buffer releases its audio).
 When playback on another queue finds no free provider stream slot and one of those buffers holds
 one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
 source stream. Preparing the next track ahead of time never stops a paused queue. A player that
@@ -238,8 +240,10 @@ Two distinct refill paths share the same "running low" trigger:
 - **Autoplay** is the single "keep going" switch; what it appends is dispatched on the media type of
   the queue's last item, since that is the item the appended ones follow. Music continues with the
   per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued items),
-  an infinite library mix (genre-biased, least-played), a chosen playlist, or an automatic mode that
-  tries similar first and falls back to the library mix. The mode is read from the per-queue config;
+  an infinite library mix (genre-biased, least-played), a chosen playlist, similar artists, or an
+  automatic mode that tries similar first and falls back to the library mix. The similar artists
+  mode plays an artist similar to the last track's artist that has no track in the queue yet, the
+  same way as playing that artist. The mode is read from the per-queue config;
   the playlist for playlist-mode is a per-queue config value. A podcast episode or audiobook instead
   continues with its own successor — the next episode of the podcast, the next book in the collection
   — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources
@@ -315,14 +319,17 @@ and items played on their own):
   still recorded.
 - A folder pins each file it lists, and a library track standing in for a file to its copy under
   that folder. An album folder, or a disc subfolder of one, records the library album as its
-  container, so it plays with album loudness like the album itself.
+  container, so it plays with album loudness like the album itself. An album inside a played
+  folder (an album folder below it, or an album a folder lists) plays as part of the folder it
+  sits in: its tracks keep their pins but record that folder.
 - An artist, a genre or a finite radio station records itself without pinning anything.
 - An audiobook or podcast episode played on its own is pinned to the copy it was started from, so
   its progress and resume stay on that account. A single track played on its own has no origin.
 
-A track played from an album, or from the folder that holds one, plays as part of that album: it
+A track played from an album, or from the album's own folder, plays as part of that album: it
 uses the album loudness, and it is not crossfaded into the next track played from the same album
-unless the streams setting `allow_crossfade_same_album` is on.
+unless the streams setting `allow_crossfade_same_album` is on. The first of those tracks to play to
+the end counts the album as played, once until the album is played again.
 
 **Album source.** An album plays all of its tracks from one source. `_resolve_album` asks the Music
 Controller for the album's `playback_listing` (which entry each source lists for each track),

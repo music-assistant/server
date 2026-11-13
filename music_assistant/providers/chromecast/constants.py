@@ -7,7 +7,6 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     create_sample_rates_config_entry,
@@ -27,6 +26,10 @@ APP_LAUNCH_TIMEOUT = 30.0
 # Seconds the receiver app is kept running after playback stopped, so a
 # follow-up command can reuse the Cast session instead of starting a new one.
 APP_QUIT_DELAY = 10.0
+
+# Seconds a playing app of another party may report nothing playing, as it does while it
+# moves to another track, before that is taken as the end of its playback.
+APP_TRACK_CHANGE_TIME = 5.0
 
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
@@ -71,7 +74,6 @@ SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     # enable flow mode by default as cast devices handle a continuous
     # flow stream more reliably than enqueueing individual tracks
     ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),

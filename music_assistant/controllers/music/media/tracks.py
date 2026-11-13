@@ -54,6 +54,7 @@ from music_assistant.controllers.music.helpers import (
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import Listing
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
     compare_artists,
@@ -68,6 +69,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
+from music_assistant.helpers.provider_access import visible_items
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import (
@@ -129,6 +131,12 @@ class TracksController(MediaControllerBase[Track]):
         super().__init__(mass)
         # register (extra) api handlers
         api_base = self.api_base
+        self.mass.register_api_command(
+            f"music/{api_base}/letter_index",
+            self.letter_index,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
+        )
         self.mass.register_api_command(
             f"music/{api_base}/track_versions", self.versions, required_scope=Scope.LIBRARY_READ
         )
@@ -248,14 +256,18 @@ class TracksController(MediaControllerBase[Track]):
                 item = await self.mass.music.get_item_by_uri(album_uri, allow_update_metadata=False)
                 if isinstance(item, Album):
                     track.album = item
-            elif provider_instance_id_or_domain == "library":
-                # grab the first album this track is attached to
+            elif track.provider == "library":
+                # grab the first album this track is attached to, on the user's sources; the
+                # row's album mapping is dropped when none is
+                track.album = None
                 for album_track_row in await self.mass.music.database.get_rows(
-                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(item_id)}, limit=1
+                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(track.item_id)}
                 ):
-                    track.album = await self.mass.music.albums.get_library_item(
-                        album_track_row["album_id"]
-                    )
+                    if album := await self.mass.music.albums.get_visible_library_item_by_prov_id(
+                        str(album_track_row["album_id"]), "library"
+                    ):
+                        track.album = album
+                        break
             elif isinstance(track.album, ItemMapping) or (track.album and not track.album.image):
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
@@ -335,18 +347,9 @@ class TracksController(MediaControllerBase[Track]):
         if reachable_via is not None and not reachable_via:
             return []
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts: list[str] = []
-        extra_join_parts: list[str] = []
-
         # Apply explicit content filter
-        if explicit is not None:
-            if explicit:
-                extra_query_parts.append("json_extract(tracks.metadata, '$.explicit') = 1")
-            else:
-                extra_query_parts.append(
-                    "(json_extract(tracks.metadata, '$.explicit') IS NULL "
-                    "OR json_extract(tracks.metadata, '$.explicit') = 0)"
-                )
+        extra_query_parts = self._library_filter_parts(explicit)
+        extra_join_parts: list[str] = []
 
         artist_join_added = False
         if field == SortField.ARTIST_NAME:
@@ -441,6 +444,51 @@ class TracksController(MediaControllerBase[Track]):
                 if _track.uri not in existing_uris:
                     result.append(_track)
         return result
+
+    async def letter_index(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
+        played_only: bool = False,
+        explicit: bool | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        reachable_via: list[str] | None = None,
+    ) -> list[dict[str, str | int]]:
+        """
+        Return where each starting letter begins in the in-database tracks listing.
+
+        Each entry holds a letter ("A" to "Z", or "#" for anything else) and the offset of
+        its first track in ``library_items`` for the same arguments, in listing order.
+        Empty when sorted on anything but name or sort name, or when searching.
+
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
+        :param search: Filter by search query.
+        :param provider: Filter by provider instance ID (single string or list).
+        :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played tracks.
+        :param explicit: Filter by explicit content (True=only explicit, False=no explicit, None=all).
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids, see `library_items`.
+        """
+        query_params: dict[str, Any] = {}
+        return await self._library_letter_index(
+            self._library_filter_parts(explicit),
+            query_params,
+            favorite=favorite,
+            search=search,
+            provider=provider,
+            genre=genre,
+            played_only=played_only,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            reachable_via=reachable_via,
+        )
 
     async def versions(
         self,
@@ -545,7 +593,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             unique_ids.add(unique_id)
             # prefer db item
-            if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
+            if db_item := await self.mass.music.albums.get_visible_library_item_by_prov_id(
                 prov_item.album.item_id, prov_item.album.provider
             ):
                 result.append(db_item)
@@ -587,7 +635,7 @@ class TracksController(MediaControllerBase[Track]):
         :param limit: Maximum number of similar tracks to return; 0 returns them all.
         :param allow_lookup: Allow lookup on other providers if not found.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
-            When provided, these providers will be tried first before falling back to others.
+            When provided, these are tried first among the track's own music providers.
         :param search: Only list the tracks whose name, album name or artist name contains
             this text.
         :param sort_field: Sort field, the provider's ranking (ORIGINAL) when omitted.
@@ -617,8 +665,9 @@ class TracksController(MediaControllerBase[Track]):
                 lambda instance_id: self._assemble_similar_tracks(item_id, instance_id),
                 item_type=Track,
             )
+        # the cached listing is shared by all users, so it is narrowed on every read
         return apply_listing(
-            tracks,
+            visible_items(self.mass, tracks, get_current_user()),
             ListingType.SIMILAR_TRACKS,
             search=search,
             sort_field=sort_field,
@@ -715,6 +764,7 @@ class TracksController(MediaControllerBase[Track]):
             limit=0,
             extra_query_parts=[query],
             extra_query_params={"track_id": db_id},
+            provider_filter=self._ensure_provider_filter(None),
             in_library_only=True,
         )
 
@@ -1765,39 +1815,30 @@ class TracksController(MediaControllerBase[Track]):
                 },
             )
         for artist in all_artists:
-            await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
+            await self._set_track_artist(db_id, artist=artist)
 
-    async def _set_track_artist(
-        self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
-    ) -> ItemMapping:
+    async def _set_track_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
         """Store Track Artist info."""
-        db_artist: Artist | ItemMapping | None = None
-        if artist.provider == "library":
-            db_artist = artist
-        elif existing := await self.mass.music.artists.get_library_item_by_prov_id(
-            artist.item_id, artist.provider
-        ):
-            db_artist = existing
-
-        if not db_artist or overwrite:
-            # Convert ItemMapping to Artist if needed
-            artist_to_add = (
-                self.mass.music.artists.artist_from_item_mapping(artist)
-                if isinstance(artist, ItemMapping)
-                else artist
-            )
-            db_artist = await self.mass.music.artists.add_item_to_library(
-                artist_to_add, overwrite_existing=overwrite
-            )
         # write (or update) record in track_artists table
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_TRACK_ARTISTS,
             {
                 "track_id": db_id,
-                "artist_id": int(db_artist.item_id),
+                "artist_id": await self.mass.music.artists.get_or_add_library_artist_id(artist),
             },
         )
-        return ItemMapping.from_item(db_artist)
+
+    @staticmethod
+    def _library_filter_parts(explicit: bool | None) -> list[str]:
+        """Return the WHERE conditions of the track-specific library listing filters."""
+        if explicit is None:
+            return []
+        if explicit:
+            return ["json_extract(tracks.metadata, '$.explicit') = 1"]
+        return [
+            "(json_extract(tracks.metadata, '$.explicit') IS NULL "
+            "OR json_extract(tracks.metadata, '$.explicit') = 0)"
+        ]
 
     def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str:
         """Return the ORDER BY clause for a sort field, ARTIST_NAME through the artists join."""
@@ -1807,7 +1848,9 @@ class TracksController(MediaControllerBase[Track]):
             return "artists.search_name ASC, tracks.search_name ASC"
         return super()._get_sort_sql(field, direction)
 
-    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+    async def _sync_details_query_parts(
+        self, provider_mappings: Iterable[ProviderMapping]
+    ) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the tracks sync-details query."""
         # the sync loop needs to know if the track has (valid) album and artist links
         # to be able to backfill missing ones on existing library tracks
@@ -1870,14 +1913,14 @@ class TracksController(MediaControllerBase[Track]):
         search_query = f"{track.artist_str} - {track.name}"
         result: UniqueList[Track] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
-            provider = self.mass.get_provider(provider_id)
+            provider = self.mass.music.get_visible_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
             if MediaType.TRACK not in provider.supported_media_types:
                 continue
             result.extend(
                 prov_item
-                for prov_item in await self.search(search_query, provider_id)
+                for prov_item in await self.search(search_query, provider.instance_id)
                 if loose_compare_strings(track.name, prov_item.name)
                 and compare_artists(prov_item.artists, track.artists, any_match=True)
                 # make sure that the 'base' version is NOT included
@@ -1896,6 +1939,11 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return the similar tracks of the first provider that has any for the given track.
 
+        Plugin providers are asked first, then the track's own music providers, then metadata
+        providers and, when allowed, a lookup match on another music provider. A similarity
+        plugin is installed to improve on what the streaming service returns, while metadata
+        providers stay a fallback.
+
         A provider that failed before the answer, or a mapped source that is not loaded,
         might have answered first, which leaves the listing incomplete.
 
@@ -1903,7 +1951,7 @@ class TracksController(MediaControllerBase[Track]):
         :param provider_instance_id_or_domain: The provider instance ID or domain.
         :param allow_lookup: Allow lookup on other providers if not found.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
-            When provided, these providers will be tried first before falling back to others.
+            When provided, these are tried first among the track's own music providers.
         :raises MusicAssistantError: When no provider can complete the request.
         """
         ref_item = await self.get(item_id, provider_instance_id_or_domain)
@@ -1927,38 +1975,38 @@ class TracksController(MediaControllerBase[Track]):
         )
         provider_responded = False
         unanswered = False
+        hidden_sources = self._hidden_sources()
 
-        # Try preferred providers first, then fall back to others
+        def cross_type_candidates(
+            prov_type: ProviderType,
+        ) -> list[tuple[MusicProvider | MusicDiscoveryMixin | None, str | None]]:
+            return [
+                (cast("MusicDiscoveryMixin", prov), None)
+                for prov in self.mass.get_providers_supporting_feature(
+                    ProviderFeature.SIMILAR_TRACKS, priority=(prov_type,)
+                )
+            ]
+
+        candidates = cross_type_candidates(ProviderType.PLUGIN)
         for prov_mapping in sorted_mappings:
-            prov = self.mass.get_provider(prov_mapping.provider_instance)
-            if prov is None:
+            prov = self.mass.music.get_visible_provider(prov_mapping.provider_instance)
+            if prov is None and prov_mapping.provider_instance in hidden_sources:
+                # a source the user may not use is no gap in their listing
+                continue
+            # an unloaded source keeps its place, as it leaves any later answer incomplete
+            if prov is None or (
+                isinstance(prov, MusicProvider)
+                and ProviderFeature.SIMILAR_TRACKS in prov.supported_features
+            ):
+                candidates.append((prov, prov_mapping.item_id))
+        candidates += cross_type_candidates(ProviderType.METADATA)
+
+        for candidate, provider_track_id in candidates:
+            if candidate is None:
                 unanswered = True
                 continue
-            if (
-                not isinstance(prov, MusicProvider)
-                or ProviderFeature.SIMILAR_TRACKS not in prov.supported_features
-            ):
-                continue
             result, error = await self._get_similar_tracks_from_provider(
-                prov, ref_item, SIMILAR_ITEMS_LIMIT, provider_track_id=prov_mapping.item_id
-            )
-            if error is not None:
-                last_provider_error = error
-                continue
-            if result is None:
-                continue
-            provider_responded = True
-            if result:
-                return Listing(result, complete=last_provider_error is None and not unanswered)
-
-        # Fallback: consult metadata/plugin providers that claim SIMILAR_TRACKS
-        for prov in self.mass.get_providers_supporting_feature(
-            ProviderFeature.SIMILAR_TRACKS,
-            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
-        ):
-            cross_prov = cast("MusicDiscoveryMixin", prov)
-            result, error = await self._get_similar_tracks_from_provider(
-                cross_prov, ref_item, SIMILAR_ITEMS_LIMIT
+                candidate, ref_item, SIMILAR_ITEMS_LIMIT, provider_track_id=provider_track_id
             )
             if error is not None:
                 last_provider_error = error
