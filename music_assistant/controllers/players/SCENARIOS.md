@@ -1024,7 +1024,10 @@ While the browser is away, the player is hidden, exposed to Home Assistant and n
 
 ## Commands to a busy player
 
-Commands to one player run one at a time: a command waits for the one before it.
+Commands to one player run one at a time: a command waits for the one before it. Moving a queue
+to another player holds both players until the other one plays: a play, stop, resume, next,
+previous, seek or play of either queue waits for the move. A pause and a clear of a queue take no
+lock and do not wait.
 
 ### BUSY-1 · A command waits for the command that holds the player
 
@@ -1043,6 +1046,89 @@ again: the input switch reaches the speaker.
 
 - End-to-end: **no**: it needs a device that never answers a command.
 - Proven by: `test_commands.py::test_a_command_behind_a_command_that_never_returns_fails_as_busy`
+
+### BUSY-3 · A stop sent to the player a queue moves to stops what the move started
+
+The queue of Den moves to Kitchen, and Den takes 40 s to stop. A stop sent to Kitchen meanwhile
+waits for the move. Once Kitchen plays the queue, the stop reaches it, and Kitchen is stopped.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_stop_sent_to_the_target_of_a_transfer_stops_what_the_transfer_started`
+
+### BUSY-4 · A queue that is still starting moves once it plays
+
+A resume of Den takes 40 s at the speaker. The queue of Den, moved to Kitchen meanwhile, moves
+once Den plays: Den stops, Kitchen plays the queue, and Den's queue is empty. Den does not go on
+playing an empty queue next to Kitchen.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_resume_that_is_still_starting_is_done_before_a_transfer_moves_its_queue`
+
+### BUSY-5 · A queue moved to a player that is still starting a play replaces it after the play
+
+A play takes 40 s at Kitchen. The queue of Den, moved to Kitchen meanwhile, waits for the play:
+until it is done Kitchen's queue is the one the play started and Den plays on. Then Kitchen plays
+Den's queue, and Den is stopped.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_play_on_the_target_that_is_still_starting_is_done_before_a_transfer_replaces_it`
+
+### BUSY-6 · A queue moved to a player that stays busy stays where it was
+
+A play on Kitchen never returns. The queue of Den, moved to Kitchen, fails with a busy error that
+names Kitchen after 120 s. Nothing has moved: Den plays its queue on, and Kitchen keeps the queue
+of its play.
+
+- End-to-end: **no**: it needs a device that never answers a command.
+- Proven by: `test_commands.py::test_a_transfer_to_a_player_that_stays_busy_fails_and_leaves_both_as_they_were`
+
+### BUSY-7 · A queue moved to a switched-off player holds neither player while it comes on
+
+The Bathroom player is on a smart plug that is switched off. The queue of Den, moved to Bathroom
+while Den plays, switches the plug on and waits for the device. A seek on Den meanwhile runs at
+once. Once the device is back, Bathroom plays Den's queue, and Den is stopped.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_commands.py::test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it_powers_on`
+
+### BUSY-8 · A queue moved to a player that is grouped elsewhere meanwhile still plays there
+
+The queue of Den moves to Kitchen, by a transfer or because Den leaves the group it leads with
+Kitchen, and Den takes 40 s to stop. Meanwhile Kitchen joins Office's group, or Downstairs, a
+group of Office and Kitchen, takes it: a sync group that starts to play another track, or a
+universal group that powers on. The move still completes: Kitchen plays the moved queue and Den
+is idle with an empty queue. Kitchen leaves Office's group again; the sync group plays its track
+on Office; the universal group is idle. When the group takes Kitchen first and the queue moves
+while Office takes 40 s to do its part, Kitchen plays the moved queue as well, and a sync group
+still lists it, at the other track. That is a limit, not the intended end: Kitchen plays its own
+queue while the sync group still lists it as a member.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by:
+  - `test_commands.py::test_a_transfer_whose_target_joins_another_group_meanwhile_still_completes`
+  - `test_commands.py::test_a_transfer_whose_target_a_group_takes_meanwhile_still_completes`
+
+### BUSY-9 · A play on the player a queue moved away from waits until the other one plays
+
+Kitchen takes 40 s to start the queue moved there from Den. Den has stopped and its queue is empty
+by then, but a play on Den sent meanwhile waits until Kitchen plays, and then plays on Den.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_play_on_the_source_waits_until_the_target_of_a_transfer_plays`
+
+### BUSY-10 · A hand-over whose new leader joins another group meanwhile still completes
+
+Den leads Kitchen and Office, plays its own queue and leaves its group: its queue moves to
+Kitchen, the new leader, which takes 40 s to regroup Office, or to start the queue. Meanwhile
+Kitchen joins Patio's group. The hand-over still completes, and Den is idle with an empty queue.
+When Kitchen joined during the regroup, it leaves Patio's group again, leads Office and plays the
+moved queue. When it joined during the start, Kitchen's speaker plays the moved queue while
+Kitchen is listed in Patio's group. That is a limit, not the intended end: Kitchen plays its own
+queue while it is listed as a member of Patio's group.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_commands.py::test_a_hand_over_whose_new_leader_joins_another_group_meanwhile_completes`
 
 ## What a stopped player keeps for a moment
 

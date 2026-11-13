@@ -14,6 +14,7 @@ but it can also be something else, hence the loose coupling.
 from __future__ import annotations
 
 import asyncio
+import functools
 import random
 import time
 from contextlib import suppress
@@ -116,7 +117,7 @@ from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
     from music_assistant_models import BackgroundTask
     from music_assistant_models.config_entries import (
@@ -1363,124 +1364,156 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         target_queue_id = self._resolve_queue_id(target_queue_id)
         self._check_player_permission(source_queue_id)
         self._check_player_permission(target_queue_id)
-        if not (source_queue := self.get(source_queue_id)):
-            raise PlayerUnavailableError(f"Queue {source_queue_id} is not available")
-        if not (target_queue := self.get(target_queue_id)):
-            raise PlayerUnavailableError(f"Queue {target_queue_id} is not available")
-        if auto_play is None:
-            auto_play = source_queue.state == PlaybackState.PLAYING
-
+        # a switched-off target the transfer plays on is powered on before the locks are taken,
+        # as a play action does: waiting for its device outlasts the wait for a player's lock
+        plays_on_target = auto_play
+        if plays_on_target is None:
+            source = self.get(source_queue_id)
+            plays_on_target = source is not None and source.state == PlaybackState.PLAYING
         target_player = self.mass.players.get_player(target_queue_id)
-        if target_player is None:
-            raise PlayerUnavailableError(f"Player {target_queue_id} is not available")
-        # refuse targets that can never render audio (display/visualizer/lighting clients)
-        # before anything is mutated, so a bad target does not destroy the source queue
-        if target_player.state.type not in PLAYBACK_TARGET_TYPES:
-            raise PlayerCommandFailed(
-                f"Player {target_player.display_name} is not capable of playback"
-            )
-        if target_player.state.active_group or target_player.state.synced_to:
-            # edge case: the user wants to move playback from the group as a whole, to a single
-            # player in the group or it is grouped and the command targeted at the single player.
-            # We need to dissolve the group/sync first, and wait for the state to actually
-            # propagate before we hand the queue over to the target player.
-            group_id = target_player.state.active_group or target_player.state.synced_to
-            assert group_id is not None  # checked in if condition above
-            # For an ad-hoc sync group (target is a sync member of a regular leader),
-            # ungroup the target itself so only it is freed - ungrouping the leader would
-            # transfer leadership to a remaining member and recurse back into this method.
-            # For a virtual group player (active_group), release the group so its static
-            # members are handled correctly.
-            ungroup_target = (
-                target_queue_id
-                if target_player.state.synced_to and not target_player.state.active_group
-                else group_id
-            )
-            async with self.mass.players.wait_for_player_update(
-                target_queue_id,
-                attribute_name=(
-                    "active_group" if target_player.state.active_group else "synced_to"
-                ),
-                attribute_value=None,
-                timeout=5,
-            ):
-                await self.mass.players.cmd_ungroup(ungroup_target)
-
-        # capture source state before stopping (stop resets these)
-        source_items = self._queue_data[source_queue_id].items
-        if source_queue.state == PlaybackState.PLAYING:
-            # use the live playback clock while actively playing
-            source_resume_pos = int(source_queue.corrected_elapsed_time)
-        elif source_queue.ended:
-            # a queue that played to its end starts over, so it has no position to carry
-            source_resume_pos = 0
-        else:
-            # when not playing the live clock is stale, so use the stored resume position
-            source_resume_pos = int(
-                source_queue.resume_pos or self._last_played_position(source_queue)
-            )
-        source_current_index = source_queue.current_index
-        source_current_item = source_queue.current_item
-
-        # stop the source player synchronously to prevent the async stop from
-        # clear() racing with the target's sync group formation/protocol switching
-        if source_queue.state != PlaybackState.IDLE:
-            await self.stop(source_queue_id)
-
-        target_queue.repeat_mode = source_queue.repeat_mode
-        target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        # so playback keeps ordering Smart Fades batches behind the same item there
-        self._queue_data[target_queue_id].fade_ordered_until = self._queue_data[
-            source_queue_id
-        ].fade_ordered_until
-        # carry over the pinned overrides (or follow-global state) and re-resolve the target
-        self._queue_data[target_queue_id].crossfade_override = self._queue_data[
-            source_queue_id
-        ].crossfade_override
-        self._queue_data[target_queue_id].autoplay_override = self._queue_data[
-            source_queue_id
-        ].autoplay_override
-        self._resolve_default_toggles(self._queue_data[target_queue_id])
-        # refresh the derived smart-fades indicator for the target's own config/availability
-        target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
-        self._queue_data[target_queue_id].source_items = list(
-            self._queue_data[source_queue_id].source_items
-        )
-        target_queue.sources = list(source_queue.sources)
-        target_queue.is_dynamic = source_queue.is_dynamic
-        target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
-        self._queue_data[target_queue_id].enqueued_media_items = list(
-            self._queue_data[source_queue_id].enqueued_media_items
-        )
-        self._queue_data[target_queue_id].credited_albums = set(
-            self._queue_data[source_queue_id].credited_albums
-        )
-        target_queue.resume_pos = source_resume_pos
-        target_queue.elapsed_time = source_resume_pos
-        target_queue.elapsed_time_last_updated = time.time()
-        target_queue.ended = source_queue.ended
-        target_queue.current_index = source_current_index
-        if source_current_item:
-            target_queue.current_item = source_current_item
-            target_queue.current_item.queue_id = target_queue_id
-        self._clear(source_queue_id, skip_stop=True)
-
-        await self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
-        for item in source_items:
-            item.queue_id = target_queue_id
-        self.update_items(target_queue_id, source_items)
         if (
-            auto_play
-            and not target_queue.ended
-            and (current_item := source_current_item)
-            and self.index_by_id(target_queue_id, current_item.queue_item_id) is not None
+            plays_on_target
+            and target_player is not None
+            and target_player.offline_by_power_control
+            and target_player.state.type in PLAYBACK_TARGET_TYPES
         ):
-            # the target's player can still report the media it played before, which resume()
-            # would read as this item's position: start the item where the source was instead
-            position = 0 if current_item.media_type == MediaType.RADIO else source_resume_pos
-            await self.play_index(target_queue_id, current_item.queue_item_id, position)
-        elif auto_play:
-            await self.resume(target_queue_id)
+            await self.mass.players._power_on_switched_off_player(target_queue_id)
+        # both queues change here, and a play action on either runs under its player's lock:
+        # hold both players until the target plays, so neither runs in the middle of the other
+        async with self.mass.players.get_playback_locks(source_queue_id, target_queue_id):
+            if not (source_queue := self.get(source_queue_id)):
+                raise PlayerUnavailableError(f"Queue {source_queue_id} is not available")
+            if not (target_queue := self.get(target_queue_id)):
+                raise PlayerUnavailableError(f"Queue {target_queue_id} is not available")
+            if auto_play is None:
+                auto_play = source_queue.state == PlaybackState.PLAYING
+
+            target_player = self.mass.players.get_player(target_queue_id)
+            if target_player is None:
+                raise PlayerUnavailableError(f"Player {target_queue_id} is not available")
+            # refuse targets that can never render audio (display/visualizer/lighting clients)
+            # before anything is mutated, so a bad target does not destroy the source queue
+            if target_player.state.type not in PLAYBACK_TARGET_TYPES:
+                raise PlayerCommandFailed(
+                    f"Player {target_player.display_name} is not capable of playback"
+                )
+            if auto_play and target_player.offline_by_power_control:
+                # switched off again, or the source started to play while the locks were awaited
+                msg = f"Player {target_player.display_name} is switched off"
+                raise PlayerUnavailableError(msg)
+            if target_player.state.active_group or target_player.state.synced_to:
+                # edge case: the user wants to move playback from the group as a whole, to a
+                # single player in the group or it is grouped and the command targeted at the
+                # single player. We need to dissolve the group/sync first, and wait for the state
+                # to actually propagate before we hand the queue over to the target player.
+                group_id = target_player.state.active_group or target_player.state.synced_to
+                assert group_id is not None  # checked in if condition above
+                # For an ad-hoc sync group (target is a sync member of a regular leader),
+                # ungroup the target itself so only it is freed - ungrouping the leader would
+                # transfer leadership to a remaining member and recurse back into this method.
+                # For a virtual group player (active_group), release the group so its static
+                # members are handled correctly.
+                ungroup_target = (
+                    target_queue_id
+                    if target_player.state.synced_to and not target_player.state.active_group
+                    else group_id
+                )
+                async with self.mass.players.wait_for_player_update(
+                    target_queue_id,
+                    attribute_name=(
+                        "active_group" if target_player.state.active_group else "synced_to"
+                    ),
+                    attribute_value=None,
+                    timeout=5,
+                ):
+                    await self.mass.players.cmd_ungroup(ungroup_target)
+
+            # capture source state before stopping (stop resets these)
+            source_items = self._queue_data[source_queue_id].items
+            if source_queue.state == PlaybackState.PLAYING:
+                # use the live playback clock while actively playing
+                source_resume_pos = int(source_queue.corrected_elapsed_time)
+            elif source_queue.ended:
+                # a queue that played to its end starts over, so it has no position to carry
+                source_resume_pos = 0
+            else:
+                # when not playing the live clock is stale, so use the stored resume position
+                source_resume_pos = int(
+                    source_queue.resume_pos or self._last_played_position(source_queue)
+                )
+            source_current_index = source_queue.current_index
+            source_current_item = source_queue.current_item
+
+            # stop the source player synchronously to prevent the async stop from
+            # clear() racing with the target's sync group formation/protocol switching
+            if source_queue.state != PlaybackState.IDLE:
+                await self.stop(source_queue_id)
+
+            target_queue.repeat_mode = source_queue.repeat_mode
+            target_queue.shuffle_enabled = source_queue.shuffle_enabled
+            # so playback keeps ordering Smart Fades batches behind the same item there
+            self._queue_data[target_queue_id].fade_ordered_until = self._queue_data[
+                source_queue_id
+            ].fade_ordered_until
+            # carry over the pinned overrides (or follow-global state) and re-resolve the target
+            self._queue_data[target_queue_id].crossfade_override = self._queue_data[
+                source_queue_id
+            ].crossfade_override
+            self._queue_data[target_queue_id].autoplay_override = self._queue_data[
+                source_queue_id
+            ].autoplay_override
+            self._resolve_default_toggles(self._queue_data[target_queue_id])
+            # refresh the derived smart-fades indicator for the target's own config/availability
+            target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
+            self._queue_data[target_queue_id].source_items = list(
+                self._queue_data[source_queue_id].source_items
+            )
+            target_queue.sources = list(source_queue.sources)
+            target_queue.is_dynamic = source_queue.is_dynamic
+            target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
+            self._queue_data[target_queue_id].enqueued_media_items = list(
+                self._queue_data[source_queue_id].enqueued_media_items
+            )
+            self._queue_data[target_queue_id].credited_albums = set(
+                self._queue_data[source_queue_id].credited_albums
+            )
+            target_queue.resume_pos = source_resume_pos
+            target_queue.elapsed_time = source_resume_pos
+            target_queue.elapsed_time_last_updated = time.time()
+            target_queue.ended = source_queue.ended
+            target_queue.current_index = source_current_index
+            if source_current_item:
+                target_queue.current_item = source_current_item
+                target_queue.current_item.queue_id = target_queue_id
+            self._clear(source_queue_id, skip_stop=True)
+
+            await self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
+            for item in source_items:
+                item.queue_id = target_queue_id
+            self.update_items(target_queue_id, source_items)
+            start: Callable[[], Awaitable[None]] | None = None
+            if (
+                auto_play
+                and not target_queue.ended
+                and (current_item := source_current_item)
+                and self.index_by_id(target_queue_id, current_item.queue_item_id) is not None
+            ):
+                # the target's player can still report the media it played before, which resume()
+                # would read as this item's position: start the item where the source was instead
+                position = 0 if current_item.media_type == MediaType.RADIO else source_resume_pos
+                start = functools.partial(
+                    self.play_index, target_queue_id, current_item.queue_item_id, position
+                )
+            elif auto_play:
+                start = functools.partial(self.resume, target_queue_id)
+            if start is not None and self.mass.players.holds_playback_owner_lock(target_queue_id):
+                await start()
+                start = None
+        if start is not None:
+            # the target got another owner while it was held (it joined a group): its start takes
+            # that owner's lock first, so it runs as a play action of its own once both players
+            # are let go of
+            await start()
 
     # Interaction with player
 

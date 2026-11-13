@@ -662,6 +662,21 @@ A command holds the lock of the player it works on, and of no player it only pas
   override off) works on the owner and holds the owner's lock alone. The owner's handler locks
   each member it works on itself; a universal group plays each member in a task of its own, which
   takes that member's lock.
+- A queue transfer works on two players and uses `get_playback_locks`, which holds each of them
+  the way `get_group_and_player_lock` does. It holds the source's and the target's player from
+  before it reads either queue until the target plays. A queue play action on either player
+  (play, stop, resume, next, previous, seek, play index, play media) waits for it, and it for such
+  an action; a pause and a clear of a queue take no lock, so they do not wait. A transfer that
+  plays on a target switched off at its power control powers it on before it takes the locks, as
+  a play action does, so one that then fails as busy has switched it on. A member change, or a
+  group that takes its members itself (a sync group that forms, a universal group that powers
+  on), does not take the lock of the players it takes, so a player that a transfer holds can still
+  get another owner. The transfer then starts the target once it let go of both players, as a
+  play action of its own, which takes the new owner's lock first.
+- The hand-over of a playing sync leader's queue to a new leader takes no lock of its own. It runs
+  under the locks its caller holds (a member change on the old leader, such as its ungroup, holds
+  that leader's); the queue move inside it holds both leaders while it moves the queue, and the
+  regroup and the resume take their own locks, so a play action can come between them.
 
 Either way the command never holds a player's lock while it waits for the lock of that player's
 owner:
@@ -671,6 +686,13 @@ owner:
   new order, a few times at most; then it fails as busy.
 - A command that already holds the player and finds it in a group whose lock it does not hold fails
   at once.
+- The transfer never waits for one player while it holds another that it took itself: it waits
+  for the locks of one of them (and its owner) only, and takes those of the other when they are
+  free. When one is busy, it lets go of all it took, waits for that one first and tries again, a
+  few times at most and within one lock timeout; then it fails as busy, before it changed
+  anything. Transfers over the same players wait for the same player first, so they usually take
+  turns, but one of two that collide can still fail as busy, for instance when an owner changes
+  while they wait. Transfers between other players do not wait for it at all.
 
 Group changes nobody issued as a command:
 - Releasing the session of a static group (an ungroup of its member) takes the group's lock.
