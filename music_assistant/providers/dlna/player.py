@@ -118,12 +118,16 @@ class DLNAPlayer(PlayerProtocol):
         """
         await self._device_connect()
 
+        # an ignored renderer is never attached, so never detached: its event
+        # subscriptions (with auto-renewal) end here
         if self.device and not self.device.has_play_media:
             self.logger.debug("Ignoring %s - no play capability", self.device.name)
+            await self._device_disconnect()
             return False
 
         if self.device and await self._is_sonos_passive_speaker():
             self.logger.debug("Ignoring %s - passive stereo pair speaker", self.device.name)
+            await self._device_disconnect()
             return False
 
         if self.device and self._is_raumfeld_zone_renderer():
