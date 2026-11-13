@@ -14,18 +14,13 @@ if TYPE_CHECKING:
     from .models import CBCProgram, CBCShow, CBCTrack, Channel
 
 
-def format_image_url(url: str | None) -> str | None:
+def format_image_url(url: str) -> str:
     """
-    Format a CBC image URL template into a concrete HTTPS URL.
+    Format a CBC image URL template with concrete dimensions.
 
     :param url: Raw image URL or template from the CBC Listen API.
     """
-    if not url or not url.strip():
-        return None
-    formatted = url.strip().replace("${width}", IMAGE_WIDTH).replace("${ratio}", IMAGE_RATIO)
-    if formatted.startswith("http://"):
-        formatted = f"https://{formatted.removeprefix('http://')}"
-    return formatted
+    return url.replace("${width}", IMAGE_WIDTH).replace("${ratio}", IMAGE_RATIO)
 
 
 def search_channels(channels: Iterable[Channel], query: str, limit: int) -> list[Channel]:

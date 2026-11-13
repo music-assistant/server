@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -12,8 +11,8 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
-    UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -61,14 +60,17 @@ from .constants import (
     STATIONS_URL,
     STREAM_METADATA_UPDATE_INTERVAL,
 )
-from .helpers import (
-    find_program,
-    find_track,
-    get_stream_metadata,
-    search_channels,
-    search_shows,
+from .helpers import find_program, get_stream_metadata, search_channels, search_shows
+from .models import (
+    CBCClip,
+    CBCClipPage,
+    CBCNetwork,
+    CBCPlaylogPage,
+    CBCProgram,
+    CBCShow,
+    CBCTrack,
+    Channel,
 )
-from .models import CBCClip, CBCClipPage, CBCNetwork, CBCProgram, CBCShow, CBCTrack, Channel
 from .parsers import parse_channels, parse_podcast, parse_podcast_episode, parse_radio
 
 if TYPE_CHECKING:
@@ -82,6 +84,7 @@ class CBCListenProvider(MusicProvider):
     """Music provider for live radio, podcasts, and radio shows from CBC Listen."""
 
     throttler: ThrottlerManager
+    _playlog_dates: dict[tuple[int, str, int, int], int | None]
 
     @property
     def max_concurrent_streams(self) -> None:
@@ -100,6 +103,7 @@ class CBCListenProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
+        self._playlog_dates = {}
 
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
@@ -216,8 +220,6 @@ class CBCListenProvider(MusicProvider):
                 stream_metadata_update_callback=self._update_stream_metadata,
                 stream_metadata_update_interval=STREAM_METADATA_UPDATE_INTERVAL,
             )
-        if media_type != MediaType.PODCAST_EPISODE:
-            raise UnplayableMediaError(f"Unsupported media type: {media_type}")
         clip = await self._get_clip(item_id)
         return StreamDetails(
             provider=self.instance_id,
@@ -264,19 +266,14 @@ class CBCListenProvider(MusicProvider):
                 if channel.location_key
                 else []
             )
-            now = utc()
-            at_ms = int(now.timestamp() * 1000)
+            at_ms = int(utc().timestamp() * 1000)
             program = find_program(programs, at_ms)
-            tracks: list[CBCTrack] = []
-            if program and isinstance(program.show_id, int) and channel.location_key:
-                today = now.strftime("%Y%m%d")
-                tracks = await self._get_tracks(program.show_id, today, channel.location_key)
-                if find_track(tracks, at_ms) is None:
-                    yesterday = (now - timedelta(days=1)).strftime("%Y%m%d")
-                    tracks = await self._get_tracks(
-                        program.show_id, yesterday, channel.location_key
-                    )
-        except (MediaNotFoundError, ProviderUnavailableError, RateLimited, RetriesExhausted) as err:
+            tracks = (
+                await self._get_program_tracks(program, channel.location_key, at_ms)
+                if program and channel.location_key
+                else []
+            )
+        except (MediaNotFoundError, ProviderUnavailableError, RetriesExhausted) as err:
             self.logger.debug(
                 "Could not update stream metadata for %s: %s", stream_details.item_id, err
             )
@@ -324,14 +321,11 @@ class CBCListenProvider(MusicProvider):
     async def _get_episodes(self, show_id: str) -> list[PodcastEpisode]:
         """Return the playable episodes or segments of a podcast or radio show."""
         podcast = ItemMapping.from_item(await self._get_series(show_id))
-        raw_clips = await self._get_clips(show_id)
-        seen: set[int] = set()
-        clips: list[CBCClip] = []
-        for clip in raw_clips:
-            if not clip.src or clip.content_tier != FREE_TIER or clip.clip_id in seen:
-                continue
-            seen.add(clip.clip_id)
-            clips.append(clip)
+        clips = [
+            clip
+            for clip in await self._get_clips(show_id)
+            if clip.src and clip.content_tier == FREE_TIER
+        ]
         positions = rank_episodes_by_date([clip.released_at or None for clip in clips])
         return [
             parse_podcast_episode(clip, podcast, position, self.instance_id, self.domain)
@@ -363,12 +357,45 @@ class CBCListenProvider(MusicProvider):
         data = await self._get_data(f"{PROGRAM_QUEUE_URL}/{network_id}/{location_key}")
         return [CBCProgram.from_dict(item) for item in data]
 
+    async def _get_program_tracks(
+        self, program: CBCProgram, location_key: str, at_ms: int
+    ) -> list[CBCTrack]:
+        """Return the playlog tracks for a scheduled program slot."""
+        if not isinstance(program.show_id, int):
+            return []
+        key = (program.show_id, location_key, program.epoch_start, program.epoch_end)
+        if key in self._playlog_dates:
+            date_id = self._playlog_dates[key]
+            return (
+                await self._get_tracks(program.show_id, date_id, location_key)
+                if date_id is not None
+                else []
+            )
+        self._playlog_dates = {k: v for k, v in self._playlog_dates.items() if k[3] > at_ms}
+        date_id = await self._get_playlog_date(program.show_id, location_key)
+        if date_id is None:
+            self._playlog_dates[key] = None
+            return []
+        tracks = await self._get_tracks(program.show_id, date_id, location_key)
+        # Only cache the date once a track from this broadcast slot has been logged,
+        # since right as a show starts CBC still lists the previous broadcast's date.
+        if any(track.broadcasted_time >= program.epoch_start for track in tracks):
+            self._playlog_dates[key] = date_id
+        return tracks
+
+    @use_cache(NOW_PLAYING_CACHE_SECONDS)
+    async def _get_playlog_date(self, show_id: int, location_key: str) -> int | None:
+        """Return the latest playlog date ID for a show and location, or ``None`` if none exist."""
+        url = f"{SHOW_URL}/{show_id}/playlogs?pageNumber=1&locationKey={location_key}&pageSize=1"
+        page = CBCPlaylogPage.from_dict(await self._get_data(url))
+        return page.episodes[0].episode_date_id if page.episodes else None
+
     @use_cache(NOW_PLAYING_CACHE_SECONDS, base_class=CBCTrack)
-    async def _get_tracks(self, show_id: int, date_id: str, location_key: str) -> list[CBCTrack]:
+    async def _get_tracks(self, show_id: int, date_id: int, location_key: str) -> list[CBCTrack]:
         """Return the daily playlog tracks for a show and location."""
         url = f"{SHOW_URL}/{show_id}/playlogs/day/{date_id}?locationKey={location_key}"
         data = await self._get_data(url)
-        return [CBCTrack.from_dict(item) for item in data] if isinstance(data, list) else []
+        return [CBCTrack.from_dict(item) for item in data]
 
     @throttle_with_retries
     async def _get_data(self, url: str) -> Any:
@@ -384,12 +411,20 @@ class CBCListenProvider(MusicProvider):
                         f"CBC Listen is rate limiting {url}",
                         backoff_time=parse_retry_after(response.headers.get("Retry-After")),
                     )
-                response.raise_for_status()
+                if response.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+                    raise ResourceTemporarilyUnavailable(
+                        f"CBC Listen server error {response.status} at {url}",
+                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                    )
+                if response.status >= HTTPStatus.BAD_REQUEST:
+                    raise ProviderUnavailableError(
+                        f"CBC Listen rejected {url} with status {response.status}"
+                    )
                 payload = await response.json()
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            raise ProviderUnavailableError(
-                f"Could not load {url}: {str(err) or type(err).__name__}"
-            ) from err
+        except (aiohttp.ContentTypeError, ValueError) as err:
+            raise ProviderUnavailableError(f"Could not parse {url}: {err!r}") from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise ResourceTemporarilyUnavailable(f"Could not load {url}: {err!r}") from err
         if not isinstance(payload, dict) or "data" not in payload or payload["data"] is None:
             raise ProviderUnavailableError(f"Unexpected response payload from {url}")
         return payload["data"]

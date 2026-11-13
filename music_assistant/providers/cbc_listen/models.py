@@ -41,6 +41,7 @@ class CBCNetwork(Document):
 class CBCProgram(Document):
     """A scheduled radio program in a station's program queue."""
 
+    # Syndicated and special programs send a string slug for showID rather than an integer.
     show_id: int | str | None = field(metadata=field_options(alias="showID"), default=None)
     program_title: str = field(metadata=field_options(alias="programTitle"), default="")
     host_name: str = field(metadata=field_options(alias="hostName"), default="")
@@ -96,7 +97,7 @@ class CBCClip(Document):
     released_at: int = field(metadata=field_options(alias="releasedAt"), default=0)
     image_url: str = field(metadata=field_options(alias="imageURL"), default="")
     web_url: str = field(metadata=field_options(alias="webURL"), default="")
-    content_tier: str = field(metadata=field_options(alias="contentTier"), default="free")
+    content_tier: str = field(metadata=field_options(alias="contentTier"), default="")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -105,6 +106,20 @@ class CBCClipPage(Document):
 
     clip_count: int = field(metadata=field_options(alias="clipCount"), default=0)
     clips: list[CBCClip] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CBCPlaylogEpisode(Document):
+    """Summary of one broadcast playlog episode for a show."""
+
+    episode_date_id: int = field(metadata=field_options(alias="episodeDateId"))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CBCPlaylogPage(Document):
+    """A page of playlog episode summaries for a show."""
+
+    episodes: list[CBCPlaylogEpisode] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -23,10 +23,8 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     RetriesExhausted,
-    UnplayableMediaError,
 )
 from music_assistant_models.media_items import BrowseFolder, ItemMapping, Podcast, Radio
-from yarl import URL
 
 from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
@@ -44,7 +42,6 @@ from music_assistant.providers.cbc_listen.constants import (
     NETWORK_LOGOS,
     SHOW_URL,
     SHOWS_URL,
-    STATIONS_URL,
 )
 from music_assistant.providers.cbc_listen.helpers import (
     format_image_url,
@@ -123,7 +120,7 @@ SAMPLE_SHOWS: list[dict[str, Any]] = [
         "title": "Front Burner",
         "description": "Daily news podcast from CBC.",
         "hosts": "Jayme Poisson",
-        "image": "http://www.cbc.ca/radio/podcasts/images/frontburner.jpg",
+        "image": "https://www.cbc.ca/radio/podcasts/images/frontburner.jpg",
         "webURL": "https://www.cbc.ca/listen/cbc-podcasts/209-front-burner",
         "originalPodcast": True,
         "isPodcast": True,
@@ -243,13 +240,6 @@ class FakeResponse:
     ) -> None:
         """Exit the response context."""
 
-    def raise_for_status(self) -> None:
-        """Raise ClientResponseError on 4xx/5xx status codes."""
-        if self.status >= HTTPStatus.BAD_REQUEST:
-            raise aiohttp.ClientResponseError(
-                MagicMock(real_url=URL(STATIONS_URL)), (), status=self.status, message="error"
-            )
-
     async def json(self) -> Any:
         """Parse and return the JSON payload."""
         return json.loads(self._body)
@@ -273,6 +263,7 @@ def make_provider(*responses: FakeResponse | Exception) -> tuple[CBCListenProvid
 
     provider = CBCListenProvider(mass, manifest, config, SUPPORTED_FEATURES)
     provider.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
+    provider._playlog_dates = {}
     return provider, get
 
 
@@ -334,13 +325,14 @@ def test_parsers() -> None:
     assert ep.metadata.images
     assert ep.metadata.images[0].path == podcast_23.metadata.images[0].path
 
+    assert CBCClip.from_dict({"clipID": 1, "showID": 1, "title": "Untitled"}).content_tier == ""
+
 
 def test_helpers() -> None:
     """Test image formatting, search helpers, and live metadata builders."""
-    assert format_image_url(None) is None
-    assert format_image_url("   ") is None
+    assert format_image_url("") == ""
     assert (
-        format_image_url("http://example.com/${width}/${ratio}/img.png")
+        format_image_url("https://example.com/${width}/${ratio}/img.png")
         == "https://example.com/512/1x1/img.png"
     )
 
@@ -422,7 +414,7 @@ async def test_browse_and_search() -> None:
 async def test_get_items_and_episodes() -> None:
     """Test fetching a single radio station, podcast, paginated episodes, and single episode."""
     page_1 = {"clipCount": 3, "clips": SAMPLE_CLIPS["clips"][:2]}
-    page_2 = {"clipCount": 3, "clips": [SAMPLE_CLIPS["clips"][0], SAMPLE_CLIPS["clips"][2]]}
+    page_2 = {"clipCount": 3, "clips": SAMPLE_CLIPS["clips"][2:]}
     provider, get = make_provider(
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=SAMPLE_NETWORKS),
@@ -459,25 +451,45 @@ async def test_stream_details_and_live_metadata() -> None:
     """Test stream details for radio and podcast episodes and live metadata updates."""
     now_dt = datetime(2026, 11, 12, 2, 0, 0, tzinfo=UTC)
     now_ms = int(now_dt.timestamp() * 1000)
+    queue_music = [
+        {
+            "showID": 1044,
+            "programTitle": "About Time",
+            "hostName": "Tom Allen",
+            "programImage": "https://example.com/about.png",
+            "epochStart": now_ms - 60000,
+            "epochEnd": now_ms + 60000,
+        }
+    ]
+    queue_talk = [
+        {
+            "showID": 39,
+            "programTitle": "Metro Morning",
+            "hostName": "David Common",
+            "programImage": "https://example.com/metro.png",
+            "epochStart": now_ms - 30000,
+            "epochEnd": now_ms + 90000,
+        }
+    ]
+    queue_syndicated = [
+        {
+            "showID": "the_world",
+            "programTitle": "The World",
+            "hostName": "Marco Werman",
+            "programImage": "https://example.com/world.png",
+            "epochStart": now_ms - 30000,
+            "epochEnd": now_ms + 90000,
+        }
+    ]
 
     provider, get = make_provider(
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=SAMPLE_CLIPS["clips"][0]),
         FakeResponse(data=SAMPLE_CLIPS["clips"][2]),
+        # Tick 1: music show resolves playlog date 20261111, fetches tracks, and caches date.
         FakeResponse(data=SAMPLE_NETWORKS),
-        FakeResponse(
-            data=[
-                {
-                    "showID": 1044,
-                    "programTitle": "About Time",
-                    "hostName": "Tom Allen",
-                    "programImage": "https://example.com/about.png",
-                    "epochStart": now_ms - 60000,
-                    "epochEnd": now_ms + 60000,
-                }
-            ]
-        ),
-        FakeResponse(data=[]),
+        FakeResponse(data=queue_music),
+        FakeResponse(data={"episodes": [{"episodeDateId": 20261111}]}),
         FakeResponse(
             data=[
                 {
@@ -489,7 +501,31 @@ async def test_stream_details_and_live_metadata() -> None:
                 }
             ]
         ),
-        FakeResponse(status=HTTPStatus.INTERNAL_SERVER_ERROR),
+        # Tick 2: same music slot reuses cached 20261111 without calling /playlogs again.
+        FakeResponse(data=SAMPLE_NETWORKS),
+        FakeResponse(data=queue_music),
+        FakeResponse(
+            data=[
+                {
+                    "title": "The Lark Ascending",
+                    "artists": "Hilary Hahn",
+                    "composers": "Vaughan Williams",
+                    "album": "Lark",
+                    "broadcastedTime": now_ms - 5000,
+                }
+            ]
+        ),
+        # Tick 3: unrecoverable error leaves existing metadata untouched.
+        FakeResponse(status=HTTPStatus.FORBIDDEN),
+        # Tick 4 & 5: talk show with empty playlogs caches None and skips further playlog calls.
+        FakeResponse(data=SAMPLE_NETWORKS),
+        FakeResponse(data=queue_talk),
+        FakeResponse(data={"episodes": []}),
+        FakeResponse(data=SAMPLE_NETWORKS),
+        FakeResponse(data=queue_talk),
+        # Tick 6: syndicated show with string showID skips playlog lookups entirely.
+        FakeResponse(data=SAMPLE_NETWORKS),
+        FakeResponse(data=queue_syndicated),
     )
 
     radio_stream = await provider.get_stream_details("37", MediaType.RADIO)
@@ -505,8 +541,6 @@ async def test_stream_details_and_live_metadata() -> None:
 
     with pytest.raises(MediaNotFoundError):
         await provider.get_stream_details("1003", MediaType.PODCAST_EPISODE)
-    with pytest.raises(UnplayableMediaError):
-        await provider.get_stream_details("37", MediaType.TRACK)
 
     with patch("music_assistant.providers.cbc_listen.provider.utc", return_value=now_dt):
         await provider._update_stream_metadata(radio_stream, 0)
@@ -515,11 +549,32 @@ async def test_stream_details_and_live_metadata() -> None:
         assert radio_stream.stream_metadata.artist == "Mark Elder"
 
         await provider._update_stream_metadata(radio_stream, 30)
-        assert radio_stream.stream_metadata.title == "Pastoral Symphony"
+        assert radio_stream.stream_metadata.title == "The Lark Ascending"
+
+        await provider._update_stream_metadata(radio_stream, 60)
+        assert radio_stream.stream_metadata.title == "The Lark Ascending"
+
+        await provider._update_stream_metadata(radio_stream, 90)
+        assert radio_stream.stream_metadata.title == "Metro Morning"
+        assert radio_stream.stream_metadata.artist == "David Common"
+
+        await provider._update_stream_metadata(radio_stream, 120)
+        assert radio_stream.stream_metadata.title == "Metro Morning"
+
+        await provider._update_stream_metadata(radio_stream, 150)
+        assert radio_stream.stream_metadata.title == "The World"
+        assert radio_stream.stream_metadata.artist == "Marco Werman"
 
     called_urls = [call.args[0] for call in get.call_args_list]
-    assert f"{SHOW_URL}/1044/playlogs/day/20261112?locationKey=toronto" in called_urls
-    assert f"{SHOW_URL}/1044/playlogs/day/20261111?locationKey=toronto" in called_urls
+    assert (
+        called_urls.count(f"{SHOW_URL}/1044/playlogs?pageNumber=1&locationKey=toronto&pageSize=1")
+        == 1
+    )
+    assert called_urls.count(f"{SHOW_URL}/1044/playlogs/day/20261111?locationKey=toronto") == 2
+    assert (
+        called_urls.count(f"{SHOW_URL}/39/playlogs?pageNumber=1&locationKey=toronto&pageSize=1")
+        == 1
+    )
     assert any(
         call.kwargs == {"headers": API_HEADERS, "timeout": API_TIMEOUT}
         for call in get.call_args_list
@@ -527,24 +582,26 @@ async def test_stream_details_and_live_metadata() -> None:
 
 
 async def test_http_errors_and_rate_limiting() -> None:
-    """Test 404/400 handling, 429 Retry-After backoff, and invalid payload errors."""
+    """Test 4xx/5xx handling, transient retries, 429 backoff, and invalid payload errors."""
+    bad_json_response = FakeResponse()
+    bad_json_response._body = "not-json"
     provider, _ = make_provider(
         FakeResponse(status=HTTPStatus.NOT_FOUND),
         FakeResponse(status=HTTPStatus.BAD_REQUEST),
-        aiohttp.ClientError("connection failed"),
+        FakeResponse(status=HTTPStatus.FORBIDDEN),
+        bad_json_response,
         FakeResponse(raw_payload={"status": "error"}),
         FakeResponse(data=[]),
         FakeResponse(data=[]),
-        FakeResponse(status=HTTPStatus.TOO_MANY_REQUESTS, headers={"Retry-After": "3"}),
-        FakeResponse(data=SAMPLE_SHOWS),
-        *[FakeResponse(status=HTTPStatus.TOO_MANY_REQUESTS)] * 5,
     )
 
     with pytest.raises(MediaNotFoundError):
         await provider._get_data(SHOWS_URL)
     with pytest.raises(MediaNotFoundError):
         await provider._get_data(f"{CLIPS_URL}/999999")
-    with pytest.raises(ProviderUnavailableError, match="connection failed"):
+    with pytest.raises(ProviderUnavailableError, match="status 403"):
+        await provider._get_data(SHOWS_URL)
+    with pytest.raises(ProviderUnavailableError, match="Could not parse"):
         await provider._get_data(SHOWS_URL)
     with pytest.raises(ProviderUnavailableError, match="Unexpected response payload"):
         await provider._get_data(SHOWS_URL)
@@ -553,16 +610,34 @@ async def test_http_errors_and_rate_limiting() -> None:
     with pytest.raises(ProviderUnavailableError, match="no shows"):
         await provider._get_shows()
 
+    retry_provider, _ = make_provider(
+        FakeResponse(status=HTTPStatus.INTERNAL_SERVER_ERROR),
+        aiohttp.ClientError("connection failed"),
+        TimeoutError(),
+        FakeResponse(data=SAMPLE_SHOWS),
+    )
     with patch(SLEEP, new_callable=AsyncMock) as sleep:
-        data = await provider._get_data(SHOWS_URL)
+        data = await retry_provider._get_data(SHOWS_URL)
+        assert len(data) == 4
+        assert sleep.await_count == 3
+
+    rate_limit_provider, _ = make_provider(
+        FakeResponse(status=HTTPStatus.TOO_MANY_REQUESTS, headers={"Retry-After": "3"}),
+        FakeResponse(data=SAMPLE_SHOWS),
+    )
+    with patch(SLEEP, new_callable=AsyncMock) as sleep:
+        data = await rate_limit_provider._get_data(SHOWS_URL)
         assert len(data) == 4
         assert sleep.await_count == 1
 
+    exhausted_provider, _ = make_provider(
+        *[FakeResponse(status=HTTPStatus.TOO_MANY_REQUESTS)] * 5,
+    )
     with (
         patch(SLEEP, new_callable=AsyncMock),
         pytest.raises(RetriesExhausted),
     ):
-        await provider._get_data(SHOWS_URL)
+        await exhausted_provider._get_data(SHOWS_URL)
 
 
 async def test_resolve_image() -> None:
