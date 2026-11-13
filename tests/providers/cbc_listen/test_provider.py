@@ -486,7 +486,23 @@ async def test_stream_details_and_live_metadata() -> None:
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=SAMPLE_CLIPS["clips"][0]),
         FakeResponse(data=SAMPLE_CLIPS["clips"][2]),
-        # Tick 1: music show resolves playlog date 20261111, fetches tracks, and caches date.
+        # Tick 1: show just started; previous broadcast's playlog date (20261110) has only
+        # older tracks, so the date is not cached yet.
+        FakeResponse(data=SAMPLE_NETWORKS),
+        FakeResponse(data=queue_music),
+        FakeResponse(data={"episodes": [{"episodeDateId": 20261110}]}),
+        FakeResponse(
+            data=[
+                {
+                    "title": "Yesterday's Finale",
+                    "artists": "Earlier Artist",
+                    "composers": "",
+                    "album": "Archive",
+                    "broadcastedTime": now_ms - 86_400_000,
+                }
+            ]
+        ),
+        # Tick 2: music show resolves playlog date 20261111, fetches tracks, and caches date.
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=queue_music),
         FakeResponse(data={"episodes": [{"episodeDateId": 20261111}]}),
@@ -501,7 +517,7 @@ async def test_stream_details_and_live_metadata() -> None:
                 }
             ]
         ),
-        # Tick 2: same music slot reuses cached 20261111 without calling /playlogs again.
+        # Tick 3: same music slot reuses cached 20261111 without calling /playlogs again.
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=queue_music),
         FakeResponse(
@@ -515,15 +531,15 @@ async def test_stream_details_and_live_metadata() -> None:
                 }
             ]
         ),
-        # Tick 3: unrecoverable error leaves existing metadata untouched.
+        # Tick 4: unrecoverable error leaves existing metadata untouched.
         FakeResponse(status=HTTPStatus.FORBIDDEN),
-        # Tick 4 & 5: talk show with empty playlogs caches None and skips further playlog calls.
+        # Tick 5 & 6: talk show with empty playlogs caches None and skips further playlog calls.
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=queue_talk),
         FakeResponse(data={"episodes": []}),
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=queue_talk),
-        # Tick 6: syndicated show with string showID skips playlog lookups entirely.
+        # Tick 7: syndicated show with string showID skips playlog lookups entirely.
         FakeResponse(data=SAMPLE_NETWORKS),
         FakeResponse(data=queue_syndicated),
     )
@@ -543,6 +559,10 @@ async def test_stream_details_and_live_metadata() -> None:
         await provider.get_stream_details("1003", MediaType.PODCAST_EPISODE)
 
     with patch("music_assistant.providers.cbc_listen.provider.utc", return_value=now_dt):
+        await provider._update_stream_metadata(radio_stream, 0)
+        assert radio_stream.stream_metadata is not None
+        assert radio_stream.stream_metadata.title == "About Time"
+        assert radio_stream.stream_metadata.artist == "Tom Allen"
         await provider._update_stream_metadata(radio_stream, 0)
         assert radio_stream.stream_metadata is not None
         assert radio_stream.stream_metadata.title == "Pastoral Symphony"
@@ -568,8 +588,9 @@ async def test_stream_details_and_live_metadata() -> None:
     called_urls = [call.args[0] for call in get.call_args_list]
     assert (
         called_urls.count(f"{SHOW_URL}/1044/playlogs?pageNumber=1&locationKey=toronto&pageSize=1")
-        == 1
+        == 2
     )
+    assert called_urls.count(f"{SHOW_URL}/1044/playlogs/day/20261110?locationKey=toronto") == 1
     assert called_urls.count(f"{SHOW_URL}/1044/playlogs/day/20261111?locationKey=toronto") == 2
     assert (
         called_urls.count(f"{SHOW_URL}/39/playlogs?pageNumber=1&locationKey=toronto&pageSize=1")
