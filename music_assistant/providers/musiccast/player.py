@@ -155,6 +155,11 @@ class MusicCastPlayer(Player):
         self._last_playback_state: PlaybackState | None = None
         self._last_playing_elapsed_time: float = 0.0
 
+    @property
+    def needs_gapless_burst(self) -> bool:
+        """Return if the player must hold a whole opening chunk of a track before it plays gapless."""
+        return True
+
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
         await self.set_static_attributes()

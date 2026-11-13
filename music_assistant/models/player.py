@@ -529,6 +529,16 @@ class Player(ABC):
         return PlayerFeature.ENQUEUE not in self.supported_features
 
     @property
+    def needs_gapless_burst(self) -> bool:
+        """
+        Return if the player must hold a whole opening chunk of a track before it plays gapless.
+
+        Such a player gets a large head start on every track it streams on its own. A player
+        that struggles with the realtime pacing otherwise plays in flow mode.
+        """
+        return False
+
+    @property
     def device_info(self) -> DeviceInfo:
         """Return the device info of the player."""
         return self._attr_device_info
