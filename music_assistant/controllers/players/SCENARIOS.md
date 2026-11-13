@@ -136,6 +136,16 @@ own protocol of a device never waits.
   - `tests/controllers/players/test_identity.py::test_waiting_protocol_joins_the_player_its_native_protocol_creates`
   - `tests/controllers/players/test_identity.py::test_native_protocol_never_waits`
 
+### APPEAR-8 · A player of audio receivers alone has the neutral speaker icon
+
+The Den device has an AirPlay and a Cast receiver and no protocol of its own, the Patio device an
+AirPlay receiver alone: both players show the speaker icon. The Office device, an Apple speaker
+with AirPlay as its own protocol and a Cast receiver, shows the AirPlay icon, also while its
+AirPlay protocol is away. An icon the user picks replaces the default.
+
+- End-to-end: **yes**. Two receivers of different kinds on one host, and one receiver alone.
+- Proven by: `test_identity.py::test_a_player_without_a_protocol_of_its_own_has_the_neutral_icon`
+
 ## A device goes away and comes back
 
 A device can go away: switched off, off the network, or its provider reloads. It can also stay

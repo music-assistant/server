@@ -874,7 +874,7 @@ class Player:
         device_info = self.device_info
         return get_default_player_icon(
             self.type,
-            self.provider_id.split("--", maxsplit=1)[0],
+            self._own_protocol_domain(),
             device_info.manufacturer,
             device_info.model,
         )
@@ -1804,6 +1804,16 @@ class Player:
         """Return whether a held level or mute applies to the control resolved for it."""
         # what a protocol reports can be stale; a fake control is the player's own level
         return self._held_volume.get(feature) is not None and control in self._protocols
+
+    def _own_protocol_domain(self) -> str | None:
+        """Return the provider domain of the own protocol of the player, also while it is away."""
+        if (own := self._own_protocol) is not None:
+            return own.provider.domain
+        for protocol_id in self._protocol_ids:
+            stored = self.mass.config.get_protocol_record(protocol_id) or {}
+            if stored.get("role") in OWN_PROTOCOL_ROLES:
+                return str(stored.get("provider") or "").split("--", maxsplit=1)[0]
+        return None
 
     def _stored_protocol_name(self) -> str | None:
         """Return the name a protocol of the player was last seen with, its own protocol first."""
