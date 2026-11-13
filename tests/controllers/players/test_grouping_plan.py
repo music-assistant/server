@@ -1,7 +1,8 @@
 """
-The plan of a group change, one rule per test, on snapshots built by hand.
+The plan of a group change and the decisions of its join, one rule per test, on snapshots built by hand.
 
-A test that pins a known shortcoming says so in its docstring.
+A test that pins a known shortcoming says so in its docstring. How the join carries its
+decisions out, call by call, is tested in test_grouping_join.py.
 """
 
 from __future__ import annotations
@@ -26,25 +27,25 @@ from music_assistant.controllers.players.grouping_plan import (
     GroupingSnapshot,
     GroupPlan,
     GroupProgress,
-    Hold,
-    JoinPhase,
+    GroupRules,
+    GroupStep,
+    Join,
+    JoinLists,
     MemberChange,
     MemberLists,
     MemberStage,
     Note,
-    OpenTakeover,
+    OldProtocol,
     OutputView,
     PlayerView,
     PrepareForPlayback,
+    ProtocolLeg,
     ProtocolView,
     QueueView,
     Refuse,
+    Regroup,
     ReleaseSession,
-    Resume,
     SetMembers,
-    SetOutput,
-    StopLeader,
-    StopProtocol,
     TransferLeadership,
     Ungroup,
     elect_ad_hoc_leader,
@@ -161,33 +162,60 @@ def _plan(
 
 
 def _calls(plan: GroupPlan) -> list[Any]:
-    """Return the steps of a plan that act, without its log lines and holds."""
-    return [step for step in plan.steps if not isinstance(step, (Note, Hold))]
-
-
-def _device_calls(plan: GroupPlan) -> list[Any]:
-    """Return the steps of a plan that act, without the admission's preparation."""
-    return [step for step in _calls(plan) if not isinstance(step, PrepareForPlayback)]
+    """Return the steps of a plan that act, without its log lines."""
+    return [step for step in plan.steps if not isinstance(step, Note)]
 
 
 def _all_plans(
     world: _World, kind: ChangeKind, target: str, add: tuple[str, ...] | None = None, **values: Any
 ) -> GroupPlan:
-    """Plan a change to its end on a world that does not change, and return all its steps."""
+    """Plan a change to its end on a world that does not change: all its steps, and its join."""
     plan = _plan(world, kind, target, add, values.pop("remove", None), **values)
     steps = list(plan.steps)
     while plan.progress is not None:
         plan = _plan(world, kind, target, add, values.get("remove"), progress=plan.progress)
         steps += plan.steps
-    return GroupPlan(tuple(steps))
+    return GroupPlan(tuple(steps), join=plan.join, regroup=plan.regroup)
 
 
-def _notes(plan: GroupPlan, level: int = logging.INFO) -> list[str]:
-    """Return the log lines of a plan at the level or above."""
+type _Call = tuple[str, tuple[str, ...], tuple[str, ...]]
+
+
+def _decided(
+    world: _World,
+    target: str,
+    add: tuple[str, ...] | None = None,
+    remove: tuple[str, ...] | None = None,
+) -> tuple[list[_Call], list[GroupStep]]:
+    """
+    Return the set_members calls a member change decides on a world that does not change.
+
+    The admission is planned to its end first. The calls are the join call of the group's
+    protocol and the call of the leader's own protocol, as (protocol id, add, remove). The log
+    lines of the admission and of the decisions come with them.
+    """
+    plan = _all_plans(world, ChangeKind.MEMBERS, target, add, remove=remove)
+    notes = list(plan.steps)
+    calls: list[_Call] = []
+    if plan.join is None:
+        return calls, notes
+    rules = GroupRules(world.snapshot(), notes.append)
+    leader = rules.held_player(target)
+    lists = rules.translate(leader, plan.join.add, plan.join.remove)
+    leg = rules.protocol_leg(leader, lists)
+    assert not isinstance(leg, Refuse)
+    if leg is not None:
+        calls.append((leg.protocol_id, leg.add, leg.remove))
+    if native := rules.native_leg(leader, lists.native_add, lists.native_remove):
+        calls.append((native.protocol_id, native.add, native.remove))
+    return calls, notes
+
+
+def _notes(plan: GroupPlan | list[GroupStep], level: int = logging.INFO) -> list[str]:
+    """Return the log lines of a plan, or of steps, at the level or above."""
+    steps = plan.steps if isinstance(plan, GroupPlan) else plan
     return [
-        step.message % step.args
-        for step in plan.steps
-        if isinstance(step, Note) and step.level >= level
+        step.message % step.args for step in steps if isinstance(step, Note) and step.level >= level
     ]
 
 
@@ -205,13 +233,9 @@ def _sonos(world: _World, *names: str, can: bool = True, **values: Any) -> None:
         world.player(name, protocol_id, can_group_with=frozenset(names) - {name}, **values)
 
 
-def _members(plan: GroupPlan, protocol_id: str) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
-    """Return the member lists of the set_members steps on a protocol."""
-    return [
-        (step.add, step.remove)
-        for step in plan.steps
-        if isinstance(step, SetMembers) and step.protocol_id == protocol_id
-    ]
+def _members(calls: list[_Call], protocol_id: str) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """Return the member lists of the calls on a protocol."""
+    return [(add, remove) for called, add, remove in calls if called == protocol_id]
 
 
 # -- routing --
@@ -322,10 +346,8 @@ def test_a_leader_without_a_playing_queue_of_its_own_dissolves(queue: QueueView 
     world = _World()
     _leader_with_members(world, queue)
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("x",), ("a",))
-    assert _calls(plan) == [
-        SetMembers(protocol_id="sonos_a", remove=("sonos_b", "sonos_c")),
-        StopLeader(player_id="a"),
-    ]
+    assert plan.join == Join(target_id="a", remove=("b", "c"), stop_after=True)
+    assert _decided(world, "a", ("x",), ("a",))[0] == [("sonos_a", (), ("sonos_b", "sonos_c"))]
     assert "Dissolving sync group of player Player a as it is being removed from itself" in _notes(
         plan
     )
@@ -394,7 +416,7 @@ def test_the_target_and_a_repeated_member_are_skipped_silently() -> None:
     world = _World()
     _sonos(world, "a", "b")
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("a", "b", "b"))
-    assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
+    assert plan.join == Join(target_id="a", add=("b",))
     assert [step for step in plan.steps if isinstance(step, PrepareForPlayback)] == [
         PrepareForPlayback(player_id="b")
     ]
@@ -411,7 +433,7 @@ def test_an_unknown_or_unavailable_member_is_left_out() -> None:
         "Player nobody is not available",
         "Player b is not available",
     ]
-    assert _members(plan, "sonos_a") == []
+    assert plan.join == Join(target_id="a")
 
 
 def test_a_member_the_target_can_not_group_with_is_left_out() -> None:
@@ -422,6 +444,7 @@ def test_a_member_the_target_can_not_group_with_is_left_out() -> None:
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",))
     assert _notes(plan, logging.WARNING) == ["Player Player b can not be grouped with Player a"]
     assert _calls(plan) == []
+    assert plan.join == Join(target_id="a")
 
 
 @pytest.mark.parametrize("held_as", ["synced_to", "active_group"])
@@ -438,6 +461,7 @@ def test_a_member_already_in_the_group_is_skipped(held_as: str) -> None:
     )
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",))
     assert _calls(plan) == []
+    assert plan.join == Join(target_id="a")
 
 
 def test_a_member_synced_elsewhere_is_released_and_the_plan_stops() -> None:
@@ -451,7 +475,7 @@ def test_a_member_synced_elsewhere_is_released_and_the_plan_stops() -> None:
     # the release worked: the next plan, on the new state, admits the member without checks
     world.players["b"] = replace(world.players["b"], synced_to=None)
     next_plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",), progress=plan.progress)
-    assert _members(next_plan, "sonos_a") == [(("sonos_b",), ())]
+    assert next_plan.join == Join(target_id="a", add=("b",))
     assert next_plan.progress is None
 
 
@@ -467,7 +491,7 @@ def test_a_member_held_by_a_group_without_sync_is_not_released() -> None:
     world.players["a"] = replace(world.players["a"], active_group=None)
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",))
     assert not any(isinstance(step, Detach) for step in plan.steps)
-    assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
+    assert plan.join == Join(target_id="a", add=("b",))
 
 
 def _airplay_leaders(world: _World, state: PlaybackState = PlaybackState.IDLE) -> None:
@@ -511,6 +535,7 @@ def test_a_member_still_serving_its_own_group_is_left_out() -> None:
         "Player Player b is still serving its own group, leaving it out of State a"
     ]
     assert _calls(plan) == []
+    assert plan.join == Join(target_id="a")
 
 
 def test_a_member_whose_group_survives_joins_as_it_is() -> None:
@@ -520,7 +545,7 @@ def test_a_member_whose_group_survives_joins_as_it_is() -> None:
     world.players["b"] = replace(world.players["b"], group_members=("b", "c"))
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",))
     assert not any(isinstance(step, MemberChange) for step in plan.steps)
-    assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
+    assert plan.join == Join(target_id="a", add=("b",))
 
 
 def test_a_member_that_powers_on_ends_the_plan() -> None:
@@ -537,7 +562,7 @@ def test_a_member_that_powers_on_ends_the_plan() -> None:
     assert _calls(plan) == [PrepareForPlayback(player_id="b")]
     assert plan.progress == GroupProgress(next_add=1, admitted=("b",))
     next_plan = _plan(world, ChangeKind.MEMBERS, "a", ("b", "c"), progress=plan.progress)
-    assert _members(next_plan, "sonos_a") == [(("sonos_b", "sonos_c"), ())]
+    assert next_plan.join == Join(target_id="a", add=("b", "c"))
 
 
 def test_a_later_member_is_checked_on_the_state_after_the_earlier_release() -> None:
@@ -558,7 +583,7 @@ def test_a_later_member_is_checked_on_the_state_after_the_earlier_release() -> N
     world.players["i"] = replace(world.players["i"], synced_to=None)
     world.players["a"] = replace(world.players["a"], can_group_with=frozenset({"i", "j"}))
     second = _plan(world, ChangeKind.MEMBERS, "a", ("i", "j"), progress=first.progress)
-    assert _members(second, "sonos_a") == [(("sonos_i", "sonos_j"), ())]
+    assert second.join == Join(target_id="a", add=("i", "j"))
 
 
 # -- removals --
@@ -571,7 +596,10 @@ def test_only_members_of_the_group_are_removed() -> None:
     world.players["a"] = replace(world.players["a"], group_members=("a", "b"))
     world.players["c"] = replace(world.players["c"], synced_to="a")
     plan = _plan(world, ChangeKind.MEMBERS, "a", None, ("b", "c", "d"))
-    assert _members(plan, "sonos_a") == [((), ("sonos_b", "sonos_c"))]
+    assert plan.join == Join(target_id="a", remove=("b", "c"))
+    assert _decided(world, "a", None, ("b", "c", "d"))[0] == [
+        ("sonos_a", (), ("sonos_b", "sonos_c"))
+    ]
 
 
 # -- a group player as target --
@@ -628,22 +656,14 @@ def test_a_native_peer_groups_on_the_own_protocol() -> None:
     """A member of the same provider groups natively, by its own protocol id."""
     world = _World()
     _mixed(world)
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("b",))
-    assert _members(plan, "sonos_s") == [(("sonos_b",), ())]
+    assert _decided(world, "s", ("b",))[0] == [("sonos_s", ("sonos_b",), ())]
 
 
 def test_a_member_of_another_make_groups_over_a_shared_protocol() -> None:
-    """Over AirPlay: its output is activated first, then the join call, then the leader's."""
+    """A member without a native way joins the protocol both have, by its protocol id."""
     world = _World()
     _mixed(world)
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("w",))
-    assert _device_calls(plan) == [
-        SetOutput(player_id="w", output_id="airplay_w"),
-        SetMembers(protocol_id="airplay_s", add=("airplay_w",)),
-    ]
-    assert plan.progress is not None
-    assert plan.progress.join is not None
-    assert plan.progress.join.phase == JoinPhase.JOINED
+    assert _decided(world, "s", ("w",))[0] == [("airplay_s", ("airplay_w",), ())]
 
 
 @pytest.mark.parametrize(("order", "native"), [(("w", "b"), ()), (("b", "w"), ("sonos_b",))])
@@ -659,8 +679,8 @@ def test_an_idle_mixed_batch_depends_on_its_order(
     """
     world = _World()
     _mixed(world)
-    plan = _all_plans(world, ChangeKind.MEMBERS, "s", order)
-    assert _members(plan, "sonos_s") == ([(native, ())] if native else [])
+    calls, _ = _decided(world, "s", order)
+    assert _members(calls, "sonos_s") == ([(native, ())] if native else [])
 
 
 @pytest.mark.parametrize("order", [("w", "b"), ("b", "w")])
@@ -670,9 +690,9 @@ def test_a_live_native_session_keeps_a_mixed_batch_on_one_protocol(
     """With a live native session, members that need a protocol are taken first."""
     world = _World()
     _mixed(world, leader_state=PLAYING, active_output="native")
-    plan = _all_plans(world, ChangeKind.MEMBERS, "s", order)
-    assert _members(plan, "sonos_s") == []
-    assert _members(plan, "airplay_s") == [(("airplay_w", "airplay_b"), ())]
+    calls, _ = _decided(world, "s", order)
+    assert _members(calls, "sonos_s") == []
+    assert _members(calls, "airplay_s") == [(("airplay_w", "airplay_b"), ())]
 
 
 def test_a_member_that_prefers_native_grouping_groups_natively() -> None:
@@ -681,8 +701,7 @@ def test_a_member_that_prefers_native_grouping_groups_natively() -> None:
     _mixed(world)
     world.protocols["sonos_b"] = replace(world.protocols["sonos_b"], prefers_native=True)
     world.players["b"] = replace(world.players["b"], preferred_output="airplay_b")
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("b",))
-    assert _members(plan, "sonos_s") == [(("sonos_b",), ())]
+    assert _members(_decided(world, "s", ("b",))[0], "sonos_s") == [(("sonos_b",), ())]
 
 
 def test_a_members_preferred_output_carries_it() -> None:
@@ -690,26 +709,23 @@ def test_a_members_preferred_output_carries_it() -> None:
     world = _World()
     _mixed(world)
     world.players["b"] = replace(world.players["b"], preferred_output="airplay_b")
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("b",))
-    assert SetMembers(protocol_id="airplay_s", add=("airplay_b",)) in plan.steps
+    assert _decided(world, "s", ("b",))[0] == [("airplay_s", ("airplay_b",), ())]
 
 
 def test_a_group_on_a_protocol_takes_members_on_it() -> None:
     """The group's protocol carries a member that has it; without SET_MEMBERS it is passed over."""
     world = _World()
     _mixed(world, active_output="airplay_s")
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("b",))
-    assert SetMembers(protocol_id="airplay_s", add=("airplay_b",)) in plan.steps
+    assert _decided(world, "s", ("b",))[0] == [("airplay_s", ("airplay_b",), ())]
     world.protocols["airplay_s"] = replace(world.protocols["airplay_s"], features=PLAYS)
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("b",))
-    assert _members(plan, "sonos_s") == [(("sonos_b",), ())]
+    assert _members(_decided(world, "s", ("b",))[0], "sonos_s") == [(("sonos_b",), ())]
 
 
 def test_a_member_without_any_way_is_dropped_with_a_warning() -> None:
     """
     A member with no way into the group is left out with a warning.
 
-    The plan finds that out only after it prepared the member (released it from another
+    The change finds that out only after it prepared the member (released it from another
     leader, powered it on).
     This is a known shortcoming, kept as it was; this test changes when it is fixed.
     """
@@ -720,8 +736,10 @@ def test_a_member_without_any_way_is_dropped_with_a_warning() -> None:
     world.players["s"] = replace(world.players["s"], can_group_with=frozenset({"x"}))
     plan = _plan(world, ChangeKind.MEMBERS, "s", ("x",))
     assert PrepareForPlayback(player_id="x") in plan.steps
+    calls, notes = _decided(world, "s", ("x",))
+    assert calls == []
     assert any(
-        "no compatible grouping method found" in note for note in _notes(plan, logging.WARNING)
+        "no compatible grouping method found" in note for note in _notes(notes, logging.WARNING)
     )
 
 
@@ -741,10 +759,9 @@ def test_a_later_switch_drops_an_earlier_member_silently() -> None:
     world.player("x", "airplay_x")
     world.protocol("sendspin_y", "y", "sendspin")
     world.player("y", "sendspin_y")
-    plan = _plan(world, ChangeKind.MEMBERS, "p", ("x", "y"))
-    assert _members(plan, "sendspin_p") == [(("sendspin_y",), ())]
-    assert _members(plan, "airplay_p") == []
-    assert _notes(plan, logging.WARNING) == []
+    calls, notes = _decided(world, "p", ("x", "y"))
+    assert calls == [("sendspin_p", ("sendspin_y",), ())]
+    assert _notes(notes, logging.WARNING) == []
 
 
 def test_native_members_follow_a_group_that_left_its_own_stream() -> None:
@@ -759,11 +776,10 @@ def test_native_members_follow_a_group_that_left_its_own_stream() -> None:
     world.player("m", "airplay_m")
     world.protocol("sendspin_s", "s", "sendspin")
     world.player("s", "sendspin_s")
-    plan = _plan(world, ChangeKind.MEMBERS, "l", ("m", "s"))
-    assert _members(plan, "sendspin_l") == [(("sendspin_s",), ())]
-    assert _members(plan, "airplay_l") == []
+    calls, notes = _decided(world, "l", ("m", "s"))
+    assert calls == [("sendspin_l", ("sendspin_s",), ())]
     assert any(
-        "the group plays through the sendspin protocol" in n for n in _notes(plan, logging.WARNING)
+        "the group plays through the sendspin protocol" in n for n in _notes(notes, logging.WARNING)
     )
 
 
@@ -773,14 +789,15 @@ def test_an_unknown_id_is_skipped_silently_in_a_translation() -> None:
     _sonos(world, "a", "b")
     world.players["a"] = replace(world.players["a"], group_members=("a", "ghost"))
     plan = _plan(world, ChangeKind.MEMBERS, "a", None, ("ghost",))
-    assert _calls(plan) == []
+    assert plan.join == Join(target_id="a", remove=("ghost",))
+    assert _decided(world, "a", None, ("ghost",)) == ([], [])
 
 
 # -- removals per protocol --
 
 
 def test_a_member_on_the_groups_protocol_leaves_it_there() -> None:
-    """It is removed from the protocol, and its output is cleared after that call."""
+    """It is removed from the protocol the group is on."""
     world = _World()
     _mixed(world, active_output="airplay_s")
     world.protocols["airplay_s"] = replace(
@@ -788,11 +805,7 @@ def test_a_member_on_the_groups_protocol_leaves_it_there() -> None:
     )
     world.players["s"] = replace(world.players["s"], group_members=("s", "w"))
     world.players["w"] = replace(world.players["w"], synced_to="s", active_output="airplay_w")
-    plan = _plan(world, ChangeKind.MEMBERS, "s", None, ("w",))
-    assert _calls(plan) == [SetMembers(protocol_id="airplay_s", remove=("airplay_w",))]
-    assert plan.progress is not None
-    after = _plan(world, ChangeKind.MEMBERS, "s", None, ("w",), progress=plan.progress)
-    assert _calls(after) == [SetOutput(player_id="w", output_id=None)]
+    assert _decided(world, "s", None, ("w",))[0] == [("airplay_s", (), ("airplay_w",))]
 
 
 def test_a_member_whose_output_went_away_is_removed_natively() -> None:
@@ -815,9 +828,9 @@ def test_a_member_whose_output_went_away_is_removed_natively() -> None:
         outputs=tuple(replace(o, available=False) for o in world.players["w"].outputs),
     )
     world.players["s"] = replace(world.players["s"], group_members=("s", "w"))
-    plan = _plan(world, ChangeKind.MEMBERS, "s", None, ("w",))
-    assert _members(plan, "airplay_s") == []
-    assert _members(plan, "sonos_s") == [((), ("wiim_w",))]
+    calls, _ = _decided(world, "s", None, ("w",))
+    assert _members(calls, "airplay_s") == []
+    assert _members(calls, "sonos_s") == [((), ("wiim_w",))]
 
 
 def test_a_native_airplay_leader_removes_the_audio_protocol_it_holds() -> None:
@@ -830,11 +843,10 @@ def test_a_native_airplay_leader_removes_the_audio_protocol_it_holds() -> None:
     world.protocol("sonos_b", "b", "sonos", role=ProtocolRole.NATIVE)
     world.protocol("airplay_b", "b", "airplay")
     world.player("b", "sonos_b", "airplay_b", synced_to="t")
-    plan = _plan(world, ChangeKind.MEMBERS, "t", None, ("b",))
-    assert _members(plan, "airplay_t") == [((), ("airplay_b",))]
+    assert _members(_decided(world, "t", None, ("b",))[0], "airplay_t") == [((), ("airplay_b",))]
 
 
-# -- the join call and the hand-over --
+# -- the join's protocol call and the hand-over --
 
 
 def _switching(world: _World, state: PlaybackState) -> None:
@@ -858,136 +870,68 @@ def _switching(world: _World, state: PlaybackState) -> None:
     world.player("y", "sendspin_y")
 
 
+def _rules(world: _World) -> GroupRules:
+    """Return the decisions on the world, their log lines dropped."""
+    return GroupRules(world.snapshot(), lambda _note: None)
+
+
 def test_a_switch_that_would_silence_a_member_is_refused() -> None:
     """Member x can not follow to Sendspin while the leader plays, so adding y is refused."""
     world = _World()
     _switching(world, PLAYING)
-    world.protocols["airplay_l"] = replace(world.protocols["airplay_l"], features=GROUPS)
-    plan = _plan(world, ChangeKind.MEMBERS, "l", ("y",))
-    refusal = plan.steps[-1]
+    rules = _rules(world)
+    leader = world.players["l"]
+    refusal = rules.protocol_leg(leader, rules.translate(leader, ("y",), ()))
     assert isinstance(refusal, Refuse)
     assert refusal.error is PlayerCommandFailed
     assert refusal.translation_key == "member_cannot_follow_protocol"
     assert refusal.message == (
         "Cannot add Player y to State l: Player x cannot play over Sendspin provider"
     )
+    # idle, nobody is silenced: the join goes on
+    world.players["l"] = replace(leader, playback_state=PlaybackState.IDLE)
+    rules = _rules(world)
+    leader = world.players["l"]
+    assert rules.protocol_leg(leader, rules.translate(leader, ("y",), ())) == ProtocolLeg(
+        protocol_id="sendspin_l", add=("sendspin_y",), remove=()
+    )
 
 
-def test_an_idle_switch_hands_nothing_over_and_keeps_x() -> None:
-    """Idle, the switch only moves the leader's output after the join call."""
-    world = _World()
-    _switching(world, PlaybackState.IDLE)
-    plan = _plan(world, ChangeKind.MEMBERS, "l", ("y",))
-    assert SetMembers(protocol_id="sendspin_l", add=("sendspin_y",)) in plan.steps
-    assert plan.progress is not None
-    assert plan.progress.join is not None
-    after = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=plan.progress)
-    assert _calls(after) == [SetOutput(player_id="l", output_id="sendspin_l")]
+@pytest.mark.parametrize(
+    ("state", "previous", "moves", "handing_over"),
+    [
+        (PlaybackState.IDLE, "airplay_l", True, False),
+        (PLAYING, "airplay_l", True, True),
+        (PlaybackState.PAUSED, "airplay_l", True, True),
+        (PLAYING, "sendspin_l", True, False),
+    ],
+)
+def test_the_leaders_output_follows_and_a_rendering_one_is_handed_over(
+    state: PlaybackState, previous: str, moves: bool, handing_over: bool
+) -> None:
+    """
+    The leader's output moves to the protocol; one that renders elsewhere is handed over.
 
-
-def _joined(state: PlaybackState) -> tuple[_World, GroupProgress]:
-    """Return a leader on AirPlay with x, after y joined Sendspin, and the progress there."""
+    A paused leader still holds its output, so it is handed over too, without a resume.
+    """
     world = _World()
     _switching(world, state)
-    world.players["x"] = replace(world.players["x"], outputs=(*world.players["x"].outputs,))
-    world.protocol("sendspin_x", "x", "sendspin")
-    world.players["x"] = world.player("x", "airplay_x", "sendspin_x", synced_to="l")
-    plan = _plan(world, ChangeKind.MEMBERS, "l", ("y",))
-    assert plan.progress is not None
-    return world, plan.progress
+    world.players["l"] = replace(world.players["l"], active_output=previous)
+    handover = _rules(world).handover(world.players["l"], "sendspin_l")
+    assert (handover.moves, handover.handing_over) == (moves, handing_over)
+    assert handover.was_playing == (state == PLAYING)
+    assert handover.previous_output == previous
 
 
-def test_a_playing_switch_stops_the_old_protocol_resumes_and_regroups() -> None:
-    """The phases of a hand-over, each planned after the device call before it."""
-    world, progress = _joined(PLAYING)
-    leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
-    assert _calls(leader) == [SetOutput(player_id="l", output_id="sendspin_l")]
-    assert (
-        "Handing the output of State l over to the sendspin protocol and resuming playback"
-        in _notes(leader)
-    )
-    assert leader.progress is not None
-    assert leader.progress.join is not None
-    assert leader.progress.join.was_playing
-    # the leader's output moved: the old protocol is looked up now, its members frozen
-    world.players["l"] = replace(world.players["l"], active_output="sendspin_l")
-    stop = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=leader.progress)
-    assert _calls(stop) == [StopProtocol(protocol_id="airplay_l")]
-    assert stop.progress is not None
-    assert stop.progress.join is not None
-    assert stop.progress.join.old_members == (("airplay_x", "x"),)
-    removal = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=stop.progress)
-    assert _calls(removal) == [SetMembers(protocol_id="airplay_l", remove=("airplay_x",))]
-    tail = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=removal.progress)
-    assert _calls(tail) == [Resume(player_id="l"), MemberChange(target_id="l", add=("x",))]
-
-
-def test_a_pause_during_the_join_call_means_no_resume() -> None:
-    """A leader that paused while the join call ran hands over without resuming."""
-    world, progress = _joined(PLAYING)
-    world.players["l"] = replace(world.players["l"], playback_state=PlaybackState.PAUSED)
-    leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
-    assert leader.progress is not None
-    assert leader.progress.join is not None
-    assert leader.progress.join.handing_over
-    assert not leader.progress.join.was_playing
-
-
-def test_a_pause_after_the_leaders_output_moved_still_resumes() -> None:
-    """Whether the leader played is read before its output moves, so a pause after it resumes."""
-    world, progress = _joined(PLAYING)
-    leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
-    world.players["l"] = replace(
-        world.players["l"], active_output="sendspin_l", playback_state=PlaybackState.PAUSED
-    )
-    plan = leader
-    steps: list[Any] = []
-    while plan.progress is not None:
-        plan = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=plan.progress)
-        steps += _calls(plan)
-    assert Resume(player_id="l") in steps
-
-
-def test_stranded_members_are_released_from_the_own_protocol() -> None:
-    """On an own-stream leader natives move along and are released, unless own is gone."""
+@pytest.mark.parametrize("previous", [None, "native"])
+def test_a_group_on_the_leaders_own_protocol_moves_no_output(previous: str | None) -> None:
+    """The leader rendering natively, the group on its own protocol: its output stays."""
     world = _World()
-    world.protocol(
-        "airplay_l",
-        "l",
-        "airplay",
-        role=ProtocolRole.NATIVE,
-        own_stream=True,
-        members=("airplay_l", "airplay_n"),
-    )
-    world.protocol("sendspin_l", "l", "sendspin")
-    world.player(
-        "l", "airplay_l", "sendspin_l", can_group_with=frozenset({"s"}), group_members=("l", "n")
-    )
-    world.protocol("airplay_n", "n", "airplay", role=ProtocolRole.NATIVE)
-    world.protocol("sendspin_n", "n", "sendspin")
-    world.player("n", "airplay_n", "sendspin_n", synced_to="l")
-    world.protocol("sendspin_s", "s", "sendspin")
-    world.player("s", "sendspin_s")
-    everything = _all_plans(world, ChangeKind.MEMBERS, "l", ("s",))
-    assert (
-        SetMembers(protocol_id="sendspin_l", add=("sendspin_s", "sendspin_n")) in everything.steps
-    )
-    plan = _plan(world, ChangeKind.MEMBERS, "l", ("s",))
-    while plan.progress is not None and (
-        plan.progress.join is None or plan.progress.join.phase != JoinPhase.JOINED
-    ):
-        plan = _plan(world, ChangeKind.MEMBERS, "l", ("s",), progress=plan.progress)
-    joined = _plan(world, ChangeKind.MEMBERS, "l", ("s",), progress=plan.progress)
-    active = _plan(world, ChangeKind.MEMBERS, "l", ("s",), progress=joined.progress)
-    assert _calls(active) == [
-        SetMembers(protocol_id="airplay_l", remove=("airplay_n",), lists=MemberLists.REMOVE_ONLY)
-    ]
-    # the own protocol is gone by then: nothing is released
-    gone = GroupingSnapshot(
-        players={**world.players, "l": replace(world.players["l"], own_protocol=None)},
-        protocols=world.protocols,
-    )
-    assert _calls(_plan(gone, ChangeKind.MEMBERS, "l", ("s",), progress=joined.progress)) == []
+    _sonos(world, "a", "b")
+    world.players["a"] = replace(world.players["a"], active_output=previous, playback_state=PLAYING)
+    handover = _rules(world).handover(world.players["a"], "sonos_a")
+    assert not handover.moves
+    assert not handover.handing_over
 
 
 def test_the_forward_filters_and_checks_the_protocol() -> None:
@@ -998,71 +942,30 @@ def test_the_forward_filters_and_checks_the_protocol() -> None:
         world.protocols["airplay_s"], group_members=("airplay_s", "airplay_w")
     )
     world.players["s"] = replace(world.players["s"], group_members=("s", "w"))
-    snapshot = world.snapshot()
-    progress = GroupProgress(
-        join=_join(
-            JoinPhase.FORWARD, "airplay_s", protocol_remove=("airplay_w", "sonos_b", "ghost")
-        )
+    lists = JoinLists(protocol_id="airplay_s", protocol_remove=("airplay_w", "sonos_b", "ghost"))
+    assert _rules(world).protocol_leg(world.players["s"], lists) == ProtocolLeg(
+        protocol_id="airplay_s", add=(), remove=("airplay_w",)
     )
-    plan = plan_group_change(
-        snapshot, GroupChange(kind=ChangeKind.MEMBERS, target_id="s"), progress
-    )
-    assert _calls(plan) == [SetMembers(protocol_id="airplay_s", remove=("airplay_w",))]
     world.protocols["airplay_s"] = replace(world.protocols["airplay_s"], features=PLAYS)
-    plan = plan_group_change(
-        world.snapshot(), GroupChange(kind=ChangeKind.MEMBERS, target_id="s"), progress
+    notes: list[GroupStep] = []
+    assert (
+        GroupRules(world.snapshot(), notes.append).protocol_leg(world.players["s"], lists) is None
     )
-    assert _calls(plan) == []
-    assert any("does not support SET_MEMBERS" in note for note in _notes(plan, logging.ERROR))
+    assert any("does not support SET_MEMBERS" in note for note in _notes(notes, logging.ERROR))
 
 
-def _join(phase: JoinPhase, protocol_id: str | None, **values: Any) -> Any:
-    """Return a join progress."""
-    from music_assistant.controllers.players.grouping_plan import JoinProgress  # noqa: PLC0415
-
-    return JoinProgress(phase=phase, protocol_id=protocol_id, **values)
-
-
-def test_each_further_activation_is_planned_after_the_one_before() -> None:
-    """One member's activation ends the plan when another one follows."""
+def test_a_joining_member_is_pointed_at_the_protocol_unless_it_already_is() -> None:
+    """Its player's output moves to the joining protocol, unless it is already that one."""
     world = _World()
     _mixed(world)
-    world.protocol("airplay_v", "v", "airplay")
-    world.player("v", "airplay_v")
-    world.players["s"] = replace(world.players["s"], can_group_with=frozenset({"w", "v"}))
-    world.protocols["airplay_s"] = replace(
-        world.protocols["airplay_s"], can_group_with=frozenset({"airplay_w", "airplay_v"})
-    )
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("w", "v"))
-    assert _calls(plan)[-1] == SetOutput(player_id="w", output_id="airplay_w")
-    # v got the protocol as output by itself meanwhile: no activation, straight to the join call
-    world.players["v"] = replace(world.players["v"], active_output="airplay_v")
-    after = _plan(world, ChangeKind.MEMBERS, "s", ("w", "v"), progress=plan.progress)
-    assert _calls(after) == [SetMembers(protocol_id="airplay_s", add=("airplay_w", "airplay_v"))]
-
-
-def test_the_native_forward_reads_the_own_protocol_after_the_protocol_leg() -> None:
-    """Native members are grouped after the protocol leg, if the own protocol still can."""
-    world = _World()
-    _mixed(world)
-    progress = GroupProgress(join=_join(JoinPhase.NATIVE, None, native_add=("sonos_b",)))
-    change = GroupChange(kind=ChangeKind.MEMBERS, target_id="s")
-    assert _calls(plan_group_change(world.snapshot(), change, progress)) == [
-        SetMembers(protocol_id="sonos_s", add=("sonos_b",))
-    ]
-    world.protocols["sonos_s"] = replace(world.protocols["sonos_s"], features=PLAYS)
-    assert _calls(plan_group_change(world.snapshot(), change, progress)) == []
-
-
-def test_a_takeover_is_opened_for_new_content_over_a_protocol_only() -> None:
-    """The hook is called before the join call and ends the plan; never for a native join."""
-    world = _World()
-    _mixed(world)
-    plan = _plan(world, ChangeKind.MEMBERS, "s", ("w",), new_content=True)
-    assert _device_calls(plan) == [OpenTakeover(protocol_id="airplay_s")]
-    assert plan.progress is not None
-    native = _plan(world, ChangeKind.MEMBERS, "s", ("b",), new_content=True)
-    assert not any(isinstance(step, OpenTakeover) for step in native.steps)
+    rules = _rules(world)
+    assert rules.member_output("airplay_w") == "w"
+    assert rules.active_output(world.players["w"]) == "airplay_w"
+    world.players["w"] = replace(world.players["w"], active_output="airplay_w")
+    assert _rules(world).member_output("airplay_w") is None
+    # an own protocol, or an id that names no protocol, has no output to move
+    assert _rules(world).member_output("sonos_b") is None
+    assert _rules(world).member_output("ghost") is None
 
 
 # -- ungroup, detach and the triggers --
@@ -1187,19 +1090,17 @@ def _left_on_bridge(world: _World, preferred: str | None = None) -> None:
 
 
 def test_a_group_left_on_a_protocol_regroups_natively_at_a_fresh_start() -> None:
-    """Removed from the protocol, then joined afresh after that call."""
+    """The members leave the protocol and join the leader afresh."""
     world = _World()
     _left_on_bridge(world)
     plan = _plan(world, ChangeKind.REGROUP_FOR_START, "a")
-    assert _calls(plan) == [SetMembers(protocol_id="airplay_a", remove=("airplay_b",))]
-    assert plan.progress is not None
-    assert plan.progress.regroup is not None
-    after = _plan(world, ChangeKind.REGROUP_FOR_START, "a", progress=plan.progress)
-    assert _calls(after) == [
-        SetOutput(player_id="b", output_id=None),
-        SetOutput(player_id="a", output_id=None),
-        SetMembers(protocol_id="sonos_a", add=("sonos_b",)),
+    assert _notes(plan) == [
+        "Regrouping State a off the airplay protocol, which none of its members need anymore"
     ]
+    assert plan.regroup == Regroup(
+        leader_id="a", protocol_id="airplay_a", removed=("airplay_b",), member_ids=("b",)
+    )
+    assert plan.progress is None
 
 
 @pytest.mark.parametrize("why", ["preferred", "unavailable", "synced"])
@@ -1211,7 +1112,9 @@ def test_a_group_that_still_needs_its_protocol_stays(why: str) -> None:
         world.players["b"] = replace(world.players["b"], available=False)
     if why == "synced":
         world.protocols["airplay_a"] = replace(world.protocols["airplay_a"], synced_to="airplay_z")
-    assert _calls(_plan(world, ChangeKind.REGROUP_FOR_START, "a")) == []
+    plan = _plan(world, ChangeKind.REGROUP_FOR_START, "a")
+    assert plan.steps == ()
+    assert plan.regroup is None
 
 
 def test_the_common_output_can_be_the_leaders_own_protocol() -> None:
@@ -1232,63 +1135,47 @@ def test_the_common_output_can_be_the_leaders_own_protocol() -> None:
         provider_id="sonos_other_household",
     )
     world.player("b", "sonos_b")
-    plan = _all_plans(world, ChangeKind.MEMBERS, "a", ("b",))
-    assert _members(plan, "sonos_a") == [(("sonos_b",), ())]
+    assert _decided(world, "a", ("b",))[0] == [("sonos_a", ("sonos_b",), ())]
 
 
 def test_the_old_members_leave_out_the_protocol_unknown_ids_and_the_leader() -> None:
     """The old members skip the protocol itself, unknown ids and the leader."""
-    world, progress = _joined(PLAYING)
+    world = _World()
+    _switching(world, PLAYING)
     world.protocols["airplay_l"] = replace(
         world.protocols["airplay_l"],
         group_members=("airplay_l", "ghost", "sendspin_l", "airplay_x"),
     )
-    leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
-    world.players["l"] = replace(world.players["l"], active_output="sendspin_l")
-    stop = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=leader.progress)
-    assert stop.progress is not None
-    assert stop.progress.join is not None
-    assert stop.progress.join.old_members == (("airplay_x", "x"),)
-
-
-def test_the_old_members_are_the_ones_captured_before_the_stop() -> None:
-    """The stopped protocol's members are removed as they were before its stop."""
-    world, progress = _joined(PLAYING)
-    leader = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=progress)
-    world.players["l"] = replace(world.players["l"], active_output="sendspin_l")
-    stop = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=leader.progress)
-    # the stopped protocol already reports a group without its member
-    world.protocols["airplay_l"] = replace(
-        world.protocols["airplay_l"], group_members=("airplay_l",)
+    assert _rules(world).old_protocol(world.players["l"], "airplay_l", "sendspin_l") == (
+        OldProtocol(protocol_id="airplay_l", members=(("airplay_x", "x"),))
     )
-    removal = _plan(world, ChangeKind.MEMBERS, "l", ("y",), progress=stop.progress)
-    assert _calls(removal) == [SetMembers(protocol_id="airplay_l", remove=("airplay_x",))]
+
+
+@pytest.mark.parametrize("previous", [None, "native", "sendspin_l"])
+def test_there_is_no_old_protocol_without_another_audio_output(previous: str | None) -> None:
+    """A leader that rendered natively, or on the protocol itself, leaves no protocol."""
+    world = _World()
+    _switching(world, PLAYING)
+    assert _rules(world).old_protocol(world.players["l"], previous, "sendspin_l") is None
 
 
 def test_the_native_add_keeps_only_what_the_own_protocol_can_group() -> None:
     """A native member the own protocol does not offer is left out of its call."""
     world = _World()
     _mixed(world)
-    progress = GroupProgress(join=_join(JoinPhase.NATIVE, None, native_add=("sonos_b", "wiim_w")))
-    change = GroupChange(kind=ChangeKind.MEMBERS, target_id="s")
-    assert _calls(plan_group_change(world.snapshot(), change, progress)) == [
-        SetMembers(protocol_id="sonos_s", add=("sonos_b",))
-    ]
+    native = _rules(world).native_leg(world.players["s"], ("sonos_b", "wiim_w"), ())
+    assert native is not None
+    assert (native.protocol_id, native.add, native.remove) == ("sonos_s", ("sonos_b",), ())
 
 
-def test_a_native_only_join_opens_no_takeover_while_the_group_is_on_a_protocol() -> None:
-    """New content, the group on AirPlay, a member that joins natively: no takeover."""
+def test_the_native_call_needs_an_own_protocol_that_groups() -> None:
+    """Without SET_MEMBERS on the own protocol, or without an own protocol, nothing is called."""
     world = _World()
-    _mixed(world, active_output="airplay_s")
-    world.protocol("sonos_c", "c", "sonos", role=ProtocolRole.NATIVE)
-    world.player("c", "sonos_c")
-    world.protocols["sonos_s"] = replace(
-        world.protocols["sonos_s"], can_group_with=frozenset({"sonos_b", "sonos_c"})
-    )
-    world.players["s"] = replace(world.players["s"], can_group_with=frozenset({"b", "w", "c"}))
-    plan = _all_plans(world, ChangeKind.MEMBERS, "s", ("c",), new_content=True)
-    assert _members(plan, "sonos_s") == [(("sonos_c",), ())]
-    assert [step for step in plan.steps if isinstance(step, OpenTakeover)] == []
+    _mixed(world)
+    world.protocols["sonos_s"] = replace(world.protocols["sonos_s"], features=PLAYS)
+    assert _rules(world).native_leg(world.players["s"], ("sonos_b",), ()) is None
+    leaderless = replace(world.players["s"], own_protocol=None)
+    assert _rules(world).native_leg(leaderless, ("sonos_b",), ()) is None
 
 
 def test_a_regroup_that_can_not_place_every_member_leaves_the_group_alone() -> None:
@@ -1302,7 +1189,7 @@ def test_a_regroup_that_can_not_place_every_member_leaves_the_group_alone() -> N
     world.protocols["airplay_a"] = replace(
         world.protocols["airplay_a"], group_members=("airplay_a", "airplay_b", "airplay_z")
     )
-    assert _calls(_plan(world, ChangeKind.REGROUP_FOR_START, "a")) == []
+    assert _plan(world, ChangeKind.REGROUP_FOR_START, "a").regroup is None
 
 
 def test_the_ungroup_scan_passes_over_a_leader_that_holds_the_player_as_static() -> None:
@@ -1337,10 +1224,8 @@ def test_a_dissolve_removes_the_members_that_are_away_too() -> None:
     _leader_with_members(world, None)
     world.players["c"] = replace(world.players["c"], available_for_playback=False)
     plan = _plan(world, ChangeKind.MEMBERS, "a", None, ("a",))
-    assert _calls(plan) == [
-        SetMembers(protocol_id="sonos_a", remove=("sonos_b", "sonos_c")),
-        StopLeader(player_id="a"),
-    ]
+    assert plan.join == Join(target_id="a", remove=("b", "c"), stop_after=True)
+    assert _decided(world, "a", None, ("a",))[0] == [("sonos_a", (), ("sonos_b", "sonos_c"))]
 
 
 def test_only_members_that_can_play_now_take_the_group_over() -> None:
@@ -1360,6 +1245,6 @@ def test_an_output_of_the_leader_that_can_not_play_is_no_common_output() -> None
     world.player("p", "sonos_p", "airplay_p", can_group_with=frozenset({"x"}))
     world.protocol("airplay_x", "x", "airplay")
     world.player("x", "airplay_x")
-    plan = _all_plans(world, ChangeKind.MEMBERS, "p", ("x",))
-    assert _members(plan, "airplay_p") == []
-    assert any("no compatible grouping method found" in n for n in _notes(plan, logging.WARNING))
+    calls, notes = _decided(world, "p", ("x",))
+    assert calls == []
+    assert any("no compatible grouping method found" in n for n in _notes(notes, logging.WARNING))

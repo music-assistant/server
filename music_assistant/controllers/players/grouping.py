@@ -28,32 +28,31 @@ from music_assistant.controllers.players.grouping_plan import (
     GroupCommand,
     GroupingSnapshot,
     GroupProgress,
+    GroupRules,
     GroupStep,
-    Hold,
+    Handover,
+    Join,
     MemberChange,
     MemberLists,
     Note,
-    OpenTakeover,
     OutputView,
     PlayerView,
     PrepareForPlayback,
     ProtocolView,
     QueueView,
     Refuse,
+    Regroup,
     ReleaseSession,
-    Resume,
     SetMembers,
-    SetOutput,
-    StopLeader,
-    StopProtocol,
     TransferLeadership,
     Ungroup,
     plan_group_change,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
+    from music_assistant_models.errors import MusicAssistantError
     from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
 
@@ -108,6 +107,8 @@ async def apply_group_change(
     """
     Carry out a group change: plan it, run the steps, plan again where the plan stopped.
 
+    A member change then joins its members, a regroup at a fresh start joins them afresh.
+
     :param players: The players controller.
     :param change: The change.
     :param target: The player object the change is about, kept for the whole change.
@@ -125,13 +126,22 @@ async def apply_group_change(
         players.logger.debug("Group plan for %s: %s", change.target_id, plan.steps)
         await run.run(plan.steps)
         if plan.progress is None:
-            return run.takeover
+            break
         progress = (
             plan.progress_left_out
             if run.left_out and plan.progress_left_out is not None
             else plan.progress
         )
         run.left_out = False
+    if plan.regroup is not None:
+        await _regroup(run, plan.regroup)
+    elif plan.join is not None:
+        try:
+            await _join(run, plan.join, new_content=change.new_content)
+        except BaseException:
+            await run.abort_takeover()
+            raise
+    return run.takeover
 
 
 async def route_group_change(players: _PlayerControllerBase, change: GroupChange) -> bool:
@@ -146,6 +156,118 @@ async def route_group_change(players: _PlayerControllerBase, change: GroupChange
     players.logger.debug("Group plan for %s: %s", change.target_id, plan.steps)
     await _GroupRun(players, change, None).run(plan.steps)
     return plan.passed_on
+
+
+async def _join(run: _GroupRun, join: Join, *, new_content: bool) -> None:  # noqa: PLR0915
+    """
+    Join and drop the members of a leader on the protocols that carry them.
+
+    The members join the protocol that carries the group first and the leader's output follows
+    them; the members of the leader's own protocol join last.
+
+    :param run: The run of the change.
+    :param join: The members that join and leave.
+    :param new_content: The caller publishes new content once the members joined.
+    """
+    players = run.players
+    target_id = join.target_id
+    # each decision is taken on the players as they are after the device call before it
+    rules = run.read()
+    lists = rules.translate(rules.held_player(target_id), join.add, join.remove)
+    if lists.protocol_id is not None:
+        run.hold(lists.protocol_id)
+        if lists.protocol_add and new_content:
+            await run.open_takeover(lists.protocol_id)
+            rules = run.read()
+    leg = rules.protocol_leg(rules.held_player(target_id), lists)
+    if isinstance(leg, Refuse):
+        raise run.error(leg)
+    handover: Handover | None = None
+    if leg is not None:
+        # This runs before set_members because a member's own stream starts inside that
+        # call and the provider resolves the member's volume control as it starts: unless
+        # its player already points at this protocol, that resolution picks another
+        # interface of the same device (e.g. its cast side) over the one carrying the audio.
+        for index, member_protocol_id in enumerate(leg.add):
+            if (player_id := rules.member_output(member_protocol_id)) is not None:
+                await run.set_output(player_id, member_protocol_id)
+                if index + 1 < len(leg.add):
+                    rules = run.read()
+        await run.protocol(leg.protocol_id).set_members(
+            player_ids_to_add=list(leg.add) or None,
+            player_ids_to_remove=list(leg.remove) or None,
+        )
+        rules = run.read()
+        run.clear_outputs(rules.leaving_outputs(leg.remove))
+        if leg.add:
+            handover = rules.handover(rules.held_player(target_id), leg.protocol_id)
+            if handover.moves:
+                await run.set_output(target_id, leg.protocol_id)
+                if handover.note is not None:
+                    run.note(handover.note)
+                rules = run.read()
+            # The members already joined the protocol group, so the native session only has
+            # to release them, and stop when it is live. Releasing them first also clears the
+            # native group, which keeps a later native playback command from resurrecting it.
+            # Both calls take the provider's own lock, so they run one after the other.
+            if leg.stranded and (own_id := rules.own_protocol(rules.held_player(target_id))):
+                run.hold(own_id)
+                await run.protocol(own_id).set_members(player_ids_to_remove=list(leg.stranded))
+                if handover.handing_over:
+                    await run.protocol(own_id).stop()
+                rules = run.read()
+    if leg is not None and handover is not None and handover.handing_over:
+        old = rules.old_protocol(
+            rules.held_player(target_id), handover.previous_output, leg.protocol_id
+        )
+        removed: list[str] = []
+        if old is not None:
+            run.hold(old.protocol_id)
+            # Stop the specific protocol itself, bypassing group/sync redirect and queue
+            # redirect logic. A stopped protocol keeps its group, which would win the output
+            # selection of the resume over the protocol that takes over, so its members are
+            # removed from it next, as they were before its stop.
+            await run.protocol(old.protocol_id).stop()
+            rules = run.read()
+            if removed := rules.removal(old.protocol_id, [member for member, _ in old.members]):
+                await run.protocol(old.protocol_id).set_members(
+                    player_ids_to_add=None, player_ids_to_remove=removed
+                )
+                rules = run.read()
+        run.clear_outputs(rules.leaving_outputs(removed))
+        old_players = [player_id for _, player_id in old.members] if old is not None else []
+        if handover.was_playing:
+            await players.cmd_resume(target_id)
+        if old_players:
+            await players._handle_set_members(run.player(target_id), player_ids_to_add=old_players)
+        if handover.was_playing or old_players:
+            rules = run.read()
+    native = rules.native_leg(rules.held_player(target_id), lists.native_add, lists.native_remove)
+    if native is not None:
+        await run.protocol(native.protocol_id).set_members(
+            player_ids_to_add=list(native.add) or None,
+            player_ids_to_remove=list(native.remove) or None,
+        )
+    if join.stop_after:
+        await players._stop_player_or_its_queue(run.player(target_id))
+
+
+async def _regroup(run: _GroupRun, regroup: Regroup) -> None:
+    """
+    Take a group off a protocol none of its members needs anymore, and join it afresh.
+
+    :param run: The run of the change.
+    :param regroup: The regroup.
+    """
+    if regroup.removed:
+        await run.protocol(regroup.protocol_id).set_members(
+            player_ids_to_add=None, player_ids_to_remove=list(regroup.removed)
+        )
+    rules = run.read()
+    run.clear_outputs(rules.leaving_outputs(regroup.removed))
+    if rules.active_output(rules.held_player(regroup.leader_id)) == regroup.protocol_id:
+        run.clear_outputs([regroup.leader_id])
+    await _join(run, Join(target_id=regroup.leader_id, add=regroup.member_ids), new_content=False)
 
 
 class _GroupRun:
@@ -176,14 +298,104 @@ class _GroupRun:
         :param steps: The steps.
         """
         for step in steps:
-            try:
-                await self._run_step(step)
-            except BaseException:
-                if self.takeover is not None:
-                    owner, token = self.takeover
-                    self.takeover = None
-                    await owner.on_group_content_takeover_aborted(token)
-                raise
+            await self._run_step(step)
+
+    def read(self) -> GroupRules:
+        """Return the decisions on the players as they are now."""
+        return GroupRules(grouping_snapshot(self.players, self.held, self.held_players), self.note)
+
+    def note(self, note: Note) -> None:
+        """
+        Write a line for the log.
+
+        :param note: The line.
+        """
+        self.players.logger.log(note.level, note.message, *note.args)
+
+    def error(self, refusal: Refuse) -> MusicAssistantError:
+        """
+        Return the error a refusal ends the change with.
+
+        :param refusal: The refusal.
+        """
+        if refusal.translation_key is not None:
+            return refusal.error(
+                refusal.message,
+                translation_key=refusal.translation_key,
+                translation_owner=self.players.translation_owner,
+                translation_args=list(refusal.translation_args),
+            )
+        return refusal.error(refusal.message)
+
+    def hold(self, protocol_id: str) -> None:
+        """
+        Keep the protocol object of an id for the rest of the change.
+
+        :param protocol_id: Id of the protocol.
+        """
+        if (protocol := self.players.get_protocol(protocol_id)) is not None:
+            self.held.setdefault(protocol_id, protocol)
+
+    def protocol(self, protocol_id: str) -> PlayerProtocol:
+        """
+        Return the protocol object of an id: the one the change holds, else the attached one.
+
+        :param protocol_id: Id of the protocol.
+        """
+        if (protocol := self.held.get(protocol_id)) is not None:
+            return protocol
+        protocol = self.players.get_protocol(protocol_id)
+        assert protocol is not None  # a change only names protocols the snapshot holds
+        return protocol
+
+    def player(self, player_id: str) -> Player:
+        """
+        Return the player object of an id: the one the change holds, else the live one.
+
+        :param player_id: Id of the player.
+        """
+        if (player := self.held_players.get(player_id)) is not None:
+            return player
+        player = self.players.get_player(player_id)
+        assert player is not None  # a change only names players the snapshot holds
+        self.held_players[player_id] = player
+        return player
+
+    async def set_output(self, player_id: str, output_id: str) -> None:
+        """
+        Make an output the active one of a player, its level handed over first.
+
+        :param player_id: Id of the player.
+        :param output_id: The protocol id of the output.
+        """
+        await self.players._activate_output_protocol(self.player(player_id), output_id)
+
+    def clear_outputs(self, player_ids: Iterable[str]) -> None:
+        """
+        Clear the active output of players.
+
+        :param player_ids: Ids of the players.
+        """
+        for player_id in player_ids:
+            self.player(player_id).set_active_output_protocol(None)
+
+    async def open_takeover(self, protocol_id: str) -> None:
+        """
+        Prepare a protocol group for a new content owner, keeping the token for the caller.
+
+        :param protocol_id: Id of the protocol.
+        """
+        protocol = self.protocol(protocol_id)
+        token = await protocol.on_group_content_takeover()
+        if token is not None:
+            self.takeover = (protocol, token)
+
+    async def abort_takeover(self) -> None:
+        """Abort the takeover the change opened, if any."""
+        if self.takeover is not None:
+            owner, token = self.takeover
+            self.takeover = None
+            await owner.on_group_content_takeover_aborted(token)
 
     async def _run_step(self, step: GroupStep) -> None:
         """
@@ -194,50 +406,27 @@ class _GroupRun:
         players = self.players
         match step:
             case Note():
-                players.logger.log(step.level, step.message, *step.args)
-            case Hold():
-                if (protocol := players.get_protocol(step.protocol_id)) is not None:
-                    self.held.setdefault(step.protocol_id, protocol)
+                self.note(step)
             case SetMembers():
                 await self._set_members(step)
-            case SetOutput():
-                await self._set_output(step)
             case PrepareForPlayback():
-                await players._power_on_for_playback(self._player(step.player_id))
+                await players._power_on_for_playback(self.player(step.player_id))
             case MemberChange():
                 await self._member_change(step)
             case Detach():
                 await self._detach(step)
             case GroupCommand():
                 await players.cmd_set_members(step.target_id, **_lists(step.add, step.remove))
-            case OpenTakeover():
-                protocol = self._protocol(step.protocol_id)
-                token = await protocol.on_group_content_takeover()
-                if token is not None:
-                    self.takeover = (protocol, token)
-            case StopProtocol():
-                await self._protocol(step.protocol_id).stop()
             case Ungroup():
                 await self._ungroup(step)
             case ReleaseSession():
                 await players._release_group_session(step.group_id)
-            case StopLeader():
-                await players._stop_player_or_its_queue(self._player(step.player_id))
-            case Resume():
-                await players.cmd_resume(step.player_id)
             case TransferLeadership():
                 await players._transfer_ad_hoc_leadership(
-                    self._player(step.leader_id), list(step.remaining)
+                    self.player(step.leader_id), list(step.remaining)
                 )
             case Refuse():
-                if step.translation_key is not None:
-                    raise step.error(
-                        step.message,
-                        translation_key=step.translation_key,
-                        translation_owner=players.translation_owner,
-                        translation_args=list(step.translation_args),
-                    )
-                raise step.error(step.message)
+                raise self.error(step)
 
     async def _set_members(self, step: SetMembers) -> None:
         """
@@ -245,30 +434,13 @@ class _GroupRun:
 
         :param step: The step.
         """
-        protocol = self._protocol(step.protocol_id)
+        protocol = self.protocol(step.protocol_id)
         if step.lists == MemberLists.REMOVE_ONLY:
             await protocol.set_members(player_ids_to_remove=list(step.remove))
-        elif step.lists == MemberLists.AS_THEY_ARE:
+        else:
             await protocol.set_members(
                 player_ids_to_add=list(step.add), player_ids_to_remove=list(step.remove)
             )
-        else:
-            await protocol.set_members(
-                player_ids_to_add=list(step.add) or None,
-                player_ids_to_remove=list(step.remove) or None,
-            )
-
-    async def _set_output(self, step: SetOutput) -> None:
-        """
-        Activate or clear the output of a player.
-
-        :param step: The step.
-        """
-        player = self._player(step.player_id)
-        if step.output_id is None:
-            player.set_active_output_protocol(None)
-            return
-        await self.players._activate_output_protocol(player, step.output_id)
 
     async def _member_change(self, step: MemberChange) -> None:
         """
@@ -277,7 +449,7 @@ class _GroupRun:
         :param step: The step.
         """
         call = self.players._handle_set_members(
-            self._player(step.target_id), **_lists(step.add, step.remove)
+            self.player(step.target_id), **_lists(step.add, step.remove)
         )
         if step.failure == Failure.RAISE:
             await call
@@ -304,7 +476,7 @@ class _GroupRun:
 
         :param step: The step.
         """
-        member = self._player(step.member_id)
+        member = self.player(step.member_id)
         if step.failure == Failure.RAISE and not step.wait_for_update:
             await self.players._detach_member(member)
             return
@@ -326,7 +498,7 @@ class _GroupRun:
 
         :param step: The step.
         """
-        protocol = self._protocol(step.protocol_id)
+        protocol = self.protocol(step.protocol_id)
         if step.failure != Failure.UNAVAILABLE:
             await protocol.ungroup()
             return
@@ -336,31 +508,6 @@ class _GroupRun:
             raise
         except Exception as err:
             raise PlayerUnavailableError(step.message) from err
-
-    def _protocol(self, protocol_id: str) -> PlayerProtocol:
-        """
-        Return the protocol object of an id: the one the change holds, else the attached one.
-
-        :param protocol_id: Id of the protocol.
-        """
-        if (protocol := self.held.get(protocol_id)) is not None:
-            return protocol
-        protocol = self.players.get_protocol(protocol_id)
-        assert protocol is not None  # a plan only names protocols the snapshot holds
-        return protocol
-
-    def _player(self, player_id: str) -> Player:
-        """
-        Return the player object of an id: the one the change holds, else the live one.
-
-        :param player_id: Id of the player.
-        """
-        if (player := self.held_players.get(player_id)) is not None:
-            return player
-        player = self.players.get_player(player_id)
-        assert player is not None  # a plan only names players the snapshot holds
-        self.held_players[player_id] = player
-        return player
 
 
 def _lists(add: tuple[str, ...] | None, remove: tuple[str, ...] | None) -> dict[str, Any]:

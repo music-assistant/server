@@ -18,10 +18,11 @@ from music_assistant.controllers.players.grouping import grouping_snapshot
 from music_assistant.controllers.players.grouping_plan import (
     ChangeKind,
     GroupChange,
+    GroupRules,
     GroupStep,
-    JoinPhase,
+    NativeLeg,
     Note,
-    SetMembers,
+    ProtocolLeg,
     plan_group_change,
 )
 from music_assistant.models.player import Player
@@ -141,12 +142,12 @@ def _planned(
     parent: Player,
     add: Iterable[str] = (),
     remove: Iterable[str] = (),
-) -> tuple[list[GroupStep], SetMembers | None]:
+) -> tuple[ProtocolLeg | None, NativeLeg | None]:
     """
-    Return every step of a member change on a parent, planned to its end on the state as it is.
+    Return the calls a member change on a parent decides on the state as it is.
 
-    Together with the join call of its protocol group: the set_members that ends the plan in
-    which the join reaches its JOINED phase.
+    That is the join call of its protocol group and the call of the parent's own protocol. The
+    admission is planned to its end first, on the same state.
 
     :param controller: The players controller.
     :param parent: The leader.
@@ -161,21 +162,25 @@ def _planned(
         remove=tuple(remove),
     )
     plan = plan_group_change(snapshot, change)
-    steps: list[GroupStep] = []
-    join_call: SetMembers | None = None
-    while True:
-        steps += plan.steps
-        join = plan.progress.join if plan.progress is not None else None
-        if join_call is None and join is not None and join.phase == JoinPhase.JOINED:
-            join_call = next(step for step in reversed(plan.steps) if isinstance(step, SetMembers))
-        if plan.progress is None:
-            break
+    steps: list[GroupStep] = list(plan.steps)
+    while plan.progress is not None:
         plan = plan_group_change(snapshot, change, plan.progress)
-    for step in steps:
-        # the log lines of the plan, as the executor writes them
-        if isinstance(step, Note):
-            controller.logger.log(step.level, step.message, *step.args)
-    return steps, join_call
+        steps += plan.steps
+    notes = [step for step in steps if isinstance(step, Note)]
+    leg: ProtocolLeg | None = None
+    native: NativeLeg | None = None
+    if plan.join is not None:
+        rules = GroupRules(snapshot, notes.append)
+        leader = rules.held_player(parent.player_id)
+        lists = rules.translate(leader, plan.join.add, plan.join.remove)
+        decided = rules.protocol_leg(leader, lists)
+        if decided is None or isinstance(decided, ProtocolLeg):
+            leg = decided
+            native = rules.native_leg(leader, lists.native_add, lists.native_remove)
+    for note in notes:
+        # the log lines of the change, as the executor writes them
+        controller.logger.log(note.level, note.message, *note.args)
+    return leg, native
 
 
 def _grouping(
@@ -187,7 +192,7 @@ def _grouping(
     remove: Iterable[str] = (),
 ) -> tuple[list[str], list[str], PlayerProtocol | None, str | None]:
     """
-    Return how the plan groups members with a parent.
+    Return how a member change groups members with a parent.
 
     That is the ids its protocol group adds (or removes), those its own protocol adds (or
     removes), the protocol of the group and its domain. The members pass the admission: the
@@ -205,21 +210,15 @@ def _grouping(
         _refresh(controller)
     member_ids = list(member_ids)
     parent.state.can_group_with = set(parent.state.can_group_with) | set(member_ids)
-    steps, join_call = _planned(controller, parent, member_ids, remove)
+    leg, native = _planned(controller, parent, member_ids, remove)
     protocol_members: list[str] = []
     protocol: PlayerProtocol | None = None
-    if join_call is not None:
-        protocol_members = list(join_call.add if member_ids else join_call.remove)
-        protocol = controller.get_protocol(join_call.protocol_id)
+    if leg is not None:
+        protocol_members = list(leg.add if member_ids else leg.remove)
+        protocol = controller.get_protocol(leg.protocol_id)
     native_members: list[str] = []
-    native_next = False
-    for step in steps:
-        if isinstance(step, Note):
-            native_next = step.message.startswith("Calling set_members on native player")
-            continue
-        if isinstance(step, SetMembers) and native_next:
-            native_members += list(step.add if member_ids else step.remove)
-        native_next = False
+    if native is not None:
+        native_members = list(native.add if member_ids else native.remove)
     return (
         protocol_members,
         native_members,
