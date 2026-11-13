@@ -938,11 +938,10 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                     "No on-demand version of %s yet, using the live stream", programme_id.pid
                 )
 
-        # the rewind window is only offered on HLS, whatever the configured stream format
         station = await self.client.stations.get_station(
             programme_id.station_id,
             include_stream=True,
-            stream_preferences=StreamPreference(stream_type=_Constants.HLS),
+            stream_preferences=StreamPreference(),
         )
         if not station or not station.stream:
             raise MediaNotFoundError(f"No live stream found for {programme_id.station_id}")
