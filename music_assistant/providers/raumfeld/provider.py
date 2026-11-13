@@ -646,7 +646,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
                     existing.set_software_version(self.room_software_version(room))
                     # a room keeps its player when the speaker it plays through changes
                     existing.set_model(self.room_model(room))
-                    existing.set_line_in(self.line_in(self.resolve_room_renderer(room)[0]))
+                    renderer_uuid, renderer_ip = self.resolve_room_renderer(room)
+                    existing.set_line_in(self.line_in(renderer_uuid))
+                    await existing.set_renderer(renderer_uuid, renderer_ip)
                     existing.set_available(True)
                 self._ensure_icy_default(player_id)
                 continue

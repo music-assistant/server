@@ -1035,6 +1035,64 @@ class ProtocolLinkingMixin:
         # above are handled by _add_protocol_link itself).
         self._link_derived_protocols_of(native_player)
 
+    def _relink_protocols_to_replaced_device(self, native_player: Player) -> None:
+        """
+        Swap the protocol outputs of a native player whose device was replaced.
+
+        Releases the registered protocol players that belong to its previous device, so they
+        can find their own parent again, and links those of the device it has now.
+
+        :param native_player: The native player, already holding the new device's identifiers.
+        """
+        linked: dict[str, Player] = {
+            link.output_protocol_id: protocol_player
+            for link in native_player.linked_output_protocols
+            if (protocol_player := self.get_player(link.output_protocol_id))
+        }
+        # what still belongs to the device: the protocols that match it directly, their
+        # siblings, and the derived protocols riding on either of those or on the player
+        kept = {
+            protocol_id
+            for protocol_id, protocol_player in linked.items()
+            if not protocol_player.underlying_player_id
+            and self._identifiers_match(
+                native_player, protocol_player, protocol_player.provider.domain
+            )
+        }
+        kept |= {
+            protocol_id
+            for protocol_id, protocol_player in linked.items()
+            if not protocol_player.underlying_player_id
+            and any(
+                self._identifiers_match(
+                    linked[kept_id], protocol_player, protocol_player.provider.domain
+                )
+                for kept_id in kept
+            )
+        }
+        changed = True
+        while changed:
+            riding = {
+                protocol_id
+                for protocol_id, protocol_player in linked.items()
+                if protocol_id not in kept
+                and protocol_player.underlying_player_id in {native_player.player_id, *kept}
+            }
+            kept |= riding
+            changed = bool(riding)
+        released = set(linked) - kept
+        if released:
+            self.logger.debug(
+                "Device of %s was replaced - releasing protocols %s",
+                native_player.player_id,
+                ", ".join(sorted(released)),
+            )
+            self._remove_protocol_ids_from_parent(native_player, released)
+            for protocol_id in released:
+                self._detach_protocol_child(linked[protocol_id])
+        self._try_link_protocols_to_native(native_player)
+        native_player.refresh_state()
+
     def _awaits_unregistered_owner(self, protocol_player: Player, candidate_parent_id: str) -> bool:
         """
         Check if a protocol player is reserved for a persisted owner that is still starting up.

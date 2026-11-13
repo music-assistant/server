@@ -10985,6 +10985,121 @@ class TestDetachProtocolChildren:
         mock_schedule.assert_not_called()
 
 
+class TestReplaceDevice:
+    """Tests for moving a native player over to another physical device."""
+
+    @staticmethod
+    def _setup(
+        mock_mass: MagicMock,
+    ) -> tuple[PlayerController, dict[str, MockPlayer], dict[str, Any]]:
+        """
+        Set up a room player linked to the DLNA output of speaker pi4 and its Sendspin bridge.
+
+        Speaker pi3 has a DLNA output of its own that no player has taken yet.
+        """
+        controller = PlayerController(mock_mass)
+        store: dict[str, Any] = {CONF_PLAYERS: {}}
+        _wire_nested_config(mock_mass, store)
+        players = {
+            "room": MockPlayer(
+                MockProvider("raumfeld", mass=mock_mass),
+                "room",
+                "Marshall",
+                identifiers={
+                    IdentifierType.UUID: "pi4",
+                    IdentifierType.IP_ADDRESS: "192.168.1.31",
+                    IdentifierType.MAC_ADDRESS: "D8:3A:DD:DA:8E:62",
+                },
+            ),
+            "dlna_pi4": MockPlayer(
+                MockProvider("dlna", mass=mock_mass),
+                "dlna_pi4",
+                "pi4 (DLNA)",
+                player_type=PlayerType.PROTOCOL,
+                identifiers={IdentifierType.UUID: "pi4", IdentifierType.IP_ADDRESS: "192.168.1.31"},
+            ),
+            "bridge_pi4": MockPlayer(
+                MockProvider("sendspin", mass=mock_mass),
+                "bridge_pi4",
+                "pi4 (Sendspin)",
+                player_type=PlayerType.PROTOCOL,
+            ),
+            "dlna_pi3": MockPlayer(
+                MockProvider("dlna", mass=mock_mass),
+                "dlna_pi3",
+                "pi3 (DLNA)",
+                player_type=PlayerType.PROTOCOL,
+                identifiers={IdentifierType.UUID: "pi3", IdentifierType.IP_ADDRESS: "192.168.1.44"},
+            ),
+        }
+        players["bridge_pi4"]._attr_underlying_player_id = "dlna_pi4"
+        for player_id, player in players.items():
+            player.set_initialized()
+            store[CONF_PLAYERS][player_id] = {
+                "provider": player.provider.instance_id,
+                "player_type": player.type.value,
+                "values": {},
+            }
+        store[CONF_PLAYERS]["room"]["values"]["cached_arp_mac"] = "D8:3A:DD:DA:8E:62"
+        controller._players = dict(players)
+        controller._add_protocol_link(players["room"], players["dlna_pi4"], "dlna")
+        controller._add_protocol_link(players["room"], players["bridge_pi4"], "sendspin")
+        return controller, players, store
+
+    async def test_outputs_of_the_new_device_replace_those_of_the_previous(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The previous speaker's outputs are released and the new speaker's are linked."""
+        controller, players, store = self._setup(mock_mass)
+        room = players["room"]
+
+        with (
+            patch.object(controller, "_resolve_mac_addresses", AsyncMock()),
+            patch.object(controller, "_schedule_protocol_evaluation") as schedule,
+        ):
+            await controller.replace_device(
+                room, {IdentifierType.UUID: "pi3", IdentifierType.IP_ADDRESS: "192.168.1.44"}
+            )
+
+        assert room.device_info.identifiers == {
+            IdentifierType.UUID: "pi3",
+            IdentifierType.IP_ADDRESS: "192.168.1.44",
+        }
+        assert [link.output_protocol_id for link in room.linked_output_protocols] == ["dlna_pi3"]
+        assert players["dlna_pi3"].protocol_parent_id == "room"
+        for released in ("dlna_pi4", "bridge_pi4"):
+            assert players[released].protocol_parent_id is None
+            assert store[CONF_PLAYERS][released]["values"][CONF_PROTOCOL_PARENT_ID] is None
+        assert {call.args[0].player_id for call in schedule.call_args_list} == {
+            "dlna_pi4",
+            "bridge_pi4",
+        }
+        values = store[CONF_PLAYERS]["room"]["values"]
+        assert values["linked_protocol_ids"] == ["dlna_pi3"]
+        # the MAC the previous speaker's IP resolved to no longer matches the room
+        assert values["cached_arp_mac"] is None
+
+    async def test_outputs_still_on_the_device_stay_linked(self, mock_mass: MagicMock) -> None:
+        """A device that only got another IP address keeps its outputs."""
+        controller, players, _ = self._setup(mock_mass)
+        room = players["room"]
+
+        with (
+            patch.object(controller, "_resolve_mac_addresses", AsyncMock()),
+            patch.object(controller, "_schedule_protocol_evaluation") as schedule,
+        ):
+            await controller.replace_device(
+                room, {IdentifierType.UUID: "pi4", IdentifierType.IP_ADDRESS: "192.168.1.32"}
+            )
+
+        assert [link.output_protocol_id for link in room.linked_output_protocols] == [
+            "dlna_pi4",
+            "bridge_pi4",
+        ]
+        assert players["dlna_pi3"].protocol_parent_id is None
+        schedule.assert_not_called()
+
+
 class TestStaleConfigMigration:
     """Tests for protocol parent link repair on startup."""
 
