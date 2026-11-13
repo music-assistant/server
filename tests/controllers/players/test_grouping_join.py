@@ -352,6 +352,47 @@ async def test_the_old_members_are_the_ones_captured_before_the_stop() -> None:
     assert devices.calls[-1] == ("member_change", "l", {"player_ids_to_add": ["x"]})
 
 
+async def test_the_old_members_outputs_are_read_after_their_removal() -> None:
+    """An old member whose output moved on while it was removed from the old protocol keeps it."""
+    world = _switch_with_x_on_sendspin(PLAYING)
+    devices = _Devices(world)
+    devices.during["set_members", "airplay_l"] = devices.change("x", active_output="native")
+    await _join(devices, "l", ("y",))
+    assert ("clear_output", "x") not in devices.calls
+    assert world.players["x"].active_output == "native"
+    assert devices.calls[-1] == ("member_change", "l", {"player_ids_to_add": ["x"]})
+
+
+def _switch_with_native_n() -> _World:
+    """Return the playing switch of l with x, and n that joins l natively."""
+    world = _switch_with_x_on_sendspin(PLAYING)
+    world.protocol("sonos_n", "n", "sonos", role=ProtocolRole.NATIVE)
+    world.player("n", "sonos_n")
+    world.players["l"] = replace(world.players["l"], can_group_with=frozenset({"n", "y"}))
+    world.protocols["sonos_l"] = replace(
+        world.protocols["sonos_l"], can_group_with=frozenset({"sonos_n"})
+    )
+    return world
+
+
+async def test_the_native_call_is_decided_after_the_resume_and_the_re_add() -> None:
+    """An own protocol that stopped grouping while the leader resumed gets no native call."""
+    world = _switch_with_native_n()
+    devices = _Devices(world)
+    await _join(devices, "l", ("n", "y"))
+    assert devices.calls[-1] == _joins("sonos_l", "sonos_n")
+    world = _switch_with_native_n()
+    devices = _Devices(world)
+
+    def _no_grouping() -> None:
+        world.protocols["sonos_l"] = replace(world.protocols["sonos_l"], features=PLAYS)
+
+    devices.during["resume", "l"] = _no_grouping
+    await _join(devices, "l", ("n", "y"))
+    assert devices.calls[-1] == ("member_change", "l", {"player_ids_to_add": ["x"]})
+    assert not any(call[:2] == ("set_members", "sonos_l") for call in devices.calls)
+
+
 async def test_the_old_protocol_is_read_after_the_leaders_output_moved() -> None:
     """A protocol detached from the leader while its output moved is left alone."""
     world = _switch_with_x_on_sendspin(PLAYING)
@@ -500,6 +541,26 @@ async def test_a_takeover_is_opened_for_new_content_over_a_protocol_only() -> No
     _mixed(world)
     assert await _join(devices, "s", ("b",), new_content=True) is None
     assert _device_calls(devices) == [_joins("sonos_s", "sonos_b")]
+
+
+async def test_the_join_is_decided_again_after_the_takeover_hook() -> None:
+    """A leader that stopped during the hook switches protocols without a refusal."""
+    world = _World()
+    _switching(world, PLAYING)
+    devices = _Devices(world)
+    protocol = devices.get_protocol("sendspin_l")
+    assert protocol is not None
+    protocol.token = "token"
+    devices.during["takeover", "sendspin_l"] = devices.change(
+        "l", playback_state=PlaybackState.IDLE
+    )
+    assert await _join(devices, "l", ("y",), new_content=True) == (protocol, "token")
+    assert _device_calls(devices) == [
+        ("takeover", "sendspin_l"),
+        ("set_output", "y", "sendspin_y"),
+        _joins("sendspin_l", "sendspin_y"),
+        ("set_output", "l", "sendspin_l"),
+    ]
 
 
 async def test_a_native_only_join_opens_no_takeover_while_the_group_is_on_a_protocol() -> None:
