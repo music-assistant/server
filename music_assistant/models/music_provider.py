@@ -1036,6 +1036,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             raise KeyError(msg)
 
         # no subpath: return main listing
+        # artists, albums and playlists folders are not playable: playing one would fetch
+        # the tracks of every item in the library, one request each
         folders: list[BrowseFolder] = []
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
@@ -1045,7 +1047,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "artists",
                     name="",
                     translation_key="artists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
@@ -1056,7 +1057,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "albums",
                     name="",
                     translation_key="albums",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
@@ -1078,7 +1078,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "playlists",
                     name="",
                     translation_key="playlists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
