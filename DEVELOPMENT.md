@@ -85,6 +85,20 @@ In most cases, you won't need to modify the models. However, if you do need to m
 
 **Note:** You must rerun this command whenever you add or remove files from the `models` repository to ensure the changes are picked up.
 
+### Running a provider from a folder outside the server
+
+A provider that lives outside the server repository (for example in a repository of its own) can be run from where it is:
+
+  * Name the provider folder after the provider's `domain`. A domain the server already has is refused.
+  * Start the server in dev mode (`PYTHONDEVMODE=1`, or from a checkout with a `.venv` in the repository root) and pass the folder that holds your provider folders:
+
+    ```bash
+    PYTHONDEVMODE=1 python -m music_assistant --dev-providers-dir /path/to/my_providers
+    ```
+
+  * The `requirements` in `manifest.json` are plain package names with versions, such as `aiohttp-retry==2.9.1`. They are installed next to the server's own packages and never replace one of them: a provider whose requirements clash with the server is not loaded.
+  * A change to the code takes effect after a restart of the server.
+
 ## Listing random order
 
 Server listing commands accept an optional integer `random_seed`. With `sort_field=random`,

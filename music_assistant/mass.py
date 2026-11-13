@@ -57,9 +57,11 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
     MASS_VERSION,
     MIN_SCHEMA_VERSION,
+    PROVIDER_LOAD_CONCURRENCY,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import CacheController
+from music_assistant.controllers.community_catalog import CommunityCatalogController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.config.filesystem_consolidation import (
     consolidate_filesystem_sources,
@@ -136,7 +138,6 @@ PROVIDER_SETUP_TIMEOUT = 120
 # Generous enough for the slowest hosts to load their ML models, but bounded so a wedged
 # provider fails to load instead of holding up startup forever.
 PROVIDER_ASYNC_INIT_TIMEOUT = 300
-PROVIDER_LOAD_CONCURRENCY = 8
 # Seconds before each retry of a failed provider load; the last delay repeats.
 PROVIDER_RETRY_DELAYS = (10, 30, 60, 120)
 PROVIDER_RETRY_JITTER = 3
@@ -245,8 +246,15 @@ class MusicAssistant:
     dashboard: DashboardController
     statistics: StatisticsController
     storage: StorageController
+    community_catalog: CommunityCatalogController
 
-    def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
+    def __init__(
+        self,
+        storage_path: str,
+        cache_path: str,
+        safe_mode: bool = False,
+        dev_providers_path: str | None = None,
+    ) -> None:
         """Initialize the MusicAssistant Server."""
         self._state = CoreState.STARTING
         self.storage_path = storage_path
@@ -255,6 +263,7 @@ class MusicAssistant:
         # default, which is a RAM-backed tmpfs on HAOS - redirect to the data volume.
         os.environ.setdefault("SQLITE_TMPDIR", storage_path)
         self.safe_mode = safe_mode
+        self.dev_providers_path = dev_providers_path
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
@@ -339,6 +348,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.dashboard))
             tg.create_task(setup_controller(self.statistics))
             tg.create_task(setup_controller(self.storage))
+            tg.create_task(setup_controller(self.community_catalog))
 
         for controller_name in (
             "cache",
@@ -395,6 +405,7 @@ class MusicAssistant:
         # the startup if they fail or take a long time to load
         if not self.safe_mode:
             await self._load_providers()
+            self.create_task(self.community_catalog.start(), task_name="community_catalog_start")
         # at this point we are fully up and running,
         # set state to running to signal we're ready
         self._set_state(CoreState.RUNNING)
@@ -524,6 +535,7 @@ class MusicAssistant:
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
             status=self._state,
+            dev_mode=self.dev_mode,
         )
 
     @api_command("time", authenticated=False)
@@ -1020,19 +1032,23 @@ class MusicAssistant:
         """
         Register the manifest of a provider, which makes the provider available for loading.
 
+        The texts of a community provider are loaded with it.
+
         :param provider_path: Folder of the provider, holding its manifest.json.
         :param tier: Who maintains the provider, which follows from where it loads.
         :raises InvalidDataError: A community provider's folder is not named after its domain.
         :raises AlreadyRegisteredError: A community provider's domain is already registered.
         """
         manifest = await self._load_provider_manifest(provider_path, tier)
+        if tier == ProviderTier.COMMUNITY:
+            await self.translations.load_provider_strings(manifest.domain, provider_path)
         if manifest.mdns_discovery:
             await self.discovery.refresh_mdns_browser()
         return manifest
 
     async def unregister_provider_manifest(self, domain: str) -> None:
         """
-        Remove the manifest of a community provider, after which it can no longer be loaded.
+        Remove the manifest and texts of a community provider, so it can no longer be loaded.
 
         Does nothing for a domain that is not a registered community provider.
 
@@ -1043,6 +1059,7 @@ class MusicAssistant:
             return
         del self._provider_manifests[domain]
         self._provider_icons.pop(domain, None)
+        self.translations.unload_provider_strings(domain)
         # a load that is still waiting for its retry has nothing left to load
         for instance_id, raw_conf in self.config.get(CONF_PROVIDERS, {}).items():
             if raw_conf["domain"] == domain:
@@ -1390,6 +1407,7 @@ class MusicAssistant:
         self.dashboard = DashboardController(self)
         self.statistics = StatisticsController(self)
         self.storage = StorageController(self)
+        self.community_catalog = CommunityCatalogController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
