@@ -81,6 +81,10 @@ def _to_date(timestamp: str | datetime) -> str:
     return _date_convertor(timestamp, "%d/%m/%y")
 
 
+def _audio_format(stream: str) -> AudioFormat:
+    return AudioFormat(content_type=ContentType.try_parse(stream))
+
+
 def _release_date(item: PodcastEpisode | RadioShow | RadioClip) -> datetime | None:
     """Return the release date of an item, or when it became available if it has none."""
     for details, key in ((item.release, "date"), (item.availability, "from")):
@@ -430,7 +434,7 @@ class PodcastConverter(BaseConverter):
                 path=source_obj.stream,
                 item_id=source_obj.id,
                 provider=self.context.provider_domain,
-                audio_format=AudioFormat(content_type=ContentType.try_parse(source_obj.stream)),
+                audio_format=_audio_format(source_obj.stream),
                 allow_seek=True,
                 can_seek=True,
                 duration=(episode.duration or None),
@@ -464,7 +468,7 @@ class PodcastConverter(BaseConverter):
                 path=source_obj.stream,
                 item_id=episode.item_id,
                 provider=self.context.provider_domain,
-                audio_format=AudioFormat(content_type=ContentType.try_parse(source_obj.stream)),
+                audio_format=_audio_format(source_obj.stream),
                 can_seek=True,
                 duration=episode.duration,
             )
