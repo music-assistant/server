@@ -102,8 +102,9 @@ stored record or when a device is new. It holds:
 What a player reports for its device comes from its `device_protocol`: its own protocol, else its
 most preferred audio protocol. Its device info also carries the identifiers its other protocols
 add. While no protocol is attached, its device info and provider are what was stored, and it has
-no extra attributes. Its name is the custom name, else the name its own protocol reports, else the
-most user-friendly name of its audio protocols, else the stored one. Its default icon is the one its
+no extra attributes. Its name is the custom name, else its stored name. The stored name follows the
+name its own protocol reports while that is attached; an audio protocol sets it only for a player
+without a protocol of its own, or one that has no name stored yet. Its default icon is the one its
 device model names, else that of the provider of its own protocol (also while that is away), else
 the neutral speaker icon.
 

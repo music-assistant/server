@@ -217,3 +217,88 @@ async def test_a_new_device_whose_setup_is_called_off_leaves_nothing_behind(
     await scenario.idle()
 
     assert [player.name for player in scenario.players_carrying(found_again)] == ["Kitchen"]
+
+
+async def _stored_name(scenario: Scenario, player_id: str) -> str | None:
+    """Return the default name stored on the record of a player."""
+    config = await scenario.player_config(player_id)
+    assert config is not None
+    return config.default_name
+
+
+def _names(scenario: Scenario, player_id: str) -> tuple[str, str]:
+    """Return the name of a player and that of its queue, as clients see them."""
+    state = scenario.player(player_id)
+    queue = scenario.queue(player_id)
+    assert state is not None
+    assert queue is not None
+    return state.name, queue.display_name
+
+
+@pytest.mark.parametrize("after_a_restart", [False, True], ids=["while_running", "after_restart"])
+async def test_a_player_keeps_its_stored_name_while_only_another_protocol_is_there(
+    scenario: Scenario, after_a_restart: bool
+) -> None:
+    """
+    The stored name of a player wins over the name of an audio protocol.
+
+    While the speaker's own protocol is away, the player keeps the name it has stored, not the
+    one its DLNA renderer reports. The own protocol renames the player once it reports another
+    name. A name the user set wins over both.
+    """
+    sonos = await scenario.add_provider("sonos")
+    dlna = await scenario.add_provider("dlna")
+    speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    renderer = dlna.protocol(
+        "uuid:RINCON_KITCHEN_MR",
+        "Kitchen - Sonos Era 100 Media Renderer - RINCON_KITCHEN",
+        role="audio",
+        identifiers=KITCHEN,
+    )
+    for protocol in (speaker, renderer):
+        await scenario.attach(protocol)
+    await scenario.idle()
+    player_id = scenario.single_player(speaker, renderer).player_id
+
+    if after_a_restart:
+        scenario.set_present("RINCON_KITCHEN", False)
+        await scenario.restart()
+    else:
+        await scenario.detach(speaker)
+    await scenario.idle()
+
+    assert _names(scenario, player_id) == ("Kitchen", "Kitchen")
+    assert await _stored_name(scenario, player_id) == "Kitchen"
+
+    # renamed in the vendor's own app while it was away
+    speaker = scenario.protocol("RINCON_KITCHEN")
+    await scenario.report(speaker, name="Study")
+    await scenario.attach(speaker)
+    await scenario.idle()
+
+    assert _names(scenario, player_id) == ("Study", "Study")
+    assert await _stored_name(scenario, player_id) == "Study"
+
+    await scenario.configure_player(player_id, name="Den")
+    await scenario.detach(speaker)
+    await scenario.idle()
+    assert _names(scenario, player_id) == ("Den", "Den")
+    await scenario.report(speaker, name="Patio")
+    await scenario.attach(speaker)
+    await scenario.idle()
+    assert _names(scenario, player_id) == ("Den", "Den")
+
+
+async def test_a_player_of_an_audio_receiver_alone_follows_its_name(scenario: Scenario) -> None:
+    """A player without a protocol of its own takes the name its receiver reports."""
+    airplay = await scenario.add_provider("airplay")
+    receiver = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
+    await scenario.attach(receiver)
+    await scenario.idle()
+    player_id = scenario.single_player(receiver).player_id
+
+    await scenario.report(receiver, name="Study")
+    await scenario.idle()
+
+    assert _names(scenario, player_id) == ("Study", "Study")
+    assert await _stored_name(scenario, player_id) == "Study"

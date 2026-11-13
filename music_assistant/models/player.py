@@ -746,7 +746,7 @@ class Player:
         if custom_name := self._config.name:
             # always prefer the custom name over the default name
             return custom_name
-        if name := self.name or self._config.default_name:
+        if name := self._followed_name() or self._config.default_name:
             return name
         # a new device that reports nothing better is shown by the name it reports,
         # also while it is away
@@ -1805,6 +1805,19 @@ class Player:
         # what a protocol reports can be stale; a fake control is the player's own level
         return self._held_volume.get(feature) is not None and control in self._protocols
 
+    def _followed_name(self) -> str | None:
+        """
+        Return the name the stored default name of the player follows, None to keep it.
+
+        That is the name its own protocol reports. An audio protocol only names a player
+        that has no protocol of its own, or no stored name yet.
+        """
+        if (own := self._own_protocol) is not None and own.name:
+            return own.name
+        if self._config.default_name and self._own_protocol_domain() is not None:
+            return None
+        return get_device_name(None, self._audio_protocols)
+
     def _own_protocol_domain(self) -> str | None:
         """Return the provider domain of the own protocol of the player, also while it is away."""
         if (own := self._own_protocol) is not None:
@@ -2184,7 +2197,7 @@ class Player:
             previous_state=self._state,
             enabled=self.enabled,
             name=self.display_name,
-            device_name=self.name,
+            device_name=self._followed_name(),
             default_name=self._config.default_name,
             hide_in_ui=self.hide_in_ui,
             expose_to_ha=self.expose_to_ha,

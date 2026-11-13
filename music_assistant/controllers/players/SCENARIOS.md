@@ -146,6 +146,14 @@ AirPlay protocol is away. An icon the user picks replaces the default.
 - End-to-end: **yes**. Two receivers of different kinds on one host, and one receiver alone.
 - Proven by: `test_identity.py::test_a_player_without_a_protocol_of_its_own_has_the_neutral_icon`
 
+### APPEAR-9 · A player of an audio receiver alone takes the name the receiver reports
+
+The Den device is an AirPlay receiver with no protocol of its own. The user renames it in its own
+app: the player and its queue take the new name, and it is stored as the name of the player.
+
+- End-to-end: **yes**. Rename a shairport-sync receiver and restart it.
+- Proven by: `test_attach_detach.py::test_a_player_of_an_audio_receiver_alone_follows_its_name`
+
 ## A device goes away and comes back
 
 A device can go away: switched off, off the network, or its provider reloads. It can also stay
@@ -232,6 +240,17 @@ it.
 - End-to-end: **possible with** an AirPlay receiver of the lab that needs pairing, with its
   Sendspin bridge.
 - Proven by: `test_availability.py::test_bridge_alone_does_not_make_its_player_available`
+
+### AWAY-8 · A player keeps its stored name while only another protocol of it is there
+
+The Kitchen speaker has its Sonos protocol and a DLNA renderer that reports a long technical name.
+While the Sonos protocol is away, also after a restart, the player and its queue keep the name
+Kitchen. The speaker is renamed to Study in its own app: once its Sonos protocol is back, the player
+is Study. A name the user gives the player stays, whatever its protocols report.
+
+- End-to-end: **possible with** a Sonos speaker of the lab whose Sonos connection the lab can cut
+  while its DLNA renderer stays up.
+- Proven by: `test_attach_detach.py::test_a_player_keeps_its_stored_name_while_only_another_protocol_is_there`
 
 ## Several devices on one host
 
