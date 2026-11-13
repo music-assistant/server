@@ -26,6 +26,7 @@ from .auth import (
     is_request_from_home_assistant,
 )
 from .registry import TOOLS, ToolError
+from .rotation_tools import ROTATION_INSTRUCTIONS, rotations_enabled
 from .tools import INSTRUCTIONS
 
 if TYPE_CHECKING:
@@ -143,9 +144,8 @@ class MCPTransport:
             case "ping":
                 return _result_response(message_id, {})
             case "tools/list":
-                return _result_response(
-                    message_id, {"tools": [tool.to_dict() for tool in TOOLS.values()]}
-                )
+                tools = [tool.to_dict() for tool in TOOLS.values() if tool.is_available(self.mass)]
+                return _result_response(message_id, {"tools": tools})
             case "tools/call":
                 return await self._call_tool(message_id, params, protocol_version)
         return _error_response(message_id, METHOD_NOT_FOUND, f"Method not found: {method}")
@@ -153,13 +153,16 @@ class MCPTransport:
     def _initialize(self, params: dict[str, Any]) -> dict[str, Any]:
         """Return the result of the initialize request."""
         requested = params.get("protocolVersion")
+        instructions = INSTRUCTIONS
+        if rotations_enabled(self.mass):
+            instructions = f"{instructions} {ROTATION_INSTRUCTIONS}"
         return {
             "protocolVersion": (
                 requested if requested in SUPPORTED_PROTOCOL_VERSIONS else LATEST_PROTOCOL_VERSION
             ),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "Music Assistant", "version": self.mass.version},
-            "instructions": INSTRUCTIONS,
+            "instructions": instructions,
         }
 
     async def _call_tool(

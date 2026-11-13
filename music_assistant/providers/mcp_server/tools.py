@@ -58,7 +58,7 @@ async def search_music(
     :param limit: The maximum number of results per media type, at most 50.
     """
     results = await mass.music.search(query, _media_types(media_type), limit=_clamp_limit(limit))
-    return {"items": [_compact_item(item) for item in _flatten_results(results)]}
+    return {"items": [compact_item(item) for item in _flatten_results(results)]}
 
 
 @mcp_tool("get_players", Scope.PLAYERS_READ)
@@ -90,7 +90,7 @@ async def play(
     item = await _resolve_media(mass, media, media_type)
     to_play = f"radio_playlist://playlist/{item.uri}" if radio_mode else item
     await mass.player_queues.play_media(target.player_id, to_play, QueueOption(mode))
-    return {"player": target.state.name, "playing": _compact_item(item)}
+    return {"player": target.state.name, "playing": compact_item(item)}
 
 
 @mcp_tool("control_player", (Scope.PLAYERS_CONTROL, Scope.QUEUES_CONTROL))
@@ -220,7 +220,7 @@ async def get_recently_played(mass: MusicAssistant, limit: int = 20) -> dict[str
     :param limit: The maximum number of items to return, at most 50.
     """
     items = await mass.music.recently_played(_clamp_limit(limit))
-    return {"items": [_compact_item(item) for item in items]}
+    return {"items": [compact_item(item) for item in items]}
 
 
 @mcp_tool("get_favorites", Scope.LIBRARY_READ)
@@ -237,7 +237,7 @@ async def get_favorites(
     for item_type in _media_types(media_type):
         controller = mass.music.get_controller(item_type)
         items = await controller.library_items(favorite=True, limit=_clamp_limit(limit))
-        favorites.extend(_compact_item(item) for item in items)
+        favorites.extend(compact_item(item) for item in items)
     return {"items": favorites}
 
 
@@ -317,6 +317,19 @@ async def ungroup_player(mass: MusicAssistant, player: str) -> dict[str, Any]:
     return _compact_player(mass, target)
 
 
+def compact_item(item: MediaItemType | ItemMapping) -> dict[str, Any]:
+    """Return the fields of a media item that a model needs."""
+    album = getattr(item, "album", None)
+    return {
+        "uri": item.uri,
+        "name": item.name,
+        "media_type": item.media_type.value,
+        "artists": [artist.name for artist in getattr(item, "artists", None) or []],
+        "album": album.name if album else None,
+        "duration": getattr(item, "duration", None) or None,
+    }
+
+
 def _players(mass: MusicAssistant) -> list[Player]:
     """Return the players the current user may use."""
     return [player for player in mass.players.all_players() if not player.state.hide_in_ui]
@@ -394,19 +407,6 @@ def _flatten_results(results: SearchResults) -> list[MediaItemType | ItemMapping
     ]
 
 
-def _compact_item(item: MediaItemType | ItemMapping) -> dict[str, Any]:
-    """Return the fields of a media item that a model needs."""
-    album = getattr(item, "album", None)
-    return {
-        "uri": item.uri,
-        "name": item.name,
-        "media_type": item.media_type.value,
-        "artists": [artist.name for artist in getattr(item, "artists", None) or []],
-        "album": album.name if album else None,
-        "duration": getattr(item, "duration", None) or None,
-    }
-
-
 def _compact_media(media: PlayerMedia) -> dict[str, Any]:
     """Return the fields of the media loaded on a player that a model needs."""
     return {
@@ -422,7 +422,7 @@ def _compact_media(media: PlayerMedia) -> dict[str, Any]:
 def _compact_queue_item(queue_item: QueueItem) -> dict[str, Any]:
     """Return the fields of a queue item that a model needs."""
     if queue_item.media_item:
-        return _compact_item(queue_item.media_item)
+        return compact_item(queue_item.media_item)
     return {
         "uri": None,
         "name": queue_item.name,

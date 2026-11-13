@@ -25,7 +25,7 @@ directly-adjacent tracks from sharing an artist, including the currently-queued 
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -43,6 +43,7 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.controllers.player_queues.helpers import (
     interleave_groups,
     is_dynamic_source,
+    plays_ordered_source_only,
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.smart_fade_ordering import order_tracks
@@ -73,6 +74,8 @@ class DynamicFillMode(StrEnum):
     DYNAMIC = "dynamic"
     # a finite source (playlist/album/artist): its own unplayed tracks mixed into the pool
     TRACKS = "tracks"
+    # the only source on the queue, and its provider keeps its own batch order: used unchanged
+    ORDERED = "ordered"
 
 
 # the shipped default; SIZE_MULTIPLICITY is a one-line switch if the feel needs revisiting
@@ -168,6 +171,22 @@ class ManagedPool:
             if is_initial
             else max(MANAGED_POOL_TARGET - _unplayed(queue, items), 0)
         )
+        if len(sources) == 1 and sources[0].fill_mode is DynamicFillMode.ORDERED:
+            # the source owns its order: no mixing, recency gating or smart-fade reordering.
+            # It also knows its own rounds, so only the upcoming tail is deduped: a new round
+            # may start with the track that plays now. Its batch may hold a track twice (for
+            # example on two albums), so each upcoming item takes away one copy only.
+            upcoming_start = start + 1 if queue.current_index is not None else start
+            upcoming = Counter(
+                item.media_item for item in items[upcoming_start:] if item.media_item is not None
+            )
+            fresh: list[Track] = []
+            for track in sources[0].candidates:
+                if upcoming[track] > 0:
+                    upcoming[track] -= 1
+                else:
+                    fresh.append(track)
+            return fresh[:slots]
         # the batch is appended after the current tail, so keep its first track clear of the last
         # queued item's artist (the seam the listener actually hears)
         preceding_track = (
@@ -246,7 +265,11 @@ class ManagedPool:
         sources: list[DynamicSource] = []
         for uri, media_item in items.items():
             if is_dynamic_source(media_item):
-                fill_mode = DynamicFillMode.DYNAMIC
+                fill_mode = (
+                    DynamicFillMode.ORDERED
+                    if plays_ordered_source_only(self.mass, queue_data.source_items)
+                    else DynamicFillMode.DYNAMIC
+                )
                 candidates = await self._fetch_dynamic(media_item, queue_data.userid)
             else:
                 # a finite source is materialized once, then its deque feeds (and is advanced by)
@@ -369,6 +392,9 @@ class ManagedPool:
             if _uri(item) not in retire
         ]
         self.queues.store_sources(queue, remaining)
+        if plays_ordered_source_only(self.mass, remaining):
+            # the source left keeps its own order, so the shuffle the mix forced on goes again
+            queue.shuffle_enabled = False
         self.logger.debug(
             "Finite source(s) exhausted on queue %s; %d source(s) remain", queue_id, len(remaining)
         )

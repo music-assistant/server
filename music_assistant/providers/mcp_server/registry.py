@@ -32,6 +32,15 @@ class MCPTool:
     scopes: tuple[Scope, ...]
     input_schema: dict[str, Any]
     handler: Callable[..., Awaitable[Any]]
+    available: Callable[[MusicAssistant], bool] | None = None
+
+    def is_available(self, mass: MusicAssistant) -> bool:
+        """
+        Return whether the tool is offered to clients.
+
+        :param mass: The Music Assistant instance.
+        """
+        return self.available is None or self.available(mass)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the tool as listed by tools/list."""
@@ -67,7 +76,10 @@ TOOLS: dict[str, MCPTool] = {}
 
 
 def mcp_tool(
-    name: str, scope: Scope | tuple[Scope, ...]
+    name: str,
+    scope: Scope | tuple[Scope, ...],
+    schema_overrides: dict[str, dict[str, Any]] | None = None,
+    available: Callable[[MusicAssistant], bool] | None = None,
 ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
     """
     Register an async function as an MCP tool.
@@ -79,6 +91,10 @@ def mcp_tool(
     :param name: The name of the tool.
     :param scope: The scope a user needs to call the tool, or a tuple of scopes that are all
         needed.
+    :param schema_overrides: Per argument, a JSON schema that replaces the generated one.
+        The description of the argument is kept.
+    :param available: Returns whether the tool is offered to clients, for a tool that needs
+        an optional provider. Without it, the tool is always offered.
     """
 
     def decorator(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
@@ -87,8 +103,9 @@ def mcp_tool(
             name=name,
             description=description,
             scopes=scope if isinstance(scope, tuple) else (scope,),
-            input_schema=_input_schema(func, param_docs),
+            input_schema=_input_schema(func, param_docs, schema_overrides or {}),
             handler=func,
+            available=available,
         )
         return func
 
@@ -103,14 +120,16 @@ def _parse_docstring(docstring: str) -> tuple[str, dict[str, str]]:
 
 
 def _input_schema(
-    func: Callable[..., Awaitable[Any]], param_docs: dict[str, str]
+    func: Callable[..., Awaitable[Any]],
+    param_docs: dict[str, str],
+    overrides: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     """Return the JSON schema of the arguments of a tool function (all but the first)."""
     properties: dict[str, Any] = {}
     required: list[str] = []
     for param in list(inspect.signature(func).parameters.values())[1:]:
         hint = ForwardRef(param.annotation).evaluate(globals=func.__globals__)
-        schema = _type_schema(hint)
+        schema = dict(overrides[param.name]) if param.name in overrides else _type_schema(hint)
         if description := param_docs.get(param.name):
             schema["description"] = description
         if param.default is inspect.Parameter.empty:
@@ -132,11 +151,16 @@ def _type_schema(hint: Any) -> dict[str, Any]:
         return {"type": "string", "enum": list(get_args(hint))}
     if origin is list:
         return {"type": "array", "items": _type_schema(get_args(hint)[0])}
+    if hint is dict or origin is dict:
+        return {"type": "object"}
     return {"type": _JSON_TYPES[hint]}
 
 
 def _matches_schema(value: Any, schema: dict[str, Any]) -> bool:
     """Return whether a value matches the (simple) JSON schema of an argument."""
+    if "type" not in schema:
+        # a schema with alternatives: the tool itself validates the value
+        return True
     match schema["type"]:
         case "string":
             return isinstance(value, str) and value in schema.get("enum", [value])
@@ -146,6 +170,8 @@ def _matches_schema(value: Any, schema: dict[str, Any]) -> bool:
             return isinstance(value, int) and not isinstance(value, bool)
         case "number":
             return isinstance(value, int | float) and not isinstance(value, bool)
+        case "object":
+            return isinstance(value, dict)
         case "array":
             return isinstance(value, list) and all(
                 _matches_schema(entry, schema["items"]) for entry in value

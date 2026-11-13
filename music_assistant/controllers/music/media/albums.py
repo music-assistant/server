@@ -14,6 +14,7 @@ import aiohttp
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     AlbumType,
+    ContentType,
     ExternalID,
     ListingType,
     MediaType,
@@ -34,13 +35,19 @@ from music_assistant_models.media_items import (
     Album,
     AlbumSummary,
     Artist,
+    AudioFormat,
     ItemMapping,
     ProviderMapping,
     Track,
     UniqueList,
 )
 
-from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+)
 from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
@@ -748,6 +755,93 @@ class AlbumsController(MediaControllerBase[Album]):
             ],
             extra_query_params={"album_id": db_id, "preferred_album_id": db_id},
         )
+
+    async def get_library_play_stats(self, item_ids: Sequence[int]) -> dict[int, tuple[int, int]]:
+        """
+        Return the play count and the last played timestamp of library albums, of all users.
+
+        The plays of an album include those of its library tracks. Ids that are not in the
+        library are left out. A last played of 0 means the album was never played.
+
+        :param item_ids: The library ids of the albums.
+        """
+        if not item_ids:
+            return {}
+        rows = await self.mass.music.database.get_rows_from_query(
+            "SELECT a.item_id AS item_id, "
+            "COALESCE(a.play_count, 0) + COALESCE(SUM(t.play_count), 0) AS play_count, "
+            "MAX(COALESCE(a.last_played, 0), COALESCE(MAX(t.last_played), 0)) AS last_played "
+            f"FROM {self.db_table} a "
+            f"LEFT JOIN {DB_TABLE_ALBUM_TRACKS} at ON at.album_id = a.item_id "
+            f"LEFT JOIN {self.mass.music.tracks.db_table} t ON t.item_id = at.track_id "
+            "WHERE a.item_id IN :item_ids GROUP BY a.item_id",
+            {"item_ids": [int(item_id) for item_id in item_ids]},
+            limit=0,
+        )
+        return {
+            int(row["item_id"]): (int(row["play_count"] or 0), int(row["last_played"] or 0))
+            for row in rows
+        }
+
+    async def get_library_track_counts(self, item_ids: Sequence[int]) -> dict[int, int]:
+        """
+        Return the number of library tracks of library albums.
+
+        Albums without library tracks are left out.
+
+        :param item_ids: The library ids of the albums.
+        """
+        if not item_ids:
+            return {}
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT album_id, COUNT(*) AS track_count FROM {DB_TABLE_ALBUM_TRACKS} "
+            "WHERE album_id IN :item_ids GROUP BY album_id",
+            {"item_ids": [int(item_id) for item_id in item_ids]},
+            limit=0,
+        )
+        return {int(row["album_id"]): int(row["track_count"]) for row in rows}
+
+    async def get_library_audio_formats(
+        self, item_ids: Sequence[int]
+    ) -> dict[int, list[AudioFormat]]:
+        """
+        Return the audio formats of the available mappings of library albums and their tracks.
+
+        An album gets one format per content type and codec type, with the highest bit depth
+        and sample rate of that type; a bit depth or sample rate that is not known is 0.
+        Albums without an available mapping are left out.
+
+        :param item_ids: The library ids of the albums.
+        """
+        if not item_ids:
+            return {}
+        pm = DB_TABLE_PROVIDER_MAPPINGS
+        rows = await self.mass.music.database.get_rows_from_query(
+            "SELECT owner, json_extract(audio_format, '$.content_type') AS content_type, "
+            "json_extract(audio_format, '$.codec_type') AS codec_type, "
+            "MAX(json_extract(audio_format, '$.bit_depth')) AS bit_depth, "
+            "MAX(json_extract(audio_format, '$.sample_rate')) AS sample_rate FROM ("
+            f"SELECT item_id AS owner, audio_format FROM {pm} "
+            "WHERE media_type = 'album' AND available AND item_id IN :item_ids "
+            "UNION ALL "
+            f"SELECT at.album_id AS owner, pm.audio_format FROM {DB_TABLE_ALBUM_TRACKS} at "
+            f"JOIN {pm} pm ON pm.media_type = 'track' AND pm.item_id = at.track_id "
+            "WHERE pm.available AND at.album_id IN :item_ids"
+            ") GROUP BY owner, content_type, codec_type",
+            {"item_ids": [int(item_id) for item_id in item_ids]},
+            limit=0,
+        )
+        result: dict[int, list[AudioFormat]] = {}
+        for row in rows:
+            result.setdefault(int(row["owner"]), []).append(
+                AudioFormat(
+                    content_type=_stored_content_type(row["content_type"]),
+                    codec_type=_stored_content_type(row["codec_type"]),
+                    bit_depth=int(row["bit_depth"] or 0),
+                    sample_rate=int(row["sample_rate"] or 0),
+                )
+            )
+        return result
 
     async def link_album_tracks(
         self,
@@ -1926,3 +2020,11 @@ def _isrcs(track: Track) -> set[str]:
         for id_type, value in track.external_ids
         if id_type == ExternalID.ISRC and is_valid_isrc(value)
     }
+
+
+def _stored_content_type(value: Any) -> ContentType:
+    """Return a content type stored in an audio format, or unknown when it is not one."""
+    try:
+        return ContentType(value)
+    except ValueError:
+        return ContentType.UNKNOWN

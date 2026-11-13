@@ -192,6 +192,33 @@ class FavoritesStore:
         )
         return {int(row["item_id"]) for row in rows}
 
+    async def liked_timestamps(
+        self, user_id: str, media_type: MediaType, item_ids: Sequence[int]
+    ) -> dict[int, int]:
+        """
+        Return the moment the given user liked library items, as unix timestamps.
+
+        Items the user did not like (no state, a dislike or a cleared state) are left out.
+
+        :param user_id: The user whose likes are returned.
+        :param media_type: Media type of the library items.
+        :param item_ids: The library ids of the items.
+        """
+        if not item_ids:
+            return {}
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, timestamp FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :user_id AND media_type = :media_type AND favorite = 1 "
+            "AND item_id IN :item_ids",
+            {
+                "user_id": user_id,
+                "media_type": media_type.value,
+                "item_ids": [int(item_id) for item_id in item_ids],
+            },
+            limit=0,
+        )
+        return {int(row["item_id"]): int(row["timestamp"] or 0) for row in rows}
+
     async def in_disliked_genres(
         self, user_id: str, tracks: Sequence[Track]
     ) -> builtins.set[tuple[str, str]]:

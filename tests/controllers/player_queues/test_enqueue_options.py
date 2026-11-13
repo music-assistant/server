@@ -9,6 +9,7 @@ side-effecting ``play_index`` and ``signal_update`` are stubbed out.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -17,6 +18,7 @@ from music_assistant_models.media_items import (
     Album,
     ItemMapping,
     MediaItemType,
+    Playlist,
     Podcast,
     ProviderMapping,
     Radio,
@@ -660,3 +662,57 @@ async def test_add_with_shuffle_reorders_only_mutable_tail_and_passes_anchor() -
     assert call.kwargs["preceding_item"] is existing[3]
     assert [item.queue_item_id for item in call.args[1]] == ["new", "tail1", "tail2"]
     assert ctrl._queue_data["q1"].items[:4] == existing[:4]
+
+
+async def test_enter_dynamic_mode_keeps_the_order_of_an_ordered_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The forced shuffle of a dynamic queue must not reorder the batch the pool returns."""
+    ctrl = _dynamic_controller()
+    ids = [f"p{i}" for i in range(12)]
+    monkeypatch.setattr(
+        ctrl._managed_pool, "fill", AsyncMock(return_value=[_track(item_id) for item_id in ids])
+    )
+    monkeypatch.setattr(ctrl, "play_index", AsyncMock())
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.PLAY)
+
+    loaded = [item.media_item.item_id for item in ctrl._queue_data["q1"].items if item.media_item]
+    assert loaded == ids
+
+
+def _dynamic_playlist(item_id: str) -> Playlist:
+    """Build a dynamic playlist source on its own provider instance."""
+    playlist = Playlist(
+        item_id=item_id, provider=f"{item_id}--1", name=item_id, provider_mappings=set()
+    )
+    playlist.is_dynamic = True
+    return playlist
+
+
+@pytest.mark.parametrize(
+    ("sources", "shuffled"),
+    [(["rotation"], False), (["radio"], True), (["rotation", "radio"], True)],
+)
+async def test_enter_dynamic_mode_shuffles_unless_the_only_source_keeps_its_order(
+    monkeypatch: pytest.MonkeyPatch, sources: list[str], shuffled: bool
+) -> None:
+    """A queue whose only dynamic source keeps its batch order is not shuffled."""
+    ctrl = _dynamic_controller()
+    monkeypatch.setattr(ctrl, "play_index", AsyncMock())
+    providers = {
+        "rotation--1": SimpleNamespace(keeps_batch_order=True),
+        "radio--1": SimpleNamespace(keeps_batch_order=False),
+    }
+    monkeypatch.setattr(ctrl.mass, "get_provider", Mock(side_effect=providers.get))
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    queue.shuffle_enabled = not shuffled
+    queue_data = PlayerQueueData(queue=queue)
+    queue_data.source_items = [_dynamic_playlist(name) for name in sources]
+    ctrl._queue_data = {"q1": queue_data}
+
+    await ctrl._enter_dynamic_mode("q1", QueueOption.PLAY)
+
+    assert queue.shuffle_enabled is shuffled
