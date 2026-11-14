@@ -337,6 +337,26 @@ class TestAvailability:
         assert state.available is available
         assert state.enabled is enabled
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    @pytest.mark.parametrize("reachable", [True, False])
+    @pytest.mark.parametrize("needs_setup", [True, False])
+    def test_player_without_a_power_control_is_available_exactly_while_it_can_be_played_to(
+        self, enabled: bool, reachable: bool, needs_setup: bool
+    ) -> None:
+        """Without a power control, available and available for playback say the same."""
+        available_for_playback = reachable and not needs_setup
+        state = _derive(
+            enabled=enabled,
+            offline_by_power_control=False,
+            own=_own(
+                available=reachable,
+                needs_setup=needs_setup,
+                available_for_playback=available_for_playback,
+            ),
+        )
+
+        assert state.available is (enabled and available_for_playback)
+
 
 class TestSyncedTo:
     """The player a player is synced to."""

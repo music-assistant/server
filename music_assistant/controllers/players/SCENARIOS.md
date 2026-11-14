@@ -273,6 +273,20 @@ shown, exposed and not private, while attached, while away and after a restart.
 - End-to-end: **no**: no audio protocol of the lab gives a device these defaults.
 - Proven by: `test_lifecycle.py::test_only_the_own_protocol_of_a_player_gives_it_its_defaults`
 
+### AWAY-11 · A live announcement to a switched-off player is played once it is on
+
+As in AWAY-4, the Bathroom player is on a smart plug that is switched off. A user speaks a live
+announcement to it from the app. The player is accepted, and once the clip is spoken it is
+announced on the player, which switches the plug on and waits for the device. The app is told
+that the clip played. When the device does not come back, the app is told why, never that the
+clip played.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a client that speaks a live announcement.
+- Proven by:
+  - `tests/controllers/streams/test_live_announcements.py::test_a_player_switched_off_at_its_power_control_is_accepted`
+  - `tests/controllers/streams/test_live_announcements.py::test_a_power_on_that_fails_is_reported_and_not_as_finished`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
@@ -1181,6 +1195,16 @@ played on until the stop, and neither queue shows an action in progress.
 - End-to-end: **no**: it needs a music service that refuses requests for an hour.
 - Proven by: `test_commands.py::test_a_play_that_its_music_service_refuses_frees_the_player_and_its_leader`
 
+### BUSY-14 · A group that switches a member on holds no player meanwhile
+
+Downstairs, a sync group of Kitchen, Office and Den, plays on Kitchen and Office while it waits
+for Den, whose plug it switched on. A seek on Downstairs meanwhile runs at once. Once Den's
+device is back, Den joins Kitchen.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a third player of one kind.
+- Proven by: `test_commands.py::test_a_group_that_switches_a_member_on_holds_no_player_meanwhile`
+
 ## What a stopped player keeps for a moment
 
 A player that stops still names what it played for a moment, so a playback that is replaced, and
@@ -1234,7 +1258,7 @@ provider knows Office by. Office shows as synced to Kitchen, and Kitchen lists b
 
 The user adds Garden and Office to Kitchen, but Kitchen can not group with Garden: Office joins,
 Garden stays out, and that is logged. A speaker that can not be reached right now is left out the
-same way.
+same way, unless it is only switched off at its power control (GROUP-27).
 
 - End-to-end: **yes**. Add a stopped player, or a player of another kind, next to a Squeezelite
   player.
@@ -1414,6 +1438,78 @@ members and its power.
 - Proven by:
   - `tests/providers/sync_group/test_lifecycle.py::test_a_new_group_comes_back_with_its_members_after_a_restart`
   - `tests/providers/universal_group/test_lifecycle.py::test_a_new_group_comes_back_with_its_members_after_a_restart`
+
+### GROUP-22 · A sync group switches on a member that is off at its power control
+
+Downstairs is a sync group of Kitchen, Office and Den, with a fixed member list or not. Den is on
+a smart plug that is switched off, so its device is off the network. The user plays Downstairs:
+it plays on Kitchen and Office at once, and the plug is switched on. Once Den's device is back,
+Den joins Kitchen and Downstairs plays on with all three.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a third player of one kind.
+- Proven by: `test_grouping.py::test_a_sync_group_switches_a_member_on_and_starts_without_it`
+
+### GROUP-23 · A universal group switches on a member that is off at its power control
+
+Downstairs is a universal group of Kitchen, Office and Den, and Den's plug is switched off. The
+user plays Downstairs: Kitchen and Office play its stream at once, and the plug is switched on.
+Once Den's device is back, Den plays the stream of Downstairs as well.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_grouping.py::test_a_universal_group_switches_a_member_on_and_starts_without_it`
+
+### GROUP-24 · A group whose members are all switched off starts on the first that is back
+
+Downstairs is a sync group or a universal group of Kitchen and Office, and both are on a plug
+that is switched off. The user plays Downstairs: both plugs are switched on and the play waits.
+Once Office's device is back, Downstairs plays on Office. Kitchen joins when its device is back.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_grouping.py::test_a_group_of_switched_off_speakers_starts_on_the_first_that_comes_online`
+
+### GROUP-25 · Stopping a group calls off the power on of its members
+
+Downstairs, a sync group or a universal group, plays on Kitchen and Office while it waits for
+Den, whose plug it switched on. The user stops Downstairs, pauses it or powers it off. When Den's
+device is back after that, Den stays out: it gets no command, is idle and in no group. Its plug
+stays on.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_grouping.py::test_a_stop_of_the_group_calls_off_the_power_on_of_its_members`
+
+### GROUP-26 · A member that does not come online is left out
+
+Downstairs, a sync group or a universal group, plays on Kitchen and Office and switched Den's
+plug on, but Den's device does not come back. After 90 s that is logged once, Downstairs plays on
+without Den, and Den, whose plug is on by then, shows as unavailable.
+
+- End-to-end: **possible with** a power control the lab can switch and a container that stays
+  stopped.
+- Proven by: `test_grouping.py::test_a_member_that_does_not_come_online_is_left_out`
+
+### GROUP-27 · A switched-off speaker added to a leader joins once it is online
+
+Den's plug is switched off. The user adds Den and Office to Kitchen: Office joins at once, Den's
+plug is switched on, and nothing is logged about leaving Den out. Once Den's device is back, Den
+joins Kitchen.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a third player of one kind.
+- Proven by: `test_grouping.py::test_a_switched_off_speaker_added_to_a_leader_joins_once_it_is_online`
+
+### GROUP-28 · A speaker that was switched on to join is not powered off as idle before it joined
+
+Den has an idle power off of one minute and its plug is switched off. The user adds Den to
+Kitchen, which switches the plug on. Den's device is back while Kitchen is busy with a play that
+takes longer than that minute, so Den waits, on and idle. It is not powered off meanwhile, and
+joins Kitchen once the play is done.
+
+- End-to-end: **no**: it needs a device that takes that long over a command.
+- Proven by: `test_grouping.py::test_a_woken_member_is_not_powered_off_as_idle_before_it_joins`
 
 ## Where playback goes
 

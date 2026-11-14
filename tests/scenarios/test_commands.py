@@ -22,7 +22,15 @@ from music_assistant.models.music_provider import MusicProvider
 from tests.common import record_lock_waits
 
 from .harness import DEFAULT_FEATURES, MUSIC_PROVIDER, TEST_TRACK_URI, FakeProtocol, Scenario
-from .test_grouping import _player_id, _speakers
+from .test_grouping import (
+    _come_back,
+    _group,
+    _player_id,
+    _speakers,
+    _state,
+    _stop,
+    _switch_off,
+)
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
 KITCHEN = {
@@ -380,6 +388,42 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
 
     assert _plays(scenario, bathroom_id) == (PlaybackState.PLAYING, [TEST_TRACK_URI])
     assert _plays(scenario, den_id) == (PlaybackState.IDLE, [])
+
+
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="a sync group switches a member on (commit 4)"
+)
+async def test_a_group_that_switches_a_member_on_holds_no_player_meanwhile(
+    scenario: Scenario,
+) -> None:
+    """
+    A group that plays while a member it switched on is still away holds no player for it.
+
+    A seek on the group sent meanwhile runs at once, and once the device is back the member
+    joins the group.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, "sync_group", kitchen_id, office_id, den_id)
+    plug = await _switch_off(scenario, den)
+    scenario.expect_log("is not available")
+    scenario.expect_log("Failed to stop queue")
+    await scenario.play(group_id)
+    assert plug.commands == [True]
+
+    waits = record_lock_waits(scenario.mass.players)
+    seek = await scenario.command(scenario.mass.player_queues.seek(group_id, 10))
+
+    assert seek.done()
+    await seek
+    assert waits == []
+    await _come_back(scenario, den)
+    await scenario.idle()
+
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
 
 
 # what a client sees of a player: its playback, the uris its queue holds, the uri of what it
