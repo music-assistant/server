@@ -17,6 +17,8 @@ from auntie_sounds.stations import StationService
 from music_assistant.providers.bbc_sounds import SUPPORTED_FEATURES, BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
 
+RADIO_FOUR_SERVICE_ID = "bbc_radio_fourfm"
+
 
 @pytest.fixture
 def client() -> SoundsClient:
