@@ -636,6 +636,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         station: Station | LiveStation | None = await self.client.stations.get_station(
             item_id,
             include_stream=True,
+            stream_preferences=StreamPreference(),
         )
 
         if not station:
