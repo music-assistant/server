@@ -877,8 +877,9 @@ async def test_a_stop_of_the_group_calls_off_the_power_on_of_its_members(
     """
     A stop, a pause or a power off of the group ends the power on of a member that still waits.
 
-    The device that comes back afterwards stays out of the group: it gets no command and is
-    idle. Its plug stays on.
+    The member, whose device is not there, shows as unavailable from then on. The device that
+    comes back afterwards stays out of the group: it gets no command and is idle. Its plug
+    stays on.
     """
     _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
     kitchen_id = _player_id(scenario, kitchen)
@@ -901,6 +902,7 @@ async def test_a_stop_of_the_group_calls_off_the_power_on_of_its_members(
     )
     await scenario.advance(10)
     await call_off
+    assert _state(scenario, den_id).available is False
     await _come_back(scenario, den)
     await scenario.idle()
 

@@ -1477,9 +1477,9 @@ Once Office's device is back, Downstairs plays on Office. Kitchen joins when its
 ### GROUP-25 · Stopping a group calls off the power on of its members
 
 Downstairs, a sync group or a universal group, plays on Kitchen and Office while it waits for
-Den, whose plug it switched on. The user stops Downstairs, pauses it or powers it off. When Den's
-device is back after that, Den stays out: it gets no command, is idle and in no group. Its plug
-stays on.
+Den, whose plug it switched on. The user stops Downstairs, pauses it or powers it off. Den, whose
+device is not there yet, shows as unavailable from then on. When its device is back after that,
+Den stays out: it gets no command, is idle and in no group. Its plug stays on.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
