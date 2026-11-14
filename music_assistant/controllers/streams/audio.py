@@ -246,11 +246,12 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
     InvalidDataError,
 )
 
-# Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
-# shorter than the minimum playtime count toward the limit so its provider is not hammered.
 HLS_RADIO_PLAYLIST_TIMEOUT = 10
 STREAMDETAILS_HLS_START_SECONDS_KEY = "hls_start_seconds"
 _EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
+
+# Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
+# shorter than the minimum playtime count toward the limit so its provider is not hammered.
 RADIO_MAX_FAILED_RESTARTS = 3
 RADIO_RESTART_MIN_PLAYTIME = 60
 RADIO_RESTART_DELAY = 1.0
