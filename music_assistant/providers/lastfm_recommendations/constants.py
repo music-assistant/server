@@ -44,6 +44,10 @@ RESOLUTION_BUFFER_SMALL = 15
 # Genre chart pool (single fetch); sized so the hourly rotation surfaces more of the genre per day
 RESOLUTION_BUFFER_LARGE = 60
 
+# Size of the single artist top tracks fetch: a deeper ranking finds more of the library's tracks
+# at no extra request
+ARTIST_TOP_TRACKS_FETCH_LIMIT = 100
+
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
 
@@ -62,6 +66,14 @@ SIMILAR_TRACKS_BUFFER = 15
 
 # Number of similar items to fetch for each seed artist/track
 SIMILAR_ITEMS_PER_SEED = 5
+
+# Size of a similar tracks or artists list asked of Last.fm: a deeper list finds more of the
+# library's items at no extra request, and fills in for entries no music provider has.
+SIMILAR_ITEMS_FETCH_LIMIT = 50
+
+# Most entries of one similar tracks or artists list looked up on the music providers without a
+# match: a few misses are filled in from further down the list, a run of them stops the lookups.
+SIMILAR_ITEMS_MISS_LIMIT = 10
 
 # Number of top artists to use as seeds for personalized recommendations
 TOP_ARTISTS_LIMIT = 5

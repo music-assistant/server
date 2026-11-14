@@ -83,6 +83,8 @@ async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists(
     query_parts = kwargs["extra_query_parts"]
     # Batch query should still filter dynamic playlists (automated refresh)
     assert any(f"{DB_TABLE_PLAYLISTS}.is_dynamic = 0" in part for part in query_parts)
+    # and leave playlist rows outside the library alone
+    assert kwargs["in_library_only"] is True
 
 
 async def test_refresh_playlist_metadata_batch_reports_corrupt_row_reactively() -> None:

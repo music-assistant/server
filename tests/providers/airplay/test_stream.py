@@ -2165,6 +2165,23 @@ def test_native_control_failure_warns_once_and_never_touches_config(
     pinned_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
 
 
+def test_compat_route_connection_loss_skips_the_native_keepalive_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The compatibility flow reports a lost connection with the same line, without native keepalives."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stream._parse_route_status(
+        "[STATUS] route protocol=airplay2 flow=raop-compat timing=ntp buffered=0"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    assert "native AirPlay 2 control keepalives" not in caplog.text
+
+
 def test_native_control_failure_on_a_superseded_stream_stays_silent() -> None:
     """
     A superseded stream's lost control channel is not reported.
@@ -2548,6 +2565,35 @@ async def test_initial_metadata_skips_artwork() -> None:
 
 
 @pytest.mark.asyncio
+async def test_metadata_line_breaks_are_replaced() -> None:
+    """Line breaks in the metadata text never add lines to the SENDMETA command."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+    metadata = MagicMock(
+        title="Track\nACTION=PAUSE",
+        artist="Artist\r\nVOLUME=0",
+        album="Album\r",
+        duration=180,
+        queue_item_id="item1",
+        source_id=None,
+        image_url=None,
+    )
+
+    with patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command:
+        await stream.send_metadata(None, metadata, send_artwork=False)
+
+    assert send_command.await_args_list[0].args[0].splitlines() == [
+        "TITLE=Track ACTION=PAUSE",
+        "ARTIST=Artist  VOLUME=0",
+        "ALBUM=Album",
+        "DURATION=180",
+        "ITEMID=item1",
+        "ACTION=SENDMETA",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     """
     Track metadata is pushed the instant the binary can receive it.
@@ -2763,6 +2809,17 @@ async def test_prepare_artwork_returns_cache_path() -> None:
     )
 
 
+def _binary_confirms_stop(stream: AirPlayStream) -> AsyncMock:
+    """Return a command-pipe write that answers STOP the way the binary does."""
+
+    async def _write(data: bytes) -> bool:
+        if data == b"ACTION=STOP\n":
+            stream._handle_status_line("[STATUS] stopped")
+        return True
+
+    return AsyncMock(side_effect=_write)
+
+
 @pytest.mark.asyncio
 async def test_stop_cleans_up_when_stop_command_fails() -> None:
     """A command-pipe failure cannot skip process and stream cleanup."""
@@ -2816,7 +2873,7 @@ async def test_stop_awaits_cancelled_stdout_reader() -> None:
     await reader_started.wait()
 
     with (
-        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "write", _binary_confirms_stop(stream)),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
     ):
         await stream.stop(force=True)
@@ -2850,7 +2907,7 @@ async def test_force_stop_does_not_wait_for_artwork_render() -> None:
         return "late.jpg"
 
     with (
-        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "write", _binary_confirms_stop(stream)),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
         patch.object(
             stream,
@@ -2867,6 +2924,60 @@ async def test_force_stop_does_not_wait_for_artwork_render() -> None:
 
     assert stream._cleanup_complete is True
     process.kill.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_force_stop_kills_only_after_the_binary_confirmed_stop() -> None:
+    """
+    A forced stop leaves the binary time to release the receiver before killing it.
+
+    The binary sends the RTSP TEARDOWN before it confirms STOP; some receivers
+    (squeezelite-esp32) only free their output on that TEARDOWN.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    events: list[str] = []
+    process = MagicMock()
+    process.closed = False
+    process.kill = AsyncMock(side_effect=lambda: events.append("kill"))
+    stream._cli_proc = process
+
+    async def _confirm_later() -> None:
+        await asyncio.sleep(0.05)
+        events.append("stopped")
+        stream._handle_status_line("[STATUS] stopped")
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        confirm = asyncio.create_task(_confirm_later())
+        # well within the stop ack timeout: the confirmation ends the wait
+        await asyncio.wait_for(stream.stop(force=True), timeout=1)
+        await confirm
+
+    assert events == ["stopped", "kill"]
+
+
+@pytest.mark.asyncio
+async def test_force_stop_gives_up_on_a_binary_that_never_confirms() -> None:
+    """A binary that never confirms STOP is killed once the stop ack timeout runs out."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    process.kill = AsyncMock()
+    stream._cli_proc = process
+
+    with (
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_STOP_ACK_TIMEOUT", 0.05),
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await asyncio.wait_for(stream.stop(force=True), timeout=1)
+
+    process.kill.assert_awaited_once()
+    assert stream._cleanup_complete is True
 
 
 async def _run_stderr_reader_to(
@@ -3013,6 +3124,47 @@ async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
     player.schedule_group_rejoin.assert_called_once_with(["child1", "child2"])
     # the controller sets the leader's final state (transfer or dissolve)
     player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receiver_taken_over_leaves_the_group_without_a_rejoin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A member whose receiver another sender took over is dropped, not re-joined.
+
+    Re-joining would take the receiver back from the other sender (an iPhone).
+    """
+    player = _make_player()
+    player.synced_to = "leader"
+    player.group_members = []
+    leader = MagicMock()
+    leader.group_members = ["leader", player.player_id]
+    player.provider.mass.players.get_player.return_value = leader
+    stream = AirPlayStream(player)
+    player.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "[STATUS] receiver_closed"
+
+    with (
+        caplog.at_level(logging.INFO),
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    player.provider.mass.players.cmd_set_members.assert_called_once_with(
+        "leader", player_ids_to_remove=[player.player_id]
+    )
+    player.schedule_group_rejoin.assert_not_called()
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+    assert "another sender took over" in caplog.text
+    assert "stopped unexpectedly" not in caplog.text
 
 
 @pytest.mark.asyncio

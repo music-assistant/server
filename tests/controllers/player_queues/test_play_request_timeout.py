@@ -162,6 +162,21 @@ async def test_a_slow_resolution_leaves_shuffle_and_seeds_alone(
     assert data.items == items_before
 
 
+async def test_a_slow_resolution_leaves_the_queue_with_its_user() -> None:
+    """A request that runs out of time keeps the user the queue plays for."""
+    ctrl, _lock = _controller()
+    data: PlayerQueueData = ctrl._queue_data["q1"]
+    data.userid = "user-a"
+
+    with (
+        patch(f"{QUEUE_LOADER}.get_current_user", Mock(return_value=Mock(user_id="user-b"))),
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await ctrl.play_media("q1", _track("slow"), QueueOption.REPLACE)
+
+    assert data.userid == "user-a"
+
+
 async def test_the_next_command_gets_through_once_the_deadline_passed() -> None:
     """A command waiting for the lock runs as soon as the slow request gave up."""
     ctrl, _lock = _controller()
@@ -198,3 +213,15 @@ async def test_a_quick_resolution_plays_as_usual() -> None:
 
     assert [item.media_item for item in ctrl._queue_data["q1"].items] == [new]
     ctrl.play_index.assert_awaited_once()
+
+
+async def test_a_quick_resolution_plays_for_the_requesting_user() -> None:
+    """A request that resolves within the deadline hands the queue to its user."""
+    ctrl, _lock = _controller()
+    data: PlayerQueueData = ctrl._queue_data["q1"]
+    data.userid = "user-a"
+
+    with patch(f"{QUEUE_LOADER}.get_current_user", Mock(return_value=Mock(user_id="user-b"))):
+        await ctrl.play_media("q1", _track("new"), QueueOption.REPLACE)
+
+    assert data.userid == "user-b"

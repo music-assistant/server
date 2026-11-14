@@ -10,10 +10,10 @@ from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, MediaType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlayerType
+from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 
-from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
@@ -27,7 +27,7 @@ from .constants import (
 from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
-    from aioslimproto.client import SlimClient
+    from aioslimproto.cli import SlimCLICommand
 
 
 class SqueezelitePlayerProvider(PlayerProvider):
@@ -88,6 +88,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             ip_address=self.mass.streams.publish_ip,
             name="Music Assistant",
             control_port=control_port,
+            cli_command_handler=self._handle_cli_command,
         )
 
     async def loaded_in_mass(self) -> None:
@@ -121,13 +122,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         await self._cleanup_server()
         self.mass.streams.unregister_dynamic_route("/slimproto/multi")
         self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
-
-    def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
-        """Return corrected elapsed milliseconds for a slimplayer."""
-        sync_delay = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_SYNC_ADJUST, 0
-        )
-        return int(slimplayer.elapsed_milliseconds - sync_delay)
 
     def _lookup_display_name(self, player_id: str) -> str | None:
         """Return Music Assistant's display name for a player, or None if it does not know it."""
@@ -282,3 +276,37 @@ class SqueezelitePlayerProvider(PlayerProvider):
             and (leader := self.mass.players.get_player(leader_id))
         ):
             cast("SqueezelitePlayer", leader).remove_disconnected_member(player_id)
+
+    async def _handle_cli_command(self, command: SlimCLICommand) -> None:
+        """
+        Handle play, pause and stop sent by a client, acting on its whole group like LMS does.
+
+        :param command: The CLI command as received from the client.
+        :raises NotImplementedError: For any other command, an unknown player and a stop
+            from a protocol-only device, so aioslimproto handles it for that client alone.
+        """
+        if not command.player_id or not (player := self.mass.players.get_player(command.player_id)):
+            raise NotImplementedError
+        arg = str(command.args[0]) if command.args else None
+        match command.command, arg:
+            case ("play", _) | ("mode", "play") | ("pause", "0"):
+                player_cmd = self.mass.players.cmd_play
+            case ("pause", "1") | ("mode", "pause"):
+                player_cmd = self.mass.players.cmd_pause
+            case ("pause", None):
+                player_cmd = self.mass.players.cmd_play_pause
+            # a protocol-only device also sends stop when another source or app takes
+            # over, so that stop must only stop the device itself and not its group
+            case ("stop", _) | ("mode", "stop") if player.type != PlayerType.PROTOCOL:
+                player_cmd = self.mass.players.cmd_stop
+            case _:
+                raise NotImplementedError
+        try:
+            await player_cmd(command.player_id)
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Failed to handle %s command from %s: %s",
+                command.command,
+                player.display_name,
+                err,
+            )

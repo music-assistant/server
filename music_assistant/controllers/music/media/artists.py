@@ -211,22 +211,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param album_artists_only: Only count artists credited on an album in the library.
         :param artist_type: Only count artists of this type.
         """
-        sql_query = f"SELECT item_id FROM {self.db_table}"
-        query_parts = []
         query_params: dict[str, Any] = {}
-        if artist_type:
-            query_parts.append(f"artist_type = '{artist_type}'")
-        if favorite_only:
-            query_parts.append(self._favorite_filter_clause(query_params, True))
-        if album_artists_only:
-            query_parts.append(self._album_artist_clause(query_params))
-        if provider_filter := self._ensure_provider_filter(None):
-            query_parts.append(
-                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
-            )
-        if query_parts:
-            sql_query += f" WHERE {' AND '.join(query_parts)}"
-        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
+        query_parts = self._library_filter_parts(query_params, album_artists_only, artist_type)
+        return await self._library_count(favorite_only, query_parts, query_params)
 
     async def library_items(  # noqa: PLR0913
         self,
@@ -1873,8 +1860,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             # a music provider that failed (e.g. rate limited) must not turn into more
             # requests against the same services through a metadata provider
             return listings, failed or unanswered
-        # metadata providers such as Last.fm resolve every item through music-service searches,
-        # so they are a fallback rather than a parallel source
+        # a metadata provider such as Last.fm may resolve its items through music-service
+        # searches (similar artists), so it is a fallback rather than a parallel source
         listings, failed = await self._gather_provider_listings(
             ref_item,
             feature,
