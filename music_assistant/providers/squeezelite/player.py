@@ -60,6 +60,7 @@ from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
+    from aioslimproto.models import MediaMetadata
 
     from .provider import SqueezelitePlayerProvider
 
@@ -375,7 +376,7 @@ class SqueezelitePlayer(Player):
             if not child_player:
                 # should not happen, but guard against it
                 continue
-            if child_player.state != SlimPlayerState.STOPPED:
+            if child_player.client.state != SlimPlayerState.STOPPED:
                 # stop the player if it is already playing something else
                 await child_player.stop()
             self._attr_group_members.append(player_id)
@@ -466,8 +467,8 @@ class SqueezelitePlayer(Player):
                 artist=metadata.get("artist"),
                 image_url=metadata.get("image_url"),
                 duration=metadata.get("duration"),
-                source_id=metadata.get("source_id"),
-                queue_item_id=metadata.get("queue_item_id"),
+                source_id=cast("str | None", metadata.get("source_id")),
+                queue_item_id=cast("str | None", metadata.get("queue_item_id")),
             )
         else:
             self._attr_current_media = None
@@ -488,16 +489,21 @@ class SqueezelitePlayer(Player):
             # derive from the url extension (only reliable for plain file urls; sync
             # group member urls have no extension, so callers pass the codec mime)
             mime_type = get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0])
-        metadata = {
-            "item_id": media.uri,
-            "title": media.title,
-            "album": media.album,
-            "artist": media.artist,
-            "image_url": media.image_url,
-            "duration": media.stream_duration or media.duration,
-            "source_id": media.source_id,
-            "queue_item_id": media.queue_item_id,
-        }
+        # MediaMetadata has no source and queue item ids; they ride along so
+        # current_media can be restored from the client
+        metadata = cast(
+            "MediaMetadata",
+            {
+                "item_id": media.uri,
+                "title": media.title,
+                "album": media.album,
+                "artist": media.artist,
+                "image_url": media.image_url,
+                "duration": media.stream_duration or media.duration,
+                "source_id": media.source_id,
+                "queue_item_id": media.queue_item_id,
+            },
+        )
         queue = None
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
@@ -632,7 +638,7 @@ class SqueezelitePlayer(Player):
             # updates once the session's options echo lands
             self.client.extra_data["playlist repeat"] = REPEATMODE_MAP[repeat_mode]
             self.client.signal_update()
-        elif event.data == "button shuffle":
+        elif event_data == "button shuffle":
             shuffle_enabled = not queue.shuffle_enabled
             await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled)
             self.client.extra_data["playlist shuffle"] = int(shuffle_enabled)
@@ -731,10 +737,11 @@ class SqueezelitePlayer(Player):
                 self.player_id, f"preset_{preset_index}"
             ):
                 try:
-                    media_item = await self.mass.music.get_item_by_uri(cast("str", preset_conf))
+                    preset_uri = cast("str", preset_conf)
+                    media_item = await self.mass.music.get_item_by_uri(preset_uri)
                     preset_items.append(
                         SlimPreset(
-                            uri=media_item.uri,
+                            uri=media_item.uri or preset_uri,
                             text=media_item.name,
                             icon=(
                                 self.mass.metadata.get_image_url(media_item.image)

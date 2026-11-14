@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aioslimproto.client import PlayerState as SlimPlayerState
+from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, RepeatMode
