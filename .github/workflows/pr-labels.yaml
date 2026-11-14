@@ -7,6 +7,8 @@ name: PR Labels
 # it automatically — most external contributors can't label their
 # own PRs. The job fails when more than one box is ticked, or when
 # none is and the PR doesn't already carry a single known label.
+# A PR labelled `new-provider` also gets one comment telling the
+# author what a provider in the server asks of them.
 
 # yamllint disable-line rule:truthy
 on:
@@ -83,6 +85,9 @@ jobs:
               const existing = current.filter(n => known.includes(n));
               if (existing.length === 1) {
                 core.info(`Skipping: PR already labelled '${existing[0]}'.`);
+                if (existing[0] === 'new-provider') {
+                  await commentOnNewProvider();
+                }
                 return;
               }
               core.setFailed(
@@ -108,5 +113,47 @@ jobs:
             if (!current.includes(desired)) {
               await github.rest.issues.addLabels({
                 owner, repo, issue_number, labels: [desired],
+              });
+            }
+            if (desired === 'new-provider') {
+              await commentOnNewProvider();
+            }
+
+            // Posted once per PR: the hidden marker finds an earlier
+            // comment, so later edits, pushes and relabels never post
+            // it again, and a label change leaves it in place.
+            async function commentOnNewProvider() {
+              const marker = '<!-- new-provider -->';
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number },
+              );
+              if (comments.some(c => c.body?.includes(marker))) {
+                return;
+              }
+              const guide = 'https://github.com/music-assistant/server/' +
+                'blob/dev/DEVELOPMENT.md#-contributing-a-provider';
+              const body = [
+                marker,
+                'Thanks for adding a provider! A provider that ships ' +
+                'with Music Assistant is installed for every user and ' +
+                'supported by the project, so it asks for a bit more ' +
+                'than working code:',
+                '',
+                '* **People ask for it:** link the feature request or ' +
+                'discussion.',
+                '* **It is documented:** a pull request on the ' +
+                'documentation comes with it.',
+                '* **It meets the standards:** it passes `lint` and ' +
+                '`test` and has tests of its own.',
+                '* **You maintain it:** you are listed in `codeowners` ' +
+                'and keep following up.',
+                '',
+                'A provider whose maintainer no longer follows up may ' +
+                'be moved out of the server. The details are in ' +
+                `[what a provider in the server asks](${guide}).`,
+              ].join('\n');
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
               });
             }
