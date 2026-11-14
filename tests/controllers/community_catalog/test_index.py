@@ -6,6 +6,7 @@ import json
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 from aiohttp import ClientSession, ClientTimeout
@@ -127,6 +128,31 @@ async def test_failed_fetch_keeps_the_copy(
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert message in warnings[0]
+
+
+async def test_index_that_cannot_be_kept_is_still_used(
+    tmp_path: Path, client: IndexClient, registry: Registry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An index that cannot be written is used all the same, and the next fetch keeps it."""
+    folder = tmp_path / "community_providers"
+    with (
+        patch.object(IndexClient, "_write", side_effect=OSError("No space left on device")),
+        caplog.at_level(logging.WARNING, logger=LOGGER.name),
+    ):
+        assert await client.fetch() is True
+
+    assert client.index is not None
+    assert client.state.index_etag is None
+    assert not folder.exists()
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "No space left on device" in warnings[0]
+
+    assert await client.fetch() is False
+
+    assert registry.requests[1] == ("nightly", None)
+    assert (folder / "index.json").exists()
+    assert client.state.index_etag == registry.etag
 
 
 async def test_load_reads_the_kept_copy(

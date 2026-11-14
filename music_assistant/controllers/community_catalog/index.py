@@ -64,7 +64,8 @@ class IndexClient:
         """
         Fetch the index of this server's line and keep it when it is valid.
 
-        Any failure keeps the copy and logs a warning. Returns whether the kept copy changed.
+        Any failure keeps the copy and logs a warning; an index that cannot be written is used
+        all the same. Returns whether the index changed.
         """
         line = server_line(self.mass.version)
         url = INDEX_URL.format(line=line)
@@ -87,10 +88,16 @@ class IndexClient:
         except (ClientError, ValueError, LookupError) as err:
             self.logger.warning("Could not fetch the community catalog from %s: %s", url, err)
             return False
-        state = replace(self.state, index_etag=etag)
-        await asyncio.to_thread(self._write, content, state)
         changed = index != self.index
-        self.index, self.state = index, state
+        self.index = index
+        state = replace(self.state, index_etag=etag)
+        try:
+            await asyncio.to_thread(self._write, content, state)
+        except OSError as err:
+            # the ETag stays the one of the kept copy, so the next fetch tries to keep it again
+            self.logger.warning("Could not keep a copy of the community catalog: %s", err)
+        else:
+            self.state = state
         return changed
 
     def _read(self) -> tuple[CatalogIndex | None, CatalogState]:
