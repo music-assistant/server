@@ -51,7 +51,7 @@ def _make_player(player_type: PlayerType = PlayerType.PLAYER) -> MagicMock:
     """Return a player mock of the given type."""
     player = MagicMock()
     player.player_id = _PLAYER_ID
-    player.state.type = player_type
+    player.type = player_type
     return player
 
 

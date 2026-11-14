@@ -21,9 +21,7 @@ def _controller() -> tuple[PlayerQueuesController, PlayerQueueData]:
     """Return a bare queue controller holding the queue of a player with a legacy id."""
     legacy_ids = {LEGACY_ID: QUEUE_ID}
     # the player is paused on its own queue, which has no stream session anymore
-    player = SimpleNamespace(
-        state=SimpleNamespace(playback_state=PlaybackState.PAUSED, active_source=QUEUE_ID)
-    )
+    player = SimpleNamespace(playback_state=PlaybackState.PAUSED, active_source=QUEUE_ID)
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.mass = SimpleNamespace(  # type: ignore[assignment]
         players=SimpleNamespace(

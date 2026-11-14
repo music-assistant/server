@@ -88,7 +88,7 @@ def _target(player_id: str = "group", **kwargs: Any) -> SimpleNamespace:
         available=kwargs.get("available", True),
         enabled=kwargs.get("enabled", True),
         group_members=[],
-        state=SimpleNamespace(static_group_members=kwargs.get("members", ["pl_display"])),
+        static_group_members=kwargs.get("members", ["pl_display"]),
     )
 
 

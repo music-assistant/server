@@ -60,7 +60,7 @@ def _player(ready: asyncio.Future[None]) -> tuple[SendspinPlayer, Mock, Mock, li
     manager.get_bridge_by_client_id.return_value = bridge
     player._get_cast_bridge_manager = Mock(return_value=manager)  # type: ignore[method-assign]
     player._player = SimpleNamespace(  # type: ignore[assignment]
-        state=SimpleNamespace(current_media=None, playback_state=PlaybackState.IDLE)
+        current_media=None, playback_state=PlaybackState.IDLE
     )
     player._attr_current_media = None
     player.update_state = Mock()  # type: ignore[method-assign,misc]

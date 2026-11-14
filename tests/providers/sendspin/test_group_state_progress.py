@@ -48,7 +48,7 @@ def _player(
     # player/mass), so the snapshot it would normally rebuild is seeded directly here.
     # The fix under test reads/mutates the state of the player, not update_state().
     player._player = SimpleNamespace(  # type: ignore[assignment]
-        state=SimpleNamespace(current_media=current_media, playback_state=player_state)
+        current_media=current_media, playback_state=player_state
     )
     player.update_state = Mock()  # type: ignore[method-assign,misc]
     player.send_current_media_metadata = AsyncMock()  # type: ignore[method-assign]

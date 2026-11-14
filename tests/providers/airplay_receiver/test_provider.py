@@ -103,7 +103,7 @@ def _reconcile_provider(
         player = MagicMock()
         player.player_id = player_id
         player.display_name = registered[player_id]
-        player.state.available = player_id not in (unavailable or set())
+        player.available = player_id not in (unavailable or set())
         return player
 
     mass.players.get_player.side_effect = get_player
@@ -519,7 +519,7 @@ async def test_receiver_config_starts_at_the_volume_of_the_player(tmp_path: Path
     prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
     prov.mass = MagicMock()
     player = MagicMock(spec=Player)
-    player.state.volume_level = 40
+    player.volume_level = 40
     prov.mass.players.get_player.return_value = player
     prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
     daemon = MagicMock(

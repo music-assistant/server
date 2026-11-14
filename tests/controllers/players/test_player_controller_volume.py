@@ -355,7 +355,7 @@ class TestEnforceVolumeLimits:
             "Player",
             SimpleNamespace(
                 player_id="user_player",
-                state=SimpleNamespace(volume_level=logical_volume),
+                volume_level=logical_volume,
             ),
         )
 

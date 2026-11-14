@@ -419,7 +419,7 @@ class TestPlayerSelection:
         provider = _make_provider("gone-player")
         other = MagicMock()
         other.player_id = "other-player"
-        other.state.playback_state = PlaybackState.PLAYING
+        other.playback_state = PlaybackState.PLAYING
         provider.mass.players.all_players.return_value = [other]  # type: ignore[attr-defined]
 
         assert provider._get_target_player_id() is None
@@ -442,7 +442,7 @@ class TestPlayerSelection:
         """Returns None when the configured player is registered but unavailable."""
         provider = _make_provider("my-player")
         player = MagicMock()
-        player.state.available = False
+        player.available = False
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
 
         assert provider._get_target_player_id() is None
@@ -452,7 +452,7 @@ class TestPlayerSelection:
         provider = _make_provider("my-player")
         provider._active_player_id = "active-one"
         players = {"active-one": MagicMock(), "my-player": MagicMock()}
-        players["active-one"].state.available = False
+        players["active-one"].available = False
         provider.mass.players.get_player.side_effect = players.get  # type: ignore[attr-defined]
 
         assert provider._get_target_player_id() == "my-player"
@@ -3242,7 +3242,7 @@ class TestEchoSuppression:
         player = MagicMock()
         player.player_id = "player1"
         player.display_name = "Player 1"
-        player.state.playback_state = PlaybackState.PLAYING
+        player.playback_state = PlaybackState.PLAYING
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
         return player
@@ -3668,7 +3668,7 @@ class TestActivatePlayback:
         player = MagicMock()
         player.player_id = "player1"
         player.display_name = "Player 1"
-        player.state.playback_state = PlaybackState.IDLE
+        player.playback_state = PlaybackState.IDLE
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
 
@@ -5041,7 +5041,7 @@ def _merged_provider() -> YandexYnisonProvider:
     merged_into = MagicMock()
     merged_into.player_id = "player2"
     merged_into.display_name = "Kitchen"
-    merged_into.state.available = True
+    merged_into.available = True
     mass.players.get_player = MagicMock(
         side_effect=lambda player_id: merged_into if player_id == "player2" else None
     )

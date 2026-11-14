@@ -18,7 +18,7 @@ def _make_player(available: bool) -> MagicMock:
     """Create the connected player."""
     player = MagicMock()
     player.player_id = PLAYER_ID
-    player.state.available = available
+    player.available = available
     return player
 
 
@@ -44,7 +44,7 @@ def _make_provider(
         legacy = legacy_ids if legacy_ids is not None else {}
         mass.players.resolve_player_id.side_effect = lambda pid: legacy.get(pid, pid)
         mass.players.iter_players.side_effect = lambda **_kwargs: [
-            player for player in players.values() if player.state.available
+            player for player in players.values() if player.available
         ]
     # setup and teardown run as tasks; close them, their calls are what is checked
     mass.create_task.side_effect = lambda coro, **_kwargs: coro.close()
@@ -98,7 +98,7 @@ async def test_player_coming_online_starts_plex_connect() -> None:
     provider._on_mass_player_event(_event(EventType.PLAYER_UPDATED))
     provider._setup_player_instance.assert_not_called()
 
-    player.state.available = True
+    player.available = True
     provider._on_mass_player_event(_event(EventType.PLAYER_UPDATED))
     provider._on_mass_player_event(_event(EventType.PLAYER_UPDATED))
     provider._setup_player_instance.assert_called_once()
@@ -168,9 +168,9 @@ async def test_plex_connect_follows_its_player_into_the_player_it_is_merged_into
     provider._teardown_player_instance.assert_not_called()
     # the events of the player it went into are followed from now on
     provider._player_instance = None
-    merged_into.state.available = False
+    merged_into.available = False
     provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="player2"))
-    merged_into.state.available = True
+    merged_into.available = True
     provider._on_mass_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="player2"))
     assert provider._setup_player_instance.call_count == 2
 

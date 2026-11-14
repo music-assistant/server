@@ -54,7 +54,7 @@ def _controller(
     ctrl.mass = MagicMock()
     player = MagicMock()
     player.offline_by_power_control = False
-    player.state = MagicMock(playback_state=PlaybackState.IDLE)
+    player.playback_state = PlaybackState.IDLE
     player.extra_data = {ATTR_ANNOUNCEMENT_IN_PROGRESS: announcement_in_progress}
     ctrl.mass.players.get_player = Mock(return_value=player)
     ctrl.logger = MagicMock()

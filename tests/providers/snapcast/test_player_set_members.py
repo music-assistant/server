@@ -38,7 +38,7 @@ def _leader() -> tuple[SnapCastPlayer, MagicMock]:
     player._provider = cast("SnapCastProvider", provider)
     mass = MagicMock()
     sync_group = MagicMock(own_protocol=MagicMock(protocol_id=f"{SGP_PREFIX}abc"))
-    sync_group.state.group_members = SYNC_GROUP_MEMBERS
+    sync_group.group_members = SYNC_GROUP_MEMBERS
     mass.players.get_player.side_effect = {SYNC_GROUP_ID: sync_group}.get
     mass.players.get_player_by_protocol.side_effect = {
         ma_id: SimpleNamespace(player_id=f"pl_{client}") for ma_id, client in CLIENTS.items()

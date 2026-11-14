@@ -22,9 +22,7 @@ def _make_mass(players: dict[str, bool]) -> Any:
     mass = MagicMock()
 
     def _player(player_id: str) -> SimpleNamespace:
-        return SimpleNamespace(
-            player_id=player_id, state=SimpleNamespace(available=players[player_id])
-        )
+        return SimpleNamespace(player_id=player_id, available=players[player_id])
 
     mass.players.get_player.side_effect = lambda player_id: (
         _player(player_id) if player_id in players else None

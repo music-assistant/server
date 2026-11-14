@@ -160,8 +160,8 @@ def _volume_sync_provider(
     daemon.backend = backend
     provider._daemons = {_PLAYER_ID: daemon}
     player = MagicMock()
-    player.state.volume_level = volume_level
-    player.state.group_volume = volume_level if group_volume is None else group_volume
+    player.volume_level = volume_level
+    player.group_volume = volume_level if group_volume is None else group_volume
     provider.mass.players.get_player.return_value = player
     return provider, daemon, set_volume
 
@@ -687,7 +687,7 @@ def _reconcile_provider(
         player = MagicMock()
         player.player_id = player_id
         player.display_name = registered[player_id]
-        player.state.available = player_id not in (unavailable or set())
+        player.available = player_id not in (unavailable or set())
         return player
 
     mass.players.get_player.side_effect = get_player

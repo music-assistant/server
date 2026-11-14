@@ -936,7 +936,7 @@ async def test_autostart_skips_an_unavailable_target(fake_client: _FakeClient) -
     """A configured target that is registered but unavailable is not played to."""
     provider = await make_provider([fake_client])
     get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
-    get_players(provider).players["client-1"].state.available = False
+    get_players(provider).players["client-1"].available = False
     fake_client.emit(_signal(SignalState.ABSENT))
     fake_client.emit(_signal(SignalState.PRESENT))
     await _settle()

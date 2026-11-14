@@ -89,14 +89,12 @@ def _member(state: PlaybackState, elapsed: float, *, synced_to: str | None = Non
                 source_id=source, queue_item_id="other" if synced_to else "own", uri=None
             )
         ),
-        state=SimpleNamespace(
-            name="Member",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=elapsed,
-            group_members=[],
-            active_source=source,
-        ),
+        name="Member",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=elapsed,
+        group_members=[],
+        active_source=source,
     )
     return cast("Player", player)
 

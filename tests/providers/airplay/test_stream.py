@@ -76,7 +76,7 @@ def _make_player() -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
-    player.player.state.active_group = None
+    player.player.active_group = None
     player.streaming_mode = STREAMING_MODE_AUTO
     player.streaming_mode_options = [
         MagicMock(value=STREAMING_MODE_AUTO),
@@ -3019,7 +3019,7 @@ async def test_unexpected_death_of_static_group_member_drops_member_only() -> No
     player.group_members = []
     # the player is a static member of an actively playing group player, for
     # which cmd_ungroup would release (stop) the WHOLE group
-    player.player.state.active_group = "syncgroup1"
+    player.player.active_group = "syncgroup1"
     group_player = MagicMock()
     group_player.static_group_members = ["plplayera0001"]
     leader = MagicMock()
@@ -3221,7 +3221,7 @@ def test_current_metadata_prefers_state_composition_for_the_same_item() -> None:
     session_media = MagicMock(queue_item_id="item-1", title="Track")
     state_media = MagicMock(queue_item_id="item-1", title="Track (Remastered)")
     stream.session = MagicMock(media=session_media)
-    player.player.state.current_media = state_media
+    player.player.current_media = state_media
 
     assert stream._current_metadata() is state_media
 
@@ -3233,10 +3233,10 @@ def test_current_metadata_keeps_session_media_when_state_describes_another_item(
     session_media = MagicMock(queue_item_id="item-2", title="Next track")
     stream.session = MagicMock(media=session_media)
 
-    player.player.state.current_media = MagicMock(queue_item_id="item-1", title="Previous track")
+    player.player.current_media = MagicMock(queue_item_id="item-1", title="Previous track")
     assert stream._current_metadata() is session_media
 
-    player.player.state.current_media = None
+    player.player.current_media = None
     assert stream._current_metadata() is session_media
 
 
@@ -3246,7 +3246,7 @@ def test_current_metadata_without_queue_item_never_swaps_sources() -> None:
     stream = AirPlayStream(player)
     session_media = MagicMock(queue_item_id=None, title="Announcement")
     stream.session = MagicMock(media=session_media)
-    player.player.state.current_media = MagicMock(queue_item_id=None, title="Something else")
+    player.player.current_media = MagicMock(queue_item_id=None, title="Something else")
 
     assert stream._current_metadata() is session_media
 

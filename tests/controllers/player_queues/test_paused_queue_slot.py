@@ -189,7 +189,8 @@ class _Rig:
         )
         self.players[queue_id] = SimpleNamespace(
             player_id=queue_id,
-            state=SimpleNamespace(playback_state=state, active_source=queue_id),
+            playback_state=state,
+            active_source=queue_id,
             extra_data={},
             # a shared speaker: its protocol is no private client player
             attached_protocols={f"{queue_id}_device": SimpleNamespace(private=False)},
@@ -227,7 +228,7 @@ class _Rig:
 
     async def _device_stopped(self, queue_id: str) -> None:
         """Let the player report idle once it was told to stop."""
-        self.players[queue_id].state.playback_state = PlaybackState.IDLE
+        self.players[queue_id].playback_state = PlaybackState.IDLE
 
 
 @pytest.fixture
@@ -294,7 +295,7 @@ async def test_play_after_a_failed_stop_starts_the_queue_again(rig: _Rig) -> Non
     await rig.fill(paused_item)
     rig.stop_device.side_effect = PlayerUnavailableError("gone")
     assert await rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
-    assert rig.players[PAUSED_QUEUE].state.playback_state == PlaybackState.PAUSED
+    assert rig.players[PAUSED_QUEUE].playback_state == PlaybackState.PAUSED
     rig.queues.resume = AsyncMock()  # type: ignore[method-assign]
 
     await rig.queues._handle_play(PAUSED_QUEUE)
@@ -322,8 +323,8 @@ def test_only_a_player_paused_on_an_ended_stream_has_lost_it(
     """Only the queue's own stream, paused on the player after the queue ended it, is lost."""
     rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
     rig.queues._queue_data[PAUSED_QUEUE].session_id = session_id
-    rig.players[PAUSED_QUEUE].state.playback_state = player_state
-    rig.players[PAUSED_QUEUE].state.active_source = active_source
+    rig.players[PAUSED_QUEUE].playback_state = player_state
+    rig.players[PAUSED_QUEUE].active_source = active_source
 
     assert rig.queues.has_lost_paused_stream(PAUSED_QUEUE) is expected
 
@@ -535,8 +536,8 @@ async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
     paused_buffer = await rig.fill(paused_item)
     rig.queues._queue_data[PAUSED_QUEUE].queue.state = queue_state
     player = rig.players[PAUSED_QUEUE]
-    player.state.playback_state = player_state
-    player.state.active_source = active_source
+    player.playback_state = player_state
+    player.active_source = active_source
     player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = announcing
 
     assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, asking_queue)
@@ -611,7 +612,7 @@ async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig
         async with rig.playback_lock(PAUSED_QUEUE):
             lock_taken.set()
             await resumed.wait()
-            rig.players[PAUSED_QUEUE].state.playback_state = PlaybackState.PLAYING
+            rig.players[PAUSED_QUEUE].playback_state = PlaybackState.PLAYING
             rig.queues._queue_data[PAUSED_QUEUE].queue.state = PlaybackState.PLAYING
 
     resume = asyncio.ensure_future(_resume())

@@ -146,7 +146,7 @@ async def test_poll_shows_the_media_of_its_player_in_the_app() -> None:
     cast("MagicMock", player._config).get_value.return_value = True  # flow mode
     shown = _media("shown")
     player._player = MagicMock()
-    player._player.state.current_media = shown
+    player._player.current_media = shown
     player._attr_current_media = _media("reported")
 
     await _poll_at(player, 10)

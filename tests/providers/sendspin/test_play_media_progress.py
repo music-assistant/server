@@ -43,12 +43,12 @@ def _player(
     # update_state() is mocked out (its real implementation needs a fully-initialized
     # player/mass), so the mock swaps in the snapshot it would normally rebuild.
     player._player = SimpleNamespace(  # type: ignore[assignment]
-        state=SimpleNamespace(current_media=media_before)
+        current_media=media_before
     )
 
     def _update_state() -> None:
         player._player = SimpleNamespace(  # type: ignore[assignment]
-            state=SimpleNamespace(current_media=media_after, playback_state=state_after)
+            current_media=media_after, playback_state=state_after
         )
 
     player.update_state = Mock(side_effect=_update_state)  # type: ignore[method-assign,misc]

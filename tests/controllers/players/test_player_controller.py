@@ -4088,13 +4088,13 @@ class TestRemovePlayerControl:
         mock_mass.loop = MagicMock()
         controller = PlayerController(mock_mass)
         using_control = MagicMock()
-        using_control.state.power_control = "switch.amp"
-        using_control.state.volume_control = PLAYER_CONTROL_NATIVE
-        using_control.state.mute_control = PLAYER_CONTROL_NATIVE
+        using_control.power_control = "switch.amp"
+        using_control.volume_control = PLAYER_CONTROL_NATIVE
+        using_control.mute_control = PLAYER_CONTROL_NATIVE
         unrelated = MagicMock()
-        unrelated.state.power_control = PLAYER_CONTROL_NATIVE
-        unrelated.state.volume_control = PLAYER_CONTROL_NATIVE
-        unrelated.state.mute_control = PLAYER_CONTROL_NATIVE
+        unrelated.power_control = PLAYER_CONTROL_NATIVE
+        unrelated.volume_control = PLAYER_CONTROL_NATIVE
+        unrelated.mute_control = PLAYER_CONTROL_NATIVE
         controller._players = {"using_control": using_control, "unrelated": unrelated}
         controller._controls = {
             "switch.amp": PlayerControl(id="switch.amp", provider="test_prov", name="Amp")
@@ -4134,9 +4134,9 @@ class TestRemovePlayerControl:
         mock_mass.loop = MagicMock()
         controller = PlayerController(mock_mass)
         player = MagicMock()
-        player.state.power_control = PLAYER_CONTROL_NATIVE
-        player.state.volume_control = PLAYER_CONTROL_NATIVE
-        player.state.mute_control = PLAYER_CONTROL_NATIVE
+        player.power_control = PLAYER_CONTROL_NATIVE
+        player.volume_control = PLAYER_CONTROL_NATIVE
+        player.mute_control = PLAYER_CONTROL_NATIVE
         controller._players = {"player": player}
 
         controller.remove_player_control("switch.gone")

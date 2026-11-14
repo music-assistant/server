@@ -55,10 +55,10 @@ def _create_venue_player(
 ) -> MagicMock:
     """Create a mock venue player with the given grouping capabilities."""
     player = MagicMock()
-    player.state.available = True
-    player.state.supported_features = {PlayerFeature.SET_MEMBERS} if supports_set_members else set()
-    player.state.can_group_with = can_group_with or set()
-    player.state.group_members = group_members or []
+    player.available = True
+    player.supported_features = {PlayerFeature.SET_MEMBERS} if supports_set_members else set()
+    player.can_group_with = can_group_with or set()
+    player.group_members = group_members or []
     return player
 
 
@@ -98,7 +98,7 @@ async def test_create_venue_unknown_player() -> None:
 async def test_create_venue_unavailable_player() -> None:
     """Creating a venue session for a registered but unavailable player raises."""
     venue_player = _create_venue_player()
-    venue_player.state.available = False
+    venue_player.available = False
     mass = _create_mock_mass(venue_player)
 
     with pytest.raises(SetupFailedError):
@@ -160,13 +160,13 @@ async def test_venue_restores_remembered_listener_only_when_missing() -> None:
     )
     session = await SharedPlaybackSession.create_venue(mass, "venue_player")
     await session.add_guest_listener("web_player_1")
-    venue_player.state.group_members = ["venue_player", "web_player_1"]
+    venue_player.group_members = ["venue_player", "web_player_1"]
     mass.players.cmd_set_members.reset_mock()
 
     await session.restore_guest_listeners()
     mass.players.cmd_set_members.assert_not_awaited()
 
-    venue_player.state.group_members = ["venue_player"]
+    venue_player.group_members = ["venue_player"]
     await session.restore_guest_listeners()
 
     mass.players.cmd_set_members.assert_awaited_once_with(

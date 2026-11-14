@@ -112,7 +112,7 @@ def make_player(  # noqa: PLR0913
     player.name = "Test Player"
     # the player the protocol is attached to
     player.player.player_id = f"pl_{protocol_id}"
-    player.player.state.active_group = None
+    player.player.active_group = None
     player.synced_to = synced_to
     player._transitioning = transitioning
     state = PlaybackState.PLAYING if playing else PlaybackState.IDLE

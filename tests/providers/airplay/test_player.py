@@ -1119,7 +1119,7 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
 ) -> None:
     """Use DACP feedback to keep the AirPlay volume current, stored on the protocol."""
     player = _attach_to_player(airplay_player, own=MagicMock(underlying_protocol_id=None))
-    player.state.volume_level = 42
+    player.volume_level = 42
     airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
     airplay_player._attr_volume_level = 57
     airplay_player.last_command_sent = time.time()

@@ -252,7 +252,8 @@ async def test_restore_keeps_its_position_when_the_stopped_player_reports_late()
                 source_id=QUEUE_ID, queue_item_id=quiz_item.queue_item_id, uri=None
             )
         ),
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=6.0),
+        playback_state=PlaybackState.PLAYING,
+        corrected_elapsed_time=6.0,
     )
     ctrl._update_current_index_from_player(queue, player)
 

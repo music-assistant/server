@@ -156,7 +156,7 @@ class _FakePlayer:
         self.player_id = player_id
         self.display_name = display_name or player_id
         self.queue = _FakeQueue(player_id, state)
-        self.state = SimpleNamespace(available=True)
+        self.available = True
 
 
 class _FakeProtocol:

@@ -77,8 +77,8 @@ def _controller(source: AudioSource | None) -> tuple[Any, MagicMock]:
     player.display_name = "Player 1"
     player.available = True
     player.offline_by_power_control = False
-    player.state.synced_to = None
-    player.state.active_group = None
+    player.synced_to = None
+    player.active_group = None
     controller.get_player = MagicMock(return_value=player)  # type: ignore[method-assign]
     # the command decorator looks the player up in the registry, not via get_player
     controller._players[PLAYER_ID] = player
@@ -185,12 +185,12 @@ async def test_a_group_member_is_playing_its_groups_source() -> None:
     member = MagicMock()
     member.player_id = "member_1"
     member.display_name = "Member"
-    member.state.synced_to = None
-    member.state.active_group = "group_1"
+    member.synced_to = None
+    member.active_group = "group_1"
     group = MagicMock()
     group.player_id = "group_1"
-    group.state.synced_to = None
-    group.state.active_group = None
+    group.synced_to = None
+    group.active_group = None
     controller.get_player = MagicMock(
         side_effect=lambda pid, *_a, **_k: {"member_1": member, "group_1": group}.get(pid)
     )
@@ -403,7 +403,7 @@ async def test_a_command_aimed_at_a_live_source_reaches_its_session() -> None:
     source = _source()
     controller, provider = _controller(source)
     player = controller.get_player(PLAYER_ID)
-    player.state.active_source = source.uri
+    player.active_source = source.uri
     controller._get_player_with_redirect = MagicMock(return_value=player)
 
     await controller.cmd_shuffle(PLAYER_ID, shuffle_enabled=True, source_id=source.uri)
@@ -415,7 +415,7 @@ async def test_a_command_aimed_at_a_live_source_that_ended_is_refused() -> None:
     """A session that is gone gets nothing, and neither does the queue that took over."""
     controller, provider = _controller(None)
     player = controller.get_player(PLAYER_ID)
-    player.state.active_source = PLAYER_ID
+    player.active_source = PLAYER_ID
     controller._get_player_with_redirect = MagicMock(return_value=player)
     queue = MagicMock()
     queue.queue_id = PLAYER_ID

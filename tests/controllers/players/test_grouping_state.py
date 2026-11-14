@@ -519,10 +519,10 @@ class TestCanGroupWithExternalSource:
         )
         server.refresh(rig["player"])
 
-        assert rig["player"].state.active_source == f"spotify_connect://audio_source/{player_id}"
+        assert rig["player"].active_source == f"spotify_connect://audio_source/{player_id}"
         # MA produces the audio, so both the native peer and the one reachable
         # only over AirPlay can be added to it
-        assert rig["player"].state.can_group_with == {
+        assert rig["player"].can_group_with == {
             rig["native_peer"].player_id,
             rig["airplay_peer"].player_id,
         }
@@ -540,10 +540,10 @@ class TestCanGroupWithExternalSource:
         rig["native"]._attr_playback_state = PlaybackState.PLAYING
         server.refresh(rig["player"])
 
-        assert rig["player"].state.active_source == "tv"
+        assert rig["player"].active_source == "tv"
         # the device distributes its own input to its own kind, but MA cannot put
         # audio it never receives onto an AirPlay/Sendspin protocol
-        assert rig["player"].state.can_group_with == {rig["native_peer"].player_id}
+        assert rig["player"].can_group_with == {rig["native_peer"].player_id}
 
 
 class TestExternalSourceTakeover:

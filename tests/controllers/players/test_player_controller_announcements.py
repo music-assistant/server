@@ -309,7 +309,8 @@ class TestNativeRouteIgnoresWantedVolume:
         """Build a fake target player with the given volume control and level."""
         return SimpleNamespace(
             player_id="p1",
-            state=SimpleNamespace(volume_control=volume_control, volume_level=volume_level),
+            volume_control=volume_control,
+            volume_level=volume_level,
         )
 
     @staticmethod
