@@ -245,16 +245,13 @@ class AirPlayPlayer(Player):
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]]:
         """Return the (sample_rate, bit_depth) pairs this player natively supports."""
-        if not self.hires_playback_enabled:
-            return [(AIRPLAY_PCM_FORMAT.sample_rate, AIRPLAY_PCM_FORMAT.bit_depth)]
-        # only the 24-bit rates the receiver lists (Shairport Sync decodes 48 kHz
-        # only); one that lists none had 24-bit switched on by hand and gets both
-        listed = [
-            rate
-            for bit, rate in AIRPLAY_HIRES_FORMATS.items()
-            if self.advertised_audio_formats & bit
-        ]
-        return listed or AIRPLAY_HIRES_SAMPLE_RATES
+        # Both 24-bit rates, also for a receiver that lists one: every member
+        # converts the shared session audio to its own stream format (see
+        # get_stream_pcm_format), and a narrower list could leave a group without
+        # a common rate.
+        if self.hires_playback_enabled:
+            return AIRPLAY_HIRES_SAMPLE_RATES
+        return [(AIRPLAY_PCM_FORMAT.sample_rate, AIRPLAY_PCM_FORMAT.bit_depth)]
 
     @property
     def needs_setup(self) -> bool:
@@ -940,12 +937,18 @@ class AirPlayPlayer(Player):
             return AIRPLAY_PCM_FORMAT
         # 24-bit: the binary expects raw s32le input on stdin (--bitdepth 24)
         # and truncates to 24-bit ALAC internally.
-        supported_rates = [sample_rate for sample_rate, _ in self.supported_sample_rates]
-        # an unsupported session rate falls back to the first supported one
+        # only the 24-bit rates the receiver lists (Shairport Sync decodes 48 kHz
+        # only); one that lists none had 24-bit switched on by hand and gets both
+        listed_rates = [
+            sample_rate
+            for bit, sample_rate in AIRPLAY_HIRES_FORMATS.items()
+            if self.advertised_audio_formats & bit
+        ] or list(AIRPLAY_HIRES_FORMATS.values())
+        # an unlisted session rate falls back to the first listed one
         sample_rate = (
             session_pcm_format.sample_rate
-            if session_pcm_format.sample_rate in supported_rates
-            else supported_rates[0]
+            if session_pcm_format.sample_rate in listed_rates
+            else listed_rates[0]
         )
         return AudioFormat(
             content_type=ContentType.PCM_S32LE,
