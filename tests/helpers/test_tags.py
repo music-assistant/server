@@ -1748,3 +1748,44 @@ def _create_mp3_with_cover(tmp_path: pathlib.Path, track_path: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _audio_tags_with(raw_tags: dict[str, Any]) -> tags.AudioTags:
+    return tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags=raw_tags,
+        has_cover_image=False,
+        filename="track.flac",
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_gain"),
+    [
+        ("-9.75 dB", -9.75),
+        ("-9.75dB", -9.75),
+        ("-9.75DB", -9.75),
+        ("+3.20 dB", 3.2),
+        ("-9.75", -9.75),
+        (" -9.75 dB ", -9.75),
+    ],
+)
+def test_replaygain_gain_tags_accept_unit_variants(value: str, expected_gain: float) -> None:
+    """ReplayGain track and album gain tags parse with or without a space before dB."""
+    audio_tags = _audio_tags_with({"replaygaintrackgain": value, "replaygainalbumgain": value})
+    assert audio_tags.track_loudness == pytest.approx(-18 - expected_gain)
+    assert audio_tags.track_album_loudness == pytest.approx(-18 - expected_gain)
+
+
+@pytest.mark.parametrize("value", ["dB", "loud", ""])
+def test_replaygain_gain_tags_without_number_are_ignored(value: str) -> None:
+    """A ReplayGain gain tag without a number yields no loudness."""
+    audio_tags = _audio_tags_with({"replaygaintrackgain": value, "replaygainalbumgain": value})
+    assert audio_tags.track_loudness is None
+    assert audio_tags.track_album_loudness is None

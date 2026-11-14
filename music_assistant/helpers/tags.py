@@ -671,7 +671,7 @@ class AudioTags:
 
         if tag := self.tags.get("replaygaintrackgain"):
             try:
-                gain_adjustment = float(tag.split(" ")[0])
+                gain_adjustment = _parse_replaygain_gain(tag)
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
                 LOGGER.warning("Invalid replaygaintrackgain tag value: %r — %s", tag, e)
@@ -690,7 +690,7 @@ class AudioTags:
 
         if tag := self.tags.get("replaygainalbumgain"):
             try:
-                gain_adjustment = float(tag.split(" ")[0])
+                gain_adjustment = _parse_replaygain_gain(tag)
                 return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
                 LOGGER.warning("Invalid replaygainalbumgain tag value: %r — %s", tag, e)
@@ -2087,6 +2087,22 @@ def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
     except Exception as err:
         LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False
+
+
+def _parse_replaygain_gain(value: str) -> float:
+    """
+    Return the gain in dB of a ReplayGain gain tag.
+
+    Accepts the standard form ("-5.30 dB") as well as the variants taggers write
+    without a space before the unit ("-5.30dB") or without the unit at all ("-5.30").
+
+    :param value: The raw tag value.
+    :raises ValueError: When the value holds no number.
+    """
+    value = value.strip()
+    if value[-2:].lower() == "db":
+        value = value[:-2]
+    return float(value)
 
 
 def _parse_release_date(value: str) -> datetime | None:
