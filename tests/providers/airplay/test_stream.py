@@ -508,6 +508,32 @@ async def test_cli_args_featureless_ap2_only_device_forces_airplay2() -> None:
 
 
 @pytest.mark.parametrize(
+    ("line", "buffered"),
+    [
+        ("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=1", True),
+        ("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=0", False),
+        ("[STATUS] route protocol=raop flow=realtime timing=ntp buffered=1", False),
+    ],
+)
+def test_parse_route_status_records_the_buffered_route(line: str, buffered: bool) -> None:
+    """Only an AirPlay 2 stream on the buffered route counts as buffered."""
+    stream = AirPlayStream(_make_player())
+    stream._parse_route_status(line)
+    assert stream.buffered_route is buffered
+
+
+def test_ntp_fallback_clears_the_buffered_route() -> None:
+    """A buffered request that ends up on NTP timing streams realtime."""
+    stream = AirPlayStream(_make_player())
+    stream._parse_route_status("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=1")
+    stream._parse_clock_ready(
+        "[STATUS] clock_ready mode=ntp state=ready streak_ms=0 exchanges=0 ready_in_ms=0 "
+        "ready_at_unix_ms=0"
+    )
+    assert stream.buffered_route is False
+
+
+@pytest.mark.parametrize(
     ("line", "expected_route"),
     [
         (

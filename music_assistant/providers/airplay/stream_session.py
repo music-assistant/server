@@ -16,6 +16,7 @@ from music_assistant.controllers.streams.audio_processing import get_media_sessi
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import (
+    AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
@@ -212,8 +213,10 @@ class AirPlayStreamSession:
             # So a group anchor waits for the receivers to say when they can
             # play, rather than trusting the lead to have covered it.
             ready_at_unix_ms = await self._wait_members_clock_ready()
+            start_unix_ms = self._anchor_start_unix_ms(ready_at_unix_ms=ready_at_unix_ms)
             await self._start_members(
-                position_ms, self._anchor_start_unix_ms(ready_at_unix_ms=ready_at_unix_ms)
+                position_ms,
+                await self._seat_member_anchors(position_ms, start_unix_ms),
             )
         except asyncio.CancelledError:
             await self.stop()
@@ -1301,6 +1304,31 @@ class AirPlayStreamSession:
                 ", ".join(sorted({readiness.value for readiness in unprojected})),
             )
         return ready_at_unix_ms
+
+    async def _seat_member_anchors(self, position_ms: int, start_unix_ms: int) -> int:
+        """
+        Have every member of a cold buffered group accept an anchor before its audio leaves.
+
+        :param position_ms: Media position mapped to the first sample of the anchor.
+        :param start_unix_ms: Shared audible-start instant planned for the group.
+        :return: The shared audible-start instant to command next.
+        """
+        streams = [player.stream for player in self.sync_clients if player.stream]
+        if len(streams) < 2 or not all(stream.buffered_route for stream in streams):
+            return start_unix_ms
+        # A receiver can refuse its anchor until its clock has locked onto ours,
+        # which the binary retries for seconds. A re-START cannot give back audio
+        # a member already sent, so anchor everyone far enough out that nothing
+        # has left before the slowest member accepts, then command the real
+        # instant, which the members' fresh clock readiness must still allow.
+        seat_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_ANCHOR_SEAT_LEAD_MS
+        async with asyncio.TaskGroup() as task_group:
+            for stream in streams:
+                task_group.create_task(stream.start(seat_unix_ms, position_ms))
+        floor_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_GROUP_START_LEAD_MS
+        if ready_at_unix_ms := await self._wait_members_clock_ready():
+            floor_unix_ms = max(floor_unix_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
+        return max(start_unix_ms, floor_unix_ms)
 
     async def _start_members(self, position_ms: int, start_unix_ms: int) -> None:
         """
