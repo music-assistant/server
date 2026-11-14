@@ -2083,21 +2083,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 params["userid"] = user_id
                 params["timestamp"] = timestamp
-                if provider_instance_id and (
+                if (provider_instance_id or progress_timestamp is not None) and (
                     row := await self.database.get_row(
                         DB_TABLE_MEDIA_PROGRESS,
                         {key: params[key] for key in PLAYLOG_CONFLICT_KEYS},
                     )
                 ):
                     if (
-                        bool(row["fully_played"]) == fully_played
+                        provider_instance_id
+                        and bool(row["fully_played"]) == fully_played
                         and row["seconds_played"] == seconds_played
                     ):
                         # provider syncs repeat unchanged progress, which must not stamp it as
                         # just played: the timestamp orders the in progress items
                         params["timestamp"] = row["timestamp"]
                     elif progress_timestamp is not None and row["timestamp"] > timestamp:
-                        # the stored progress is newer than the one the provider reports
+                        # the stored progress is newer than the one reported
                         continue
                 recorded_play = await self._record_completed_play(
                     params, user_is_resolved=user is not None

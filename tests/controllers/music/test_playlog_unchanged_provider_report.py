@@ -117,22 +117,24 @@ async def test_provider_report_keeps_its_time(
 
 
 @pytest.mark.parametrize(
-    ("reset", "progress_timestamp", "expected_row"),
+    ("reset", "provider_instance_id", "progress_timestamp", "expected_row"),
     [
-        (False, 1000, (120, 2000)),
-        (False, 3000, (300, 3000)),
-        (True, 1000, (120, 2000)),
-        (True, 3000, None),
+        (False, PROVIDER_INSTANCE, 1000, (120, 2000)),
+        (False, PROVIDER_INSTANCE, 3000, (300, 3000)),
+        (False, None, 1000, (120, 2000)),
+        (True, PROVIDER_INSTANCE, 1000, (120, 2000)),
+        (True, PROVIDER_INSTANCE, 3000, None),
     ],
 )
 async def test_older_provider_report_keeps_newer_progress(
     mass: MusicAssistant,
     reset: bool,
+    provider_instance_id: str | None,
     progress_timestamp: int,
     expected_row: tuple[int, int] | None,
 ) -> None:
-    """A progress or reset the provider recorded before the stored progress does not replace it."""
-    name = f"older_{reset}_{progress_timestamp}"
+    """A progress or reset recorded before the stored progress does not replace it."""
+    name = f"older_{reset}_{provider_instance_id}_{progress_timestamp}"
     listener = await mass.webserver.auth.create_user(name)
     audiobook = await _add_audiobook(mass, name)
     row_key = {
@@ -155,7 +157,7 @@ async def test_older_provider_report_keeps_newer_progress(
     if reset:
         await mass.music.mark_item_unplayed(
             audiobook,
-            provider_instance_id=PROVIDER_INSTANCE,
+            provider_instance_id=provider_instance_id,
             progress_timestamp=progress_timestamp,
         )
     else:
@@ -164,7 +166,7 @@ async def test_older_provider_report_keeps_newer_progress(
             fully_played=False,
             seconds_played=300,
             user_initiated=False,
-            provider_instance_id=PROVIDER_INSTANCE,
+            provider_instance_id=provider_instance_id,
             progress_timestamp=progress_timestamp,
         )
 
