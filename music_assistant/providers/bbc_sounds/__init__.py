@@ -181,11 +181,19 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         self.adaptor = Adaptor(self)
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Close the client's own HTTP session, which shares MA's connection pool."""
+        """Close the provider's session and, on removal, delete its stored cookies."""
         self.logger.debug("Closing BBC Sounds provider session...")
-        if client := getattr(self, "client", None):
-            await client.close()
-        await super().unload(is_removed)
+        try:
+            client = getattr(self, "client", None)
+            if client:
+                await client.close()
+            # If the provider has been removed, clean up the cookie jar
+            if client and is_removed:
+                jar = client.cookie_path
+                jar.unlink(missing_ok=True)
+                jar.with_name(f"{jar.name}.owner").unlink(missing_ok=True)
+        finally:
+            await super().unload(is_removed)
 
     async def loaded_in_mass(self) -> None:
         """Do post-loaded actions."""
