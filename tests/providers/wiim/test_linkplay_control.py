@@ -88,7 +88,7 @@ async def _linkplay_device(
         mac_address=mac,
         device_info=client.get_device_info_model.return_value,
     )
-    await scenario.mass.players.attach(linkplay)
+    await scenario.mass.players.register(linkplay)
     await scenario.settle()
     renderer = dlna.protocol(
         udn,
@@ -97,7 +97,7 @@ async def _linkplay_device(
         identifiers={IdentifierType.MAC_ADDRESS: mac, IdentifierType.IP_ADDRESS: ip_address},
         volume_level=30,
     )
-    await scenario.attach(renderer)
+    await scenario.register(renderer)
     await scenario.idle()
     return linkplay, renderer
 
@@ -133,7 +133,7 @@ async def test_playback_goes_to_dlna_before_a_higher_priority_output(scenario: S
         role="audio",
         identifiers={IdentifierType.MAC_ADDRESS: DEN_MAC, IdentifierType.IP_ADDRESS: DEN_IP},
     )
-    await scenario.attach(airplay)
+    await scenario.register(airplay)
     player = _player(linkplay)
     assert airplay.player is player
 

@@ -384,9 +384,9 @@ async def test_saving_a_player_without_an_attached_protocol_keeps_its_default_na
     speaker = sonos.protocol(
         "speaker_1", "Speaker", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A1"}
     )
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
 
     await scenario.configure_player(player_id, name="Kitchen")
     await scenario.configure_player(player_id, name="Study")
@@ -428,14 +428,14 @@ async def _session_of_a_device_client(scenario: Scenario) -> str:  # noqa: F811
     sonos = await scenario.add_provider("sonos")
     sendspin = await scenario.add_provider("sendspin")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
     client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(client)
+    await scenario.register(client)
     assert scenario.player_of(client) == player_id
-    await scenario.detach(client)
+    await scenario.unregister(client)
     session = sendspin.protocol("sendspin_kitchen", "Kitchen", role="native", session_only=True)
-    await scenario.attach(session)
+    await scenario.register(session)
     assert scenario.player_of(session) == "sendspin_kitchen"
     return player_id
 
@@ -469,11 +469,11 @@ async def test_customised_session_only_player_takes_its_protocol_config_from_the
     assert _listed_protocols(scenario, player_id) == ["RINCON_KITCHEN"]
 
     session = scenario.protocol("sendspin_kitchen")
-    await scenario.detach(session)
+    await scenario.unregister(session)
     client = scenario.provider("sendspin").protocol(
         "sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN
     )
-    await scenario.attach(client)
+    await scenario.register(client)
     await scenario.idle()
 
     assert scenario.player_of(client) == player_id
@@ -499,11 +499,11 @@ async def test_rejected_first_save_of_a_session_only_player_leaves_the_config_of
     assert config.get(CONF_PLAYERS) == stored_players
     assert _listed_protocols(scenario, player_id) == ["RINCON_KITCHEN", "sendspin_kitchen"]
 
-    await scenario.detach(scenario.protocol("sendspin_kitchen"))
+    await scenario.unregister(scenario.protocol("sendspin_kitchen"))
     client = scenario.provider("sendspin").protocol(
         "sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN
     )
-    await scenario.attach(client)
+    await scenario.register(client)
     await scenario.idle()
 
     assert scenario.player_of(client) == player_id

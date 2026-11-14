@@ -87,7 +87,7 @@ async def test_new_device_gets_a_player_with_an_id_of_its_own(scenario: Scenario
     calls = _record_hooks(speaker)
     scenario.clear_events()
 
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
 
     player_id = scenario.single_player(speaker).player_id
     assert player_id.startswith("pl")
@@ -111,7 +111,7 @@ async def test_technical_name_of_a_new_device_is_shown_but_never_stored(
     """A device shows a technical name until it reports a real one, which it then keeps."""
     airplay = await scenario.add_provider("airplay")
     speaker = airplay.protocol("ap_kitchen", "54:78:C9:E6:0D:A0", role="audio", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     default_name_key = f"{CONF_PLAYERS}/{player_id}/default_name"
 
@@ -131,13 +131,13 @@ async def test_attaching_the_attached_object_again_publishes_what_it_reports(
     """A refresh re-reads the reported values, without setting the protocol up again."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, volume_level=20)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     calls = _record_hooks(speaker)
     scenario.clear_events()
 
     speaker._set_reported(volume_level=35)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
 
     state = scenario.player(player_id)
     assert state is not None
@@ -152,14 +152,14 @@ async def test_another_object_of_a_protocol_takes_the_place_of_the_attached_one(
     """A reconnect replaces the object: the old one is torn down, the player stays."""
     squeezelite = await scenario.add_provider("squeezelite")
     old = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
-    await scenario.attach(old)
+    await scenario.register(old)
     player_id = scenario.single_player(old).player_id
     old_calls = _record_hooks(old)
     scenario.clear_events()
 
     new = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN, volume_level=35)
     new_calls = _record_hooks(new)
-    await scenario.attach(new)
+    await scenario.register(new)
 
     assert old_calls == ["on_detach"]
     assert old.player is None
@@ -179,13 +179,13 @@ async def test_detached_protocol_leaves_its_player_listed(scenario: Scenario) ->
     """A detach tears the protocol down and keeps the player, its config and its queue."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     calls = _record_hooks(speaker)
     scenario.clear_events()
 
-    await scenario.detach(speaker)
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
+    await scenario.unregister(speaker)
 
     assert calls == ["on_detach"]
     state = scenario.player(player_id)
@@ -207,20 +207,20 @@ async def test_detach_of_one_protocol_leaves_the_others_playing(scenario: Scenar
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
     await scenario.configure_player(player_id, preferred_output_protocol="ap_kitchen")
     await scenario.play(player_id)
 
-    await scenario.detach(native)
+    await scenario.unregister(native)
     await scenario.idle()
 
     queue = scenario.queue(player_id)
     assert queue is not None
     assert queue.state == PlaybackState.PLAYING
 
-    await scenario.detach(audio)
+    await scenario.unregister(audio)
     await scenario.idle()
 
     queue = scenario.queue(player_id)
@@ -237,9 +237,9 @@ async def test_detach_while_a_new_device_attaches_stops_the_attach(scenario: Sce
     scenario.clear_events()
     players = scenario.mass.players
 
-    task = await scenario.command(players.attach(speaker))
+    task = await scenario.command(players.register(speaker))
     assert calls == ["on_config_updated", "on_attach"]
-    await players.detach("RINCON_KITCHEN")
+    await players.unregister("RINCON_KITCHEN")
     gate.set()
     await scenario.settle()
     await task
@@ -290,9 +290,9 @@ async def test_detach_while_a_new_player_is_published_settles_that_player(
         delayed = patch.object(scenario.mass.config, "get_player_object_config", _load_config_later)
     scenario.clear_events()
     with delayed:
-        task = await scenario.command(players.attach(protocol))
+        task = await scenario.command(players.register(protocol))
         assert reached.is_set()
-        await players.detach(protocol.protocol_id)
+        await players.unregister(protocol.protocol_id)
         release.set()
         await scenario.settle()
         await task
@@ -334,8 +334,8 @@ async def test_detach_while_the_address_of_a_device_is_resolved_stops_the_attach
         await resolve(protocol)
 
     players._resolve_mac_addresses = _resolve_later  # type: ignore[method-assign]
-    task = await scenario.command(players.attach(speaker))
-    await players.detach("RINCON_KITCHEN")
+    task = await scenario.command(players.register(speaker))
+    await players.unregister("RINCON_KITCHEN")
     gate.set()
     await scenario.settle()
     await task
@@ -353,13 +353,13 @@ async def test_detach_of_another_protocol_does_not_stop_an_attach(scenario: Scen
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
     gate = asyncio.Event()
     _record_hooks(audio, gate)
 
-    task = await scenario.command(scenario.mass.players.attach(audio))
-    await scenario.mass.players.detach("RINCON_KITCHEN")
+    task = await scenario.command(scenario.mass.players.register(audio))
+    await scenario.mass.players.unregister("RINCON_KITCHEN")
     gate.set()
     await scenario.settle()
     await task
@@ -381,7 +381,7 @@ async def test_failed_attach_of_a_new_device_leaves_nothing_behind(scenario: Sce
     scenario.clear_events()
 
     with pytest.raises(RuntimeError, match="device refused"):
-        await scenario.mass.players.attach(speaker)
+        await scenario.mass.players.register(speaker)
     await scenario.settle()
 
     assert calls == ["on_config_updated", "on_detach"]
@@ -404,7 +404,7 @@ async def test_failed_attach_to_a_player_that_exists_leaves_that_player_alone(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
 
     async def _refuse(player: Player) -> None:  # noqa: ARG001
@@ -413,7 +413,7 @@ async def test_failed_attach_to_a_player_that_exists_leaves_that_player_alone(
     on_attach = audio.on_attach
     audio.on_attach = _refuse  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="device refused"):
-        await scenario.mass.players.attach(audio)
+        await scenario.mass.players.register(audio)
     await scenario.settle()
 
     assert scenario.player_of(native) == player_id
@@ -421,7 +421,7 @@ async def test_failed_attach_to_a_player_that_exists_leaves_that_player_alone(
     assert player_id in _stored(scenario)[0]
     # a later attach of the same protocol is not blocked by the failed one
     audio.on_attach = on_attach  # type: ignore[method-assign]
-    await scenario.attach(audio)
+    await scenario.register(audio)
     assert scenario.player_of(audio) == player_id
 
 
@@ -434,7 +434,7 @@ async def test_incomplete_first_attach_of_another_protocol_stores_nothing_of_it(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
     players = scenario.mass.players
 
@@ -445,12 +445,12 @@ async def test_incomplete_first_attach_of_another_protocol_stores_nothing_of_it(
 
         audio.on_attach = _refuse  # type: ignore[method-assign]
         with pytest.raises(RuntimeError, match="device refused"):
-            await players.attach(audio)
+            await players.register(audio)
     else:
         gate = asyncio.Event()
         _record_hooks(audio, gate)
-        task = await scenario.command(players.attach(audio))
-        await players.detach("ap_kitchen")
+        task = await scenario.command(players.register(audio))
+        await players.unregister("ap_kitchen")
         gate.set()
         await scenario.settle()
         await task
@@ -470,17 +470,17 @@ async def test_failed_attach_of_a_protocol_that_returns_keeps_its_config(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
-    await scenario.detach(audio)
+    await scenario.unregister(audio)
 
     async def _refuse(player: Player) -> None:  # noqa: ARG001
         raise RuntimeError("device refused")
 
     audio.on_attach = _refuse  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="device refused"):
-        await scenario.mass.players.attach(audio)
+        await scenario.mass.players.register(audio)
     await scenario.idle()
 
     assert _stored(scenario) == ([player_id], ["RINCON_KITCHEN", "ap_kitchen"])
@@ -495,12 +495,12 @@ async def test_nothing_attaches_while_its_provider_or_the_server_stops(
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     if stopping == "provider":
         sonos.unloading = True
-        await scenario.mass.players.attach(speaker)
+        await scenario.mass.players.register(speaker)
         sonos.unloading = False
     else:
         closing = PropertyMock(return_value=True)
         with patch.object(type(scenario.mass), "closing", closing):
-            await scenario.mass.players.attach(speaker)
+            await scenario.mass.players.register(speaker)
 
     assert scenario.mass.players.get_protocol("RINCON_KITCHEN") is None
     assert _stored(scenario) == ([], [])
@@ -514,8 +514,8 @@ async def test_removed_protocol_takes_its_player_with_it_when_it_was_the_last(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
     scenario.clear_events()
 
@@ -549,13 +549,13 @@ async def test_removed_protocol_takes_the_protocols_that_ride_on_it_along(
     sendspin = await scenario.add_provider("sendspin")
     base_ap = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
     base_cast = chromecast.protocol("cast_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(base_ap)
-    await scenario.attach(base_cast)
+    await scenario.register(base_ap)
+    await scenario.register(base_cast)
     player_id = scenario.single_player(base_ap, base_cast).player_id
     bridge = sendspin.protocol(
         "spb_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
     )
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
     assert scenario.player_of(bridge) == player_id
 
     await scenario.mass.players.remove_protocol("cast_kitchen")
@@ -580,15 +580,15 @@ async def test_a_removed_provider_takes_the_protocols_that_ride_on_its_own_along
     airplay = await scenario.add_provider("airplay")
     sendspin = await scenario.add_provider("sendspin")
     base = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(base)
+    await scenario.register(base)
     player_id = scenario.player_of(base)
     bridge = sendspin.protocol(
         "spb_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
     )
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
     assert scenario.player_of(bridge) == player_id
     # the bridge goes when its provider unloads the protocol it rides on
-    await scenario.detach(bridge)
+    await scenario.unregister(bridge)
 
     await scenario.remove_provider(airplay)
     await scenario.idle()
@@ -601,7 +601,7 @@ async def test_removal_reaches_the_protocol_of_a_disabled_player(scenario: Scena
     """A provider is told about the removal of a device it holds without it being attached."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     await scenario.disable(player_id)
     removed: list[str] = []
@@ -630,8 +630,8 @@ async def test_removal_reaches_a_protocol_its_provider_still_holds(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
     removed: list[str] = []
 
@@ -640,7 +640,7 @@ async def test_removal_reaches_a_protocol_its_provider_still_holds(
 
     audio.on_remove = _on_remove  # type: ignore[method-assign]
     if away == "detached":
-        await scenario.detach(audio)
+        await scenario.unregister(audio)
     else:
         await scenario.mass.config.save_protocol_config("ap_kitchen", {"enabled": False})
         await scenario.settle()
@@ -660,7 +660,7 @@ async def test_removal_does_not_reach_a_protocol_of_a_provider_that_unloaded(
     """A protocol object of a provider that unloaded is not told about a removal."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     removed: list[str] = []
 
@@ -684,8 +684,8 @@ async def test_removed_protocol_is_no_longer_named_by_its_player(scenario: Scena
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
     choices = ("preferred_output_protocol", "volume_control", "mute_control")
     await scenario.configure_player(player_id, **dict.fromkeys(choices, "ap_kitchen"))
@@ -704,8 +704,8 @@ async def test_player_names_the_provider_of_its_protocols_after_one_is_removed(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
 
     await scenario.remove_provider(sonos)
@@ -721,8 +721,8 @@ async def test_removed_player_leaves_the_player_filters_of_the_users(scenario: S
     den = sonos.protocol(
         "RINCON_DEN", "Den", identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B1"}
     )
-    await scenario.attach(kitchen)
-    await scenario.attach(den)
+    await scenario.register(kitchen)
+    await scenario.register(den)
     kitchen_id = scenario.single_player(kitchen).player_id
     den_id = scenario.single_player(den).player_id
     auth = scenario.mass.webserver.auth
@@ -743,8 +743,8 @@ async def test_group_that_is_removed_while_it_plays_stops_its_members(scenario: 
     sonos = await scenario.add_provider("sonos")
     member_a = sonos.protocol("RINCON_A", "Player A")
     member_b = sonos.protocol("RINCON_B", "Player B")
-    await scenario.attach(member_a)
-    await scenario.attach(member_b)
+    await scenario.register(member_a)
+    await scenario.register(member_b)
     member_ids = [scenario.single_player(member).player_id for member in (member_a, member_b)]
     group = await scenario.mass.players.create_group_player(
         "universal_group", "Group Z", member_ids, False
@@ -791,7 +791,7 @@ async def test_group_plays_on_when_one_of_its_members_is_removed(
             can_group_with=set(protocol_ids) - {protocol_id},
             **reported,
         )
-        await scenario.attach(member)
+        await scenario.register(member)
         members.append(member)
     # the members learn who they can be grouped with
     await scenario.advance(3)
@@ -845,8 +845,8 @@ async def test_sync_member_that_is_removed_only_leaves_its_leader(scenario: Scen
         supported_features=features,
         can_group_with={"RINCON_KITCHEN"},
     )
-    await scenario.attach(leader)
-    await scenario.attach(member)
+    await scenario.register(leader)
+    await scenario.register(member)
     leader_id = scenario.single_player(leader).player_id
     member_id = scenario.single_player(member).player_id
     await scenario.play(leader_id)
@@ -879,7 +879,7 @@ async def test_removal_stops_a_player_also_when_its_user_can_not_control_it(
     """The stop before a removal is the server's own: it is no command of the user who removes."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     await scenario.play(player_id)
     speaker.commands.clear()
@@ -911,7 +911,7 @@ async def test_removed_player_is_stopped_but_not_powered_off(
         supported_features={*DEFAULT_FEATURES, PlayerFeature.POWER},
         **reported,
     )
-    await scenario.attach(receiver)
+    await scenario.register(receiver)
     player_id = scenario.single_player(receiver).player_id
     receiver.commands.clear()
 
@@ -929,10 +929,10 @@ async def test_removed_player_without_playback_to_end_gets_no_command(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     protocols = [native]
     if left == "idle_output":
-        await scenario.attach(audio)
+        await scenario.register(audio)
         protocols.append(audio)
     player_id = scenario.single_player(*protocols).player_id
     if left == "idle_output":
@@ -959,7 +959,7 @@ async def test_removed_player_leaves_its_power_control_switched_on(scenario: Sce
     """A player on a smart plug is removed with the plug on, so its device is found again."""
     squeezelite = await scenario.add_provider("squeezelite")
     speaker = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     plug = await scenario.add_power_control("plug_1", "Plug", powered=True)
     await scenario.configure_player(player_id, power_control=plug.control_id)
@@ -990,7 +990,7 @@ async def test_removal_goes_through_when_the_device_fails_a_command(
         powered=True,
         supported_features={*DEFAULT_FEATURES, PlayerFeature.POWER},
     )
-    await scenario.attach(receiver)
+    await scenario.register(receiver)
     player_id = scenario.single_player(receiver).player_id
     await scenario.play(player_id)
 
@@ -1016,14 +1016,14 @@ async def test_protocol_that_waits_takes_no_place_on_a_player_that_is_removed(
     sendspin = await scenario.add_provider("sendspin")
     carrier = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
     client = sendspin.protocol("sendspin_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(carrier)
-    await scenario.attach(client)
+    await scenario.register(carrier)
+    await scenario.register(client)
     player_id = scenario.single_player(carrier, client).player_id
     # the place of its domain is taken by the client of the device itself
     bridge = sendspin.protocol(
         "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
     )
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
     assert scenario.player_of(bridge) is None
     for protocol_id in ("ap_kitchen", "sendspin_kitchen", "sendspin_bridge_kitchen"):
         scenario.set_present(protocol_id, False)
@@ -1043,14 +1043,14 @@ async def test_derived_protocol_that_connects_while_its_player_is_removed_waits(
     chromecast = await scenario.add_provider("chromecast")
     sendspin = await scenario.add_provider("sendspin")
     carrier = chromecast.protocol("cast_kitchen", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(carrier)
+    await scenario.register(carrier)
     player_id = scenario.single_player(carrier).player_id
     bridge = sendspin.protocol(
         "sendspin_bridge_kitchen", "Kitchen", role="audio", underlying_protocol_id="cast_kitchen"
     )
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
     assert scenario.player_of(bridge) == player_id
-    await scenario.detach(bridge)
+    await scenario.unregister(bridge)
     for protocol_id in ("cast_kitchen", "sendspin_bridge_kitchen"):
         scenario.set_present(protocol_id, False)
     players = scenario.mass.players
@@ -1065,7 +1065,7 @@ async def test_derived_protocol_that_connects_while_its_player_is_removed_waits(
     with patch.object(players, "_drop_player", _drop_slowly):
         removal = await scenario.command(players.remove(player_id))
         # the receiver app on the speaker connects again
-        await players.attach(bridge)
+        await players.register(bridge)
         dropping.set()
         await scenario.settle()
         await removal
@@ -1082,7 +1082,7 @@ async def test_device_found_again_while_its_player_is_removed_becomes_a_new_play
     """A device that reconnects while its player is removed ends up as a player of its own."""
     squeezelite = await scenario.add_provider("squeezelite")
     old = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
-    await scenario.attach(old)
+    await scenario.register(old)
     player_id = scenario.single_player(old).player_id
     players = scenario.mass.players
     removed: list[str] = []
@@ -1098,7 +1098,7 @@ async def test_device_found_again_while_its_player_is_removed_becomes_a_new_play
     old.on_remove = _on_remove  # type: ignore[method-assign]
     removal = await scenario.command(players.remove(player_id))
     new = squeezelite.protocol("aa:bb:cc:00:00:01", "Bedroom", identifiers=KITCHEN)
-    await players.attach(new)
+    await players.register(new)
     closing.set()
     await scenario.settle()
     await removal
@@ -1131,7 +1131,7 @@ async def test_remove_unavailable_removes_the_players_whose_devices_are_gone(
         identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C1"},
     )
     for protocol in (present, gone, unloaded):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     present_id, gone_id, unloaded_id = (
         scenario.single_player(protocol).player_id for protocol in (present, gone, unloaded)
     )
@@ -1159,7 +1159,7 @@ async def test_remove_unavailable_keeps_a_player_whose_device_needs_setup(
     """A player whose device is reachable is no leftover, also while it awaits its setup."""
     airplay = await scenario.add_provider("airplay")
     speaker = airplay.protocol("ap_den", "Den", role="audio", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     await scenario.report(speaker, needs_setup=True, setup_reason="pairing_required")
     state = scenario.player(player_id)
@@ -1178,13 +1178,13 @@ async def test_remove_unavailable_is_refused_while_the_providers_find_their_devi
     """Right after a start or a provider load nothing is removed: devices are still found."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     scenario.set_present("RINCON_KITCHEN", False)
     if after == "restart":
         await scenario.restart()
     else:
-        await scenario.detach(speaker)
+        await scenario.unregister(speaker)
         await scenario.advance(REMOVE_UNAVAILABLE_GRACE)
         await scenario.reload_provider(sonos)
 
@@ -1215,8 +1215,8 @@ async def test_remove_unavailable_waits_only_for_the_players_of_a_provider_that_
         role="audio",
         identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C1"},
     )
-    await scenario.attach(gone)
-    await scenario.attach(reloading)
+    await scenario.register(gone)
+    await scenario.register(reloading)
     gone_id = scenario.single_player(gone).player_id
     reloading_id = scenario.single_player(reloading).player_id
     # a player with nothing but a config of its own, as the migration keeps a customised one
@@ -1276,7 +1276,7 @@ async def test_dry_run_of_remove_unavailable_names_what_the_command_removes(
         identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:D1"},
     )
     for protocol in (gone, in_setup, reloading, unloaded):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.report(in_setup, needs_setup=True, setup_reason="pairing_required")
     gone_id, reloading_id = (
         scenario.single_player(protocol).player_id for protocol in (gone, reloading)
@@ -1331,7 +1331,7 @@ async def test_discovery_after_a_removal_is_dropped_when_its_provider_unloads(
     """The discovery a removal asks for never runs against a provider that unloaded meanwhile."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     task_id = f"discover_players_{sonos.instance_id}"
 
@@ -1354,8 +1354,8 @@ async def test_disable_and_enable_announce_the_player_going_and_coming(scenario:
     airplay = await scenario.add_provider("airplay")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(speaker)
-    await scenario.attach(audio)
+    await scenario.register(speaker)
+    await scenario.register(audio)
     player_id = scenario.single_player(speaker, audio).player_id
     calls = _record_hooks(speaker)
     audio_calls = _record_hooks(audio)
@@ -1379,8 +1379,8 @@ async def test_disable_and_enable_announce_the_player_going_and_coming(scenario:
     with pytest.raises(PlayerUnavailableError):
         await scenario.mass.players.cmd_stop(player_id)
     # the providers find the device again, which attaches nothing for a disabled player
-    await scenario.mass.players.attach(speaker)
-    await scenario.mass.players.attach(audio)
+    await scenario.mass.players.register(speaker)
+    await scenario.mass.players.register(audio)
     await scenario.settle()
     assert scenario.visible_players() == []
     assert audio.player is None
@@ -1411,7 +1411,7 @@ async def test_stored_player_is_announced_at_boot_before_its_provider_attaches(
     """A restart brings a stored player back with its queue, unavailable until it attaches."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     scenario.set_present("RINCON_KITCHEN", False)
     scenario.clear_events()
@@ -1431,7 +1431,7 @@ async def test_stored_player_is_announced_at_boot_before_its_provider_attaches(
     ]
 
     scenario.clear_events()
-    await scenario.attach(scenario.protocol("RINCON_KITCHEN"))
+    await scenario.register(scenario.protocol("RINCON_KITCHEN"))
 
     state = scenario.player(player_id)
     assert state is not None
@@ -1447,8 +1447,8 @@ async def test_session_only_player_is_announced_as_removed_when_it_detaches(
     browser = sendspin.protocol("sendspin_web_1", "Web Browser", session_only=True)
     scenario.clear_events()
 
-    await scenario.attach(browser)
-    await scenario.detach(browser)
+    await scenario.register(browser)
+    await scenario.unregister(browser)
 
     assert scenario.events(
         EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED, EventType.QUEUE_ADDED
@@ -1466,11 +1466,11 @@ async def test_sleep_timer_that_expires_on_a_player_without_protocol_is_dropped(
     """A sleep timer of a player whose device is away ends without a command to it."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     await scenario.play(player_id)
     scenario.mass.players.set_sleep_timer(player_id, 1)
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
 
     # the scenario fails on a warning the server logs
     await scenario.advance(70)

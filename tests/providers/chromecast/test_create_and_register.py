@@ -44,13 +44,13 @@ async def test_a_discovered_device_connects_when_it_attaches(attaches: bool) -> 
         if attaches:
             await protocol.on_attach(MagicMock())
 
-    provider.mass.players.attach = AsyncMock(side_effect=_attach)
+    provider.mass.players.register = AsyncMock(side_effect=_attach)
 
     with patch("pychromecast.get_chromecast_from_cast_info") as connect:
         await provider._create_and_register_player(protocol_id, cast_info)
         await asyncio.sleep(0)
 
-    provider.mass.players.attach.assert_awaited_once()
+    provider.mass.players.register.assert_awaited_once()
     assert connect.call_count == (1 if attaches else 0)
     assert connect.return_value.start.call_count == (1 if attaches else 0)
     assert provider.bridge_manager.evaluate_bridge.await_count == (1 if attaches else 0)

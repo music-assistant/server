@@ -42,8 +42,8 @@ async def _native_and_airplay(
     audio = airplay.protocol(
         "ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN, volume_level=80
     )
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     await scenario.idle()
     return scenario.single_player(native, audio).player_id, native, audio
 
@@ -110,7 +110,7 @@ async def test_players_grouped_through_an_audio_protocol_hand_it_their_level_and
         ),
     ]
     for protocol in protocols:
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     kitchen_native, kitchen_airplay, hall_native, hall_airplay = protocols
     kitchen_id = scenario.single_player(kitchen_native, kitchen_airplay).player_id
@@ -297,8 +297,8 @@ async def test_output_that_takes_over_is_never_made_louder_than_the_device_was_l
     audio = dlna.protocol(
         "uuid:kitchen", "Kitchen", role="audio", identifiers=KITCHEN, volume_level=60
     )
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     await scenario.idle()
     player_id = scenario.single_player(native, audio).player_id
     await scenario.report(audio, volume_level=8)
@@ -387,7 +387,7 @@ async def test_level_the_player_had_is_kept_while_its_native_can_not_be_reached(
             )
         )
     for protocol in protocols:
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     player_id = scenario.single_player(*protocols).player_id
     player = scenario.mass.players.get_player(player_id)
@@ -402,14 +402,14 @@ async def test_level_the_player_had_is_kept_while_its_native_can_not_be_reached(
         assert state.volume_control == "cast_kitchen"
         await scenario.report(protocols[2], available=False)
     elif change == "output_flaps":
-        await scenario.detach(audio)
-        await scenario.attach(audio)
+        await scenario.unregister(audio)
+        await scenario.register(audio)
     elif change == "output_blinks":
         await scenario.report(audio, available=False)
         await scenario.report(audio, available=True)
     elif change == "native_detaches":
         # a reload of its provider
-        await scenario.detach(native)
+        await scenario.unregister(native)
     elif change == "pinned_and_back":
         # the user picks the fake control and goes back to the automatic one
         scenario.mass.config.set_player_value(player_id, CONF_VOLUME_CONTROL, "fake")
@@ -524,7 +524,7 @@ async def test_member_that_joins_through_airplay_while_its_native_is_unreachable
         ),
     ]
     for protocol in protocols:
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     kitchen_native, kitchen_airplay, hall_native, hall_airplay = protocols
     kitchen_id = scenario.single_player(kitchen_native, kitchen_airplay).player_id
@@ -603,7 +603,7 @@ async def test_output_that_refuses_the_level_of_the_player_is_activated_all_the_
         ),
     ]
     for protocol in protocols:
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     kitchen_native, kitchen_airplay, hall_native, hall_airplay = protocols
     kitchen_id = scenario.single_player(kitchen_native, kitchen_airplay).player_id
@@ -646,8 +646,8 @@ async def test_output_without_a_volume_of_its_own_gets_none_while_the_native_is_
         identifiers=KITCHEN,
         supported_features={PlayerFeature.PLAY_MEDIA, PlayerFeature.PAUSE},
     )
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     await scenario.idle()
     player = scenario.mass.players.get_player(scenario.single_player(native, audio).player_id)
     assert player is not None
@@ -671,7 +671,7 @@ async def test_detach_of_the_idle_native_leaves_the_playing_output_alone(
     await scenario.configure_player(player_id, preferred_output_protocol="ap_kitchen")
     await scenario.play(player_id)
 
-    await scenario.detach(native)
+    await scenario.unregister(native)
     await scenario.idle()
 
     queue = scenario.queue(player_id)
@@ -690,7 +690,7 @@ async def test_commands_of_a_player_with_only_an_audio_protocol_go_to_it(
     audio = airplay.protocol(
         "ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN, volume_level=20
     )
-    await scenario.attach(audio)
+    await scenario.register(audio)
     await scenario.idle()
     player_id = scenario.single_player(audio).player_id
 
@@ -705,7 +705,7 @@ async def test_commands_of_a_player_with_only_an_audio_protocol_go_to_it(
     # the playback path goes: the queue stops where it was
     await scenario.mass.players.cmd_play(player_id)
     await scenario.idle()
-    await scenario.detach(audio)
+    await scenario.unregister(audio)
     await scenario.idle()
     queue = scenario.queue(player_id)
     assert queue is not None
@@ -735,7 +735,7 @@ async def test_device_that_follows_a_native_leader_gives_up_its_own_output(
         identifiers={IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"},
     )
     for protocol in (control, audio, leader):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     player_id = scenario.single_player(control, audio).player_id
     await scenario.play(player_id)
@@ -770,8 +770,8 @@ async def test_control_protocol_alone_makes_a_player_neither_available_nor_playa
         supported_features={PlayerFeature.VOLUME_SET, PlayerFeature.SET_MEMBERS},
     )
     audio = dlna.protocol("dlna_den", "Den", role="audio", identifiers=KITCHEN)
-    await scenario.attach(control)
-    await scenario.attach(audio)
+    await scenario.register(control)
+    await scenario.register(audio)
     await scenario.idle()
     player_id = scenario.single_player(control, audio).player_id
     player = scenario.mass.players.get_player(player_id)
@@ -784,13 +784,13 @@ async def test_control_protocol_alone_makes_a_player_neither_available_nor_playa
 
     assert _availability() == (True, True, True)
 
-    await scenario.detach(audio)
+    await scenario.unregister(audio)
 
     # the control protocol still answers, which is no output for a sync group to lead on
     assert control.available
     assert _availability() == (False, False, False)
 
-    await scenario.attach(audio)
+    await scenario.register(audio)
 
     assert _availability() == (True, True, True)
 
@@ -846,7 +846,7 @@ async def test_ungrouping_a_member_of_a_cast_group_releases_the_group(
         )
     else:
         for protocol_id in protocol_ids:
-            await scenario.attach(scenario.protocol(protocol_id))
+            await scenario.register(scenario.protocol(protocol_id))
     await scenario.idle()
     member_ids = [
         scenario.player_of(scenario.protocol(protocol_id)) for protocol_id in CAST_MEMBERS
@@ -878,7 +878,7 @@ async def test_static_member_of_a_group_of_players_that_is_not_there_stays_liste
     """A group of players names its fixed members by their player ids, also one that is away."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     speaker_id = scenario.single_player(speaker).player_id
     snapcast = await scenario.add_provider("snapcast")
     group = snapcast.protocol(
@@ -889,7 +889,7 @@ async def test_static_member_of_a_group_of_players_that_is_not_there_stays_liste
         static_group_members=[speaker_id, "pl0123456789ab"],
     )
 
-    await scenario.attach(group)
+    await scenario.register(group)
 
     group_state = scenario.player(scenario.single_player(group).player_id)
     assert group_state is not None
@@ -902,7 +902,7 @@ async def test_device_that_plays_the_queue_of_its_player_has_the_player_as_sourc
     """A protocol that reports its own id as active source plays the queue of its player."""
     sonos = await scenario.add_provider("sonos")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
     assert player_id != "RINCON_KITCHEN"
 
@@ -921,7 +921,7 @@ async def test_published_type_is_never_protocol(scenario: Scenario) -> None:
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     speaker._set_reported(type=PlayerType.PROTOCOL)
 
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
 
     state = scenario.player(scenario.single_player(speaker).player_id)
     assert state is not None
@@ -935,7 +935,7 @@ async def test_device_protocol_is_the_own_protocol_else_the_preferred_audio_prot
     player_id, native, audio = await _native_and_airplay(scenario)
     chromecast = await scenario.add_provider("chromecast")
     cast = chromecast.protocol("cc_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(cast)
+    await scenario.register(cast)
     await scenario.idle()
     player = scenario.mass.players.get_player(player_id)
     assert player is not None
@@ -944,7 +944,7 @@ async def test_device_protocol_is_the_own_protocol_else_the_preferred_audio_prot
     assert player.provider_id == native.provider.instance_id
     assert player.state.device_info.model == "Fake sonos"
 
-    await scenario.detach(native)
+    await scenario.unregister(native)
     await scenario.idle()
 
     # airplay is preferred over cast

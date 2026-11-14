@@ -462,7 +462,7 @@ async def _kitchen_and_den(scenario: Scenario) -> tuple[str, str]:
         protocol = airplay.protocol(
             protocol_id, name, role="audio", identifiers={IdentifierType.MAC_ADDRESS: mac}
         )
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     return (
         scenario.single_player(scenario.protocol("ap_kitchen")).player_id,
         scenario.single_player(scenario.protocol("ap_den")).player_id,

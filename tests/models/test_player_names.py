@@ -37,11 +37,11 @@ async def test_player_whose_device_reports_a_technical_name_keeps_it_while_away(
     device = sendspin.protocol(
         "54:78:c9:e6:0d:a0", "sendspin_kitchen", role="audio", identifiers=KITCHEN
     )
-    await scenario.attach(device)
+    await scenario.register(device)
     player_id = scenario.single_player(device).player_id
     assert await _shown_names(scenario, player_id) == ("sendspin_kitchen", "sendspin_kitchen")
 
-    await scenario.detach(device)
+    await scenario.unregister(device)
 
     assert await _shown_names(scenario, player_id) == ("sendspin_kitchen", "sendspin_kitchen")
 

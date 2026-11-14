@@ -119,7 +119,7 @@ analogous to how the Player Controller pairs runtime state with the wire `Player
   starting an album, podcast, podcast episode, audiobook or audio source (`ORDERED_MEDIA_TYPES`)
   with *play* or *replace* switches shuffle off, because those are sequenced content rather than a
   pool of tracks. An artist counts as sequenced too when it plays its albums under an album
-  order. Top tracks, an artist without albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
+  order. Top tracks, an artist without library albums, and authors or narrators keep the queue's shuffle. An explicit `shuffle` argument on `play_media` always wins, and the first item of
   a batch decides for the whole batch — it is the only media type known before the items are
   resolved. Switching shuffle off goes through `set_shuffle`, so the items that stay in the queue
   are restored to their original order rather than left shuffled behind a queue that now reads
@@ -160,8 +160,15 @@ Transport and playback actions on a given queue are serialized through the playe
 lock, obtained from the Player Controller. That lock is re-entrant, so nested actions on the same
 queue do not deadlock. A request waits for the running one to finish, up to 120 seconds per lock, and
 then fails with a busy error rather than run alongside it; the player controller's own commands wait
-for it the same way. The next-track handover takes the same lock and only checks the queue once it
-holds it, so a track handed to the player after a wait is still the one that follows the playing one.
+for it the same way. The lookup of what a play request plays (a big artist, playlist or folder fetched
+through a throttled provider can take minutes) runs under that lock, so it has a deadline of its own
+(`PLAY_REQUEST_RESOLVE_TIMEOUT`), which starts once the request holds the lock: the wait for a
+running command does not count. When it runs out the request fails and releases the lock, and that
+of the group holding the player, before it has changed the queue, so the queue keeps its items,
+enqueued items, shuffle state and playback. The deadline does not cover filling the managed pool of
+a queue that stays dynamic, which fetches the tracks of each new source once the queue's sources are
+stored. The next-track handover takes the same lock and only checks the queue once it holds it, so a
+track handed to the player after a wait is still the one that follows the playing one.
 Queue edits (moves, deletes, refills) do not take the lock, so the handover checks the queue again once
 the player has the track, and hands over the real next track when an edit changed it meanwhile.
 While an action is in progress an "action in progress" flag is surfaced on the queue and reported to
@@ -289,7 +296,7 @@ Close choices keep some randomness, and Smart Fades still decides the actual tra
 
 Non-track media must be expanded into the actual tracks or episodes to enqueue. Each source type
 (artist, album, genre, playlist, podcast, audiobook, browse folder) resolves into a concrete track
-list, applying the configured selection rules (e.g. top tracks vs library tracks vs all tracks),
+list, applying the configured selection rules (e.g. top tracks vs library tracks),
 resolving library-versus-provider variants, and optionally ordering the result. The same concern
 also builds the `PlayerMedia` payload handed to the player, using the Metadata Controller for
 images.
@@ -418,12 +425,13 @@ mechanism) that configure default enqueue behaviour, in three groups:
 - **Per-media-type default enqueue option** — for artist, album, track, genre, live sources, and
   playlist (plus the hidden audiobook, podcast, podcast-episode, and folder types), each defaulting
   to *play* or *replace*.
-- **Selection modes** — how artists and albums expand into tracks (e.g. top tracks, library tracks,
-  prefer library, all tracks), and the order an artist plays in: shuffled tracks, or its albums
-  in random or release order. The artist selection picks the artist's own albums, and each album
-  plays as it does on its own, following the album selection. The album orders leave out singles,
-  and the compilations found only on a provider. They fall back to shuffled tracks for the top
-  tracks selection or an artist without albums.
+- **Selection modes** — how artists and albums expand into tracks (top tracks, library tracks,
+  prefer library, or the tracks of the artist's library albums), and the order an artist plays in:
+  shuffled tracks, or its library albums in random or release order. Each album plays as it does
+  on its own, following the album selection. The album orders leave out singles. They fall back
+  to shuffled tracks for the top tracks selection or an artist without library albums. An artist
+  that is not in the library plays its top tracks. Playing an artist never lists or expands the
+  albums a provider has of it, as that costs a request per release.
 - **Click actions** — what a client does when an artist, album, track, genre, radio, or playlist is
   clicked (*browse* or *play*), and what the play button on a track row inside an album
   or playlist starts (*play from here* or *play track*).

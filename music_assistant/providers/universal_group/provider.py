@@ -53,14 +53,14 @@ class UniversalGroupProvider(PlayerProvider):
         self.mass.config.set_protocol_value(protocol_id, CONF_DYNAMIC_GROUP_MEMBERS, dynamic)
         group = UniversalGroupPlayer(self, protocol_id)
         # attaching creates the player of the group, which keeps the record stored above
-        await self.mass.players.attach(group)
+        await self.mass.players.register(group)
         if (player := group.player) is None:
             raise PlayerCommandFailed(f"Could not create group player {name}")
         return player
 
     async def discover_players(self) -> None:
-        """Attach every stored universal group that has no attached protocol."""
+        """Register every stored universal group that has no attached protocol."""
         for protocol_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
             if self.get_protocol(protocol_id):
                 continue  # already attached
-            await self.mass.players.attach(UniversalGroupPlayer(self, protocol_id))
+            await self.mass.players.register(UniversalGroupPlayer(self, protocol_id))

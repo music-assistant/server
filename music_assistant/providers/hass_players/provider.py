@@ -207,7 +207,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
             entity_registry=entity_registry,
         )
         self._entity_players[state["entity_id"]] = player
-        await self.mass.players.attach(player)
+        await self.mass.players.register(player)
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""
@@ -239,7 +239,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
 
     async def _setup_players(self, entity_ids: list[str]) -> None:
         """
-        Set up and attach the players of the entities that have none attached or in setup.
+        Set up and register the players of the entities that have none registered or in setup.
 
         :param entity_ids: The entity ids of the media players.
         """

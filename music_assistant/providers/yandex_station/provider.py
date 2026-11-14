@@ -678,7 +678,7 @@ class YandexStationProvider(PlayerProvider):
             )
             # Glagol is started when the protocol attaches, if host/port are
             # available (mDNS or glagol API)
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
 
         except Exception:
             self.logger.exception("Failed to create player %s", protocol_id)

@@ -36,6 +36,7 @@ from music_assistant.controllers.config.player_split import (
     migrate_player_split,
     remove_player_records_of_older_versions,
 )
+from music_assistant.controllers.player_queues.constants import CONF_DEFAULT_ENQUEUE_SELECT_ARTIST
 from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
 
@@ -590,6 +591,12 @@ async def migrate(data: dict[str, Any]) -> bool:
     # Move Raumfeld players still on the former "full" ICY default to "basic".
     # TODO: remove after 2.13 release
     if _migrate_raumfeld_icy_basic(data):
+        changed = True
+
+    # Move an artist selection that listed the artist's whole catalogue to the tracks of the
+    # artist's albums in the library.
+    # TODO: remove after 2.13 release
+    if _migrate_artist_catalogue_selection(data):
         changed = True
 
     # Split the player configs into one record per player and one per protocol. This runs
@@ -1494,4 +1501,21 @@ def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
         LOGGER.info("Moved %d Raumfeld player(s) from ICY metadata full to basic", migrated)
     # claim the marker even when nothing moved, so a "full" picked later is kept
     data[CONF_RAUMFELD_ICY_BASIC_MIGRATED] = True
+    return True
+
+
+def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
+    """Move a stored artist selection that is no longer offered to the library album tracks."""
+    core_cfg = data.get(CONF_CORE)
+    queues_cfg = core_cfg.get("player_queues") if isinstance(core_cfg, dict) else None
+    queue_values = queues_cfg.get("values") if isinstance(queues_cfg, dict) else None
+    if not isinstance(queue_values, dict):
+        return False
+    if queue_values.get(CONF_DEFAULT_ENQUEUE_SELECT_ARTIST) not in (
+        "all_tracks",
+        "all_album_tracks",
+    ):
+        return False
+    queue_values[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST] = "library_album_tracks"
+    LOGGER.info("Moved the artist playback selection to the tracks of the library albums")
     return True

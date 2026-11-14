@@ -70,8 +70,8 @@ async def scenario(tmp_path: pathlib.Path) -> AsyncGenerator[Scenario]:
         await scenario.start()
         sonos = await scenario.add_provider("sonos")
         kitchen = sonos.protocol(KITCHEN_DEVICE, "Kitchen")
-        await scenario.attach(kitchen)
-        await scenario.attach(sonos.protocol(BEDROOM_DEVICE, "Bedroom"))
+        await scenario.register(kitchen)
+        await scenario.register(sonos.protocol(BEDROOM_DEVICE, "Bedroom"))
         kitchen_id = scenario.single_player(kitchen).player_id
         await scenario.seed_config(
             {CONF_PLAYERS: {kitchen_id: {"values": {CONF_LEGACY_IDS: [LEGACY_ID]}}}}

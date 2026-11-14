@@ -106,7 +106,7 @@ async def test_a_speaker_of_a_disabled_player_releases_its_subscriptions(
         role="audio",
         identifiers={IdentifierType.MAC_ADDRESS: "00:0E:58:AA:AA:AA"},
     )
-    await scenario.attach(audio)
+    await scenario.register(audio)
     player_id = scenario.player_of(audio)
     assert player_id is not None
     await scenario.disable(player_id)
@@ -129,7 +129,7 @@ async def test_a_speaker_taken_off_its_player_follows_its_events_again(
         role="audio",
         identifiers={IdentifierType.MAC_ADDRESS: "00:0E:58:AA:AA:AA"},
     )
-    await scenario.attach(audio)
+    await scenario.register(audio)
     assert protocol.player is not None
     old_player_id = protocol.player.player_id
     assert scenario.player_of(audio) == old_player_id

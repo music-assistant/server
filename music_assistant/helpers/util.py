@@ -42,7 +42,7 @@ from urllib.parse import urlparse, urlsplit
 
 import ifaddr
 from markdownify import markdownify
-from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.enums import AlbumType, IdentifierType, ProviderTier
 from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models.player import DeviceInfo
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -1519,13 +1520,24 @@ async def import_module_in_thread(name: str, package: str | None = None) -> Modu
         return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
 
 
-async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
-    """Return module for given provider domain and make sure the requirements are met."""
+async def load_provider_module(manifest: ProviderManifest) -> ProviderModuleType:
+    """
+    Return the module of a provider and make sure its requirements are met.
+
+    The requirements of a community provider are not installed here.
+
+    :param manifest: Manifest of the provider to import.
+    """
 
     async def _get_provider_module() -> ProviderModuleType:
-        module = await import_module_in_thread(f".{domain}", "music_assistant.providers")
+        module = await import_module_in_thread(f".{manifest.domain}", "music_assistant.providers")
         return cast("ProviderModuleType", module)
 
+    if manifest.tier == ProviderTier.COMMUNITY:
+        # nothing a community provider asks for may end up in the server environment
+        return await _get_provider_module()
+
+    requirements = manifest.requirements
     # ensure module requirements are met
     for requirement in requirements:
         if requirement in _checked_requirements:
@@ -1555,6 +1567,22 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
     # try loading the provider again to be safe
     # this will fail if something else is wrong (as it should)
     return await _get_provider_module()
+
+
+def purge_provider_modules(domain: str) -> None:
+    """
+    Forget the imported code of a provider, so its next import reads the files again.
+
+    :param domain: Domain of the provider.
+    """
+    package = "music_assistant.providers"
+    module_name = f"{package}.{domain}"
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            del sys.modules[name]
+    # the package keeps an imported provider as attribute, which a from-import would return
+    vars(importlib.import_module(package)).pop(domain, None)
+    importlib.invalidate_caches()
 
 
 async def has_tmpfs_mount() -> bool:

@@ -56,14 +56,14 @@ async def scenario(tmp_path: pathlib.Path) -> AsyncGenerator[Scenario]:
 
 
 async def _members(scenario: Scenario) -> list[str]:
-    """Load the provider, attach two devices of different providers and return their player ids."""
+    """Load the provider, register two devices of different providers and return their player ids."""
     await scenario.mass.config._create_provider_instance("universal_group", {})
     sonos = await scenario.add_provider("sonos")
     airplay = await scenario.add_provider("airplay")
     member_a = sonos.protocol("member_a", "Player A")
     member_b = airplay.protocol("member_b", "Player B")
-    await scenario.attach(member_a)
-    await scenario.attach(member_b)
+    await scenario.register(member_a)
+    await scenario.register(member_b)
     player_ids = [scenario.player_of(member_a), scenario.player_of(member_b)]
     assert None not in player_ids
     return [player_id for player_id in player_ids if player_id]
@@ -212,7 +212,7 @@ async def test_discovery_leaves_an_attached_group_alone(scenario: Scenario) -> N
     assert isinstance(provider, PlayerProvider)
 
     with patch.object(
-        scenario.mass.players, "attach", wraps=scenario.mass.players.attach
+        scenario.mass.players, "register", wraps=scenario.mass.players.register
     ) as attach:
         await provider.discover_players()
 

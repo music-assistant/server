@@ -132,7 +132,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         Called under the attach lock. What is stored changes before the first await and is
         saved before anything else of the absorbed player is deleted; the user filters follow
         once its removal went out, so a user limited to it still learns that it went. A
-        protocol that fails to attach again, or that its provider detached meanwhile,
+        protocol that fails to attach again, or that its provider unregistered meanwhile,
         attaches to the kept player when its provider finds it again.
 
         :param keep_id: Id of the player that stays.
@@ -167,7 +167,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
             for protocol_id in protocol_ids - {protocol.protocol_id for protocol in moving}
             if (record := self.mass.config.get_protocol_record(protocol_id))
         }
-        # a moving protocol is attaching: a detach by its provider meanwhile takes this away
+        # a moving protocol is attaching: its provider unregistering it meanwhile takes this away
         moves = {protocol.protocol_id: _Attach() for protocol in moving}
         self._attaching.update(moves)
         for protocol in moving:
@@ -184,7 +184,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
             self.logger.exception("Could not move the user filters of %s", absorb_id)
         for protocol in moving:
             if self._attaching.get(protocol.protocol_id) is not moves[protocol.protocol_id]:
-                # its provider detached it while it moved, and keeps the object
+                # its provider unregistered it while it moved, and keeps the object
                 if not protocol.provider.unloading:
                     self._unattached[protocol.protocol_id] = protocol
                 continue

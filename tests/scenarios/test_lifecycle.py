@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import ANY
 
 import pytest
-from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature
+from music_assistant_models.enums import (
+    EventType,
+    IdentifierType,
+    PlayerFeature,
+    ProviderTier,
+)
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
     CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_UNLINKED_FROM,
     SETUP_REASON_PROVIDER_NOT_INSTALLED,
 )
@@ -26,6 +33,8 @@ from music_assistant.helpers.config_entries import (
 from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, Event, Role, Scenario, VisiblePlayer
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from music_assistant_models.config_entries import ConfigEntry
 
 LIVING = {
@@ -53,7 +62,7 @@ async def test_player_outlives_its_removed_provider_on_its_other_protocols(
         "sendspin_living", "Living", role="audio", identifiers=LIVING
     )
     for protocol in (living, living_airplay, living_sendspin):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     player_id = scenario.single_player(living, living_airplay, living_sendspin).player_id
     scenario.clear_events()
 
@@ -81,7 +90,7 @@ async def test_player_without_other_protocols_goes_with_its_removed_provider(
     """A player left without any protocol config when its provider is removed is removed with it."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     scenario.clear_events()
 
@@ -98,7 +107,7 @@ async def test_removed_player_of_a_present_device_comes_back_as_new(scenario: Sc
     """A removed player whose device is still there comes back new: a new id, its defaults."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     await scenario.configure_player(player_id, name="Kitchen")
     scenario.clear_events()
@@ -143,7 +152,7 @@ async def test_disabled_by_default_device_is_no_player_until_enabled(
     tv = provider.protocol(
         f"{domain}_tv", "Living Room TV", role=role, identifiers=TV, enabled_by_default=False
     )
-    await scenario.attach(tv)
+    await scenario.register(tv)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -195,7 +204,7 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     browser = sendspin.protocol(
         "sendspin_web_3f2a", "Web Browser", session_only=True, volume_level=20, **WEB_PLAYER
     )
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.idle()
     player_id = scenario.single_player(browser).player_id
 
@@ -205,7 +214,7 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     reloaded = sendspin.protocol(
         "sendspin_web_3f2a", "Web Browser", session_only=True, volume_level=35, **WEB_PLAYER
     )
-    await scenario.attach(reloaded)
+    await scenario.register(reloaded)
     await scenario.mass.players.play_media(player_id, MEDIA)
     await scenario.settle()
 
@@ -216,7 +225,7 @@ async def test_session_only_web_player_exists_while_attached(scenario: Scenario)
     assert ("play_media", MEDIA) in reloaded.commands
     assert browser.commands == []
 
-    await scenario.detach(reloaded)
+    await scenario.unregister(reloaded)
     await scenario.idle()
 
     assert scenario.visible_players() == []
@@ -240,14 +249,14 @@ async def test_a_customised_browser_player_stays_listed_while_its_browser_is_awa
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
-    await scenario.attach(browser)
+    await scenario.register(browser)
     player_id = scenario.single_player(browser).player_id
     await scenario.configure_player(player_id, name="Den browser")
     await scenario.play(player_id)
     await scenario.idle()
     scenario.clear_events()
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
 
     assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
@@ -265,7 +274,7 @@ async def test_a_customised_browser_player_stays_listed_while_its_browser_is_awa
         (player_id, "Den browser")
     ]
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert [(p.player_id, p.name, p.available) for p in scenario.visible_players()] == [
@@ -291,10 +300,10 @@ async def test_the_settings_list_every_stored_player_and_every_connected_one(
     )
     uncustomised = sendspin.protocol("sendspin_app_9c1d", "Phone app", session_only=True)
     for protocol in (living, customised, uncustomised):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     living_id = scenario.single_player(living).player_id
     await scenario.configure_player("sendspin_web_3f2a", name="Den browser")
-    await scenario.detach(customised)
+    await scenario.unregister(customised)
     await scenario.idle()
 
     assert sorted((c.player_id, c.name) for c in await scenario.player_configs()) == sorted(
@@ -340,18 +349,18 @@ async def test_a_kept_browser_player_keeps_the_defaults_of_its_client_while_away
         expose_to_ha_by_default=False,
         **WEB_PLAYER,
     )
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.configure_player("sendspin_web_3f2a", name="Den browser")
     connected = _defaults(scenario, "sendspin_web_3f2a")
     assert connected[:3] == (True, False, True)
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
     away = _defaults(scenario, "sendspin_web_3f2a")
     await scenario.restart()
     await scenario.idle()
     restarted = _defaults(scenario, "sendspin_web_3f2a")
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert [away, restarted, _defaults(scenario, "sendspin_web_3f2a")] == [connected] * 3
@@ -369,12 +378,12 @@ async def test_a_value_the_user_set_on_a_kept_browser_player_wins_over_its_clien
         expose_to_ha_by_default=False,
         **WEB_PLAYER,
     )
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.configure_player("sendspin_web_3f2a", hide_in_ui=False, expose_player_to_ha=True)
     chosen = _defaults(scenario, "sendspin_web_3f2a")
     assert chosen[:3] == (False, True, True)
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
     away = _defaults(scenario, "sendspin_web_3f2a")
     await scenario.restart()
@@ -400,12 +409,12 @@ async def test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_awa
         expose_to_ha_by_default=False,
         private=True,
     )
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     connected = _defaults(scenario, player_id)
     assert connected[:3] == (True, False, True)
 
-    await scenario.detach(living)
+    await scenario.unregister(living)
     await scenario.idle()
     away = _defaults(scenario, player_id)
     await scenario.restart()
@@ -414,8 +423,8 @@ async def test_a_player_keeps_the_defaults_of_its_device_while_the_device_is_awa
     assert [away, _defaults(scenario, player_id)] == [connected] * 2
 
     updated = scenario.provider("wiim").protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(updated)
-    await scenario.detach(updated)
+    await scenario.register(updated)
+    await scenario.unregister(updated)
     await scenario.idle()
 
     assert _defaults(scenario, player_id)[:3] == (False, True, False)
@@ -448,14 +457,14 @@ async def test_only_the_own_protocol_of_a_player_gives_it_its_defaults(
         "ap_living", "Living", role="audio", identifiers=LIVING, **hiding
     )
     for protocol in (den, den_bridge, living, living_airplay):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     den_id = scenario.single_player(den, den_bridge).player_id
     living_id = scenario.single_player(living, living_airplay).player_id
     generic = (False, True, False)
 
     attached = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
     for protocol in (den_bridge, den, living, living_airplay):
-        await scenario.detach(protocol)
+        await scenario.unregister(protocol)
     await scenario.idle()
     away = [_defaults(scenario, den_id)[:3], _defaults(scenario, living_id)[:3]]
     await scenario.restart()
@@ -470,18 +479,18 @@ async def test_session_only_player_has_the_same_id_in_every_session(scenario: Sc
     """A web player is known by the id of its protocol, in every session and after a restart."""
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
-    await scenario.attach(browser)
+    await scenario.register(browser)
 
     assert scenario.player_of(browser) == "sendspin_web_3f2a"
 
-    await scenario.detach(browser)
-    await scenario.attach(browser)
+    await scenario.unregister(browser)
+    await scenario.register(browser)
 
     assert scenario.player_of(browser) == "sendspin_web_3f2a"
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.restart()
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert [player.player_id for player in scenario.visible_players()] == ["sendspin_web_3f2a"]
@@ -502,7 +511,7 @@ async def test_disabling_a_player_takes_it_out_and_enabling_brings_it_back(
     """
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     await scenario.play(player_id)
     await scenario.idle()
@@ -556,7 +565,7 @@ async def test_the_last_update_of_a_disabled_player_says_it_is_disabled_and_unav
     living = wiim.protocol(
         "wiim_living", "Living", identifiers=LIVING, supported_features=features, powered=True
     )
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     if power == "external":
         plug = await scenario.add_power_control("switch.living_plug", "Living plug", powered=True)
@@ -582,18 +591,18 @@ async def test_a_browser_player_that_was_only_seen_is_removed_when_its_client_di
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.idle()
     scenario.clear_events()
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
 
     assert scenario.visible_players() == []
     assert await scenario.player_configs() == []
     assert scenario.removals() == [("sendspin_web_3f2a", None)]
 
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.idle()
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
@@ -617,12 +626,12 @@ async def test_a_browser_player_that_played_stays_listed_while_its_browser_is_aw
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.idle()
     scenario.clear_events()
     await scenario.play("sendspin_web_3f2a")
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
@@ -640,7 +649,7 @@ async def test_a_browser_player_that_played_stays_listed_while_its_browser_is_aw
     ]
     assert [c.player_id for c in await scenario.player_configs()] == ["sendspin_web_3f2a"]
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
@@ -662,14 +671,14 @@ async def test_a_browser_player_whose_queue_was_cleared_is_removed_when_its_clie
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.play("sendspin_web_3f2a")
     await scenario.idle()
     scenario.mass.player_queues.clear("sendspin_web_3f2a")
     await scenario.idle()
     scenario.clear_events()
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
 
     assert scenario.visible_players() == []
@@ -682,7 +691,7 @@ async def test_a_player_the_user_removes_is_announced_as_removed(scenario: Scena
     """A player the user removes is announced as removed, without data, as before the split."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     scenario.clear_events()
 
@@ -711,7 +720,7 @@ async def test_a_player_that_is_not_there_is_announced_once_when_it_is_removed(
         )
     else:
         protocol = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(protocol)
+    await scenario.register(protocol)
     player_id = scenario.single_player(protocol).player_id
     await scenario.play(player_id)
     await scenario.idle()
@@ -720,7 +729,7 @@ async def test_a_player_that_is_not_there_is_announced_once_when_it_is_removed(
     elif state == "provider_not_loaded":
         await scenario.mass.unload_provider(wiim.instance_id)
     else:
-        await scenario.detach(protocol)
+        await scenario.unregister(protocol)
     await scenario.idle()
     scenario.clear_events()
 
@@ -748,9 +757,9 @@ async def test_the_player_that_goes_in_a_merge_is_announced_as_removed(
     tv_cast = chromecast.protocol(
         "cast_tv", "Living TV", role="audio", identifiers={IdentifierType.CAST_UUID: "6f0c1a2b"}
     )
-    await scenario.attach(tv_airplay)
+    await scenario.register(tv_airplay)
     await scenario.advance(15)
-    await scenario.attach(tv_cast)
+    await scenario.register(tv_cast)
     await scenario.advance(15)
     await scenario.idle()
     keep_id = scenario.single_player(tv_airplay).player_id
@@ -775,9 +784,9 @@ async def test_a_disabled_player_that_goes_in_a_merge_is_announced_as_removed(
     tv_cast = chromecast.protocol(
         "cast_tv", "Living TV", role="audio", identifiers={IdentifierType.CAST_UUID: "6f0c1a2b"}
     )
-    await scenario.attach(tv_airplay)
+    await scenario.register(tv_airplay)
     await scenario.advance(15)
-    await scenario.attach(tv_cast)
+    await scenario.register(tv_cast)
     await scenario.advance(15)
     await scenario.idle()
     keep_id = scenario.single_player(tv_airplay).player_id
@@ -836,7 +845,7 @@ async def test_pre_split_session_only_player_comes_back_with_its_id(
         [("sendspin_web_3f2a", stored_name)] if stored_name else []
     )
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert [(player.player_id, player.name) for player in scenario.visible_players()] == [
@@ -855,10 +864,10 @@ async def test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_con
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
-    await scenario.attach(browser)
+    await scenario.register(browser)
     await scenario.play("sendspin_web_3f2a")
     await scenario.idle()
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
     await scenario.seed_config({CONF_PLAYERS: {"sendspin_web_3f2a": None}})
     await scenario.seed_pre_split_config({"sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER})
@@ -868,7 +877,7 @@ async def test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_con
     assert await scenario.player_configs() == []
     assert await scenario.saved_queue("sendspin_web_3f2a") == [TEST_TRACK_URI]
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert [item.uri for item in scenario.mass.player_queues.items("sendspin_web_3f2a")] == [
@@ -876,7 +885,7 @@ async def test_a_pre_split_browser_player_with_a_saved_queue_is_kept_once_it_con
     ]
 
     scenario.clear_events()
-    await scenario.detach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.unregister(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [
@@ -934,7 +943,7 @@ async def test_pre_split_browser_players_keep_the_defaults_of_their_client_from_
     ]
 
     for client_id in ("sendspin_web_renamed", "sendspin_web_exposed"):
-        await scenario.attach(scenario.protocol(client_id))
+        await scenario.register(scenario.protocol(client_id))
     await scenario.idle()
 
     assert _listed() == [
@@ -973,7 +982,7 @@ async def test_pre_split_session_only_player_the_user_disabled_stays_disabled(
     await scenario.seed_pre_split_config(
         {"sendspin_web_3f2a": PRE_SPLIT_WEB_PLAYER | {"enabled": False}}
     )
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.advance(15)
     await scenario.idle()
 
@@ -1067,8 +1076,8 @@ async def test_protocol_only_player_is_restored_with_its_id_after_a_restart(
     chromecast = await scenario.add_provider("chromecast")
     den_airplay = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
     den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
-    await scenario.attach(den_airplay)
-    await scenario.attach(den_cast)
+    await scenario.register(den_airplay)
+    await scenario.register(den_cast)
     await scenario.advance(15)
     player_id = scenario.single_player(den_airplay, den_cast).player_id
     await scenario.configure_player(player_id, name="Den TV")
@@ -1195,7 +1204,7 @@ async def test_what_an_older_version_stored_goes_at_the_next_start(scenario: Sce
     den_airplay = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
     den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
     for protocol in (living, living_airplay, den_airplay, den_cast):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.advance(15)
     await scenario.idle()
     living_id = scenario.single_player(living, living_airplay).player_id
@@ -1244,7 +1253,7 @@ async def test_what_an_older_version_stored_goes_at_the_next_start(scenario: Sce
         [living_id, den_id, tv_id]
     )
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert scenario.player_of(scenario.protocol("sendspin_web_3f2a")) == "sendspin_web_3f2a"
@@ -1293,6 +1302,116 @@ async def test_a_stored_player_whose_provider_is_not_installed_says_so(
     assert not_loaded.setup_reason is None
 
 
+def _stored_protocol(protocol_id: str, provider: str, player_id: str, role: str) -> dict[str, Any]:
+    """Return the stored config of a protocol of a stored player."""
+    return {
+        "protocol_id": protocol_id,
+        "provider": provider,
+        "player_id": player_id,
+        "role": role,
+        "enabled": True,
+        "default_name": "Patio",
+        "values": {},
+    }
+
+
+async def test_the_settings_of_a_player_whose_provider_is_not_installed_can_be_read(
+    scenario: Scenario,
+) -> None:
+    """
+    The settings of a stored player open while the providers of its protocols are not installed.
+
+    Its outputs are listed under the domain of their provider, for lack of a name.
+    """
+    await scenario.seed_config(
+        {
+            CONF_PLAYERS: {
+                "pl0a1b2c3d4e5f": _stored_player("pl0a1b2c3d4e5f", "retired_speakers", "Patio"),
+            },
+            CONF_PLAYER_PROTOCOLS: {
+                "retired_patio": _stored_protocol(
+                    "retired_patio", "retired_speakers", "pl0a1b2c3d4e5f", "native"
+                ),
+                "cast_patio": _stored_protocol(
+                    "cast_patio", "retired_cast", "pl0a1b2c3d4e5f", "audio"
+                ),
+            },
+        }
+    )
+    await scenario.idle()
+
+    config = await scenario.player_config("pl0a1b2c3d4e5f")
+
+    assert config is not None
+    outputs = config.values[CONF_PREFERRED_OUTPUT_PROTOCOL].options
+    assert [(option.title, option.value) for option in outputs if option.value != "auto"] == [
+        ("RETIRED_SPEAKERS (native)", "native"),
+        ("RETIRED_CAST", "cast_patio"),
+    ]
+    assert [listed.player_id for listed in await scenario.player_configs()] == ["pl0a1b2c3d4e5f"]
+
+
+async def test_a_stored_player_follows_a_provider_installed_or_removed_while_the_server_runs(
+    scenario: Scenario, tmp_path: Path
+) -> None:
+    """
+    A provider that is installed from a second folder counts as installed, like a shipped one.
+
+    The stored Patio player says its provider is not installed. Once the provider is
+    installed, without a restart, Patio is unavailable without that reason, as the player of
+    a shipped provider that is not set up. It says so again once the provider is removed.
+    """
+    provider_dir = tmp_path / "community_providers" / "garden_speakers"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "type": "player",
+                "domain": "garden_speakers",
+                "name": "Garden Speakers",
+                "description": "A provider that is installed later",
+                "codeowners": [],
+            }
+        )
+    )
+    await scenario.seed_config(
+        {
+            CONF_PLAYERS: {
+                "pl0a1b2c3d4e5f": _stored_player("pl0a1b2c3d4e5f", "garden_speakers", "Patio"),
+            },
+            CONF_PLAYER_PROTOCOLS: {
+                "garden_patio": _stored_protocol(
+                    "garden_patio", "garden_speakers", "pl0a1b2c3d4e5f", "native"
+                ),
+            },
+        }
+    )
+    await scenario.idle()
+
+    def _patio() -> tuple[bool, str | None]:
+        state = scenario.player("pl0a1b2c3d4e5f")
+        assert state is not None
+        return state.available, state.setup_reason
+
+    assert _patio() == (False, SETUP_REASON_PROVIDER_NOT_INSTALLED)
+
+    await scenario.mass.register_provider_manifest(str(provider_dir), ProviderTier.COMMUNITY)
+    await scenario.idle()
+
+    assert _patio() == (False, None)
+    config = await scenario.player_config("pl0a1b2c3d4e5f")
+    assert config is not None
+    outputs = config.values[CONF_PREFERRED_OUTPUT_PROTOCOL].options
+    assert [option.title for option in outputs if option.value == "native"] == [
+        "Garden Speakers (native)"
+    ]
+
+    await scenario.mass.unregister_provider_manifest("garden_speakers")
+    await scenario.idle()
+
+    assert _patio() == (False, SETUP_REASON_PROVIDER_NOT_INSTALLED)
+
+
 async def test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choice(
     scenario: Scenario,
 ) -> None:
@@ -1306,8 +1425,8 @@ async def test_a_browser_player_is_offered_to_a_plugin_only_while_it_is_its_choi
     sendspin = await scenario.add_provider("sendspin")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True, **WEB_PLAYER)
-    await scenario.attach(living)
-    await scenario.attach(browser)
+    await scenario.register(living)
+    await scenario.register(browser)
     await scenario.idle()
     living_id = scenario.single_player(living).player_id
 

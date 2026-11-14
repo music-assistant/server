@@ -34,8 +34,8 @@ async def _den(
         supported_features={PlayerFeature.SET_MEMBERS},
     )
     audio = dlna.protocol("dlna_den", "Den", role="audio", identifiers=DEN)
-    await scenario.attach(control)
-    await scenario.attach(audio)
+    await scenario.register(control)
+    await scenario.register(audio)
     await scenario.idle()
     return scenario.single_player(control, audio).player_id, control, audio
 
@@ -75,7 +75,7 @@ async def test_playback_on_a_player_with_only_its_control_protocol_is_refused_up
     player_id, _, audio = await _den(scenario)
     await scenario.play(player_id)
     await scenario.mass.players.cmd_stop(player_id)
-    await scenario.detach(audio)
+    await scenario.unregister(audio)
     before = _queue_and_source(scenario, player_id)
 
     with pytest.raises(PlayerUnavailableError):
@@ -92,8 +92,8 @@ async def test_switched_off_player_plays_once_a_protocol_that_can_render_is_back
     plug = await scenario.add_power_control("switch.den_plug", "Den plug", powered=True)
     await scenario.configure_player(player_id, power_control=plug.control_id)
     await scenario.switch(plug, False)
-    await scenario.detach(control)
-    await scenario.detach(audio)
+    await scenario.unregister(control)
+    await scenario.unregister(audio)
     await scenario.idle()
     await scenario.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
     await scenario.settle()
@@ -101,11 +101,11 @@ async def test_switched_off_player_plays_once_a_protocol_that_can_render_is_back
     play = await scenario.command(scenario.mass.player_queues.play_media(player_id, TEST_TRACK_URI))
 
     assert plug.commands == [True]
-    await scenario.attach(control)
+    await scenario.register(control)
     # the power on looks for the device every 0.5 s
     await scenario.advance(1)
     assert not play.done()
-    await scenario.attach(audio)
+    await scenario.register(audio)
     await scenario.advance(1)
     await play
 

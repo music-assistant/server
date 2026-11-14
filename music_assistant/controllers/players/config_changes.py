@@ -92,7 +92,7 @@ class ConfigChangesMixin(_PlayerControllerBase):
             player_id = self.get_player_id_of_protocol(protocol_id)
             if not self.wants_protocol(protocol_id):
                 # the user switched this output of the player off
-                await self.detach(protocol_id)
+                await self.unregister(protocol_id)
                 # a protocol that waits for the place of its domain may take it now
                 self._schedule_held_protocols()
                 if player_id:
@@ -104,7 +104,7 @@ class ConfigChangesMixin(_PlayerControllerBase):
                 self._schedule_protocol_roles(player_id)
             await self._hold_derived_protocols_without_place(protocol_id)
             if protocol is None or protocol.player is None:
-                # its provider attaches it when it looks for its devices again
+                # its provider registers it when it looks for its devices again
                 stored = self.mass.config.get_protocol_record(protocol_id) or {}
                 provider = self.mass.get_provider(str(stored.get("provider")))
                 if isinstance(provider, PlayerProvider):

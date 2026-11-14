@@ -35,7 +35,7 @@ async def test_attaching_a_new_device_creates_the_config_of_its_player_and_proto
         "RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN, type=PlayerType.STEREO_PAIR
     )
 
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
 
     player_id = scenario.single_player(speaker).player_id
     player_record = scenario.mass.config.get(f"{CONF_PLAYERS}/{player_id}")

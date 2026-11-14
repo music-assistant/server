@@ -33,7 +33,7 @@ async def test_player_stays_available_on_its_audio_protocols(scenario: Scenario)
     den_airplay = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
     den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
     for protocol in (snapclient, den_airplay, den_cast):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     player_id = scenario.single_player(snapclient, den_airplay, den_cast).player_id
 
     await scenario.report(snapclient, available=False)
@@ -77,7 +77,7 @@ async def test_bridge_alone_does_not_make_its_player_available(
         "sendspin_bridge_den", "Den", role="audio", underlying_protocol_id="ap_den"
     )
     for protocol in (receiver, bridge):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     player_id = scenario.single_player(receiver, bridge).player_id
 
@@ -113,12 +113,12 @@ async def _switched_off_player(scenario: Scenario) -> tuple[FakeProtocol, FakePo
     """
     squeezelite = await scenario.add_provider("squeezelite")
     pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
-    await scenario.attach(pi)
+    await scenario.register(pi)
     player_id = scenario.single_player(pi).player_id
     plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
     await scenario.configure_player(player_id, power_control=plug.control_id)
     await scenario.switch(plug, False)
-    await scenario.detach(pi)
+    await scenario.unregister(pi)
     await scenario.idle()
     return pi, plug, player_id
 
@@ -140,7 +140,7 @@ async def test_offline_device_is_powered_on_through_its_power_control(scenario: 
 
     assert plug.commands == [True]
     assert not power_on.done()
-    await scenario.attach(pi)
+    await scenario.register(pi)
     # the power on looks for the device every 0.5 s
     await scenario.advance(1)
     await power_on
@@ -170,7 +170,7 @@ async def test_play_on_a_switched_off_player_powers_it_on(scenario: Scenario) ->
 
     assert plug.commands == [True]
     assert not play.done()
-    await scenario.attach(pi)
+    await scenario.register(pi)
     # the power on looks for the device every 0.5 s
     await scenario.advance(1)
     await play
@@ -182,9 +182,9 @@ async def _detached_player(scenario: Scenario) -> str:
     """Return the id of a native player whose device has gone away, without a power control."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
     await scenario.idle()
     return player_id
 

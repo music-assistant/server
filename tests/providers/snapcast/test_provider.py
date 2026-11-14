@@ -120,7 +120,7 @@ async def test_discovery_attaches_the_clients_without_an_attached_protocol() -> 
     player_class.assert_called_once_with(
         provider=provider, protocol_id="ma_enabled", snap_client=clients[1]
     )
-    mass.players.attach.assert_called_once_with(player_class.return_value)
+    mass.players.register.assert_called_once_with(player_class.return_value)
     clients[1].set_callback.assert_called_once_with(player_class.return_value._handle_player_update)
     clients[0].set_callback.assert_not_called()
     clients[2].set_callback.assert_not_called()

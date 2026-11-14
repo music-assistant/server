@@ -324,7 +324,7 @@ class AirPlayProvider(PlayerProvider):
                 self.logger.debug("Player offline: %s", _player.display_name)
                 # Remove the Sendspin bridge first
                 await self._bridge_manager.remove_bridge(protocol_id)
-                await self.mass.players.detach(protocol_id)
+                await self.mass.players.unregister(protocol_id)
             self.dashboards.unregister(protocol_id)
             return
         # handle update for existing device
@@ -496,7 +496,7 @@ class AirPlayProvider(PlayerProvider):
         # (multiple MDNS events processed in parallel for same device)
         if self.get_protocol(protocol_id):
             self.logger.debug(
-                "Player %s already attached during setup, skipping attach", protocol_id
+                "Player %s already attached during setup, skipping register", protocol_id
             )
             return
 
@@ -566,7 +566,7 @@ class AirPlayProvider(PlayerProvider):
                 initial_volume=volume,
                 is_local_shairport=is_local_shairport,
             )
-        await self.mass.players.attach(player)
+        await self.mass.players.register(player)
         if self.get_protocol(protocol_id) is not player:
             # not attached: the user disabled the player (e.g. a Mac, disabled by default)
             return

@@ -140,7 +140,7 @@ class SonosPlayer(PlayerProtocol):
 
         await asyncio.to_thread(_read_speaker_state)
         await self.subscribe()
-        await self.mass.players.attach(self)
+        await self.mass.players.register(self)
         if self.provider.get_protocol(self.protocol_id) is not self:
             # the attach skipped it (e.g. a disabled player or during a teardown):
             # release the subscriptions setup opened, as only an attached protocol

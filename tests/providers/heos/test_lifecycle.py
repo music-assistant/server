@@ -59,13 +59,13 @@ def _device(player_id: str = PROTOCOL_ID, name: str = "Speaker A") -> MagicMock:
     return device
 
 
-async def _attach(scenario: Scenario, device: MagicMock) -> HeosPlayer:
-    """Attach the protocol of a HEOS device the way discovery sets it up."""
+async def _register(scenario: Scenario, device: MagicMock) -> HeosPlayer:
+    """Register the protocol of a HEOS device the way discovery sets it up."""
     provider: Any = scenario.mass.get_provider("heos") or await scenario.add_provider("heos")
     provider._heos_queue = MagicMock()
     protocol = HeosPlayer(provider, device)
     protocol.set_device_info()
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     return protocol
 
@@ -74,7 +74,7 @@ async def test_a_new_device_is_the_native_protocol_of_a_minted_player(
     scenario: Scenario,
 ) -> None:
     """A device first seen now gets a player of its own, identified by its HEOS id."""
-    protocol = await _attach(scenario, _device())
+    protocol = await _register(scenario, _device())
 
     assert protocol.player is not None
     assert protocol.player.player_id.startswith(PLAYER_ID_PREFIX)
@@ -85,12 +85,12 @@ async def test_a_new_device_is_the_native_protocol_of_a_minted_player(
 
 async def test_two_heos_players_on_one_host_stay_apart(scenario: Scenario) -> None:
     """A new HEOS player on the host of one that is away does not take over its record."""
-    first = await _attach(scenario, _device())
+    first = await _register(scenario, _device())
     assert first.player is not None
     first_player_id = first.player.player_id
     await scenario.restart()
 
-    second = await _attach(scenario, _device("-7654321", "Speaker B"))
+    second = await _register(scenario, _device("-7654321", "Speaker B"))
 
     assert second.player is not None
     assert second.player.player_id != first_player_id
@@ -100,15 +100,15 @@ async def test_two_heos_players_on_one_host_stay_apart(scenario: Scenario) -> No
 async def test_the_device_events_follow_every_attach(scenario: Scenario) -> None:
     """The protocol listens to its device while attached, again after a detach."""
     device = _device()
-    protocol = await _attach(scenario, device)
+    protocol = await _register(scenario, device)
     unsubscribe = device.add_on_player_event.return_value
     assert device.add_on_player_event.call_count == 1
 
-    await scenario.mass.players.detach(PROTOCOL_ID)
+    await scenario.mass.players.unregister(PROTOCOL_ID)
     await scenario.settle()
     unsubscribe.assert_called_once()
 
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     assert device.add_on_player_event.call_count == 2
 
@@ -116,15 +116,15 @@ async def test_the_device_events_follow_every_attach(scenario: Scenario) -> None
 async def test_a_new_device_reads_its_settings_from_its_own_record(scenario: Scenario) -> None:
     """The transition timeout of a device with a minted player id comes from its protocol."""
     device = _device()
-    protocol = await _attach(scenario, device)
+    protocol = await _register(scenario, device)
     assert protocol.player is not None
     player_id = protocol.player.player_id
     await scenario.mass.config.save_protocol_config(
         PROTOCOL_ID, {CONF_PLAYBACK_TRANSITION_TIMEOUT: 12}
     )
     await scenario.settle()
-    await scenario.mass.players.detach(PROTOCOL_ID)
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.unregister(PROTOCOL_ID)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     device.play_url = AsyncMock()
     media = PlayerMedia(
@@ -171,7 +171,7 @@ async def test_a_detached_device_leaves_its_queue_alone(scenario: Scenario) -> N
     """A detach ends the cleanup of the device's own queue that MA playback scheduled."""
     device = _device()
     device.play_url = AsyncMock()
-    protocol = await _attach(scenario, device)
+    protocol = await _register(scenario, device)
     queue: Any = protocol._heos_queue
     queue.player_get_queue = AsyncMock(
         return_value=[SimpleNamespace(queue_id=1), SimpleNamespace(queue_id=2)]
@@ -190,7 +190,7 @@ async def test_a_detached_device_leaves_its_queue_alone(scenario: Scenario) -> N
     on_event = device.add_on_player_event.call_args.args[0]
     await on_event(heos_const.EVENT_PLAYER_QUEUE_CHANGED)
 
-    await scenario.mass.players.detach(PROTOCOL_ID)
+    await scenario.mass.players.unregister(PROTOCOL_ID)
     await scenario.advance(5)
 
     queue.player_remove_from_queue.assert_not_awaited()

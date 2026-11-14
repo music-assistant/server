@@ -178,7 +178,7 @@ class AmpliPiPlayerProvider(PlayerProvider):
             return new_stream_id
 
     async def discover_players(self) -> None:
-        """Attach the zones of the AmpliPi controller that have no attached protocol."""
+        """Register the zones of the AmpliPi controller that have no attached protocol."""
         for zone in self._status.zones:
             if zone.disabled or zone.id is None:
                 continue
@@ -190,7 +190,7 @@ class AmpliPiPlayerProvider(PlayerProvider):
                 continue
             player = player or AmpliPiZonePlayer(self, zone.id)
             self._players[zone.id] = player
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
             if self.get_protocol(protocol_id) is player:
                 player.update_from_status(self._status)
 

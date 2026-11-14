@@ -579,10 +579,10 @@ async def test_identity_of_a_player_keeps_what_its_protocols_that_are_away_repor
     )
     audio = airplay.protocol("ap_tv", "TV", role="audio", identifiers=KITCHEN)
     for protocol in (cast, renderer, audio):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     player_id = scenario.single_player(cast, renderer, audio).player_id
-    await scenario.detach(renderer)
-    await scenario.detach(audio)
+    await scenario.unregister(renderer)
+    await scenario.unregister(audio)
 
     parts = scenario.mass.players._identity_parts(player_id)
 
@@ -612,7 +612,7 @@ async def test_identity_of_a_player_keeps_what_its_protocols_that_are_away_repor
         role="audio",
         identifiers={**KITCHEN, IdentifierType.UUID: "other-udn"},
     )
-    await scenario.attach(other)
+    await scenario.register(other)
     await scenario.advance(15)
     await scenario.idle()
 
@@ -626,12 +626,12 @@ async def test_minted_player_id_is_free_as_a_player_and_as_a_config(scenario: Sc
     sendspin = await scenario.add_provider("sendspin")
     # a live player without a stored config: a session whose own id has the minted shape
     session = sendspin.protocol("pl0a0a0a0a0a0a", "Web Browser", session_only=True)
-    await scenario.attach(session)
+    await scenario.register(session)
     assert scenario.player_of(session) == "pl0a0a0a0a0a0a"
     assert scenario.mass.config.get(f"{CONF_PLAYERS}/pl0a0a0a0a0a0a") is None
     # a disabled player has a stored config and no live player
     stored = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
-    await scenario.attach(stored)
+    await scenario.register(stored)
     stored_id = scenario.single_player(stored).player_id
     await scenario.disable(stored_id)
     assert scenario.mass.players.get_player(stored_id) is None
@@ -643,7 +643,7 @@ async def test_minted_player_id_is_free_as_a_player_and_as_a_config(scenario: Sc
 
     study = sonos.protocol("RINCON_STUDY", "Study", identifiers=STUDY)
     with patch.object(secrets, "token_hex", _token_hex):
-        await scenario.attach(study)
+        await scenario.register(study)
 
     assert scenario.player_of(study) == "pl0123456789ab"
 
@@ -659,8 +659,8 @@ async def test_new_devices_get_distinct_minted_ids_in_creation_order(scenario: S
     first = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     second = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
 
-    await scenario.attach(first)
-    await scenario.attach(second)
+    await scenario.register(first)
+    await scenario.register(second)
 
     player_ids = [scenario.player_of(first), scenario.player_of(second)]
     assert all(player_id and re.fullmatch(r"pl[0-9a-f]{12}", player_id) for player_id in player_ids)
@@ -687,7 +687,7 @@ async def test_protocol_only_player_keeps_its_id_when_its_device_returns_with_ot
     airplay = await scenario.add_provider("airplay")
     # at first only its address is known
     speaker = airplay.protocol("ap_1", "Living Room", role="audio", identifiers=KITCHEN_ADDRESS)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.advance(15)
     player_id = scenario.single_player(speaker).player_id
     scenario.set_present("ap_1", False)
@@ -700,7 +700,7 @@ async def test_protocol_only_player_keeps_its_id_when_its_device_returns_with_ot
         role="audio",
         identifiers={IdentifierType.UUID: "12345678-1234-1234-1234-123456789abc"},
     )
-    await scenario.attach(returned)
+    await scenario.register(returned)
 
     assert scenario.player_of(returned) == player_id
     assert _edge(scenario, "ap_1") == player_id
@@ -721,8 +721,8 @@ async def test_protocol_stored_for_a_player_attaches_to_it_without_waiting(
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN_ADDRESS)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
     if player_state == "disabled":
         await scenario.disable(player_id)
@@ -739,7 +739,7 @@ async def test_protocol_stored_for_a_player_attaches_to_it_without_waiting(
         role="audio",
         identifiers={IdentifierType.IP_ADDRESS: "192.168.1.77"},
     )
-    await scenario.attach(returned)
+    await scenario.register(returned)
 
     if player_state == "offline":
         assert scenario.player_of(returned) == player_id
@@ -763,12 +763,12 @@ async def test_protocol_stored_for_a_player_is_not_claimed_by_another_matching_p
     heos = await scenario.add_provider("heos")
     airplay = await scenario.add_provider("airplay")
     other = heos.protocol("heos_receiver", "Other Receiver", identifiers=DEN)
-    await scenario.attach(other)
+    await scenario.register(other)
     other_id = scenario.player_of(other)
     native = sonos.protocol("RINCON_KITCHEN", "Speaker", identifiers=KITCHEN)
     audio = airplay.protocol("ap_shared", "Speaker", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(audio)
+    await scenario.register(native)
+    await scenario.register(audio)
     player_id = scenario.single_player(native, audio).player_id
     assert other_id not in (None, player_id)
     # the other device turns out to report an identifier of the speaker
@@ -779,8 +779,8 @@ async def test_protocol_stored_for_a_player_is_not_claimed_by_another_matching_p
 
     # the other player is the first to match, and it is back before the speaker's protocols
     assert scenario.player_of(scenario.protocol("heos_receiver")) == other_id
-    await scenario.attach(scenario.protocol("ap_shared"))
-    await scenario.attach(scenario.protocol("RINCON_KITCHEN"))
+    await scenario.register(scenario.protocol("ap_shared"))
+    await scenario.register(scenario.protocol("RINCON_KITCHEN"))
     await scenario.idle()
 
     assert scenario.player_of(scenario.protocol("ap_shared")) == player_id
@@ -797,7 +797,7 @@ async def test_protocol_stored_for_a_player_that_is_gone_is_matched_again(
     heos = await scenario.add_provider("heos")
     airplay = await scenario.add_provider("airplay")
     receiver = heos.protocol("heos_receiver", "Receiver", identifiers=KITCHEN)
-    await scenario.attach(receiver)
+    await scenario.register(receiver)
     receiver_id = scenario.player_of(receiver)
     scenario.mass.config.create_protocol_record(
         "ap_shared",
@@ -808,7 +808,7 @@ async def test_protocol_stored_for_a_player_that_is_gone_is_matched_again(
     )
 
     audio = airplay.protocol("ap_shared", "Speaker", role="audio", identifiers=KITCHEN)
-    await scenario.attach(audio)
+    await scenario.register(audio)
 
     assert scenario.player_of(audio) == receiver_id
     assert _edge(scenario, "ap_shared") == receiver_id
@@ -833,13 +833,13 @@ async def test_protocol_of_a_domain_its_player_has_gets_a_player_of_its_own(
     renderer = dlna.protocol("dlna_1", "DLNA", role="audio", identifiers=KITCHEN)
     cast = chromecast.protocol("cast_1", "Cast", role="audio", identifiers=KITCHEN)
     for protocol in (native, first, renderer, cast):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     player_id = scenario.single_player(native, first, renderer, cast).player_id
     if not first_available:
         await scenario.report(first, available=False)
 
     second = airplay.protocol("ap_2", "AirPlay 2", role="audio", identifiers=KITCHEN)
-    await scenario.attach(second)
+    await scenario.register(second)
     await scenario.idle()
 
     second_id = scenario.player_of(second)
@@ -864,7 +864,7 @@ async def test_waiting_protocols_of_one_domain_become_a_player_each(scenario: Sc
     second = airplay.protocol("ap_2", "Zone 2", role="audio", identifiers=KITCHEN_ADDRESS)
     renderer = dlna.protocol("dlna_1", "Zone 1", role="audio", identifiers=KITCHEN_ADDRESS)
     for protocol in (first, second, renderer):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
 
     await scenario.advance(15)
     await scenario.idle()
@@ -884,8 +884,8 @@ async def test_protocol_stored_for_a_player_with_a_protocol_of_its_domain_gets_a
     airplay = await scenario.add_provider("airplay")
     native = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
     first = airplay.protocol("ap_1", "AirPlay 1", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(first)
+    await scenario.register(native)
+    await scenario.register(first)
     player_id = scenario.single_player(native, first).player_id
     # a second AirPlay protocol stored for the same player, from an earlier session
     scenario.mass.config.create_protocol_record(
@@ -897,7 +897,7 @@ async def test_protocol_stored_for_a_player_with_a_protocol_of_its_domain_gets_a
     )
 
     second = airplay.protocol("ap_2", "AirPlay 2", role="audio", identifiers=KITCHEN)
-    await scenario.attach(second)
+    await scenario.register(second)
     await scenario.idle()
 
     second_id = scenario.player_of(second)
@@ -954,7 +954,7 @@ async def test_receivers_of_one_domain_on_one_host_are_one_player_each(
         for index, mac in enumerate(macs, start=1)
     ]
     for receiver in receivers:
-        await scenario.attach(receiver)
+        await scenario.register(receiver)
     await scenario.advance(15)
     await scenario.idle()
     player_ids = [scenario.player_of(receiver) for receiver in receivers]
@@ -985,7 +985,7 @@ async def test_protocol_that_shares_an_identifier_with_another_protocol_of_a_pla
     sendspin = await scenario.add_provider("sendspin")
     # the native protocol reports no identifiers at all
     native = heos.protocol("2140037800", "Receiver")
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
     denon = {
         IdentifierType.MAC_ADDRESS: "00:06:78:74:7B:16",
@@ -999,16 +999,16 @@ async def test_protocol_that_shares_an_identifier_with_another_protocol_of_a_pla
             role=ProtocolRole.AUDIO,
             default_name="Receiver",
         )
-    await scenario.attach(
+    await scenario.register(
         airplay.protocol("ap000678747b16", "Receiver", role="audio", identifiers=denon)
     )
     if domain_slot == "taken":
         client = sendspin.protocol("sendspin_client", "Receiver", role="audio")
-        await scenario.attach(client)
+        await scenario.register(client)
         assert scenario.player_of(client) == player_id
 
     bridge = sendspin.protocol("spb_000678747b16", "Receiver", role="audio", identifiers=denon)
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
     await scenario.idle()
 
     if domain_slot == "free":
@@ -1031,14 +1031,14 @@ async def test_native_protocol_joins_the_player_its_audio_protocols_have(
     wiim = await scenario.add_provider("wiim")
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
     renderer = dlna.protocol("dlna_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(audio)
-    await scenario.attach(renderer)
+    await scenario.register(audio)
+    await scenario.register(renderer)
     player_id = scenario.single_player(audio, renderer).player_id
     await scenario.configure_player(player_id, name="Living Room TV", **{CONF_HIDE_IN_UI: True})
     scenario.clear_events()
 
     native = wiim.protocol("wiim_kitchen", "Kitchen", role=role, identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     await scenario.idle()
 
     assert scenario.player_of(native) == player_id
@@ -1072,12 +1072,12 @@ async def test_audio_protocol_never_joins_a_group_player(scenario: Scenario) -> 
     airplay = await scenario.add_provider("airplay")
     group = chromecast.protocol("cast_group", "Speaker Group", identifiers=KITCHEN)
     group._set_reported(type=PlayerType.GROUP)
-    await scenario.attach(group)
+    await scenario.register(group)
     group_id = scenario.player_of(group)
     assert group_id is not None
 
     audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(audio)
+    await scenario.register(audio)
     await scenario.idle()
 
     assert scenario.player_of(audio) not in (None, group_id)
@@ -1095,7 +1095,7 @@ async def test_restored_player_is_recognised_by_what_its_protocols_reported(
     airplay = await scenario.add_provider("airplay")
     await scenario.add_provider("sendspin")
     known = airplay.protocol("ap_tv", "Apple TV", role="audio", identifiers=KITCHEN)
-    await scenario.attach(known)
+    await scenario.register(known)
     player_id = scenario.single_player(known).player_id
     scenario.set_present("ap_tv", False)
     await scenario.restart()
@@ -1105,7 +1105,7 @@ async def test_restored_player_is_recognised_by_what_its_protocols_reported(
     )
     order = ["ap_tv", "sendspin_tv"] if returned_first else ["sendspin_tv", "ap_tv"]
     for protocol_id in order:
-        await scenario.attach(scenario.protocol(protocol_id))
+        await scenario.register(scenario.protocol(protocol_id))
     await scenario.idle()
 
     assert scenario.player_of(scenario.protocol("ap_tv")) == player_id
@@ -1130,13 +1130,13 @@ async def test_derived_protocol_attaches_to_the_player_of_the_protocol_it_rides_
     sendspin = await scenario.add_provider("sendspin")
     native = heos.protocol("native_1", "AVR", identifiers=KITCHEN)
     base = airplay.protocol("ap_1", "AVR AirPlay", role="audio", identifiers=KITCHEN)
-    await scenario.attach(native)
-    await scenario.attach(base)
+    await scenario.register(native)
+    await scenario.register(base)
     player_id = scenario.single_player(native, base).player_id
 
     # the derived protocol has NO identifiers: the edge alone must resolve it
     bridge = sendspin.protocol("spb_1", "Bridge", role="audio", underlying_protocol_id="ap_1")
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
 
     assert scenario.player_of(bridge) == player_id
     player = scenario.mass.players.get_player(player_id)
@@ -1154,13 +1154,13 @@ async def test_derived_protocol_riding_on_the_own_protocol_rides_on_the_native_o
     sonos = await scenario.add_provider("sonos")
     sendspin = await scenario.add_provider("sendspin")
     native = sonos.protocol("RINCON_KITCHEN", "Dummy Output", identifiers=KITCHEN)
-    await scenario.attach(native)
+    await scenario.register(native)
     player_id = scenario.single_player(native).player_id
 
     bridge = sendspin.protocol(
         "spb_1", "Bridge", role="audio", underlying_protocol_id="RINCON_KITCHEN"
     )
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
 
     assert scenario.player_of(bridge) == player_id
     player = scenario.mass.players.get_player(player_id)
@@ -1184,14 +1184,14 @@ async def _bridges_of_one_domain(scenario: Scenario) -> tuple[str, Any, Any]:
     base_ap = airplay.protocol("ap_1", "WiiM AirPlay", role="audio", identifiers=KITCHEN)
     base_cast = chromecast.protocol("cast_1", "WiiM Cast", role="audio", identifiers=KITCHEN)
     for protocol in (native, base_ap, base_cast):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     player_id = scenario.single_player(native, base_ap, base_cast).player_id
     bridge_cast = sendspin.protocol(
         "spb_cast", "Bridge", role="audio", underlying_protocol_id="cast_1"
     )
     bridge_ap = sendspin.protocol("spb_ap", "Bridge", role="audio", underlying_protocol_id="ap_1")
-    await scenario.attach(bridge_cast)
-    await scenario.attach(bridge_ap)
+    await scenario.register(bridge_cast)
+    await scenario.register(bridge_ap)
     return player_id, bridge_cast, bridge_ap
 
 
@@ -1219,7 +1219,7 @@ async def test_waiting_derived_protocol_attaches_once_its_domain_is_free(
     """
     player_id, bridge_cast, bridge_ap = await _bridges_of_one_domain(scenario)
     if detached_first:
-        await scenario.detach(bridge_cast)
+        await scenario.unregister(bridge_cast)
 
     await scenario.mass.players.remove_protocol("spb_cast")
     await scenario.idle()
@@ -1232,9 +1232,9 @@ async def test_derived_edge_is_stored_with_the_protocol(scenario: Scenario) -> N
     airplay = await scenario.add_provider("airplay")
     sendspin = await scenario.add_provider("sendspin")
     base = airplay.protocol("ap_1", "Kitchen", role="audio", identifiers=KITCHEN)
-    await scenario.attach(base)
+    await scenario.register(base)
     bridge = sendspin.protocol("spb_1", "Bridge", role="audio", underlying_protocol_id="ap_1")
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
     config = scenario.mass.config
 
     # derived protocol: the edge is stored
@@ -1244,7 +1244,7 @@ async def test_derived_edge_is_stored_with_the_protocol(scenario: Scenario) -> N
 
     # edge revoked (e.g. a bridge client turned web player): the stored value is cleared
     bridge._set_reported(underlying_protocol_id=None)
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
 
     assert config.get_protocol_value("spb_1", CONF_UNDERLYING_PLAYER_ID) is None
 
@@ -1256,12 +1256,12 @@ async def test_derived_protocol_of_a_player_without_a_config_stores_nothing(
     sendspin = await scenario.add_provider("sendspin")
     airplay = await scenario.add_provider("airplay")
     browser = sendspin.protocol("sendspin_web_1", "Web Browser", session_only=True)
-    await scenario.attach(browser)
+    await scenario.register(browser)
     bridge = airplay.protocol(
         "ap_web_1", "Bridge", role="audio", underlying_protocol_id="sendspin_web_1"
     )
 
-    await scenario.attach(bridge)
+    await scenario.register(bridge)
 
     assert scenario.player_of(bridge) == "sendspin_web_1"
     assert scenario.mass.config.get_protocol_record("ap_web_1") is None

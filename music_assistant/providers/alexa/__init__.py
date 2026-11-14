@@ -630,11 +630,11 @@ class AlexaProvider(PlayerProvider):
         await self._load_intents()
 
     async def discover_players(self) -> None:
-        """Attach the Echo devices of the account that have no attached protocol."""
+        """Register the Echo devices of the account that have no attached protocol."""
         for protocol_id, device in self.devices.items():
             if self.get_protocol(protocol_id) or not self.mass.players.wants_protocol(protocol_id):
                 continue
-            await self.mass.players.attach(AlexaPlayer(self, protocol_id, device))
+            await self.mass.players.register(AlexaPlayer(self, protocol_id, device))
 
     async def get_volumes(self) -> dict[str, int]:
         """Return each Echo's volume by serial number, read once per poll round."""

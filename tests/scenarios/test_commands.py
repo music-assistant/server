@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
-from music_assistant_models.errors import ResourceBusyError
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    QueueOption,
+)
+from music_assistant_models.errors import PlayerCommandFailed, ResourceBusyError
 from music_assistant_models.player import PlayerMedia, PlayerSource
 
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from tests.common import record_lock_waits
 
 from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakeProtocol, Scenario
@@ -32,7 +39,7 @@ async def _speaker_with_an_input(scenario: Scenario) -> tuple[FakeProtocol, str]
     """Return a native speaker with an HDMI input, and the id of its player."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.report(
         speaker,
         supported_features={*DEFAULT_FEATURES, PlayerFeature.SELECT_SOURCE},
@@ -47,8 +54,8 @@ async def _two_speakers(scenario: Scenario) -> tuple[FakeProtocol, str, FakeProt
     sonos = await scenario.add_provider("sonos")
     den = sonos.protocol("RINCON_DEN", "Den", identifiers=DEN)
     kitchen = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(den)
-    await scenario.attach(kitchen)
+    await scenario.register(den)
+    await scenario.register(kitchen)
     await scenario.idle()
     return (
         den,
@@ -343,12 +350,12 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
     _den, den_id, _kitchen, _kitchen_id = await _two_speakers(scenario)
     squeezelite = await scenario.add_provider("squeezelite")
     pi = squeezelite.protocol("b8:27:eb:aa:bb:cc", "Bathroom", identifiers=BATHROOM)
-    await scenario.attach(pi)
+    await scenario.register(pi)
     bathroom_id = scenario.single_player(pi).player_id
     plug = await scenario.add_power_control("switch.bathroom_plug", "Bathroom plug", powered=True)
     await scenario.configure_player(bathroom_id, power_control=plug.control_id)
     await scenario.switch(plug, False)
-    await scenario.detach(pi)
+    await scenario.unregister(pi)
     await scenario.idle()
     await scenario.play(den_id)
     transfer = await scenario.command(
@@ -363,7 +370,7 @@ async def test_a_transfer_to_a_switched_off_player_holds_neither_player_while_it
     assert seek.done()
     await seek
     assert waits == []
-    await scenario.attach(pi)
+    await scenario.register(pi)
     # the power on looks for the device every 0.5 s
     await scenario.advance(1)
     await transfer
@@ -619,3 +626,99 @@ async def test_a_hand_over_whose_new_leader_joins_another_group_meanwhile_comple
         "Office": (PlaybackState.IDLE, None),
         "Patio": (PlaybackState.IDLE, None),
     }
+
+
+def _never_resolving(scenario: Scenario, uri: str) -> None:
+    """
+    Let the lookup of what a play request plays never return for one track.
+
+    :param uri: The uri of the track whose lookup hangs.
+    """
+    resolver = scenario.mass.player_queues._media_resolver
+    resolve = resolver._resolve_media_items
+
+    async def _resolve(media_item: Any, *args: Any, **kwargs: Any) -> Any:
+        if media_item.uri == uri:
+            await asyncio.Event().wait()
+        return await resolve(media_item, *args, **kwargs)
+
+    resolver._resolve_media_items = _resolve  # type: ignore[method-assign]
+
+
+async def test_a_play_request_that_is_given_up_frees_the_player_and_its_leader(
+    scenario: Scenario,
+) -> None:
+    """
+    A play request whose lookup takes longer than a minute fails, and changes nothing.
+
+    Kitchen is grouped to Den, which plays. A play on Kitchen holds Kitchen and Den while it
+    looks up what to play, so a stop of Den sent behind it waits. After 60 s the play fails:
+    Kitchen is still in the group of Den with an empty queue, neither queue shows an action in
+    progress, and the stop reaches Den at once.
+    """
+    _, (den, kitchen) = await _speakers(scenario, "Den", "Kitchen")
+    den_id, kitchen_id = _player_id(scenario, den), _player_id(scenario, kitchen)
+    await scenario.mass.players.cmd_set_members(den_id, player_ids_to_add=[kitchen_id])
+    await scenario.idle()
+    await scenario.play(den_id)
+    _never_resolving(scenario, OTHER_TRACK_URI)
+
+    play = await scenario.command(
+        scenario.mass.player_queues.play_media(kitchen_id, OTHER_TRACK_URI, QueueOption.REPLACE)
+    )
+    stop = await scenario.command(scenario.mass.player_queues.stop(den_id))
+    await scenario.advance(59)
+    assert not play.done()
+    assert not stop.done()
+    assert _plays(scenario, den_id) == (PlaybackState.PLAYING, [TEST_TRACK_URI])
+
+    await scenario.advance(1)
+    assert play.done()
+    with pytest.raises(PlayerCommandFailed) as given_up:
+        await play
+    assert stop.done()
+    await stop
+    await scenario.idle()
+
+    assert given_up.value.translation_key == "play_request_timeout"
+    assert given_up.value.translation_owner == "core.player_queues"
+    kitchen_state = scenario.player(kitchen_id)
+    assert kitchen_state is not None
+    assert kitchen_state.synced_to == den_id
+    assert _plays(scenario, kitchen_id) == (PlaybackState.IDLE, [])
+    assert _plays(scenario, den_id) == (PlaybackState.IDLE, [TEST_TRACK_URI])
+    assert "ungroup" not in _names(kitchen)
+    for player_id in (den_id, kitchen_id):
+        queue = scenario.queue(player_id)
+        assert queue is not None
+        assert not queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS)
+
+
+async def test_a_play_request_that_waits_longer_than_a_minute_for_its_turn_still_plays(
+    scenario: Scenario,
+) -> None:
+    """
+    The minute a play request has to look up what to play does not run while it waits.
+
+    A play takes 90 s at the Den speaker. A play of another track sent right behind it waits
+    for it all that time, then looks its track up and plays it.
+    """
+    den, den_id, _kitchen, _kitchen_id = await _two_speakers(scenario)
+    await scenario.play(den_id)
+    _slow(den, "play_media", 90, once=True)
+    queues = scenario.mass.player_queues
+    first = await scenario.command(queues.play_media(den_id, TEST_TRACK_URI, QueueOption.REPLACE))
+    second = await scenario.command(queues.play_media(den_id, OTHER_TRACK_URI, QueueOption.REPLACE))
+
+    await scenario.advance(89)
+    assert not first.done()
+    assert not second.done()
+
+    await scenario.advance(1)
+    assert first.done()
+    assert second.done()
+    await first
+    await second
+    await scenario.idle()
+
+    assert _plays(scenario, den_id) == (PlaybackState.PLAYING, [OTHER_TRACK_URI])

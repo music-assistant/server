@@ -208,7 +208,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
             self._release_from_sync_leader(player.protocol_id)
-            self.mass.create_task(self.mass.players.detach(player.protocol_id))
+            self.mass.create_task(self.mass.players.unregister(player.protocol_id))
             return
 
         # forward all other events to the player itself

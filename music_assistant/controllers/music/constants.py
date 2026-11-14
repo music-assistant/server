@@ -33,9 +33,6 @@ LISTING_CACHE_EXPIRATION: Final[int] = 15 * 60
 BROWSE_CACHE_EXPIRATION: Final[int] = 2 * 60
 # how many similar artists or tracks the providers are asked for, the size of such a listing
 SIMILAR_ITEMS_LIMIT: Final[int] = 25
-# caps the album track lookups in flight when an artist's tracks are listed from its albums,
-# so a large discography does not flood a provider
-ARTIST_ALBUM_LOOKUP_BATCH: Final[int] = 5
 
 # max time to wait for a single provider's search results before
 # contributing empty results for it, so one slow provider can never block

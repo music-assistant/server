@@ -28,7 +28,7 @@ The Sync Group Player provider enables creating persistent groups of compatible 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    SyncGroupProvider                             │
-│  - Attaches the stored sync groups to their players             │
+│  - Registers the stored sync groups with the players controller │
 │  - Creates/removes sync groups via UI                           │
 └─────────────────────────────────────────────────────────────────┘
                               │
