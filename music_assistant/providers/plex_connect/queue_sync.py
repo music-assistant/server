@@ -44,8 +44,6 @@ class QueueSyncMixin:
 
         async def _broadcast_timeline(self) -> None: ...
 
-        async def _send_timeline_to_server(self) -> None: ...
-
         def _selected_item_index(self, playqueue: PlayQueue) -> int: ...
 
     def _collect_synced_keys(self, player_id: str) -> list[str]:
@@ -458,7 +456,6 @@ class QueueSyncMixin:
             return
 
         try:
-            await self._send_timeline_to_server()
             await self._broadcast_timeline()
         except Exception as e:
             LOGGER.debug(f"Error handling state event: {e}")

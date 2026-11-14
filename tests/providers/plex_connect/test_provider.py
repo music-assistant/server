@@ -10,8 +10,9 @@ import aiohttp
 import pytest
 
 from music_assistant.providers import plex_connect
+from music_assistant.providers.plex.helpers import compute_client_id
 from music_assistant.providers.plex_connect import PlexConnectProvider
-from music_assistant.providers.plex_connect.plextv import PlexTvAuthError, compute_client_id
+from music_assistant.providers.plex_connect.plextv import PlexTvAuthError
 
 
 def _make_provider(token: str | None = "devtoken") -> Any:  # noqa: S107
