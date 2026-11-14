@@ -311,7 +311,7 @@ def queue_visible(user: Any, queue: Any) -> bool:
 _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
 _REFERENCE_KINDS = frozenset({TargetKind.MUSIC_REFERENCE, TargetKind.MUSIC_REFERENCES})
-_INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "database", "library"})
+_INTERNAL_MUSIC_TARGETS = frozenset({"builtin", "library"})
 _UNRESOLVED_SHARE_URL = "<unresolved share url>"
 
 
