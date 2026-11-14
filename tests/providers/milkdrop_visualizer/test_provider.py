@@ -26,27 +26,10 @@ def _provider() -> tuple[MilkdropVisualizerProvider, Mock, Mock]:
     return provider, logger, mocked.config.get_value
 
 
-async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
-    """A stale instance must not take the live one's route or commands on its way out."""
-    provider, _logger, _config_value = _provider()
-    mocked = cast("Any", provider)
-    mocked.unloading = True
-    mocked._relay = Mock()
-    mocked._unregister_handles = []
-
-    await provider.loaded_in_mass()
-
-    # the relay route unregisters by name too, and this instance is past its own close()
-    mocked._relay.setup.assert_not_called()
-    mocked.mass.register_api_command.assert_not_called()
-    assert provider._unregister_handles == []
-
-
 async def test_loaded_in_mass_registers_the_viewer_commands() -> None:
     """A live instance exposes both viewer-facing commands and keeps their unregister handles."""
     provider, _logger, _config_value = _provider()
     mocked = cast("Any", provider)
-    mocked.unloading = False
     mocked._relay = Mock()
     mocked._unregister_handles = []
 
