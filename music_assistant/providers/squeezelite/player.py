@@ -234,7 +234,12 @@ class SqueezelitePlayer(Player):
                 # a member was (re)added or its stream is gone: LMS takes the stream-idle
                 # path (re-stream, then coordinated _syncStart), not _Resume
                 self._restream_needed = False
-                self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
+                # shares the regroup restart's id, so back-to-back restarts collapse
+                self.mass.create_task(
+                    self.mass.players.cmd_resume(self.player_id),
+                    task_id=f"squeezelite_regroup_resume_{self.player_id}",
+                    abort_existing=True,
+                )
                 return
             if (paused_at := self._paused_at) > 0:
                 # stream still live: LMS _Resume (coordinated startAt + check holdoff);
@@ -629,7 +634,12 @@ class SqueezelitePlayer(Player):
             count += 1
 
         # all children ready (or timeout) - start playback in sync
-        await self._sync_group.start(self._get_sync_clients())
+        clients = list(self._get_sync_clients())
+        if len(clients) < 2:
+            # the members dropped out while buffering, so there is nothing to sync
+            await self.client.unpause_at(self.client.jiffies)
+            return
+        await self._sync_group.start(clients)
 
     async def _handle_player_cli_event(self, event: SlimEvent) -> None:
         """Process CLI Event."""

@@ -381,6 +381,120 @@ async def test_a_paused_group_resumes_in_sync_from_its_own_pause_only() -> None:
         client.play.assert_awaited_once()
 
 
+async def test_repeated_play_while_restreaming_restarts_the_group_once() -> None:
+    """A second play before the new stream exists replaces the pending restart."""
+    player, mass = _player_with_mocked_mass()
+    player._restream_needed = True
+
+    with (
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(
+            SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="leader"
+        ),
+    ):
+        await player.play()
+
+    assert mass.create_task.call_args.kwargs == {
+        "task_id": "squeezelite_regroup_resume_leader",
+        "abort_existing": True,
+    }
+
+
+@pytest.mark.parametrize(("sync_adjust", "play_delay"), [(30, 30), (None, 0)])
+async def test_sync_delay_setting_is_the_play_delay(
+    sync_adjust: int | None, play_delay: int
+) -> None:
+    """The per-player sync delay setting becomes the player's LMS play delay."""
+    player, _mass = _player_with_mocked_mass()
+    player.client = MagicMock(play_delay=0)
+    config = MagicMock(get_value=MagicMock(return_value=sync_adjust))
+
+    with (
+        patch.object(SqueezelitePlayer, "config", new_callable=PropertyMock, return_value=config),
+        patch.object(player, "_set_preset_items", new=AsyncMock()),
+        patch.object(player, "_set_display", new=AsyncMock()),
+    ):
+        await player.on_config_updated()
+
+    assert player.client.play_delay == play_delay
+
+
+async def test_buffer_ready_starts_the_group_in_sync() -> None:
+    """Once every member has buffered, the group starts at a common instant."""
+    player, _mass = _player_with_mocked_mass()
+    clients = [MagicMock(state=SlimPlayerState.BUFFER_READY) for _ in range(2)]
+    sync_group = MagicMock(start=AsyncMock())
+    player._sync_group = sync_group
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_get_sync_clients", side_effect=lambda: iter(clients)),
+        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=AsyncMock()),
+    ):
+        await player._handle_buffer_ready()
+
+    sync_group.start.assert_awaited_once_with(clients)
+
+
+async def test_buffer_ready_starts_the_leader_when_its_members_dropped_out() -> None:
+    """A leader left on its own while buffering starts instead of waiting forever."""
+    player, _mass = _player_with_mocked_mass()
+    player.client = leader = MagicMock(
+        state=SlimPlayerState.BUFFER_READY, jiffies=1234, unpause_at=AsyncMock()
+    )
+    sync_group = MagicMock(start=AsyncMock())
+    player._sync_group = sync_group
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_get_sync_clients", side_effect=lambda: iter([leader])),
+        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=AsyncMock()),
+    ):
+        await player._handle_buffer_ready()
+
+    leader.unpause_at.assert_awaited_once_with(1234)
+    sync_group.start.assert_not_called()
+
+
+def test_a_heartbeat_checks_the_group_sync() -> None:
+    """The leader's heartbeat runs the group drift check on all members."""
+    player, mass = _player_with_mocked_mass()
+    clients = [MagicMock(), MagicMock()]
+    sync_group = MagicMock()
+    player._sync_group = sync_group
+
+    with (
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_get_sync_clients", return_value=clients),
+    ):
+        player._handle_sync()
+
+    sync_group.check.assert_called_once_with(clients)
+    mass.create_task.assert_called_once_with(sync_group.check.return_value)
+
+
 async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
     """An old-stream heartbeat that lands before the flush does not survive the restart."""
     player, mass = _player_with_mocked_mass()
