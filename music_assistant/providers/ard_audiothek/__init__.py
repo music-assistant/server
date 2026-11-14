@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from collections.abc import AsyncGenerator, Sequence
@@ -109,7 +110,12 @@ ACCOUNT_ERRORS = (
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
+}
+# without a linked account there is no library, and a sync of an empty one would remove the
+# podcasts (and their likes) a former account synced
+ACCOUNT_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
 
@@ -118,9 +124,8 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     features = set(SUPPORTED_FEATURES)
-    # subscriptions can only be changed in the ARD account when one is linked
     if mass.config.get_provider_setup_value(config.instance_id, CONF_REFRESH_TOKEN):
-        features.add(ProviderFeature.LIBRARY_PODCASTS_EDIT)
+        features |= ACCOUNT_FEATURES
     return ARDAudiothek(mass, manifest, config, features)
 
 
@@ -184,16 +189,17 @@ class ARDAudiothek(MusicProvider):
 
         self.max_bitrate = int(float(str(self.config.get_value(CONF_MAX_BITRATE))))
 
-        if _refresh_token and (
-            self.token is None or self.user_id is None or self.token_expire < utc()
-        ):
-            refreshed = time.monotonic() >= self._refresh_retry_at and await self._refresh_login(
-                str(_refresh_token)
-            )
-            if not refreshed:
-                # without a valid token the public catalogue is still served
-                self.token = None
-                self.user_id = None
+        if _refresh_token and self._token_expired():
+            async with self._refresh_lock:
+                # requests waiting here use the token the first one refreshed
+                if self._token_expired():
+                    refreshed = time.monotonic() >= self._refresh_retry_at and (
+                        await self._refresh_login(str(_refresh_token))
+                    )
+                    if not refreshed:
+                        # without a valid token the public catalogue is still served
+                        self.token = None
+                        self.user_id = None
 
         if not self._client_initialized or self._client_token != self.token:
             headers = None
@@ -214,6 +220,7 @@ class ARDAudiothek(MusicProvider):
         self._client_initialized = False
         self._client_token = None
         self._refresh_retry_at: float = 0.0
+        self._refresh_lock = asyncio.Lock()
         self._account_error: Exception | None = None
         self.remote_progress: dict[str, PlayHistoryEntry] = {}
         # the play history is keyed by an episode's asset id, not by the core id we use
@@ -647,6 +654,9 @@ class ARDAudiothek(MusicProvider):
             publications += [podcast]
 
         return publications
+
+    def _token_expired(self) -> bool:
+        return self.token is None or self.user_id is None or self.token_expire < utc()
 
     async def _refresh_login(self, refresh_token: str) -> bool:
         try:

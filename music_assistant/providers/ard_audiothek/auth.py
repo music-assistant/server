@@ -41,6 +41,14 @@ FIRESTORE_DOCUMENTS_URL = (
 MIN_POLL_INTERVAL = 3
 MAX_POLL_INTERVAL = 60
 BACKOFF_SECONDS = 60
+# the only refresh errors that mean the token is gone; Google also answers passing trouble,
+# such as QUOTA_EXCEEDED, with HTTP 400
+REJECTED_TOKEN_ERRORS = (
+    "TOKEN_EXPIRED",
+    "INVALID_REFRESH_TOKEN",
+    "USER_DISABLED",
+    "USER_NOT_FOUND",
+)
 HEADERS = {"User-Agent": "Music Assistant"}
 
 # shared by all instances, as they all talk to the same Google APIs; a 429 or 5xx reply
@@ -127,7 +135,7 @@ async def refresh_tokens(session: ClientSession, refresh_token: str) -> ArdToken
     :param session: The aiohttp session to use.
     :param refresh_token: The refresh token of the signed in account.
     :raises LoginFailed: When the refresh token is no longer accepted.
-    :raises ResourceTemporarilyUnavailable: When the token service could not be reached.
+    :raises ResourceTemporarilyUnavailable: When the token service failed for a passing reason.
     """
     async with (
         THROTTLER.acquire(),
@@ -144,8 +152,8 @@ async def refresh_tokens(session: ClientSession, refresh_token: str) -> ArdToken
     if isinstance(data, dict) and data.get("id_token"):
         return _tokens_from(str(data["id_token"]), str(data.get("refresh_token") or refresh_token))
     message = _error_message(data) or f"HTTP {status}"
-    # only a client error means the token itself was rejected, anything else may pass
-    if 400 <= status < 500 and status != 429:
+    # the message may carry details after the code, e.g. "TOKEN_EXPIRED : ..."
+    if message.split(" ", 1)[0] in REJECTED_TOKEN_ERRORS:
         raise LoginFailed(f"Refreshing the ARD login failed: {message}")
     raise _temporary_error(f"Refreshing the ARD login failed: {message}", retry_after)
 

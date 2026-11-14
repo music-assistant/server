@@ -120,17 +120,27 @@ async def test_refresh_tokens() -> None:
     assert session.post.call_args.kwargs["data"]["refresh_token"] == "old"
 
 
-async def test_refresh_tokens_error_raises_login_failed() -> None:
+@pytest.mark.parametrize(
+    "message",
+    ["TOKEN_EXPIRED", "INVALID_REFRESH_TOKEN : Invalid refresh token", "USER_DISABLED"],
+)
+async def test_refresh_tokens_error_raises_login_failed(message: str) -> None:
     """Raise LoginFailed with the reason when the refresh token is rejected."""
-    payload = {"error": {"code": 400, "message": "TOKEN_EXPIRED"}}
+    payload = {"error": {"code": 400, "message": message}}
     session = Mock(post=Mock(return_value=_response(status=400, payload=payload)))
 
-    with pytest.raises(LoginFailed, match="TOKEN_EXPIRED"):
+    with pytest.raises(LoginFailed, match=message.split(" ", 1)[0]):
         await refresh_tokens(session, "old")
 
 
 @pytest.mark.parametrize(
-    ("status", "text"), [(503, '{"error": {"message": "UNAVAILABLE"}}'), (502, "<html>")]
+    ("status", "text"),
+    [
+        (503, '{"error": {"message": "UNAVAILABLE"}}'),
+        (502, "<html>"),
+        (400, '{"error": {"code": 400, "message": "QUOTA_EXCEEDED"}}'),
+    ],
+    ids=["unavailable", "html", "quota"],
 )
 async def test_refresh_tokens_server_error_is_temporary(
     throttler: Mock, status: int, text: str

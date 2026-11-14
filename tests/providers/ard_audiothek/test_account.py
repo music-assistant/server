@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -80,6 +81,7 @@ def _setup_provider(setup_data: dict[str, Any]) -> ARDAudiothek:
     provider._client_initialized = False
     provider._client_token = None
     provider._refresh_retry_at = 0.0
+    provider._refresh_lock = asyncio.Lock()
     provider._account_error = None
     return provider
 
@@ -109,6 +111,33 @@ async def test_expired_token_is_refreshed() -> None:
     update_setup_data.assert_any_call(CONF_REFRESH_TOKEN, "new-refresh")
     update_setup_data.assert_any_call(CONF_EXPIRY_TIME, "4940.0")
     transport.assert_called_once_with({"Authorization": "Bearer new-token"})
+
+
+async def test_concurrent_requests_refresh_once() -> None:
+    """Requests that find the token expired at the same time share a single refresh."""
+    provider = _setup_provider(
+        {
+            CONF_REFRESH_TOKEN: "refresh-token",
+            CONF_TOKEN_BEARER: "old-token",
+            CONF_USERID: "uid",
+            CONF_EXPIRY_TIME: "0",
+        }
+    )
+    tokens = ArdTokens("new-token", "new-refresh", "uid", "Jane", "", time.time() + 3600)
+
+    async def _refresh(*_: Any) -> ArdTokens:
+        await asyncio.sleep(0)
+        return tokens
+
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock(side_effect=_refresh)) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport"),
+    ):
+        await asyncio.gather(*(provider.get_client() for _ in range(3)))
+
+    refresh.assert_awaited_once()
+    assert provider.token == "new-token"
 
 
 async def test_valid_token_is_not_refreshed() -> None:
@@ -346,8 +375,8 @@ async def test_episode_listings_reuse_the_play_history() -> None:
 
 
 @pytest.mark.parametrize("refresh_token", ["refresh-token", None], ids=["signed-in", "anonymous"])
-async def test_subscriptions_are_editable_when_signed_in(refresh_token: str | None) -> None:
-    """Only a provider linked to an ARD account changes subscriptions in that account."""
+async def test_library_only_with_an_account(refresh_token: str | None) -> None:
+    """Only a provider linked to an ARD account syncs and changes its subscriptions."""
     mass = Mock()
     mass.config.get_provider_setup_value.return_value = refresh_token
     config = Mock(instance_id="ard_audiothek--test", enabled=True)
@@ -355,8 +384,8 @@ async def test_subscriptions_are_editable_when_signed_in(refresh_token: str | No
 
     provider = await setup(mass, Mock(domain="ard_audiothek"), config)
 
-    editable = ProviderFeature.LIBRARY_PODCASTS_EDIT in provider.supported_features
-    assert editable is bool(refresh_token)
+    for feature in (ProviderFeature.LIBRARY_PODCASTS, ProviderFeature.LIBRARY_PODCASTS_EDIT):
+        assert (feature in provider.supported_features) is bool(refresh_token)
 
 
 async def test_library_add_and_remove_change_the_subscriptions() -> None:
