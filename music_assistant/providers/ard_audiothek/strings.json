@@ -41,6 +41,9 @@
       "description": "Your code is {0}. Use the button below to open the ARD login with the code already filled in, or go to accounts.ard.de/id on another device and enter it there. This screen updates automatically once you have signed in."
     }
   },
+  "errors": {
+    "login_failed": "Signing in to your ARD account failed. Please try again."
+  },
   "manifest": {
     "description": "Stream radio shows, news, and podcasts from ARD Sounds (Germany’s public broadcaster)."
   }

@@ -157,7 +157,9 @@ async def test_failed_login_shows_the_form_again(monkeypatch: pytest.MonkeyPatch
 
     await ard_flow.run_setup(session)
 
-    assert form.call_args.kwargs["errors"] == {"base": "ARD device login failed (HTTP 400)"}
+    error = form.call_args.kwargs["errors"]["base"]
+    assert isinstance(error, SetupFlowError)
+    assert error.translation_key == "login_failed"
     assert finish.call_args.args[1] == dict.fromkeys(ACCOUNT_KEYS)
 
 

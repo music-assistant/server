@@ -78,7 +78,13 @@ async def run_setup(session: SetupSession) -> None:
                 tokens = await _device_login(session)
             except LoginFailed as err:
                 session.mass.logger.warning("ARD account login failed: %s", err)
-                errors = {"base": str(err)}
+                # the reason stays in the log, the form shows a message that can be translated
+                errors = {
+                    "base": SetupFlowError(
+                        "Signing in to your ARD account failed. Please try again.",
+                        translation_key="login_failed",
+                    )
+                }
                 continue
             collected.update(
                 {

@@ -1164,6 +1164,7 @@
   "provider.ard_audiothek.config_entries.token.label": "token",
   "provider.ard_audiothek.config_entries.token_expiry.label": "token_expiry",
   "provider.ard_audiothek.config_entries.user_id.label": "uid",
+  "provider.ard_audiothek.errors.login_failed": "Signing in to your ARD account failed. Please try again.",
   "provider.ard_audiothek.manifest.description": "Stream radio shows, news, and podcasts from ARD Sounds (Germany’s public broadcaster).",
   "provider.ard_audiothek.setup_flow.device_login.description": "Your code is {0}. Use the button below to open the ARD login with the code already filled in, or go to accounts.ard.de/id on another device and enter it there. This screen updates automatically once you have signed in.",
   "provider.ard_audiothek.setup_flow.device_login.title": "Sign in to your ARD account",
