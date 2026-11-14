@@ -121,7 +121,7 @@ class ChromecastDashboards:
     def _register_device(self, device_id: str, cast_info: CastInfo) -> None:
         """Build a DashboardDevice for device_id and (re-)register it with the controller."""
         device = DashboardDevice(
-            dashboard_id=f"chromecast_{device_id}",
+            dashboard_id=self._dashboard_id(device_id),
             name=cast_info.friendly_name or device_id,
             supported_types=SUPPORTED_DASHBOARD_TYPES,
             provider_domain_hint=self.provider.domain,
@@ -152,7 +152,9 @@ class ChromecastDashboards:
             # a release that is already on the wire will close the app anyway, so the
             # receiver's 'already running' short-circuit has to be bypassed
             force_launch = castplayer.app_quit_sent
-        url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
+        url = await self.mass.dashboard.resolve_dashboard_url(
+            dashboard, player_id, dashboard_id=self._dashboard_id(device_id)
+        )
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
             await self.mass.loop.run_in_executor(
@@ -281,7 +283,7 @@ class ChromecastDashboards:
         if device_id not in self._active_casts:
             return
         self._drop_active_cast(device_id)
-        self.mass.dashboard.end_session(f"chromecast_{device_id}", reason)
+        self.mass.dashboard.end_session(self._dashboard_id(device_id), reason)
 
         if chromecast := self._dashboard_connections.pop(device_id, None):
             # non-blocking: close the socket, the daemon thread exits on its own
@@ -302,6 +304,11 @@ class ChromecastDashboards:
         if entry.loss_timer is not None:
             entry.loss_timer.cancel()
         entry.listener.invalidate()
+
+    @staticmethod
+    def _dashboard_id(device_id: str) -> str:
+        """Return the dashboard endpoint id for a Cast device."""
+        return f"chromecast_{device_id}"
 
 
 class _DashboardCastListener:

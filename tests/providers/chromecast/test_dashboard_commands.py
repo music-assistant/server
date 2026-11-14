@@ -144,6 +144,10 @@ async def test_on_show_reuses_connected_player_cc() -> None:
         await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url, force_launch=False)
+    # the url carries the endpoint's dashboard id so the viewer can identify its session
+    dashboards.mass.dashboard.resolve_dashboard_url.assert_called_once_with(
+        DashboardType.PARTY, None, dashboard_id=f"chromecast_{device_uuid}"
+    )
 
 
 async def test_on_show_keeps_the_player_from_releasing_the_device() -> None:

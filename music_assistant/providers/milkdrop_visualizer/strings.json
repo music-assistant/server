@@ -1,0 +1,8 @@
+{
+  "config_entries": {
+    "show_on_dashboards": {
+      "label": "Show on dashboards and cast displays",
+      "description": "Show the visualizer by default on the party and now playing dashboards of a cast or kiosk display. It does not change the visualizer in the regular web app, and a per-player setting of whoever cast the display still wins. Displays reached through remote access (app.music-assistant.io, used when the server has no https base URL) cannot show the visualizer."
+    }
+  }
+}

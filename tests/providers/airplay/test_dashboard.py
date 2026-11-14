@@ -260,7 +260,7 @@ async def test_on_show_builds_contract_launch_uri() -> None:
     await dashboards._on_show(PLAYER_ID, DashboardType.NOW_PLAYING, PLAYER_ID)
 
     dashboards.mass.dashboard.resolve_dashboard_url.assert_awaited_once_with(
-        DashboardType.NOW_PLAYING, PLAYER_ID, prefer_local=True
+        DashboardType.NOW_PLAYING, PLAYER_ID, dashboard_id=f"airplay_{PLAYER_ID}", prefer_local=True
     )
     expected = (
         "musicassistant://dashboard/show?v=1&type=now_playing"
@@ -279,6 +279,8 @@ async def test_on_show_party_launch_uri_needs_no_player() -> None:
     controller.logger = MagicMock()
     controller._dashboards = {}
     controller._sessions = {}
+    controller._session_owners = {}
+    controller._viewer_keys = {}
 
     dashboards = _make_dashboards()
     dashboards.mass.dashboard = controller
@@ -287,12 +289,16 @@ async def test_on_show_party_launch_uri_needs_no_player() -> None:
     dashboards._register(player)
     dashboard_id = f"airplay_{PLAYER_ID}"
 
-    with patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="ABC123")):
+    with (
+        patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="ABC123")),
+        patch("secrets.token_urlsafe", return_value="KEY"),
+    ):
         await controller.show_dashboard(dashboard_id, DashboardType.PARTY)
 
     expected = (
         "musicassistant://dashboard/show?v=1&type=party"
-        "&target=http%3A%2F%2F192.168.1.10%3A8095%3Fdashboard%3DABC123%26path%3D%252Fparty"
+        "&target=http%3A%2F%2F192.168.1.10%3A8095%3Fdashboard%3DABC123"
+        f"%26path%3D%252Fparty%253Fdashboard_id%253D{dashboard_id}%2526viewer_key%253DKEY"
         f"&dashboard_id={dashboard_id}"
     )
     player.async_launch_app.assert_awaited_once_with(expected)
@@ -363,6 +369,7 @@ async def test_launch_failure_leaves_no_controller_session() -> None:
     controller.logger = MagicMock()
     controller._dashboards = {}
     controller._sessions = {}
+    controller._viewer_keys = {}
     controller.resolve_dashboard_url = AsyncMock(  # type: ignore[method-assign]
         return_value="http://192.168.1.10:8095/?dashboard=ABC123&path=%2Fnow-playing%3Fplayer%3Dap"
     )

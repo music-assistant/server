@@ -1773,7 +1773,14 @@ class AuthenticationManager:
 
         # Update preferences if provided
         if preferences is not None:
+            # target_user can be a login-time snapshot, so read the stored preferences
+            stored_user = await self.get_user(target_user.user_id)
+            previous_preferences = stored_user.preferences if stored_user else None
             target_user = await self.update_user_preferences(target_user, preferences)
+            # cast dashboards render with their casting user's preferences; notify viewers
+            self.mass.dashboard.notify_user_preferences_changed(
+                target_user.user_id, previous_preferences, preferences
+            )
 
         # Update player_filter (requires the users.manage scope)
         if player_filter is not None:
