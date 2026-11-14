@@ -18,7 +18,11 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.streams.constants import HLS_RADIO_INPUT_BURST, RADIO_BUFFER_SIZE
+from music_assistant.controllers.streams.constants import (
+    HLS_RADIO_INPUT_BURST,
+    HLS_RADIO_SEGMENT_RETRIES,
+    RADIO_BUFFER_SIZE,
+)
 from music_assistant.helpers.audio import HTTP_HEADERS
 from music_assistant.helpers.mp3 import NO_SEEK_HINTS, Mp3SeekHints
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
@@ -1336,7 +1340,11 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
     async def _get_hls_substream(_url: str) -> SimpleNamespace:
         return SimpleNamespace(path="http://test.invalid/media.m3u8")
 
+    async def _get_start(_url: str) -> tuple[int, float | None]:
+        return 4, 20.0
+
     monkeypatch.setattr(audio, "get_hls_substream", _get_hls_substream)
+    monkeypatch.setattr(audio, "_get_hls_radio_start", _get_start)
     streamdetails = StreamDetails(
         provider="test_provider",
         item_id="station-1",
@@ -1348,9 +1356,14 @@ async def test_hls_radio_input_reads_ahead_of_realtime(monkeypatch: pytest.Monke
 
     _, _, extra_input_args = await audio._resolve_media_stream_source(streamdetails, 0, [])
 
+    assert streamdetails.data["hls_start_seconds"] == 20.0
     assert extra_input_args == [
         "-stream_loop",
         "-1",
+        "-live_start_index",
+        "-4",
+        "-seg_max_retry",
+        str(HLS_RADIO_SEGMENT_RETRIES),
         "-readrate",
         "1",
         "-readrate_initial_burst",

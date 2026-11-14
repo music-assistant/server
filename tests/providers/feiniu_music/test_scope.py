@@ -364,3 +364,42 @@ async def test_reload_preserves_ma_owned_http_connector(provider: Any, monkeypat
         assert not session.closed
     finally:
         await session.close()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "scoped/test-scope/track/track-test/cover-test",
+        "scoped/test-scope/album/a%2Fb/cover%20x",
+        "scoped/test-scope/playlist/p/c",
+    ],
+)
+def test_accepts_stored_image_path_scoped_artwork(provider: Any, path: str) -> None:
+    """Artwork scoped to this account is accepted as a stored image path."""
+    assert provider.accepts_stored_image_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "cover-test",
+        "scoped/other-scope/track/track-test/cover-test",
+        "scoped/test-scope/radio/track-test/cover-test",
+        "scoped/test-scope/track/track-test/cover-test/x",
+        "scoped/test-scope/track/track-test/cover\n",
+        "/scoped/test-scope/track/track-test/cover-test",
+        "@evil.com/x",
+        "//evil.com/x",
+        "http://evil/x",
+    ],
+)
+def test_accepts_stored_image_path_refuses_paths(provider: Any, path: str) -> None:
+    """Anything but artwork scoped to this account is refused."""
+    assert not provider.accepts_stored_image_path(path)
+
+
+def test_accepts_stored_image_path_refuses_before_login(provider: Any) -> None:
+    """Without an account scope no stored image path is accepted."""
+    provider._image_scope = ""
+    assert not provider.accepts_stored_image_path("scoped//track/track-test/cover-test")

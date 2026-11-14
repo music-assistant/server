@@ -26,6 +26,7 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.helpers.images import _extract_imageproxy_id, get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.util import strip_control_characters
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_RENDER_TIMEOUT,
     AIRPLAY_ARTWORK_SIZE,
@@ -798,9 +799,10 @@ class AirPlayStream:
         item_id = ""
         if metadata:
             duration = self._full_media_duration(metadata)
-            title = metadata.title or ""
-            artist = metadata.artist or ""
-            album = metadata.album or ""
+            # each field is a single line of the newline-delimited command
+            title = strip_control_characters(metadata.title or "")
+            artist = strip_control_characters(metadata.artist or "")
+            album = strip_control_characters(metadata.album or "")
             item_id = metadata.queue_item_id or ""
             # The identity deliberately excludes duration and image url: a
             # value that shifts per seek or per media-update would re-send the
