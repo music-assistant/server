@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from auntie_sounds import LoginFailedError, SoundsClient, exceptions
+from auntie_sounds.content import MAX_PODCAST_EPISODES
 from auntie_sounds.models import (
     CategoryItemContainer,
     Container,
@@ -224,7 +225,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Get all PodcastEpisodes for given podcast id."""
         self.logger.debug("Getting podcast episodes for %s", prov_podcast_id)
         podcast_episodes = await self.client.content.get_podcast_episodes(
-            prov_podcast_id, fetch_all_items=True
+            prov_podcast_id, fetch_all_items=True, max_items=MAX_PODCAST_EPISODES
         )
         if podcast_episodes:
             for episode in podcast_episodes:
