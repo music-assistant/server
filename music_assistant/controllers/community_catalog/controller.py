@@ -42,17 +42,20 @@ from music_assistant.controllers.community_catalog.installer import (
     InstallError,
     content_hash,
 )
+from music_assistant.controllers.community_catalog.listing import (
+    available_provider,
+    installed_manifest,
+    installed_provider,
+)
 from music_assistant.controllers.community_catalog.loader import ProviderLoader
 from music_assistant.controllers.community_catalog.models import (
     CommunityProvider,
-    CommunityProviderState,
     IndexProvider,
-    IndexStatus,
     InstalledProvider,
 )
 from music_assistant.controllers.community_catalog.store import CatalogStore
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.util import load_provider_module, set_provider_tier
+from music_assistant.helpers.util import load_provider_module
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -200,7 +203,7 @@ class CommunityCatalogController(CoreController):
             provider
             for domain, entry in index.providers.items()
             if domain not in installed
-            and (provider := self._available_provider(domain, entry)) is not None
+            and (provider := available_provider(domain, entry, self.logger)) is not None
         )
         return providers
 
@@ -1017,7 +1020,7 @@ class CommunityCatalogController(CoreController):
         """
         index = self._gate.own_index()
         entry = index.providers.get(domain) if index is not None else None
-        if entry is None or self._available_provider(domain, entry) is None:
+        if entry is None or available_provider(domain, entry, self.logger) is None:
             msg = f"The community catalog does not offer {domain} for this server version"
             raise ActionUnavailable(msg)
         if domain in self._store.state.installed:
@@ -1039,111 +1042,18 @@ class CommunityCatalogController(CoreController):
         """
         index = self._store.index
         entry = index.providers.get(domain) if index is not None else None
-        manifest = await self._installed_manifest(domain, entry)
+        manifest = await installed_manifest(self.mass, self._installer, domain, entry, self.logger)
         if manifest is None:
             return None
-        own_index = self._gate.own_index()
-        own_entry = own_index.providers.get(domain) if own_index is not None else None
-        latest = own_entry.latest if own_entry is not None else None
-        release = own_entry.versions.get(latest) if own_entry and latest else None
-        decision = self._decisions.get(domain)
-        state = CommunityProviderState.INSTALLED
-        reason = reason_url = None
-        if decision is not None and decision.verdict == Verdict.BLOCKED:
-            state, reason, reason_url = (
-                CommunityProviderState.BLOCKED,
-                decision.detail,
-                decision.url,
-            )
-        elif decision is not None and decision.verdict != Verdict.LOAD:
-            state = CommunityProviderState.UNAVAILABLE
-        elif installed.pending_version is not None:
-            state = CommunityProviderState.RESTART_REQUIRED
-        elif self._gate.evaluate(domain, installed, self._folder_hashes.get(domain)).version:
-            state = CommunityProviderState.UPDATE_AVAILABLE
-        elif entry is not None and entry.status == IndexStatus.WITHDRAWN:
-            state, reason, reason_url = (
-                CommunityProviderState.WITHDRAWN,
-                entry.reason,
-                entry.reason_url,
-            )
-        return CommunityProvider(
-            domain=domain,
-            repository=installed.repository,
-            maintainers=entry.maintainers if entry is not None else [],
-            icon=entry.icon if entry is not None else None,
-            manifest=manifest,
-            state=state,
-            installed_version=installed.version,
-            latest_version=latest,
-            pending_version=installed.pending_version,
-            failed_version=installed.failed_version,
-            added=entry.added if entry is not None else None,
-            released=release.released if release is not None else None,
-            reason=reason,
-            reason_url=reason_url,
+        return installed_provider(
+            domain,
+            installed,
+            manifest,
+            entry,
+            own_entry=self._gate.own_entry(domain),
+            decision=self._decisions.get(domain),
+            update=self._gate.evaluate(domain, installed, self._folder_hashes.get(domain)).version,
             error=self.unavailable_reason(domain),
-            notice=installed.notice,
-        )
-
-    async def _installed_manifest(
-        self, domain: str, entry: IndexProvider | None
-    ) -> ProviderManifest | None:
-        """
-        Return the manifest of an installed provider: of its live folder, else of the index.
-
-        :param domain: The domain of the provider.
-        :param entry: The provider in the kept copy of the index.
-        """
-        for manifest in self.mass.get_provider_manifests():
-            if manifest.domain == domain and manifest.tier == ProviderTier.COMMUNITY:
-                return manifest
-        folder = self._installer.live_folder(domain)
-        try:
-            manifest = await ProviderManifest.parse(str(folder / "manifest.json"))
-            set_provider_tier(manifest, ProviderTier.COMMUNITY)
-        except (OSError, ValueError, LookupError) as err:
-            # the live folder is gone or broken when installing it again failed
-            if entry is not None and (available := self._available_provider(domain, entry)):
-                return available.manifest
-            self.logger.warning("Not listing community provider %s: %s", domain, err)
-            return None
-        return manifest
-
-    def _available_provider(self, domain: str, entry: IndexProvider) -> CommunityProvider | None:
-        """
-        Return a provider of the index that can be installed, or None.
-
-        :param domain: The domain of the provider.
-        :param entry: The provider in the index.
-        """
-        if (latest := entry.offered_version) is None:
-            return None
-        try:
-            manifest = ProviderManifest.from_dict(entry.manifest)
-        except (ValueError, LookupError) as err:
-            self.logger.warning(
-                "Not listing community provider %s: invalid manifest: %s", domain, err
-            )
-            return None
-        if manifest.domain != domain:
-            self.logger.warning(
-                "Not listing community provider %s: its manifest is of %s", domain, manifest.domain
-            )
-            return None
-        set_provider_tier(manifest, ProviderTier.COMMUNITY)
-        return CommunityProvider(
-            domain=domain,
-            repository=entry.repository,
-            maintainers=entry.maintainers,
-            icon=entry.icon,
-            manifest=manifest,
-            state=CommunityProviderState.AVAILABLE,
-            latest_version=latest,
-            added=entry.added,
-            released=entry.versions[latest].released,
-            reason=entry.reason,
-            reason_url=entry.reason_url,
         )
 
     def _raise_in_safe_mode(self) -> None:
