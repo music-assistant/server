@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
-from .harness import FakePowerControl, FakeProtocol, Scenario, VisiblePlayer
+from .harness import (
+    MUSIC_PROVIDER,
+    TEST_TRACK_URI,
+    FakePowerControl,
+    FakeProtocol,
+    Scenario,
+    VisiblePlayer,
+)
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
 BATHROOM = {
@@ -176,6 +184,34 @@ async def test_play_on_a_switched_off_player_powers_it_on(scenario: Scenario) ->
     await play
 
     assert ("play_media", MEDIA) in pi.commands
+
+
+async def test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_device(
+    scenario: Scenario,
+) -> None:
+    """
+    A stop of the queue of a player that is being powered on calls the power on off, no more.
+
+    The play that switched the control on waits for the device. The stop of its queue ends
+    that wait and does not go on to the player, whose device is not there to take a stop.
+    """
+    _pi, plug, player_id = await _switched_off_player(scenario)
+    await scenario.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
+    await scenario.settle()
+    play = await scenario.command(scenario.mass.player_queues.play_media(player_id, TEST_TRACK_URI))
+    assert plug.commands == [True]
+    assert not play.done()
+    players = scenario.mass.players
+
+    with patch.object(players, "_handle_cmd_stop", wraps=players._handle_cmd_stop) as stop_player:
+        await scenario.mass.player_queues.stop(player_id)
+
+    stop_player.assert_not_awaited()
+    # the power on looks for the device every 0.5 s
+    await scenario.advance(1)
+    with pytest.raises(PlayerUnavailableError, match="is switched off"):
+        await play
+    assert plug.commands == [True]
 
 
 async def _detached_player(scenario: Scenario) -> str:

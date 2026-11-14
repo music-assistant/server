@@ -2475,10 +2475,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 halts_playback = queue_data.halted_by_command = True
         try:
             # a player switched off at its power control has nothing left to stop, while its
-            # session below still needs the teardown
-            if player := self.mass.players.get_player(queue_id):
+            # session below still needs the teardown. Read before the power on is called off:
+            # a player that waits for its device counts as switched off until then
+            player = self.mass.players.get_player(queue_id)
+            switched_off = player is not None and player.offline_by_power_control
+            if player is not None:
                 self.mass.players._cancel_power_on(player)
-            if not (player and player.offline_by_power_control):
+            if not switched_off:
                 # Use internal handler to avoid circular redirect:
                 # public cmd_stop redirects to queue.stop when a queue is active,
                 # which would loop back here indefinitely.

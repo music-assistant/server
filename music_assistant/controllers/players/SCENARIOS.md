@@ -290,6 +290,16 @@ clip played.
   - `tests/controllers/streams/test_live_announcements.py::test_a_player_switched_off_at_its_power_control_is_accepted`
   - `tests/controllers/streams/test_live_announcements.py::test_a_power_on_that_fails_is_reported_and_not_as_finished`
 
+### AWAY-12 · A stop of the queue of a player that waits for its device goes to no device
+
+As in AWAY-4, the user plays music on the Bathroom player, which switches its plug on and waits
+for the device. The user stops the queue of the player: the play fails as switched off, and
+nothing is sent to the player, whose device is not there to take a stop.
+
+- End-to-end: **possible with** a power control the lab can switch and a container that stays
+  stopped.
+- Proven by: `test_availability.py::test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_device`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
