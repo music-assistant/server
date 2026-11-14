@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, overload
 
-from music_assistant_models.enums import MediaType, PlayerType, SleepTimerMode
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerType, SleepTimerMode
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -28,7 +28,7 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.controllers.players.constants import SwitchedOffAction
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import ContentType, PlaybackState
+    from music_assistant_models.enums import ContentType
     from music_assistant_models.media_items import (
         Album,
         BrowseFolder,
@@ -92,6 +92,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     func: None = None,
     *,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    starts_unless_playing: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayActionHostT, P], Awaitable[R]]],
     Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]],
@@ -102,6 +103,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]] | None = None,
     *,
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
+    starts_unless_playing: bool = False,
 ) -> (
     Callable[Concatenate[PlayActionHostT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -123,7 +125,11 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
         its external power control (see SwitchedOffAction), handled before the locks are
         taken: refused by default, ignored, powered on first for actions that start
         playback, or run as is for actions that handle it themselves. An action that powers
-        such a player on also waits for the switched-off members of a group player.
+        such a player on also waits for the switched-off members of the group player it
+        starts: the queue's player itself, or the group that its playback goes to.
+    :param starts_unless_playing: The action makes a queue that does not play start playing
+        (a seek), so on such a queue it waits for the switched-off members of a group player
+        as well. A queue whose player itself is switched off is handled as switched_off says.
     """  # noqa: D401
 
     def decorator(
@@ -156,12 +162,18 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     await self.mass.players._power_on_switched_off_player(queue_id)
                     # the queue can register anew while its device comes online
                     queue_data = self._queue_data[queue_id]
-            elif (
+            elif player is not None and (
                 switched_off == SwitchedOffAction.POWER_ON
-                and player is not None
-                and player.type == PlayerType.GROUP
+                or (
+                    starts_unless_playing
+                    and queue_data.queue.active
+                    and queue_data.queue.state != PlaybackState.PLAYING
+                )
             ):
-                await self.mass.players._power_on_members(player)
+                # the group player itself, or the group that the playback of a member goes to
+                target = self.mass.players._resolve_play_media_target(player)
+                if target.type == PlayerType.GROUP:
+                    await self.mass.players._power_on_members(target)
             queue = queue_data.queue
             # a play action on the queue of a player captured by a (sync)group releases the
             # player from it first, which takes the group's lock - so that one is taken

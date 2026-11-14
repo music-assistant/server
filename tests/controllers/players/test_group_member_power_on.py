@@ -276,21 +276,57 @@ async def test_playback_the_server_continues_powers_on_no_member(mock_mass: Magi
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
-async def test_a_group_that_plays_already_powers_on_no_member(mock_mass: MagicMock) -> None:
-    """A group that plays is not started: a command on it leaves a switched-off member off."""
-    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
-    controller = setup.controller
-    group_protocol = cast("MockProtocol", controller.get_protocol("proto_downstairs"))
+def _plays(setup: _Setup) -> None:
+    """Let the group read as playing."""
+    group_protocol = cast("MockProtocol", setup.controller.get_protocol("proto_downstairs"))
     group_protocol._attr_playback_state = PlaybackState.PLAYING
     setup.group.update_state(signal_event=False, force_update=True)
+
+
+async def test_a_play_on_a_group_that_plays_already_powers_on_no_member(
+    mock_mass: MagicMock,
+) -> None:
+    """A play is ignored on a group that plays, so it leaves a switched-off member off."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    _plays(setup)
     started = asyncio.get_running_loop().time()
 
-    assert await controller._power_on_members(setup.group) == set()
+    await setup.controller.cmd_play("downstairs")
 
     assert asyncio.get_running_loop().time() == started
     assert _power_ons(setup) == {"kitchen": 0, "den": 0}
-    # a player that is added to it is powered on all the same
-    assert await controller._power_on_members(setup.group, ["den"]) == set()
+
+
+async def test_a_play_on_a_group_that_does_not_play_powers_on_its_members(
+    mock_mass: MagicMock,
+) -> None:
+    """A play that starts a group waits for its switched-off member."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    mock_mass.player_queues.get = MagicMock(return_value=None)
+    started = asyncio.get_running_loop().time()
+
+    with suppress(MusicAssistantError):
+        # a group that plays nothing may refuse the command itself
+        await setup.controller.cmd_play("downstairs")
+
+    assert asyncio.get_running_loop().time() - started >= BOOT_TIME
+    assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+async def test_a_resume_of_a_group_that_plays_already_powers_on_its_members(
+    mock_mass: MagicMock,
+) -> None:
+    """A resume starts a group again, so it waits for its switched-off member while it plays."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    _plays(setup)
+    mock_mass.player_queues.get = MagicMock(return_value=None)
+    started = asyncio.get_running_loop().time()
+
+    with suppress(MusicAssistantError):
+        # a group that plays no queue may refuse the command itself
+        await setup.controller.cmd_resume("downstairs")
+
+    assert asyncio.get_running_loop().time() - started >= BOOT_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 

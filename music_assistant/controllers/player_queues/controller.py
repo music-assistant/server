@@ -1144,6 +1144,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
+        starts_player = queue.state != PlaybackState.PLAYING
         self._set_transitioning(queue_id, True)
         idx = self._queue_data[queue_id].queue.current_index
         if idx is None:
@@ -1170,6 +1171,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._move_to_index,
             queue_id,
             next_index,
+            starts_player,
             task_id=f"queue_play_index_{queue_id}",
         )
 
@@ -1188,6 +1190,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(queue_id)
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
+        starts_player = queue.state != PlaybackState.PLAYING
         self._set_transitioning(queue_id, True)
         current_index = self._queue_data[queue_id].queue.current_index
         if current_index is None:
@@ -1213,6 +1216,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._move_to_index,
             queue_id,
             prev_index,
+            starts_player,
             task_id=f"queue_play_index_{queue_id}",
         )
 
@@ -1245,8 +1249,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_data.pending_skip_seconds += seconds
         try:
             await self._apply_pending_skip(queue_id)
-        except asyncio.CancelledError:
-            # a press cancelled while waiting takes back its offset, unless it was already applied
+        except asyncio.CancelledError, PlayerUnavailableError:
+            # a press cancelled while waiting takes back its offset, unless it was already
+            # applied, and so does one whose wait for the members of a group was called off
             if queue_data.pending_skip_item_id == current_item.queue_item_id:
                 queue_data.pending_skip_seconds -= seconds
             raise
@@ -1256,7 +1261,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         required_scope=Scope.QUEUES_CONTROL,
         allow_impersonation=True,
     )
-    @handle_play_action
+    @handle_play_action(starts_unless_playing=True)
     async def seek(self, queue_id: str, position: int = 10) -> None:
         """
         Handle SEEK command for given queue.
@@ -2623,7 +2628,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return max(0.0, min(target, max(0.0, duration - SKIP_END_MARGIN)))
 
-    @handle_play_action
+    @handle_play_action(starts_unless_playing=True)
     async def _apply_pending_skip(self, queue_id: str) -> None:
         """
         Seek by the skip seconds collected for the queue's current item, if any.
@@ -2923,16 +2928,37 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time_last_updated = time.time()
         queue.resume_pos = 0
 
-    async def _move_to_index(self, queue_id: str, index: int) -> None:
+    async def _move_to_index(self, queue_id: str, index: int, starts_player: bool) -> None:
         """
         Play another item of a queue, for a step within it (next, previous).
 
-        Unlike play_index it is no command that starts the queue's player: the members of a
-        group player that are switched off at their power control stay off.
+        A step within a queue that plays is no command that starts the queue's player: the
+        members of a group player that are switched off at their power control stay off. A
+        step that makes a queue play starts its player, so those members are powered on and
+        waited for first.
 
         :param queue_id: The queue to play the item of.
         :param index: The index of the item to play.
+        :param starts_player: Whether the queue did not play when the step was asked for.
         """
+        player = self.mass.players.get_player(queue_id)
+        # the group player itself, or the group that the playback of a member goes to
+        target = self.mass.players._resolve_play_media_target(player) if player else None
+        if starts_player and target is not None and target.type == PlayerType.GROUP:
+            # the wait is a task of its own: the move of a further step replaces this move
+            # and joins that wait, so the members are powered on and waited for once
+            power_on = self.mass.create_task(
+                self.mass.players._power_on_members(target),
+                task_id=f"queue_power_on_members_{queue_id}",
+                log_exceptions=False,
+            )
+            try:
+                await asyncio.shield(power_on)
+            except PlayerUnavailableError as err:
+                # called off by a stop, a pause or a power off: the step starts nothing
+                self.logger.debug("Not moving queue %s to another item: %s", queue_id, err)
+                self._set_transitioning(queue_id, False)
+                return
         with self.mass.players.without_member_power_on():
             await self.play_index(queue_id, index)
 

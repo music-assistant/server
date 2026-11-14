@@ -2148,6 +2148,38 @@ class TestPlayMediaOverride:
         assert played_on == ["g1"]
 
     @pytest.mark.asyncio
+    async def test_override_disabled_redirects_a_player_that_joins_a_group_meanwhile(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """With override disabled, a player a group takes while play_media waits is redirected."""
+        controller, group, protocol, member = self._captured_member(mock_mass)
+        protocol._attr_group_members = []
+        _refresh(group, member)
+        assert member.active_group is None
+        _set_play_media_override(mock_mass, False)
+
+        played_on: list[str] = []
+
+        async def _handle_play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            played_on.append(player_id)
+
+        controller._handle_play_media = _handle_play_media  # type: ignore[method-assign]
+
+        media = MagicMock(uri="x", source_id="src")
+        with patch.object(controller, "_release_player_for_play_media") as release:
+            async with _lock_held_elsewhere(controller, "member"):
+                play = asyncio.create_task(controller.play_media("member", media))
+                await _yield_to_loop()
+                # the group takes the player while the command waits for the player's lock
+                protocol._attr_group_members = ["member"]
+                _refresh(group, member)
+            await play
+
+        # the media goes to the group, and the player is not taken out of it
+        assert played_on == ["g1"]
+        release.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_override_releases_dynamic_member(self, mock_mass: MagicMock) -> None:
         """With override enabled, play_media on a dynamic group member releases it first."""
         # NOT a static member ⇒ dynamic — can be removed via set_members

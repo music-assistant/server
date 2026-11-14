@@ -12,7 +12,7 @@ import functools
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, overload
 
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MusicAssistantError,
@@ -61,6 +61,7 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
     accept_unavailable: bool = False,
     to_playback_owner: bool = False,
+    ignored_while_playing: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -74,6 +75,7 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
     accept_unavailable: bool = False,
     to_playback_owner: bool = False,
+    ignored_while_playing: bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -105,6 +107,9 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
         command that handles such a player itself (power).
     :param to_playback_owner: The command acts on the owner of the player's playback (its
         sync leader or group player), so the user needs access to that owner as well.
+    :param ignored_while_playing: The command does nothing on a player that plays already
+        (play), so it does not wait for the switched-off members of a group player that
+        plays.
     """  # noqa: D401
 
     def decorator(
@@ -170,7 +175,13 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
                 target = self._resolve_playback_owner(player) if to_playback_owner else player
                 if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
                     await self._power_on_switched_off_player(player.player_id)
-                elif switched_off == SwitchedOffAction.POWER_ON and target.type == PlayerType.GROUP:
+                elif (
+                    switched_off == SwitchedOffAction.POWER_ON
+                    and target.type == PlayerType.GROUP
+                    and not (
+                        ignored_while_playing and target.playback_state == PlaybackState.PLAYING
+                    )
+                ):
                     await self._power_on_members(target)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):

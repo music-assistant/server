@@ -545,9 +545,8 @@ class PowerMixin(_PlayerControllerBase):
         boots after a power on that was called off is waited for again. A player that does not come
         online is logged and left to the caller. Takes no lock: waiting for a device takes
         far longer than other commands wait for a player lock, so this must run before any
-        lock is taken. Does nothing in a task that holds the lock of the owner already, for
-        playback the server continues by itself (see without_member_power_on), and for the
-        members of a group player that plays already: that is no start of it.
+        lock is taken. Does nothing in a task that holds the lock of the owner already, and
+        for playback the server continues by itself (see without_member_power_on).
 
         :param owner: The group player that is about to play, or the group player or leader
             that players are added to.
@@ -558,8 +557,6 @@ class PowerMixin(_PlayerControllerBase):
         :return: The ids of the players that did not come online.
         """
         if _CONTINUES_PLAYBACK.get() or self.holds_player_lock(owner.player_id):
-            return set()
-        if member_ids is None and owner.playback_state == PlaybackState.PLAYING:
             return set()
         owner_members = (*owner.group_members, *owner.static_group_members)
         members = [

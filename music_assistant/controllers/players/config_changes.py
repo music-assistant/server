@@ -169,9 +169,11 @@ class ConfigChangesMixin(_PlayerControllerBase):
             )
             return
         self.logger.info("Restarting playback of Player %s after DSP change", player_id)
-        # if the player is not using a queue, we need to stop and start playback
-        await self.cmd_stop(player_id)
-        await self.cmd_play(player_id)
+        # if the player is not using a queue, we need to stop and start playback, which is
+        # no command that starts a group
+        with self.without_member_power_on():
+            await self.cmd_stop(player_id)
+            await self.cmd_play(player_id)
 
     async def _restart_playback_after_config_change(
         self, player: Player, requires_restart: bool
