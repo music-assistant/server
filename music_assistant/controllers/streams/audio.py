@@ -109,6 +109,9 @@ from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     HLS_RADIO_INPUT_BURST,
+    HLS_RADIO_LIVE_START_SECONDS,
+    HLS_RADIO_MIN_START_SEGMENTS,
+    HLS_RADIO_SEGMENT_RETRIES,
     ICY_PLACEHOLDER_IMAGE_URLS,
     MIN_VOICE_OVER_DURATION,
     NO_TRACK_MATCH_EXPIRATION,
@@ -251,6 +254,10 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
     RetriesExhausted,
     InvalidDataError,
 )
+
+HLS_RADIO_PLAYLIST_TIMEOUT = 10
+STREAMDETAILS_HLS_START_SECONDS_KEY = "hls_start_seconds"
+_EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
 
 # Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
 # shorter than the minimum playtime count toward the limit so its provider is not hammered.
@@ -621,6 +628,21 @@ class _IncomingFadePrefetcher:
                 yield chunks.popleft()
             async for chunk in stream:
                 yield chunk
+
+
+def _segments_for_seconds(durations: list[float], seconds: float) -> int:
+    """
+    Return how many segments from the end of a playlist cover the given seconds.
+
+    :param durations: The durations of the segments of the playlist, oldest first.
+    :param seconds: The seconds to cover, all segments are returned when they cover less.
+    """
+    covered = 0.0
+    for count, duration in enumerate(reversed(durations), start=1):
+        covered += duration
+        if covered >= seconds:
+            return count
+    return len(durations)
 
 
 class StreamsAudio:
@@ -5273,9 +5295,18 @@ class StreamsAudio:
                 # HLS streams (especially the BBC) struggle when they're played directly
                 # with ffmpeg, where they just stop after some minutes,
                 # so we tell ffmpeg to loop around in this case.
+                start_segments, start_seconds = await self._get_hls_radio_start(substream.path)
+                if streamdetails.data is None:
+                    streamdetails.data = {}
+                if isinstance(streamdetails.data, dict):
+                    streamdetails.data[STREAMDETAILS_HLS_START_SECONDS_KEY] = start_seconds
                 extra_input_args += [
                     "-stream_loop",
                     "-1",
+                    "-live_start_index",
+                    str(-start_segments),
+                    "-seg_max_retry",
+                    str(HLS_RADIO_SEGMENT_RETRIES),
                     "-readrate",
                     "1",
                     "-readrate_initial_burst",
@@ -5851,6 +5882,33 @@ class StreamsAudio:
             ) as resp:
                 yield resp
 
+    async def _get_hls_radio_start(self, media_playlist_url: str) -> tuple[int, float | None]:
+        """
+        Return the segments behind the live edge an HLS radio stream starts and their seconds.
+
+        The seconds are None when the playlist gave no usable segment durations.
+
+        :param media_playlist_url: The url of the media playlist of the stream.
+        """
+        try:
+            async with self.mass.http_session_no_ssl.get(
+                encoded_request_url(media_playlist_url),
+                headers=HTTP_HEADERS,
+                timeout=ClientTimeout(total=HLS_RADIO_PLAYLIST_TIMEOUT),
+            ) as resp:
+                resp.raise_for_status()
+                playlist = (await resp.read()).decode("utf-8", errors="replace")
+        except (aiohttp.ClientError, TimeoutError) as err:
+            self.logger.debug("Could not read the HLS radio playlist: %s", err)
+            return HLS_RADIO_MIN_START_SEGMENTS, None
+        durations = [float(value) for value in _EXTINF_DURATION.findall(playlist)]
+        if not any(durations):
+            return HLS_RADIO_MIN_START_SEGMENTS, None
+        needed = _segments_for_seconds(durations, HLS_RADIO_LIVE_START_SECONDS)
+        # ffmpeg starts at the first segment of a playlist that is shorter than this
+        segments = min(max(needed, HLS_RADIO_MIN_START_SEGMENTS), len(durations))
+        return segments, sum(durations[-segments:])
+
     async def _update_hls_radio_metadata(
         self,
         streamdetails: StreamDetails,
@@ -5897,49 +5955,52 @@ class StreamsAudio:
                     streamdetails.data.pop("hls_media_playlist_url", None)
                 raise
 
-            # Parse the playlist and look for EXTINF metadata
-            # The most recent segment usually has the current metadata
+            # The audio stays as far behind the live edge as the stream started, so the
+            # metadata of what plays now is that far back in the playlist
             lines = playlist_content.strip().split("\n")
-            for line in reversed(lines):
-                if line.startswith("#EXTINF:"):
-                    # Extract metadata from EXTINF line
-                    metadata = parse_extinf_metadata(line)
+            entries = [line for line in lines if line.startswith("#EXTINF:")]
+            if not entries:
+                return
+            line = entries[-1]
+            start_seconds = streamdetails.data.get(STREAMDETAILS_HLS_START_SECONDS_KEY)
+            if start_seconds:
+                durations = [float(value) for value in _EXTINF_DURATION.findall("\n".join(entries))]
+                if len(durations) == len(entries):
+                    line = entries[-_segments_for_seconds(durations, start_seconds)]
 
-                    # Build stream title from title and artist
-                    title = metadata.get("title", "")
-                    artist = metadata.get("artist", "")
-                    image_url = (
-                        metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
+            # Extract metadata from EXTINF line
+            metadata = parse_extinf_metadata(line)
+
+            # Build stream title from title and artist
+            title = metadata.get("title", "")
+            artist = metadata.get("artist", "")
+            image_url = metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
+            if not artist and " - " in title:
+                artist, title = title.split(" - ", 1)
+            if title or artist:
+                # Format as "Artist - Title"
+                if artist and title:
+                    stream_title = f"{artist} - {title}"
+                elif title:
+                    stream_title = title
+                else:
+                    stream_title = artist
+
+                # Clean the stream title
+                cleaned_title = clean_stream_title(stream_title)
+
+                # Only update if changed
+                if cleaned_title != streamdetails.stream_title and cleaned_title:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL, "HLS Radio metadata updated: %s", cleaned_title
                     )
-                    if not artist and " - " in title:
-                        artist, title = title.split(" - ", 1)
-                    if title or artist:
-                        # Format as "Artist - Title"
-                        if artist and title:
-                            stream_title = f"{artist} - {title}"
-                        elif title:
-                            stream_title = title
-                        else:
-                            stream_title = artist
-
-                        # Clean the stream title
-                        cleaned_title = clean_stream_title(stream_title)
-
-                        # Only update if changed
-                        if cleaned_title != streamdetails.stream_title and cleaned_title:
-                            self.logger.log(
-                                VERBOSE_LOG_LEVEL, "HLS Radio metadata updated: %s", cleaned_title
-                            )
-                            streamdetails.stream_title = cleaned_title
-                            self._update_radio_stream_metadata(
-                                streamdetails,
-                                artist=artist or None,
-                                title=title or cleaned_title,
-                                image_url=image_url,
-                            )
-
-                    # Only check the most recent EXTINF
-                    break
+                    streamdetails.stream_title = cleaned_title
+                    self._update_radio_stream_metadata(
+                        streamdetails,
+                        artist=artist or None,
+                        title=title or cleaned_title,
+                        image_url=image_url,
+                    )
 
         except Exception as err:
             self.logger.debug("Error fetching HLS metadata: %s", err)
