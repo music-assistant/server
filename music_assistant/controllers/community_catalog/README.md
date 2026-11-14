@@ -4,8 +4,11 @@ Installs and loads providers that community members build and maintain in their 
 
 ## Package Layout
 
-- `controller.py`: `CommunityCatalogController`, a `CoreController` (domain `community_catalog`) that owns the switch, the start, the daily index check, the admin commands, updates, and the decision state of each installed provider. It is the only code that changes what is installed or loaded, always under one `asyncio.Lock`.
-- `gate.py`: `evaluate()`, the pure function that decides whether an installed provider may load, switches to another version or has an update on offer, given what was installed, the content hash of its live folder and the kept copy of the index.
+- `controller.py`: `CommunityCatalogController`, a `CoreController` (domain `community_catalog`) that owns the switch, the start, the daily index check, the admin commands, install and remove, the moved providers, and the decision state of each installed provider. What is installed or loaded only changes through it, always under one `asyncio.Lock`; the modules below do that work when it calls them.
+- `gate.py`: `evaluate()`, the pure function that decides whether an installed provider may load, switches to another version or has an update on offer, given what was installed, the content hash of its live folder and the kept copy of the index; `Gate`, which asks it with the kept copy; and the reason texts of the verdicts.
+- `versions.py`: `VersionChanger`, which stages and activates another version of an installed provider (live, or pending until the next start), judges the first load of a version and goes back from one that fails.
+- `loader.py`: `ProviderLoader`, which installs the requirements of community providers, registers them, loads their settings entries and stops them; it also reads the development folder.
+- `listing.py`: the functions that build the installed and available providers as the app lists them.
 - `store.py`: `CatalogStore`, the only writer of `index.json` and `state.json`.
 - `index.py`: `IndexClient`, which fetches the index of the server's line (with its ETag) and hands a valid one to the store.
 - `installer.py`: `Installer`, which downloads a version from GitHub into a staging folder, checks it against the content hash the index lists, and swaps it live; `content_hash()` is the definition the registry uses too.
