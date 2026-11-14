@@ -416,6 +416,7 @@ async def test_transfer_queue_starts_the_item_at_the_source_position(
     fake.resume.assert_not_awaited()
 
 
+@pytest.mark.usefixtures("frozen_clock")
 async def test_transfer_queue_starts_an_item_the_source_just_began_at_zero() -> None:
     """A source at 0 s does not let the target fall back to its own last position."""
     track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
@@ -494,6 +495,7 @@ async def test_transfer_queue_restarts_a_queue_that_had_ended() -> None:
     assert fake.get("tgt").ended is True
 
 
+@pytest.mark.usefixtures("frozen_clock")
 async def test_transfer_queue_carries_the_source_clock_without_auto_play() -> None:
     """A later resume() on the target reads the source's position, not the target's own clock."""
     track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
