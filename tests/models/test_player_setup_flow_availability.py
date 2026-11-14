@@ -43,12 +43,12 @@ def test_a_protocol_can_report_its_flow_as_unavailable() -> None:
 
 def test_an_unavailable_flow_is_not_offered_through_its_player() -> None:
     """A player offers the flows of its protocols, so it must respect their answer."""
-    assert _player_of(_bare(_UnavailableFlowProtocol)).has_setup_flow is False
+    assert _player_of(_bare(_UnavailableFlowProtocol))._has_setup_flow is False
 
 
 def test_an_available_flow_is_offered_through_its_player() -> None:
     """A player offers the flow of a protocol that does have something to set up."""
-    assert _player_of(_bare(_FlowProtocol)).has_setup_flow is True
+    assert _player_of(_bare(_FlowProtocol))._has_setup_flow is True
 
 
 def _bare(cls: type[PlayerProtocol]) -> PlayerProtocol:

@@ -122,7 +122,7 @@ MASS_SOURCE_IDLE_MEMORY = 5
 # config-derived cached properties (propcache keys in Player._cache); these are
 # only invalidated by set_config, all other cached properties are invalidated on
 # every update_state call
-_CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha", "enabled"})
+_CONFIG_CACHED_PROPS = frozenset({"_hide_in_ui", "_expose_to_ha", "enabled"})
 
 # The roles a protocol can stand for the device itself in: one protocol of a player does
 # so, a protocol another one of these ranks above is a control protocol of the player, and
@@ -627,7 +627,7 @@ class Player:
             type=self.type,
             name=self.display_name,
             available=False,
-            device_info=self.device_info,
+            device_info=self._device_info,
             enabled=self.enabled,
             unavailable_since=self._unavailable_since,
             last_seen=self._last_seen,
@@ -736,11 +736,6 @@ class Player:
         """Return the translation owner namespace ("provider.<domain>") of the player."""
         return f"provider.{self.provider_id.split('--', maxsplit=1)[0]}"
 
-    @property
-    def name(self) -> str | None:
-        """Return the name the device reports, None while it reports no usable one."""
-        return get_device_name(self._own_protocol, self._audio_protocols)
-
     @cached_property
     def display_name(self) -> str:
         """Return the (FINAL) display name of the player."""
@@ -795,57 +790,6 @@ class Player:
         return self._offline_by_power_control(self._reachable)
 
     @property
-    def has_setup_flow(self) -> bool:
-        """
-        Return if an interactive setup flow can be started for this player.
-
-        True when one of its protocols has a setup flow that currently has something
-        to offer. Unlike ``needs_setup`` this stays True once setup completed, so the UI
-        can offer to re-run the flow on demand (e.g. to redo a pairing step that was skipped).
-        """
-        return any(protocol.has_setup_flow for protocol in self._protocols.values())
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """
-        Return the device info of the player.
-
-        That of its own protocol, else of its most preferred attached audio protocol,
-        with the identifiers the other protocols add; else what was last stored.
-        """
-        if (primary := self.device_protocol) is None:
-            return self._stored_device_info()
-        device_info = primary.device_info
-        manufacturer = device_info.manufacturer or primary.provider.name
-        if len(self._protocols) == 1 and manufacturer == device_info.manufacturer:
-            return device_info
-        merged = DeviceInfo(
-            model=device_info.model,
-            manufacturer=manufacturer,
-            software_version=device_info.software_version,
-            model_id=device_info.model_id,
-            manufacturer_id=device_info.manufacturer_id,
-        )
-        for protocol in (primary, *self._protocols.values()):
-            for identifier_type, value in protocol.device_info.identifiers.items():
-                if identifier_type not in merged.identifiers:
-                    merged.add_identifier(identifier_type, value)
-        return merged
-
-    @property
-    def extra_attributes(self) -> dict[str, EXTRA_ATTRIBUTES_TYPES]:
-        """
-        Return the extra attributes of the player.
-
-        This is a dict that can be used to pass any extra (serializable)
-        attributes over the API, to be consumed by the UI (or another APi client, such as HA).
-        This is not persisted and not used or validated by the core logic.
-        """
-        if (protocol := self.device_protocol) is not None:
-            return protocol.extra_attributes
-        return {}
-
-    @property
     def extra_data(self) -> dict[str, Any]:
         """
         Return the extra data of the player.
@@ -859,27 +803,13 @@ class Player:
     @cached_property
     def default_icon(self) -> str:
         """Return the default player icon."""
-        device_info = self.device_info
+        device_info = self._device_info
         return get_default_player_icon(
             self.type,
             self._own_protocol_domain(),
             device_info.manufacturer,
             device_info.model,
         )
-
-    @cached_property
-    def icon(self) -> str:
-        """Return the player icon."""
-        icon = self.mass.config.get_player_value(self.player_id, CONF_ENTRY_PLAYER_ICON.key)
-        return icon if isinstance(icon, str) and icon else self.default_icon
-
-    @cached_property
-    def legacy_ids(self) -> list[str]:
-        """Return the ids the player was known under before, which it keeps answering to."""
-        legacy_ids = self.mass.config.get_player_value(self.player_id, CONF_LEGACY_IDS)
-        if not isinstance(legacy_ids, list):
-            return []
-        return [legacy_id for legacy_id in legacy_ids if isinstance(legacy_id, str)]
 
     @cached_property
     def power_control(self) -> str:
@@ -941,25 +871,6 @@ class Player:
         player itself (if set), or None if not supported.
         """
         return self._state.group_volume_muted
-
-    @cached_property
-    def hide_in_ui(self) -> bool:
-        """
-        Return the hide player in UI options.
-
-        This is a convenience property based on the config entry.
-        """
-        return bool(self._config.get_value(CONF_HIDE_IN_UI, self.hidden_by_default))
-
-    @cached_property
-    def expose_to_ha(self) -> bool:
-        """
-        Return if the player should be exposed to Home Assistant.
-
-        This is a convenience property that returns True if the player is set to be exposed
-        to Home Assistant, based on the config entry.
-        """
-        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA, self.expose_to_ha_by_default))
 
     @property
     def hidden_by_default(self) -> bool:
@@ -1446,7 +1357,7 @@ class Player:
         if self.mass.config.get(conf_key) is None:
             # a player that only exists while its device is connected has no config to keep it in
             return
-        device_info = self.device_info
+        device_info = self._device_info
         stored_info = {"model": device_info.model, "manufacturer": device_info.manufacturer}
         for key in ("software_version", "model_id", "manufacturer_id"):
             if value := getattr(device_info, key):
@@ -1758,6 +1669,90 @@ class Player:
             if protocol.available and self._roles[protocol_id] != ProtocolRole.CONTROL:
                 return True
         return False
+
+    @property
+    def _device_info(self) -> DeviceInfo:
+        """
+        Return the device info of the player.
+
+        That of its own protocol, else of its most preferred attached audio protocol,
+        with the identifiers the other protocols add; else what was last stored.
+        """
+        if (primary := self.device_protocol) is None:
+            return self._stored_device_info()
+        device_info = primary.device_info
+        manufacturer = device_info.manufacturer or primary.provider.name
+        if len(self._protocols) == 1 and manufacturer == device_info.manufacturer:
+            return device_info
+        merged = DeviceInfo(
+            model=device_info.model,
+            manufacturer=manufacturer,
+            software_version=device_info.software_version,
+            model_id=device_info.model_id,
+            manufacturer_id=device_info.manufacturer_id,
+        )
+        for protocol in (primary, *self._protocols.values()):
+            for identifier_type, value in protocol.device_info.identifiers.items():
+                if identifier_type not in merged.identifiers:
+                    merged.add_identifier(identifier_type, value)
+        return merged
+
+    @property
+    def _extra_attributes(self) -> dict[str, EXTRA_ATTRIBUTES_TYPES]:
+        """
+        Return the extra attributes of the player.
+
+        This is a dict that can be used to pass any extra (serializable)
+        attributes over the API, to be consumed by the UI (or another APi client, such as HA).
+        This is not persisted and not used or validated by the core logic.
+        """
+        if (protocol := self.device_protocol) is not None:
+            return protocol.extra_attributes
+        return {}
+
+    @property
+    def _has_setup_flow(self) -> bool:
+        """
+        Return if an interactive setup flow can be started for this player.
+
+        True when one of its protocols has a setup flow that currently has something
+        to offer. Unlike ``needs_setup`` this stays True once setup completed, so the UI
+        can offer to re-run the flow on demand (e.g. to redo a pairing step that was skipped).
+        """
+        return any(protocol.has_setup_flow for protocol in self._protocols.values())
+
+    @cached_property
+    def _hide_in_ui(self) -> bool:
+        """
+        Return the hide player in UI options.
+
+        This is a convenience property based on the config entry.
+        """
+        return bool(self._config.get_value(CONF_HIDE_IN_UI, self.hidden_by_default))
+
+    @cached_property
+    def _expose_to_ha(self) -> bool:
+        """
+        Return if the player should be exposed to Home Assistant.
+
+        This is a convenience property that returns True if the player is set to be exposed
+        to Home Assistant, based on the config entry.
+        """
+        return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA, self.expose_to_ha_by_default))
+
+    @cached_property
+    def _icon(self) -> str:
+        """Return the player icon."""
+        icon = self.mass.config.get_player_value(self.player_id, CONF_ENTRY_PLAYER_ICON.key)
+        return icon if isinstance(icon, str) and icon else self.default_icon
+
+    @cached_property
+    def _legacy_ids(self) -> list[str]:
+        """Return the ids the player was known under before, which it keeps answering to."""
+        legacy_ids = self.mass.config.get_player_value(self.player_id, CONF_LEGACY_IDS)
+        if not isinstance(legacy_ids, list):
+            return []
+        return [legacy_id for legacy_id in legacy_ids if isinstance(legacy_id, str)]
 
     def _index_protocols(self) -> None:
         """Rebuild what is kept per role of the attached protocols."""
@@ -2230,10 +2225,10 @@ class Player:
             name=self.display_name,
             device_name=self._followed_name(),
             default_name=self._config.default_name,
-            hide_in_ui=self.hide_in_ui,
-            expose_to_ha=self.expose_to_ha,
-            icon=self.icon,
-            legacy_ids=self.legacy_ids,
+            hide_in_ui=self._hide_in_ui,
+            expose_to_ha=self._expose_to_ha,
+            icon=self._icon,
+            legacy_ids=self._legacy_ids,
             last_seen=self._last_seen,
             unavailable_since=self._unavailable_since,
             power_control=self.power_control,
@@ -2244,7 +2239,7 @@ class Player:
             volume_muted=self._mute_control_state(),
             offline_by_power_control=self._offline_by_power_control(reachable),
             own=own,
-            device_info=self.device_info,
+            device_info=self._device_info,
             private=self._protocol_default("private", False),
             trusts_reported_source=(own_protocol.trusts_reported_source if own_protocol else False),
             grouping_locked=grouping_locked,
@@ -2254,7 +2249,7 @@ class Player:
             static_group_members=static_group_members,
             can_group_with=can_group_with,
             protocol_can_group_with=protocol_can_group_with,
-            has_setup_flow=self.has_setup_flow,
+            has_setup_flow=self._has_setup_flow,
             linked=linked,
             active_protocol=active_protocol,
             foreign_app=foreign_app,
@@ -2264,7 +2259,7 @@ class Player:
             active_mass_source=self._active_mass_source,
             sleep_timer_expires_at=self._sleep_timer_expires_at,
             sleep_timer_mode=self._sleep_timer_mode,
-            extra_attributes=self.extra_attributes,
+            extra_attributes=self._extra_attributes,
             palette_url=self._current_palette_url,
             palette=self._current_palette,
             peers=peers,

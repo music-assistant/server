@@ -86,7 +86,7 @@ from music_assistant.controllers.config.helpers import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
-from music_assistant.models.player import OWN_PROTOCOL_ROLES
+from music_assistant.models.player import OWN_PROTOCOL_ROLES, get_device_name
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
@@ -1107,7 +1107,7 @@ class PlayerConfigMixin:
             player_id,
             provider=player.provider_id,
             player_type=player.type,
-            default_name=player.name,
+            default_name=get_device_name(player.own_protocol, player.audio_protocols),
             values={CONF_SESSION_ONLY: True, CONF_CREATED_AT: time.time_ns()},
         )
         previous: dict[str, dict[str, Any] | None] = {}

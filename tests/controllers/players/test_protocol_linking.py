@@ -470,7 +470,7 @@ def test_device_info_of_a_player_keeps_the_identifiers_of_its_own_protocol() -> 
         },
     )
 
-    identifiers = player.device_info.identifiers
+    identifiers = player._device_info.identifiers
     assert identifiers[IdentifierType.MAC_ADDRESS] == "AA:BB:CC:DD:EE:FF"
     # what only the other protocol reports is added
     assert identifiers[IdentifierType.UUID] == "uuid:dlna-123"
