@@ -214,8 +214,14 @@ async def test_cli_stop_of_a_synced_protocol_device_leaves_its_group(
     """A synced protocol-only device that stops leaves its group, unless a sync group holds it."""
     provider, leader, update_state = _synced_member()
     leader._attr_group_members.append("other")
-    leader._state = MagicMock(active_group=active_group)
-    provider.mass.players.get_player("member").type = PlayerType.PROTOCOL
+    member = provider.mass.players.get_player("member")
+    member.type = PlayerType.PROTOCOL
+    member.protocol_parent_id = "device"
+    # the device's own player holds the active group: a leader that is a protocol
+    # player itself never reports one
+    device = MagicMock(state=MagicMock(active_group=active_group))
+    players = {"leader": leader, "member": member, "device": device}
+    provider.mass.players.get_player.side_effect = players.get
     for cmd in PLAYER_COMMANDS:
         setattr(provider.mass.players, cmd, AsyncMock())
 

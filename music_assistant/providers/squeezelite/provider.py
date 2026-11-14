@@ -303,13 +303,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
             case ("stop", _) | ("mode", "stop") if player.type != PlayerType.PROTOCOL:
                 player_cmd = self.mass.players.cmd_stop
             case ("stop", _) | ("mode", "stop"):
-                leader = (
-                    self.mass.players.get_player(player.synced_to) if player.synced_to else None
-                )
+                device = self.mass.players.get_player(player.protocol_parent_id or player.player_id)
                 # it most likely switched to another source, and a member that stays in the
                 # group would be pulled back by the group's next track or resume; a sync
                 # group player would add it back right away, so its members stay
-                if leader and not leader.state.active_group:
+                if not (device and device.state.active_group):
                     self._release_from_sync_leader(player.player_id)
                 raise NotImplementedError
             case _:
