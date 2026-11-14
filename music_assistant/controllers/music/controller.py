@@ -1993,7 +1993,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         skip_artist_ids: list[str] | None = None,
         playback_speed: float | None = None,
         provider_instance_id: str | None = None,
-        progress_timestamp: float | None = None,
+        progress_timestamp: int | None = None,
     ) -> None:
         """
         Mark item as played in playlog.
@@ -2048,6 +2048,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "timestamp": timestamp,
             "queue_id": queue_id,
             "user_initiated": user_initiated,
+            # the podcast's id on the episode's provider, never a library id: episodes always
+            # come from their provider; the cleanup matches it against the provider mappings
             "podcast_item_id": media_item.podcast.item_id
             if isinstance(media_item, PodcastEpisode)
             else None,

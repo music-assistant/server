@@ -82,14 +82,14 @@ async def test_unchanged_provider_report_keeps_timestamp(
 
 
 @pytest.mark.parametrize(
-    ("progress_timestamp", "expected_timestamp"), [(1000.0, 1000), (4102444800.0, None)]
+    ("progress_timestamp", "expected_timestamp"), [(1000, 1000), (4102444800, None)]
 )
 async def test_provider_report_keeps_its_time(
-    mass: MusicAssistant, progress_timestamp: float, expected_timestamp: int | None
+    mass: MusicAssistant, progress_timestamp: int, expected_timestamp: int | None
 ) -> None:
     """A report is stamped with the time the provider recorded; a future one counts as now."""
-    listener = await mass.webserver.auth.create_user(f"timed{int(progress_timestamp)}")
-    audiobook = await _add_audiobook(mass, f"timed_{int(progress_timestamp)}")
+    listener = await mass.webserver.auth.create_user(f"timed{progress_timestamp}")
+    audiobook = await _add_audiobook(mass, f"timed_{progress_timestamp}")
 
     await mass.music.mark_item_played(
         audiobook,
