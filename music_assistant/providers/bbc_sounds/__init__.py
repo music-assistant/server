@@ -225,7 +225,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Get all PodcastEpisodes for given podcast id."""
         self.logger.debug("Getting podcast episodes for %s", prov_podcast_id)
         podcast_episodes = await self.client.content.get_podcast_episodes(
-            prov_podcast_id, fetch_all_items=True, max_items=MAX_PODCAST_EPISODES
+            prov_podcast_id, max_items=MAX_PODCAST_EPISODES
         )
         if podcast_episodes:
             for episode in podcast_episodes:
