@@ -74,7 +74,7 @@ async def test_switching_on(
     assert provider.state == CommunityProviderState.AVAILABLE
     assert provider.repository == "someone/listed_one"
     assert provider.maintainers == ["someone"]
-    assert provider.icon_svg == "<svg/>"
+    assert provider.icon == "data:image/svg+xml;base64,PHN2Zy8+"
     assert provider.latest_version == "1.2.0"
     assert provider.installed_version is None
     assert provider.added == ADDED

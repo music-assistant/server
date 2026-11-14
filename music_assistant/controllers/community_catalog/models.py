@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from base64 import b64encode
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -68,6 +69,13 @@ class IndexProvider(DataClassDictMixin):
     # the reason, by version
     blocked_versions: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def icon(self) -> str | None:
+        """Return the icon as a data URI, which a client can show as an image but not as markup."""
+        if not self.icon_svg:
+            return None
+        return f"data:image/svg+xml;base64,{b64encode(self.icon_svg.encode()).decode('ascii')}"
+
 
 @dataclass
 class CatalogIndex(DataClassDictMixin):
@@ -95,7 +103,8 @@ class CommunityProvider(DataClassDictMixin):
     # owner/name of the repository on GitHub
     repository: str
     maintainers: list[str]
-    icon_svg: str | None
+    # a data URI for an image element, like providers/icon returns
+    icon: str | None
     # the manifest of the installed version, else the one of the latest version in the index
     manifest: ProviderManifest
     state: CommunityProviderState

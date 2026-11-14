@@ -60,7 +60,7 @@ class CommunityCatalogController(CoreController):
             "that people in the community build and maintain."
         )
         self._dependencies = CommunityDependencies(mass)
-        self._index = IndexClient(
+        self._index_client = IndexClient(
             mass, os.path.join(mass.storage_path, COMMUNITY_PROVIDERS_FOLDER), self.logger
         )
 
@@ -93,7 +93,7 @@ class CommunityCatalogController(CoreController):
 
     async def start(self) -> None:
         """
-        Load the community providers and their enabled instances.
+        Bring the index up to date, then load the community providers and their enabled instances.
 
         Runs once, after the server's own providers are loaded; never in safe mode.
         """
@@ -112,7 +112,7 @@ class CommunityCatalogController(CoreController):
     async def get_providers(self) -> list[CommunityProvider]:
         """Return the providers of the community catalog, none while it is switched off."""
         self._raise_in_safe_mode()
-        index = self._index.index
+        index = self._index_client.index
         # a kept copy of another line offers what another server version can install
         if (
             not self._needs_index()
@@ -130,7 +130,7 @@ class CommunityCatalogController(CoreController):
     async def refresh(self) -> list[CommunityProvider]:
         """Fetch the index of the community catalog now, and return its providers."""
         self._raise_in_safe_mode()
-        if self._needs_index() and await self._index.fetch():
+        if self._needs_index() and await self._index_client.fetch():
             self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
         return await self.get_providers()
 
@@ -147,8 +147,8 @@ class CommunityCatalogController(CoreController):
         """
         try:
             if initial:
-                await self._index.load()
-            if await self._index.fetch() or initial:
+                await self._index_client.load()
+            if await self._index_client.fetch() or initial:
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
         finally:
             if self._needs_index():
@@ -177,7 +177,7 @@ class CommunityCatalogController(CoreController):
             domain=domain,
             repository=entry.repository,
             maintainers=entry.maintainers,
-            icon_svg=entry.icon_svg,
+            icon=entry.icon,
             manifest=manifest,
             state=CommunityProviderState.AVAILABLE,
             latest_version=latest,
