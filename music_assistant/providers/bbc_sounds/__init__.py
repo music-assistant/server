@@ -758,7 +758,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             return None
         self.logger.debug("%s(%s)", type(station), station.id)
         self.logger.log(VERBOSE_LOG_LEVEL, station)
-        if station_metadata := _station_programme_display(station):
+        if station_metadata := _station_programme_display(station, detailed=True):
             return station_metadata
         return None
 
@@ -917,22 +917,15 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 and (isinstance(station, LiveStation) or not station.international)
             ):
                 # A plain Station has no programme, so its titles and synopses are empty
-                synopsis = station.synopses.short if station.synopses else None
-                details = (station.titles.secondary, synopsis)
-                programme_details = " • ".join(filter(None, details)).replace(
-                    " - ",
-                    "–",  # ruff: ignore[RUF001]
+                station_info = (
+                    _station_programme_display(station)
+                    if show_current_programme and isinstance(station, LiveStation)
+                    else None
                 )
-                station_title = _get_station_title(station)
-                programme_title = station.titles.primary
-                if not programme_title:
-                    display_name = station_title
-                elif station_title in programme_title:
-                    display_name = programme_title
-                else:
-                    display_name = f"{station_title}: {programme_title}"
+                description = station_info.title if station_info else None
+                display_name = _get_station_title(station)
                 metadata = MediaItemMetadata(
-                    description=programme_details or None,
+                    description=description,
                     images=(
                         UniqueList(
                             [

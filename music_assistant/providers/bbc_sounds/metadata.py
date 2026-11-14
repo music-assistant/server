@@ -33,8 +33,12 @@ def _segment_to_metadata(now_playing: Segment) -> StreamMetadata | None:
     return StreamMetadata(title=title, artist=artist, image_url=image_url)
 
 
-def _station_programme_display(station: LiveStation) -> StreamMetadata | None:
+def _station_programme_display(
+    station: LiveStation, detailed: bool = False
+) -> StreamMetadata | None:
     if station and station.titles and station.titles.primary:
         title = f"{station.titles.secondary} • {station.titles.primary}"
+        if detailed and station.synopses and station.synopses.short:
+            title = f"{title}: {station.synopses.short}"
         return StreamMetadata(title=title, artist=None, image_url=station.image_url)
     return None
