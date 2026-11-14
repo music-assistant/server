@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.errors import ProviderUnavailableError
 
+from music_assistant.helpers.tags import AudioTags
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 from music_assistant.providers.webdav.helpers import WebDAVItem
 from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
@@ -215,3 +217,34 @@ async def test_is_reachable_asks_the_server(monkeypatch: pytest.MonkeyPatch) -> 
     test_connection.side_effect = ProviderUnavailableError("server down")
     with pytest.raises(ProviderUnavailableError):
         await provider._is_reachable()
+
+
+async def test_parse_tags_uses_webdav_path_as_filename(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Filename-based tag fallbacks see the decoded WebDAV path, not the encoded URL."""
+    provider = _make_provider()
+    provider.verify_ssl = True
+    relative_path = "My Show/01 - Episode One.mp3"
+    file_item = FileSystemItem(
+        filename="01 - Episode One.mp3",
+        relative_path=relative_path,
+        absolute_path=provider._build_authenticated_url(relative_path),
+        is_dir=False,
+        checksum="1",
+        file_size=1000,
+    )
+    raw: dict[str, Any] = {
+        "format": {"filename": "", "format_name": "mp3", "duration": "10.0", "tags": {}},
+        "streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "44100"}],
+    }
+
+    async def _fake_parse(input_file: str, *_args: Any, **_kwargs: Any) -> AudioTags:
+        raw["format"]["filename"] = input_file
+        return AudioTags.parse(raw)
+
+    monkeypatch.setattr("music_assistant.providers.webdav.provider.async_parse_tags", _fake_parse)
+
+    tags = await provider._parse_tags(file_item)
+
+    assert tags.filename == relative_path
+    assert tags.title == "Episode One"
+    assert tags.track == 1
