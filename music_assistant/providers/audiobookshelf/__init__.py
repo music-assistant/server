@@ -415,6 +415,8 @@ for more details.
         # safe guard user updates
         self._pending_user_update: User | None = None
         self._user_update_task: asyncio.Task[None] | None = None
+        # catch up on progresses changed while mass was offline
+        await self._socket_abs_user_updated(abs_user)
 
         # create close sessions task
         self._close_sessions_task = self.mass.create_task(self._cleanup_open_sessions_loop())
@@ -2127,6 +2129,7 @@ for more details.
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
+                progress_timestamp=progress.last_update // 1000,
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
@@ -2154,6 +2157,7 @@ for more details.
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
+                progress_timestamp=progress.last_update // 1000,
             )
 
     # other abs clients report the progress of a playing episode every 15s
