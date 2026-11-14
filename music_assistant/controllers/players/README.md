@@ -603,21 +603,22 @@ group that forms without a member also logs that, as it does for any member it c
 When no member can play, the command fails as it does for any group without a member that can
 play.
 
-A stop, a pause or a power off of the group calls that wait off (`_cancel_power_on`), also a stop
-or a pause of a member whose playback the group owns, and a power off of a group that still reads
-as off while it waits. The command that waits fails as unavailable and starts nothing, also not
+A stop, a pause or a power off of the group calls that wait off (`_cancel_member_power_ons`),
+also a stop or a pause of a member whose playback the group owns, and a power off of a group that
+still reads as off while it waits. The command that waits fails as unavailable and starts nothing, also not
 on the members that are on. The power controls stay on, and a device that comes online afterwards
-stays idle. Stopping the leader or group that a player is added to ends the addition the same
+stays idle (a sync group with a fixed member list that is formed takes a returning member back,
+as it does without this). Stopping the leader or group that a player is added to ends the addition the same
 way, and removing that player from it ends the wait for that player alone. A new start right
 after that waits again for a member whose device still boots: its control is on, switched on
 less than those 90 seconds ago, and it is waited for until they are over, without switching its
 control once more.
 
-Only such a command switches a member on. Nothing does because a state changed, and no member
-joins later by this rule. What a command runs under the lock of the group leaves the members as
-they are, and so does playback that the server continues by itself (`without_member_power_on`):
-the next items of a queue that played out, a restart of a playing queue for a changed setting,
-and a next or previous within a queue. An announcement to a group switches no member on either,
+Only such a command switches a member on; nothing does because a state changed. What a command
+runs under the lock of the group leaves the members as they are, and so does playback that the
+server continues by itself (`without_member_power_on`): the next items of a queue that played
+out, a restart of a playing queue for a changed setting, and a next or previous within a queue.
+An announcement to a group switches no member on either,
 also not when it resumes the group afterwards: it plays on the members that are on. An
 announcement to one switched-off player powers that player on.
 
