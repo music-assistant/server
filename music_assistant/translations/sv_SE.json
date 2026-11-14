@@ -788,5 +788,17 @@
   "common.media.audiobook_genre.religion_and_spirituality.description": "Ljudböcker om religion, tro och andlighet inom olika traditioner och för personlig utövning.",
   "common.media.audiobook_genre.religion_and_spirituality.name": "Religion och andlighet",
   "common.media.audiobook_genre.romance.description": "Romantiska ljudböcker, från samtida kärleksberättelser till historiska och mer erotiska skildringar.",
-  "common.media.audiobook_genre.romance.name": "Romantik"
+  "common.media.audiobook_genre.romance.name": "Romantik",
+  "common.media.audiobook_genre.science.description": "Ljudböcker om vetenskap och natur, från naturvärlden och upptäckter till hur saker fungerar.",
+  "common.media.audiobook_genre.science.name": "Vetenskap",
+  "common.media.audiobook_genre.self_help.description": "Självhjälp och personlig utveckling — vägledning om utveckling, vanor, välbefinnande och framgång.",
+  "common.media.audiobook_genre.self_help.name": "Självhjälp",
+  "common.media.audiobook_genre.speakers_and_storytellers.description": "Föreläsningar, tal och berättarföreställningar av framstående talare och berättare.",
+  "common.media.audiobook_genre.speakers_and_storytellers.name": "Föreläsare och berättare",
+  "common.media.audiobook_genre.sports.description": "Ljudböcker om sport och fritid — idrottare, lag, spel och friluftsliv.",
+  "common.media.audiobook_genre.sports.name": "Sport",
+  "common.media.audiobook_genre.technology.description": "Ljudböcker om teknik, datorer och idéerna som formar den digitala världen.",
+  "common.media.audiobook_genre.technology.name": "Teknik",
+  "common.media.audiobook_genre.travel_and_adventure.description": "Reseskildringar och äventyr — resor, platser och berättelser om upptäcktsfärder.",
+  "common.media.audiobook_genre.travel_and_adventure.name": "Resor och äventyr"
 }
