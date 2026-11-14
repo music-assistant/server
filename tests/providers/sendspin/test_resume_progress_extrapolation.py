@@ -93,6 +93,8 @@ async def test_push_pairs_the_position_with_the_playing_state() -> None:
         setattr(player, name, getattr(SendspinPlayer, name).__get__(player, SendspinPlayer))
     player._queue_repeat_shuffle.return_value = (MagicMock(), False)
     player._send_beat_schedule = AsyncMock()
+    # no flow timeline yet: the queue position is all there is
+    player._timeline_anchored = lambda metadata, *_args, **_kwargs: (metadata, None)
     idle_media = _media(74, updated_ago=360.0)
     idle_media.duration = 309
     player.state = SimpleNamespace(current_media=idle_media, playback_state=PlaybackState.IDLE)

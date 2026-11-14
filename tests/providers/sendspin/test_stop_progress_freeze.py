@@ -23,6 +23,7 @@ def _player_mock() -> MagicMock:
     mock._clear_current_media_metadata = AsyncMock()
     mock.playback_session.cancel = AsyncMock()
     mock.api.group.stop = AsyncMock()
+    mock._metadata_update_pending.return_value = False
     return mock
 
 
@@ -95,6 +96,44 @@ async def test_stop_republishes_when_the_display_shows_another_item() -> None:
     assert (
         mock.mass.create_task.call_args.kwargs["task_id"] == f"sendspin_metadata_{mock.player_id}"
     )
+
+
+async def test_stop_republishes_an_item_still_scheduled_for_its_first_audio() -> None:
+    """
+    A stop between a skip and its first audio publishes the new item.
+
+    The new item counts as published, but only took effect once heard. The group stop
+    freezes the previous item that was still in effect and drops the scheduled one.
+    """
+    mock = _player_mock()
+    mock.synced_to = None
+    mock.state.current_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
+    mock._published_item = ("track-2", "item-2")
+    mock._metadata_update_pending.return_value = True
+
+    await SendspinPlayer.stop(mock)
+
+    mock.mass.create_task.assert_called_once()
+    assert (
+        mock.mass.create_task.call_args.kwargs["task_id"] == f"sendspin_metadata_{mock.player_id}"
+    )
+
+
+def test_an_update_counts_as_pending_only_until_it_takes_effect() -> None:
+    """Scheduled ahead of the clock it is pending; once due, or published at once, not."""
+    player = SendspinPlayer.__new__(SendspinPlayer)
+    now_us = 50_000_000
+    provider = SimpleNamespace(
+        server_api=SimpleNamespace(clock=SimpleNamespace(now_us=lambda: now_us))
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(SendspinPlayer, "provider", property(lambda _self: provider), raising=False)
+        player._published_effective_us = now_us + 700_000
+        assert player._metadata_update_pending()
+        player._published_effective_us = now_us - 1
+        assert not player._metadata_update_pending()
+        player._published_effective_us = None
+        assert not player._metadata_update_pending()
 
 
 @pytest.mark.parametrize(
