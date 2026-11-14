@@ -6644,6 +6644,7 @@ class TestGetAnnouncementVolume:
             player_id="p1",
             announcement_features=features,
             supported_features={PlayerFeature.PLAY_ANNOUNCEMENT},
+            own_available=True,
             state=SimpleNamespace(volume_level=volume_level, available=True, enabled=True),
         )
 
@@ -7160,6 +7161,54 @@ class TestNativeAnnouncementVolumeRouting:
 
         setup.volume_set.assert_not_awaited()
         setup.play_announcement.assert_awaited_once_with(ANY, None)
+
+
+class TestAnnouncePlayerRequiresOwnTransport:
+    """The device's own announcement handler is skipped while its transport is down."""
+
+    @staticmethod
+    def _setup(
+        mock_mass: MagicMock, *, own_available: bool
+    ) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+        """Wire a native parent that announces natively, with a linked announcing output."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        parent = MockPlayer(provider, "parent", "Parent")
+        parent._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        parent._attr_available = own_available
+        output = MockPlayer(provider, "output", "Output", player_type=PlayerType.PROTOCOL)
+        output._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        controller._players = {"parent": parent, "output": output}
+        parent.set_linked_output_protocols(
+            [
+                LinkedOutputProtocol(
+                    output_protocol_id="output",
+                    protocol_domain="test_provider",
+                    priority=10,
+                )
+            ]
+        )
+        for player in controller._players.values():
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        return controller, parent, output
+
+    def test_idle_parent_with_dead_own_transport_announces_through_output(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A closed snapclient cannot overlay the clip; the live output must get it."""
+        controller, parent, output = self._setup(mock_mass, own_available=False)
+        # the device is still available through the output
+        assert parent.available is True
+
+        assert controller._resolve_announce_player(parent) == output
+
+    def test_live_native_handler_still_wins(self, mock_mass: MagicMock) -> None:
+        """While the own transport is up the device's own handler is preferred."""
+        controller, parent, _ = self._setup(mock_mass, own_available=True)
+
+        assert controller._resolve_announce_player(parent) == parent
 
 
 class TestPlayAnnouncementMessage:

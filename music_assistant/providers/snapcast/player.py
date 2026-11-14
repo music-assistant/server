@@ -95,6 +95,11 @@ class SnapCastPlayer(Player):
     @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
+        # following a leader only makes sense while this player's own snapclient
+        # transport is up: a disconnected client cannot follow, and reporting a
+        # leader for it would suppress the fallbacks that keep it playing
+        if not self.own_available:
+            return None
         grp_name = self.snap_group_name
         if grp_name == self.player_id:
             # is group leader
@@ -105,7 +110,9 @@ class SnapCastPlayer(Player):
             return None
 
         if leader_player := self.mass.players.get_player(grp_name):
-            return grp_name if leader_player.available else None
+            # snapcast sync rides on the leader's own stream, not on an output
+            # protocol linked to it
+            return grp_name if leader_player.own_available else None
 
         return None
 

@@ -107,3 +107,43 @@ async def test_dropped_client_leaves_other_output_protocol_alone() -> None:
     await _process_update(player)
 
     player.mass.player_queues.stop.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+class TestSyncedToFollowsOwnTransport:
+    """synced_to may only report a leader while the snapclient can actually follow."""
+
+    @staticmethod
+    def _synced_player(*, own_available: bool, leader_own_available: bool = True) -> SnapCastPlayer:
+        """Build a group member (group 'group') whose own liveness is set per test."""
+        player = _make_player(queue_active=False)
+        group = SimpleNamespace(stream="ma-stream", clients=["client1", "client2"], name="group")
+        player.snap_client = cast(
+            "SnapclientProto",
+            SimpleNamespace(
+                group=group, friendly_name="Kitchen", volume=50, muted=False, connected=True
+            ),
+        )
+        player._provider._get_ma_id.side_effect = lambda _client_id: "group"  # type: ignore[attr-defined]
+        player._attr_available = own_available
+        player.mass.players.get_player.return_value = SimpleNamespace(  # type: ignore[attr-defined]
+            available=True, own_available=leader_own_available
+        )
+        return player
+
+    def test_follower_reports_leader_while_own_transport_up(self) -> None:
+        """A live follower on a live leader reports the sync as before."""
+        player = self._synced_player(own_available=True)
+
+        assert player.synced_to == "group"
+
+    def test_follower_with_dead_own_transport_reports_no_leader(self) -> None:
+        """A disconnected client cannot follow, so fallbacks must not be suppressed."""
+        player = self._synced_player(own_available=False)
+
+        assert player.synced_to is None
+
+    def test_follower_reports_no_leader_when_leader_transport_down(self) -> None:
+        """A leader whose own stream is gone cannot serve the sync either."""
+        player = self._synced_player(own_available=True, leader_own_available=False)
+
+        assert player.synced_to is None

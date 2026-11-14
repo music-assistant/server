@@ -2078,7 +2078,11 @@ class ProtocolLinkingMixin:
         )
         if preferred and preferred != "auto":
             if preferred == "native":
-                if PlayerFeature.PLAY_MEDIA in player.supported_features:
+                if (
+                    PlayerFeature.PLAY_MEDIA in player.supported_features
+                    and player.own_available
+                    and not player.needs_setup
+                ):
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: native (user preference)",
@@ -2102,7 +2106,11 @@ class ProtocolLinkingMixin:
                         break
 
         # 3. Use native playback if available
-        if PlayerFeature.PLAY_MEDIA in player.supported_features:
+        if (
+            PlayerFeature.PLAY_MEDIA in player.supported_features
+            and player.own_available
+            and not player.needs_setup
+        ):
             self.logger.log(
                 VERBOSE_LOG_LEVEL, "Selected protocol for %s: native", player.state.name
             )
@@ -2258,7 +2266,7 @@ class ProtocolLinkingMixin:
             return None
 
         # if the player natively supports the required feature, use that
-        if required_feature in player.supported_features:
+        if required_feature in player.supported_features and player.own_available:
             return player
 
         # An output the user explicitly picked owns the audio, so a command that has to
@@ -2454,6 +2462,11 @@ class ProtocolLinkingMixin:
     ) -> bool:
         """Check if child can be grouped with parent using native grouping."""
         if not parent_supports_native:
+            return False
+        # Native grouping is carried by the members' own transports: while either
+        # side's own transport is down, the native group cannot be formed or held
+        # up, and grouping must fall through to the protocol path instead.
+        if not (parent_player.own_available and child_player.own_available):
             return False
         return (
             parent_player.is_native_group_compatible(child_player)

@@ -498,11 +498,13 @@ class AnnouncementsMixin:
 
         :param player: The player the announcement is played on.
         """
-        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features and player.own_available:
             # The device's own announcement handler is built for exactly this and
             # overlays the clip on whatever the speaker is playing - including the
             # stream a linked protocol renders into it (e.g. Sonos audioClip while
             # the Sonos plays through its AirPlay child), so it always wins.
+            # While its own transport is down it cannot overlay anything and the
+            # announcement must go to the live output instead.
             return player
         if announce_player := self._get_control_target(
             player,
