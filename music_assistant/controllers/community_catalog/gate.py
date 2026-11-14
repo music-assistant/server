@@ -33,6 +33,8 @@ class Verdict(StrEnum):
     WENT_BACK = "went_back"
     RESTART_TO_GO_BACK = "restart_to_go_back"
     RESTART_TO_UPDATE = "restart_to_update"
+    # not installed: a moved provider that waits to be installed from the catalog
+    MOVED = "moved"
 
 
 @dataclass(frozen=True, slots=True)

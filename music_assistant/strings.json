@@ -1219,6 +1219,7 @@
     "community_provider_went_back": "Version {0} of this failed to load, and the version before it is no longer available, so it does not run.",
     "community_provider_restart_to_go_back": "Version {0} of this failed to load. Restart Music Assistant to finish going back to the version before it.",
     "community_provider_restart_to_update": "Version {0} of this is ready. Restart Music Assistant to finish the update.",
+    "community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
     "media_not_found": "The requested media item could not be found.",
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",

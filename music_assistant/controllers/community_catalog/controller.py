@@ -20,11 +20,16 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.constants import PROVIDER_LOAD_CONCURRENCY, UNHANDLED_PROVIDER_ERROR_CODE
+from music_assistant.constants import (
+    CONF_PROVIDERS,
+    PROVIDER_LOAD_CONCURRENCY,
+    UNHANDLED_PROVIDER_ERROR_CODE,
+)
 from music_assistant.controllers.community_catalog.constants import (
     COMMUNITY_PROVIDERS_FOLDER,
     CONF_AUTO_UPDATE,
     CONF_ENABLED,
+    MOVED_PROVIDER_DOMAINS,
 )
 from music_assistant.controllers.community_catalog.dependencies import (
     CommunityDependencies,
@@ -105,6 +110,10 @@ _REASONS: Final[dict[Verdict, str]] = {
     Verdict.RESTART_TO_UPDATE: (
         "Version {0} of this is ready. Restart Music Assistant to finish the update."
     ),
+    Verdict.MOVED: (
+        "This moved to the community catalog. Music Assistant installs it from there by itself "
+        "as soon as the catalog offers it for this version and your server can reach it."
+    ),
 }
 
 
@@ -181,6 +190,8 @@ class CommunityCatalogController(CoreController):
             if self._needs_index():
                 await self._index_client.fetch()
                 self._schedule_check()
+            # installed here, they load with the other installed providers
+            await self._install_moved(load=False)
             await self._activate_pending()
             providers = await self._gate_installed()
             await self._update_at_start(providers)
@@ -195,11 +206,13 @@ class CommunityCatalogController(CoreController):
 
     def unavailable_reason(self, domain: str) -> ProviderError | None:
         """
-        Return why an installed community provider does not load, None when it does.
+        Return why a community provider does not load, None when it loads or is not one.
 
         :param domain: The domain of the provider.
         """
         decision = self._decisions.get(domain)
+        if decision is None and domain in self._waiting_moves():
+            decision = Decision(Verdict.MOVED)
         if decision is None or decision.verdict == Verdict.LOAD:
             return None
         detail = decision.detail or ""
@@ -255,41 +268,11 @@ class CommunityCatalogController(CoreController):
         """
         self._raise_in_safe_mode()
         async with self._lock:
-            entry = self._installable(domain)
-            # an offered entry always has a latest version
-            version = str(entry.latest)
-            manifest = await self._installer.stage(domain, entry, version)
-            try:
-                await self._activate_staged(manifest)
-            except Exception:
-                with suppress(InstallError):
-                    await self._installer.discard(domain)
-                raise
-            release = entry.versions[version]
-            installed = InstalledProvider(
-                version=version,
-                repository=entry.repository,
-                commit=release.commit,
-                content_hash=release.content_hash,
-            )
-            state = self._store.state
-            try:
-                await self._store.save_state(
-                    replace(state, installed={**state.installed, domain: installed})
-                )
-            except OSError as err:
-                with suppress(InstallError):
-                    await self._installer.remove(domain)
-                msg = f"Could not install {domain}: {err}"
-                raise InstallError(msg) from err
-            self._folder_hashes[domain] = release.content_hash
-            self._decisions[domain] = Decision(Verdict.LOAD)
-            self._dependencies.activate()
-            await self._register(self._installer.live_folder(domain))
-            self.logger.info("Installed community provider %s %s", domain, version)
-            self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
-            await self._load_instances({domain})
-            await self._judge(domain)
+            if not self.config.get_value(CONF_ENABLED):
+                msg = "Switch the community catalog on to install from it"
+                raise ActionUnavailable(msg)
+            installed = await self._install(domain)
+            await self._load_installed(domain)
             provider = await self._installed_provider(domain, installed)
         # the manifest of the live folder was just registered
         assert provider is not None
@@ -326,6 +309,21 @@ class CommunityCatalogController(CoreController):
             finally:
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
             self.logger.info("Removed community provider %s", domain)
+
+    @api_command("community_catalog/dismiss_notice", required_scope=Scope.SYSTEM_MANAGE)
+    async def dismiss_notice(self, domain: str) -> None:
+        """
+        Dismiss the notice of an installed community provider; nothing happens when it has none.
+
+        :param domain: The domain of the provider.
+        """
+        self._raise_in_safe_mode()
+        async with self._lock:
+            installed = self._store.state.installed.get(domain)
+            if installed is None or installed.notice is None:
+                return
+            await self._save_installed(domain, replace(installed, notice=None))
+        self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
 
     @api_command("community_catalog/update", required_scope=Scope.SYSTEM_MANAGE)
     async def update_providers(self, domain: str | None = None) -> list[CommunityProvider]:
@@ -369,8 +367,24 @@ class CommunityCatalogController(CoreController):
 
     def _needs_index(self) -> bool:
         """Return whether the server keeps the index of the community catalog current."""
-        # what is installed must still be stopped when the catalog blocks it
-        return bool(self.config.get_value(CONF_ENABLED) or self._store.state.installed)
+        # what is installed must still be stopped when the catalog blocks it, and a moved
+        # provider that waits is installed from it
+        return bool(
+            self.config.get_value(CONF_ENABLED)
+            or self._store.state.installed
+            or self._waiting_moves()
+        )
+
+    def _waiting_moves(self) -> set[str]:
+        """Return the moved providers that the server is to install from the catalog by itself."""
+        state = self._store.state
+        configured = {conf["domain"] for conf in self.mass.config.get(CONF_PROVIDERS, {}).values()}
+        taken = {manifest.domain for manifest in self.mass.get_provider_manifests()}
+        return {
+            domain
+            for domain in MOVED_PROVIDER_DOMAINS & configured
+            if domain not in state.installed and domain not in state.moved and domain not in taken
+        }
 
     def _own_index(self) -> CatalogIndex | None:
         """Return the kept copy of the index when it is the one of this server's line."""
@@ -392,6 +406,7 @@ class CommunityCatalogController(CoreController):
         async with self._lock:
             if changed := await self._index_client.fetch():
                 await self._apply_index()
+            await self._install_moved(load=True)
         await self._apply_updates()
         return changed
 
@@ -475,6 +490,91 @@ class CommunityCatalogController(CoreController):
         except InstallError as err:
             return Decision(Verdict.REINSTALL_FAILED, str(err)), folder_hash
         return self._evaluate(domain, installed, installed.content_hash), installed.content_hash
+
+    async def _install(self, domain: str, *, moved: bool = False) -> InstalledProvider:
+        """
+        Install the latest version of a provider the community catalog offers, without loading it.
+
+        Returns what was installed. A refused or failed install leaves the installed providers
+        as they were.
+
+        :param domain: The domain of the provider.
+        :param moved: Whether the server installs a moved provider by itself; it then gets the
+            notice and is never installed by itself again.
+        :raises ActionUnavailable: The provider cannot be installed; the message tells why.
+        :raises InstallError: The provider could not be downloaded or is not what the catalog lists.
+        :raises DependencyConflict: Its requirements clash with those of the server or of
+            another community provider.
+        :raises DependenciesUnavailable: Its requirements could not be installed.
+        """
+        entry = self._installable(domain)
+        # an offered entry always has a latest version
+        version = str(entry.latest)
+        manifest = await self._installer.stage(domain, entry, version)
+        try:
+            await self._activate_staged(manifest)
+        except Exception:
+            with suppress(InstallError):
+                await self._installer.discard(domain)
+            raise
+        release = entry.versions[version]
+        installed = InstalledProvider(
+            version=version,
+            repository=entry.repository,
+            commit=release.commit,
+            content_hash=release.content_hash,
+            notice="moved" if moved else None,
+        )
+        state = self._store.state
+        try:
+            await self._store.save_state(
+                replace(
+                    state,
+                    installed={**state.installed, domain: installed},
+                    moved=[*state.moved, domain] if moved else state.moved,
+                )
+            )
+        except OSError as err:
+            with suppress(InstallError):
+                await self._installer.remove(domain)
+            msg = f"Could not install {domain}: {err}"
+            raise InstallError(msg) from err
+        self._folder_hashes[domain] = release.content_hash
+        self._decisions[domain] = Decision(Verdict.LOAD)
+        self.logger.info("Installed community provider %s %s", domain, version)
+        return installed
+
+    async def _install_moved(self, *, load: bool) -> None:
+        """
+        Install each moved provider that waits; one that cannot be installed now keeps waiting.
+
+        :param load: Whether to load what was installed; False at start, where it loads with
+            the other installed providers.
+        """
+        for domain in self._waiting_moves():
+            try:
+                await self._install(domain, moved=True)
+            except (MusicAssistantError, OSError) as err:
+                self.logger.warning(
+                    "Could not install %s from the community catalog, where it moved: %s",
+                    domain,
+                    err,
+                )
+                continue
+            if load:
+                await self._load_installed(domain)
+
+    async def _load_installed(self, domain: str) -> None:
+        """
+        Register a provider that was just installed, and load its enabled settings entries.
+
+        :param domain: The domain of the provider.
+        """
+        self._dependencies.activate()
+        await self._register(self._installer.live_folder(domain))
+        self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
+        await self._load_instances({domain})
+        await self._judge(domain)
 
     async def _activate_staged(self, manifest: ProviderManifest) -> None:
         """
@@ -998,9 +1098,6 @@ class CommunityCatalogController(CoreController):
         :param domain: The domain of the provider.
         :raises ActionUnavailable: The provider may not be installed; the message tells why.
         """
-        if not self.config.get_value(CONF_ENABLED):
-            msg = "Switch the community catalog on to install from it"
-            raise ActionUnavailable(msg)
         index = self._own_index()
         entry = index.providers.get(domain) if index is not None else None
         if entry is None or self._available_provider(domain, entry) is None:
@@ -1069,6 +1166,7 @@ class CommunityCatalogController(CoreController):
             reason=reason,
             reason_url=reason_url,
             error=self.unavailable_reason(domain),
+            notice=installed.notice,
         )
 
     async def _installed_manifest(

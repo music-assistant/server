@@ -289,6 +289,7 @@
   "common.errors.builtin_role_readonly": "A builtin role can not be changed or removed.",
   "common.errors.community_provider_blocked": "The community catalog blocked this ({0}), so it no longer runs. You can remove it.",
   "common.errors.community_provider_catalog_unreachable": "The community catalog could not be reached to check this, so it does not run. Restart Music Assistant when your server is online again.",
+  "common.errors.community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
   "common.errors.community_provider_not_for_this_version": "This is not available for this version of Music Assistant, so it does not run. You can remove it.",
   "common.errors.community_provider_not_listed": "This is no longer in the community catalog, so it no longer runs. You can remove it.",
   "common.errors.community_provider_reinstall_failed": "The files of this were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",

@@ -10,7 +10,7 @@ Installs and loads providers that community members build and maintain in their 
 - `index.py`: `IndexClient`, which fetches the index of the server's line (with its ETag) and hands a valid one to the store.
 - `installer.py`: `Installer`, which downloads a version from GitHub into a staging folder, checks it against the content hash the index lists, and swaps it live; `content_hash()` is the definition the registry uses too.
 - `dependencies.py`: `CommunityDependencies`, which resolves the Python requirements of all community providers in one pass against the server's own packages and installs the result into one folder next to the server.
-- `models.py`: the index, the state and the API result models; `constants.py`: setting keys and file format versions.
+- `models.py`: the index, the state and the API result models; `constants.py`: setting keys, file format versions and the moved providers.
 
 ## On Disk
 
@@ -21,7 +21,8 @@ Installs and loads providers that community members build and maintain in their 
   .staging/<domain>/          a download being checked, or the version that becomes live at the next start
   index.json                  kept copy of the last valid index
   state.json                  the ETag and, per domain, the installed version, repository, commit and content hash,
-                              whether that version loaded once, and the previous, pending and failed version
+                              whether that version loaded once, the previous, pending and failed version and a
+                              notice; and the moved providers the server installed by itself
 <cache>/community_deps/       the requirements of all community providers, and requirements.lock
 ```
 
@@ -33,12 +34,13 @@ A community provider is registered (its manifest and texts) only while it may lo
 
 At start (a background task after the server's own providers, never in safe mode):
 
-1. The kept copy is read and, while the switch is on or anything is installed, the index is fetched; the daily check is scheduled.
-2. A pending version becomes live when its staged folder still has the content hash the index lists for it; otherwise it is dropped and the installed version stays.
-3. Every installed provider gets the content hash of its live folder and a verdict from `evaluate()`. A changed folder is installed again at the same version, which keeps the previous version; if that fails, it does not load.
-4. Where the verdict is a switch, and with automatic updates on also where an update is on offer, the new version is staged and made live (see Updates). A switch that fails does not load; an update that fails leaves the installed version loading.
-5. The requirements of everything that may load, together with those of the providers of the development folder, are resolved in one pass and synced. A provider whose requirements clash is left out and the rest is resolved again.
-6. Each remaining provider is registered and its enabled settings entries load; a version that never loaded here before is judged (see Going Back).
+1. The kept copy is read and, while the switch is on, anything is installed or a moved provider waits, the index is fetched; the daily check is scheduled.
+2. Each moved provider that waits is installed (see Moved Providers).
+3. A pending version becomes live when its staged folder still has the content hash the index lists for it; otherwise it is dropped and the installed version stays.
+4. Every installed provider gets the content hash of its live folder and a verdict from `evaluate()`. A changed folder is installed again at the same version, which keeps the previous version; if that fails, it does not load.
+5. Where the verdict is a switch, and with automatic updates on also where an update is on offer, the new version is staged and made live (see Updates). A switch that fails does not load; an update that fails leaves the installed version loading.
+6. The requirements of everything that may load, together with those of the providers of the development folder, are resolved in one pass and synced. A provider whose requirements clash is left out and the rest is resolved again.
+7. Each remaining provider is registered and its enabled settings entries load; a version that never loaded here before is judged (see Going Back).
 
 `evaluate()` decides in this order: without any kept copy nothing loads; a blocked provider or blocked version does not load, and a blocked version switches to the latest version when the provider is listed and the latest version is not one this server went back from; with only a copy of another line, a provider loads when its folder is unchanged; a provider that is no longer listed does not load; an installed version that is not listed for this line, or listed with other content, switches to the latest version when the provider is listed and the latest version is not one this server went back from, and does not load otherwise; a changed folder is installed again; everything else loads, including a withdrawn provider, with an update on offer when the provider is listed and its latest version is another one that this server did not go back from.
 
@@ -61,3 +63,9 @@ The admin can update one provider or all at once, whatever is playing. Switches 
 A version that has not loaded on this server before is judged after it loads, also at start. It is verified as soon as one of its enabled settings entries loads, or, without any enabled entry, when its module imports. When the load fails with an error that is not a `MusicAssistantError` (a bug, rather than a handled condition such as a failed login or an unreachable service), or the module does not import, the server goes back: it stops the provider and its dependents, puts the previous version back, records the failed version, syncs the requirements of the previous version and loads it when `evaluate()` lets it. When those requirements would change an imported package, the provider stays stopped until a restart finishes going back. A first install has nothing to go back to; its settings entry shows the load error as for any provider. A handled error never goes back.
 
 At a start where the requirements could not be installed, a version that fails may only miss them: the server goes back, but does not record the version as failed, so it is offered again. A recorded failed version is not switched to, offered or updated to automatically, and the list shows it. The admin can still install it by updating that one provider; making it live drops the record, which is set again when it fails again.
+
+## Moved Providers
+
+A provider that moves from the server to the community catalog is listed in `MOVED_PROVIDER_DOMAINS`. It waits while it has a settings entry, is not installed, the server has no provider of its own by that name and the server did not install it by itself before. While one waits the index is needed, also with the switch off, and its settings entries carry a reason of their own. At start, before the installed providers are gated, and at every check of the index (the daily check or a refresh), the server installs it the way an admin's install does, without the switch. When the catalog does not offer it or the install fails, a warning is logged and it keeps waiting.
+
+The state records the move, so a provider the admin removes afterwards is never installed by itself again. The installed provider carries the notice `moved` in the list until the admin dismisses it; otherwise it is an ordinary installed community provider.

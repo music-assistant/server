@@ -91,6 +91,7 @@ async def test_update(tmp_path: Path, registry: Registry, github: GitHub) -> Non
             "previous_version": OLD,
             "pending_version": None,
             "failed_version": None,
+            "notice": None,
         }
         assert sys.modules[f"{providers_package.__name__}.{OTHER}"] is other_module
         assert mass.get_provider(OTHER) is other_instance

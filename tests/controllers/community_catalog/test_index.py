@@ -64,6 +64,7 @@ async def test_fetch_keeps_the_copy_and_its_etag(
         "schema": 1,
         "index_etag": registry.etag,
         "installed": {},
+        "moved": [],
     }
     assert client.store.index is not None
     assert set(client.store.index.providers) == set(catalog_index()["providers"])

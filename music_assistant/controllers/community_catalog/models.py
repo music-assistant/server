@@ -118,6 +118,8 @@ class InstalledProvider(DataClassDictMixin):
     pending_version: str | None = None
     # a version this server went back from, which it installs again only when the admin asks
     failed_version: str | None = None
+    # what the app tells the admin about this provider until it is dismissed: "moved"
+    notice: str | None = None
 
 
 @dataclass
@@ -128,6 +130,8 @@ class CatalogState(DataClassDictMixin):
     index_etag: str | None = None
     # by domain
     installed: dict[str, InstalledProvider] = field(default_factory=dict)
+    # the moved providers the server installed by itself, which it never does again
+    moved: list[str] = field(default_factory=list)
 
 
 @dataclass
