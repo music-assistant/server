@@ -10,7 +10,7 @@ import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from signal import SIGKILL
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -64,6 +64,26 @@ if interrupted:
     sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
     sys.stdout.flush()
 """
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_communicate_releases_streams(timeout: bool) -> None:
+    """Communication releases its streams for cleanup, including on timeout."""
+    proc = AsyncProcess(["ffprobe"], stdout=True, stderr=True)
+    proc.proc = MagicMock(returncode=None)
+    proc.proc.communicate = AsyncMock(
+        side_effect=TimeoutError if timeout else None, return_value=(b"output", b"error")
+    )
+    if timeout:
+        with pytest.raises(TimeoutError):
+            await proc.communicate()
+    else:
+        assert await proc.communicate() == (b"output", b"error")
+    assert proc.proc is not None
+    proc.proc.stdout.read = AsyncMock(return_value=b"")
+    proc.proc.stderr.readline = AsyncMock(return_value=b"")
+    assert await asyncio.wait_for(proc.read(-1), 0.1) == b""
+    assert await asyncio.wait_for(proc.read_stderr(), 0.1) == b""
 
 
 @pytest.fixture(name="piped_process")
