@@ -66,8 +66,9 @@ class HermesAgentRadio(MusicProvider):
 
     The station is a self-running 24/7 broadcast: each 'station' is a linear
     MP3 stream (the main feed plus genre mounts). There is no on-demand track
-    audio, so this provider serves MediaType.RADIO only and exposes the
-    community song library / chart as browse metadata, not playable tracks.
+    audio, so this provider serves MediaType.RADIO only. The station's
+    community song library, chart and song requests live on the station's own
+    site and are not offered through this provider.
     """
 
     @property
