@@ -588,10 +588,10 @@ def _configure_player(player: AirPlayPlayer, values: dict[str, object]) -> None:
 @pytest.mark.parametrize(
     ("advertised_audio_formats", "streaming_mode", "airplay2_capable", "expected"),
     [
-        # 24-bit advertised on the realtime stream
-        (ALAC_44100_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
-        # the Apple TV advertises 24-bit for its buffered stream only
-        (ALAC_48000_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
+        # both 24-bit rates listed (Apple TV, HomePod)
+        (ALAC_44100_24 | ALAC_48000_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
+        # one 24-bit rate listed (Shairport Sync): both, the stream converts to it
+        (ALAC_44100_16 | ALAC_48000_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
         # the RAOP mode cannot do 24-bit: falls back to the 16-bit base
         (ALAC_44100_24, STREAMING_MODE_RAOP, True, [(44100, 16)]),
         # the compatibility mode streams through the 16-bit RAOP flow
@@ -643,7 +643,7 @@ def test_hires_disabled_in_compatibility_mode(airplay_player: AirPlayPlayer) -> 
 def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
     """For a 24-bit capable device the stream format is 24-bit in a s32le container."""
     _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
-    airplay_player.advertised_audio_formats = ALAC_44100_24
+    airplay_player.advertised_audio_formats = ALAC_44100_24 | ALAC_48000_24
     _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
 
     session_format = AudioFormat(
@@ -664,6 +664,26 @@ def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
     assert stream_format.bit_depth == 24
 
 
+def test_get_stream_pcm_format_listed_rate_only(airplay_player: AirPlayPlayer) -> None:
+    """A receiver that lists 48 kHz 24-bit only gets 44.1 kHz audio at 48 kHz."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_44100_16 | ALAC_48000_24
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
+
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32
+    )
+    stream_format = airplay_player.get_stream_pcm_format(session_format)
+    assert stream_format.sample_rate == 48000
+    assert stream_format.bit_depth == 24
+
+    # a listed session rate passes through
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
+    )
+    assert airplay_player.get_stream_pcm_format(session_format).sample_rate == 48000
+
+
 def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
     """Without a 24-bit capable device the stream format is the 44.1/16 default."""
     _set_discovery_info(airplay_player, raop=True, airplay=True)
@@ -675,11 +695,14 @@ def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
 
 
 def _make_hires_player(
-    manufacturer: str, model: str, stored_toggle: bool | None = None
+    manufacturer: str,
+    model: str,
+    stored_toggle: bool | None = None,
+    advertised_audio_formats: int = ALAC_44100_24,
 ) -> AirPlayPlayer:
-    """Create a 24-bit capable AirPlay 2 player with the given device identity."""
+    """Create an AirPlay 2 player with the given device identity and listed formats."""
     provider = MagicMock()
-    _stub_raw_config(provider)
+    _stub_raw_config(provider, {} if stored_toggle is None else {CONF_ENABLE_HIRES: stored_toggle})
     player = AirPlayPlayer(
         provider=provider,
         player_id="test_player",
@@ -691,11 +714,8 @@ def _make_hires_player(
         airplay_discovery_info=None,
     )
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
-    player.advertised_audio_formats = ALAC_44100_24
-    values: dict[str, object] = {CONF_STREAMING_MODE: STREAMING_MODE_AUTO}
-    if stored_toggle is not None:
-        values[CONF_ENABLE_HIRES] = stored_toggle
-    _configure_player(player, values)
+    player.advertised_audio_formats = advertised_audio_formats
+    _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
     return player
 
 
@@ -727,19 +747,29 @@ def test_hires_toggle_override(manufacturer: str, model: str, stored: bool, expe
     assert player.hires_playback_enabled is expected
 
 
+def test_hires_toggle_for_a_receiver_listing_no_24_bit() -> None:
+    """24-bit stays off for a receiver that lists none, until switched on by hand."""
+    player = _make_hires_player("JBL", "MA9100HP", advertised_audio_formats=0)
+    assert player.hires_playback_enabled is False
+    assert player.supported_sample_rates == [(44100, 16)]
+
+    player = _make_hires_player("JBL", "MA9100HP", stored_toggle=True, advertised_audio_formats=0)
+    assert player.hires_playback_enabled is True
+    assert player.supported_sample_rates == [(44100, 24), (48000, 24)]
+
+
 @pytest.mark.asyncio
 async def test_hires_toggle_config_entry_visibility(airplay_player: AirPlayPlayer) -> None:
-    """The 24-bit entry is only shown when the device advertises 24-bit support."""
+    """The 24-bit entry is shown on the AirPlay 2 route, on when 24-bit is listed."""
     _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
 
-    # always part of the entry list (so a stored value survives the config
-    # parse at registration, before the async formats probe has landed), but
-    # hidden until the device is known to support 24-bit
+    # shown without a listed 24-bit format, so it can be switched on by hand
     airplay_player.advertised_audio_formats = ALAC_44100_16
     entries = await airplay_player.get_config_entries()
     hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
-    assert hires_entry.hidden is True
+    assert hires_entry.hidden is False
+    assert hires_entry.default_value is False
 
     airplay_player.advertised_audio_formats = ALAC_44100_24
     entries = await airplay_player.get_config_entries()
@@ -748,6 +778,13 @@ async def test_hires_toggle_config_entry_visibility(airplay_player: AirPlayPlaye
     assert hires_entry.default_value is True
     # flipping the toggle must restart an active stream to take effect
     assert hires_entry.requires_reload is True
+
+    # always part of the entry list (so a stored value survives the config
+    # parse at registration), but hidden on a route that cannot carry 24-bit
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_RAOP})
+    entries = await airplay_player.get_config_entries()
+    hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
+    assert hires_entry.hidden is True
 
 
 @pytest.mark.asyncio
@@ -830,6 +867,54 @@ async def test_session_pcm_format_selects_processing_depth(
     assert fmt.content_type == expected_content_type
     assert fmt.sample_rate == 48000
     assert fmt.bit_depth == expected_bit_depth
+
+
+@pytest.mark.asyncio
+async def test_group_with_a_48k_only_receiver_and_a_16_bit_member(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A receiver that lists 48 kHz 24-bit only shares a session rate with a 16-bit member."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_44100_16 | ALAC_48000_24
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
+    member = AirPlayPlayer(
+        provider=cast("AirPlayProvider", airplay_player.provider),
+        player_id="member",
+        display_name="Member",
+        address="127.0.0.2",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    _set_discovery_info(member, raop=True, airplay=False)
+    airplay_player.mass.streams.audio = StreamsAudio(airplay_player.mass)
+    cast("MagicMock", airplay_player.mass.config.get_player_dsp_config).return_value = MagicMock(
+        enabled=False
+    )
+    cast(
+        "MagicMock", airplay_player.mass.streams.get_crossfade_mode
+    ).return_value = CrossfadeMode.DISABLED
+    streamdetails = MagicMock()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16
+    )
+    streamdetails.decoded_audio_format = None
+    streamdetails.media_type = MediaType.TRACK
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+    queue = MagicMock(crossfade_enabled=False, overlay_enabled=False, overlay_source=None)
+    cast("MagicMock", airplay_player.mass.player_queues.get).return_value = queue
+    cast("MagicMock", airplay_player.mass.player_queues.get_item).return_value = MagicMock(
+        streamdetails=streamdetails
+    )
+    media = MagicMock(source_id="queue1", queue_item_id="item1", media_type=MediaType.TRACK)
+
+    session_format = await airplay_player._get_session_pcm_format([airplay_player, member], media)
+
+    assert session_format.sample_rate == 44100
+    # each member converts the session audio to its own stream format
+    assert airplay_player.get_stream_pcm_format(session_format).sample_rate == 48000
+    assert member.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
 
 
 # --- Volume and Mute tests ---

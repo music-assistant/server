@@ -32,6 +32,7 @@ from .constants import (
     AIRPLAY_DEFAULT_PORT,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
+    AIRPLAY_HIRES_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
@@ -217,20 +218,20 @@ class AirPlayPlayer(Player):
     @property
     def hires_playback_enabled(self) -> bool:
         """Return if 24-bit hi-res playback is possible and enabled for this player."""
-        # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
-        # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
-        # base whatever it advertises.
-        return (
-            bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
-            and self.protocol == StreamingProtocol.AIRPLAY2
-            # the compat lane is 16-bit only, so hi-res stands down while the pin is active
-            and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
-            and bool(self.config.get_value(CONF_ENABLE_HIRES, self._hires_default_enabled))
-        )
+        if not self._hires_route:
+            return False
+        # the stored toggle is read raw: its parsed default dates from registration,
+        # before the receiver's formats were probed
+        stored = self.mass.config.get_raw_player_config_value(self.player_id, CONF_ENABLE_HIRES)
+        return self._hires_default_enabled if stored is None else bool(stored)
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]]:
         """Return the (sample_rate, bit_depth) pairs this player natively supports."""
+        # Both 24-bit rates, also for a receiver that lists one: every member
+        # converts the shared session audio to its own stream format (see
+        # get_stream_pcm_format), and a narrower list could leave a group without
+        # a common rate.
         if self.hires_playback_enabled:
             return AIRPLAY_HIRES_SAMPLE_RATES
         return [(AIRPLAY_PCM_FORMAT.sample_rate, AIRPLAY_PCM_FORMAT.bit_depth)]
@@ -410,17 +411,17 @@ class AirPlayPlayer(Player):
                 )
             )
 
-        # 24-bit toggle, shown only when the device advertises 24-bit support
-        # (per-device default: see default_hires_enabled). Hidden rather than
-        # omitted when it does not: the formats are probed async after
-        # registration, and an entry absent from the registration-time config
-        # parse would drop the user's stored value until the next config save.
+        # 24-bit toggle, on by default when the device lists 24-bit support (see
+        # _hires_default_enabled) and switchable by hand for a receiver that
+        # renders it without listing it. Hidden rather than omitted on a route
+        # that cannot carry 24-bit: an entry absent from the registration-time
+        # config parse would drop the user's stored value until the next save.
         base_entries.append(
             ConfigEntry(
                 key=CONF_ENABLE_HIRES,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=self._hires_default_enabled,
-                hidden=not self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS,
+                hidden=not self._hires_route,
                 category="protocol_generic",
                 requires_reload=True,
             )
@@ -919,11 +920,18 @@ class AirPlayPlayer(Player):
             return AIRPLAY_PCM_FORMAT
         # 24-bit: the binary expects raw s32le input on stdin (--bitdepth 24)
         # and truncates to 24-bit ALAC internally.
-        supported_rates = {sample_rate for sample_rate, _ in self.supported_sample_rates}
+        # only the 24-bit rates the receiver lists (Shairport Sync decodes 48 kHz
+        # only); one that lists none had 24-bit switched on by hand and gets both
+        listed_rates = [
+            sample_rate
+            for bit, sample_rate in AIRPLAY_HIRES_FORMATS.items()
+            if self.advertised_audio_formats & bit
+        ] or list(AIRPLAY_HIRES_FORMATS.values())
+        # an unlisted session rate falls back to the first listed one
         sample_rate = (
             session_pcm_format.sample_rate
-            if session_pcm_format.sample_rate in supported_rates
-            else AIRPLAY_PCM_FORMAT.sample_rate
+            if session_pcm_format.sample_rate in listed_rates
+            else listed_rates[0]
         )
         return AudioFormat(
             content_type=ContentType.PCM_S32LE,
@@ -1525,10 +1533,21 @@ class AirPlayPlayer(Player):
         self.set_password_invalid(False)
 
     @property
+    def _hires_route(self) -> bool:
+        """Return whether the current streaming route can carry 24-bit audio."""
+        # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
+        # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
+        # base, and so does the compat lane.
+        return (
+            self.protocol == StreamingProtocol.AIRPLAY2
+            and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
+        )
+
+    @property
     def _hires_default_enabled(self) -> bool:
         """Return the per-device default for the 24-bit toggle."""
-        return default_hires_enabled(
-            self.device_info.manufacturer or "", self.device_info.model or ""
+        return bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS) and (
+            default_hires_enabled(self.device_info.manufacturer or "", self.device_info.model or "")
         )
 
 
