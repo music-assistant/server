@@ -954,14 +954,14 @@ def test_translate_event_maps_metadata_fields() -> None:
     assert metadata.album == "The Album"
     assert metadata.image_url == "http://img.invalid/c.jpg"
     assert metadata.duration == 215
-    assert metadata.position == 32
+    assert metadata.position == 32.9
 
 
 def test_translate_event_maps_seek_position_ms_to_seconds() -> None:
-    """Seek events carry the position converted from milliseconds to whole seconds."""
+    """Seek events carry the position converted from milliseconds to seconds, to the ms."""
     event = _make_backend()._translate_event("seek", {"position": 61999})
     assert event.type is BackendEventType.POSITION
-    assert event.position == 61
+    assert event.position == 61.999
 
 
 @pytest.mark.parametrize(

@@ -155,6 +155,8 @@ class _PlayerDaemon:
     # 'inactive' events; gates the resume kick in on_source_selected (skip if
     # already playing) and the play_media trigger in the event handler.
     playing: bool = False
+    # Fraction of a second of the position that the whole-second elapsed time can't hold.
+    position_fraction: float = 0.0
     # True while MA is the active Spotify Connect device (set on 'active',
     # cleared on 'inactive'); gates get_stream_details and transport commands.
     spotify_session_active: bool = False
@@ -189,11 +191,38 @@ class _PlayerDaemon:
             and metadata.elapsed_time is not None
             and metadata.elapsed_time_last_updated is not None
         ):
-            now = int(time.time())
             if not playing:
-                metadata.elapsed_time += int(now - metadata.elapsed_time_last_updated)
-            metadata.elapsed_time_last_updated = now
+                self._anchor_position(
+                    metadata.elapsed_time + time.time() - metadata.elapsed_time_last_updated,
+                    playing=False,
+                )
+            else:
+                metadata.elapsed_time_last_updated = time.time() - self.position_fraction
         self.playing = playing
+
+    def set_position(self, position: float) -> None:
+        """
+        Anchor the stream position reported by the backend at this moment.
+
+        :param position: Elapsed time in seconds, with their fraction.
+        """
+        self._anchor_position(position, playing=self.playing)
+
+    def _anchor_position(self, position: float, *, playing: bool) -> None:
+        """
+        Store a position whose fraction of a second the whole-second elapsed time can't hold.
+
+        The fraction moves into the timestamp instead: while playing, the whole seconds were
+        reached that long ago, so the extrapolated position stays exact. While paused nothing
+        is extrapolated, so the fraction waits until playback resumes.
+        """
+        metadata = self.stream_metadata
+        whole = int(max(0.0, position))
+        self.position_fraction = max(0.0, position) - whole
+        metadata.elapsed_time = whole
+        metadata.elapsed_time_last_updated = time.time() - (
+            self.position_fraction if playing else 0.0
+        )
 
 
 class SpotifyConnectProvider(PluginProvider):
@@ -1102,8 +1131,7 @@ class SpotifyConnectProvider(PluginProvider):
         if event.type is BackendEventType.METADATA and event.metadata is not None:
             self._apply_metadata(daemon, event.metadata)
         elif event.type is BackendEventType.POSITION and event.position is not None:
-            daemon.stream_metadata.elapsed_time = event.position
-            daemon.stream_metadata.elapsed_time_last_updated = int(time.time())
+            daemon.set_position(event.position)
 
         if event.type is BackendEventType.VOLUME and event.volume is not None:
             await self._handle_volume_event(daemon, event.volume)
@@ -1181,8 +1209,7 @@ class SpotifyConnectProvider(PluginProvider):
         daemon.stream_metadata.image_url = metadata.image_url
         daemon.stream_metadata.description = None
         daemon.stream_metadata.duration = metadata.duration
-        daemon.stream_metadata.elapsed_time = metadata.position
-        daemon.stream_metadata.elapsed_time_last_updated = int(time.time())
+        daemon.set_position(metadata.position)
 
     async def _handle_volume_event(self, daemon: _PlayerDaemon, volume: int) -> None:
         """

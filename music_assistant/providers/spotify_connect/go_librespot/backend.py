@@ -434,7 +434,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                     album=data.get("album_name"),
                     image_url=data.get("album_cover_url"),
                     duration=duration_ms // 1000 if duration_ms else None,
-                    position=int(data.get("position", 0)) // 1000,
+                    position=int(data.get("position", 0)) / 1000,
                 ),
             )
         if event_type == "seek":
@@ -442,7 +442,7 @@ class GoLibrespotBackend(SpotifyConnectBackend):
                 BackendEventType.POSITION,
                 context_uri=context_uri,
                 track_uri=track_uri,
-                position=int(data.get("position", 0)) // 1000,
+                position=int(data.get("position", 0)) / 1000,
             )
         if event_type == "volume" and data.get("value") is not None:
             # translate the daemon's 0..max scale to a 0-100 percentage
