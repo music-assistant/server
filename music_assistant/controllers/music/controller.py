@@ -2045,6 +2045,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "timestamp": timestamp,
             "queue_id": queue_id,
             "user_initiated": user_initiated,
+            "podcast_item_id": media_item.podcast.item_id
+            if isinstance(media_item, PodcastEpisode)
+            else None,
         }
         # try to figure out the user that triggered the action
         user: User | None = None
