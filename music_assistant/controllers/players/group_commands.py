@@ -106,6 +106,9 @@ class GroupCommandsMixin(_PlayerControllerBase):
             member = self.get_player(member_id)
             if member and member.available and member.offline_by_power_control:
                 self._power_on_member(parent_player, member, added=True)
+        # a member that is removed before its device is online does not join later
+        for member_id in player_ids_to_remove or []:
+            self._cancel_member_join(parent_player, member_id)
 
         # Use lock for playback commands to prevent protocol switches from
         # racing with concurrent play_media / play_index / resume calls.

@@ -397,3 +397,50 @@ async def test_a_group_that_waits_for_its_first_member_fails_once_the_power_on_i
     with pytest.raises(PlayerUnavailableError, match="None of the members of Downstairs"):
         await waiting
     setup.joined.assert_not_awaited()
+
+
+async def test_a_member_whose_leader_is_stopped_while_it_waits_for_the_lock_is_not_added(
+    mock_mass: MagicMock,
+) -> None:
+    """A player that was added to a leader is not added once that power on was called off."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    set_members = AsyncMock()
+    controller.cmd_set_members = set_members  # type: ignore[method-assign]
+    kitchen, den = setup.speakers["kitchen"].player, setup.speakers["den"].player
+
+    async with controller.get_player_lock("kitchen", PlayerLockPurpose.PLAYBACK):
+        controller._power_on_member(kitchen, den, added=True)
+        await asyncio.sleep(BOOT_TIME * 2)
+        # online, and waiting for the lock of its leader
+        assert den.available_for_playback
+        assert list(controller._member_joins) == ["den"]
+        controller._cancel_power_on(kitchen)
+    await asyncio.sleep(1)
+
+    set_members.assert_not_awaited()
+
+
+async def test_a_member_that_is_removed_from_its_owner_is_not_powered_on_for_it_any_more(
+    mock_mass: MagicMock,
+) -> None:
+    """Only the owner that took a player along calls its power on off by removing it."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    set_members = AsyncMock()
+    controller.cmd_set_members = set_members  # type: ignore[method-assign]
+    kitchen, den = setup.speakers["kitchen"].player, setup.speakers["den"].player
+    controller._power_on_member(kitchen, den, added=True)
+    await asyncio.sleep(BOOT_TIME / 2)
+
+    controller._cancel_member_join(setup.group, "den")
+    assert list(controller._member_joins) == ["den"]
+
+    controller._cancel_member_join(kitchen, "den")
+    assert controller._member_joins == {}
+    assert not den.power_on_in_progress
+    await asyncio.sleep(BOOT_TIME * 2)
+
+    set_members.assert_not_awaited()
+    # the control is left as it is
+    setup.speakers["den"].control.power_off.assert_not_awaited()  # type: ignore[union-attr]

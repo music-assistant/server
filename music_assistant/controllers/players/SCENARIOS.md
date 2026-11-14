@@ -1526,6 +1526,28 @@ joins Kitchen once the play is done.
 - End-to-end: **no**: it needs a device that takes that long over a command.
 - Proven by: `test_grouping.py::test_a_woken_member_is_not_powered_off_as_idle_before_it_joins`
 
+### GROUP-29 · A speaker whose leader or group is stopped while it waits to join stays out
+
+Den's plug is switched off. The user adds Den to Kitchen, which leads Office, or to the sync
+group or universal group Downstairs of Kitchen and Office, while it plays. Den's device is back
+while another command holds Kitchen or Downstairs, so Den waits to join. The user stops or pauses
+Kitchen or Downstairs meanwhile: once the other command is done Den does not join. It gets no
+command, is idle and in no group, and its plug stays on.
+
+- End-to-end: **no**: it needs a command that holds a player while a device boots.
+- Proven by: `test_group_power_on.py::test_a_speaker_whose_owner_is_stopped_while_it_waits_to_join_stays_out`
+
+### GROUP-30 · A speaker that is removed before it is online stays out
+
+Den's plug is switched off. The user adds Den to Kitchen or to the group Downstairs, as in
+GROUP-29, and removes it again before its device is back. When the device is back Den does not
+join: it gets no command, is in no group, and Kitchen or Downstairs does not list it. Its plug
+stays on.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a third player of one kind.
+- Proven by: `test_group_power_on.py::test_a_speaker_that_is_removed_before_it_is_online_stays_out`
+
 ### GROUP-31 · A power off of a group that waits for its members ends the wait
 
 Downstairs, a sync group or a universal group with a power control of its own, has Kitchen and

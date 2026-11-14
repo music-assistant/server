@@ -603,13 +603,19 @@ class PowerMixin(_PlayerControllerBase):
             if player := self.get_player(player_id):
                 player.refresh_state()
         try:
-            if join.added:
-                await self.cmd_set_members(owner.player_id, player_ids_to_add=[member.player_id])
-            elif own := owner.own_protocol:
-                async with self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK):
-                    # not when the owner was stopped while this waited for its lock
-                    if self._member_joins.get(member.player_id) is join:
-                        await own.on_member_powered_on(member)
+            # the lock that a member change of the owner runs under; for a group player
+            # that is its own lock
+            async with self.get_group_and_player_lock(owner.player_id):
+                if self._member_joins.get(member.player_id) is not join:
+                    # the owner was stopped or paused, or the player was removed from it,
+                    # while this waited for the lock
+                    return
+                if join.added:
+                    await self.cmd_set_members(
+                        owner.player_id, player_ids_to_add=[member.player_id]
+                    )
+                elif own := owner.own_protocol:
+                    await own.on_member_powered_on(member)
         except MusicAssistantError as err:
             self.logger.warning("Player %s could not join %s: %s", member.name, owner.name, err)
 
@@ -628,10 +634,23 @@ class PowerMixin(_PlayerControllerBase):
         if called_off:
             player.set_power_on_in_progress(False)
             self.logger.debug("Called off the power on of player %s", player.name)
-        for member_id, join in list(self._member_joins.items()):
-            if join.owner_id != player.player_id:
-                continue
-            del self._member_joins[member_id]
-            if member := self.get_player(member_id):
-                self._cancel_power_on(member)
+        for member_id in list(self._member_joins):
+            self._cancel_member_join(player, member_id)
         return called_off
+
+    def _cancel_member_join(self, owner: Player, member_id: str) -> None:
+        """
+        Call off the power on of a player that its owner took along, which then stays out of it.
+
+        Does nothing for a player that the owner did not take along. The power control is
+        left as it is.
+
+        :param owner: The group player or leader that took the player along.
+        :param member_id: The player that was powered on for it.
+        """
+        join = self._member_joins.get(member_id)
+        if join is None or join.owner_id != owner.player_id:
+            return
+        del self._member_joins[member_id]
+        if member := self.get_player(member_id):
+            self._cancel_power_on(member)

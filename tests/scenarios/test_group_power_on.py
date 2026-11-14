@@ -9,14 +9,18 @@ from music_assistant_models.constants import PLAYER_CONTROL_FAKE
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerUnavailableError
 
+from music_assistant.controllers.players.constants import PlayerLockPurpose
+
 from .harness import TEST_TRACK_URI
 from .test_grouping import (
     _come_back,
     _group,
+    _grouping_commands,
     _load_music,
     _player_id,
     _speakers,
     _state,
+    _stop,
     _switch_off,
 )
 
@@ -38,6 +42,86 @@ async def _owner(scenario: Scenario, owner_type: str, leader_id: str, member_id:
         await scenario.idle()
         return leader_id
     return await _group(scenario, owner_type, leader_id, member_id)
+
+
+@pytest.mark.parametrize("owner_type", ["leader", "sync_group", "universal_group"])
+@pytest.mark.parametrize("command", ["stop", "pause"])
+async def test_a_speaker_whose_owner_is_stopped_while_it_waits_to_join_stays_out(
+    scenario: Scenario, owner_type: str, command: str
+) -> None:
+    """
+    A stop or a pause of a leader or group keeps out a speaker that was about to join it.
+
+    The speaker was added while it was switched off at its plug. Its device is back while
+    another command holds the owner, so its join waits. The owner is stopped or paused
+    meanwhile: the speaker gets no command, is idle and in no group.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    owner_id = await _owner(scenario, owner_type, kitchen_id, office_id)
+    plug = await _switch_off(scenario, den)
+    players = scenario.mass.players
+    await scenario.play(owner_id)
+    await players.cmd_set_members(owner_id, player_ids_to_add=[den_id])
+    await scenario.settle()
+    assert plug.commands == [True]
+
+    async with players.get_player_lock(owner_id, PlayerLockPurpose.PLAYBACK):
+        await _come_back(scenario, den)
+        call_off = await scenario.command(
+            players.cmd_stop(owner_id)
+            if command == "stop"
+            else scenario.mass.player_queues.pause(owner_id)
+        )
+        await scenario.advance(2)
+    await scenario.advance(10)
+    await call_off
+    await scenario.idle()
+
+    assert den.commands == []
+    assert ("set_members", ["sonos_den"], None) not in _grouping_commands(kitchen)
+    assert _state(scenario, den_id).synced_to is None
+    assert _state(scenario, den_id).active_group is None
+    assert _state(scenario, den_id).playback_state == PlaybackState.IDLE
+    assert plug.commands == [True]
+    if command == "pause":
+        await _stop(scenario, owner_id)
+
+
+@pytest.mark.parametrize("owner_type", ["leader", "sync_group", "universal_group"])
+async def test_a_speaker_that_is_removed_before_it_is_online_stays_out(
+    scenario: Scenario, owner_type: str
+) -> None:
+    """
+    A speaker that is added while it is switched off, and removed again, does not join.
+
+    Its plug was switched on for the leader or group it was added to. It is removed from that
+    owner before its device is back. Once the device is back the speaker gets no command, is
+    idle and in no group, and its owner does not list it.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    owner_id = await _owner(scenario, owner_type, kitchen_id, office_id)
+    plug = await _switch_off(scenario, den)
+    players = scenario.mass.players
+    await scenario.play(owner_id)
+    await players.cmd_set_members(owner_id, player_ids_to_add=[den_id])
+    await scenario.settle()
+    assert plug.commands == [True]
+
+    await players.cmd_set_members(owner_id, player_ids_to_remove=[den_id])
+    await scenario.settle()
+    await _come_back(scenario, den)
+    await scenario.idle()
+
+    assert den.commands == []
+    assert den_id not in _state(scenario, owner_id).group_members
+    assert _state(scenario, den_id).synced_to is None
+    assert _state(scenario, den_id).active_group is None
+    assert plug.commands == [True]
+    await _stop(scenario, owner_id)
 
 
 @pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
