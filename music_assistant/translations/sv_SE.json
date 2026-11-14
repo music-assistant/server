@@ -923,5 +923,11 @@
   "common.media.genre.anime_and_video_game_music.description": "Videospelmusik (VGM) är musiken som ackompanjerar videospel. De första videospelens musik begränsades till ljud från tidiga ljudkretsar, såsom programmerbara ljudgeneratorer (PSG) eller kretsar för FM-syntes. Dessa begränsningar ledde till musikstilen chiptune, som kom att prägla de tidiga videospelen.",
   "common.media.genre.anime_and_video_game_music.name": "Anime och videospelmusik",
   "common.media.genre.asian_music.description": "Asiatisk musik omfattar många musikstilar, varierade kulturella och religiösa traditioner och former med ursprung på den asiatiska kontinenten.",
-  "common.media.genre.asian_music.name": "Asiatisk musik"
+  "common.media.genre.asian_music.name": "Asiatisk musik",
+  "common.media.genre.childrens_music.description": "Barnmusik är musik som komponeras och framförs för barn. I europeiskt präglade sammanhang avser det vanligtvis musik, ofta sånger, som skrivits särskilt för en ung publik. Kompositörerna är vanligtvis vuxna.",
+  "common.media.genre.childrens_music.name": "Barnmusik",
+  "common.media.genre.christmas_music.description": "Julmusik omfattar olika musikgenrer som regelbundet framförs eller hörs under julperioden. Musik som förknippas med julen kan vara helt instrumental, eller, som i julsånger, ha texter om Jesu födelse, traditioner som gåvor och festligheter, kulturella gestalter som jultomten eller andra ämnen. Många sånger har bara vinter- eller säsongstema, eller har av andra skäl blivit en del av den etablerade repertoaren.",
+  "common.media.genre.christmas_music.name": "Julmusik",
+  "common.media.genre.church_music.description": "Kyrkomusik är kristen musik som skrivits för framförande i kyrkan eller inom en kyrklig liturgi, eller musik med texter som uttrycker något heligt, till exempel en psalm.",
+  "common.media.genre.church_music.name": "Kyrkomusik"
 }
