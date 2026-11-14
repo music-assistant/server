@@ -1087,7 +1087,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 return await self._catch_up_stream_details(
                     programme_id.pid, MediaType.PODCAST_EPISODE
                 )
-            except MusicAssistantError, exceptions.NotFoundError:
+            except MusicAssistantError, exceptions.SoundsHttpException:
                 self.logger.debug(
                     "No on-demand version of %s yet, using the live stream", programme_id.pid
                 )
