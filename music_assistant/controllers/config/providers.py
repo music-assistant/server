@@ -128,7 +128,8 @@ class ProviderConfigMixin:
             # guard for deleted providers
             if prov_conf["domain"] not in prov_entries:
                 if include_unavailable:
-                    configs.append(_unavailable_provider_config(prov_conf))
+                    reason = self.mass.community_catalog.unavailable_reason(prov_conf["domain"])
+                    configs.append(_unavailable_provider_config(prov_conf, reason))
                 continue
             if include_values:
                 # get_provider_config already stamps the derived status
@@ -162,7 +163,8 @@ class ProviderConfigMixin:
                     break
             else:
                 if include_unavailable:
-                    return _unavailable_provider_config(raw_conf)
+                    reason = self.mass.community_catalog.unavailable_reason(raw_conf["domain"])
+                    return _unavailable_provider_config(raw_conf, reason)
                 msg = f"Unknown provider domain: {raw_conf['domain']}"
                 raise KeyError(msg)
             config_entries = await self.get_provider_config_entries(instance_id)

@@ -137,6 +137,15 @@ class Installer:
             msg = f"Could not remove {domain}: {err}"
             raise InstallError(msg) from err
 
+    def live_folder(self, domain: str) -> Path:
+        """
+        Return the folder of the live version of a provider, which need not exist.
+
+        :param domain: The domain of the provider.
+        :raises InstallError: The domain is not a provider domain.
+        """
+        return self._folders(domain)[0]
+
     async def _stage(
         self, domain: str, version: str, repository: str, release: IndexVersion
     ) -> ProviderManifest:

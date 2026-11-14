@@ -15,6 +15,7 @@ from music_assistant_models import helpers as models_helpers
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
+from music_assistant.controllers.community_catalog import CommunityCatalogController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
@@ -274,6 +275,7 @@ async def _minimal_mass_context(
     mass_instance.discovery = DiscoveryController(mass_instance)
     mass_instance.cache = CacheController(mass_instance)
     mass_instance.translations = TranslationController(mass_instance)
+    mass_instance.community_catalog = CommunityCatalogController(mass_instance)
 
     try:
         yield mass_instance

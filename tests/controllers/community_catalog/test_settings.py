@@ -155,6 +155,8 @@ async def test_safe_mode(tmp_path: Path, registry: Registry) -> None:
 
 async def _switch(mass: MusicAssistant, *, enabled: bool) -> None:
     """Save the switch, as the app does, and wait for the check it starts."""
+    # the start reads the switch too
+    await _wait_for_start(mass)
     await mass.config.save_core_config(DOMAIN, {"catalog_enabled": enabled})
     if (task := mass.get_task(_INDEX_CHECK)) is not None:
         await task

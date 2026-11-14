@@ -88,11 +88,24 @@ class CatalogIndex(DataClassDictMixin):
 
 
 @dataclass
+class InstalledProvider(DataClassDictMixin):
+    """The version of a community provider that is installed."""
+
+    version: str
+    # owner/name of the repository on GitHub
+    repository: str
+    commit: str
+    content_hash: str
+
+
+@dataclass
 class CatalogState(DataClassDictMixin):
     """What the server keeps about the community catalog next to the kept copy of the index."""
 
     schema: int = STATE_SCHEMA
     index_etag: str | None = None
+    # by domain
+    installed: dict[str, InstalledProvider] = field(default_factory=dict)
 
 
 @dataclass

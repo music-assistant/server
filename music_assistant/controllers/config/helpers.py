@@ -70,11 +70,18 @@ def _provider_status(conf: ProviderConfig, is_loaded: bool) -> ProviderStatus:
     return ProviderStatus.LOADING
 
 
-def _unavailable_provider_config(raw_conf: dict[str, Any]) -> ProviderConfig:
-    """Return the config of a provider whose code is not available, with the reason why."""
+def _unavailable_provider_config(
+    raw_conf: dict[str, Any], reason: ProviderError | None
+) -> ProviderConfig:
+    """
+    Return the config of a provider whose code is not available, with the reason why.
+
+    :param raw_conf: The stored config of the provider.
+    :param reason: Why the provider is not available, a generic reason when None.
+    """
     conf = cast("ProviderConfig", ProviderConfig.parse([], raw_conf))
     conf.status = ProviderStatus.UNAVAILABLE
-    conf.last_error = ProviderError(
+    conf.last_error = reason or ProviderError(
         error_code=ProviderUnavailableError.error_code,
         message="This provider is no longer available.",
         translation_key="provider_no_longer_available",

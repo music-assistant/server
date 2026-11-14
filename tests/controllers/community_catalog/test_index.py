@@ -13,6 +13,8 @@ from aiohttp import ClientSession, ClientTimeout
 
 from music_assistant.controllers.community_catalog import index as index_module
 from music_assistant.controllers.community_catalog.index import IndexClient, server_line
+from music_assistant.controllers.community_catalog.models import CatalogState
+from music_assistant.controllers.community_catalog.store import CatalogStore
 from tests.controllers.community_catalog.conftest import catalog_index
 
 if TYPE_CHECKING:
@@ -44,7 +46,8 @@ async def client(tmp_path: Path) -> AsyncGenerator[IndexClient]:
     """Return an index client of a nightly server that keeps its copy in a temporary folder."""
     async with ClientSession() as session:
         mass = SimpleNamespace(version="0.0.0", http_session=session)
-        yield IndexClient(mass, str(tmp_path / "community_providers"), LOGGER)  # type: ignore[arg-type]
+        store = CatalogStore(str(tmp_path / "community_providers"), LOGGER)
+        yield IndexClient(mass, store, LOGGER)  # type: ignore[arg-type]
 
 
 async def test_fetch_keeps_the_copy_and_its_etag(
@@ -60,9 +63,10 @@ async def test_fetch_keeps_the_copy_and_its_etag(
     assert json.loads((folder / "state.json").read_bytes()) == {
         "schema": 1,
         "index_etag": registry.etag,
+        "installed": {},
     }
-    assert client.index is not None
-    assert set(client.index.providers) == set(catalog_index()["providers"])
+    assert client.store.index is not None
+    assert set(client.store.index.providers) == set(catalog_index()["providers"])
 
     kept = (folder / "index.json").read_bytes()
     assert await client.fetch() is False
@@ -78,7 +82,7 @@ async def test_unchanged_index_is_no_change(client: IndexClient, registry: Regis
 
     assert await client.fetch() is False
 
-    assert client.state.index_etag == '"two"'
+    assert client.store.state.index_etag == '"two"'
 
 
 @pytest.mark.parametrize(
@@ -103,7 +107,7 @@ async def test_failed_fetch_keeps_the_copy(
     """Whatever goes wrong, the kept copy stays and one warning tells why."""
     folder = tmp_path / "community_providers"
     assert await client.fetch() is True
-    kept, kept_index = (folder / "index.json").read_bytes(), client.index
+    kept, kept_index = (folder / "index.json").read_bytes(), client.store.index
     registry.etag = '"two"'
     match failure:
         case "not_found":
@@ -123,8 +127,8 @@ async def test_failed_fetch_keeps_the_copy(
 
     assert len(registry.requests) == 2
     assert (folder / "index.json").read_bytes() == kept
-    assert client.index == kept_index
-    assert client.state.index_etag == '"one"'
+    assert client.store.index == kept_index
+    assert client.store.state.index_etag == '"one"'
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert message in warnings[0]
@@ -136,13 +140,13 @@ async def test_index_that_cannot_be_kept_is_still_used(
     """An index that cannot be written is used all the same, and the next fetch keeps it."""
     folder = tmp_path / "community_providers"
     with (
-        patch.object(IndexClient, "_write", side_effect=OSError("No space left on device")),
+        patch.object(CatalogStore, "_write", side_effect=OSError("No space left on device")),
         caplog.at_level(logging.WARNING, logger=LOGGER.name),
     ):
         assert await client.fetch() is True
 
-    assert client.index is not None
-    assert client.state.index_etag is None
+    assert client.store.index is not None
+    assert client.store.state.index_etag is None
     assert not folder.exists()
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
@@ -152,7 +156,7 @@ async def test_index_that_cannot_be_kept_is_still_used(
 
     assert registry.requests[1] == ("nightly", None)
     assert (folder / "index.json").exists()
-    assert client.state.index_etag == registry.etag
+    assert client.store.state.index_etag == registry.etag
 
 
 async def test_load_reads_the_kept_copy(
@@ -161,18 +165,19 @@ async def test_load_reads_the_kept_copy(
     """The kept copy and its ETag are read back; a state of another format reads as empty."""
     folder = tmp_path / "community_providers"
     assert await client.fetch() is True
-    fetched = client.index
-    async with ClientSession() as session:
-        mass = SimpleNamespace(version="0.0.0", http_session=session)
-        restarted = IndexClient(mass, str(folder), LOGGER)  # type: ignore[arg-type]
-        await restarted.load()
-        assert restarted.index == fetched
-        assert restarted.state.index_etag == registry.etag
+    fetched = client.store.index
+    restarted = CatalogStore(str(folder), LOGGER)
+    await restarted.load()
+    assert restarted.index == fetched
+    assert restarted.state.index_etag == registry.etag
 
-        (folder / "state.json").write_text(json.dumps({"schema": 2, "index_etag": '"one"'}))
-        await restarted.load()
-        assert restarted.index == fetched
-        assert restarted.state.index_etag is None
+    installed = {"foo": {"version": "1.0", "repository": "a/b", "commit": "c", "content_hash": "d"}}
+    (folder / "state.json").write_text(
+        json.dumps({"schema": 2, "index_etag": '"one"', "installed": installed})
+    )
+    await restarted.load()
+    assert restarted.index == fetched
+    assert restarted.state == CatalogState()
 
 
 async def test_no_etag_without_a_copy(
@@ -182,7 +187,7 @@ async def test_no_etag_without_a_copy(
     folder = tmp_path / "community_providers"
     assert await client.fetch() is True
     (folder / "index.json").unlink()
-    await client.load()
+    await client.store.load()
 
     assert await client.fetch() is True
 
