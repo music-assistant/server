@@ -71,6 +71,8 @@ class GroupCommandsMixin(_PlayerControllerBase):
         Join/unjoin given player(s) to/from target player.
 
         Will add the given player(s) to the target player (sync leader or group player).
+        A player to add that is switched off at its external power control is powered on,
+        and added once its device is online.
         Does not check the current user's player access, see check_grouping_access.
 
         :param target_player: player_id of the syncgroup leader or group player.
@@ -98,6 +100,12 @@ class GroupCommandsMixin(_PlayerControllerBase):
             ),
         ):
             return
+
+        # no lock while a device comes online: such a member is left out of this change
+        for member_id in player_ids_to_add or []:
+            member = self.get_player(member_id)
+            if member and member.available and member.offline_by_power_control:
+                self._power_on_member(parent_player, member, added=True)
 
         # Use lock for playback commands to prevent protocol switches from
         # racing with concurrent play_media / play_index / resume calls.

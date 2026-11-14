@@ -117,6 +117,8 @@ class PlayerView:
     :param listed: Whether its state says available and enabled.
     :param iterated: Whether ``iter_players(return_unavailable=False)`` yields it.
     :param available_for_playback: Whether it can play now.
+    :param switched_off: Whether its device is off the network because it is switched off at
+        its external power control.
     :param powered: Its power state.
     :param power_control: The control its power goes through.
     :param playback_state: Its playback state.
@@ -141,6 +143,7 @@ class PlayerView:
     listed: bool = True
     iterated: bool = True
     available_for_playback: bool = True
+    switched_off: bool = False
     powered: bool | None = None
     power_control: str = PLAYER_CONTROL_NONE
     playback_state: PlaybackState = PlaybackState.IDLE
@@ -1828,6 +1831,14 @@ class _Planner(GroupRules):
         if child_id == target.player_id or child_id in admitted:
             return False
         child = self.snapshot.player(child_id)
+        if child and child.listed and child.switched_off:
+            # whoever takes it along powers it on, and it joins once its device is online
+            self._note(
+                logging.DEBUG,
+                "Player %s is switched off at its power control, it is left out for now",
+                child.name,
+            )
+            return False
         if not child or not child.available_for_playback:
             self._note(logging.WARNING, "Player %s is not available", child_id)
             return False

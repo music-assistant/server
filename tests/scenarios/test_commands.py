@@ -407,7 +407,6 @@ async def test_a_group_that_switches_a_member_on_holds_no_player_meanwhile(
     office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
     group_id = await _group(scenario, "sync_group", kitchen_id, office_id, den_id)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("is not available")
     scenario.expect_log("Failed to stop queue")
     await scenario.play(group_id)
     assert plug.commands == [True]

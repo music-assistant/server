@@ -247,6 +247,23 @@ async def test_a_member_is_powered_on_once_and_joins_who_took_it_along_last(
     setup.joined.assert_not_awaited()
 
 
+async def test_a_member_that_was_added_to_a_leader_is_added_again_once_it_is_online(
+    mock_mass: MagicMock,
+) -> None:
+    """A switched-off player that was added to a leader is added by the same command again."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    set_members = AsyncMock()
+    controller.cmd_set_members = set_members  # type: ignore[method-assign]
+    kitchen, den = setup.speakers["kitchen"].player, setup.speakers["den"].player
+
+    assert await controller._power_on_member(kitchen, den, added=True) is True
+    await asyncio.sleep(1)
+
+    set_members.assert_awaited_once_with("kitchen", player_ids_to_add=["den"])
+    assert controller._member_joins == {}
+
+
 async def test_calling_off_the_power_on_of_the_group_keeps_its_member_out(
     mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:

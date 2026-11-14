@@ -3296,11 +3296,12 @@ class TestOfflinePowerControl:
 
         cast("AsyncMock", control.power_on).assert_not_awaited()
 
-    async def test_switched_off_player_is_not_added_to_a_group(
+    async def test_switched_off_player_added_to_a_group_joins_once_it_is_online(
         self, mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Grouping skips a member that is only available through its power control."""
-        controller, player, protocol, _control = self._setup(mock_mass)
+        """A member that is switched off at its power control is powered on, then added."""
+        controller, player, protocol, control = self._setup(mock_mass)
+        use_real_create_task(mock_mass)
         leader, leader_protocol = _attach(
             cast("MockProvider", protocol.provider), "leader", "Leader"
         )
@@ -3311,9 +3312,13 @@ class TestOfflinePowerControl:
 
         with caplog.at_level(logging.WARNING):
             await controller.cmd_set_members("leader", player_ids_to_add=["player_1"])
+            # left out of this change, while it is powered on
+            assert _proto("player_1") not in leader_protocol.group_members
+            await asyncio.sleep(2)
 
-        assert _proto("player_1") not in leader_protocol.group_members
-        assert "Player player_1 is not available" in caplog.text
+        cast("AsyncMock", control.power_on).assert_awaited_once()
+        assert _proto("player_1") in leader_protocol.group_members
+        assert "is not available" not in caplog.text
 
     def test_going_offline_with_its_control_detaches_a_synced_player(
         self, mock_mass: MagicMock

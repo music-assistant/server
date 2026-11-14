@@ -435,6 +435,21 @@ def test_an_unknown_or_unavailable_member_is_left_out() -> None:
     assert plan.join == Join(target_id="a")
 
 
+def test_a_switched_off_member_is_left_out_without_a_warning() -> None:
+    """A member that is switched off at its power control is left out, which is no warning."""
+    world = _World()
+    _sonos(world, "a", "b", "c")
+    world.players["b"] = replace(
+        world.players["b"], available_for_playback=False, switched_off=True
+    )
+    plan = _plan(world, ChangeKind.MEMBERS, "a", ("b", "c"))
+    assert _notes(plan, logging.WARNING) == []
+    assert _notes(plan, logging.DEBUG) == [
+        "Player Player b is switched off at its power control, it is left out for now"
+    ]
+    assert plan.join == Join(target_id="a", add=("c",))
+
+
 def test_a_member_the_target_can_not_group_with_is_left_out() -> None:
     """A member missing from the target's can_group_with is left out with a warning."""
     world = _World()

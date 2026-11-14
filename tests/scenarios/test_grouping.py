@@ -792,7 +792,6 @@ async def test_a_sync_group_switches_a_member_on_and_starts_without_it(
     office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
     group_id = await _group(scenario, "sync_group", kitchen_id, office_id, den_id, dynamic=dynamic)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("is not available")
     scenario.expect_log("Failed to stop queue")
 
     await scenario.play(group_id)
@@ -885,7 +884,6 @@ async def test_a_group_of_switched_off_speakers_starts_on_the_first_that_comes_o
     group_id = await _group(scenario, group_type, kitchen_id, office_id)
     kitchen_plug = await _switch_off(scenario, kitchen)
     office_plug = await _switch_off(scenario, office)
-    scenario.expect_log("is not available")
     scenario.expect_log("Failed to stop queue")
     await _load_music(scenario)
 
@@ -928,7 +926,6 @@ async def test_a_stop_of_the_group_calls_off_the_power_on_of_its_members(
     if command == "power off":
         await scenario.configure_player(group_id, power_control=PLAYER_CONTROL_FAKE)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("is not available")
     await scenario.play(group_id)
     assert plug.commands == [True]
     assert _state(scenario, den_id).powered is True
@@ -971,7 +968,6 @@ async def test_a_member_that_does_not_come_online_is_left_out(
     office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
     group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("is not available")
     scenario.expect_log("did not come online")
 
     with caplog.at_level(logging.WARNING, logger="music_assistant"):
@@ -991,11 +987,6 @@ async def test_a_member_that_does_not_come_online_is_left_out(
     await _stop(scenario, group_id)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="a switched-off speaker added to a leader joins when it is online (commit 3)",
-)
 async def test_a_switched_off_speaker_added_to_a_leader_joins_once_it_is_online(
     scenario: Scenario,
 ) -> None:
@@ -1009,7 +1000,6 @@ async def test_a_switched_off_speaker_added_to_a_leader_joins_once_it_is_online(
     kitchen_id = _player_id(scenario, kitchen)
     office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("is not available")
     scenario.expect_log("Failed to stop queue")
 
     await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[den_id, office_id])
@@ -1026,11 +1016,6 @@ async def test_a_switched_off_speaker_added_to_a_leader_joins_once_it_is_online(
     assert _state(scenario, kitchen_id).group_members == [kitchen_id, office_id, den_id]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="a speaker that was switched on to join is not powered off as idle (commit 3)",
-)
 async def test_a_woken_member_is_not_powered_off_as_idle_before_it_joins(
     scenario: Scenario,
 ) -> None:
@@ -1045,7 +1030,6 @@ async def test_a_woken_member_is_not_powered_off_as_idle_before_it_joins(
     kitchen_id, den_id = _player_id(scenario, kitchen), _player_id(scenario, den)
     await scenario.configure_player(den_id, idle_power_off=1)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("is not available")
     scenario.expect_log("Failed to stop queue")
     await _load_music(scenario)
     await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[den_id])
