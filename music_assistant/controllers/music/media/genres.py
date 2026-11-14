@@ -66,7 +66,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from music_assistant_models.event import MassEvent
 
@@ -1168,7 +1168,7 @@ class GenreController(MediaControllerBase[Genre]):
 
     async def sync_media_item_genres(
         self, media_type: MediaType, media_id: str | int, genre_names: set[str]
-    ) -> None:
+    ) -> tuple[set[str], set[int]]:
         """
         Sync genre mappings for a media item.
 
@@ -1179,6 +1179,7 @@ class GenreController(MediaControllerBase[Genre]):
         :param media_type: The type of media item being synced.
         :param media_id: The database ID of the media item.
         :param genre_names: Set of genre names from the provider.
+        :return: The genre names newly linked and the ids of the genres unlinked.
         """
         media_id_int = int(media_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
@@ -1196,7 +1197,7 @@ class GenreController(MediaControllerBase[Genre]):
             )
             # a genre the user excluded from the item is never mapped to it again
             if removable_ids <= target_ids - excluded_ids <= stored_ids:
-                return
+                return set(), set()
 
         # batch the (possible) genre creations and mapping changes into a single commit
         async with self.mass.music.database.deferred_commit():
@@ -1242,6 +1243,31 @@ class GenreController(MediaControllerBase[Genre]):
                     },
                     allow_replace=True,
                 )
+        return {target_mappings[genre_id] for genre_id in to_add}, to_remove
+
+    async def names_only_linking_to(
+        self, media_type: MediaType, names: Iterable[str], genre_ids: set[int]
+    ) -> set[str]:
+        """
+        Return the genre names that resolve only to the given genres.
+
+        :param media_type: The type of media item the names belong to.
+        :param names: Genre names, as stored on a media item.
+        :param genre_ids: The genre ids to match.
+        """
+        content_type = genre_content_type_for(media_type)
+        matched: set[str] = set()
+        refreshed = False
+        for name in names:
+            resolved = await self._resolve_genre_names_cached({name}, content_type)
+            if resolved is None and not refreshed:
+                # the cached snapshot can predate a genre the sync just created
+                self._sync_lookup_cache.pop(content_type.value if content_type else None, None)
+                refreshed = True
+                resolved = await self._resolve_genre_names_cached({name}, content_type)
+            if resolved and resolved <= genre_ids:
+                matched.add(name)
+        return matched
 
     def register_scheduled_scan_task(self) -> BackgroundTask:
         """Register the recurring genre mapping scan task."""
