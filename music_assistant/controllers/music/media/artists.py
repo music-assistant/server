@@ -40,6 +40,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaCollection,
     MediaItemImage,
+    Playlist,
     ProviderMapping,
     Track,
     UniqueList,
@@ -115,6 +116,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         # again (through the MusicBrainz cache)
         self._match_lookups: dict[int, _ArtistLookups] = {}
         # register (extra) api handlers
+        self.mass.register_api_command(
+            "music/artists/artist_playlists", self.playlists, required_scope=Scope.LIBRARY_READ
+        )
         api_base = self.api_base
         self.mass.register_api_command(
             f"music/{api_base}/letter_index",
@@ -448,6 +452,26 @@ class ArtistsController(MediaControllerBase[Artist]):
             extra_query_params={"artist_id": int(item_id)},
             in_library_only=True,
         )
+
+    async def playlists(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Playlist]:
+        """
+        Return up to 100 public playlists created by an artist on a music source.
+
+        :param item_id: The artist's ID on the selected provider.
+        :param provider_instance_id_or_domain: The selected music source.
+        """
+        provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
+        if (
+            not isinstance(provider, MusicProvider)
+            or not provider.available
+            or not provider.supports_feature(ProviderFeature.ARTIST_PLAYLISTS)
+        ):
+            return []
+        return (await provider.get_artist_playlists(item_id))[:100]
 
     async def albums(  # noqa: PLR0913
         self,

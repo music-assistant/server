@@ -442,6 +442,14 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """Get full artist details by id."""
         raise NotImplementedError
 
+    async def get_artist_playlists(self, prov_artist_id: str) -> list[Playlist]:
+        """
+        Return public playlists created by the given artist, capped at 100 items.
+
+        Only called if the provider supports ProviderFeature.ARTIST_PLAYLISTS.
+        """
+        raise NotImplementedError
+
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
         Get a list of albums for the given artist.
