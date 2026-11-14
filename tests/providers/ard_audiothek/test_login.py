@@ -1,12 +1,13 @@
 """Test the ARD Audiothek account login."""
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import jwt
 import pytest
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 
 from music_assistant.providers.ard_audiothek.auth import (
     PlayHistoryEntry,
@@ -26,11 +27,13 @@ def _id_token(**claims: Any) -> str:
     return jwt.encode(claims, "secret-key-for-tests-only-0123456789", algorithm="HS256")
 
 
-def _response(status: int = 200, payload: Any = None, text: str = "") -> MagicMock:
+def _response(
+    status: int = 200, payload: Any = None, text: str = "", headers: dict[str, str] | None = None
+) -> MagicMock:
     """Return an async context manager mocking an aiohttp response."""
-    response = Mock(status=status)
+    response = Mock(status=status, headers=headers or {})
     response.json = AsyncMock(return_value=payload)
-    response.text = AsyncMock(return_value=text)
+    response.text = AsyncMock(return_value=text or json.dumps(payload))
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=response)
     context.__aexit__ = AsyncMock(return_value=False)
@@ -114,6 +117,48 @@ async def test_refresh_tokens_error_raises_login_failed() -> None:
 
     with pytest.raises(LoginFailed, match="TOKEN_EXPIRED"):
         await refresh_tokens(session, "old")
+
+
+@pytest.mark.parametrize(
+    ("status", "text"), [(503, '{"error": {"message": "UNAVAILABLE"}}'), (502, "<html>")]
+)
+async def test_refresh_tokens_server_error_is_temporary(status: int, text: str) -> None:
+    """A server error while refreshing is temporary and does not reject the account."""
+    response = _response(status=status, text=text, headers={"Retry-After": "120"})
+    session = Mock(post=Mock(return_value=response))
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as err:
+        await refresh_tokens(session, "old")
+
+    assert err.value.backoff_time == 120
+
+
+async def test_poll_device_token_backs_off_on_server_errors() -> None:
+    """A server error while polling is no reason to give up, but the next poll waits longer."""
+    id_token = _id_token(user_id="uid", exp=1000)
+    session = Mock(
+        get=Mock(
+            side_effect=[
+                _response(status=429, text="slow down", headers={"Retry-After": "30"}),
+                _response(status=503, text="<html>"),
+                _response(text=f'{{"idToken": "{id_token}", "refreshToken": "r"}}'),
+            ]
+        )
+    )
+    sleep = AsyncMock()
+
+    with patch("music_assistant.providers.ard_audiothek.auth.asyncio.sleep", sleep):
+        await poll_device_token(session, {"token_uri": "https://x/token", "interval": 5})
+
+    assert [call.args[0] for call in sleep.await_args_list] == [5, 30, 20]
+
+
+async def test_firestore_server_error_is_temporary() -> None:
+    """A Firestore server error is temporary and not reported as a rejected login."""
+    session = Mock(get=Mock(return_value=_response(status=503, text="<html>")))
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await get_subscribed_podcast_ids(session, "token", "uid")
 
 
 async def test_get_subscribed_podcast_ids_follows_pages() -> None:

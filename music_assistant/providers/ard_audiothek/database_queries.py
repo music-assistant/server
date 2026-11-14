@@ -285,6 +285,7 @@ episode_asset_id_query = gql(
 query EpisodeAssetId($coreId: String!) {
   itemByCoreId(coreId: $coreId) {
     assetId
+    duration
   }
 }
 """

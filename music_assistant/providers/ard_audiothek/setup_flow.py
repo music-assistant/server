@@ -4,11 +4,13 @@ Setup flow for the ARD Audiothek provider.
 Signing in to an ARD account is optional. ARD only accepts passwords on its own login
 page, so the account is linked with a device login: the user confirms a short code on
 accounts.ard.de and the flow polls until ARD hands out the tokens. A code that expires
-before it was confirmed is minted afresh and the step re-shown.
+before it was confirmed is minted afresh and the step re-shown, until the overall time for
+signing in ran out.
 """
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
@@ -37,6 +39,7 @@ if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
 CONF_SIGN_IN = "sign_in"
+AUTHORIZATION_TIMEOUT = 15 * 60.0
 
 
 async def run_setup(session: SetupSession) -> None:
@@ -99,19 +102,24 @@ async def _device_login(session: SetupSession) -> ArdTokens:
     Show a device login code until the user confirmed one, returning the account tokens.
 
     :param session: The setup session driving the flow.
+    :raises StepExpiredError: When the user did not sign in within AUTHORIZATION_TIMEOUT.
     """
     http_session = session.mass.http_session
-    while True:
+    deadline = time.monotonic() + AUTHORIZATION_TIMEOUT
+    while (remaining := deadline - time.monotonic()) > 0:
         device = await request_device_code(http_session)
         user_code = str(device["user_code"])
+        # the step countdown never outlives the overall budget
+        remaining = deadline - time.monotonic()
         try:
             return await session.external_until(
                 poll_device_token(http_session, device),
                 url=str(device["verification_uri"]),
                 step_id="device_login",
-                expires_in=float(device.get("expires_in") or 180),
+                expires_in=max(0.0, min(float(device.get("expires_in") or 180), remaining)),
                 copy_text=user_code,
                 translation_params=[user_code],
             )
         except StepExpiredError:
             continue
+    raise StepExpiredError

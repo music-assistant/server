@@ -119,6 +119,20 @@ async def test_expired_code_is_replaced(monkeypatch: pytest.MonkeyPatch) -> None
     assert finish.call_args.args[1][CONF_REFRESH_TOKEN] == "refresh-token"
 
 
+async def test_abandoned_login_stops_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fresh codes are only handed out until the overall time for signing in ran out."""
+    session, finish, _ = _make_session(monkeypatch, [True])
+    clock = iter([0.0, 0.0, 600.0, 600.0, 1200.0])
+    monkeypatch.setattr(ard_flow, "time", mock.Mock(monotonic=lambda: next(clock, 2000.0)))
+    request = _device_login(monkeypatch, session, StepExpiredError(), StepExpiredError())
+
+    with pytest.raises(StepExpiredError):
+        await ard_flow.run_setup(session)
+
+    assert request.await_count == 2
+    finish.assert_not_awaited()
+
+
 async def test_failed_login_shows_the_form_again(monkeypatch: pytest.MonkeyPatch) -> None:
     """A rejected login returns to the form with the reason, and the setup can go on."""
     session, finish, form = _make_session(monkeypatch, [True, False])

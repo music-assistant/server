@@ -9,11 +9,16 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.providers.ard_audiothek import (
+    CONF_EMAIL,
     CONF_EXPIRY_TIME,
     CONF_REFRESH_TOKEN,
     CONF_TOKEN_BEARER,
@@ -35,10 +40,17 @@ def _provider(asset_id: str | None = ASSET_ID) -> ARDAudiothek:
     config = Mock(instance_id="ard_audiothek--test", enabled=True)
     config.get_value.side_effect = lambda key, default=None: CONFIG.get(key, default)
     provider = ARDAudiothek(Mock(), Mock(domain="ard_audiothek"), config, SUPPORTED_FEATURES)
+    provider.get_setup_value = Mock(  # type: ignore[method-assign]
+        side_effect=lambda key, default=None: (
+            "refresh-token" if key == CONF_REFRESH_TOKEN else default
+        )
+    )
     provider.token = "id-token"
     provider.user_id = "uid"
+    provider._account_error = None
     provider.remote_progress = {}
     provider._asset_ids = {}
+    provider._durations = {}
     provider._progress_fetched_at = -60
 
     session = Mock(
@@ -66,6 +78,9 @@ def _setup_provider(setup_data: dict[str, Any]) -> ARDAudiothek:
     )
     provider._update_setup_data = Mock()  # type: ignore[method-assign]
     provider._client_initialized = False
+    provider._client_token = None
+    provider._refresh_retry_at = 0.0
+    provider._account_error = None
     return provider
 
 
@@ -117,12 +132,103 @@ async def test_valid_token_is_not_refreshed() -> None:
     refresh.assert_not_awaited()
 
 
-async def test_password_login_requires_signing_in_again() -> None:
-    """An account set up with the former password login has to be signed in again."""
-    provider = _setup_provider({CONF_PASSWORD: "secret"})
+async def test_password_login_is_dropped() -> None:
+    """The former password login is forgotten and the provider runs without the account."""
+    provider = _setup_provider({CONF_EMAIL: "jane@example.com", CONF_PASSWORD: "secret"})
 
-    with pytest.raises(LoginFailed, match="sign in"):
+    provider._drop_password_login()
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock()) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport") as transport,
+    ):
         await provider.get_client()
+
+    update_setup_data = cast("Mock", provider._update_setup_data)
+    update_setup_data.assert_any_call(CONF_EMAIL, None)
+    update_setup_data.assert_any_call(CONF_PASSWORD, None)
+    refresh.assert_not_awaited()
+    transport.assert_called_once_with(None)
+
+
+async def test_signed_in_account_keeps_its_data() -> None:
+    """Dropping the password login leaves an account linked with the device login alone."""
+    provider = _setup_provider({CONF_REFRESH_TOKEN: "refresh-token", CONF_PASSWORD: "secret"})
+
+    provider._drop_password_login()
+
+    cast("Mock", provider._update_setup_data).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("error", "retried"),
+    [(LoginFailed("TOKEN_EXPIRED"), False), (ResourceTemporarilyUnavailable("503"), True)],
+    ids=["rejected", "unavailable"],
+)
+async def test_failed_refresh_keeps_the_catalogue(error: Exception, retried: bool) -> None:
+    """A failed refresh serves the public catalogue and only retries a passing failure."""
+    provider = _setup_provider(
+        {
+            CONF_REFRESH_TOKEN: "refresh-token",
+            CONF_TOKEN_BEARER: "old-token",
+            CONF_USERID: "uid",
+            CONF_EXPIRY_TIME: "0",
+        }
+    )
+
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock(side_effect=error)) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport") as transport,
+    ):
+        await provider.get_client()
+        await provider.get_client()
+        if retried:
+            # the backoff ran out
+            provider._refresh_retry_at = 0.0
+        await provider.get_client()
+
+    transport.assert_called_once_with(None)
+    assert refresh.await_count == (2 if retried else 1)
+    with pytest.raises(type(error)):
+        await provider._get_account()
+
+
+async def test_library_podcasts_raise_when_the_account_is_unavailable() -> None:
+    """A linked account that cannot be reached fails the sync instead of emptying the library."""
+    provider = _provider()
+    provider.token = None
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        _ = [item async for item in provider.get_library_podcasts()]
+
+
+async def test_unavailable_play_history_keeps_the_progress() -> None:
+    """When the play history cannot be read, the last known progress stays in place."""
+    provider = _provider()
+    provider.remote_progress = {ASSET_ID: PlayHistoryEntry(False, 330.0, None)}
+
+    with patch(f"{MODULE}.get_play_history", AsyncMock(side_effect=RuntimeError("503"))):
+        await provider._update_progress(force=True)
+
+    assert provider.remote_progress == {ASSET_ID: PlayHistoryEntry(False, 330.0, None)}
+
+
+@pytest.mark.parametrize(
+    ("playtime", "completed", "finished"),
+    [(960.0, False, True), (500.0, True, True), (500.0, False, False)],
+    ids=["threshold", "completed", "in-progress"],
+)
+async def test_progress_from_ard_applies_the_finished_share(
+    playtime: float, completed: bool, finished: bool
+) -> None:
+    """Progress read from ARD counts as finished past the configured share, like stored progress."""
+    provider = _provider()
+    provider._asset_ids = {CORE_ID: ASSET_ID}
+    provider._durations = {CORE_ID: 1000}
+    provider.remote_progress = {ASSET_ID: PlayHistoryEntry(completed, playtime, None)}
+
+    assert provider._get_progress(CORE_ID) == (finished, int(playtime * 1000))
 
 
 async def test_library_podcasts_skip_unavailable_ones() -> None:

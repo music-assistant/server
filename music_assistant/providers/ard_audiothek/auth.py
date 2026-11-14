@@ -19,9 +19,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import jwt
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 
 from music_assistant.helpers.datetime import from_iso_string, utc
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -38,7 +39,12 @@ FIRESTORE_DOCUMENTS_URL = (
     "https://firestore.googleapis.com/v1/projects/ardmt-prod/databases/(default)/documents"
 )
 MIN_POLL_INTERVAL = 3
+MAX_POLL_INTERVAL = 60
+BACKOFF_SECONDS = 60
 HEADERS = {"User-Agent": "Music Assistant"}
+
+# shared by all instances, as they all talk to the same Google APIs
+THROTTLER = ThrottlerManager(rate_limit=5, period=1)
 
 
 @dataclass(frozen=True)
@@ -92,18 +98,22 @@ async def poll_device_token(session: ClientSession, device: dict[str, Any]) -> A
     :raises LoginFailed: When ARD rejects the login.
     """
     interval = max(int(device.get("interval") or 5), MIN_POLL_INTERVAL)
+    wait = interval
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(wait)
         async with session.get(str(device["token_uri"]), headers=HEADERS) as response:
             status = response.status
             text = await response.text()
-        # a transient server error must not abort a login the user may be confirming
-        if status == 425 or status >= 500 or "authorization_pending" in text:
+            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+        wait = interval
+        if status == 429 or status >= 500:
+            # a transient server error must not abort a login the user may be confirming,
+            # but the next poll waits as long as ARD asks, or backs off when it does not say
+            wait = retry_after or min(interval * 4, MAX_POLL_INTERVAL)
             continue
-        try:
-            data = json.loads(text)
-        except ValueError:
-            data = None
+        if status == 425 or "authorization_pending" in text:
+            continue
+        data = _json_or_none(text)
         if not isinstance(data, dict) or not data.get("idToken") or not data.get("refreshToken"):
             raise LoginFailed(f"ARD device login failed (HTTP {status})")
         return _tokens_from(str(data["idToken"]), str(data["refreshToken"]))
@@ -116,17 +126,30 @@ async def refresh_tokens(session: ClientSession, refresh_token: str) -> ArdToken
     :param session: The aiohttp session to use.
     :param refresh_token: The refresh token of the signed in account.
     :raises LoginFailed: When the refresh token is no longer accepted.
+    :raises ResourceTemporarilyUnavailable: When the token service could not be reached.
     """
-    async with session.post(
-        f"{REFRESH_API_URL}?key={SECURE_TOKEN_KEY}",
-        headers=HEADERS,
-        data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-    ) as response:
-        data = await response.json(content_type=None)
-    if not isinstance(data, dict) or not data.get("id_token"):
-        message = data.get("error", {}).get("message", "") if isinstance(data, dict) else ""
-        raise LoginFailed(f"Refreshing the ARD login failed: {message or 'no token returned'}")
-    return _tokens_from(str(data["id_token"]), str(data.get("refresh_token") or refresh_token))
+    async with (
+        THROTTLER.acquire(),
+        session.post(
+            f"{REFRESH_API_URL}?key={SECURE_TOKEN_KEY}",
+            headers=HEADERS,
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+        ) as response,
+    ):
+        status = response.status
+        text = await response.text()
+        retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+    data = _json_or_none(text)
+    if isinstance(data, dict) and data.get("id_token"):
+        return _tokens_from(str(data["id_token"]), str(data.get("refresh_token") or refresh_token))
+    message = _error_message(data) or f"HTTP {status}"
+    # only a client error means the token itself was rejected, anything else may pass
+    if 400 <= status < 500 and status != 429:
+        raise LoginFailed(f"Refreshing the ARD login failed: {message}")
+    raise ResourceTemporarilyUnavailable(
+        f"Refreshing the ARD login failed: {message}",
+        backoff_time=retry_after or BACKOFF_SECONDS,
+    )
 
 
 async def get_subscribed_podcast_ids(
@@ -189,8 +212,11 @@ async def add_subscription(
             "updatedOn": {"timestampValue": _firestore_now()},
         }
     }
-    async with session.patch(url, headers=_auth_headers(id_token), json=body) as response:
-        data = await response.json(content_type=None)
+    async with (
+        THROTTLER.acquire(),
+        session.patch(url, headers=_auth_headers(id_token), json=body) as response,
+    ):
+        data = _json_or_none(await response.text())
         status = response.status
     _raise_for_firestore_error(status, data, "Subscribing to the ARD podcast")
 
@@ -207,8 +233,11 @@ async def remove_subscription(
     :param podcast_id: The id of the podcast to unsubscribe from.
     """
     url = f"{FIRESTORE_DOCUMENTS_URL}/audiothek/{user_id}/lists/groupings/items/{podcast_id}"
-    async with session.delete(url, headers=_auth_headers(id_token)) as response:
-        data = await response.json(content_type=None)
+    async with (
+        THROTTLER.acquire(),
+        session.delete(url, headers=_auth_headers(id_token)) as response,
+    ):
+        data = _json_or_none(await response.text())
         status = response.status
     _raise_for_firestore_error(status, data, "Unsubscribing from the ARD podcast")
 
@@ -242,8 +271,11 @@ async def set_play_history_entry(
             "updatedOn": {"timestampValue": _firestore_now()},
         }
     }
-    async with session.patch(url, headers=_auth_headers(id_token), json=body) as response:
-        data = await response.json(content_type=None)
+    async with (
+        THROTTLER.acquire(),
+        session.patch(url, headers=_auth_headers(id_token), json=body) as response,
+    ):
+        data = _json_or_none(await response.text())
         status = response.status
     _raise_for_firestore_error(status, data, "Storing the ARD play history")
 
@@ -260,8 +292,11 @@ async def remove_play_history_entry(
     :param episode_id: The id of the episode to remove.
     """
     url = f"{FIRESTORE_DOCUMENTS_URL}/audiothek/{user_id}/lists/playhistory/items/{episode_id}"
-    async with session.delete(url, headers=_auth_headers(id_token)) as response:
-        data = await response.json(content_type=None)
+    async with (
+        THROTTLER.acquire(),
+        session.delete(url, headers=_auth_headers(id_token)) as response,
+    ):
+        data = _json_or_none(await response.text())
         status = response.status
     _raise_for_firestore_error(status, data, "Removing the episode from the ARD play history")
 
@@ -274,8 +309,11 @@ async def _list_documents(
     page_token = ""
     while True:
         params = {"pageSize": "300", **({"pageToken": page_token} if page_token else {})}
-        async with session.get(url, headers=_auth_headers(id_token), params=params) as response:
-            data = await response.json(content_type=None)
+        async with (
+            THROTTLER.acquire(),
+            session.get(url, headers=_auth_headers(id_token), params=params) as response,
+        ):
+            data = _json_or_none(await response.text())
             status = response.status
         _raise_for_firestore_error(status, data, "Fetching the ARD account data")
         for doc in data.get("documents", []):
@@ -311,9 +349,32 @@ def _raise_for_firestore_error(status: int, data: Any, action: str) -> None:
     if status in (401, 403):
         raise LoginFailed(f"ARD rejected the account token (HTTP {status})")
     if not isinstance(data, dict) or "error" in data:
-        message = data.get("error", {}).get("message", "") if isinstance(data, dict) else ""
-        msg = f"{action} failed: {message or f'HTTP {status}'}"
+        msg = f"{action} failed: {_error_message(data) or f'HTTP {status}'}"
+        if status == 429 or status >= 500:
+            raise ResourceTemporarilyUnavailable(msg, backoff_time=BACKOFF_SECONDS)
         raise RuntimeError(msg)
+
+
+def _error_message(data: Any) -> str:
+    """Return the message of a Google API error reply, empty when there is none."""
+    if not isinstance(data, dict) or not isinstance(data.get("error"), dict):
+        return ""
+    return str(data["error"].get("message") or "")
+
+
+def _json_or_none(text: str) -> Any:
+    """Parse a JSON reply, None when it is no JSON (e.g. an HTML error page)."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _retry_after_seconds(value: str | None) -> int:
+    """Return the seconds a Retry-After header asks to wait, 0 when absent or unusable."""
+    if not value or not value.strip().isdigit():
+        return 0
+    return min(int(value), MAX_POLL_INTERVAL * 10)
 
 
 def _tokens_from(id_token: str, refresh_token: str) -> ArdTokens:
