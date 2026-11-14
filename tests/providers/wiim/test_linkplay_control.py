@@ -249,6 +249,9 @@ async def test_transport_commands_reach_an_app_playing_on_the_renderer(
     )
     player = _player(linkplay)
     assert player.state.active_source == "spotify"
+    assert [info.protocol_id for info in player.state.protocols if info.active] == [
+        renderer.protocol_id
+    ]
     assert PlayerFeature.NEXT_PREVIOUS in player.state.supported_features
 
     await scenario.mass.players.cmd_pause(player.player_id)

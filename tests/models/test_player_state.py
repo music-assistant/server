@@ -35,6 +35,7 @@ from music_assistant_models.player import (
     PlayerMedia,
     PlayerOption,
     PlayerOptionType,
+    PlayerProtocolInfo,
     PlayerSoundMode,
     PlayerSource,
 )
@@ -184,6 +185,29 @@ def _app_protocol(**values: Any) -> ProtocolSnapshot:
         "supported_features": {PlayerFeature.PAUSE, PlayerFeature.SEEK, PlayerFeature.ENQUEUE},
     }
     return make_protocol_snapshot("cast_1", **(app_values | values))
+
+
+def _protocol_infos() -> list[PlayerProtocolInfo]:
+    """Return the protocols of a player with its own protocol, a Chromecast and an AirPlay one."""
+    return [
+        PlayerProtocolInfo(
+            protocol_id=PLAYER_ID, domain="test", provider="test_prov", role=ProtocolRole.NATIVE
+        ),
+        PlayerProtocolInfo(
+            protocol_id="cast_1",
+            domain="chromecast",
+            provider="chromecast",
+            role=ProtocolRole.AUDIO,
+        ),
+        PlayerProtocolInfo(
+            protocol_id="airplay_1", domain="airplay", provider="airplay", role=ProtocolRole.AUDIO
+        ),
+    ]
+
+
+def _active_ids(state: State) -> list[str]:
+    """Return the ids of the protocols the state marks as active."""
+    return [protocol.protocol_id for protocol in state.protocols if protocol.active]
 
 
 def _source(state: State, source_id: str) -> PlayerSource | None:
@@ -495,6 +519,90 @@ class TestForeignApp:
         effects = _effects(active_output_protocol="native", linked=(app,), foreign_app=app)
 
         assert effects.foreign_protocol_id == "cast_1"
+
+
+class TestActiveProtocol:
+    """The protocol that is marked as the current playback path of the player."""
+
+    def test_shown_app_marks_its_protocol(self) -> None:
+        """The protocol whose app the player shows is its only active protocol."""
+        app = _app_protocol()
+
+        state = _derive(protocols=_protocol_infos(), linked=(app,), foreign_app=app)
+
+        assert _active_ids(state) == ["cast_1"]
+
+    def test_shown_app_is_marked_over_an_idle_native_output(self) -> None:
+        """An app shown while the native output plays nothing is marked, not the own protocol."""
+        app = _app_protocol()
+
+        state = _derive(
+            protocols=_protocol_infos(),
+            active_output_protocol="native",
+            linked=(app,),
+            foreign_app=app,
+        )
+
+        assert _active_ids(state) == ["cast_1"]
+        assert state.active_output_protocol == "native"
+
+    @pytest.mark.parametrize(
+        ("values", "active"),
+        [
+            ({"active_output_protocol": "airplay_1"}, ["airplay_1"]),
+            ({"own": _own(playback_state=PlaybackState.PLAYING)}, [PLAYER_ID]),
+            (
+                {
+                    "own": _own(playback_state=PlaybackState.PAUSED),
+                    "foreign_app": _app_protocol(playback_state=PlaybackState.PAUSED),
+                },
+                [PLAYER_ID],
+            ),
+            ({"own": _own(synced_to="leader"), "peers": {"leader": _peer("leader")}}, [PLAYER_ID]),
+            ({"groups": (_group(),), "peers": {"group_1": _group_peer(_group())}}, [PLAYER_ID]),
+            ({"session": _session()}, [PLAYER_ID]),
+        ],
+        ids=[
+            "other_output_active",
+            "player_plays",
+            "both_paused",
+            "synced",
+            "grouped",
+            "live_source",
+        ],
+    )
+    def test_app_that_is_not_shown_changes_no_marking(
+        self, values: dict[str, Any], active: list[str]
+    ) -> None:
+        """An app the player does not show leaves the protocol of the active output marked."""
+        app = _app_protocol()
+
+        state = _derive(
+            **(
+                {
+                    "protocols": _protocol_infos(),
+                    "active_output_protocol": "native",
+                    "linked": (app,),
+                    "foreign_app": app,
+                }
+                | values
+            )
+        )
+
+        assert _active_ids(state) == active
+
+    @pytest.mark.parametrize(
+        ("active_output_protocol", "active"),
+        [(None, []), ("native", [PLAYER_ID]), ("airplay_1", ["airplay_1"])],
+        ids=["no_output", "native_output", "protocol_output"],
+    )
+    def test_without_an_app_the_active_output_is_marked(
+        self, active_output_protocol: str | None, active: list[str]
+    ) -> None:
+        """The protocol of the active output is marked, the own one for a native output."""
+        state = _derive(protocols=_protocol_infos(), active_output_protocol=active_output_protocol)
+
+        assert _active_ids(state) == active
 
 
 class TestPlaybackPosition:

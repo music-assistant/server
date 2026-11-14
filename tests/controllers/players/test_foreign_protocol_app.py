@@ -224,3 +224,26 @@ async def test_seek_and_skip_go_to_the_protocol_player(
     app_next.assert_awaited_once()
     app_previous.assert_awaited_once()
     own_seek.assert_not_awaited()
+
+
+def test_the_update_marks_the_protocol_of_the_app_while_it_plays(
+    provider: MockProvider, controller: PlayerController
+) -> None:
+    """The update for an app that starts or stops changes which protocol is marked active."""
+    player, _, cast = _linked(provider, controller, app=None)
+    signal = MagicMock()
+    controller.signal_player_state_update = signal  # type: ignore[method-assign]
+
+    cast._attr_active_source = "tunein"
+    player.update_state()
+    cast._attr_playback_state = PlaybackState.IDLE
+    player.update_state()
+
+    marked = [
+        [
+            [info.protocol_id for info in protocols if info.active]
+            for protocols in call.args[1]["protocols"]
+        ]
+        for call in signal.call_args_list
+    ]
+    assert marked == [[[], ["cast_1"]], [["cast_1"], []]]

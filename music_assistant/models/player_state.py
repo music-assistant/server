@@ -404,7 +404,7 @@ def derive_player_state(inputs: StateInputs) -> tuple[PlayerState, StateEffects]
         legacy_ids=inputs.legacy_ids,
         last_seen=inputs.last_seen,
         unavailable_since=inputs.unavailable_since,
-        protocols=_protocols(inputs),
+        protocols=_protocols(inputs, foreign_app),
     )
     volume_members = _volume_members(inputs, state)
     state.group_volume = _group_volume(state, volume_members)
@@ -572,9 +572,15 @@ def _protocol_needing_setup(inputs: StateInputs) -> ProtocolSnapshot | None:
     return next((p for p in inputs.linked if p.available and p.needs_setup), None)
 
 
-def _protocols(inputs: StateInputs) -> list[PlayerProtocolInfo]:
-    """Return the protocols the player is made up of, the one of the active output marked."""
-    active_id = inputs.active_output_protocol
+def _protocols(
+    inputs: StateInputs, foreign_app: ProtocolSnapshot | None
+) -> list[PlayerProtocolInfo]:
+    """
+    Return the protocols the player is made up of, the one of its playback path marked.
+
+    That is the protocol whose app the player shows, else the one of the active output.
+    """
+    active_id = foreign_app.protocol_id if foreign_app else inputs.active_output_protocol
     if active_id == "native":
         active_id = inputs.own.protocol_id
     if active_id is None:
