@@ -66,8 +66,13 @@ PROVIDER_LOUDNESS_DOMAIN = "provider_loudness"
 LOUDNESS_PROVIDER_PRIORITY = (PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
-# AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
-TRACK_EXPORT_AA_PRIORITY = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN)
+# AA domains trusted for frontend-facing track data (bpm/key/energy/waveform), authoritative
+# first. The loudness providers precede Sonic Analysis, whose loudness is an RMS approximation.
+TRACK_EXPORT_AA_PRIORITY = (
+    SMART_FADES_ANALYSIS_DOMAIN,
+    *LOUDNESS_PROVIDER_PRIORITY,
+    SONIC_ANALYSIS_DOMAIN,
+)
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
@@ -681,23 +686,16 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         Return AudioMetadata (bpm, musical key, energy level) for a track, or None without analysis.
 
         Provider mappings are tried in the order playback would pick them; per field the
-        Smart Fades AA provider is preferred over other AA providers. The energy level is
-        only filled when a loudness provider measured the track.
+        Smart Fades AA provider is preferred over other AA providers.
 
         :param track: The track to look up stored analysis data for.
         """
+        priority = TRACK_EXPORT_AA_PRIORITY
         for mapping in rank_provider_mappings(track.provider_mappings):
             analysis = await self.get_audio_analysis(
-                mapping.item_id, mapping.provider_instance, priority=TRACK_EXPORT_AA_PRIORITY
+                mapping.item_id, mapping.provider_instance, priority=priority
             )
-            if analysis is None:
-                continue
-            # energy_level needs EBU R128 loudness, not Sonic Analysis' RMS approximation
-            loudness = await self.get_audio_analysis(
-                mapping.item_id, mapping.provider_instance, priority=LOUDNESS_PROVIDER_PRIORITY
-            )
-            analysis.loudness_integrated = loudness.loudness_integrated if loudness else None
-            if (metadata := analysis.as_audio_metadata()) is not None:
+            if analysis is not None and (metadata := analysis.as_audio_metadata()) is not None:
                 return metadata
         return None
 
@@ -717,11 +715,9 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         if not self._database_ready or not tracks:
             return results
         available_aa_domains = self._available_aa_domains()
-        export_domains = [d for d in TRACK_EXPORT_AA_PRIORITY if d in available_aa_domains]
-        if not export_domains:
+        wanted_domains = [d for d in TRACK_EXPORT_AA_PRIORITY if d in available_aa_domains]
+        if not wanted_domains:
             return results
-        loudness_domains = [d for d in LOUDNESS_PROVIDER_PRIORITY if d in available_aa_domains]
-        wanted_domains = export_domains + loudness_domains
 
         prov_keys: dict[str, str | None] = {}
         ranked_keys: list[list[tuple[str, str]]] = []
@@ -744,13 +740,12 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         # first-listed domain win each field, as in _merged_from_rows
         priority_order = " ".join(f"WHEN :{name} THEN {i}" for i, name in enumerate(domain_params))
         analysis_by_key: dict[tuple[str, str], AudioAnalysisData] = defaultdict(AudioAnalysisData)
-        loudness_by_key: dict[tuple[str, str], float] = {}
         for prov_key, item_ids in item_ids_by_prov_key.items():
             for chunk in batched(item_ids, _AUDIO_METADATA_BATCH_SIZE, strict=False):
                 params: dict[str, Any] = {f"id{i}": item_id for i, item_id in enumerate(chunk)}
                 id_placeholders = ",".join(f":id{i}" for i in range(len(chunk)))
                 rows = await self.database.get_rows_from_query(
-                    "SELECT item_id, aa_provider_domain, json_extract(header, '$.bpm') AS bpm, "
+                    "SELECT item_id, json_extract(header, '$.bpm') AS bpm, "
                     "json_extract(header, '$.key') AS key, json_extract(header, '$.mode') AS mode, "
                     "json_extract(header, '$.brightness') AS brightness, "
                     "json_extract(header, '$.arousal') AS arousal, "
@@ -769,19 +764,14 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
                     limit=0,
                 )
                 for row in rows:
-                    item_key = (prov_key, row["item_id"])
-                    # loudness_integrated only from loudness domains, as get_track_audio_metadata
-                    if row["aa_provider_domain"] in loudness_domains:
-                        if row["loudness_integrated"] is not None:
-                            loudness_by_key[item_key] = float(row["loudness_integrated"])
-                        continue
-                    analysis_by_key[item_key].update(
+                    analysis_by_key[(prov_key, row["item_id"])].update(
                         AudioAnalysisData(
                             bpm=_float_or_none(row["bpm"]),
                             key=row["key"],
                             mode=row["mode"],
                             brightness=_float_or_none(row["brightness"]),
                             arousal=_float_or_none(row["arousal"]),
+                            loudness_integrated=_float_or_none(row["loudness_integrated"]),
                         )
                     )
 
@@ -789,10 +779,8 @@ class AudioAnalysisController(AudioAnalysisDatabaseMixin):
         for index, track_keys in enumerate(ranked_keys):
             for key in track_keys:
                 if key not in metadata_by_key:
-                    metadata_by_key[key] = None
-                    if (analysis := analysis_by_key.get(key)) is not None:
-                        analysis.loudness_integrated = loudness_by_key.get(key)
-                        metadata_by_key[key] = analysis.as_audio_metadata()
+                    analysis = analysis_by_key.get(key)
+                    metadata_by_key[key] = analysis.as_audio_metadata() if analysis else None
                 if (metadata := metadata_by_key[key]) is not None:
                     results[index] = metadata
                     break

@@ -622,7 +622,7 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
         (128.0, "D"),
         (None, "F# minor"),
         None,
-        None,
+        (90.0, None),
         None,
         None,
         (140.0, None),
@@ -636,35 +636,29 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
 async def test_tracks_audio_metadata_energy_level_matches_single_track_lookup(
     ctrl: AudioAnalysisController,
 ) -> None:
-    """The energy level takes loudness only from a loudness provider, in both lookups."""
+    """Both lookups take the loudness for the energy level from the first-listed provider."""
     await _setup_metadata_fixture(ctrl)
     domains = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
     ctrl.mass.get_providers = MagicMock(  # type: ignore[method-assign]
         return_value=[_aa_provider(domain) for domain in domains]
     )
-    sonic = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-12.0)
-    await ctrl.set_audio_analysis("e1", "fs--a", SONIC_ANALYSIS_DOMAIN, sonic)
-    # the provider-supplied loudness wins over the measured one
-    await ctrl.set_audio_analysis(
-        "e1", "fs--a", LOUDNESS_ANALYSIS_DOMAIN, AudioAnalysisData(loudness_integrated=-20.0)
-    )
-    await ctrl.set_audio_analysis(
-        "e1", "fs--a", PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)
-    )
-    await ctrl.set_audio_analysis(
-        "e2",
-        "fs--a",
-        SONIC_ANALYSIS_DOMAIN,
-        AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0),
-    )
-    tracks = [_track(("e1", "fs--a", ContentType.MP3)), _track(("e2", "fs--a", ContentType.MP3))]
+    stored = [
+        (
+            SONIC_ANALYSIS_DOMAIN,
+            AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-30.0),
+        ),
+        (LOUDNESS_ANALYSIS_DOMAIN, AudioAnalysisData(loudness_integrated=-20.0)),
+        (PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)),
+    ]
+    for aa_domain, analysis in stored:
+        await ctrl.set_audio_analysis("e1", "fs--a", aa_domain, analysis)
+    tracks = [_track(("e1", "fs--a", ContentType.MP3))]
 
     batched_result = await ctrl.get_tracks_audio_metadata(tracks)
 
-    assert batched_result == [await ctrl.get_track_audio_metadata(track) for track in tracks]
+    assert batched_result == [await ctrl.get_track_audio_metadata(tracks[0])]
     assert batched_result[0] is not None
     assert batched_result[0].energy_level == 7
-    assert batched_result[1] is None
 
 
 @pytest.mark.asyncio

@@ -207,8 +207,8 @@ class AudioAnalysisData(DataClassDictMixin):
         Perceived energy of the track, from 1.0 (calmest) to 10.0 (most energetic).
 
         An average track scores 5.5. None unless brightness, arousal and loudness_integrated
-        are all set. loudness_integrated must be the EBU R128 value of a loudness domain,
-        not Sonic Analysis' RMS approximation.
+        are all set. loudness_integrated should be the EBU R128 value of a loudness domain,
+        Sonic Analysis' RMS approximation reads about one level too low.
         """
         if self.brightness is None or self.arousal is None or self.loudness_integrated is None:
             return None
