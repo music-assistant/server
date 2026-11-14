@@ -262,6 +262,7 @@ async def test_link_run_queries_the_phases_in_order_newest_first() -> None:
             sort_direction=SortDirection.DESC,
             extra_query_parts=[query],
             extra_query_params=params,
+            in_library_only=False,
         )
 
 
@@ -771,19 +772,22 @@ async def _add_album(
     looked_up: int | None,
     mbid: str | None = None,
     domains: Sequence[str] = ("qobuz",),
+    artists: Sequence[Artist] = (),
+    in_library: bool = True,
 ) -> Album:
-    """Add a library album with the given MusicBrainz lookup marker, id and provider mappings."""
+    """Add an album row with the given MusicBrainz lookup marker, id and provider mappings."""
     return await mass.music.albums.add_item_to_library(
         Album(
             item_id="0",
             provider="library",
             name=name,
-            artists=UniqueList(),
+            artists=UniqueList(artists),
             provider_mappings={
                 ProviderMapping(
                     item_id=f"{domain}-{name}",
                     provider_domain=domain,
                     provider_instance=f"{domain}_1",
+                    in_library=in_library,
                 )
                 for domain in domains
             },
@@ -793,17 +797,59 @@ async def _add_album(
     )
 
 
-async def _add_artist(mass: MusicAssistant, *, looked_up: int | None) -> Artist:
-    """Add an identified library artist mapped to qobuz with the given MusicBrainz lookup marker."""
+async def _add_artist(
+    mass: MusicAssistant,
+    *,
+    looked_up: int | None,
+    name: str = "Radiohead",
+    mbid: str | None = ARTIST_ID,
+    in_library: bool = True,
+) -> Artist:
+    """Add an artist row mapped to qobuz with the given MusicBrainz lookup marker and id."""
     return await mass.music.artists.add_item_to_library(
         Artist(
             item_id="0",
             provider="library",
-            name="Radiohead",
+            name=name,
             provider_mappings={
-                ProviderMapping(item_id="rh", provider_domain="qobuz", provider_instance="qobuz_1")
+                ProviderMapping(
+                    item_id=f"qobuz-{name}",
+                    provider_domain="qobuz",
+                    provider_instance="qobuz_1",
+                    in_library=in_library,
+                )
             },
-            external_ids={(ExternalID.MB_ARTIST, ARTIST_ID)},
+            external_ids={(ExternalID.MB_ARTIST, mbid)} if mbid else set(),
+            metadata=MediaItemMetadata(last_musicbrainz_lookup=looked_up),
+        )
+    )
+
+
+async def _add_track(
+    mass: MusicAssistant,
+    name: str,
+    album: Album,
+    artist: Artist,
+    *,
+    in_library: bool,
+    looked_up: int | None = None,
+) -> Track:
+    """Add a track row on the given album, credited to the given artist."""
+    return await mass.music.tracks.add_item_to_library(
+        Track(
+            item_id="0",
+            provider="library",
+            name=name,
+            album=album,
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=f"qobuz-{name}",
+                    provider_domain="qobuz",
+                    provider_instance="qobuz_1",
+                    in_library=in_library,
+                )
+            },
             metadata=MediaItemMetadata(last_musicbrainz_lookup=looked_up),
         )
     )
@@ -819,8 +865,8 @@ async def _link_artist(mass: MusicAssistant, artist: Artist, details: MusicBrain
     return await mass.music.artists.get_library_item(artist.item_id)
 
 
-async def _linked_ids(mass: MusicAssistant) -> set[str]:
-    """Run the link run against the real library and return the item ids it picked up."""
+async def _linked_uris(mass: MusicAssistant) -> set[str]:
+    """Run the link run against the real library and return the uris of the items it picked up."""
     with (
         patch.object(mass.metadata, "link_item_to_musicbrainz", AsyncMock()) as link,
         patch.object(
@@ -831,7 +877,12 @@ async def _linked_ids(mass: MusicAssistant) -> set[str]:
         ),
     ):
         await mass.metadata._link_library_to_musicbrainz()
-    return {call.args[0].item_id for call in link.await_args_list}
+    return {call.args[0].uri for call in link.await_args_list}
+
+
+async def _linked_ids(mass: MusicAssistant) -> set[str]:
+    """Run the link run against the real library and return the item ids it picked up."""
+    return {uri.rsplit("/", 1)[1] for uri in await _linked_uris(mass)}
 
 
 async def test_link_run_selects_albums_by_their_lookup_marker(mass: MusicAssistant) -> None:
@@ -851,6 +902,83 @@ async def test_link_run_selects_albums_by_their_lookup_marker(mass: MusicAssista
     }
 
     assert await _linked_ids(mass) == {never.item_id, stale_unknown.item_id}
+
+
+async def test_link_run_selects_the_album_a_library_track_hangs_on(mass: MusicAssistant) -> None:
+    """An album outside the library is identified for its library track; a bare one is not."""
+    artist = await _add_artist(mass, name="Portishead", looked_up=NOW, mbid=None, in_library=False)
+    holder = await _add_album(mass, "Dummy", looked_up=None, artists=[artist], in_library=False)
+    await _add_track(mass, "Roads", holder, artist, in_library=True)
+    await _add_album(mass, "Third", looked_up=None, artists=[artist], in_library=False)
+
+    diagnostics = await mass.metadata.get_diagnostics()
+    assert diagnostics is not None
+    assert diagnostics["musicbrainz_link"] == {
+        "last_run": None,
+        "pending": {"albums": 1, "artists": 0, "tracks": 0},
+    }
+
+    assert await _linked_uris(mass) == {holder.uri}
+
+
+async def test_link_run_selects_the_artists_and_tracks_the_library_holds(
+    mass: MusicAssistant,
+) -> None:
+    """An artist credited on a library album or track is identified, as is a library track."""
+    now = int(time())
+    track_artist = await _add_artist(
+        mass, name="Beth Gibbons", looked_up=None, mbid=None, in_library=False
+    )
+    album_artist = await _add_artist(
+        mass, name="Portishead", looked_up=None, mbid=None, in_library=False
+    )
+    bare_artist = await _add_artist(mass, name="Beak>", looked_up=None, mbid=None, in_library=False)
+    # identified albums: their tracklists and credits name the tracks and artists
+    holder = await _add_album(
+        mass,
+        "Out of Season",
+        looked_up=now,
+        mbid=RELEASE_ID,
+        artists=[track_artist],
+        in_library=False,
+    )
+    library_track = await _add_track(mass, "Mysteries", holder, track_artist, in_library=True)
+    await _add_album(mass, "Dummy", looked_up=now, mbid=RELEASE_ID, artists=[album_artist])
+    bare = await _add_album(
+        mass, "Beak>", looked_up=now, mbid=RELEASE_ID, artists=[bare_artist], in_library=False
+    )
+    await _add_track(mass, "Backwell", bare, bare_artist, in_library=False)
+
+    diagnostics = await mass.metadata.get_diagnostics()
+    assert diagnostics is not None
+    assert diagnostics["musicbrainz_link"] == {
+        "last_run": None,
+        "pending": {"albums": 0, "artists": 2, "tracks": 1},
+    }
+
+    assert await _linked_uris(mass) == {track_artist.uri, album_artist.uri, library_track.uri}
+
+
+async def test_link_run_relinks_only_what_the_library_holds_or_hangs_on(
+    mass: MusicAssistant,
+) -> None:
+    """An identified album outside the library is relinked only while a library track needs it."""
+    now = int(time())
+    artist = await _add_artist(mass, name="Portishead", looked_up=now, mbid=None, in_library=False)
+    library = await _add_album(mass, "Library", looked_up=now - 20, mbid=RELEASE_ID)
+    holder = await _add_album(
+        mass, "Holder", looked_up=now - 20, mbid=RELEASE_ID, artists=[artist], in_library=False
+    )
+    await _add_track(mass, "Roads", holder, artist, in_library=True, looked_up=now)
+    await _add_album(mass, "Bare", looked_up=now - 20, mbid=RELEASE_ID, in_library=False)
+    mass.config.set_raw_core_config_value(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, [f"spotify:{now - 10}"]
+    )
+
+    with patch.object(mass.music, "get_provider_instances", _provider_instances(["spotify"])):
+        linked = await _linked_uris(mass)
+
+    assert linked == {library.uri, holder.uri}
 
 
 async def test_link_run_relinks_identified_items_that_miss_a_new_providers_links(

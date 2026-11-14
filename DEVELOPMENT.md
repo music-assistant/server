@@ -163,6 +163,8 @@ A provider that talks to a music service must therefore:
   service has no endpoint for that way. Paging through the user's own library, through the
   throttler, is fine. A provider without an artist tracks endpoint does not offer
   `ProviderFeature.ARTIST_TRACKS`; artist top tracks (`ARTIST_TOPTRACKS`) is a feature of its own.
+  A listing of an artist's albums stops at `ARTIST_ALBUMS_LIMIT` releases (100, in
+  [`music_provider.py`](./music_assistant/models/music_provider.py)).
   The throttler serves playback first, user actions second and background work last. Background
   work may use only half of the rate limit and is spread evenly over time, which keeps room free
   for the user. Music Assistant sets the priority where a request starts, so a provider normally
