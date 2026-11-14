@@ -993,9 +993,10 @@ class Player:
         count. Neither a device that still needs setup - an unpaired AirPlay receiver, for
         example - nor a disabled player can accept a stream.
 
-        Use this, not available, for a device that must be reachable right now: a player
-        that is switched off at its power control is available too (see
-        offline_by_power_control).
+        For the players controller and the models, where a stream or a command goes to the
+        device at this instant. Everyone else reads available: a player that is switched off
+        at its power control is available too (see offline_by_power_control), and the
+        controller powers it on for whoever takes it along.
         """
         if not self._config.enabled:
             return False

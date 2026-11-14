@@ -159,7 +159,9 @@ app: the player and its queue take the new name, and it is stored as the name of
 
 A device can go away: switched off, off the network, or its provider reloads. It can also stay
 known but not be reachable. Its player stays all the same, with its id, its settings and its
-queue. These scenarios say what a client sees meanwhile and which commands the player takes.
+queue. These scenarios say what a client sees meanwhile and which commands the player takes. A
+player that is switched off at its power control stays available: a play, a power on or an
+announcement switches it on.
 
 ### AWAY-1 · A player whose device goes away stays listed
 
@@ -1244,7 +1246,9 @@ Players are grouped through the protocol that can carry the group: their own pro
 are of one make, else an audio protocol they share, such as AirPlay. A sync group is a player of
 its own whose members are grouped on one of them, its leader, while it plays. Most examples use
 speakers of one make that can all group with each other (Kitchen, Office, Den), and speakers of
-two makes that share an AirPlay receiver (Lounge, Study).
+two makes that share an AirPlay receiver (Lounge, Study). A speaker that is switched off at its
+power control is taken along: the group or the leader switches it on, and it joins once its
+device is back (GROUP-22 and on).
 
 ### GROUP-1 · Speakers of one make group through their own protocol
 

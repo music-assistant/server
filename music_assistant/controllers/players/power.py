@@ -1,8 +1,9 @@
 """
 Power Mixin for the Player Controller.
 
-The power commands of a player, a player switched off at its external power control,
-a power off that happens outside of Music Assistant and the idle power off.
+The power commands of a player, a player switched off at its external power control
+(powered on for itself, or for the group or leader that takes it along), a power off that
+happens outside of Music Assistant and the idle power off.
 
 This module provides the PowerMixin class which is inherited by
 PlayerController to add the power commands.

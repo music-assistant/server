@@ -507,7 +507,18 @@ class _PlayerControllerBase(CoreController):
         active_only: bool = False,
         exclude_self: bool = True,
     ) -> Iterator[Player]:
-        """Get (child) players attached to a group player or syncgroup."""
+        """
+        Iterate over the members of a group player or sync leader that play along right now.
+
+        A member that can not be played to at this instant is left out, also one that is
+        switched off at its power control and is still powered on for the group.
+
+        :param group_player: The group player or sync leader.
+        :param only_powered: Leave out the members that are powered off.
+        :param only_playing: Only the members that play or are paused.
+        :param active_only: Only the members this group holds.
+        :param exclude_self: Leave out the group player or leader itself.
+        """
         for child_id in list(group_player.group_members):
             if child_player := self.get_player(child_id, False):
                 if not child_player.available_for_playback or not child_player.enabled:
