@@ -260,6 +260,7 @@ async def test_no_kept_copy(
     [
         ("switched_off", "Switch the community catalog on"),
         ("blocked_one", "does not offer blocked_one"),
+        ("blocked_latest_one", "does not offer blocked_latest_one"),
         ("unknown_one", "does not offer unknown_one"),
         (DOMAIN, "installed already"),
         ("builtin", "already has a provider named builtin"),
@@ -276,10 +277,13 @@ async def test_install_refused(
     """A refused install stages nothing and changes nothing live or in the state."""
     blocked = _publish(github, "blocked_one")
     blocked.update(status="blocked", reason="Sends the library elsewhere")
+    blocked_latest = _publish(github, "blocked_latest_one")
+    blocked_latest.update(blocked_versions={VERSION: "Sends the library elsewhere"})
     providers = {
         DOMAIN: _publish(github, DOMAIN),
         "switched_off": _publish(github, "switched_off"),
         "blocked_one": blocked,
+        "blocked_latest_one": blocked_latest,
         "builtin": _publish(github, "builtin"),
     }
     registry.document = _index(providers)
@@ -297,27 +301,73 @@ async def test_install_refused(
         assert mass.get_provider_manifest("builtin").tier == ProviderTier.CORE
 
 
+@pytest.mark.parametrize(
+    ("requirement", "error", "message"),
+    [
+        (f"{REQUIREMENT}==2.0", DependencyConflict, f"comm_two clash with {DOMAIN}"),
+        # no clash, but the version the loaded provider imported would be replaced
+        (REQUIREMENT, ActionUnavailable, "cannot be changed while they run"),
+    ],
+)
 async def test_install_refused_on_a_clash(
-    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+    tmp_path: Path,
+    catalog: Path,
+    registry: Registry,
+    github: GitHub,
+    requirement: str,
+    error: type[Exception],
+    message: str,
 ) -> None:
-    """Requirements that clash with a loaded provider are refused, naming that provider."""
+    """Requirements that clash with a loaded provider, or replace a package it uses, are refused."""
     registry.document = _index(
         {
-            DOMAIN: _publish(github, DOMAIN, requirements=[f"{REQUIREMENT}==1.0"]),
-            "comm_two": _publish(github, "comm_two", requirements=[f"{REQUIREMENT}==2.0"]),
+            DOMAIN: _publish(github, DOMAIN, requirements=[requirement]),
+            "comm_two": _publish(github, "comm_two", requirements=[f"{REQUIREMENT}==1.0"]),
         }
     )
+    _seed_instance(tmp_path, DOMAIN)
+    lock = tmp_path / "cache" / "community_deps" / "requirements.lock"
     async with _server(tmp_path) as mass:
         await _switch(mass, enabled=True)
         await mass.community_catalog.install_provider(DOMAIN)
-        before = _snapshot(catalog)
+        before = _snapshot(catalog), lock.read_bytes()
 
-        with pytest.raises(DependencyConflict, match=f"comm_two clash with {DOMAIN}"):
+        with pytest.raises(error, match=message):
             await mass.community_catalog.install_provider("comm_two")
 
-        assert _snapshot(catalog) == before
+        assert (_snapshot(catalog), lock.read_bytes()) == before
         with pytest.raises(KeyError):
             mass.get_provider_manifest("comm_two")
+        _assert_loaded(mass, catalog, DOMAIN)
+
+
+async def test_requirements_clash_at_start(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """Of two installed providers whose requirements clash, only the one installed first loads."""
+    one = _publish(github, DOMAIN, requirements=[f"{REQUIREMENT}==1.0"])
+    two = _publish(github, "comm_two", requirements=[f"{REQUIREMENT}==2.0"])
+    registry.document = _index({DOMAIN: one, "comm_two": two})
+    _seed_instance(tmp_path, DOMAIN, "comm_two")
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        await mass.community_catalog.install_provider(DOMAIN)
+    # while the first one is blocked, nothing refuses the install of the second
+    blocked = one | {"status": "blocked", "reason": "Sends the library elsewhere"}
+    registry.document, registry.etag = _index({DOMAIN: blocked, "comm_two": two}), '"two"'
+    async with _server(tmp_path) as mass:
+        await mass.community_catalog.install_provider("comm_two")
+        _assert_loaded(mass, catalog, "comm_two")
+    registry.document, registry.etag = _index({DOMAIN: one, "comm_two": two}), '"three"'
+
+    async with _server(tmp_path) as mass:
+        _assert_loaded(mass, catalog, DOMAIN)
+        await _assert_not_loaded(
+            mass,
+            "comm_two",
+            CommunityProviderState.UNAVAILABLE,
+            _REASONS[Verdict.REQUIREMENTS_CLASH],
+        )
 
 
 async def test_remove(tmp_path: Path, catalog: Path, registry: Registry, github: GitHub) -> None:
@@ -595,7 +645,7 @@ async def _assert_not_loaded(
     with pytest.raises(KeyError):
         mass.get_provider_manifest(domain)
     assert f"{providers_package.__name__}.{domain}" not in sys.modules
-    provider = _provider(await mass.community_catalog.get_providers())
+    provider = _provider(await mass.community_catalog.get_providers(), domain)
     assert provider.state == state
     assert provider.error is not None
     assert reason in provider.error.message
@@ -619,9 +669,9 @@ async def _assert_blocked(mass: MusicAssistant, catalog: Path) -> None:
     assert DOMAIN in _state(catalog)["installed"]
 
 
-def _provider(providers: Sequence[Any]) -> Any:
-    """Return the provider of DOMAIN in a list of the community catalog."""
-    return next(provider for provider in providers if provider.domain == DOMAIN)
+def _provider(providers: Sequence[Any], domain: str = DOMAIN) -> Any:
+    """Return a provider in a list of the community catalog."""
+    return next(provider for provider in providers if provider.domain == domain)
 
 
 def _settings_entry(configs: Sequence[Any], instance_id: str) -> Any:

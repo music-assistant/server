@@ -97,6 +97,8 @@ def catalog_index(line: str = "nightly", schema: int = 1) -> dict[str, Any]:
             "withdrawn_one": _entry("withdrawn_one", "withdrawn", reason="No longer maintained"),
             "broken_one": _entry("broken_one", "listed", manifest={"domain": "broken_one"}),
             "unreleased_one": _entry("unreleased_one", "listed", latest=None),
+            "blocked_latest_one": _entry("blocked_latest_one", "listed")
+            | {"blocked_versions": {"1.2.0": "Sends the library elsewhere"}},
         },
     }
 

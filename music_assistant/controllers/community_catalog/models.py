@@ -79,6 +79,17 @@ class IndexProvider(DataClassDictMixin):
             return None
         return f"data:image/svg+xml;base64,{b64encode(self.icon_svg.encode()).decode('ascii')}"
 
+    @property
+    def offered_version(self) -> str | None:
+        """Return the version the catalog offers to install, None when it offers none."""
+        if (
+            self.status != IndexStatus.LISTED
+            or self.latest not in self.versions
+            or self.latest in self.blocked_versions
+        ):
+            return None
+        return self.latest
+
 
 @dataclass
 class CatalogIndex(DataClassDictMixin):

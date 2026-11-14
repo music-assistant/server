@@ -552,8 +552,7 @@ class CommunityCatalogController(CoreController):
         :param domain: The domain of the provider.
         :param entry: The provider in the index.
         """
-        latest = entry.latest
-        if entry.status != IndexStatus.LISTED or latest is None or latest not in entry.versions:
+        if (latest := entry.offered_version) is None:
             return None
         try:
             manifest = ProviderManifest.from_dict(entry.manifest)
