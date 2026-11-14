@@ -78,6 +78,7 @@ def _edition(
     media_format: str = "Digital Media",
     country: str | None = "XW",
     date: str | None = "2007-12-31",
+    barcode: str | None = BARCODE,
     urls: Sequence[str] = (),
 ) -> MusicBrainzBarcodeRelease:
     """Return one release as the release group browse lists it."""
@@ -87,6 +88,7 @@ def _edition(
         status=status,
         country=country,
         date=date,
+        barcode=barcode,
         media=[MusicBrainzMedia(format=media_format, track_count=10)],
         relations=_relations(urls),
     )
@@ -455,6 +457,119 @@ async def test_resolve_looks_up_the_likeliest_few_editions_only() -> None:
     assert harness.musicbrainz.get_release_details.await_args_list == [
         call(edition.id) for edition in editions[:_MAX_EDITION_LOOKUPS]
     ]
+
+
+async def test_resolve_passes_over_the_editions_no_service_can_be_asked_for() -> None:
+    """Editions without a link or a barcode give their turns to later ones with a barcode."""
+    unfindable = [
+        _edition(f"rel-single-{index}", date=f"1975-10-{index + 1:02d}", barcode=None)
+        for index in range(_MAX_EDITION_LOOKUPS)
+    ]
+    # a link to a service the user lacks makes an edition no more findable than none at all
+    unfindable.append(
+        _edition("rel-tidal-linked", date="1976", barcode=None, urls=[TIDAL_ALBUM_URL])
+    )
+    reissues = [
+        _edition("rel-reissue-cd", media_format="CD", country="GB", date="1988"),
+        _edition("rel-reissue-vinyl", media_format='12" Vinyl', country="GB", date="2019"),
+    ]
+    spotify_album = _album("spotify_1", SPOTIFY_ALBUM_ID)
+    spotify = _music_provider("spotify_1", album=spotify_album)
+    with _harness(
+        editions=[*unfindable, *reissues],
+        releases=[_release(edition.id) for edition in reissues],
+        loaded={"spotify": ["spotify_1"]},
+        providers=[spotify],
+        albums={("spotify_1", SPOTIFY_ALBUM_ID): spotify_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is spotify_album
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-reissue-cd")
+    spotify.get_album_by_external_id.assert_awaited_once_with(BARCODE, ExternalID.BARCODE)
+
+
+async def test_resolve_tries_an_edition_linked_to_the_users_service_without_a_barcode() -> None:
+    """An edition linked to the user's service goes first, barcode or not."""
+    spotify_album = _album("spotify_1", SPOTIFY_ALBUM_ID)
+    spotify = _music_provider("spotify_1")
+    with _harness(
+        editions=[
+            _edition("rel-cd", media_format="CD", date="2007-10-10"),
+            _edition("rel-linked", date="2008-01-01", barcode=None, urls=[SPOTIFY_ALBUM_URL]),
+        ],
+        releases=[_release("rel-linked", barcode=None, urls=[SPOTIFY_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"]},
+        providers=[spotify],
+        albums={("spotify_1", SPOTIFY_ALBUM_ID): spotify_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is spotify_album
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-linked")
+    harness.get_provider_item.assert_awaited_once_with(
+        SPOTIFY_ALBUM_ID, "spotify_1", **STRICT_FETCH
+    )
+    spotify.get_album_by_external_id.assert_not_awaited()
+
+
+async def test_resolve_looks_up_nothing_when_no_edition_can_be_found() -> None:
+    """A group whose editions no service can be asked for fails without looking any up."""
+    no_barcode_lookup = _music_provider("spotify_1")
+    no_barcode_lookup.supported_features = set()
+    for providers, editions in (
+        (
+            [_music_provider("spotify_1")],
+            [
+                _edition("rel-bare", barcode=None),
+                _edition("rel-bad-barcode", barcode="not-a-barcode"),
+                _edition("rel-tidal-linked", barcode=None, urls=[TIDAL_ALBUM_URL]),
+            ],
+        ),
+        # a barcode is of no use when none of the user's services looks one up
+        ([no_barcode_lookup], [_edition("rel-barcode")]),
+    ):
+        with (
+            _harness(
+                editions=editions, loaded={"spotify": ["spotify_1"]}, providers=providers
+            ) as harness,
+            pytest.raises(MediaNotFoundError) as excinfo,
+        ):
+            await harness.resolve()
+
+        assert excinfo.value.translation_key == "album_not_available_on_music_services"
+        harness.musicbrainz.get_release_details.assert_not_awaited()
+        harness.get_provider_item.assert_not_awaited()
+        for provider in providers:
+            provider.get_album_by_external_id.assert_not_awaited()
+
+
+async def test_resolve_looks_up_no_more_findable_editions_than_the_bound() -> None:
+    """Of many findable editions, only the likeliest few are looked up."""
+    findable = [
+        _edition(f"rel-barcode-{index}", date=f"2008-01-{index + 1:02d}")
+        for index in range(_MAX_EDITION_LOOKUPS + 2)
+    ]
+    unfindable = [
+        _edition(f"rel-bare-{index}", date=f"2007-01-{index + 1:02d}", barcode=None)
+        for index in range(_MAX_EDITION_LOOKUPS)
+    ]
+    spotify = _music_provider("spotify_1")
+    with (
+        _harness(
+            editions=[*unfindable, *findable],
+            releases=[_release(edition.id) for edition in findable],
+            loaded={"spotify": ["spotify_1"]},
+            providers=[spotify],
+        ) as harness,
+        pytest.raises(MediaNotFoundError),
+    ):
+        await harness.resolve()
+
+    assert harness.musicbrainz.get_release_details.await_args_list == [
+        call(edition.id) for edition in findable[:_MAX_EDITION_LOOKUPS]
+    ]
+    assert spotify.get_album_by_external_id.await_count == _MAX_EDITION_LOOKUPS
 
 
 async def test_resolve_reads_a_reissued_group_past_its_first_page_of_editions() -> None:

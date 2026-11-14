@@ -31,7 +31,8 @@
     "refresh_playlist_metadata": "Refresh playlist metadata",
     "cleanup_thumbnail_cache": "Cleanup thumbnail cache",
     "reconcile_duplicate_albums": "Reconcile duplicate albums",
-    "link_library_to_musicbrainz": "Link library to MusicBrainz"
+    "link_library_to_musicbrainz": "Link library to MusicBrainz",
+    "link_artist_to_music_services": "Link {0} to your music services"
   },
   "manifest": {
     "name": "Metadata",

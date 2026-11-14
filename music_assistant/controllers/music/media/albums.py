@@ -416,21 +416,9 @@ class AlbumsController(MediaControllerBase[Album]):
         :param favorite_only: Only count the albums the current user likes.
         :param album_types: Only count albums of these types.
         """
-        sql_query = f"SELECT item_id FROM {self.db_table}"
-        query_parts: list[str] = []
         query_params: dict[str, Any] = {}
-        if favorite_only:
-            query_parts.append(self._favorite_filter_clause(query_params, True))
-        if album_types:
-            query_parts.append("albums.album_type IN :album_types")
-            query_params["album_types"] = [x.value for x in album_types]
-        if provider_filter := self._ensure_provider_filter(None):
-            query_parts.append(
-                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
-            )
-        if query_parts:
-            sql_query += f" WHERE {' AND '.join(query_parts)}"
-        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
+        query_parts = self._library_filter_parts(query_params, album_types)
+        return await self._library_count(favorite_only, query_parts, query_params)
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete item from the library(database)."""
@@ -690,7 +678,20 @@ class AlbumsController(MediaControllerBase[Album]):
         # edition's own links and barcode are tried, never those of the whole group; the
         # editions linked to the user's own services go first, as only those resolve by link
         services = {source.domain for source in self.mass.music.providers if source.available}
-        ranked = sorted(editions, key=lambda edition: _streaming_edition_rank(edition, services))
+        barcode_lookup = any(
+            provider.supports_feature(ProviderFeature.ALBUM_BY_EXTERNAL_ID)
+            for provider in self.mass.music.providers
+        )
+        # an edition none of the user's services can be asked for would spend a turn on a
+        # MusicBrainz lookup alone, so only the findable ones are tried
+        ranked = sorted(
+            (
+                edition
+                for edition in editions
+                if _is_findable_edition(edition, services, barcode_lookup)
+            ),
+            key=lambda edition: _streaming_edition_rank(edition, services),
+        )
         for edition in ranked[:_MAX_EDITION_LOOKUPS]:
             try:
                 release = await musicbrainz.get_release_details(edition.id)
@@ -1780,6 +1781,30 @@ def _canonical_album_barcodes(album: Album) -> set[str]:
     }
 
 
+def _is_findable_edition(
+    release: MusicBrainzBarcodeRelease, services: set[str], barcode_lookup: bool
+) -> bool:
+    """
+    Return whether the user's music services can be asked for an edition, by link or by barcode.
+
+    :param release: The edition as the release group browse lists it.
+    :param services: The domains of the music services the user may see.
+    :param barcode_lookup: Whether any of the user's music services looks albums up by barcode.
+    """
+    if _linked_services(release) & services:
+        return True
+    return barcode_lookup and release.barcode is not None and is_valid_barcode(release.barcode)
+
+
+def _linked_services(release: MusicBrainzBarcodeRelease) -> set[str]:
+    """Return the domains of the music services a release links to as an album."""
+    return {
+        service
+        for url in relation_urls(release.relations)
+        if (service := share_url_provider(url, MediaType.ALBUM))
+    }
+
+
 def _streaming_edition_rank(
     release: MusicBrainzBarcodeRelease, services: set[str]
 ) -> tuple[bool, bool, bool, bool, str]:
@@ -1789,11 +1814,7 @@ def _streaming_edition_rank(
     :param release: The edition as the release group browse lists it.
     :param services: The domains of the music services the user may see.
     """
-    linked = {
-        service
-        for url in relation_urls(release.relations)
-        if (service := share_url_provider(url, MediaType.ALBUM))
-    }
+    linked = _linked_services(release)
     return (
         not linked & services,
         not is_digital_release(release),

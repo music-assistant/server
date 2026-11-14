@@ -905,18 +905,18 @@ async def test_library_count_unchanged_without_user(counted_mass: MusicAssistant
     """Without an authenticated user the counts stay the true library totals."""
     for media_type in ("tracks", "albums", "artists"):
         controller = getattr(counted_mass.music, media_type)
-        total_rows = await counted_mass.music.database.get_count(controller.db_table)
         with patch(GET_CURRENT_USER, return_value=None):
-            assert await controller.library_count() == total_rows
+            library_items = await controller.library_items(limit=500)
+            assert await controller.library_count() == len(library_items)
 
 
 async def test_library_count_unchanged_for_unrestricted_user(
     counted_mass: MusicAssistant,
 ) -> None:
     """A user that may see every music source sees the true library totals."""
-    total_rows = await counted_mass.music.database.get_count("tracks")
     with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
-        assert await counted_mass.music.tracks.library_count() == total_rows
+        library_items = await counted_mass.music.tracks.library_items(limit=500)
+        assert await counted_mass.music.tracks.library_count() == len(library_items)
 
 
 async def test_album_artists_only_ignores_albums_on_hidden_sources(

@@ -89,7 +89,11 @@ def test_index_ranks_actions_newest_first_whatever_their_timestamps() -> None:
 
 
 async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodder) -> None:
-    """Episodes reported by url only are matched although their item id holds the guid."""
+    """
+    Episodes reported by url only are matched although their item id holds the guid.
+
+    Each write carries the time of its action.
+    """
     _serve(provider)
     _subscribe(provider, [FEED])
     with patch(
@@ -101,11 +105,14 @@ async def test_sync_writes_the_progress_of_every_matched_episode(provider: GPodd
     assert [podcast.item_id for podcast in podcasts] == [FEED]
     music = cast("Mock", provider.mass.music)
     played = music.mark_item_played
-    assert [(c.args[0].item_id, c.kwargs["seconds_played"]) for c in played.call_args_list] == [
-        (f"{FEED} guid-1", 600)
-    ]
+    assert [
+        (c.args[0].item_id, c.kwargs["seconds_played"], c.kwargs["progress_timestamp"])
+        for c in played.call_args_list
+    ] == [(f"{FEED} guid-1", 600, 1704189600)]
     unplayed = music.mark_item_unplayed
-    assert [c.args[0].item_id for c in unplayed.call_args_list] == [f"{FEED} guid-2"]
+    assert [
+        (c.args[0].item_id, c.kwargs["progress_timestamp"]) for c in unplayed.call_args_list
+    ] == [(f"{FEED} guid-2", 1704362400)]
     assert provider.timestamp_actions == 999
 
 

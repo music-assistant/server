@@ -1324,6 +1324,29 @@ async def test_migration_adds_is_endless_column_to_radios(
     assert [(row["item_id"], row["is_endless"]) for row in rows] == [(1, 1), (2, 1)]
 
 
+@pytest.mark.parametrize("table_exists", [True, False])
+async def test_migration_adds_podcast_item_id_to_media_progress(
+    database: DatabaseConnection, table_exists: bool
+) -> None:
+    """A pre-74 database gets the column; a missing table or a second run does not fail."""
+    if table_exists:
+        await database.execute(
+            f"CREATE TABLE {DB_TABLE_MEDIA_PROGRESS}([item_id] TEXT NOT NULL, "
+            "[provider] TEXT NOT NULL, [media_type] TEXT NOT NULL)"
+        )
+        await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=73, create_tables=AsyncMock()
+        )
+
+    columns = await _table_columns(database, DB_TABLE_MEDIA_PROGRESS)
+    assert ("podcast_item_id" in columns) is table_exists
+
+
 async def test_migration_replaces_play_history_indexes(database: DatabaseConnection) -> None:
     """Schema 70 replaces the two play-history indexes with its covering index."""
     await database.execute(

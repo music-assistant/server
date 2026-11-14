@@ -68,7 +68,6 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
     player._attr_options = []
-    player._provider = MagicMock()
     player.client = client
     player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
     player._on_detach_callbacks = []
