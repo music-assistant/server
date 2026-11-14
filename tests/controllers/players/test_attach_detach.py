@@ -20,7 +20,13 @@ from music_assistant_models.errors import ActionUnavailable, PlayerUnavailableEr
 from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
 from music_assistant.controllers.players.lifecycle import REMOVE_UNAVAILABLE_GRACE
 from tests.common import as_user
-from tests.scenarios.harness import DEFAULT_FEATURES, Event, FakeProtocol, Scenario
+from tests.scenarios.harness import (
+    DEFAULT_FEATURES,
+    Event,
+    FakePlayerProvider,
+    FakeProtocol,
+    Scenario,
+)
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
@@ -1342,6 +1348,63 @@ async def test_discovery_after_a_removal_is_dropped_when_its_provider_unloads(
     await scenario.settle()
 
     assert task_id not in scenario.mass._tracked_timers
+
+
+async def test_a_provider_unloaded_while_it_finishes_loading_leaves_nothing_of_its_devices(
+    scenario: Scenario,
+) -> None:
+    """
+    A provider that is unloaded before its load is done never looks for its devices.
+
+    The device it registered before the unload, which still waited for its player, is let
+    go: no protocol of the provider is left, nothing is pending and nothing is stored.
+    """
+    airplay = await scenario.add_provider("airplay")
+    instance_id = airplay.instance_id
+    airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=ADDRESS_ONLY)
+    scenario.set_present("ap_kitchen", True)
+    stored = _stored(scenario)
+    mass = scenario.mass
+    update_cache = mass._update_available_providers_cache
+    # the provider instance that was loading, its device, and whether the controller held
+    # that device until it knows its player
+    loading: list[tuple[FakePlayerProvider, FakeProtocol, bool]] = []
+
+    async def _unload_while_loading() -> None:
+        await update_cache()
+        provider = mass.get_provider(instance_id)
+        if loading or not isinstance(provider, FakePlayerProvider) or provider is airplay:
+            return
+        # the new instance is registered and runs its finish-loading hooks: it finds its
+        # device (as a listener it started before does), and is unloaded right after
+        device = provider._protocol_for("ap_kitchen")
+        await mass.players.register(device)
+        held = (
+            mass.players.get_protocol("ap_kitchen") is device
+            and device.player is None
+            and "ap_kitchen" in mass.players._pending_protocol_evaluations
+        )
+        loading.append((provider, device, held))
+        await mass.unload_provider(instance_id)
+
+    with patch.object(mass, "_update_available_providers_cache", _unload_while_loading):
+        await mass.load_provider(instance_id)
+        await scenario.settle()
+
+    assert len(loading) == 1
+    provider, device, held = loading[0]
+    assert held
+    assert mass.get_provider(instance_id) is None
+    assert not provider.initialized.is_set()
+
+    await scenario.advance(30)
+
+    assert device.player is None
+    assert list(mass.players.iter_protocols(instance_id)) == []
+    assert not mass.players._pending_protocol_evaluations
+    assert f"discover_players_{instance_id}" not in mass._tracked_timers
+    assert scenario.visible_players() == []
+    assert _stored(scenario) == stored
 
 
 async def test_disable_and_enable_announce_the_player_going_and_coming(scenario: Scenario) -> None:

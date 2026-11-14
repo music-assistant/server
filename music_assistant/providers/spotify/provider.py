@@ -787,9 +787,10 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
+        # the result cache outlives the page cache, which would only add a request
         return [
             parse_track(item, self)
-            async for item in self._get_all_items(f"albums/{prov_album_id}/tracks")
+            async for item in self._get_all_items(f"albums/{prov_album_id}/tracks", use_cache=False)
             if item["id"]
         ]
 
@@ -1805,8 +1806,9 @@ class SpotifyProvider(MusicProvider):
         chapters_data: list[dict[str, Any]] = []
 
         try:
+            # the result cache lasts as long as the page cache, which would only add a request
             async for item in self._get_all_items(
-                f"audiobooks/{prov_audiobook_id}/chapters", market="from_token"
+                f"audiobooks/{prov_audiobook_id}/chapters", use_cache=False, market="from_token"
             ):
                 if item and item.get("id"):
                     chapters_data.append(item)
@@ -1835,8 +1837,8 @@ class SpotifyProvider(MusicProvider):
         :param endpoint: API endpoint of the paged list.
         :param key: Key of the items in each page.
         :param limit: Number of items to request per page.
-        :param use_cache: Serve pages from the page cache; when False, every page is requested
-            from the API.
+        :param use_cache: Serve pages from the page cache, at the cost of one extra request that
+            checks the list for changes; when False, every page is requested from the API.
         """
         offset = 0
         cache_checksum: str | None = None

@@ -1602,6 +1602,11 @@ class MusicAssistant:
                 )
             raise
 
+        # an unload during the hooks above found no post-load task to cancel and already
+        # tore the instance down, so it must not be announced or have loaded_in_mass run
+        if provider.unloading:
+            return
+
         # if we reach this point, the provider loaded successfully
         LOGGER.info(
             "Loaded %s provider %s",

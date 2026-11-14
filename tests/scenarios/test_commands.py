@@ -14,13 +14,14 @@ from music_assistant_models.enums import (
     PlayerFeature,
     QueueOption,
 )
-from music_assistant_models.errors import PlayerCommandFailed, ResourceBusyError
+from music_assistant_models.errors import PlayerCommandFailed, RateLimited, ResourceBusyError
 from music_assistant_models.player import PlayerMedia, PlayerSource
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
+from music_assistant.models.music_provider import MusicProvider
 from tests.common import record_lock_waits
 
-from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakeProtocol, Scenario
+from .harness import DEFAULT_FEATURES, MUSIC_PROVIDER, TEST_TRACK_URI, FakeProtocol, Scenario
 from .test_grouping import _player_id, _speakers
 
 DEN = {IdentifierType.MAC_ADDRESS: "00:11:22:33:44:55", IdentifierType.IP_ADDRESS: "192.168.1.30"}
@@ -29,8 +30,9 @@ KITCHEN = {
     IdentifierType.IP_ADDRESS: "192.168.1.31",
 }
 BATHROOM = {IdentifierType.MAC_ADDRESS: "B8:27:EB:AA:BB:CC"}
-# another track of the server's test music provider than the one play() plays
+# other tracks of the server's test music provider than the one play() plays
 OTHER_TRACK_URI = "test://track/1_1_1"
+THIRD_TRACK_URI = "test://track/2_2_2"
 
 MEDIA = PlayerMedia(uri="http://ma.local/stream/track.flac")
 
@@ -722,3 +724,82 @@ async def test_a_play_request_that_waits_longer_than_a_minute_for_its_turn_still
     await scenario.idle()
 
     assert _plays(scenario, den_id) == (PlaybackState.PLAYING, [OTHER_TRACK_URI])
+
+
+def _asked_to_wait(scenario: Scenario) -> list[str]:
+    """
+    Let the music service refuse to say how its tracks are streamed: it asked to wait an hour.
+
+    Returns the list that collects the ids of the tracks it was asked about.
+    """
+    requested: list[str] = []
+
+    async def _get_stream_details(item_id: str, *_args: Any, **_kwargs: Any) -> Any:
+        requested.append(item_id)
+        msg = "The music service asked to wait another 3600 seconds"
+        raise RateLimited(msg, backoff_time=3600)
+
+    provider = scenario.mass.get_provider(MUSIC_PROVIDER)
+    assert isinstance(provider, MusicProvider)
+    provider.get_stream_details = _get_stream_details  # type: ignore[method-assign]
+    return requested
+
+
+async def test_a_play_that_its_music_service_refuses_frees_the_player_and_its_leader(
+    scenario: Scenario,
+) -> None:
+    """
+    A play of a track whose music service asked to wait fails at once, and skips nothing.
+
+    Kitchen is grouped to Den, which plays. A play of two tracks on Kitchen holds Kitchen and
+    Den while it starts the first one, which the music service refuses. The play fails with
+    that refusal and the second track is not tried. Commands sent right behind it wait for
+    neither player: a second start of the first track is refused the same way, as the track
+    stayed playable, and a stop reaches Den. Kitchen is still in the group of Den with both
+    tracks in its queue, and neither queue shows an action in progress.
+    """
+    _, (den, kitchen) = await _speakers(scenario, "Den", "Kitchen")
+    den_id, kitchen_id = _player_id(scenario, den), _player_id(scenario, kitchen)
+    await scenario.mass.players.cmd_set_members(den_id, player_ids_to_add=[kitchen_id])
+    await scenario.idle()
+    await scenario.play(den_id)
+    requested = _asked_to_wait(scenario)
+    scenario.expect_log("The music service asked to wait")
+    queues = scenario.mass.player_queues
+
+    play = await scenario.command(
+        queues.play_media(kitchen_id, [OTHER_TRACK_URI, THIRD_TRACK_URI], QueueOption.REPLACE)
+    )
+    assert play.done()
+    with pytest.raises(RateLimited):
+        await play
+    assert requested == ["1_1_1"]
+    assert _plays(scenario, den_id) == (PlaybackState.PLAYING, [TEST_TRACK_URI])
+
+    waits = record_lock_waits(scenario.mass.players)
+    again = await scenario.command(queues.play_index(kitchen_id, 0))
+    assert again.done()
+    with pytest.raises(RateLimited):
+        await again
+    stop = await scenario.command(queues.stop(den_id))
+    assert stop.done()
+    await stop
+    await scenario.idle()
+
+    assert waits == []
+    assert requested == ["1_1_1", "1_1_1"]
+    assert "play_media" not in _names(kitchen)
+    assert "ungroup" not in _names(kitchen)
+    kitchen_state = scenario.player(kitchen_id)
+    assert kitchen_state is not None
+    assert kitchen_state.synced_to == den_id
+    assert _plays(scenario, kitchen_id) == (
+        PlaybackState.IDLE,
+        [OTHER_TRACK_URI, THIRD_TRACK_URI],
+    )
+    assert all(item.available for item in queues.items(kitchen_id))
+    assert _plays(scenario, den_id) == (PlaybackState.IDLE, [TEST_TRACK_URI])
+    for player_id in (den_id, kitchen_id):
+        queue = scenario.queue(player_id)
+        assert queue is not None
+        assert not queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS)

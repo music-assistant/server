@@ -44,6 +44,8 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     PlayerUnavailableError,
     QueueEmpty,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Audiobook,
@@ -2996,10 +2998,23 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                             prev_state["last_playing_elapsed_time"] = int(queue.elapsed_time)
                         loaded_item = queue_item
                         break
-                    except (MediaNotFoundError, AudioError) as load_err:
-                        if isinstance(load_err, ProviderStreamLimitError):
-                            # the requested item is playable, its provider is just at capacity:
-                            # report that instead of silently advancing to another item
+                    except (
+                        MediaNotFoundError,
+                        AudioError,
+                        ResourceTemporarilyUnavailable,
+                        RetriesExhausted,
+                    ) as load_err:
+                        if isinstance(
+                            load_err,
+                            (
+                                ProviderStreamLimitError,
+                                ResourceTemporarilyUnavailable,
+                                RetriesExhausted,
+                            ),
+                        ):
+                            # the requested item is playable, its provider is just at capacity
+                            # or asked us to back off: report that instead of silently
+                            # advancing to another item
                             self.logger.error("%s", load_err)
                             await self._end_failed_start(queue_data)
                             raise
