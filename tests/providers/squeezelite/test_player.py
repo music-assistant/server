@@ -324,6 +324,63 @@ async def test_play_media_resets_elapsed_anchor() -> None:
     assert time.time() - player._attr_elapsed_time_last_updated < 1
 
 
+async def test_play_media_clears_a_stale_resume_state() -> None:
+    """A new stream neither resumes from an older pause nor restarts on its first resume."""
+    player, mass = _player_with_mocked_mass()
+    player.multi_client_stream = None
+    player.client = MagicMock(elapsed_seconds=0)
+    player._provider = MagicMock(mass=mass)
+    player._paused_at = 42.0
+    player._restream_needed = True
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
+        ),
+        patch.object(SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="p1"),
+        patch.object(player, "_handle_play_url_for_slimplayer", new=AsyncMock()),
+        patch.object(player, "update_attributes"),
+        patch.object(player, "update_state"),
+    ):
+        await player.play_media(
+            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+        )
+
+    assert player._paused_at == 0.0
+    assert player._restream_needed is False
+
+
+async def test_a_paused_group_resumes_in_sync_from_its_own_pause_only() -> None:
+    """The pause position is used for the resume after that pause, not for a later one."""
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player._restream_needed = False
+    player._paused_at = 42.0
+    sync_group = MagicMock(resume=AsyncMock())
+    player._sync_group = sync_group
+    clients = [MagicMock(play=AsyncMock()), MagicMock(play=AsyncMock())]
+
+    with (
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_group_needs_restream", return_value=False),
+        patch.object(player, "_get_sync_clients", return_value=clients),
+    ):
+        await player.play()
+        # a pause from a device button bypasses pause(), so no new pause position
+        await player.play()
+
+    sync_group.resume.assert_awaited_once_with(clients, 42.0)
+    for client in clients:
+        client.play.assert_awaited_once()
+
+
 async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
     """An old-stream heartbeat that lands before the flush does not survive the restart."""
     player, mass = _player_with_mocked_mass()

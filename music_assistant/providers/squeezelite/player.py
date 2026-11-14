@@ -218,6 +218,7 @@ class SqueezelitePlayer(Player):
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
             self.multi_client_stream = None
+        self._paused_at = 0.0
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 if self.type == PlayerType.PROTOCOL:
@@ -235,9 +236,11 @@ class SqueezelitePlayer(Player):
                 self._restream_needed = False
                 self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
                 return
-            if self._paused_at > 0:
-                # stream still live: LMS _Resume (coordinated startAt + check holdoff)
-                await self._sync_group.resume(self._get_sync_clients(), self._paused_at)
+            if (paused_at := self._paused_at) > 0:
+                # stream still live: LMS _Resume (coordinated startAt + check holdoff);
+                # the pause position is only valid for the pause it was taken at
+                self._paused_at = 0.0
+                await self._sync_group.resume(self._get_sync_clients(), paused_at)
                 return
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
@@ -268,6 +271,9 @@ class SqueezelitePlayer(Player):
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
             self.multi_client_stream = None
+        # the new stream covers the current members and has no pause to resume from
+        self._paused_at = 0.0
+        self._restream_needed = False
 
         # Clear next media item during announcements to prevent playing the
         # next enqueued track after it finishes.
