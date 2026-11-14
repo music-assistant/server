@@ -182,6 +182,14 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # audibly out of sync. Warm re-anchors reuse a locked clock and keep the
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+# How far out a cold group whose members all stream buffered first anchors, so
+# every receiver has accepted an anchor before any audio leaves. A strict
+# receiver can reject anchors for the whole 5.5-second retry span of
+# AIRPLAY_START_ACK_TIMEOUT_MS, and audio leaves up to one send window before
+# the anchor (3 s at the deepest CONF_BUFFER_DEPTH), so this clears both with
+# 500 ms to spare. A re-START after audio has left never puts it back: that
+# member skips what it was already sent and plays ahead of the others.
+AIRPLAY_ANCHOR_SEAT_LEAD_MS: Final[int] = 9000
 
 # How long a start waits for the source to hand over its first audio before it
 # judges the members on what they never received. A seek may land up to
@@ -350,17 +358,17 @@ AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
-# Sample rates advertised for a receiver that supports 24-bit (AirPlay 2 flow
-# only). At 24-bit the cliairplay binary expects raw s32le on stdin and truncates
-# to 24-bit ALAC internally.
-AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
-
-# Bits in the audioFormat bit space (shared with the receiver's /info format
-# tables) that mark 24-bit ALAC: 44.1 kHz and 48 kHz respectively. Receivers
-# understate these - the Apple TV lists them for its buffered stream only, yet
-# renders them fine on the realtime stream - so a device advertising either bit
-# on either stream is treated as 24-bit capable.
-AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
+# 24-bit ALAC sample rates (AirPlay 2 flow only) by their bit in the audioFormat
+# bit space, shared with the receiver's /info format tables. Receivers understate
+# the stream they list them for - the Apple TV lists them for its buffered stream
+# only, yet renders them fine on the realtime stream - so a format listed on
+# either stream counts. At 24-bit the cliairplay binary expects raw s32le on
+# stdin and truncates to 24-bit ALAC internally.
+AIRPLAY_HIRES_FORMATS: Final[dict[int, int]] = {1 << 19: 44100, 1 << 21: 48000}
+AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = sum(AIRPLAY_HIRES_FORMATS)
+AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [
+    (sample_rate, 24) for sample_rate in AIRPLAY_HIRES_FORMATS.values()
+]
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

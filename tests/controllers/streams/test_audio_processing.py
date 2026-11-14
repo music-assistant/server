@@ -34,7 +34,12 @@ from music_assistant_models.enums import (
     MediaType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayLogEntry
@@ -1271,6 +1276,31 @@ async def test_flow_stream_handler_continues_a_repeat_request_at_the_current_ite
         await controller.serve_queue_flow_stream(request)
 
     controller.mass.player_queues.get_item.assert_called_once_with("queue-1", expected_item_id)
+
+
+@pytest.mark.parametrize(
+    ("error", "available"),
+    [
+        (RetriesExhausted("Not retrying, asked to wait 3600 seconds"), True),
+        (MediaNotFoundError("gone"), False),
+    ],
+    ids=["provider_backs_off", "item_not_found"],
+)
+@pytest.mark.asyncio
+async def test_item_stream_handler_keeps_an_item_whose_provider_backs_off(
+    monkeypatch: pytest.MonkeyPatch, error: MusicAssistantError, available: bool
+) -> None:
+    """A provider asking to back off fails the request but leaves the item available."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails = None
+    queue_item.available = True
+    controller.audio.get_stream_details = AsyncMock(side_effect=error)
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_item_stream(request)
+
+    assert queue_item.available is available
 
 
 @pytest.mark.asyncio

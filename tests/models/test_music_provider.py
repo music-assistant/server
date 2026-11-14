@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.media_items import BrowseFolder
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.models.music_provider import (
@@ -68,6 +69,29 @@ def test_supported_media_types_default_follows_library_features() -> None:
     )
 
     assert provider.supported_media_types == {MediaType.TRACK, MediaType.PLAYLIST}
+
+
+async def test_browse_root_library_folders_play_only_tracks() -> None:
+    """Of the library folders at the browse root, only the tracks folder is playable."""
+    provider = _make_provider(
+        _StreamingProvider,
+        supported_features={
+            ProviderFeature.BROWSE,
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ALBUMS,
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_PLAYLISTS,
+        },
+    )
+
+    folders = await provider.browse("test_provider--1://")
+
+    assert {f.item_id: f.is_playable for f in folders if isinstance(f, BrowseFolder)} == {
+        "artists": False,
+        "albums": False,
+        "tracks": True,
+        "playlists": False,
+    }
 
 
 def test_streaming_provider_has_conservative_default() -> None:

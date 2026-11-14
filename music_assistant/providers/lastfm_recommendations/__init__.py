@@ -22,11 +22,12 @@ from music_assistant_models.media_items import RecommendationFolder, Track, Uniq
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.throttle_retry import RequestPriority, with_request_priority
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
-    CACHE_CATEGORY_RESOLVED_ITEMS,
+    ARTIST_TOP_TRACKS_FETCH_LIMIT,
     CACHE_EXPIRATION_SECONDS,
     CONF_ACTION_CLEAR_CACHE,
     CONF_API_KEY,
@@ -236,13 +237,24 @@ class LastFMRecommendationsProvider(MetadataProvider):
 
     async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
         """
-        Retrieve an artist's top tracks from Last.fm.
+        Retrieve an in-library artist's library tracks, in the order of Last.fm's top tracks.
+
+        Only tracks in the library are listed; empty for an artist that is not a library item.
 
         :param artist: The reference artist.
         :param limit: Maximum number of top tracks to return.
         """
-        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-        return await self._get_artist_toptracks(artist.name, artist_mbid, limit)
+        if artist.provider != "library":
+            return []
+        library_tracks = await self.mass.music.artists.get_library_artist_tracks(artist.item_id)
+        if not library_tracks:
+            return []
+        ranking = await self._get_artist_toptrack_entries(
+            artist.name, artist.get_external_id(ExternalID.MB_ARTIST)
+        )
+        # comparing every title with every track takes too long for the event loop once an
+        # artist has many tracks
+        return await asyncio.to_thread(_match_library_tracks, ranking, library_tracks, limit)
 
     async def get_artist_toptrack_titles(self, artist: Artist, limit: int = 25) -> list[str]:
         """
@@ -251,8 +263,10 @@ class LastFMRecommendationsProvider(MetadataProvider):
         :param artist: The reference artist.
         :param limit: Maximum number of titles to return.
         """
-        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-        return await self._get_artist_toptrack_titles(artist.name, artist_mbid, limit)
+        ranking = await self._get_artist_toptrack_entries(
+            artist.name, artist.get_external_id(ExternalID.MB_ARTIST)
+        )
+        return [entry["name"] for entry in ranking[:limit]]
 
     # a background job, also when it runs from the startup timer or a config action: the
     # music provider searches it fans out must leave headroom for user actions and playback
@@ -283,41 +297,58 @@ class LastFMRecommendationsProvider(MetadataProvider):
         except MusicAssistantError as err:
             self.logger.warning("Failed to build recommendations: %s", err)
 
-    @use_cache(
-        CACHE_EXPIRATION_SECONDS,
-        category=CACHE_CATEGORY_RESOLVED_ITEMS,
-        allow_expired_cache=True,
-    )
-    async def _get_artist_toptracks(
-        self, artist_name: str, artist_mbid: str | None, limit: int
-    ) -> list[Track]:
-        """Fetch and resolve an artist's top tracks, keyed by name/mbid for caching."""
-        top_raw = await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
-        if not top_raw:
-            return []
-
-        # Tolerate individual resolution failures (e.g. a rate-limited lookup) so one bad
-        # track can't sink the whole listing.
-        resolved = await asyncio.gather(
-            *[self.recommendations_manager.get_or_resolve_track(raw) for raw in top_raw],
-            return_exceptions=True,
-        )
-        tracks = [t for t in resolved if isinstance(t, Track)]
-        self.logger.debug(
-            "Resolved %d/%d top tracks to playable items for '%s'",
-            len(tracks),
-            len(top_raw),
-            artist_name,
-        )
-        return tracks
-
     @use_cache(CACHE_EXPIRATION_SECONDS, allow_expired_cache=True)
-    async def _get_artist_toptrack_titles(
-        self, artist_name: str, artist_mbid: str | None, limit: int
-    ) -> list[str]:
-        """Fetch the titles of an artist's top tracks, keyed by name/mbid for caching."""
+    async def _get_artist_toptrack_entries(
+        self, artist_name: str, artist_mbid: str | None
+    ) -> list[dict[str, str]]:
+        """Fetch the title and recording mbid of an artist's top tracks, keyed by name/mbid."""
         return [
-            raw["name"]
-            for raw in await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
+            {"name": raw["name"], "mbid": raw.get("mbid") or ""}
+            for raw in await self.api.get_artist_top_tracks(
+                artist_name, artist_mbid, ARTIST_TOP_TRACKS_FETCH_LIMIT
+            )
             if raw.get("name")
         ]
+
+
+def _match_library_tracks(
+    ranking: list[dict[str, str]], tracks: list[Track], limit: int
+) -> list[Track]:
+    """
+    Return at most one library track per ranked entry, in the order of the ranking.
+
+    :param ranking: Ranked entries with the track's title and MusicBrainz recording id.
+    :param tracks: The artist's library tracks.
+    :param limit: Maximum number of tracks to return.
+    """
+    by_mbid = {
+        value: track
+        for track in tracks
+        for id_type, value in track.external_ids
+        if id_type == ExternalID.MB_RECORDING
+    }
+    matched: list[Track] = []
+    listed: set[str] = set()
+    for entry in ranking:
+        if len(matched) >= limit:
+            break
+        track = by_mbid.get(entry["mbid"])
+        if track is None or track.item_id in listed:
+            unlisted = [candidate for candidate in tracks if candidate.item_id not in listed]
+            # an exact title before a similar one: "Revolution" is not "Revolution 1"
+            named = [
+                candidate
+                for candidate in unlisted
+                if compare_strings(candidate.name, entry["name"], True)
+            ] or [
+                candidate
+                for candidate in unlisted
+                if compare_strings(candidate.name, entry["name"], False)
+            ]
+            if not named:
+                continue
+            # the original recording before a live, remix or other version of it
+            track = min(named, key=lambda candidate: bool(candidate.version))
+        matched.append(track)
+        listed.add(track.item_id)
+    return matched

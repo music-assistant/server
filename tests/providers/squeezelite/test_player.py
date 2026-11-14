@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -307,7 +307,8 @@ async def test_regroup_supersedes_pending_resume() -> None:
     use_real_create_task(mass)
     member = MagicMock()
     member.player_id = "member"
-    member.state = SlimPlayerState.STOPPED
+    # the mock is both the member's sync client and the member player
+    member.state = member.client.state = SlimPlayerState.STOPPED
     mass.players.get_player.return_value = member
     # the playback lock an announcement holds on the leader while it plays
     leader_busy = asyncio.Event()
@@ -359,6 +360,177 @@ async def test_play_media_resets_elapsed_anchor() -> None:
 
     assert player._attr_elapsed_time == 0
     assert time.time() - player._attr_elapsed_time_last_updated < 1
+
+
+async def test_play_media_clears_a_stale_resume_state() -> None:
+    """A new stream neither resumes from an older pause nor restarts on its first resume."""
+    player, mass = _player_with_mocked_mass()
+    player.multi_client_stream = None
+    player.client = MagicMock(elapsed_seconds=0)
+    player._provider = MagicMock(mass=mass)
+    player._paused_at = 42.0
+    player._restream_needed = True
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
+        ),
+        patch.object(SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="p1"),
+        patch.object(player, "_handle_play_url_for_slimplayer", new=AsyncMock()),
+        patch.object(player, "update_attributes"),
+        patch.object(player, "update_state"),
+    ):
+        await player.play_media(
+            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+        )
+
+    assert player._paused_at == 0.0
+    assert player._restream_needed is False
+
+
+async def test_a_paused_group_resumes_in_sync_from_its_own_pause_only() -> None:
+    """The pause position is used for the resume after that pause, not for a later one."""
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player._restream_needed = False
+    player._paused_at = 42.0
+    sync_group = MagicMock(resume=AsyncMock())
+    player._sync_group = sync_group
+    clients = [MagicMock(play=AsyncMock()), MagicMock(play=AsyncMock())]
+
+    with (
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_group_needs_restream", return_value=False),
+        patch.object(player, "_get_sync_clients", return_value=clients),
+    ):
+        await player.play()
+        # a pause from a device button bypasses pause(), so no new pause position
+        await player.play()
+
+    sync_group.resume.assert_awaited_once_with(clients, 42.0)
+    for client in clients:
+        client.play.assert_awaited_once()
+
+
+async def test_repeated_play_while_restreaming_restarts_the_group_once() -> None:
+    """A second play before the new stream exists replaces the pending restart."""
+    player, mass = _player_with_mocked_mass()
+    player._restream_needed = True
+
+    with (
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(
+            SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="leader"
+        ),
+    ):
+        await player.play()
+
+    assert mass.create_task.call_args.kwargs == {
+        "task_id": "squeezelite_regroup_resume_leader",
+        "abort_existing": True,
+    }
+
+
+@pytest.mark.parametrize(("sync_adjust", "play_delay"), [(30, 30), (None, 0)])
+async def test_sync_delay_setting_is_the_play_delay(
+    sync_adjust: int | None, play_delay: int
+) -> None:
+    """The per-player sync delay setting becomes the player's LMS play delay."""
+    player, _mass = _player_with_mocked_mass()
+    player.client = MagicMock(play_delay=0)
+    config = MagicMock(get_value=MagicMock(return_value=sync_adjust))
+
+    with (
+        patch.object(SqueezelitePlayer, "config", new_callable=PropertyMock, return_value=config),
+        patch.object(player, "_set_preset_items", new=AsyncMock()),
+        patch.object(player, "_set_display", new=AsyncMock()),
+    ):
+        await player.on_config_updated()
+
+    assert player.client.play_delay == play_delay
+
+
+async def test_buffer_ready_starts_the_group_in_sync() -> None:
+    """Once every member has buffered, the group starts at a common instant."""
+    player, _mass = _player_with_mocked_mass()
+    clients = [MagicMock(state=SlimPlayerState.BUFFER_READY) for _ in range(2)]
+    sync_group = MagicMock(start=AsyncMock())
+    player._sync_group = sync_group
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_get_sync_clients", side_effect=lambda: iter(clients)),
+        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=AsyncMock()),
+    ):
+        await player._handle_buffer_ready()
+
+    sync_group.start.assert_awaited_once_with(clients)
+
+
+async def test_buffer_ready_starts_the_leader_when_its_members_dropped_out() -> None:
+    """A leader left on its own while buffering starts instead of waiting forever."""
+    player, _mass = _player_with_mocked_mass()
+    player.client = leader = MagicMock(
+        state=SlimPlayerState.BUFFER_READY, jiffies=1234, unpause_at=AsyncMock()
+    )
+    sync_group = MagicMock(start=AsyncMock())
+    player._sync_group = sync_group
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_get_sync_clients", side_effect=lambda: iter([leader])),
+        patch("music_assistant.providers.squeezelite.player.asyncio.sleep", new=AsyncMock()),
+    ):
+        await player._handle_buffer_ready()
+
+    leader.unpause_at.assert_awaited_once_with(1234)
+    sync_group.start.assert_not_called()
+
+
+def test_a_heartbeat_checks_the_group_sync() -> None:
+    """The leader's heartbeat runs the group drift check on all members."""
+    player, mass = _player_with_mocked_mass()
+    clients = [MagicMock(), MagicMock()]
+    sync_group = MagicMock()
+    player._sync_group = sync_group
+
+    with (
+        patch.object(
+            SqueezelitePlayer,
+            "group_members",
+            new_callable=PropertyMock,
+            return_value=["leader", "member"],
+        ),
+        patch.object(player, "_get_sync_clients", return_value=clients),
+    ):
+        player._handle_sync()
+
+    sync_group.check.assert_called_once_with(clients)
+    mass.create_task.assert_called_once_with(sync_group.check.return_value)
 
 
 async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
@@ -439,8 +611,9 @@ async def test_setup_restores_volume_without_a_valid_cache_entry(
     with patch.object(player, "update_attributes"):
         await player.setup()
 
-    player.client.mute.assert_not_called()
-    player.client.volume_set.assert_awaited_once_with(expected_volume)
+    client = cast("MagicMock", player.client)
+    client.mute.assert_not_called()
+    client.volume_set.assert_awaited_once_with(expected_volume)
     mass.players.register_or_update.assert_awaited_once_with(player)
     assert stored[CONF_STORED_VOLUME] == expected_volume
 
@@ -454,7 +627,7 @@ async def test_volume_changed_on_the_player_is_stored() -> None:
         mass.config.set_raw_player_config_value.reset_mock()
         event = SlimEvent(type=SlimEventType.PLAYER_UPDATED, player_id="p1")
 
-        player.client.volume_level = 65
+        cast("MagicMock", player.client).volume_level = 65
         player.handle_slim_event(event)
         assert stored[CONF_STORED_VOLUME] == 65
 

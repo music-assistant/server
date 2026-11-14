@@ -509,6 +509,32 @@ async def test_cli_args_featureless_ap2_only_device_forces_airplay2() -> None:
 
 
 @pytest.mark.parametrize(
+    ("line", "buffered"),
+    [
+        ("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=1", True),
+        ("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=0", False),
+        ("[STATUS] route protocol=raop flow=realtime timing=ntp buffered=1", False),
+    ],
+)
+def test_parse_route_status_records_the_buffered_route(line: str, buffered: bool) -> None:
+    """Only an AirPlay 2 stream on the buffered route counts as buffered."""
+    stream = AirPlayStream(_make_player())
+    stream._parse_route_status(line)
+    assert stream.buffered_route is buffered
+
+
+def test_ntp_fallback_clears_the_buffered_route() -> None:
+    """A buffered request that ends up on NTP timing streams realtime."""
+    stream = AirPlayStream(_make_player())
+    stream._parse_route_status("[STATUS] route protocol=airplay2 flow=native timing=ptp buffered=1")
+    stream._parse_clock_ready(
+        "[STATUS] clock_ready mode=ntp state=ready streak_ms=0 exchanges=0 ready_in_ms=0 "
+        "ready_at_unix_ms=0"
+    )
+    assert stream.buffered_route is False
+
+
+@pytest.mark.parametrize(
     ("line", "expected_route"),
     [
         (
@@ -2519,6 +2545,35 @@ async def test_initial_metadata_skips_artwork() -> None:
     assert send_command.await_args_list[1].args[0].endswith("PROGRESS=0")
     assert stream._last_progress_sent == 0
     send_artwork.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_metadata_line_breaks_are_replaced() -> None:
+    """Line breaks in the metadata text never add lines to the SENDMETA command."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+    metadata = MagicMock(
+        title="Track\nACTION=PAUSE",
+        artist="Artist\r\nVOLUME=0",
+        album="Album\r",
+        duration=180,
+        queue_item_id="item1",
+        source_id=None,
+        image_url=None,
+    )
+
+    with patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command:
+        await stream.send_metadata(None, metadata, send_artwork=False)
+
+    assert send_command.await_args_list[0].args[0].splitlines() == [
+        "TITLE=Track ACTION=PAUSE",
+        "ARTIST=Artist  VOLUME=0",
+        "ALBUM=Album",
+        "DURATION=180",
+        "ITEMID=item1",
+        "ACTION=SENDMETA",
+    ]
 
 
 @pytest.mark.asyncio

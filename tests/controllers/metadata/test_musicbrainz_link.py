@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 import aiohttp
 import pytest
 from music_assistant_models.enums import (
+    ArtistEntityType,
     EventType,
     ExternalID,
     MediaType,
@@ -27,6 +28,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.constants import DB_TABLE_ALBUMS
 from music_assistant.controllers.metadata import MetaDataController
@@ -46,6 +48,7 @@ from music_assistant.controllers.metadata.controller import (
 )
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
+from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzLifeSpan
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 if TYPE_CHECKING:
@@ -806,6 +809,16 @@ async def _add_artist(mass: MusicAssistant, *, looked_up: int | None) -> Artist:
     )
 
 
+async def _link_artist(mass: MusicAssistant, artist: Artist, details: MusicBrainzArtist) -> Artist:
+    """Run the link step for a library artist against the given details and reload it."""
+    with patch.object(
+        MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=details)
+    ) as get_details:
+        await mass.metadata.link_item_to_musicbrainz(artist)
+    get_details.assert_awaited_once_with(ARTIST_ID)
+    return await mass.music.artists.get_library_item(artist.item_id)
+
+
 async def _linked_ids(mass: MusicAssistant) -> set[str]:
     """Run the link run against the real library and return the item ids it picked up."""
     with (
@@ -919,3 +932,35 @@ async def test_relink_query_selects_identified_items_never_looked_up(mass: Music
     )
 
     assert {album.item_id for album in selected} == {tagged.item_id, early.item_id}
+
+
+async def test_link_item_stores_an_artists_type_and_life_span(mass: MusicAssistant) -> None:
+    """The artist details the link step fetches leave the type and life span in the library."""
+    artist = await _add_artist(mass, looked_up=None)
+    details = MusicBrainzArtist(
+        id=ARTIST_ID,
+        name="Radiohead",
+        sort_name="Radiohead",
+        type="Group",
+        life_span=MusicBrainzLifeSpan(begin="1985"),
+    )
+
+    stored = await _link_artist(mass, artist, details)
+
+    assert stored.metadata.artist_entity_type == ArtistEntityType.GROUP
+    assert stored.metadata.life_span == LifeSpan(begin="1985")
+
+
+async def test_link_item_keeps_a_stored_life_span_musicbrainz_lacks(mass: MusicAssistant) -> None:
+    """Artist details without a type or life span leave the stored values in the library."""
+    artist = await _add_artist(mass, looked_up=None)
+    artist.metadata.life_span = LifeSpan(begin="1985-01-01")
+    artist.metadata.artist_entity_type = ArtistEntityType.GROUP
+    await mass.music.artists.update_item_in_library(artist.item_id, artist)
+    artist = await mass.music.artists.get_library_item(artist.item_id)
+    details = MusicBrainzArtist(id=ARTIST_ID, name="Radiohead", sort_name="Radiohead")
+
+    stored = await _link_artist(mass, artist, details)
+
+    assert stored.metadata.artist_entity_type == ArtistEntityType.GROUP
+    assert stored.metadata.life_span == LifeSpan(begin="1985-01-01")

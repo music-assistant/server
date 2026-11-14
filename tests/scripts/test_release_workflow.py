@@ -162,6 +162,20 @@ def test_stable_preserves_patch_versioning_across_diverged_branches(
     assert decision.should_release is True
 
 
+@pytest.mark.parametrize(("channel", "tag"), [("stable", "2.9.9"), ("beta", "2.10.0b1")])
+def test_auto_release_skips_without_new_commits(
+    repository: tuple[Path, GitRepository], channel: str, tag: str
+) -> None:
+    """No channel releases when nothing was committed since its latest tag."""
+    path, git_repository = repository
+    _git(path, "tag", tag)
+
+    decision = determine_auto_release(git_repository, channel, "HEAD")
+
+    assert decision.commits_since == 0
+    assert decision.should_release is False
+
+
 def test_stable_auto_release_fails_when_unreleased_rc_exists(
     repository: tuple[Path, GitRepository],
 ) -> None:

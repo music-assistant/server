@@ -131,6 +131,7 @@ Create a file called `__init__.py` inside the folder of your provider. This file
 * The `setup()` function is called by Music Assistant upon initialization of the provider. It gives you the opportunity the prepare the provider for usage. For example, logging in a user or obtaining a token can be done in this function.
 * A provider should let Music Assistant know which [`ProviderFeature`](https://github.com/music-assistant/models/blob/main/music_assistant_models/enums.py) it supports by implementing the property `supported_features`, which returns a list of `ProviderFeature`.
 * A podcast provider must set each episode's `position` so that the oldest episode has the lowest number and the newest the highest. The episode listing is sorted on it and "play from here" queues the selected episode plus everything newer, so a provider that numbers episodes by the order its API happens to return them will show them backwards. Rank on the publication date using `rank_episodes_by_date()` in [`podcast_parsers`](./music_assistant/helpers/podcast_parsers.py), and leave the position at 0 where it is unknown.
+* Image paths that are not URLs (for example a cover id that `resolve_image()` fetches from the service) are dropped when they are read back from a playlist file, because a stored path could point at a local file. If your `resolve_image()` only ever looks such a path up in your own service, override `accepts_stored_image_path()` to accept the paths your service uses. See the [Plex](./music_assistant/providers/plex/__init__.py) provider as an example. [OpenSubsonic](./music_assistant/providers/opensubsonic/sonic_provider.py) accepts any id, which is only safe because the id is sent to its server and never used for anything else.
 * The actual playback of audio in Music Assistant happens in two phases:
     1. `get_stream_details()` is called to obtain information about the audio, like the quality, format, # of channels etc.
     2. `get_audio_stream()` is called to stream raw bytes of audio to the player. There are a few [helpers](./music_assistant/helpers/audio.py) to help you with this. Note that this function is not applicable to direct url streams.
@@ -157,6 +158,11 @@ A provider that talks to a music service must therefore:
   service's API and set it to what that service actually tolerates, and put
   [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
   instead of asking again. Back off on a 429 rather than retrying into it.
+  One user action or background job never walks the service's catalogue: no requests per album,
+  track or page of an artist's discography or a service listing, and never build what the
+  service has no endpoint for that way. Paging through the user's own library, through the
+  throttler, is fine. A provider without an artist tracks endpoint does not offer
+  `ProviderFeature.ARTIST_TRACKS`; artist top tracks (`ARTIST_TOPTRACKS`) is a feature of its own.
   The throttler serves playback first, user actions second and background work last. Background
   work may use only half of the rate limit and is spread evenly over time, which keeps room free
   for the user. Music Assistant sets the priority where a request starts, so a provider normally

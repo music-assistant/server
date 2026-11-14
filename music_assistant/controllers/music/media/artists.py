@@ -55,10 +55,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.controllers.music.constants import (
-    ARTIST_ALBUM_LOOKUP_BATCH,
-    SIMILAR_ITEMS_LIMIT,
-)
+from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
@@ -1399,50 +1396,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         Return all tracks for an artist on given provider.
 
-        Without an artist tracks listing of its own, the provider's tracks of the artist's
-        albums are listed: a failing album leaves the listing incomplete, and is only raised
-        when it leaves nothing to play. A single is left out when an album lists its song
-        already, and compilations only count for an artist with nothing else.
+        Empty when the provider has no artist tracks listing of its own.
         """
         provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider) or not provider.available:
             return Listing([])  # guard against an unavailable or hidden provider
-        if provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
-            return Listing(await provider.get_artist_tracks(item_id))
-        # fallback: enumerate (and dedupe) the tracks of the artist's albums on the provider
-        releases = await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
-        singles = [album for album in releases if album.album_type == AlbumType.SINGLE]
-        albums = [
-            album
-            for album in releases
-            if album.album_type not in (AlbumType.SINGLE, AlbumType.COMPILATION)
-        ]
-        if not albums and not singles:
-            # the songs of a compilation are mostly on the artist's albums already, so it is
-            # only listed when there is nothing else
-            albums = releases
-        album_tracks, provider_error = await self._tracks_of_albums(
-            albums, provider_instance_id_or_domain
-        )
-        # a single whose song an album lists already would only repeat it
-        listed_songs = {create_safe_string(track.name) for track in album_tracks}
-        single_tracks, single_error = await self._tracks_of_albums(
-            [single for single in singles if create_safe_string(single.name) not in listed_songs],
-            provider_instance_id_or_domain,
-        )
-        provider_error = single_error or provider_error
-        result: list[Track] = []
-        unique_ids: set[str] = set()
-        for track in (*album_tracks, *single_tracks):
-            unique_id = f"{track.name}.{track.version}"
-            if unique_id in unique_ids:
-                continue
-            unique_ids.add(unique_id)
-            result.append(track)
-        if provider_error is not None and not any(track.available for track in result):
-            # nothing could be played at all, so surface the reason instead of an empty list
-            raise provider_error
-        return Listing(result, complete=provider_error is None)
+        # no fallback to the tracks of the artist's albums: that costs a request per release,
+        # which our usage policy rules out
+        if not provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
+            return Listing([])
+        return Listing(await provider.get_artist_tracks(item_id))
 
     async def get_library_artist_tracks(
         self,
@@ -1649,10 +1612,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
-                if not self.mass.music.get_visible_provider(provider_mapping.provider_instance):
+                mapped_provider = self.mass.music.get_visible_provider(
+                    provider_mapping.provider_instance
+                )
+                if not mapped_provider or not mapped_provider.supports_feature(
+                    ProviderFeature.ARTIST_TOPTRACKS
+                ):
                     continue
                 with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
-                    ref_tracks += await self.mass.music.artists.tracks(
+                    ref_tracks += await self.mass.music.artists.top_tracks(
                         provider_mapping.item_id, provider_mapping.provider_instance
                     )
         for ref_track in ref_tracks:
@@ -1905,8 +1873,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             # a music provider that failed (e.g. rate limited) must not turn into more
             # requests against the same services through a metadata provider
             return listings, failed or unanswered
-        # metadata providers such as Last.fm resolve every item through music-service searches,
-        # so they are a fallback rather than a parallel source
+        # a metadata provider such as Last.fm may resolve its items through music-service
+        # searches (similar artists), so it is a fallback rather than a parallel source
         listings, failed = await self._gather_provider_listings(
             ref_item,
             feature,
@@ -1947,43 +1915,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             listings.append(listing)
         return listings, failed
-
-    async def _tracks_of_albums(
-        self, albums: Sequence[Album], provider_instance_id_or_domain: str
-    ) -> tuple[list[Track], Exception | None]:
-        """
-        Return the tracks of the given provider albums, in the order of the albums.
-
-        An album whose tracks can't be fetched is left out (and logged).
-
-        :param albums: The albums, as the provider lists them.
-        :param provider_instance_id_or_domain: The provider the albums are listed on.
-        :returns: The tracks, and the error of the last album that failed, if any.
-        """
-        tracks: list[Track] = []
-        provider_error: Exception | None = None
-        for start in range(0, len(albums), ARTIST_ALBUM_LOOKUP_BATCH):
-            batch = albums[start : start + ARTIST_ALBUM_LOOKUP_BATCH]
-            results = await asyncio.gather(
-                *(self.mass.music.albums.provider_album_tracks(album) for album in batch),
-                return_exceptions=True,
-            )
-            for album, result in zip(batch, results, strict=True):
-                if isinstance(result, PROVIDER_FETCH_ERRORS):
-                    # one failing album must not drop the artist's other tracks on this provider
-                    provider_error = result
-                    self.logger.log(
-                        provider_fetch_log_level(result),
-                        "Unable to fetch tracks for album %s from provider %s: %s",
-                        album.name,
-                        provider_instance_id_or_domain,
-                        result,
-                    )
-                    continue
-                if isinstance(result, BaseException):
-                    raise result
-                tracks.extend(result)
-        return tracks, provider_error
 
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
