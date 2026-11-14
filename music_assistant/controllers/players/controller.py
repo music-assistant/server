@@ -3180,6 +3180,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     child_player.on_group_updated(player, changed_values)
                 else:
                     child_player.on_sync_parent_updated(player, changed_values)
+        # A native leader lists its protocol members by their visible parent, so those
+        # protocol players (whose state the parent mirrors) are notified separately.
+        if player.type not in (PlayerType.PROTOCOL, PlayerType.GROUP):
+            for member_id in player.group_members:
+                if (member := self.get_player(member_id)) and member.type == PlayerType.PROTOCOL:
+                    member.on_sync_parent_updated(player, changed_values)
         # update/signal group player(s) when a member updates. A sync leader is a member of the
         # group player that formed the sync group and gaining members of its own does not change
         # that: a group player mirrors its leader, so it depends on exactly these updates.
