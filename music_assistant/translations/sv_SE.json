@@ -983,5 +983,9 @@
   "common.media.genre.tango.name": "Tango",
   "common.media.genre.trap.name": "Trap",
   "common.media.genre.waltz.name": "Vals",
-  "common.media.genre.wellness.name": "Välbefinnande"
+  "common.media.genre.wellness.name": "Välbefinnande",
+  "common.media.genre.metal.description": "Samlingskategori för musikgenrer med rötter i heavy metal, utan att de nödvändigtvis är undergenrer till heavy metal.",
+  "common.media.genre.polka.description": "Polka är en dansstil och genre inom dansmusik i tvåtakt, med ursprung i 1800-talets Böhmen, som i dag ingår i Tjeckien. Polka förknippas främst med tjeckisk och centraleuropeisk kultur men är populär i hela Europa och Amerika.",
+  "common.media.genre.punk.description": "Samlingskategori för musikgenrer med koppling till punksubkulturen och punkrockscenen, utan att de nödvändigtvis är undergenrer till punkrock.",
+  "common.media.genre.reggaeton.description": "Reggaeton är en stil inom populärmusik och elektronisk musik som uppstod i Panama under slutet av 1980-talet. Sedan början av 1990-talet har den populariserats och dominerats av artister från Puerto Rico."
 }
