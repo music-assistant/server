@@ -319,31 +319,28 @@ async def test_scan_matches_no_mbid_skipped(
     assert await manager._scan_matches() == []
 
 
-async def test_scan_matches_no_enrichment_schedules_metadata_update(
+async def test_scan_matches_uses_stored_values_and_schedules_nothing(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """Artists without metadata enrichment (last_refresh=None) are skipped and enrichment is scheduled."""
+    """The scan only reads stored values: an artist without a life span is skipped, none refreshed."""
     today_mmdd = _today_mmdd()
-    mbid_not_enriched = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
-    mbid_enriched = "f59c5520-5f46-4d2c-b2c4-822eabf53419"
-    artist_not_enriched = _make_artist("1", "Not Enriched", mbid=mbid_not_enriched)
-    artist_not_enriched.metadata = MediaItemMetadata()
-    life_span = LifeSpan(begin=f"1985-{today_mmdd}")
-    artist_enriched = _make_artist(
-        "2",
-        "Enriched Artist",
-        mbid=mbid_enriched,
-        life_span=life_span,
+    artist_no_life_span = _make_artist(
+        "1", "No Life Span", mbid="20ff3303-4fe2-4a47-a1b6-291e26aa3438"
+    )
+    artist_no_life_span.metadata = MediaItemMetadata()
+    # life span and type stored by the MusicBrainz link step, before any full metadata refresh
+    artist_linked = _make_artist("2", "Linked Artist", mbid="f59c5520-5f46-4d2c-b2c4-822eabf53419")
+    artist_linked.metadata = MediaItemMetadata(
+        life_span=LifeSpan(begin=f"1985-{today_mmdd}"),
         artist_entity_type=ArtistEntityType.PERSON,
     )
-    _set_library(provider_mock, [artist_not_enriched, artist_enriched])
+    _set_library(provider_mock, [artist_no_life_span, artist_linked])
 
     artists = await manager._scan_matches()
-    assert [a.name for a in artists] == ["Enriched Artist"]
-    provider_mock.mass.metadata.schedule_update_metadata.assert_called_once_with(
-        artist_not_enriched
-    )
+
+    provider_mock.mass.metadata.schedule_update_metadata.assert_not_called()
+    assert [a.name for a in artists] == ["Linked Artist"]
 
 
 async def test_scan_matches_uses_metadata_when_available(

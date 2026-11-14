@@ -1,9 +1,16 @@
 """Tests for the RadioArtworkMixin helpers on MetaDataController."""
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
+from music_assistant_models.errors import RetriesExhausted
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -19,6 +26,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.providers.musicbrainz import MusicBrainzReleaseGroup
+from music_assistant.providers.musicbrainz.models import MusicBrainzArtist
 
 
 def _artist(name: str) -> Artist | ItemMapping:
@@ -34,6 +42,35 @@ def _release_group(title: str) -> MusicBrainzReleaseGroup:
 def _controller() -> MetaDataController:
     """Create a bare MetaDataController without running __init__."""
     return MetaDataController.__new__(MetaDataController)
+
+
+def _thumb() -> MediaItemImage:
+    """Build a thumb a metadata provider found online."""
+    return MediaItemImage(
+        type=ImageType.THUMB,
+        path="http://images/thumb.jpg",
+        provider="working",
+        remotely_accessible=True,
+    )
+
+
+def _providers(feature: ProviderFeature, lookup: str) -> tuple[MagicMock, MagicMock]:
+    """
+    Build two metadata providers: one that ran out of retries, and one that finds a thumb.
+
+    :param feature: The metadata feature both providers support.
+    :param lookup: Name of the provider method the feature is served by.
+    """
+    failing = MagicMock(supported_features={feature}, priority=1)
+    setattr(failing, lookup, AsyncMock(side_effect=RetriesExhausted("gave up")))
+    working = MagicMock(supported_features={feature}, priority=2)
+    working.name = "Working"
+    setattr(
+        working,
+        lookup,
+        AsyncMock(return_value=MediaItemMetadata(images=UniqueList([_thumb()]))),
+    )
+    return failing, working
 
 
 def _streamdetails() -> StreamDetails:
@@ -250,3 +287,54 @@ class TestGetLibraryItemThumb:
         ctrl = _controller()
         ctrl.get_image_url = MagicMock(side_effect=lambda img, **_: img.path)  # type: ignore[method-assign]
         assert await ctrl._get_library_item_thumb(track) == album_thumb.path
+
+
+class TestProviderOutOfRetries:
+    """A metadata provider that ran out of retries leaves the lookup to the next provider."""
+
+    @staticmethod
+    def _setup(providers: tuple[MagicMock, MagicMock]) -> MetaDataController:
+        """Build a controller that has the given metadata providers loaded."""
+        ctrl = _controller()
+        ctrl.mass = MagicMock()
+        ctrl.mass.get_providers.return_value = list(providers)
+        ctrl.logger = MagicMock()
+        return ctrl
+
+    async def test_release_group_artwork_comes_from_the_next_provider(self) -> None:
+        """The cover of a release group is taken from the provider that still answers."""
+        failing, working = _providers(ProviderFeature.ALBUM_METADATA, "get_album_metadata")
+        ctrl = self._setup((failing, working))
+
+        release_group = MusicBrainzReleaseGroup(
+            id="8e8a594f-2175-38c7-a871-abb68ec363e7", title="Kind of Blue"
+        )
+
+        result = await ctrl._get_release_group_artwork(release_group)
+
+        failing.get_album_metadata.assert_awaited_once()
+        assert result is not None
+        metadata, provider_name = result
+        assert metadata.images == [_thumb()]
+        assert provider_name == "Working"
+
+    async def test_artist_artwork_comes_from_the_next_provider(self) -> None:
+        """The artist image of a stream is taken from the provider that still answers."""
+        failing, working = _providers(ProviderFeature.ARTIST_METADATA, "get_artist_metadata")
+        ctrl = self._setup((failing, working))
+        mb_artist = MusicBrainzArtist(
+            id="561d854a-6a28-4aa7-8c99-323e6ce46c2a", name="Miles Davis", sort_name="Davis, Miles"
+        )
+        ctrl._get_library_track_metadata = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        ctrl._get_library_artist_metadata = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # MusicBrainz knows the artist, but no release group to take a cover from
+        ctrl._search_musicbrainz_with_variants = AsyncMock(  # type: ignore[method-assign]
+            return_value=((mb_artist, []), False)
+        )
+
+        metadata, source, _, _ = await ctrl.get_track_metadata_by_name("Miles Davis", "So What")
+
+        failing.get_artist_metadata.assert_awaited_once()
+        assert metadata is not None
+        assert metadata.images == [_thumb()]
+        assert source == "artist 'Miles Davis' via Working"

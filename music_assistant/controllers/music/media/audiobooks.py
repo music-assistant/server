@@ -663,6 +663,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 )
         if (provider_point := ResumePoint.from_item(media_item)) is None:
             return
+        # stamped when the provider recorded it, which orders the in progress items;
+        # a time in the future counts as now
+        timestamp = utc_timestamp()
+        if provider_point.timestamp is not None:
+            timestamp = min(provider_point.timestamp.timestamp(), timestamp)
 
         for user_id in user_ids:
             cur_entry = await self.mass.music.database.get_row(
@@ -699,7 +704,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                     else None,
                     "fully_played": media_item.fully_played,
                     "seconds_played": seconds_played,
-                    "timestamp": utc_timestamp(),
+                    "timestamp": timestamp,
                     "userid": user_id,
                 },
                 allow_replace=True,

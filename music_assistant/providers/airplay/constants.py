@@ -151,6 +151,11 @@ CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # cliairplay then makes up to 12 attempts, 500 ms apart. Cover that 5.5-second
 # retry span plus control-response and status-delivery margin.
 AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 7000
+# How long a forced stop waits for the binary to confirm STOP ([STATUS] stopped)
+# before it kills the process. The binary first releases the receiver (RTSP
+# TEARDOWN), which some receivers need to free their output (squeezelite-esp32);
+# that normally takes milliseconds.
+AIRPLAY_STOP_ACK_TIMEOUT: Final[float] = 2.0
 # A join can additionally withhold its ack while receiver-clock verification
 # settles. Keep its independently named bound aligned with the buffered retry
 # span too; command failures still answer either wait immediately.
@@ -358,17 +363,17 @@ AIRPLAY_VOLUME_ECHO_GRACE_S: Final[float] = 2.0
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
-# Sample rates advertised for a receiver that supports 24-bit (AirPlay 2 flow
-# only). At 24-bit the cliairplay binary expects raw s32le on stdin and truncates
-# to 24-bit ALAC internally.
-AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
-
-# Bits in the audioFormat bit space (shared with the receiver's /info format
-# tables) that mark 24-bit ALAC: 44.1 kHz and 48 kHz respectively. Receivers
-# understate these - the Apple TV lists them for its buffered stream only, yet
-# renders them fine on the realtime stream - so a device advertising either bit
-# on either stream is treated as 24-bit capable.
-AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
+# 24-bit ALAC sample rates (AirPlay 2 flow only) by their bit in the audioFormat
+# bit space, shared with the receiver's /info format tables. Receivers understate
+# the stream they list them for - the Apple TV lists them for its buffered stream
+# only, yet renders them fine on the realtime stream - so a format listed on
+# either stream counts. At 24-bit the cliairplay binary expects raw s32le on
+# stdin and truncates to 24-bit ALAC internally.
+AIRPLAY_HIRES_FORMATS: Final[dict[int, int]] = {1 << 19: 44100, 1 << 21: 48000}
+AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = sum(AIRPLAY_HIRES_FORMATS)
+AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [
+    (sample_rate, 24) for sample_rate in AIRPLAY_HIRES_FORMATS.values()
+]
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

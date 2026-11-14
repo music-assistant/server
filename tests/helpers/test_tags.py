@@ -220,6 +220,24 @@ def test_parse_rejects_file_without_audio_channels() -> None:
         tags.AudioTags.parse(raw)
 
 
+async def test_parse_tags_reads_a_probe_that_finished_before_it_was_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that is done before its output is collected still yields the tags."""
+    start = AsyncProcess.start
+
+    async def start_and_finish(self: AsyncProcess) -> None:
+        """Start the process and let it run to its end, as a busy event loop does."""
+        await start(self)
+        await self.wait()
+
+    monkeypatch.setattr(AsyncProcess, "start", start_and_finish)
+
+    _tags = await tags.async_parse_tags(FILE_MP3)
+
+    assert _tags.title == "MyTitle"
+
+
 async def test_parse_metadata_from_id3tags() -> None:
     """Test parsing of parsing metadata from ID3 tags."""
     filename = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))

@@ -1897,8 +1897,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             # a music provider that failed (e.g. rate limited) must not turn into more
             # requests against the same services through a metadata provider
             return listings, failed or unanswered
-        # metadata providers such as Last.fm resolve every item through music-service searches,
-        # so they are a fallback rather than a parallel source
+        # a metadata provider such as Last.fm may resolve its items through music-service
+        # searches (similar artists), so it is a fallback rather than a parallel source
         listings, failed = await self._gather_provider_listings(
             ref_item,
             feature,
