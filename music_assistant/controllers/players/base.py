@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from .constants import PlayerLockPurpose
     from .lifecycle import _Attach
     from .matching import DeviceIdentity
+    from .power import MemberJoin
 
 
 class _PlayerControllerBase(CoreController):
@@ -81,6 +82,7 @@ class _PlayerControllerBase(CoreController):
     _register_lock: asyncio.Lock
     _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
     _source_sessions: dict[str, AudioSourceSession]
+    _member_joins: dict[str, MemberJoin]
     _state_update_subscribers: list[Callable[[Player, dict[str, tuple[Any, Any]]], None]]
 
     def iter_players(
@@ -799,6 +801,9 @@ class _PlayerControllerBase(CoreController):
             self, player: Player, skip_auto_play: bool = False
         ) -> None: ...
         async def _power_on_switched_off_player(self, player_id: str) -> Player: ...
+        def _power_on_member(
+            self, owner: Player, member: Player, added: bool = False
+        ) -> asyncio.Future[bool]: ...
         def _cancel_power_on(self, player: Player) -> None: ...
         # volume
         def _enforce_volume_limits(self, player: Player) -> bool: ...

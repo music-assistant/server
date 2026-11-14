@@ -28,6 +28,7 @@ from music_assistant_models.enums import (
     ListingType,
     MediaType,
     PlaybackState,
+    PlayerType,
     QueueOption,
     RepeatMode,
     SleepTimerMode,
@@ -803,10 +804,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (
             option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
             and (player := self.mass.players.get_player(queue_id)) is not None
-            and player.offline_by_power_control
+            and (player.offline_by_power_control or player.type == PlayerType.GROUP)
         ):
-            # powered on before the play action takes its locks; media that is only enqueued
-            # leaves the player switched off
+            # powered on before the play action takes its locks, and so are the switched-off
+            # members of a group; media that is only enqueued leaves the player switched off
             await self.mass.players._power_on_switched_off_player(queue_id)
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
@@ -1063,6 +1064,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # a player switched off at its power control has nothing to pause
             self.mass.players._cancel_power_on(player)
             return
+        if player is not None:
+            # a member that was powered on to join what is paused now stays out of it
+            self.mass.players._cancel_power_on(player)
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
         await self.mass.players._handle_cmd_pause(queue_id)
@@ -1367,7 +1371,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(source_queue_id)
         self._check_player_permission(target_queue_id)
         # a switched-off target the transfer plays on is powered on before the locks are taken,
-        # as a play action does: waiting for its device outlasts the wait for a player's lock
+        # as a play action does: waiting for its device outlasts the wait for a player's lock.
+        # The same goes for the switched-off members of a group it plays on
         plays_on_target = auto_play
         if plays_on_target is None:
             source = self.get(source_queue_id)
@@ -1376,7 +1381,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (
             plays_on_target
             and target_player is not None
-            and target_player.offline_by_power_control
+            and (target_player.offline_by_power_control or target_player.type == PlayerType.GROUP)
             and target_player.type in PLAYBACK_TARGET_TYPES
         ):
             await self.mass.players._power_on_switched_off_player(target_queue_id)
@@ -2445,11 +2450,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         try:
             # a player switched off at its power control has nothing left to stop, while its
             # session below still needs the teardown
-            if (
-                player := self.mass.players.get_player(queue_id)
-            ) and player.offline_by_power_control:
+            if player := self.mass.players.get_player(queue_id):
                 self.mass.players._cancel_power_on(player)
-            else:
+            if not (player and player.offline_by_power_control):
                 # Use internal handler to avoid circular redirect:
                 # public cmd_stop redirects to queue.stop when a queue is active,
                 # which would loop back here indefinitely.

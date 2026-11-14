@@ -763,10 +763,21 @@ async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
     await _stop(scenario, group_id)
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="a sync group switches a member on (commit 4)"
+@pytest.mark.parametrize(
+    "dynamic",
+    [
+        pytest.param(
+            True,
+            id="dynamic",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="a member a dynamic sync group switched on joins it (commit 4)",
+            ),
+        ),
+        pytest.param(False, id="fixed"),
+    ],
 )
-@pytest.mark.parametrize("dynamic", [True, False], ids=["dynamic", "fixed"])
 async def test_a_sync_group_switches_a_member_on_and_starts_without_it(
     scenario: Scenario, dynamic: bool
 ) -> None:
@@ -847,7 +858,7 @@ async def test_a_universal_group_switches_a_member_on_and_starts_without_it(
             marks=pytest.mark.xfail(
                 strict=True,
                 raises=AssertionError,
-                reason="a sync group switches its members on (commit 4)",
+                reason="a member a sync group switched on joins it (commit 4)",
             ),
         ),
         pytest.param(
@@ -855,7 +866,7 @@ async def test_a_universal_group_switches_a_member_on_and_starts_without_it(
             marks=pytest.mark.xfail(
                 strict=True,
                 raises=AssertionError,
-                reason="a universal group switches its members on (commit 5)",
+                reason="a member a universal group switched on joins it (commit 5)",
             ),
         ),
     ],
@@ -874,6 +885,8 @@ async def test_a_group_of_switched_off_speakers_starts_on_the_first_that_comes_o
     group_id = await _group(scenario, group_type, kitchen_id, office_id)
     kitchen_plug = await _switch_off(scenario, kitchen)
     office_plug = await _switch_off(scenario, office)
+    scenario.expect_log("is not available")
+    scenario.expect_log("Failed to stop queue")
     await _load_music(scenario)
 
     play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
@@ -897,27 +910,7 @@ async def test_a_group_of_switched_off_speakers_starts_on_the_first_that_comes_o
     await _stop(scenario, group_id)
 
 
-@pytest.mark.parametrize(
-    "group_type",
-    [
-        pytest.param(
-            "sync_group",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="a sync group switches its members on (commit 4)",
-            ),
-        ),
-        pytest.param(
-            "universal_group",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="a universal group switches its members on (commit 5)",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
 @pytest.mark.parametrize("command", ["stop", "pause", "power off"])
 async def test_a_stop_of_the_group_calls_off_the_power_on_of_its_members(
     scenario: Scenario, group_type: str, command: str
@@ -936,7 +929,6 @@ async def test_a_stop_of_the_group_calls_off_the_power_on_of_its_members(
         await scenario.configure_player(group_id, power_control=PLAYER_CONTROL_FAKE)
     plug = await _switch_off(scenario, den)
     scenario.expect_log("is not available")
-    scenario.expect_log("Failed to stop queue")
     await scenario.play(group_id)
     assert plug.commands == [True]
     assert _state(scenario, den_id).powered is True
@@ -964,27 +956,7 @@ async def test_a_stop_of_the_group_calls_off_the_power_on_of_its_members(
         await _stop(scenario, group_id)
 
 
-@pytest.mark.parametrize(
-    "group_type",
-    [
-        pytest.param(
-            "sync_group",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="a sync group switches its members on (commit 4)",
-            ),
-        ),
-        pytest.param(
-            "universal_group",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="a universal group switches its members on (commit 5)",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
 async def test_a_member_that_does_not_come_online_is_left_out(
     scenario: Scenario, group_type: str, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1000,7 +972,6 @@ async def test_a_member_that_does_not_come_online_is_left_out(
     group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id)
     plug = await _switch_off(scenario, den)
     scenario.expect_log("is not available")
-    scenario.expect_log("Failed to stop queue")
     scenario.expect_log("did not come online")
 
     with caplog.at_level(logging.WARNING, logger="music_assistant"):
@@ -1013,7 +984,7 @@ async def test_a_member_that_does_not_come_online_is_left_out(
         message
         for record in caplog.records
         if "did not come online" in (message := record.getMessage())
-    ] == ["Player Den did not come online, it is left out of Downstairs"]
+    ] == ["Player Den did not come online after powering it on, it is left out of Downstairs"]
     assert _state(scenario, den_id).available is False
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     assert plug.commands == [True]

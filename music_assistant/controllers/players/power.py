@@ -11,8 +11,10 @@ PlayerController to add the power commands.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
 from music_assistant_models.auth import Scope
@@ -24,6 +26,7 @@ from music_assistant_models.constants import (
 from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.errors import (
     InsufficientPermissions,
+    MusicAssistantError,
     PlayerUnavailableError,
     ResourceBusyError,
     UnsupportedFeaturedException,
@@ -40,6 +43,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
+    system_auth_context,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
@@ -48,16 +52,12 @@ from music_assistant.models.player import Player
 from .base import _PlayerControllerBase
 from .constants import (
     CACHE_CATEGORY_PLAYER_POWER,
+    OFFLINE_POWER_ON_TIMEOUT,
     UNGROUP_ON_POWER_OFF_TYPES,
     PlayerLockPurpose,
     SwitchedOffAction,
 )
 from .helpers import handle_player_command, wait_for_power_on
-
-# How long a power on through an external power control waits for a device that was
-# switched off at that control to come online.
-OFFLINE_POWER_ON_TIMEOUT = 90
-
 
 # How long a player must stay powered off before the queue it was playing is ended.
 # Home Assistant reports an entity that is (briefly) unavailable or unknown as off, so an
@@ -65,6 +65,23 @@ OFFLINE_POWER_ON_TIMEOUT = 90
 # stop the music. Long enough to sit out a reloading integration or a device missing a
 # poll, short enough that a real power off is not left streaming.
 EXTERNAL_POWER_OFF_STOP_DELAY = 15
+
+
+@dataclass
+class MemberJoin:
+    """
+    A switched-off player that is powered on for the player that took it along.
+
+    :param owner_id: The group player or leader that took the player along.
+    :param added: Whether the player was added to its owner, which adds it again once its
+        device is online. Otherwise its owner started to play, and takes it into what it
+        plays by then.
+    :param online: Resolves to whether the device came online.
+    """
+
+    owner_id: str
+    added: bool
+    online: asyncio.Future[bool]
 
 
 class PowerMixin(_PlayerControllerBase):
@@ -79,11 +96,16 @@ class PowerMixin(_PlayerControllerBase):
         :param player_id: player_id of the player to handle the command.
         :param powered: bool if player should be powered on or off.
         """
-        if powered and (player := self.get_player(player_id)) and player.offline_by_power_control:
-            # no lock while the switched off device comes online: that takes far longer than
-            # other commands wait for the lock, and it has no group to form
-            await self._handle_cmd_power(player_id, True)
-            return
+        if powered and (player := self.get_player(player_id)):
+            if player.offline_by_power_control:
+                # no lock while the switched off device comes online: that takes far longer
+                # than other commands wait for the lock, and it has no group to form
+                await self._handle_cmd_power(player_id, True)
+                return
+            if player.type == PlayerType.GROUP and player.available and player.powered is False:
+                # the group forms on the members that are on, so the others are switched on
+                # before the lock as well
+                await self._power_on_group_members(player)
         # Power is serialized with PLAYBACK because powering on a sync/group player
         # forms the group (and powering off dissolves it) - this must not race with
         # play_media / cmd_resume / cmd_set_members on the same player.
@@ -221,13 +243,13 @@ class PowerMixin(_PlayerControllerBase):
             and time.monotonic() - idle_since >= minutes * 60
         )
 
-    @staticmethod
-    def _get_idle_power_off_minutes(player: Player) -> int:
+    def _get_idle_power_off_minutes(self, player: Player) -> int:
         """
         Return after how many idle minutes the player is to be powered off.
 
         Returns 0 while that does not apply: the player has no idle power off configured, is
-        not online, powered on and stopped, or is about to play an announcement.
+        not online, powered on and stopped, is about to play an announcement, or was powered
+        on to join a group or leader and has not joined it yet.
 
         :param player: The player to get the idle power off time for.
         """
@@ -242,6 +264,7 @@ class PowerMixin(_PlayerControllerBase):
             or player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
             # reported as powered on and idle while it is still starting up
             or player.offline_by_power_control
+            or player.player_id in self._member_joins
         ):
             return 0
         return minutes
@@ -281,6 +304,8 @@ class PowerMixin(_PlayerControllerBase):
             # device that powers itself off when stopped reports it before the power
             # command below even reaches it
             player.set_power_off_issued_at(time.monotonic())
+            # calls off a power on that still waits for the device
+            self._cancel_power_on(player)
 
         # ungroup player at power off
         player_was_sync_child = bool(player.synced_to or player.active_group)
@@ -354,8 +379,6 @@ class PowerMixin(_PlayerControllerBase):
                 await player_control.power_on()
                 await wait_for_power_on(self.logger, player, player_control)
             else:
-                # calls off a power on that still waits for the device
-                self._cancel_power_on(player)
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
         # always trigger a state update to update the UI
@@ -399,6 +422,9 @@ class PowerMixin(_PlayerControllerBase):
         for the device takes far longer than other commands wait for a player lock, so it
         must run before any lock is taken.
 
+        For a group player its switched-off members are powered on instead (see
+        _power_on_group_members).
+
         :param player_id: The player to power on.
         :raises InsufficientPermissions: When the current user has no access to the player.
         :raises PlayerUnavailableError: When the device does not come online in time, or
@@ -407,6 +433,9 @@ class PowerMixin(_PlayerControllerBase):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
+        if player.type == PlayerType.GROUP:
+            await self._power_on_group_members(player)
+            return player
         if not player.offline_by_power_control:
             return player
         current_user = get_current_user()
@@ -465,14 +494,138 @@ class PowerMixin(_PlayerControllerBase):
                 if refreshed := self.get_player(player_id):
                     refreshed.refresh_state()
 
+    async def _power_on_group_members(self, group: Player) -> None:
+        """
+        Power on the members of a group player that are switched off at their power control.
+
+        Each of them joins the group once its device is online. Returns right away while a
+        member of the group can play, and for a group without such a member; otherwise it
+        returns once the first device is online. Takes no lock, as waiting for a device takes
+        far longer than other commands wait for a player lock.
+
+        :param group: The group player that is about to play.
+        :raises PlayerUnavailableError: When no member can play and none comes online.
+        """
+        if group.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # an announcement to a group plays on the members that are on, and so does the
+            # playback it restores afterwards
+            return
+        members = [
+            member
+            for member_id in dict.fromkeys((*group.group_members, *group.static_group_members))
+            if (member := self.get_player(member_id)) is not None and member.available
+        ]
+        came_online = [
+            self._power_on_member(group, member)
+            for member in members
+            if member.offline_by_power_control
+        ]
+        if not came_online or any(member.available_for_playback for member in members):
+            return
+        for online in asyncio.as_completed(came_online):
+            if await online:
+                return
+        msg = f"None of the members of {group.name} came online after powering them on"
+        raise PlayerUnavailableError(msg)
+
+    def _power_on_member(
+        self, owner: Player, member: Player, added: bool = False
+    ) -> asyncio.Future[bool]:
+        """
+        Power on a switched-off player for the player that takes it along, which it then joins.
+
+        Returns right away: the power on runs in the background and holds no lock. A player
+        that is powered on for another owner already joins this one instead.
+
+        :param owner: The group player or leader that takes the player along.
+        :param member: The player, which is switched off at its power control.
+        :param added: Whether the player is added to its owner, which adds it again once
+            its device is online. Otherwise its owner is about to play, and takes it into
+            what it plays by then.
+        :return: A future that resolves to whether the device came online.
+        """
+        if (join := self._member_joins.get(member.player_id)) is not None:
+            join.owner_id, join.added = owner.player_id, added
+            return join.online
+        join = MemberJoin(owner.player_id, added, asyncio.get_running_loop().create_future())
+        self._member_joins[member.player_id] = join
+        self.logger.debug("Powering on player %s for %s", member.name, owner.name)
+        self.mass.create_task(self._join_once_online(member.player_id, join))
+        return join.online
+
+    async def _join_once_online(self, member_id: str, join: MemberJoin) -> None:
+        """
+        Power on a switched-off player and let it join the player that took it along.
+
+        :param member_id: The player to power on.
+        :param join: Its pending join.
+        """
+        try:
+            # the user's access was checked on the player that takes this one along
+            with system_auth_context():
+                try:
+                    member = await self._power_on_switched_off_player(member_id)
+                except PlayerUnavailableError as err:
+                    join.online.set_result(False)
+                    owner = self.get_player(join.owner_id)
+                    self.logger.log(
+                        # a power on that its owner called off is no failure
+                        logging.WARNING
+                        if self._member_joins.get(member_id) is join
+                        else logging.DEBUG,
+                        "%s, it is left out of %s",
+                        err,
+                        owner.name if owner else join.owner_id,
+                    )
+                    return
+                join.online.set_result(True)
+                await self._join_owner(member, join)
+        finally:
+            if self._member_joins.get(member_id) is join:
+                del self._member_joins[member_id]
+            if not join.online.done():
+                join.online.set_result(False)
+
+    async def _join_owner(self, member: Player, join: MemberJoin) -> None:
+        """
+        Let a player whose device came online join the player that took it along.
+
+        :param member: The player that was powered on.
+        :param join: Its pending join.
+        """
+        if (owner := self.get_player(join.owner_id)) is None:
+            return
+        # what the owner and its members can group with includes the player again
+        for player_id in dict.fromkeys((owner.player_id, *owner.group_members)):
+            if player := self.get_player(player_id):
+                player.refresh_state()
+        try:
+            if join.added:
+                await self.cmd_set_members(owner.player_id, player_ids_to_add=[member.player_id])
+            elif own := owner.own_protocol:
+                async with self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK):
+                    # not when the owner was stopped while this waited for its lock
+                    if self._member_joins.get(member.player_id) is join:
+                        await own.on_member_powered_on(member)
+        except MusicAssistantError as err:
+            self.logger.warning("Player %s could not join %s: %s", member.name, owner.name, err)
+
     def _cancel_power_on(self, player: Player) -> None:
         """
-        Call off a power on of the player that still waits for its device to come online.
+        Call off a power on that still waits for a device to come online.
 
-        The requests waiting for it fail as switched off. Its power control is left as it is.
+        That of the player itself, and those of the players it took along, which then stay
+        out of it. The requests waiting for such a power on fail as switched off. The power
+        controls are left as they are.
 
-        :param player: The player whose power on to call off.
+        :param player: The player whose power on, and that of its members, to call off.
         """
         if player.power_on_in_progress:
             player.set_power_on_in_progress(False)
             self.logger.debug("Called off the power on of player %s", player.name)
+        for member_id, join in list(self._member_joins.items()):
+            if join.owner_id != player.player_id:
+                continue
+            del self._member_joins[member_id]
+            if member := self.get_player(member_id):
+                self._cancel_power_on(member)

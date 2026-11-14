@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, overload
 
-from music_assistant_models.enums import MediaType, SleepTimerMode
+from music_assistant_models.enums import MediaType, PlayerType, SleepTimerMode
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -122,7 +122,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     :param switched_off: What the action does with a queue whose player is switched off at
         its external power control (see SwitchedOffAction), handled before the locks are
         taken: refused by default, ignored, powered on first for actions that start
-        playback, or run as is for actions that handle it themselves.
+        playback, or run as is for actions that handle it themselves. An action that powers
+        such a player on does the same for the switched-off members of a group player.
     """  # noqa: D401
 
     def decorator(
@@ -155,6 +156,12 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     await self.mass.players._power_on_switched_off_player(queue_id)
                     # the queue can register anew while its device comes online
                     queue_data = self._queue_data[queue_id]
+            elif (
+                switched_off == SwitchedOffAction.POWER_ON
+                and player is not None
+                and player.type == PlayerType.GROUP
+            ):
+                await self.mass.players._power_on_switched_off_player(queue_id)
             queue = queue_data.queue
             # a play action on the queue of a player captured by a (sync)group releases the
             # player from it first, which takes the group's lock - so that one is taken

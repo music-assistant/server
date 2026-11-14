@@ -1110,6 +1110,18 @@ class PlayerProtocol(ABC):
         # default implementation will simply trigger an update for the state of the player
         self._trigger_player_update()
 
+    async def on_member_powered_on(self, member: Player) -> None:  # noqa: B027
+        """
+        Handle a member this group powered on at its power control that is online by now.
+
+        The group was started while the member was switched off, and took it along. Take it
+        into what the group plays, if it still plays. Called with the playback lock of the
+        group player held.
+
+        :param member: The player of the member.
+        """
+        # optional callback, for the protocol of a group player
+
     def on_group_updated(
         self, group_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
