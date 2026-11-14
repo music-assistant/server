@@ -1169,6 +1169,18 @@ and plays it.
 - End-to-end: **no**: it needs a device that takes that long over a command.
 - Proven by: `test_commands.py::test_a_play_request_that_waits_longer_than_a_minute_for_its_turn_still_plays`
 
+### BUSY-13 · A play that its music service refuses fails at once and holds no player
+
+Kitchen is grouped to Den, which plays. A play of two tracks on Kitchen starts the first one,
+but its music service asked to wait an hour and refuses. The play fails with that refusal at
+once. The second track is not tried and both tracks stay playable in the queue of Kitchen.
+Commands sent right behind the play wait for neither player: a second start of the first track
+is refused the same way, and a stop reaches Den. Kitchen is still in the group of Den, which
+played on until the stop, and neither queue shows an action in progress.
+
+- End-to-end: **no**: it needs a music service that refuses requests for an hour.
+- Proven by: `test_commands.py::test_a_play_that_its_music_service_refuses_frees_the_player_and_its_leader`
+
 ## What a stopped player keeps for a moment
 
 A player that stops still names what it played for a moment, so a playback that is replaced, and

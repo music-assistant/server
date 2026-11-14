@@ -88,10 +88,13 @@ def location(tmp_path: Path) -> Iterator[Path]:
     folder = tmp_path / "community_providers"
     folder.mkdir()
     original_path = list(providers_package.__path__)
+    imported_before = set(sys.modules)
     yield folder
     providers_package.__path__[:] = original_path
     for provider_dir in folder.iterdir():
-        purge_provider_modules(provider_dir.name)
+        # a shipped provider of the same name, imported elsewhere, stays imported
+        if f"{PACKAGE}.{provider_dir.name}" not in imported_before:
+            purge_provider_modules(provider_dir.name)
 
 
 async def test_provider_imports_from_added_location(
