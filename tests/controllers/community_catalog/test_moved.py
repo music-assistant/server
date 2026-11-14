@@ -12,8 +12,8 @@ from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant.controllers.community_catalog import controller as controller_module
 from music_assistant.controllers.community_catalog.constants import CONF_ENABLED
-from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK, _REASONS
-from music_assistant.controllers.community_catalog.gate import Verdict
+from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK
+from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.models import (
     CatalogState,
     CommunityProviderState,

@@ -18,9 +18,9 @@ import music_assistant
 from music_assistant import providers as providers_package
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.community_catalog import CommunityCatalogController, dependencies
-from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK, _REASONS
+from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
-from music_assistant.controllers.community_catalog.gate import Verdict
+from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from music_assistant.helpers.util import purge_provider_modules
 from tests.conftest import full_mass_context

@@ -13,13 +13,9 @@ from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant import providers as providers_package
 from music_assistant.controllers.community_catalog import dependencies
-from music_assistant.controllers.community_catalog.controller import (
-    _INDEX_CHECK,
-    _REASONS,
-    _UPDATE_RETRY,
-)
+from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK, _UPDATE_RETRY
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
-from music_assistant.controllers.community_catalog.gate import Verdict
+from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.installer import InstallError
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from tests.controllers.community_catalog.conftest import ADDED, RELEASED, build_archive

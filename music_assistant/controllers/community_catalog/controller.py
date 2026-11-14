@@ -35,8 +35,8 @@ from music_assistant.controllers.community_catalog.dependencies import (
     DependenciesUnavailable,
     DependencyConflict,
 )
-from music_assistant.controllers.community_catalog.gate import Decision, Verdict, evaluate
-from music_assistant.controllers.community_catalog.index import IndexClient, server_line
+from music_assistant.controllers.community_catalog.gate import _REASONS, Decision, Gate, Verdict
+from music_assistant.controllers.community_catalog.index import IndexClient
 from music_assistant.controllers.community_catalog.installer import (
     Installer,
     InstallError,
@@ -59,7 +59,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant.controllers.community_catalog.dependencies import ResolvedDependencies
-    from music_assistant.controllers.community_catalog.models import CatalogIndex
     from music_assistant.mass import MusicAssistant
 
 # the timer of the daily check of the index, and the task that runs a check
@@ -70,50 +69,6 @@ _CHECK_SPREAD: Final = 3600
 # the timer that tries the automatic updates again that waited for playback to stop
 _UPDATE_RETRY: Final = "community_catalog_update_retry"
 _UPDATE_RETRY_INTERVAL: Final = 3600
-# why an installed provider does not load, as the admin reads it; the texts of the
-# translation keys community_provider_<verdict> in the errors of strings.json
-_REASONS: Final[dict[Verdict, str]] = {
-    Verdict.CATALOG_UNREACHABLE: (
-        "The community catalog could not be reached to check this, so it does not run. "
-        "Restart Music Assistant when your server is online again."
-    ),
-    Verdict.BLOCKED: "The community catalog blocked this ({0}), so it no longer runs. "
-    "You can remove it.",
-    Verdict.NOT_LISTED: (
-        "This is no longer in the community catalog, so it no longer runs. You can remove it."
-    ),
-    Verdict.NOT_FOR_THIS_VERSION: (
-        "This is not available for this version of Music Assistant, so it does not run. "
-        "You can remove it."
-    ),
-    Verdict.REQUIREMENTS_CLASH: (
-        "This needs versions of Python packages that clash with Music Assistant or with "
-        "something else from the community catalog, so it does not run."
-    ),
-    Verdict.REINSTALL_FAILED: (
-        "The files of this were changed on your server and could not be downloaded again "
-        "({0}), so it does not run. Restart Music Assistant to try again."
-    ),
-    Verdict.WENT_BACK: (
-        "Version {0} of this failed to load, and the version before it is no longer "
-        "available, so it does not run."
-    ),
-    Verdict.RESTART_TO_GO_BACK: (
-        "Version {0} of this failed to load. Restart Music Assistant to finish going back "
-        "to the version before it."
-    ),
-    Verdict.RESTART_TO_UPDATE: (
-        "Version {0} of this is ready. Restart Music Assistant to finish the update."
-    ),
-    Verdict.MOVED: (
-        "This moved to the community catalog. Music Assistant installs it from there by itself "
-        "as soon as the catalog offers it for this version and your server can reach it."
-    ),
-    Verdict.MOVE_FAILED: (
-        "This moved to the community catalog, but Music Assistant could not install it from "
-        "there ({0}). It tries again at every start and whenever it checks the catalog."
-    ),
-}
 
 
 class CommunityCatalogController(CoreController):
@@ -134,6 +89,7 @@ class CommunityCatalogController(CoreController):
         self._index_client = IndexClient(mass, self._store, self.logger)
         self._installer = Installer(mass, folder, self.logger)
         self._dependencies = CommunityDependencies(mass)
+        self._gate = Gate(mass, self._store)
         # held by everything that changes what is installed or loaded
         self._lock = asyncio.Lock()
         # by installed domain: whether it loads, and the content hash of its live folder
@@ -238,7 +194,7 @@ class CommunityCatalogController(CoreController):
             for domain, record in installed.items()
             if (provider := await self._installed_provider(domain, record)) is not None
         ]
-        if not self.config.get_value(CONF_ENABLED) or (index := self._own_index()) is None:
+        if not self.config.get_value(CONF_ENABLED) or (index := self._gate.own_index()) is None:
             return providers
         providers.extend(
             provider
@@ -391,13 +347,6 @@ class CommunityCatalogController(CoreController):
             if domain not in state.installed and domain not in state.moved and domain not in taken
         }
 
-    def _own_index(self) -> CatalogIndex | None:
-        """Return the kept copy of the index when it is the one of this server's line."""
-        index = self._store.index
-        if index is None or index.server_line != server_line(self.mass.version):
-            return None
-        return index
-
     async def _check_index(self) -> None:
         """Fetch the index and apply it, then schedule the next daily check."""
         try:
@@ -427,25 +376,6 @@ class CommunityCatalogController(CoreController):
         self.mass.cancel_task(_INDEX_CHECK)
         self.mass.cancel_timer(_UPDATE_RETRY)
 
-    def _evaluate(
-        self, domain: str, installed: InstalledProvider, folder_hash: str | None
-    ) -> Decision:
-        """
-        Return whether an installed provider may load by the kept copy of the index.
-
-        :param domain: The domain of the provider.
-        :param installed: What was installed.
-        :param folder_hash: The content hash of its live folder.
-        """
-        index = self._store.index
-        return evaluate(
-            installed,
-            folder_hash,
-            index.providers.get(domain) if index is not None else None,
-            has_index=index is not None,
-            own_line=self._own_index() is not None,
-        )
-
     async def _gate_installed(self) -> dict[str, ProviderManifest]:
         """
         Decide for every installed provider whether it may load, installing it again first where needed.
@@ -457,7 +387,7 @@ class CommunityCatalogController(CoreController):
         for domain, installed in self._store.state.installed.items():
             folder = self._installer.live_folder(domain)
             folder_hash = await asyncio.to_thread(_folder_hash, folder)
-            decision = self._evaluate(domain, installed, folder_hash)
+            decision = self._gate.evaluate(domain, installed, folder_hash)
             if decision.verdict == Verdict.REINSTALL:
                 decision, folder_hash = await self._reinstall(domain, installed, folder_hash)
             if decision.verdict in (Verdict.LOAD, Verdict.SWITCH) and domain in taken:
@@ -494,7 +424,10 @@ class CommunityCatalogController(CoreController):
             await self._installer.activate(domain, reinstall=True)
         except InstallError as err:
             return Decision(Verdict.REINSTALL_FAILED, str(err)), folder_hash
-        return self._evaluate(domain, installed, installed.content_hash), installed.content_hash
+        return (
+            self._gate.evaluate(domain, installed, installed.content_hash),
+            installed.content_hash,
+        )
 
     async def _install(self, domain: str, *, moved: bool = False) -> InstalledProvider:
         """
@@ -609,7 +542,7 @@ class CommunityCatalogController(CoreController):
     async def _apply_index(self) -> None:
         """Stop each loaded provider the index no longer lets load, and keep the reasons current."""
         for domain, installed in self._store.state.installed.items():
-            decision = self._evaluate(domain, installed, self._folder_hashes.get(domain))
+            decision = self._gate.evaluate(domain, installed, self._folder_hashes.get(domain))
             if decision.verdict in (Verdict.LOAD, Verdict.REINSTALL, Verdict.SWITCH):
                 # one that does not load keeps its reason until the next start or its switch
                 continue
@@ -628,7 +561,7 @@ class CommunityCatalogController(CoreController):
         for domain, installed in list(self._store.state.installed.items()):
             if (version := installed.pending_version) is None:
                 continue
-            entry = self._own_entry(domain)
+            entry = self._gate.own_entry(domain)
             release = entry.versions.get(version) if entry is not None else None
             staged_hash = await asyncio.to_thread(
                 _folder_hash, self._installer.staged_folder(domain)
@@ -664,7 +597,7 @@ class CommunityCatalogController(CoreController):
         """
         for domain, version in self._targets(include_updates=self._auto_update()).items():
             # targets only come from the index of this server's line
-            entry = self._own_entry(domain)
+            entry = self._gate.own_entry(domain)
             assert entry is not None
             requirements = {
                 manifest.domain: manifest.requirements for manifest in providers.values()
@@ -721,7 +654,7 @@ class CommunityCatalogController(CoreController):
             another community provider.
         :raises DependenciesUnavailable: Its requirements could not be installed.
         """
-        entry = self._own_entry(domain)
+        entry = self._gate.own_entry(domain)
         assert entry is not None
         manifests = self._community_manifests()
         requirements = {name: manifest.requirements for name, manifest in manifests.items()}
@@ -954,7 +887,7 @@ class CommunityCatalogController(CoreController):
         assert installed.previous_version is not None
         folder = self._installer.live_folder(domain)
         folder_hash = await asyncio.to_thread(_folder_hash, folder)
-        entry = self._own_entry(domain)
+        entry = self._gate.own_entry(domain)
         release = entry.versions.get(installed.previous_version) if entry is not None else None
         restored = replace(
             installed,
@@ -969,7 +902,7 @@ class CommunityCatalogController(CoreController):
         )
         await self._save_installed(domain, restored)
         self._folder_hashes[domain] = folder_hash
-        decision = self._evaluate(domain, restored, folder_hash)
+        decision = self._gate.evaluate(domain, restored, folder_hash)
         if decision.verdict == Verdict.BLOCKED:
             return decision
         if decision.verdict != Verdict.LOAD:
@@ -1033,7 +966,7 @@ class CommunityCatalogController(CoreController):
         targets: dict[str, str] = {}
         for domain, installed in self._store.state.installed.items():
             judged = replace(installed, failed_version=None) if retry_failed else installed
-            decision = self._evaluate(domain, judged, self._folder_hashes.get(domain))
+            decision = self._gate.evaluate(domain, judged, self._folder_hashes.get(domain))
             if (
                 decision.version is None
                 or decision.version == installed.pending_version
@@ -1054,15 +987,6 @@ class CommunityCatalogController(CoreController):
             player.state.playback_state == PlaybackState.PLAYING
             for player in self.mass.players.iter_players()
         )
-
-    def _own_entry(self, domain: str) -> IndexProvider | None:
-        """
-        Return a provider in the index of this server's line, None when it is not in it.
-
-        :param domain: The domain of the provider.
-        """
-        index = self._own_index()
-        return index.providers.get(domain) if index is not None else None
 
     def _community_manifests(self) -> dict[str, ProviderManifest]:
         """Return the manifests of the registered community providers, by domain."""
@@ -1091,7 +1015,7 @@ class CommunityCatalogController(CoreController):
         :param domain: The domain of the provider.
         :raises ActionUnavailable: The provider may not be installed; the message tells why.
         """
-        index = self._own_index()
+        index = self._gate.own_index()
         entry = index.providers.get(domain) if index is not None else None
         if entry is None or self._available_provider(domain, entry) is None:
             msg = f"The community catalog does not offer {domain} for this server version"
@@ -1118,7 +1042,7 @@ class CommunityCatalogController(CoreController):
         manifest = await self._installed_manifest(domain, entry)
         if manifest is None:
             return None
-        own_index = self._own_index()
+        own_index = self._gate.own_index()
         own_entry = own_index.providers.get(domain) if own_index is not None else None
         latest = own_entry.latest if own_entry is not None else None
         release = own_entry.versions.get(latest) if own_entry and latest else None
@@ -1135,7 +1059,7 @@ class CommunityCatalogController(CoreController):
             state = CommunityProviderState.UNAVAILABLE
         elif installed.pending_version is not None:
             state = CommunityProviderState.RESTART_REQUIRED
-        elif self._evaluate(domain, installed, self._folder_hashes.get(domain)).version:
+        elif self._gate.evaluate(domain, installed, self._folder_hashes.get(domain)).version:
             state = CommunityProviderState.UPDATE_AVAILABLE
         elif entry is not None and entry.status == IndexStatus.WITHDRAWN:
             state, reason, reason_url = (

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
+from music_assistant.controllers.community_catalog.index import server_line
 from music_assistant.controllers.community_catalog.models import IndexStatus
 
 if TYPE_CHECKING:
     from music_assistant.controllers.community_catalog.models import (
+        CatalogIndex,
         IndexProvider,
         InstalledProvider,
     )
+    from music_assistant.controllers.community_catalog.store import CatalogStore
+    from music_assistant.mass import MusicAssistant
 
 
 class Verdict(StrEnum):
@@ -50,6 +54,52 @@ class Decision:
     # the version to switch to, also from a blocked version, or the update on offer for a
     # provider that loads
     version: str | None = None
+
+
+# why an installed provider does not load, as the admin reads it; the texts of the
+# translation keys community_provider_<verdict> in the errors of strings.json
+_REASONS: Final[dict[Verdict, str]] = {
+    Verdict.CATALOG_UNREACHABLE: (
+        "The community catalog could not be reached to check this, so it does not run. "
+        "Restart Music Assistant when your server is online again."
+    ),
+    Verdict.BLOCKED: "The community catalog blocked this ({0}), so it no longer runs. "
+    "You can remove it.",
+    Verdict.NOT_LISTED: (
+        "This is no longer in the community catalog, so it no longer runs. You can remove it."
+    ),
+    Verdict.NOT_FOR_THIS_VERSION: (
+        "This is not available for this version of Music Assistant, so it does not run. "
+        "You can remove it."
+    ),
+    Verdict.REQUIREMENTS_CLASH: (
+        "This needs versions of Python packages that clash with Music Assistant or with "
+        "something else from the community catalog, so it does not run."
+    ),
+    Verdict.REINSTALL_FAILED: (
+        "The files of this were changed on your server and could not be downloaded again "
+        "({0}), so it does not run. Restart Music Assistant to try again."
+    ),
+    Verdict.WENT_BACK: (
+        "Version {0} of this failed to load, and the version before it is no longer "
+        "available, so it does not run."
+    ),
+    Verdict.RESTART_TO_GO_BACK: (
+        "Version {0} of this failed to load. Restart Music Assistant to finish going back "
+        "to the version before it."
+    ),
+    Verdict.RESTART_TO_UPDATE: (
+        "Version {0} of this is ready. Restart Music Assistant to finish the update."
+    ),
+    Verdict.MOVED: (
+        "This moved to the community catalog. Music Assistant installs it from there by itself "
+        "as soon as the catalog offers it for this version and your server can reach it."
+    ),
+    Verdict.MOVE_FAILED: (
+        "This moved to the community catalog, but Music Assistant could not install it from "
+        "there ({0}). It tries again at every start and whenever it checks the catalog."
+    ),
+}
 
 
 def evaluate(
@@ -104,3 +154,52 @@ def evaluate(
     if offered and offered != installed.version:
         return Decision(Verdict.LOAD, version=offered)
     return Decision(Verdict.LOAD)
+
+
+class Gate:
+    """Decides by the kept copy of the index whether the installed providers may load."""
+
+    def __init__(self, mass: MusicAssistant, store: CatalogStore) -> None:
+        """
+        Initialize the gate.
+
+        :param mass: The Music Assistant instance.
+        :param store: The store that holds the kept copy of the index.
+        """
+        self.mass = mass
+        self._store = store
+
+    def evaluate(
+        self, domain: str, installed: InstalledProvider, folder_hash: str | None
+    ) -> Decision:
+        """
+        Return whether an installed provider may load by the kept copy of the index.
+
+        :param domain: The domain of the provider.
+        :param installed: What was installed.
+        :param folder_hash: The content hash of its live folder.
+        """
+        index = self._store.index
+        return evaluate(
+            installed,
+            folder_hash,
+            index.providers.get(domain) if index is not None else None,
+            has_index=index is not None,
+            own_line=self.own_index() is not None,
+        )
+
+    def own_index(self) -> CatalogIndex | None:
+        """Return the kept copy of the index when it is the one of this server's line."""
+        index = self._store.index
+        if index is None or index.server_line != server_line(self.mass.version):
+            return None
+        return index
+
+    def own_entry(self, domain: str) -> IndexProvider | None:
+        """
+        Return a provider in the index of this server's line, None when it is not in it.
+
+        :param domain: The domain of the provider.
+        """
+        index = self.own_index()
+        return index.providers.get(domain) if index is not None else None
