@@ -94,16 +94,15 @@ class NicovideoVideoService(NicovideoBaseService):
         if not domand_bid:
             raise UnplayableMediaError("Failed to fetch domand_bid")
 
-        # 5. Fetch HLS playlist text
-        playlist_text = await self._fetch_media_playlist_text(hls_url, domand_bid)
+        # 5. Resolve the media playlist URL ffmpeg streams from
+        media_playlist_url = await self._resolve_media_playlist_url(hls_url, domand_bid)
 
         # 6. Return conversion data
         return StreamConversionData(
             watch_data=watch_data,
             selected_audio=selected_audio,
-            hls_url=hls_url,
+            media_playlist_url=media_playlist_url,
             domand_bid=domand_bid,
-            hls_playlist_text=playlist_text,
         )
 
     async def _get_watch_lazy_data(self, watch_data: WatchData) -> WatchLazyData | None:
@@ -147,9 +146,9 @@ class NicovideoVideoService(NicovideoBaseService):
 
         return str(hls_url)
 
-    async def _fetch_media_playlist_text(self, hls_url: str, domand_bid: str) -> str:
+    async def _resolve_media_playlist_url(self, hls_url: str, domand_bid: str) -> str:
         """
-        Fetch the (unparsed) media playlist text from an HLS stream.
+        Resolve the media playlist URL of an HLS stream.
 
         :param hls_url: URL to the HLS playlist (master or media).
         :param domand_bid: Authentication cookie value.
@@ -167,15 +166,10 @@ class NicovideoVideoService(NicovideoBaseService):
 
         # Check if this is already a media playlist (has #EXTINF)
         if "#EXTINF:" in master_playlist_text:
-            return master_playlist_text
+            return hls_url
 
         # Extract media playlist URL from master playlist
-        media_playlist_url = self._extract_media_playlist_url(master_playlist_text, hls_url)
-
-        # Fetch media playlist
-        async with session.get(media_playlist_url, headers=headers) as response:
-            response.raise_for_status()
-            return await response.text()
+        return self._extract_media_playlist_url(master_playlist_text, hls_url)
 
     def _extract_media_playlist_url(self, master_playlist: str, base_url: str) -> str:
         """
