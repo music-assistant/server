@@ -111,6 +111,10 @@ class PlaybackMixin(_PlayerControllerBase):
                 return
             # Delegate to internal handler for actual implementation
             await self._handle_cmd_play(player.player_id)
+            if active_queue:
+                # the queue follows its player with a delay: it may not have seen the pause
+                # yet, and would then not see its player play again either
+                self.mass.player_queues.on_player_unpaused(active_queue.queue_id)
 
     @api_command("players/cmd/pause", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(switched_off=SwitchedOffAction.CANCEL_POWER_ON, to_playback_owner=True)
