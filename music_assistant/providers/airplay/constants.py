@@ -151,6 +151,11 @@ CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # cliairplay then makes up to 12 attempts, 500 ms apart. Cover that 5.5-second
 # retry span plus control-response and status-delivery margin.
 AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 7000
+# How long a forced stop waits for the binary to confirm STOP ([STATUS] stopped)
+# before it kills the process. The binary first releases the receiver (RTSP
+# TEARDOWN), which some receivers need to free their output (squeezelite-esp32);
+# that normally takes milliseconds.
+AIRPLAY_STOP_ACK_TIMEOUT: Final[float] = 2.0
 # A join can additionally withhold its ack while receiver-clock verification
 # settles. Keep its independently named bound aligned with the buffered retry
 # span too; command failures still answer either wait immediately.

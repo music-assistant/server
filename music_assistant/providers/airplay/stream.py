@@ -34,6 +34,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_START_ACK_TIMEOUT_MS,
+    AIRPLAY_STOP_ACK_TIMEOUT,
     CLI_PROBLEM_MARKERS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
@@ -164,6 +165,14 @@ class AirPlayStream:
         # Whether that end was [STATUS] eof: unlike its idle timeout, the binary
         # stays alive after it, holding the receiver session until it is stopped.
         self._input_ended: bool = False
+        # Set when the binary confirms a STOP ([STATUS] stopped), which it does
+        # once it has released the receiver.
+        self._stop_acked = asyncio.Event()
+        # Whether the receiver ended the session itself ([STATUS]
+        # receiver_closed), for example because another sender took it over.
+        self._receiver_closed: bool = False
+        # Whether the stream runs on the AirPlay 2 compatibility flow ([STATUS] route).
+        self._compat_route: bool = False
         # Structured fatal failure the binary reported before exiting; stays
         # None when it exited without reporting one.
         self._connect_error: CliError | None = None
@@ -402,7 +411,8 @@ class AirPlayStream:
         """
         Stop playback and cleanup.
 
-        :param force: If True, immediately kill the process without graceful shutdown.
+        :param force: If True, kill the process once it confirmed the STOP (bounded)
+            instead of waiting for it to exit.
         """
         async with self._stop_lock:
             if self._cleanup_complete:
@@ -412,7 +422,8 @@ class AirPlayStream:
             async with self._metadata_lock:
                 self._metadata_generation += 1
                 try:
-                    await self._write_cli_command("ACTION=STOP")
+                    if await self._write_cli_command("ACTION=STOP") and force:
+                        await self._await_stop_ack()
                 finally:
                     self._stopped = True
                     try:
@@ -1377,6 +1388,7 @@ class AirPlayStream:
         fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
         protocol = fields.get("protocol", "")
         self.buffered_route = protocol == "airplay2" and fields.get("buffered") == "1"
+        self._compat_route = protocol == "airplay2" and fields.get("flow") == "raop-compat"
         if protocol == "airplay2":
             flow = fields.get("flow", "")
             timing = fields.get("timing", "")
@@ -1418,6 +1430,8 @@ class AirPlayStream:
           [STATUS] playing elapsed_ms=<ms>
           [STATUS] paused
           [STATUS] eof
+          [STATUS] stopped (STOP done, the receiver is released)
+          [STATUS] receiver_closed (the receiver ended the session itself)
           [STATUS] announce_started at_unix_ms=<ms> duration_ms=<ms>
           [STATUS] announce_done [cancelled=1]
           [STATUS] error code=<slug> http=<int> detail="<short text>"
@@ -1467,9 +1481,18 @@ class AirPlayStream:
                             "superseded cliairplay process stopped for %s", player.display_name
                         )
                         return
-                    logger.warning(
-                        "cliairplay process stopped unexpectedly for %s", player.display_name
-                    )
+                    if self._receiver_closed:
+                        # Another sender took the receiver over: it leaves the group
+                        # session like a failed member, but is not re-joined, which
+                        # would take the receiver back.
+                        logger.info(
+                            "%s ended the AirPlay session (another sender took over)",
+                            player.display_name,
+                        )
+                    else:
+                        logger.warning(
+                            "cliairplay process stopped unexpectedly for %s", player.display_name
+                        )
                     # Candidates for the automatic re-join: the leader this member
                     # was synced to (plus its other members, in case leadership
                     # transfers while the backoff runs), or - when this was the
@@ -1510,7 +1533,7 @@ class AirPlayStream:
                         )
                     else:
                         self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
-                    if rejoin_candidates:
+                    if rejoin_candidates and not self._receiver_closed:
                         # the group (or its successor) may still be playing:
                         # schedule bounded attempts to re-join it
                         player.schedule_group_rejoin(rejoin_candidates)
@@ -1636,6 +1659,10 @@ class AirPlayStream:
             player.logger.debug("End of stream reached")
             self._input_ended = True
             return True
+        elif "[STATUS] stopped" in line:
+            self._stop_acked.set()
+        elif "[STATUS] receiver_closed" in line:
+            self._receiver_closed = True
         elif "[STATUS] REANCHOR" in line:
             self._parse_reanchor_status(line)
         elif "[STATUS] error " in line:
@@ -1861,6 +1888,20 @@ class AirPlayStream:
             return
         raise self._password_required_error()
 
+    async def _await_stop_ack(self) -> None:
+        """Wait until the binary confirmed a STOP or exited, bounded by the stop ack timeout."""
+        waiters = [
+            asyncio.ensure_future(self._stop_acked.wait()),
+            asyncio.ensure_future(self._process_ended.wait()),
+        ]
+        try:
+            await asyncio.wait(
+                waiters, timeout=AIRPLAY_STOP_ACK_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+
     async def _await_connected(self, timeout: float = 10) -> None:
         """
         Wait for the binary to confirm the device connection.
@@ -1991,7 +2032,8 @@ class AirPlayStream:
 
     def _handle_native_control_failure(self) -> None:
         """Warn once that the receiver dropped the native AirPlay 2 control channel."""
-        if self._native_control_failure_warned:
+        # the compatibility flow reports its lost connection with the same line
+        if self._native_control_failure_warned or self._compat_route:
             return
         if not self._describes_the_device():
             # The binary keeps reporting while the failure lasts, so leaving the
