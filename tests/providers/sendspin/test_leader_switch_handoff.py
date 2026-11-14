@@ -28,7 +28,7 @@ async def test_leader_hands_session_to_first_player_after_a_visualizer(
     """A visualizer next in line is skipped so the session goes to the next audio player."""
     monkeypatch.setattr(player_module, "SendspinPlaybackSession", MagicMock())
     leader = MagicMock()
-    leader.player_id = "living"
+    leader.protocol_id = "living"
     leader.playback_session.playback_task.done.return_value = False
     leader.playback_session.transfer_to = AsyncMock()
     leader.api.group.remove_client = AsyncMock()
@@ -37,7 +37,7 @@ async def test_leader_hands_session_to_first_player_after_a_visualizer(
     badkamer = MagicMock(spec=SendspinPlayer)
     players = {"living": leader, "hue": MagicMock(spec=SendspinVisualizerPlayer)}
     players["badkamer"] = badkamer
-    leader.mass.players.get_player.side_effect = lambda player_id, *_args: players[player_id]
+    leader.provider.get_protocol.side_effect = lambda player_id, *_a, **_kw: players[player_id]
 
     await SendspinPlayer.set_members(leader, player_ids_to_remove=["living"])
 
@@ -48,7 +48,7 @@ async def test_leader_hands_session_to_first_player_after_a_visualizer(
 async def test_audio_player_leads_a_group_where_a_visualizer_comes_first() -> None:
     """The player that inherited the session keeps feeding the visualizer ahead of it."""
     badkamer = MagicMock()
-    badkamer.player_id = "badkamer"
+    badkamer.protocol_id = "badkamer"
     badkamer._attr_group_members = []
     badkamer.playback_session.sync_members = AsyncMock()
     group = badkamer.api.group

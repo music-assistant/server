@@ -38,7 +38,9 @@ def _fake_player(
     # __init__ is skipped: it needs a provider, cast info and a live Chromecast connection.
     # Typed as Any because the collaborators below are read back as the mocks they are.
     fake = cast("Any", ChromecastPlayer.__new__(ChromecastPlayer))
+    fake._player = None
     fake.mass = MagicMock()
+    fake._provider = MagicMock(get_protocol=lambda pid: fake.mass.players.get_protocol(pid))
     fake.logger = MagicMock()
     fake.cc = MagicMock(app_id=MASS_APP_ID)
     fake.update_state = MagicMock()
@@ -46,8 +48,9 @@ def _fake_player(
     fake._app_quit_task_id = "cast_quit_app_test"
     fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.active_cast_group = active_cast_group
-    # display_name is a cached property, normally built from the config in __init__
-    fake._cache = {"display_name": "Test Cast"}
+    # an unattached protocol shows the name its device reports
+    fake._cache = {}
+    fake._attr_name = "Test Cast"
     # the state below is exposed through read-only properties on the base Player,
     # so it is seeded through the attributes backing them
     fake._attr_type = player_type
@@ -184,7 +187,7 @@ def test_a_group_member_is_not_released_when_the_group_stops() -> None:
     group = MagicMock(spec=ChromecastPlayer)
     group.cc = MagicMock()
     group.cc.media_controller.status = _media_status()
-    fake.mass.players.get_player.return_value = group
+    fake.mass.players.get_protocol.return_value = group
 
     fake._handle_media_status(_media_status())
 

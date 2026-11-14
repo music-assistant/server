@@ -44,8 +44,9 @@ class PlaybackHandler(WamPlayerFeatureBase):
     @handle_pywam_errors
     async def play(self) -> None:
         """Resume playback on the speaker."""
-        if self.player.active_source == self.player.player_id:
-            await self.mass.player_queues.resume(self.player.player_id)
+        if self.player.active_source == self.player.protocol_id:
+            if player := self.player.player:
+                await self.mass.player_queues.resume(player.player_id)
             return
 
         await self.speaker.cmd_play()
@@ -82,7 +83,7 @@ class PlaybackHandler(WamPlayerFeatureBase):
         if self.player.active_source != WamSource.WIFI:
             await self.select_source(WamSource.WIFI)
 
-        stream_url = await self.mass.streams.resolve_stream_url(self.player.player_id, media)
+        stream_url = await self.mass.streams.resolve_stream_url(self.player.protocol_id, media)
 
         duration = media.stream_duration or media.duration
         item = UrlMediaItem(
@@ -115,7 +116,9 @@ class PlaybackHandler(WamPlayerFeatureBase):
         :param source: The target source identifier.
         """
         try:
-            target_source = WamSource.WIFI if source == self.player.player_id else WamSource(source)
+            target_source = (
+                WamSource.WIFI if source == self.player.protocol_id else WamSource(source)
+            )
         except ValueError as err:
             raise PlayerCommandFailed(
                 f"'{source}' is not a valid source for {self.player.log_name}"
@@ -125,7 +128,8 @@ class PlaybackHandler(WamPlayerFeatureBase):
             self.player.stream_active = False
             # The player will briefly appear idle during the source switch; setting the active
             # source here prevents the UI from momentarily reverting to the queue name
-            self.player.set_active_mass_source(str(target_source))
+            if player := self.player.player:
+                player.set_active_mass_source(str(target_source))
 
         if self.player.active_source == str(target_source):
             # Already on the target source; refresh to push current state through

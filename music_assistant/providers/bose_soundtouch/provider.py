@@ -107,11 +107,11 @@ class BoseSoundTouchProvider(PlayerProvider):
         """
         return str(self.get_config_value(preset_media_key(preset_id), "") or "")
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
+    async def discover_players(self) -> None:
+        """Set up the speakers at the manually configured addresses that are not attached."""
         manual_ips = cast("list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
         for ip_address in manual_ips:
-            if stripped := ip_address.strip():
+            if (stripped := ip_address.strip()) and not self._get_player_by_ip(stripped):
                 await self.try_add_player(stripped)
 
     async def on_mdns_service_state_change(
@@ -126,7 +126,7 @@ class BoseSoundTouchProvider(PlayerProvider):
             return
         # if we already know a player on this address, just trigger an update
         if existing := self._get_player_by_ip(ip_address):
-            self.mass.players.trigger_player_update(existing.player_id)
+            existing.update_state()
             return
         # debounce setup to avoid duplicate work on rapid mDNS updates
         task_id = f"setup_soundtouch_{ip_address}"
@@ -148,20 +148,23 @@ class BoseSoundTouchProvider(PlayerProvider):
             self.logger.debug("SoundTouch device at %s returned no device id", ip_address)
             return
 
-        player_id = f"{PLAYER_ID_PREFIX}{info.device_id}"
-        if existing := self.mass.players.get_player(player_id):
+        protocol_id = f"{PLAYER_ID_PREFIX}{info.device_id}"
+        if existing := self.get_protocol(protocol_id):
             # already known: refresh its address and bail out
             assert isinstance(existing, BoseSoundTouchPlayer)
             existing.update_ip_address(ip_address)
             return
+        if not self.mass.players.wants_protocol(protocol_id):
+            self.logger.debug("Ignoring disabled SoundTouch player %s", info.name)
+            return
 
-        player = BoseSoundTouchPlayer(self, player_id, client, info)
+        player = BoseSoundTouchPlayer(self, protocol_id, client, info)
         try:
             await player.setup(info)
-            await self.mass.players.register_or_update(player)
+            await self.mass.players.register(player)
         except MusicAssistantError, aiohttp.ClientError, TimeoutError, OSError:
             self.logger.exception("Failed to register SoundTouch player %s", info.name)
-            await player.on_unload()
+            await player.on_detach()
             return
         self.logger.info("Registered Bose SoundTouch player: %s (%s)", info.name, ip_address)
 
@@ -172,7 +175,7 @@ class BoseSoundTouchProvider(PlayerProvider):
 
     def _get_player_by_ip(self, ip_address: str) -> BoseSoundTouchPlayer | None:
         """Return an existing SoundTouch player with the given IP address (if any)."""
-        for player in self.players:
+        for player in self.protocols:
             if isinstance(player, BoseSoundTouchPlayer) and player.ip_address == ip_address:
                 return player
         return None

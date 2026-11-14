@@ -139,13 +139,15 @@ def _player(
         CONF_FLOW_MODE_SAMPLE_RATE: FLOW_MODE_SAMPLE_RATE_SMART,
     }
     player = SendspinPlayer.__new__(SendspinPlayer)
-    player._player_id = player_id
+    player._protocol_id = player_id
+    player._player = None
     player.api = client
     player.logger = MagicMock()
     player._config = MagicMock()
     player._config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     player._provider = MagicMock()
     player._provider.server_api.get_client.return_value = client
+    player._provider.get_protocol = lambda pid: player.mass.players.get_player(pid)
     player.mass = MagicMock()
     player.mass.streams.audio = audio
     player.mass.players.get_player.return_value = player

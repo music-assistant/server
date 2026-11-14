@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
+    ProtocolRole,
 )
 from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import MediaItemImage
@@ -88,33 +89,28 @@ def _make_control_player(
     values = config_values or {}
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
     config.update.side_effect = values.update
-    provider.mass.config.get_base_player_config.return_value = config
+    provider.mass.config.get_base_protocol_config.return_value = config
     provider.mass.config.save_player_config = AsyncMock()
-    # Credentials live in the player's (encrypted) setup_data; serve them through the
-    # mass.config get/set surface that Player.get_setup_value / _update_setup_data use.
+    # Credentials live in the protocol's (encrypted) setup_data; serve them through the
+    # protocol config and the mass.config setter that _update_setup_data uses.
     # The same dict object is returned so tests can observe cleared/updated values.
     stored_setup_data = setup_data if setup_data is not None else {}
+    config.setup_data = stored_setup_data
 
-    def _config_get(key: str, default: object = None) -> object:
-        if key == f"players/{PLAYER_ID}/setup_data":
-            return stored_setup_data
-        if key == f"players/{PLAYER_ID}":
-            return {"player_id": PLAYER_ID}
-        return default
+    def _set_setup_value(protocol_id: str, key: str, value: object, **_kwargs: object) -> None:
+        assert protocol_id == PLAYER_ID
+        stored_setup_data[key] = value
 
-    def _config_set(key: str, value: object, **_kwargs: object) -> None:
-        prefix = f"players/{PLAYER_ID}/setup_data/"
-        if key.startswith(prefix):
-            stored_setup_data[key[len(prefix) :]] = value
-
-    provider.mass.config.get.side_effect = _config_get
-    provider.mass.config.set.side_effect = _config_set
+    provider.mass.config.set_protocol_setup_value.side_effect = _set_setup_value
     provider.mass.config.decrypt_string.side_effect = lambda value: value
     provider.mass.config.encrypt_string.side_effect = lambda value: value
     # raw player config values live in their own store (individual tests override
     # this); without it they would read back as (truthy) mocks
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, _key, default=None: default
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, _key, default=None: (
+        default
+    )
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, _key, default=None: (
+        default
     )
     # Real Companion services advertise the flags under the mixed-case key
     # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
@@ -128,7 +124,7 @@ def _make_control_player(
     )
     return AirPlayControlPlayer(
         provider=provider,
-        player_id=PLAYER_ID,
+        protocol_id=PLAYER_ID,
         raop_discovery_info=None,
         airplay_discovery_info=_service_info(
             AIRPLAY_DISCOVERY_TYPE,
@@ -149,12 +145,12 @@ def _make_control_player(
     )
 
 
-def test_player_models_have_distinct_types() -> None:
-    """Generic and control-capable AirPlay endpoints use distinct player types."""
+def test_player_models_report_their_role() -> None:
+    """A generic endpoint is an audio protocol, a control-capable one the native protocol."""
     provider = MagicMock()
     generic = GenericAirPlayPlayer(
         provider=provider,
-        player_id="generic",
+        protocol_id="generic",
         raop_discovery_info=None,
         airplay_discovery_info=None,
         address="192.168.1.20",
@@ -164,8 +160,9 @@ def test_player_models_have_distinct_types() -> None:
     )
     controlled = _make_control_player()
 
-    assert generic.type == PlayerType.PROTOCOL
-    assert controlled.type == PlayerType.PLAYER
+    assert generic.role == ProtocolRole.AUDIO
+    assert controlled.role == ProtocolRole.NATIVE
+    assert generic.type == controlled.type == PlayerType.PLAYER
 
 
 @pytest.mark.parametrize(
@@ -342,7 +339,7 @@ def test_duplicate_native_volume_update_is_ignored() -> None:
     with patch.object(player, "update_state") as update_state:
         player._handle_volume_update("companion", 42)
 
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -361,7 +358,7 @@ def test_native_volume_update_ignored_while_streaming() -> None:
 
     assert player.volume_level == 62
     assert player.volume_muted is False
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -380,7 +377,7 @@ def test_transient_mrp_volume_report_never_latches_mute() -> None:
 
     assert player.volume_muted is False
     assert player.volume_level == 62
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    cast("MagicMock", player.mass.config).set_protocol_value.assert_not_called()
     update_state.assert_not_called()
 
 
@@ -396,6 +393,30 @@ def test_native_volume_update_applies_when_idle() -> None:
 
     assert player.volume_level == 10
     update_state.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"), [(10, (10, False)), (0, (62, True))], ids=["level", "mute"]
+)
+def test_native_volume_update_reaches_the_sendspin_bridge(
+    reported: int, expected: tuple[int, bool]
+) -> None:
+    """A level or mute the device reports through its control reaches the bridge as well."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+    seen: list[tuple[int | None, bool | None]] = []
+    bridge_manager = cast("MagicMock", player.provider).bridge_manager
+    bridge_manager.sync_volume.side_effect = lambda _protocol_id: seen.append(
+        (player.volume_level, player.volume_muted)
+    )
+
+    with patch.object(player, "update_state"):
+        player._handle_volume_update("companion", reported)
+
+    assert seen == [expected]
+    bridge_manager.sync_volume.assert_called_with(PLAYER_ID)
 
 
 def test_control_pairing_is_optional_and_never_requires_setup() -> None:
@@ -626,7 +647,7 @@ async def test_airplay_provider_resolves_only_current_external_artwork() -> None
     player._mrp_device = device
     provider = AirPlayProvider.__new__(AirPlayProvider)
     provider.mass = MagicMock()
-    provider.mass.players.get_player.return_value = player
+    provider.mass.players.get_protocol.return_value = player
     artwork_path = f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{PLAYER_ID}/{artwork_id}"
 
     assert await provider.resolve_image(artwork_path) == b"artwork-bytes"
@@ -1112,9 +1133,10 @@ async def test_provider_selects_player_model_from_device_identity(
     provider._mrp_info_by_address = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.players.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
+        default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1164,9 +1186,10 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
 
     provider.mass.discovery.async_find_mdns_service = AsyncMock(side_effect=_find_service)
     provider.mass.players.register = AsyncMock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.players.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
+        default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1206,7 +1229,7 @@ async def test_companion_discovery_is_attached_and_retained_during_sleep() -> No
     set_companion_info = AsyncMock()
     player.set_companion_discovery_info = set_companion_info  # type: ignore[method-assign]
     provider.get_players = MagicMock(return_value=[player])  # type: ignore[method-assign]
-    provider.mass.players.get_player.return_value = player
+    provider.mass.players.get_protocol.return_value = player
     info = _service_info(COMPANION_DISCOVERY_TYPE)
 
     await provider._handle_companion_service_state_change(
@@ -1282,7 +1305,7 @@ async def test_late_companion_discovery_never_changes_player_model() -> None:
     provider._bridge_manager = MagicMock(get_bridge=MagicMock(return_value=None))
     generic_player = GenericAirPlayPlayer(
         provider=provider,
-        player_id=PLAYER_ID,
+        protocol_id=PLAYER_ID,
         raop_discovery_info=None,
         airplay_discovery_info=_service_info(AIRPLAY_DISCOVERY_TYPE),
         address="192.168.1.10",
@@ -1322,9 +1345,10 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider._mrp_info_by_address = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     provider.mass.players.register = AsyncMock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: True if key == "enabled" else default
+    provider.mass.players.get_protocol.return_value = None
+    provider.mass.players.wants_protocol.return_value = True
+    provider.mass.config.get_protocol_value.side_effect = lambda _protocol_id, _key, default=None: (
+        default
     )
     info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -1530,3 +1554,60 @@ async def test_dropped_control_channel_wakes_backoff_wait() -> None:
     assert calls == 2
     # waking the loop keeps the failing channel's backoff
     assert player._reconnect_delay == 60
+
+
+async def test_a_detach_ends_the_reconnect_backoff() -> None:
+    """A detach ends a loop that waits out its backoff, and a later channel drop starts none."""
+    player = _make_control_player()
+    waiting = asyncio.Event()
+
+    async def _connect() -> bool:
+        waiting.set()
+        return True
+
+    with (
+        patch.object(player, "_connect_control_services", side_effect=_connect),
+        patch.object(player, "_disconnect_control_services", AsyncMock()),
+    ):
+        task = asyncio.create_task(player._connection_loop())
+        player._connection_task = task
+        await waiting.wait()
+        await asyncio.sleep(0)
+        create_task = cast("MagicMock", player.mass.create_task)
+        create_task.reset_mock()
+
+        await player.on_detach()
+        player._schedule_connection()
+
+    assert task.done()
+    create_task.assert_not_called()
+    assert not player._reconnect_wakeup.is_set()
+
+
+async def test_an_attach_after_a_detach_connects_the_control_services_again() -> None:
+    """The same object attached again after a detach connects its control services again."""
+    player = _make_control_player()
+    cast("MagicMock", player.provider).bridge_manager.evaluate_bridge = AsyncMock()
+    cast("MagicMock", player.mass.create_task).side_effect = lambda coro, **_: asyncio.create_task(
+        coro
+    )
+    connect = AsyncMock(return_value=False)
+
+    async def _bind() -> None:
+        await player.on_config_updated()
+        await player.on_attach(MagicMock())
+        assert player._connection_task is not None
+        await asyncio.wait_for(player._connection_task, 1)
+
+    with (
+        patch.object(player, "_connect_control_services", connect),
+        patch.object(player, "_disconnect_control_services", AsyncMock()),
+    ):
+        await _bind()
+        connect.assert_awaited_once()
+        await player.on_detach()
+        connect.reset_mock()
+
+        await _bind()
+
+    connect.assert_awaited_once()

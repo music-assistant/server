@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -15,8 +16,11 @@ from music_assistant_models.errors import (
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+
+from .test_play_request_timeout import _locked, _with_player_locks
 
 QUEUE_ID = "q1"
 BACK_OFF_ERRORS = [
@@ -86,6 +90,44 @@ async def test_play_index_stops_on_a_provider_backing_off(error: MusicAssistantE
     load_mock.assert_awaited_once()
     assert all(item.available for item in ctrl._queue_data[QUEUE_ID].items)
     stop_mock.assert_awaited_once_with(QUEUE_ID)
+
+
+@pytest.mark.parametrize("error", BACK_OFF_ERRORS)
+async def test_a_refused_start_lets_go_of_its_player_and_the_group_holding_it(
+    error: MusicAssistantError,
+) -> None:
+    """A start is refused while it holds its player and the group above it, and frees both."""
+    ctrl, load_mock, stop_mock = _controller(error)
+    players = _with_player_locks(ctrl, {QUEUE_ID: "group"})
+    # the queue's player plays along with its group
+    ctrl.mass.players._resolve_playback_owner = Mock(  # type: ignore[method-assign]
+        return_value=Mock()
+    )
+    end_session = ctrl._end_session = Mock()  # type: ignore[method-assign]
+    held_while_loading: list[str] = []
+
+    async def _refuse(*_args: object, **_kwargs: object) -> None:
+        held_while_loading.extend(_locked(players, QUEUE_ID, "group"))
+        raise error
+
+    load_mock.side_effect = _refuse
+    queue_data = ctrl._queue_data[QUEUE_ID]
+
+    with pytest.raises(type(error)) as exc_info:
+        await ctrl.play_index(QUEUE_ID, 0)
+
+    assert exc_info.value is error
+    assert held_while_loading == [QUEUE_ID, "group"]
+    assert _locked(players, QUEUE_ID, "group") == []
+    assert not players._task_held_locks
+    assert not players._lock_holders
+    assert not queue_data.queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS]
+    # only the session of this start ends: a stop would end the stream of the group
+    stop_mock.assert_not_awaited()
+    end_session.assert_called_once_with(queue_data, queue_data.session_id)
+    # the next command on the player or on its group gets its lock at once
+    async with asyncio.timeout(0), players.get_group_and_player_lock(QUEUE_ID):
+        assert _locked(players, QUEUE_ID, "group") == [QUEUE_ID, "group"]
 
 
 @pytest.mark.parametrize("error", BACK_OFF_ERRORS)

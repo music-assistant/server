@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import ImageType
 from music_assistant_models.media_items import MediaItemImage
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 
+from music_assistant.helpers.api import APICommandHandler
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
 
 
@@ -52,3 +54,24 @@ def test_serialize_resets_resolver(tmp_path: Path) -> None:
     server = _make_server(tmp_path / "control.sock")
     server._serialize(MediaItemImage(type=ImageType.THUMB, path="/x.jpg", provider="filesystem"))
     assert IMAGE_PROXY_ID_RESOLVER.get() is None
+
+
+async def test_command_reaches_a_queue_by_a_legacy_id_of_its_player(tmp_path: Path) -> None:
+    """A control script command that names its queue by a legacy id runs for that queue."""
+    server = _make_server(tmp_path / "control.sock")
+    played: list[str] = []
+
+    async def play(queue_id: str) -> None:
+        played.append(queue_id)
+
+    mass = cast("MagicMock", server.mass)
+    mass.command_handlers = {
+        "player_queues/play": APICommandHandler.parse("player_queues/play", play)
+    }
+    mass.players.resolve_player_id = lambda player_id: (
+        "queue-1" if player_id == "old-queue" else player_id
+    )
+
+    await server._execute_command("player_queues/play", {"queue_id": "old-queue"})
+
+    assert played == ["queue-1"]

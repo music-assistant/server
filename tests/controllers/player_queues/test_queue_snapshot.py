@@ -247,11 +247,13 @@ async def test_restore_keeps_its_position_when_the_stopped_player_reports_late()
     await ctrl.restore(QUEUE_ID, snapshot)
 
     player = SimpleNamespace(
-        active_output_protocol=None,
-        current_media=SimpleNamespace(
-            source_id=QUEUE_ID, queue_item_id=quiz_item.queue_item_id, uri=None
+        resolve_output_protocol=lambda: SimpleNamespace(
+            current_media=SimpleNamespace(
+                source_id=QUEUE_ID, queue_item_id=quiz_item.queue_item_id, uri=None
+            )
         ),
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=6.0),
+        playback_state=PlaybackState.PLAYING,
+        corrected_elapsed_time=6.0,
     )
     ctrl._update_current_index_from_player(queue, player)
 

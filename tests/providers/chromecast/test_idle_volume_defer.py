@@ -9,7 +9,7 @@ back, shown right away, and sent once the media is loaded at playback start.
 from __future__ import annotations
 
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call
 from uuid import uuid4
 
 import pytest
@@ -39,8 +39,8 @@ def _make_player(app_id: str | None, defer_idle_volume: bool = True) -> Chromeca
     provider.mz_mgr = MagicMock()
     chromecast = MagicMock()
     chromecast.app_id = app_id
-    with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-        player = ChromecastPlayer(provider, str(info.uuid), info, chromecast)
+    player = ChromecastPlayer(provider, str(info.uuid), info)
+    player.cc = chromecast
     cast("MagicMock", player.config).get_value = MagicMock(
         side_effect=lambda key, default=None: (
             defer_idle_volume if key == CONF_DEFER_IDLE_VOLUME else default

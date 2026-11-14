@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import EventType, MediaType, ProviderType
+from music_assistant_models.enums import EventType, IdentifierType, MediaType, ProviderType
 from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.tasks import TasksController
@@ -21,11 +21,20 @@ from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
+
+# the real server with fake providers, for the tests of what the unload does to players
+from tests.scenarios.conftest import scenario  # noqa: F401
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderError
+
+    from tests.scenarios.harness import FakeProtocol, Scenario
+
+KITCHEN = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0"}
+BEDROOM = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:B0"}
+OFFICE = {IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:C0"}
 
 
 def _make_mass(
@@ -143,112 +152,62 @@ async def test_unload_provider_waits_for_running_sync(
     assert sync_finished_on_unload is True
 
 
-@pytest.mark.parametrize("is_removed", [False, True])
-async def test_unload_provider_unregisters_hidden_players(
-    mass_minimal: MusicAssistant,
-    monkeypatch: pytest.MonkeyPatch,
-    is_removed: bool,
+@pytest.mark.parametrize("removed", [False, True], ids=["unload", "removal"])
+async def test_unload_of_a_player_provider_detaches_its_protocols(
+    scenario: Scenario,  # noqa: F811
+    removed: bool,
 ) -> None:
     """
-    Unloading a player provider also unregisters its disabled and initializing players.
+    Unloading a player provider detaches its protocols, also of a disabled player.
 
-    Removing the provider deletes their configs as well, a plain reload keeps them.
+    A plain unload keeps the players, unavailable, with their configs and queues, so they
+    come back with their settings. Removing the provider deletes the configs as well,
+    including the one of a disabled player, and a player goes with its last protocol.
     """
-    mass_minimal.players = PlayerController(mass_minimal)
-    mass_minimal.music = MagicMock(unschedule_provider_sync=AsyncMock())
-    mass_minimal.player_queues = MagicMock()
-    # wiping a player config strips that player from the user access filters
-    mass_minimal.webserver = MagicMock(auth=MagicMock(remove_from_user_filters=AsyncMock()))
-    # discovery is not set up on the minimal instance and plays no part in this test
-    monkeypatch.setattr(mass_minimal.discovery, "on_provider_unload", MagicMock())
+    sonos = await scenario.add_provider("sonos")
+    airplay = await scenario.add_provider("airplay")
+    kitchen = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
+    kitchen_audio = airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+    bedroom = sonos.protocol("RINCON_BEDROOM", "Bedroom", identifiers=BEDROOM)
+    office = sonos.protocol("RINCON_OFFICE", "Office", identifiers=OFFICE)
+    for protocol in (kitchen, kitchen_audio, bedroom, office):
+        await scenario.register(protocol)
+    kitchen_id = scenario.single_player(kitchen, kitchen_audio).player_id
+    bedroom_id = scenario.single_player(bedroom).player_id
+    office_id = scenario.single_player(office).player_id
+    await scenario.play(bedroom_id)
+    await scenario.disable(office_id)
+    detached = _record_detach(kitchen, kitchen_audio, bedroom, office)
 
-    unloaded_players: list[str] = []
+    if removed:
+        await scenario.remove_provider(sonos)
+    else:
+        await scenario.mass.unload_provider(sonos.instance_id)
+    await scenario.idle()
 
-    class RecordingPlayer(Player):
-        """Player that records that it was unloaded."""
-
-        async def on_unload(self) -> None:
-            """Handle unload of the player."""
-            unloaded_players.append(self.player_id)
-            await super().on_unload()
-
-    def add_provider(instance_id: str) -> PlayerProvider:
-        provider_config = ProviderConfig(
-            values={},
-            type=ProviderType.PLAYER,
-            domain="test_player_provider",
-            instance_id=instance_id,
-            name="Test player provider",
+    assert sorted(detached) == ["RINCON_BEDROOM", "RINCON_KITCHEN"]
+    assert [protocol.protocol_id for protocol in scenario.mass.players.iter_protocols()] == [
+        "ap_kitchen"
+    ]
+    kitchen_state = scenario.player(kitchen_id)
+    assert kitchen_state is not None
+    assert kitchen_state.available
+    stored_players, stored_protocols = _stored(scenario)
+    if removed:
+        assert stored_players == [kitchen_id]
+        assert stored_protocols == ["ap_kitchen"]
+        assert scenario.player(bedroom_id) is None
+        # the queue of a player that is gone for good goes with it
+        assert await scenario.saved_queue(bedroom_id) is None
+    else:
+        assert stored_players == sorted([kitchen_id, bedroom_id, office_id])
+        assert stored_protocols == sorted(
+            ["RINCON_KITCHEN", "ap_kitchen", "RINCON_BEDROOM", "RINCON_OFFICE"]
         )
-        monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
-        provider = PlayerProvider(
-            mass_minimal,
-            manifest=ProviderManifest(
-                type=ProviderType.PLAYER,
-                domain="test_player_provider",
-                name="Test player provider",
-                description="Test player provider",
-                codeowners=["@music-assistant"],
-            ),
-            config=provider_config,
-        )
-        provider.available = True
-        mass_minimal._providers[instance_id] = provider
-        return provider
-
-    def add_player(
-        provider: PlayerProvider,
-        player_id: str,
-        enabled: bool = True,
-        initialized: bool = True,
-    ) -> RecordingPlayer:
-        player = RecordingPlayer(provider, player_id)
-        if initialized:
-            player.set_initialized()
-        if not enabled:
-            # config and state are kept in sync so the player reads as disabled
-            # even if its state gets recalculated from the config
-            player.config.enabled = False
-            player.state.enabled = False
-        mass_minimal.players._players[player_id] = player
-        return player
-
-    provider = add_provider("test_player_provider--instance")
-    other_provider = add_provider("test_player_provider--other")
-    add_player(provider, "enabled_player")
-    # a player provider may deliberately keep a disabled player registered (msx_bridge does)
-    add_player(provider, "disabled_player", enabled=False)
-    # a player that is still being set up when its provider goes away
-    add_player(provider, "initializing_player", initialized=False)
-    other_player = add_player(other_provider, "other_provider_player")
-    provider_player_ids = {"enabled_player", "disabled_player", "initializing_player"}
-    all_player_ids = provider_player_ids | {other_player.player_id}
-
-    try:
-        await mass_minimal.unload_provider(provider.instance_id, is_removed=is_removed)
-    finally:
-        # unregistering schedules a debounced state update for the players that remain
-        mass_minimal.cancel_timer(f"player_update_state_{other_player.player_id}")
-
-    assert set(unloaded_players) == provider_player_ids
-    assert set(mass_minimal.players._players) == {other_player.player_id}
-
-    # a removed provider takes the configs of all its players with it, including the ones
-    # its own players listing hides; a plain reload must leave every config untouched so
-    # the players come back with their settings
-    stored_configs = {
-        player_id
-        for player_id in all_player_ids
-        if mass_minimal.config.get(f"{CONF_PLAYERS}/{player_id}") is not None
-    }
-    assert stored_configs == ({other_player.player_id} if is_removed else all_player_ids)
-
-    # the queue controller is the other consumer of the removal flag: it drops the
-    # persisted queue of a player only when that player is gone for good
-    assert {
-        (mock_call.args[0], mock_call.kwargs["permanent"])
-        for mock_call in mass_minimal.player_queues.on_player_remove.call_args_list
-    } == {(player_id, is_removed) for player_id in provider_player_ids}
+        bedroom_state = scenario.player(bedroom_id)
+        assert bedroom_state is not None
+        assert not bedroom_state.available
+        assert await scenario.saved_queue(bedroom_id)
 
 
 class _TeardownProvider(PlayerProvider):
@@ -261,129 +220,129 @@ class _TeardownProvider(PlayerProvider):
         self.unloaded = True
 
 
-class _TeardownPlayer(Player):
-    """Player that records its teardown and optionally fails it."""
+class _TeardownProtocol(PlayerProtocol):
+    """Protocol that records its teardown and optionally fails it."""
 
-    def __init__(self, provider: PlayerProvider, player_id: str, fails: bool = False) -> None:
+    def __init__(self, provider: PlayerProvider, protocol_id: str, fails: bool = False) -> None:
         """
-        Initialize the player.
+        Initialize the protocol.
 
-        :param provider: Player provider this player belongs to.
-        :param player_id: ID of the player.
-        :param fails: Raise from on_unload to simulate a provider that fails to release it.
+        :param provider: Player provider this protocol belongs to.
+        :param protocol_id: ID of the protocol.
+        :param fails: Raise from on_detach to simulate a provider that fails to release it.
         """
-        super().__init__(provider, player_id)
-        self._attr_name = player_id
+        super().__init__(provider, protocol_id)
+        self._attr_name = protocol_id
         self._attr_available = True
         self._fails = fails
-        self.unloaded = False
+        self.detached = False
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        self.unloaded = True
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        self.detached = True
+        await super().on_detach()
         if self._fails:
             msg = "device is gone"
             raise RuntimeError(msg)
 
+    async def stop(self) -> None:
+        """Handle a stop command."""
 
-def _setup_player_provider(
+
+async def _setup_player_provider(
     mass: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
-    failing_player_id: str,
-) -> tuple[_TeardownProvider, list[_TeardownPlayer], list[EventType]]:
+    failing_protocol_id: str,
+) -> tuple[_TeardownProvider, list[_TeardownProtocol], list[EventType]]:
     """
-    Wire a minimal mass with one player provider owning three registered players.
+    Wire a minimal mass with one player provider owning three attached protocols.
 
     :param mass: Minimal MusicAssistant instance to wire up.
     :param monkeypatch: Pytest monkeypatch fixture.
-    :param failing_player_id: ID of the player whose on_unload must raise.
-    :return: The provider, its players (in registration order) and the recorded event types.
+    :param failing_protocol_id: ID of the protocol whose on_detach must raise.
+    :return: The provider, its protocols (in attach order) and the recorded event types.
     """
-    monkeypatch.setattr(
-        mass, "music", MagicMock(unschedule_provider_sync=AsyncMock()), raising=False
-    )
-    monkeypatch.setattr(mass, "player_queues", MagicMock(), raising=False)
+    provider = await _setup_bare_player_provider(mass, monkeypatch, _TeardownProvider)
     monkeypatch.setattr(mass, "_update_available_providers_cache", AsyncMock())
-    monkeypatch.setattr(mass.discovery, "on_provider_unload", MagicMock())
     signalled: list[EventType] = []
     monkeypatch.setattr(
         mass, "signal_event", lambda event, *_args, **_kwargs: signalled.append(event)
     )
-    monkeypatch.setattr(mass, "players", PlayerController(mass), raising=False)
-
-    provider = _TeardownProvider(
-        mass,
-        manifest=ProviderManifest(
-            type=ProviderType.PLAYER,
-            domain="test_player_provider",
-            name="Test player provider",
-            description="Test player provider",
-            codeowners=["@music-assistant"],
-        ),
-        config=ProviderConfig(
-            values={},
-            type=ProviderType.PLAYER,
-            domain="test_player_provider",
-            instance_id="test_player_provider--instance",
-            name="Test player provider",
-        ),
-    )
-    mass._providers[provider.instance_id] = provider
-
-    players = [
-        _TeardownPlayer(provider, player_id, fails=player_id == failing_player_id)
-        for player_id in ("player_a", "player_b", "player_c")
+    protocols = [
+        _TeardownProtocol(provider, protocol_id, fails=protocol_id == failing_protocol_id)
+        for protocol_id in ("device_a", "device_b", "device_c")
     ]
-    for player in players:
-        mass.players._players[player.player_id] = player
-        player.set_initialized()
-    return provider, players, signalled
+    for protocol in protocols:
+        await mass.players.register(protocol)
+    assert all(protocol.player is not None for protocol in protocols)
+    return provider, protocols, signalled
 
 
-async def test_failing_player_teardown_does_not_strand_the_others(
+async def test_failing_protocol_teardown_does_not_strand_the_others(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A player that fails to release must not block the rest of the provider unload."""
-    provider, players, signalled = _setup_player_provider(mass_minimal, monkeypatch, "player_a")
+    """A protocol that fails to release must not block the rest of the provider unload."""
+    provider, protocols, signalled = await _setup_player_provider(
+        mass_minimal, monkeypatch, "device_a"
+    )
+    player_ids = {protocol.player.player_id for protocol in protocols if protocol.player}
 
     await mass_minimal.unload_provider(provider.instance_id)
 
-    assert all(player.unloaded for player in players)
-    assert mass_minimal.players._players == {}
+    assert all(protocol.detached for protocol in protocols)
+    assert mass_minimal.players._protocols == {}
+    # the players stay, unavailable, until their device is found again
+    assert set(mass_minimal.players._players) == player_ids
+    assert not any(player.available for player in mass_minimal.players._players.values())
     assert provider.unloaded
     assert provider.instance_id not in mass_minimal._providers
     assert EventType.PROVIDERS_UPDATED in signalled
 
 
-async def test_failing_unregister_still_deregisters_the_provider(
+async def test_failing_detach_still_deregisters_the_provider(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unregister that raises must still leave the provider deregistered and signalled."""
-    provider, _players, signalled = _setup_player_provider(mass_minimal, monkeypatch, "player_a")
+    """A detach that raises must still leave the provider deregistered and signalled."""
+    provider, _protocols, signalled = await _setup_player_provider(
+        mass_minimal, monkeypatch, "device_a"
+    )
     monkeypatch.setattr(
         mass_minimal.players, "unregister", AsyncMock(side_effect=RuntimeError("teardown blew up"))
     )
 
-    await mass_minimal.unload_provider(provider.instance_id)
+    unload_error: Exception | None = None
+    try:
+        await mass_minimal.unload_provider(provider.instance_id)
+    except RuntimeError as err:
+        unload_error = err
 
     assert provider.instance_id not in mass_minimal._providers
     assert EventType.PROVIDERS_UPDATED in signalled
+    assert unload_error is None
 
 
 async def _setup_bare_player_provider(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> PlayerProvider:
-    """Put a bare player provider on a minimal mass instance, ready to be unloaded."""
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_class: type[PlayerProvider] = PlayerProvider,
+) -> Any:
+    """
+    Put a bare player provider on a minimal mass instance, ready to be unloaded.
+
+    :param mass: Minimal MusicAssistant instance to wire up.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param provider_class: The class of the provider to create.
+    """
     mass.players = PlayerController(mass)
     mass.music = MagicMock(unschedule_provider_sync=AsyncMock())
     # no queues exist in these tests, so get() must report a miss rather than a mock
     mass.player_queues = MagicMock(on_player_register=AsyncMock(), get=MagicMock(return_value=None))
     # discovery is not set up on the minimal instance and plays no part in these tests
     monkeypatch.setattr(mass.discovery, "on_provider_unload", MagicMock())
-    # a registration reads the player's cached power state, so the cache has to work here
-    # for it to run all the way to the point where the player enters the registry
+    # an attach reads the player's cached power state, so the cache has to work here
+    # for it to run all the way to the point where the protocol enters the registry
     await mass.cache.setup(await mass.config.get_core_config("cache"))
 
     provider_config = ProviderConfig(
@@ -394,7 +353,7 @@ async def _setup_bare_player_provider(
         name="Test player provider",
     )
     monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
-    provider = PlayerProvider(
+    provider = provider_class(
         mass,
         manifest=ProviderManifest(
             type=ProviderType.PLAYER,
@@ -410,73 +369,79 @@ async def _setup_bare_player_provider(
     return provider
 
 
-async def test_unload_provider_rejects_late_player_registration(
+async def test_unload_provider_rejects_late_protocol_attach(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A player provider on its way out can no longer register players."""
+    """A player provider on its way out can no longer register protocols."""
     provider = await _setup_bare_player_provider(mass_minimal, monkeypatch)
     monkeypatch.setattr(
-        "music_assistant.controllers.players.controller.enrich_device_mac_address",
+        "music_assistant.controllers.players.lifecycle.enrich_device_mac_address",
         AsyncMock(),
     )
 
-    late_player = Player(provider, "late_player")
+    late_protocol = _TeardownProtocol(provider, "late_device")
 
-    class LateRegisteringPlayer(Player):
-        """Player whose unload lets a discovery callback register another player."""
+    class LateAttachingProtocol(_TeardownProtocol):
+        """Protocol whose detach lets a discovery callback attach another protocol."""
 
-        async def on_unload(self) -> None:
-            """Handle unload of the player."""
-            await super().on_unload()
+        async def on_detach(self) -> None:
+            """Handle logic when the protocol is detached from its player."""
+            await super().on_detach()
             # stands in for a discovery that was already running when the unload started
-            # and only reaches the controller once the players have been unregistered
-            await self.mass.players.register_or_update(late_player)
+            # and only reaches the controller once the protocols have been detached
+            await self.mass.players.register(late_protocol)
 
-    player = LateRegisteringPlayer(provider, "existing_player")
-    player.set_initialized()
-    mass_minimal.players._players[player.player_id] = player
+    protocol = LateAttachingProtocol(provider, "existing_device")
+    await mass_minimal.players.register(protocol)
+    assert protocol.player is not None
+    existing_player_id = protocol.player.player_id
 
     await mass_minimal.unload_provider(provider.instance_id)
 
-    # without the guard the late player survives the unload with no provider behind it,
-    # so it is never unregistered and its on_unload never runs
-    assert mass_minimal.players._players == {}
+    # without the guard the late protocol survives the unload with no provider behind it,
+    # so it is never detached and its on_detach never runs
+    assert mass_minimal.players._protocols == {}
+    assert late_protocol.player is None
+    assert set(mass_minimal.players._players) == {existing_player_id}
 
 
-async def test_unload_provider_rejects_in_flight_player_registration(
+async def test_unload_provider_rejects_in_flight_protocol_attach(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A registration that is already running when the unload starts is dropped as well."""
+    """An attach that is already running when the unload starts is dropped as well."""
     provider = await _setup_bare_player_provider(mass_minimal, monkeypatch)
 
-    registration_started = asyncio.Event()
-    resume_registration = asyncio.Event()
+    attach_started = asyncio.Event()
+    resume_attach = asyncio.Event()
 
     async def _blocked_enrich(*_args: object, **_kwargs: object) -> None:
-        """Park the registration in one of its awaits until the test releases it."""
-        registration_started.set()
-        await resume_registration.wait()
+        """Park the attach in one of its awaits until the test releases it."""
+        attach_started.set()
+        await resume_attach.wait()
 
     monkeypatch.setattr(
-        "music_assistant.controllers.players.controller.enrich_device_mac_address",
+        "music_assistant.controllers.players.lifecycle.enrich_device_mac_address",
         _blocked_enrich,
     )
 
-    register = asyncio.create_task(mass_minimal.players.register(Player(provider, "in_flight")))
-    await asyncio.wait_for(registration_started.wait(), timeout=5)
+    protocol = _TeardownProtocol(provider, "in_flight")
+    attach = asyncio.create_task(mass_minimal.players.register(protocol))
+    await asyncio.wait_for(attach_started.wait(), timeout=5)
 
-    # start the unload with the registration parked, and release it once the provider is
-    # flagged: the player is not in the registry yet, so the unregister pass cannot see it
+    # start the unload with the attach parked, and release it once the provider is
+    # flagged: the protocol is not in the registry yet, so the detach pass cannot see it
     unload = asyncio.create_task(mass_minimal.unload_provider(provider.instance_id))
     async with asyncio.timeout(5):
         while not provider.unloading:
             await asyncio.sleep(0)
-    resume_registration.set()
-    await asyncio.gather(register, unload)
+    resume_attach.set()
+    await asyncio.gather(attach, unload)
 
+    assert mass_minimal.players._protocols == {}
     assert mass_minimal.players._players == {}
+    assert protocol.player is None
 
 
 async def test_unload_cancels_pending_post_load(
@@ -535,3 +500,31 @@ async def test_unload_cancels_pending_post_load(
     assert post_load_task.cancelled()
     assert resumed is False
     assert provider.instance_id not in mass_minimal._providers
+
+
+def _stored(server: Scenario) -> tuple[list[str], list[str]]:
+    """Return the ids of the stored player configs and of the stored protocol configs."""
+    config = server.mass.config
+    return sorted(config.get(CONF_PLAYERS, {})), sorted(config.get(CONF_PLAYER_PROTOCOLS, {}))
+
+
+def _record_detach(*protocols: FakeProtocol) -> list[str]:
+    """
+    Record the ids of the protocols that get detached.
+
+    :param protocols: The protocol objects to watch.
+    """
+    detached: list[str] = []
+
+    def _watch(protocol: FakeProtocol) -> None:
+        on_detach = protocol.on_detach
+
+        async def _on_detach() -> None:
+            detached.append(protocol.protocol_id)
+            await on_detach()
+
+        protocol.on_detach = _on_detach  # type: ignore[method-assign]
+
+    for protocol in protocols:
+        _watch(protocol)
+    return detached

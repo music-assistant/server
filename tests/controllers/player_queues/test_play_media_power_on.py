@@ -15,6 +15,8 @@ def _controller() -> Any:
     """Build a bare controller whose queue "q1" belongs to a switched off player."""
     ctrl: Any = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.mass = MagicMock()
+    ctrl._queue_data = {}
+    ctrl.mass.players.resolve_player_id = lambda player_id: player_id
     ctrl.mass.players.get_player.return_value.offline_by_power_control = True
     ctrl.mass.players._resolve_playback_owner = lambda player: player  # plays on its own
     ctrl.mass.players._power_on_switched_off_player = AsyncMock()

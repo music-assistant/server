@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.audio")
 
@@ -856,42 +856,45 @@ def get_bit_rate(fmt: AudioFormat) -> int:
 
 def resolve_output_player_ids(
     mass: MusicAssistant,
-    player_ids: Iterable[str],
+    protocol_ids: Iterable[str],
 ) -> set[str]:
     """
-    Resolve output destinations to their user-facing player identifiers.
+    Resolve output destinations a device protocol reports to their user-facing player identifiers.
 
     :param mass: Music Assistant instance.
-    :param player_ids: Player or protocol-player identifiers to resolve.
+    :param protocol_ids: Ids as a device protocol reports them (its group members): an id
+        names a protocol first, a player only when no protocol has it.
     :return: Deduplicated user-facing player identifiers.
     """
     resolved_ids: set[str] = set()
-    for player_id in player_ids:
-        player = mass.players.get_player(player_id)
-        resolved_ids.add(
-            player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        )
+    for protocol_id in protocol_ids:
+        player = mass.players.get_player_by_protocol(protocol_id)
+        resolved_ids.add(player.player_id if player else protocol_id)
     return resolved_ids
 
 
-def is_grouping_preventing_dsp(player: Player) -> bool:
+def is_grouping_preventing_dsp(player: PlayerProtocol) -> bool:
     """
     Check if grouping is preventing DSP from being applied to this leader/PlayerGroup.
 
     If this returns True, no DSP should be applied to the player.
     This function will not check if the Player is in a group, the caller should do that first.
+
+    :param player: The protocol that renders the audio of the player.
     """
-    # We require the caller to handle non-leader cases themselves since player.state.synced_to
+    # We require the caller to handle non-leader cases themselves since synced_to
     # can be unreliable in some edge cases
-    multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
-    child_count = len(player.state.group_members) if player.state.group_members else 0
+    multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
+    # a protocol that leads no group reports no members, or only itself
+    members = player.group_members
+    child_count = 0 if members == [player.protocol_id] else len(members)
 
     is_multiple_devices: bool
     if player.provider.domain == "player_group":
         # PlayerGroups have no leader, so having a child count of 1 means
         # the group actually contains only a single player.
         is_multiple_devices = child_count > 1
-    elif player.state.type == PlayerType.GROUP:
+    elif player.type == PlayerType.GROUP:
         # This is an group player external to Music Assistant.
         is_multiple_devices = True
     else:

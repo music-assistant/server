@@ -5,6 +5,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiosonos.exceptions import CannotConnect
 from zeroconf import ServiceStateChange
 
 from music_assistant.mass import MusicAssistant
@@ -31,17 +32,17 @@ def _bind_provider(mass: MusicAssistant | MagicMock) -> SonosPlayerProvider:
 def _make_provider(enabled: bool = False) -> tuple[SonosPlayerProvider, MagicMock]:
     """Create a Sonos provider with mocked discovery dependencies."""
     mass = MagicMock()
-    mass.config.get_raw_player_config_value.return_value = enabled
-    mass.players.get_player.return_value = None
+    mass.players.wants_protocol.return_value = enabled
+    mass.players.get_protocol.return_value = None
     return _bind_provider(mass), mass
 
 
 def _bind_discovering_provider(mass: MusicAssistant) -> SonosPlayerProvider:
     """Create a Sonos provider that discovers players on the real timer machinery."""
     mass.config = MagicMock()
-    mass.config.get_raw_player_config_value.return_value = True
     mass.players = MagicMock()
-    mass.players.get_player.return_value = None
+    mass.players.wants_protocol.return_value = True
+    mass.players.get_protocol.return_value = None
     mass.streams = MagicMock()
     return _bind_provider(mass)
 
@@ -82,9 +83,9 @@ async def test_disabled_discovery_logs_again_after_reenable(
 
     with caplog.at_level(logging.DEBUG, logger=provider.logger.name):
         await provider.on_mdns_service_state_change(SERVICE_NAME, ServiceStateChange.Added, info)
-        mass.config.get_raw_player_config_value.return_value = True
+        mass.players.wants_protocol.return_value = True
         await provider.on_mdns_service_state_change(SERVICE_NAME, ServiceStateChange.Updated, info)
-        mass.config.get_raw_player_config_value.return_value = False
+        mass.players.wants_protocol.return_value = False
         await provider.on_mdns_service_state_change(SERVICE_NAME, ServiceStateChange.Updated, info)
 
     mass.call_later.assert_called_once()
@@ -100,7 +101,7 @@ async def test_a_player_set_up_in_the_meantime_is_not_set_up_again(
 ) -> None:
     """Test a delayed setup of a player that is registered by then is skipped quietly."""
     provider, mass = _make_provider(enabled=True)
-    mass.players.get_player.return_value = MagicMock(spec=SonosPlayer)
+    mass.players.get_protocol.return_value = MagicMock(spec=SonosPlayer)
     get_discovery_info = AsyncMock()
     monkeypatch.setattr(
         "music_assistant.providers.sonos.provider.get_discovery_info", get_discovery_info
@@ -199,11 +200,86 @@ async def test_a_withdrawn_announcement_is_handed_to_the_player() -> None:
     player = MagicMock(spec=SonosPlayer)
     goodbye = object()
     player.on_mdns_goodbye = MagicMock(return_value=goodbye)
-    mass.players.get_player.return_value = player
+    mass.players.get_protocol.return_value = player
 
     await provider.on_mdns_service_state_change(
         "RINCON_C438750D189C01400@Move 2._sonos._tcp.local.", ServiceStateChange.Removed, None
     )
 
-    mass.players.get_player.assert_called_once_with("RINCON_C438750D189C01400")
+    mass.players.get_protocol.assert_called_once_with("RINCON_C438750D189C01400")
     mass.create_task.assert_called_once_with(goodbye)
+
+
+def _manual_ip_provider(attached: bool = False, wanted: bool = True) -> SonosPlayerProvider:
+    """
+    Create a provider with one speaker configured by IP address.
+
+    :param attached: Whether the speaker at that address has an attached protocol.
+    :param wanted: Whether the server wants the speaker.
+    """
+    mass = MagicMock()
+    mass.players.get_protocol.return_value = MagicMock(spec=SonosPlayer) if attached else None
+    mass.players.wants_protocol.return_value = wanted
+    provider = _bind_provider(mass)
+    provider.config = MagicMock()
+    provider.config.get_value.return_value = ["192.168.1.60"]
+    return provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("attached", "wanted"), [(True, True), (False, False)])
+async def test_discovery_skips_a_manual_speaker_that_is_attached_or_not_wanted(
+    monkeypatch: pytest.MonkeyPatch, attached: bool, wanted: bool
+) -> None:
+    """Discovering again leaves an attached speaker alone and sets up no disabled one."""
+    provider = _manual_ip_provider(attached=attached, wanted=wanted)
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info",
+        AsyncMock(return_value={"device": {"id": PLAYER_ID}}),
+    )
+    player_class = MagicMock()
+    monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
+
+    await provider.discover_players()
+
+    player_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discovery_sets_up_a_manual_speaker_without_an_attached_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A removed or re-enabled speaker at a configured address is set up again."""
+    provider = _manual_ip_provider()
+    discovery_info = {"device": {"id": PLAYER_ID}}
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info",
+        AsyncMock(return_value=discovery_info),
+    )
+    player_class = MagicMock()
+    player_class.return_value.setup = AsyncMock()
+    monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
+
+    await provider.discover_players()
+
+    player_class.assert_called_once_with(provider, PLAYER_ID, discovery_info=discovery_info)
+    player_class.return_value.setup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discovery_goes_on_when_a_manual_speaker_can_not_be_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A speaker that refuses the connection does not fail the discovery."""
+    provider = _manual_ip_provider()
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info",
+        AsyncMock(return_value={"device": {"id": PLAYER_ID}}),
+    )
+    player_class = MagicMock()
+    player_class.return_value.setup = AsyncMock(side_effect=CannotConnect(OSError("refused")))
+    monkeypatch.setattr("music_assistant.providers.sonos.provider.SonosPlayer", player_class)
+
+    await provider.discover_players()
+
+    player_class.return_value.setup.assert_awaited_once()

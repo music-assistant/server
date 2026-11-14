@@ -142,7 +142,7 @@ class ChromecastDashboards:
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, when dashboard is NOW_PLAYING.
         """
-        player = self.mass.players.get_player(device_id)
+        player = self.provider.get_protocol(device_id)
         castplayer = player if isinstance(player, ChromecastPlayer) else None
         force_launch = False
         if castplayer is not None:
@@ -205,7 +205,7 @@ class ChromecastDashboards:
 
     async def _get_or_create_chromecast(self, device_id: str) -> pychromecast.Chromecast:
         """Resolve a device_id to a connected Chromecast, reusing an existing connection."""
-        castplayer = self.mass.players.get_player(device_id)
+        castplayer = self.provider.get_protocol(device_id)
         if isinstance(castplayer, ChromecastPlayer) and castplayer.cc.socket_client.is_connected:
             return castplayer.cc
 
@@ -239,7 +239,7 @@ class ChromecastDashboards:
 
     def _get_existing_chromecast(self, device_id: str) -> pychromecast.Chromecast | None:
         """Return an already-connected Chromecast for device_id, without opening a new one."""
-        castplayer = self.mass.players.get_player(device_id)
+        castplayer = self.provider.get_protocol(device_id)
         if isinstance(castplayer, ChromecastPlayer) and castplayer.cc.socket_client.is_connected:
             return castplayer.cc
 

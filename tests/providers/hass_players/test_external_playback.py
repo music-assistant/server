@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -131,7 +132,9 @@ async def test_announcement_does_not_disturb_source_detection(player: HomeAssist
     player._update_attributes(_external_attributes())
     assert player._attr_active_source == "External"
 
-    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+    # the core flags the announcement on the player of the entity
+    extra_data = {ATTR_ANNOUNCEMENT_IN_PROGRESS: True}
+    player._player = SimpleNamespace(extra_data=extra_data)  # type: ignore[assignment]
     player.update_from_compressed_state(
         {
             "s": "playing",
@@ -144,7 +147,7 @@ async def test_announcement_does_not_disturb_source_detection(player: HomeAssist
     assert player._attr_active_source == "External"
 
     # an unrelated update after the announcement may not pick the announcement up either
-    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+    extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
     player.update_from_compressed_state({"s": "playing", "a": {"volume_level": 0.5}})
 
     assert player._reports_stream_url is False

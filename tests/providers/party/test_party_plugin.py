@@ -302,7 +302,9 @@ async def test_skip_vote_without_item_counts_for_playing_track() -> None:
     assert current_item.extra_attributes["party_skip_votes"] == 1
 
 
-def _create_session_test_plugin(mode: str, guest_access: bool = True) -> PartyPlugin:
+def _create_session_test_plugin(
+    mode: str, guest_access: bool = True, player: str = CONF_PARTY_PLAYER_AUTO
+) -> PartyPlugin:
     """Create a party plugin with a real get_party_player for session tests."""
     plugin = PartyPlugin.__new__(PartyPlugin)
     plugin.mass = MagicMock()
@@ -313,7 +315,7 @@ def _create_session_test_plugin(mode: str, guest_access: bool = True) -> PartyPl
     config_values = {
         CONF_ENABLE_GUEST_ACCESS: guest_access,
         CONF_PARTY_MODE: mode,
-        CONF_PARTY_PLAYER: CONF_PARTY_PLAYER_AUTO,
+        CONF_PARTY_PLAYER: player,
     }
     plugin.config.get_value.side_effect = config_values.__getitem__
     return plugin
@@ -381,6 +383,26 @@ async def test_get_party_player_auto_select_prefers_playing_then_paused() -> Non
 
 
 @pytest.mark.asyncio
+async def test_configured_party_player_is_found_by_its_legacy_id() -> None:
+    """A configured party player that answers to another id since it was stored plays by it."""
+    plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value, player="airplay_kitchen")
+    legacy_ids = {"airplay_kitchen": "pl_kitchen"}
+    cast("MagicMock", plugin.mass.players.resolve_player_id).side_effect = lambda player_id: (
+        legacy_ids.get(player_id, player_id)
+    )
+    session = MagicMock()
+
+    with patch(
+        "music_assistant.providers.party.SharedPlaybackSession.create_venue",
+        AsyncMock(return_value=session),
+    ) as create_venue:
+        assert await plugin.get_party_player() == "pl_kitchen"
+        assert await plugin._get_session() is session
+
+    create_venue.assert_awaited_once_with(plugin.mass, "pl_kitchen")
+
+
+@pytest.mark.asyncio
 async def test_listen_in_without_session_raises() -> None:
     """Listen-in is rejected when no session is available (venue auto mode)."""
     plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)
@@ -409,6 +431,27 @@ async def test_listen_in_attaches_guest_player() -> None:
 
     assert result == {"success": True, "queue_id": "sendspin_virtual_party"}
     session.add_guest_listener.assert_awaited_once_with("web_player_1")
+
+
+@pytest.mark.asyncio
+async def test_session_survives_an_outage_and_ends_when_its_player_is_gone() -> None:
+    """A session outlives its player being unavailable and is closed once the player is gone."""
+    plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)
+    session = MagicMock()
+    session.player_id = "venue_player"
+    session.close = AsyncMock()
+    plugin._session = session
+    player = MagicMock()
+    player.available = False
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.return_value = player
+
+    assert await plugin._get_session() is session
+    session.close.assert_not_awaited()
+
+    get_player.return_value = None
+    assert await plugin._get_session() is None
+    session.close.assert_awaited_once()
 
 
 @pytest.mark.parametrize("mode", [SharedPlaybackMode.VENUE.value, SharedPlaybackMode.REMOTE.value])

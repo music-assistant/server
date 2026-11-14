@@ -20,7 +20,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
-    PlayerType,
+    ProtocolRole,
     RepeatMode,
 )
 from music_assistant_models.errors import InvalidCommand, MusicAssistantError
@@ -36,12 +36,9 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import (
-    POSITION_JUMP_THRESHOLD,
-    DeviceInfo,
-    Player,
-    PlayerMedia,
-)
+from music_assistant.models.player import DeviceInfo, PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
+from music_assistant.models.player_state import POSITION_JUMP_THRESHOLD
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -68,8 +65,8 @@ PROTOCOL_ONLY_MODELS = (
     # Device models where slimproto is only a secondary protocol on a device with
     # its own (native) identity: WiiM/LinkPlay devices (ModelName=WiiM Player) and
     # the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as
-    # squeezelite players. These register as PlayerType.PROTOCOL and get linked
-    # to the device's visible player.
+    # squeezelite players. These attach as an audio protocol to the player of
+    # the device.
     "wiim",
     "raopbridge",
     "castbridge",
@@ -83,17 +80,17 @@ def is_protocol_only_device(device_model: str) -> bool:
     return any(model.lower() in device_model_lower for model in PROTOCOL_ONLY_MODELS)
 
 
-class SqueezelitePlayer(Player):
+class SqueezelitePlayer(PlayerProtocol):
     """Squeezelite Player implementation."""
 
     def __init__(
         self,
         provider: SqueezelitePlayerProvider,
-        player_id: str,
+        protocol_id: str,
         client: SlimClient,
     ) -> None:
         """Initialize the Squeezelite Player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.client = client
         self._provider: SqueezelitePlayerProvider = provider
         # Set static player attributes
@@ -106,13 +103,12 @@ class SqueezelitePlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
-        # Protocol players are powered on/off with the stream and expose no power
+        # Audio protocols are powered on/off with the stream and expose no power
         # control; full players get native power support (slimproto power can e.g.
         # drive a GPIO/script wired to an amplifier).
         if is_protocol_only_device(client.device_model):
-            self._attr_type = PlayerType.PROTOCOL
+            self._attr_role = ProtocolRole.AUDIO
         else:
-            self._attr_type = PlayerType.PLAYER
             self._attr_supported_features.add(PlayerFeature.POWER)
         self._attr_can_group_with = {provider.instance_id}
         max_sr = int(self.client.max_sample_rate)
@@ -142,30 +138,38 @@ class SqueezelitePlayer(Player):
         await self._set_preset_items()
         await self._set_display()
 
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        if (stream := self.multi_client_stream) is not None:
+            self.multi_client_stream = None
+            await stream.stop()
+        await super().on_detach()
+
     async def setup(self) -> None:
-        """Set up the player."""
-        player_id = self.client.player_id
-        self.logger.info("Player %s connected", self.client.name or player_id)
+        """Set up the player and register it."""
+        protocol_id = self.client.player_id
+        self.logger.info("Player %s connected", self.client.name or protocol_id)
         # update all dynamic attributes
         self.update_attributes()
         # restore volume state
         init_volume = cast(
             "int | None",
-            self.mass.config.get_raw_player_config_value(player_id, CONF_STORED_VOLUME),
+            self.mass.config.get_protocol_value(protocol_id, CONF_STORED_VOLUME),
         )
         if init_volume is None:
             # older versions kept it in an (expiring) cache entry
             last_state = await self.mass.cache.get(
-                key=player_id,
+                key=protocol_id,
                 provider=self.provider.instance_id,
                 category=CACHE_CATEGORY_PREV_STATE,
             )
             init_volume = last_state[1] if last_state else DEFAULT_PLAYER_VOLUME
         await self.client.stop()
         await self.client.volume_set(init_volume)
-        # carries a volume from the legacy cache over before that entry expires
+        await self.mass.players.register(self)
+        # carries a volume from the legacy cache over before that entry expires; only after the
+        # attach, which creates the record of a new protocol
         self._store_volume()
-        await self.mass.players.register_or_update(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -221,7 +225,7 @@ class SqueezelitePlayer(Player):
         self._paused_at = 0.0
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
-                if self.type == PlayerType.PROTOCOL:
+                if self.role == ProtocolRole.AUDIO:
                     tg.create_task(client.power(False))
                 else:
                     tg.create_task(client.stop())
@@ -230,14 +234,14 @@ class SqueezelitePlayer(Player):
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         if self.group_members:
-            if self._restream_needed or self._group_needs_restream():
+            if self.player is not None and (self._restream_needed or self._group_needs_restream()):
                 # a member was (re)added or its stream is gone: LMS takes the stream-idle
                 # path (re-stream, then coordinated _syncStart), not _Resume
                 self._restream_needed = False
                 # shares the regroup restart's id, so back-to-back restarts collapse
                 self.mass.create_task(
-                    self.mass.players.cmd_resume(self.player_id),
-                    task_id=f"squeezelite_regroup_resume_{self.player_id}",
+                    self.mass.players.cmd_resume(self.player.player_id),
+                    task_id=f"squeezelite_regroup_resume_{self.protocol_id}",
                     abort_existing=True,
                 )
                 return
@@ -287,7 +291,9 @@ class SqueezelitePlayer(Player):
 
         if not self.group_members:
             # Simple, single-player playback
-            stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+            stream_url = await self.provider.mass.streams.resolve_stream_url(
+                self.protocol_id, media
+            )
             await self._handle_play_url_for_slimplayer(
                 self.client,
                 url=stream_url,
@@ -323,7 +329,7 @@ class SqueezelitePlayer(Player):
         # select audio source, we force flow mode
         # because multi-client streaming does not support enqueueing
         audio_source = self.mass.streams.get_stream(
-            media, master_audio_format, player_id=self.player_id, force_flow_mode=True
+            media, master_audio_format, player_id=self.protocol_id, force_flow_mode=True
         )
 
         # start the stream task
@@ -333,7 +339,7 @@ class SqueezelitePlayer(Player):
             queue_id=media.source_id,
             session_id=get_media_session_id(media),
         )
-        base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}"
+        base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.protocol_id}"
 
         # Count how many clients will connect
         expected_clients = len(list(self._get_sync_clients()))
@@ -360,7 +366,7 @@ class SqueezelitePlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         await self._handle_play_url_for_slimplayer(
             self.client,
             url=stream_url,
@@ -394,17 +400,17 @@ class SqueezelitePlayer(Player):
                             # stop the player if it is playing
                             await sync_client.stop()
             # if no children remain, remove ourselves from the list too
-            remaining = [x for x in self._attr_group_members if x != self.player_id]
+            remaining = [x for x in self._attr_group_members if x != self.protocol_id]
             if not remaining:
                 self._attr_group_members.clear()
 
         # handle additions
         players_added = False
         for player_id in player_ids_to_add or []:
-            if player_id == self.player_id or player_id in self.group_members:
+            if player_id == self.protocol_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player = cast("SqueezelitePlayer | None", self.mass.players.get_player(player_id))
+            child_player = cast("SqueezelitePlayer | None", self.provider.get_protocol(player_id))
             if not child_player:
                 # should not happen, but guard against it
                 continue
@@ -414,20 +420,24 @@ class SqueezelitePlayer(Player):
             self._attr_group_members.append(player_id)
             players_added = True
         # ensure the sync leader (self) is the first item in group_members
-        if self._attr_group_members and self.player_id not in self._attr_group_members:
-            self._attr_group_members.insert(0, self.player_id)
+        if self._attr_group_members and self.protocol_id not in self._attr_group_members:
+            self._attr_group_members.insert(0, self.protocol_id)
 
         # always update the state after modifying group members
         self.update_state()
 
-        if (players_added or player_ids_to_remove) and self.state.current_media:
+        if (
+            (players_added or player_ids_to_remove)
+            and self.player is not None
+            and self.player.current_media
+        ):
             if self._attr_playback_state == PlaybackState.PLAYING:
                 # restart stream session if it was already playing
                 # for now, we dont support late joining into an existing stream
                 # a back-to-back restart reads the position of the one before it, so the newest wins
                 self.mass.create_task(
-                    self.mass.players.cmd_resume(self.player_id),
-                    task_id=f"squeezelite_regroup_resume_{self.player_id}",
+                    self.mass.players.cmd_resume(self.player.player_id),
+                    task_id=f"squeezelite_regroup_resume_{self.protocol_id}",
                     abort_existing=True,
                 )
             else:
@@ -439,12 +449,12 @@ class SqueezelitePlayer(Player):
         """
         Remove a group member whose slimproto connection dropped.
 
-        :param player_id: The player id of the disconnected member.
+        :param player_id: The protocol id of the disconnected member.
         """
         if player_id not in self._attr_group_members:
             return
         self._attr_group_members.remove(player_id)
-        if self._attr_group_members == [self.player_id]:
+        if self._attr_group_members == [self.protocol_id]:
             self._attr_group_members.clear()
         self.update_state()
 
@@ -484,6 +494,9 @@ class SqueezelitePlayer(Player):
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.client.device_address)
         # player_id is the MAC address in slimproto
         self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.client.player_id)
+        # several squeezelite instances on one host share its IP (and possibly its MAC), and
+        # each tells its own slimproto id: that id keeps the instances apart
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self.client.player_id)
         if (
             old_state != PlaybackState.PLAYING
             and self._attr_playback_state == PlaybackState.PLAYING
@@ -539,8 +552,9 @@ class SqueezelitePlayer(Player):
         )
         queue = None
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
-            self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
-            self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
+            if self.player is not None:
+                self.player.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
+                self.player.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
         # live streams and announcements start on a smaller buffer (KB, tenths of a second) to cut
         # latency; a short announcement would never fill the default 2 second output buffer
         low_latency_stream = media.media_type in (
@@ -596,7 +610,7 @@ class SqueezelitePlayer(Player):
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
         # only involve the state machine when the reported position diverged (e.g. buffering/seek)
-        published_position = self.state.corrected_elapsed_time
+        published_position = self.player.corrected_elapsed_time if self.player is not None else None
         if (
             published_position is None
             or abs(published_position - self.client.elapsed_seconds) > POSITION_JUMP_THRESHOLD
@@ -648,7 +662,9 @@ class SqueezelitePlayer(Player):
         # event data is str, not dict
         # TODO: fix this in the aioslimproto lib
         event_data = cast("str", event.data)
-        queue = self.mass.player_queues.get_active_queue(self.player_id)
+        if self.player is None:
+            return
+        queue = self.mass.player_queues.get_active_queue(self.player.player_id)
         if not queue:
             return
         if event_data.startswith("button preset_") and event_data.endswith(".single"):
@@ -707,8 +723,8 @@ class SqueezelitePlayer(Player):
         """Set the presets for a player."""
         preset_items: list[SlimPreset] = []
         for preset_index in range(1, 11):
-            if preset_conf := self.mass.config.get_raw_player_config_value(
-                self.player_id, f"preset_{preset_index}"
+            if preset_conf := self.mass.config.get_protocol_value(
+                self.protocol_id, f"preset_{preset_index}"
             ):
                 try:
                     preset_uri = cast("str", preset_conf)
@@ -739,13 +755,13 @@ class SqueezelitePlayer(Player):
 
     async def _set_display(self) -> None:
         """Set the display config for a player."""
-        display_enabled = self.mass.config.get_raw_player_config_value(
-            self.player_id,
+        display_enabled = self.mass.config.get_protocol_value(
+            self.protocol_id,
             CONF_ENTRY_DISPLAY.key,
             CONF_ENTRY_DISPLAY.default_value,
         )
-        visualization = self.mass.config.get_raw_player_config_value(
-            self.player_id,
+        visualization = self.mass.config.get_protocol_value(
+            self.protocol_id,
             CONF_ENTRY_VISUALIZATION.key,
             CONF_ENTRY_VISUALIZATION.default_value,
         )
@@ -757,7 +773,7 @@ class SqueezelitePlayer(Player):
         """Get all sync clients for a player."""
         yield self.client
         for member_id in self.group_members:
-            if member_id == self.player_id:  # ← Skip if it's the leader itself
+            if member_id == self.protocol_id:  # ← Skip if it's the leader itself
                 continue
             if self._provider.slimproto and (
                 slimplayer := self._provider.slimproto.get_player(member_id)
@@ -767,14 +783,12 @@ class SqueezelitePlayer(Player):
     def _get_member_output_codec(self, member_player_id: str, media: PlayerMedia) -> str:
         """Return the stream format to request for a sync group member."""
         if media.media_type == MediaType.AUDIO_SOURCE:
-            member_player = self.mass.players.get_player(member_player_id)
+            member_player = self.provider.get_protocol(member_player_id)
             if member_player and member_player.config.get_value(
                 CONF_PREFER_WAV_FOR_LIVE_SOURCES, default=False
             ):
                 return "wav"
-        return self.mass.config.get_raw_player_config_value(
-            member_player_id, CONF_OUTPUT_CODEC, "flac"
-        )
+        return self.mass.config.get_protocol_value(member_player_id, CONF_OUTPUT_CODEC, "flac")
 
     def _sync_elapsed_after_flush(self) -> None:
         """Drop an old-stream heartbeat that landed before the flush."""
@@ -782,9 +796,7 @@ class SqueezelitePlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
 
     def _store_volume(self) -> None:
-        """Keep the current volume in the player config so it survives a reconnect."""
+        """Keep the current volume in the protocol config so it survives a reconnect."""
         volume = self.client.volume_level
-        if volume != self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_STORED_VOLUME
-        ):
-            self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
+        if volume != self.mass.config.get_protocol_value(self.protocol_id, CONF_STORED_VOLUME):
+            self.mass.config.set_protocol_value(self.protocol_id, CONF_STORED_VOLUME, volume)

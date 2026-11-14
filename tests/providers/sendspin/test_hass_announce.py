@@ -26,7 +26,8 @@ ENTITY_ID = "media_player.kitchen_speaker"
 
 def _player(*, player_id: str = MAC, hello_mac: str | None = None) -> SendspinPlayer:
     player = SendspinPlayer.__new__(SendspinPlayer)
-    player._player_id = player_id
+    player._protocol_id = player_id
+    player._player = None
     player.api = cast(
         "SendspinClient",
         SimpleNamespace(

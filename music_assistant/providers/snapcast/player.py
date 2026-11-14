@@ -12,7 +12,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.snapcast.constants import (
     SNAPCLIENT_LIVENESS_POLL_INTERVAL,
     SNAPCLIENT_STALE_THRESHOLD,
@@ -21,6 +21,7 @@ from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
 if TYPE_CHECKING:
+    from music_assistant.models.player import Player
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto, SnapstreamProto
 
@@ -54,18 +55,18 @@ class TrackedPlayerState(TypedDict, total=False):
     grp_member_avail: list[bool]
 
 
-class SnapCastPlayer(Player):
+class SnapCastPlayer(PlayerProtocol):
     """SnapCastPlayer."""
 
     def __init__(
         self,
         provider: SnapCastProvider,
-        player_id: str,
+        protocol_id: str,
         snap_client: SnapclientProto,
     ) -> None:
         """Init."""
         self.snap_client = snap_client
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
 
         # Snapcast stream format is fixed for a provider instance (from advanced settings)
         stream_format = provider.stream_audio_format
@@ -94,9 +95,9 @@ class SnapCastPlayer(Player):
 
     @property
     def synced_to(self) -> str | None:
-        """Return the id of the player this player is synced to (sync leader)."""
+        """Return the id of the protocol this player is synced to (sync leader)."""
         grp_name = self.snap_group_name
-        if grp_name == self.player_id:
+        if grp_name == self.protocol_id:
             # is group leader
             return None
 
@@ -104,7 +105,7 @@ class SnapCastPlayer(Player):
         if len(grp_player_ids) < 2 or grp_name not in grp_player_ids:
             return None
 
-        if leader_player := self.mass.players.get_player(grp_name):
+        if leader_player := self.provider.get_protocol(grp_name):
             return grp_name if leader_player.available else None
 
         return None
@@ -116,17 +117,17 @@ class SnapCastPlayer(Player):
             return []
 
         grp_name = self.snap_group_name
-        if grp_name != self.player_id:
+        if grp_name != self.protocol_id:
             # only group leaders can have members
             return []
 
         player_ids = self._get_player_ids_of_curr_group()
-        if self.player_id not in player_ids:
+        if self.protocol_id not in player_ids:
             # should not happen, unless the current
             # state repr is invalid
             return []
 
-        player_ids.remove(self.player_id)
+        player_ids.remove(self.protocol_id)
         connected = [
             player_id
             for player_id in player_ids
@@ -134,14 +135,20 @@ class SnapCastPlayer(Player):
             and client.connected
         ]
         if connected:
-            return [self.player_id, *connected]
+            return [self.protocol_id, *connected]
 
         return []
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
-        if self.active_output_protocol and self.active_output_protocol != "native":
+        player = self.player
+        # asked of the attached protocols: the state of the player is derived from this
+        if (
+            player is not None
+            and (output := player.resolve_output_protocol()) is not None
+            and output is not player.own_protocol
+        ):
             # native volume only affects the snapclient's own stream, not whatever
             # protocol is actually driving the output right now (support#6468)
             return self._attr_supported_features - {
@@ -178,6 +185,9 @@ class SnapCastPlayer(Player):
         # Only add MAC address if it's valid (not 00:00:00:00:00:00)
         if mac and is_valid_mac_address(mac):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac)
+        # several snapclient instances on one host share its IP and MAC, and each has a
+        # client id of its own (the host id, with the instance number from the second one)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, self.snap_client.identifier)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.SET_MEMBERS,
@@ -189,8 +199,18 @@ class SnapCastPlayer(Player):
         # poll to detect abruptly powered-off clients (see _is_alive)
         self._attr_needs_poll = True
         self._attr_poll_interval = SNAPCLIENT_LIVENESS_POLL_INTERVAL
+
+    async def on_attach(self, player: Player) -> None:
+        """Start processing the state updates of the snapclient."""
         if not self._update_worker:
             self._update_worker = self.mass.create_task(self._player_update_worker())
+
+    async def on_detach(self) -> None:
+        """Stop processing the state updates of the snapclient."""
+        await super().on_detach()
+        if self._update_worker:
+            self._update_worker.cancel()
+            self._update_worker = None
 
     async def poll(self) -> None:
         """Poll the snapserver so abruptly powered-off clients are detected."""
@@ -205,7 +225,7 @@ class SnapCastPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
-        player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
+        player_group = await self.snap_provider.ensure_player_owned_group(self.protocol_id)
         assert player_group is not None  # for type checking
         ma_stream = self.active_snap_ma_stream
         await player_group.set_stream("default")
@@ -238,7 +258,7 @@ class SnapCastPlayer(Player):
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
         # get the group owned by this player (identified by the group name)
-        player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
+        player_group = await self.snap_provider.ensure_player_owned_group(self.protocol_id)
 
         if player_group is None:
             return
@@ -252,22 +272,28 @@ class SnapCastPlayer(Player):
         ]
 
         curr_stream_id = player_group.stream
-        sync_group_player: Player | None = None
-        if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
-            media = curr_ma_stream.media
-            media_src_id = media.source_id or ""
-            if media_src_id.startswith(SGP_PREFIX):
-                sync_group_player = self.mass.players.get_player(media_src_id)
-        if sync_group_player and self.player_id in (player_ids_to_remove or []):
-            # players in sync_group_player.group_members will be rejoined
+        sync_group_members: set[str] | None = None
+        if (
+            (curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id))
+            and (media_src_id := curr_ma_stream.media.source_id)
+            and (source_player := self.mass.players.get_player(media_src_id))
+            and (source_protocol := source_player.own_protocol)
+            and source_protocol.protocol_id.startswith(SGP_PREFIX)
+        ):
+            # the members of a sync group are players, these ids are the protocols of them
+            sync_group_members = {
+                protocol_id
+                for protocol_id in curr_ma_player_ids
+                if (member := self.mass.players.get_player_by_protocol(protocol_id))
+                and member.player_id in source_player.group_members
+            }
+        if sync_group_members is not None and self.protocol_id in (player_ids_to_remove or []):
+            # players in sync_group_members will be rejoined
             # remove others first
             for id_to_remove in player_ids_to_remove or []:
-                if id_to_remove == self.player_id:
+                if id_to_remove == self.protocol_id:
                     continue
-                if (
-                    id_to_remove in curr_ma_player_ids
-                    and id_to_remove not in sync_group_player.group_members
-                ):
+                if id_to_remove in curr_ma_player_ids and id_to_remove not in sync_group_members:
                     await self.snap_provider.isolate_player_to_dedicated_group(
                         id_to_remove, target_stream_id="default"
                     )
@@ -275,7 +301,7 @@ class SnapCastPlayer(Player):
             # split remaining group into individual groups,
             # keeps the current stream, set this group to default stream
             await self.snap_provider.isolate_player_to_dedicated_group(
-                target_player_id=self.player_id,
+                target_player_id=self.protocol_id,
                 target_stream_id="default",
                 others_stream_id=curr_stream_id,
             )
@@ -296,9 +322,10 @@ class SnapCastPlayer(Player):
 
         # some caller require instant state updates before returning
         async with self._state_update_lock:
+            was_available = self._attr_available
             call_update = await self._process_snapcast_client_state()
         if call_update:
-            await self._publish_state()
+            await self._publish_state(was_available)
 
         self.snap_provider._update_group_callbacks(poke=True)
 
@@ -309,7 +336,7 @@ class SnapCastPlayer(Player):
             raise RuntimeError(msg)
 
         ma_stream = await self.snap_provider.get_snapcast_media_stream(
-            media, filter_settings_owner=self.player_id
+            media, filter_settings_owner=self.protocol_id
         )
 
         if ma_stream is None or ma_stream.stream_id is None:
@@ -320,7 +347,7 @@ class SnapCastPlayer(Player):
         # e.g. DSP settings require a restart
         await self._snap_ma_stream.start_stream(allow_restart=True)
 
-        player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
+        player_group = await self.snap_provider.ensure_player_owned_group(self.protocol_id)
         assert player_group is not None  # for type checking
         if player_group.stream == ma_stream.stream_id:
             # leaving the stream drops the old audio the clients still have buffered
@@ -344,7 +371,11 @@ class SnapCastPlayer(Player):
         prev_stream = self.active_snap_ma_stream
         # the music keeps streaming unheard while the group plays the clip, so the queue
         # restarts where the clip began instead of rejoining the live stream
-        resume_queue = None if was_synced_to else self.mass.player_queues.get(self.player_id)
+        resume_queue = (
+            None
+            if was_synced_to or self.player is None
+            else self.mass.player_queues.get(self.player.player_id)
+        )
         resume_item = (
             resume_queue.current_item
             if resume_queue and resume_queue.active and resume_queue.state == PlaybackState.PLAYING
@@ -361,13 +392,13 @@ class SnapCastPlayer(Player):
             resume_item = None
         # pin the music stream, else the idle timer stops it before the announcement ends
         if prev_stream:
-            prev_stream.pin(self.player_id)
+            prev_stream.pin(self.protocol_id)
 
         try:
             ma_stream = await self.snap_provider.get_snapcast_media_stream(
-                announcement, filter_settings_owner=self.player_id
+                announcement, filter_settings_owner=self.protocol_id
             )
-            player_group = await self.snap_provider.ensure_player_owned_group(self.player_id)
+            player_group = await self.snap_provider.ensure_player_owned_group(self.protocol_id)
 
             if ma_stream is None or ma_stream.stream_id is None or player_group is None:
                 return
@@ -415,8 +446,12 @@ class SnapCastPlayer(Player):
         finally:
             self._announcement_clip_playing = False
             if prev_stream:
-                prev_stream.unpin(self.player_id)
+                prev_stream.unpin(self.protocol_id)
                 self.snap_provider.update_stream_usage()
+
+    async def on_remove(self) -> None:
+        """Remove the client from the snapserver when it is deleted."""
+        await self.snap_provider.remove_client(self.protocol_id)
 
     def _handle_player_update(self, snap_client: SnapclientProto) -> None:
         """Forward snap_client updates."""
@@ -435,13 +470,14 @@ class SnapCastPlayer(Player):
                 call_update: bool = False
                 try:
                     async with self._state_update_lock:
+                        was_available = self._attr_available
                         call_update = await self._process_snapcast_client_state()
                     if call_update:
-                        await self._publish_state()
+                        await self._publish_state(was_available)
                 except KeyError, AttributeError, TypeError, ValueError:
                     # a failed update must not kill this worker (state would freeze)
                     self.logger.exception(
-                        "Error while processing state update for player %s", self.player_id
+                        "Error while processing state update for player %s", self.protocol_id
                     )
                     break
                 if self._poke_evt.is_set():
@@ -499,7 +535,7 @@ class SnapCastPlayer(Player):
                 pl.available
                 for cl_id in members
                 if (pl_id := self.snap_provider._get_ma_id(cl_id))
-                and (pl := self.mass.players.get_player(pl_id))
+                and (pl := self.provider.get_protocol(pl_id))
             ],
         }
 
@@ -633,16 +669,20 @@ class SnapCastPlayer(Player):
             if (ma_id := self.snap_provider._get_ma_id(client_id))
         ]
 
-    def _get_players_of_curr_group(self) -> list[Player]:
+    def _get_players_of_curr_group(self) -> list[PlayerProtocol]:
         return [
             ma_player
             for ma_id in self._get_player_ids_of_curr_group()
-            if (ma_player := self.mass.players.get_player(ma_id))
+            if (ma_player := self.provider.get_protocol(ma_id))
         ]
 
-    async def _publish_state(self) -> None:
-        """Publish the processed state, stopping the queue first if the client dropped."""
-        if self.state.available and not self._attr_available:
+    async def _publish_state(self, was_available: bool) -> None:
+        """
+        Publish the processed state, stopping the queue first if the client dropped.
+
+        :param was_available: Whether the client was available before the processed state.
+        """
+        if was_available and not self._attr_available:
             # stopped before publishing, as an unavailable player rejects it
             await self._stop_playing_queue()
         self.update_state()
@@ -650,13 +690,13 @@ class SnapCastPlayer(Player):
     async def _stop_playing_queue(self) -> None:
         """Stop this player's own queue if it plays on the snapclient."""
         # the snapserver keeps an MA stream playing without clients, unlike other outputs
-        if self.active_output_protocol not in (None, "native"):
+        if self.player is None or self.player.active_output_protocol not in (None, "native"):
             return
-        queue = self.mass.player_queues.get(self.player_id)
+        queue = self.mass.player_queues.get(self.player.player_id)
         if not queue or not queue.active or queue.state != PlaybackState.PLAYING:
             return
         try:
-            await self.mass.player_queues.stop(self.player_id)
+            await self.mass.player_queues.stop(queue.queue_id)
         except MusicAssistantError as err:
             # an error escaping here would end the player's state update worker
             self.logger.warning("Failed to stop the queue of %s: %s", self.display_name, err)

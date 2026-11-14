@@ -73,7 +73,7 @@ def _make_session(
     pcm_format.channels = 2
 
     leader = MagicMock()
-    leader.player_id = "leader"
+    leader.protocol_id = "leader"
     leader.protocol = StreamingProtocol.RAOP
     # a joinable session has a reference member that is actually playing
     leader.playback_state = PlaybackState.PLAYING
@@ -98,7 +98,7 @@ def _make_session(
 def _make_late_joiner() -> MagicMock:
     """Create a mock AirPlay player for late-join testing."""
     player = MagicMock()
-    player.player_id = "late_joiner"
+    player.protocol_id = "late_joiner"
     player.protocol = StreamingProtocol.RAOP
     player.stream = None
     player.config = MagicMock()
@@ -184,10 +184,10 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
     """Every member connects before one shared START anchors the group."""
     session = _make_session(0, 0)
     first_player: Any = session.sync_clients[0]
-    first_player.player_id = "first"
+    first_player.protocol_id = "first"
     first_player.protocol = first_protocol
     first_player.config.get_value = MagicMock(return_value=0)
-    second_player = MagicMock(player_id="second")
+    second_player = MagicMock(protocol_id="second")
     second_player.protocol = second_protocol
     second_player.config.get_value = MagicMock(return_value=0)
     session.sync_clients.append(second_player)
@@ -198,11 +198,11 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
         stream = _stream_defaults(MagicMock(running=True))
 
         async def wait_for_connection() -> None:
-            operations.append(f"connected:{player.player_id}")
+            operations.append(f"connected:{player.protocol_id}")
 
         async def start(start_unix_ms: int, position_ms: int) -> int:
             assert position_ms == 12_000
-            operations.append(f"started:{player.player_id}:{start_unix_ms}")
+            operations.append(f"started:{player.protocol_id}:{start_unix_ms}")
             return start_unix_ms
 
         stream.wait_for_connection = AsyncMock(side_effect=wait_for_connection)
@@ -236,7 +236,7 @@ async def test_group_start_never_anchors_before_every_receiver_clock_is_usable()
     first: Any = session.sync_clients[0]
     first.protocol = StreamingProtocol.AIRPLAY2
     first.config.get_value = MagicMock(return_value=0)
-    second = MagicMock(player_id="second", protocol=StreamingProtocol.AIRPLAY2)
+    second = MagicMock(protocol_id="second", protocol=StreamingProtocol.AIRPLAY2)
     second.config.get_value = MagicMock(return_value=0)
     session.sync_clients.append(second)
     # The slower member's clock lands past the cold group lead, so anchoring on
@@ -355,7 +355,7 @@ async def _start_group(
     lost_ms: dict[str, int] = dict.fromkeys(accept_delays, 0)
     session = _make_session(0, 0)
     players: list[Any] = [
-        MagicMock(player_id=name, protocol=StreamingProtocol.AIRPLAY2) for name in accept_delays
+        MagicMock(protocol_id=name, protocol=StreamingProtocol.AIRPLAY2) for name in accept_delays
     ]
     for player in players:
         player.config.get_value = MagicMock(return_value=0)
@@ -385,7 +385,7 @@ async def _start_group(
         return stream
 
     async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
-        player.stream = member_stream(player.player_id)
+        player.stream = member_stream(player.protocol_id)
 
     with (
         patch.object(session, "_start_client", side_effect=start_client),
@@ -451,7 +451,7 @@ async def test_group_start_that_never_converges_anchors_where_members_landed() -
     session = _make_session(0, 0)
     first: Any = session.sync_clients[0]
     first.config.get_value = MagicMock(return_value=0)
-    second = MagicMock(player_id="second")
+    second = MagicMock(protocol_id="second")
     second.protocol = StreamingProtocol.RAOP
     second.config.get_value = MagicMock(return_value=0)
     session.sync_clients.append(second)
@@ -503,7 +503,7 @@ async def test_group_start_fails_when_a_member_never_acknowledges() -> None:
     session = _make_session(0, 0)
     first_player: Any = session.sync_clients[0]
     first_player.protocol = StreamingProtocol.RAOP
-    second_player = MagicMock(player_id="silent", protocol=StreamingProtocol.RAOP)
+    second_player = MagicMock(protocol_id="silent", protocol=StreamingProtocol.RAOP)
     second_player.config.get_value = MagicMock(return_value=0)
     session.sync_clients.append(second_player)
     anchor_before = (session.start_unix_ms, session.start_time)
@@ -545,7 +545,7 @@ async def test_initial_single_player_starts_after_connect(
     """A standalone player is anchored with a single START once connected."""
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
-    player.player_id = "solo"
+    player.protocol_id = "solo"
     player.protocol = protocol
     player.config.get_value = MagicMock(return_value=0)
     stream = _stream_defaults(MagicMock(running=True))
@@ -576,7 +576,7 @@ async def test_initial_connection_failure_never_starts_partial_group() -> None:
     session = _make_session(0, 0)
     first_player: Any = session.sync_clients[0]
     first_player.protocol = StreamingProtocol.RAOP
-    second_player = MagicMock(player_id="second")
+    second_player = MagicMock(protocol_id="second")
     second_player.protocol = StreamingProtocol.RAOP
     session.sync_clients.append(second_player)
 
@@ -613,7 +613,7 @@ async def test_connection_failure_names_the_member_that_failed(
     first_player: Any = session.sync_clients[0]
     first_player.display_name = "Player A"
     first_player.protocol = StreamingProtocol.RAOP
-    second_player = MagicMock(player_id="second", display_name="Player B")
+    second_player = MagicMock(protocol_id="second", display_name="Player B")
     second_player.protocol = StreamingProtocol.RAOP
     session.sync_clients.append(second_player)
 
@@ -649,7 +649,7 @@ async def test_unconfirmed_audio_feed_names_the_silent_members() -> None:
     first_player.display_name = "Player A"
     first_player.protocol = StreamingProtocol.RAOP
     first_player.stream.wait_audio_present = AsyncMock(return_value=True)
-    second_player = MagicMock(player_id="second", display_name="Player B")
+    second_player = MagicMock(protocol_id="second", display_name="Player B")
     second_player.protocol = StreamingProtocol.RAOP
     second_player.stream = _stream_defaults(MagicMock(running=True))
     second_player.stream.wait_audio_present = AsyncMock(return_value=False)
@@ -664,7 +664,7 @@ async def test_initial_connection_cancellation_never_starts_group() -> None:
     """Cancellation while connecting cleans up without anchoring playback."""
     session = _make_session(0, 0)
     player: Any = session.sync_clients[0]
-    player.player_id = "solo"
+    player.protocol_id = "solo"
     player.protocol = StreamingProtocol.RAOP
     connection_waiting = asyncio.Event()
     stream = _stream_defaults(MagicMock(running=True))
@@ -708,7 +708,7 @@ def test_warm_replace_supports_every_streaming_protocol(
     players: Any = []
     for index, protocol in enumerate(protocols):
         player = MagicMock()
-        player.player_id = f"player-{index}"
+        player.protocol_id = f"player-{index}"
         player.protocol = protocol
         player.stream = _stream_defaults(MagicMock(running=True, connected=True))
         players.append(player)
@@ -736,7 +736,7 @@ async def test_standby_supports_every_connected_streaming_protocol(
     players: Any = []
     for index, protocol in enumerate(protocols):
         player = MagicMock()
-        player.player_id = f"player-{index}"
+        player.protocol_id = f"player-{index}"
         player.protocol = protocol
         player.stream = _stream_defaults(MagicMock(running=True, connected=True))
         player.stream.send_cli_command = AsyncMock(return_value=True)
@@ -771,7 +771,7 @@ async def test_standby_resumes_warm_on_existing_streams(
     original_streams: dict[str, MagicMock] = {}
     for index, protocol in enumerate(protocols):
         player = MagicMock()
-        player.player_id = f"player-{index}"
+        player.protocol_id = f"player-{index}"
         player.protocol = protocol
         player.config.get_value = MagicMock(return_value=0)
         player.stream = _stream_defaults(MagicMock(running=True, connected=True))
@@ -779,7 +779,7 @@ async def test_standby_resumes_warm_on_existing_streams(
         player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.flush = AsyncMock(return_value=True)
         players.append(player)
-        original_streams[player.player_id] = player.stream
+        original_streams[player.protocol_id] = player.stream
     session.sync_clients = players
 
     assert await session.standby()
@@ -801,7 +801,7 @@ async def test_standby_resumes_warm_on_existing_streams(
         AIRPLAY_START_LEAD_MS if len(protocols) == 1 else AIRPLAY_GROUP_START_LEAD_MS
     )
     for player in players:
-        stream = original_streams[player.player_id]
+        stream = original_streams[player.protocol_id]
         assert player.stream is stream
         stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
         stream.flush.assert_awaited_once_with()
@@ -817,7 +817,7 @@ async def test_warm_replace_flushes_all_before_starting_any() -> None:
     delayed_waiting = asyncio.Event()
 
     for player_id in ("first", "delayed"):
-        player = MagicMock(player_id=player_id, protocol=StreamingProtocol.AIRPLAY2)
+        player = MagicMock(protocol_id=player_id, protocol=StreamingProtocol.AIRPLAY2)
         player.config.get_value = MagicMock(return_value=0)
         stream = _stream_defaults(MagicMock(running=True, connected=True))
 
@@ -876,7 +876,7 @@ async def test_warm_replace_stops_old_audio_and_ffmpeg_before_flush() -> None:
         operations.append("ffmpeg-killed")
 
     old_ffmpeg.kill = AsyncMock(side_effect=kill_ffmpeg)
-    session._player_ffmpeg[player.player_id] = old_ffmpeg
+    session._player_ffmpeg[player.protocol_id] = old_ffmpeg
 
     async def old_audio() -> None:
         try:
@@ -909,7 +909,7 @@ async def test_warm_replace_flush_failure_falls_back_to_cold() -> None:
     session = _make_session(0, 0)
     players: list[Any] = []
     for player_id, acked in (("ok", True), ("failed", False)):
-        player = MagicMock(player_id=player_id, protocol=StreamingProtocol.RAOP)
+        player = MagicMock(protocol_id=player_id, protocol=StreamingProtocol.RAOP)
         player.config.get_value = MagicMock(return_value=0)
         stream = _stream_defaults(MagicMock(running=True, connected=True))
         stream.flush = AsyncMock(return_value=acked)
@@ -976,7 +976,7 @@ def test_warm_anchor_clears_the_receivers_queued_audio(
     """
     session = _make_session(0, 0)
     members: list[Any] = [session.sync_clients[0]]
-    second = MagicMock(player_id="second", protocol=StreamingProtocol.AIRPLAY2)
+    second = MagicMock(protocol_id="second", protocol=StreamingProtocol.AIRPLAY2)
     second.stream = _stream_defaults(MagicMock(running=True, connected=True))
     session.sync_clients.append(second)
     members.append(second)
@@ -1004,7 +1004,7 @@ def test_warm_anchor_clears_the_head_every_flushed_member_froze() -> None:
     first: Any = session.sync_clients[0]
     first.stream.flushed_head_unix_ms = 102_000
     first.config.get_value = MagicMock(return_value=0)
-    second = MagicMock(player_id="second", protocol=StreamingProtocol.AIRPLAY2)
+    second = MagicMock(protocol_id="second", protocol=StreamingProtocol.AIRPLAY2)
     second.stream = _stream_defaults(MagicMock(running=True, connected=True))
     second.stream.flushed_head_unix_ms = 105_000
     second.config.get_value = MagicMock(return_value=300)
@@ -1026,7 +1026,7 @@ async def test_start_player_ffmpeg_wires_persistent_cli_stdin() -> None:
     player: Any = session.sync_clients[0]
     old_ffmpeg = MagicMock()
     old_ffmpeg.close = AsyncMock()
-    session._player_ffmpeg[player.player_id] = old_ffmpeg
+    session._player_ffmpeg[player.protocol_id] = old_ffmpeg
 
     stream = _stream_defaults(MagicMock())
     stream.pcm_format = session.pcm_format
@@ -1057,7 +1057,7 @@ async def test_start_player_ffmpeg_wires_persistent_cli_stdin() -> None:
     # the fresh ffmpeg writes into the cli process stdin fd (77)
     assert ffmpeg_factory.call_args.kwargs["audio_output"] == 77
     new_ffmpeg.start.assert_awaited_once()
-    assert session._player_ffmpeg[player.player_id] is new_ffmpeg
+    assert session._player_ffmpeg[player.protocol_id] is new_ffmpeg
 
 
 @pytest.mark.asyncio
@@ -1225,7 +1225,7 @@ async def test_source_end_only_keeps_stdin_open_for_a_pending_replacement(
     ffmpeg.write_eof = AsyncMock()
     ffmpeg.wait_with_timeout = AsyncMock()
     ffmpeg.kill = AsyncMock()
-    session._player_ffmpeg[player.player_id] = ffmpeg
+    session._player_ffmpeg[player.protocol_id] = ffmpeg
 
     no_chunks: list[bytes] = []
 
@@ -1238,7 +1238,7 @@ async def test_source_end_only_keeps_stdin_open_for_a_pending_replacement(
     ) as backstop:
         await session._audio_streamer(exhausted_source())
 
-    assert player.player_id not in session._player_ffmpeg
+    assert player.protocol_id not in session._player_ffmpeg
     assert player.stream.write_audio_eof.await_count == (1 if ends_stream else 0)
     # a withheld EOF is never simply dropped: it is held for the replacement
     assert backstop.await_count == (0 if ends_stream else 1)
@@ -1277,7 +1277,7 @@ async def test_a_replacement_that_never_arrives_still_ends_the_stream() -> None:
     ffmpeg = MagicMock(closed=False)
     ffmpeg.write_eof = AsyncMock()
     ffmpeg.kill = AsyncMock()
-    session._player_ffmpeg[player.player_id] = ffmpeg
+    session._player_ffmpeg[player.protocol_id] = ffmpeg
 
     no_chunks: list[bytes] = []
 
@@ -1355,7 +1355,7 @@ async def test_the_withheld_eof_drops_any_ffmpeg_still_on_the_stdin() -> None:
     player.stream.write_audio_eof = AsyncMock(side_effect=lambda: order.append("eof"))
     retired = MagicMock(closed=False)
     retired.kill = AsyncMock(side_effect=lambda: order.append("retired-kill"))
-    session._player_ffmpeg[player.player_id] = retired
+    session._player_ffmpeg[player.protocol_id] = retired
 
     no_chunks: list[bytes] = []
 
@@ -1371,7 +1371,7 @@ async def test_the_withheld_eof_drops_any_ffmpeg_still_on_the_stdin() -> None:
         await asyncio.sleep(0.01)
         joined = MagicMock(closed=False)
         joined.kill = AsyncMock(side_effect=lambda: order.append("joiner-kill"))
-        session._player_ffmpeg[player.player_id] = joined
+        session._player_ffmpeg[player.protocol_id] = joined
         await streamer
 
     assert order == ["retired-kill", "joiner-kill", "eof"]
@@ -1393,7 +1393,7 @@ async def test_a_replacement_claiming_the_session_cancels_the_withheld_eof() -> 
     )
     ffmpeg = MagicMock(closed=False)
     ffmpeg.kill = AsyncMock()
-    session._player_ffmpeg[player.player_id] = ffmpeg
+    session._player_ffmpeg[player.protocol_id] = ffmpeg
 
     no_chunks: list[bytes] = []
 
@@ -1433,10 +1433,10 @@ async def test_a_replacement_claiming_the_session_cancels_the_withheld_eof() -> 
 async def test_standby_requires_every_member_running_and_connected(stream_state: str) -> None:
     """Standby is unavailable when any member lacks a reusable connected session."""
     session = _make_session(0, 0)
-    ready_player = MagicMock(player_id="ready", protocol=StreamingProtocol.AIRPLAY2)
+    ready_player = MagicMock(protocol_id="ready", protocol=StreamingProtocol.AIRPLAY2)
     ready_player.stream = _stream_defaults(MagicMock(running=True, connected=True))
     ready_player.stream.send_cli_command = AsyncMock()
-    unavailable_player = MagicMock(player_id="unavailable", protocol=StreamingProtocol.RAOP)
+    unavailable_player = MagicMock(protocol_id="unavailable", protocol=StreamingProtocol.RAOP)
     unavailable_player.stream = None
     if stream_state != "missing":
         unavailable_player.stream = MagicMock(
@@ -1465,13 +1465,13 @@ async def test_standby_returns_false_when_command_is_not_delivered() -> None:
     session = _make_session(0, 0)
     logger = MagicMock()
     session.prov.logger = logger
-    delivered_player = MagicMock(player_id="delivered", protocol=StreamingProtocol.AIRPLAY2)
+    delivered_player = MagicMock(protocol_id="delivered", protocol=StreamingProtocol.AIRPLAY2)
     delivered_player.stream = _stream_defaults(MagicMock(running=True, connected=True))
     delivered_player.stream.send_cli_command = AsyncMock(return_value=True)
-    dropped_player = MagicMock(player_id="dropped", protocol=StreamingProtocol.RAOP)
+    dropped_player = MagicMock(protocol_id="dropped", protocol=StreamingProtocol.RAOP)
     dropped_player.stream = _stream_defaults(MagicMock(running=True, connected=True))
     dropped_player.stream.send_cli_command = AsyncMock(return_value=False)
-    pending_player = MagicMock(player_id="pending", protocol=StreamingProtocol.AIRPLAY2)
+    pending_player = MagicMock(protocol_id="pending", protocol=StreamingProtocol.AIRPLAY2)
     pending_player.stream = _stream_defaults(MagicMock(running=True, connected=True))
     pending_player.stream.send_cli_command = AsyncMock(return_value=True)
     session.sync_clients = [delivered_player, dropped_player, pending_player]
@@ -1494,7 +1494,7 @@ async def test_standby_returns_false_when_command_raises() -> None:
     session = _make_session(0, 0)
     logger = MagicMock()
     session.prov.logger = logger
-    player = MagicMock(player_id="failed", protocol=StreamingProtocol.AIRPLAY2)
+    player = MagicMock(protocol_id="failed", protocol=StreamingProtocol.AIRPLAY2)
     player.stream = _stream_defaults(MagicMock(running=True, connected=True))
     player.stream.send_cli_command = AsyncMock(side_effect=OSError("command pipe failed"))
     session.sync_clients = [player]
@@ -1552,7 +1552,7 @@ async def test_late_join_caps_prime_at_whole_ring_when_position_predates_it() ->
     assert mock_start.called, "_start_client was never called"
     # the whole ring is primed, nothing is skipped, and the anchor maps to the
     # ring's first sample: start_at = start_time + (seconds_streamed - buffer)
-    assert session._client_skip_bytes[player.player_id] == 0
+    assert session._client_skip_bytes[player.protocol_id] == 0
     assert written_chunks, "expected the whole ring to be primed"
     assert len(written_chunks[0]) / PCM_SAMPLE_SIZE == pytest.approx(buffer_seconds, abs=0.01)
     expected = start_time + (seconds_streamed - buffer_seconds)
@@ -1617,7 +1617,7 @@ async def test_late_join_unacknowledged_start_stops_client() -> None:
         await session.add_client(player)
 
     assert player not in session.sync_clients
-    assert player.player_id not in session._client_skip_bytes
+    assert player.protocol_id not in session._client_skip_bytes
     player.stream.rebase_position.assert_not_called()
     stop_client.assert_awaited_once_with(player, reason="late joiner start/prime failed")
 
@@ -1723,7 +1723,7 @@ async def test_late_join_primes_from_ring_tail_at_headroom() -> None:
     )
 
     # The last 3.0s of the ring is primed (positions 2.0s..5.0s), nothing skipped.
-    assert session._client_skip_bytes[player.player_id] == 0
+    assert session._client_skip_bytes[player.protocol_id] == 0
     assert written_chunks, "No data was written to the player"
     remaining_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
     expected_primed = seconds_streamed - (expected_headroom + (now - start_time))
@@ -1764,7 +1764,7 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
     expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
     assert written_chunks == []
-    skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
+    skip_seconds = session._client_skip_bytes[player.protocol_id] / PCM_SAMPLE_SIZE
     assert skip_seconds == pytest.approx(1.34, abs=0.01)
 
 
@@ -1800,7 +1800,7 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
 
     expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
-    assert session._client_skip_bytes[player.player_id] == 0
+    assert session._client_skip_bytes[player.protocol_id] == 0
     assert written_chunks, "expected a prime write from the ring tail"
     primed_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
     assert primed_seconds == pytest.approx(1.699, abs=0.01)
@@ -2013,7 +2013,7 @@ async def test_late_join_feed_keeps_flowing_while_start_ack_is_outstanding() -> 
     writes: list[tuple[str, int]] = []
 
     async def capture_write(target: Any, chunk: bytes) -> None:
-        writes.append((target.player_id, len(chunk)))
+        writes.append((target.protocol_id, len(chunk)))
 
     with (
         patch.object(session, "_start_client", side_effect=setup_deferred_ack),
@@ -2034,7 +2034,7 @@ async def test_late_join_feed_keeps_flowing_while_start_ack_is_outstanding() -> 
     # the anchor (now + the 2.5s floor) is due at 7.5s of feed, so the joiner
     # skips only the 1.5s still to come, not the 2.5s due at the commanded
     # mapping: the content is mapped against the head the feed actually reached
-    skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
+    skip_seconds = session._client_skip_bytes[player.protocol_id] / PCM_SAMPLE_SIZE
     assert skip_seconds == pytest.approx(1.5, abs=0.01)
     assert player in session.sync_clients
 
@@ -2110,7 +2110,7 @@ async def test_late_join_maps_content_from_the_acked_instant() -> None:
     # The ack lands 1.5s later than commanded, so the due position is 9.0s of
     # feed instead of 7.5s: the joiner skips 4.0s of the live feed.
     assert written_chunks == []
-    skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
+    skip_seconds = session._client_skip_bytes[player.protocol_id] / PCM_SAMPLE_SIZE
     assert skip_seconds == pytest.approx(4.0, abs=0.01)
     # Progress is reported against the sample that lands on the acked instant,
     # not the one that would have landed on the commanded instant.
@@ -2124,9 +2124,9 @@ async def test_write_chunk_drains_skip_counter_across_chunks() -> None:
     player: Any = session.sync_clients[0]
     ffmpeg = MagicMock(closed=False)
     ffmpeg.write = AsyncMock()
-    session._player_ffmpeg[player.player_id] = ffmpeg
+    session._player_ffmpeg[player.protocol_id] = ffmpeg
     # skip 1.5s of a 1s-per-chunk feed
-    session._client_skip_bytes[player.player_id] = PCM_SAMPLE_SIZE * 3 // 2
+    session._client_skip_bytes[player.protocol_id] = PCM_SAMPLE_SIZE * 3 // 2
 
     chunk_one = b"\x01" * PCM_SAMPLE_SIZE
     chunk_two = b"\x02" * PCM_SAMPLE_SIZE
@@ -2137,7 +2137,7 @@ async def test_write_chunk_drains_skip_counter_across_chunks() -> None:
     written = [call_args.args[0] for call_args in ffmpeg.write.await_args_list]
     # first chunk fully consumed, second chunk sliced in half, third whole
     assert written == [b"\x02" * (PCM_SAMPLE_SIZE // 2), chunk_three]
-    assert session._client_skip_bytes[player.player_id] == 0
+    assert session._client_skip_bytes[player.protocol_id] == 0
 
 
 def test_effective_start_time_adds_reference_member_shift() -> None:
@@ -2166,11 +2166,11 @@ async def test_stop_client_clears_skip_and_shift_state() -> None:
     player.stream = _stream_defaults(MagicMock())
     player.stream.session = session
     player.stream.stop = AsyncMock()
-    session._client_skip_bytes[player.player_id] = 12_345
+    session._client_skip_bytes[player.protocol_id] = 12_345
 
     await session.stop_client(player)
 
-    assert player.player_id not in session._client_skip_bytes
+    assert player.protocol_id not in session._client_skip_bytes
     player.stream.reset_reanchor_shift.assert_called_once_with()
     player.stream.stop.assert_awaited_once_with(force=True)
 
@@ -2186,7 +2186,7 @@ async def test_replace_clears_skip_and_shift_state() -> None:
     stream.connected = True
     stream.flush = AsyncMock(return_value=True)
     stream.wait_audio_present = AsyncMock(return_value=True)
-    session._client_skip_bytes[player.player_id] = 999
+    session._client_skip_bytes[player.protocol_id] = 999
 
     with (
         patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
@@ -2243,7 +2243,7 @@ async def test_late_join_pads_with_silence_when_the_ring_ran_out_under_a_committ
     written: list[tuple[str, bytes]] = []
 
     async def capture_write(target: Any, chunk: bytes) -> None:
-        written.append((target.player_id, chunk))
+        written.append((target.protocol_id, chunk))
 
     def setup_with_feed(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
@@ -2267,7 +2267,7 @@ async def test_late_join_pads_with_silence_when_the_ring_ran_out_under_a_committ
     # The anchor is the one that was commanded: an acked instant is never moved.
     headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
     assert _captured_start_at(player) == pytest.approx(now + headroom, abs=0.001)
-    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    prime = next(chunk for pid, chunk in written if pid == player.protocol_id)
     # due is 102.5s of feed and the write head reached 112.0s, so 9.5s is owed
     # while only 8s survives in the ring: the missing 1.5s opens as silence.
     assert len(prime) / PCM_SAMPLE_SIZE == pytest.approx(9.5, abs=0.001)
@@ -2275,7 +2275,7 @@ async def test_late_join_pads_with_silence_when_the_ring_ran_out_under_a_committ
     assert prime[:pad] == bytes(pad), "the missing head must be silence"
     assert set(prime[pad:]) == {1, 2}, "the rest must be the buffered feed"
     assert pad % session._pcm_frame_size == 0
-    assert session._client_skip_bytes[player.player_id] == 0
+    assert session._client_skip_bytes[player.protocol_id] == 0
     # Position still reports where the GROUP is at that instant, because the
     # real content lands exactly where it would have without the shortfall.
     player.stream.rebase_position.assert_not_called()
@@ -2298,7 +2298,7 @@ async def test_late_join_ring_shortfall_keeps_a_misaligned_ring_head_frame_align
     written: list[tuple[str, bytes]] = []
 
     async def capture_write(target: Any, chunk: bytes) -> None:
-        written.append((target.player_id, chunk))
+        written.append((target.protocol_id, chunk))
 
     def setup_with_feed(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
@@ -2317,7 +2317,7 @@ async def test_late_join_ring_shortfall_keeps_a_misaligned_ring_head_frame_align
     ):
         await session.add_client(player)
 
-    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    prime = next(chunk for pid, chunk in written if pid == player.protocol_id)
     frame_size = session._pcm_frame_size
     # The prime ends exactly at the write head, so its start - and therefore the
     # whole padded prime - has to sit on an absolute frame boundary.
@@ -2389,7 +2389,7 @@ async def test_late_join_silence_pad_is_bounded_and_reports_the_residual() -> No
     written: list[tuple[str, bytes]] = []
 
     async def capture_write(target: Any, chunk: bytes) -> None:
-        written.append((target.player_id, chunk))
+        written.append((target.protocol_id, chunk))
 
     def setup_with_stale_ack(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
@@ -2404,7 +2404,7 @@ async def test_late_join_silence_pad_is_bounded_and_reports_the_residual() -> No
     ):
         await session.add_client(player)
 
-    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    prime = next(chunk for pid, chunk in written if pid == player.protocol_id)
     # Bounded at one ring of silence plus the ring itself - never the 320s owed.
     assert len(prime) / PCM_SAMPLE_SIZE == pytest.approx(4.0, abs=0.01)
     assert (session._pcm_total_fed - len(prime)) % session._pcm_frame_size == 0

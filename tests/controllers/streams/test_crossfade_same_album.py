@@ -80,7 +80,6 @@ def _audio(next_item: QueueItem, allow_same_album: bool = False) -> StreamsAudio
     """Build a StreamsAudio whose queue reports the given (unloaded) next item."""
     mass = MagicMock()
     mass.player_queues.get.return_value = MagicMock()
-    mass.players.get_player.return_value = MagicMock()
     mass.player_queues.get_next_item.return_value = next_item
     mass.config.get_raw_core_config_value.return_value = allow_same_album
     return StreamsAudio(cast("Any", mass))
@@ -91,7 +90,6 @@ def _crossfade_allowed(current: QueueItem, next_item: QueueItem, **kwargs: Any) 
     return _audio(next_item, **kwargs).crossfade_allowed(
         current,
         crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
-        player_id="queue-1",
         flow_mode=True,
     )
 

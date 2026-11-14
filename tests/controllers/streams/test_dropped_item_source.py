@@ -115,7 +115,7 @@ class _Harness:
             setattr(self.ctrl, helper, MethodType(getattr(StreamsController, helper), self.ctrl))
         self.ctrl.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
         self.ctrl.mass.player_queues = player_queues
-        self.ctrl.mass.players.get_player.return_value = player
+        self.ctrl.mass.players.get_output_protocol.return_value = player
         self.ctrl.mass.config.get_raw_core_config_value.return_value = 8
         self.ctrl.mass.create_task.side_effect = self._create_task
         pcm_format = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100)

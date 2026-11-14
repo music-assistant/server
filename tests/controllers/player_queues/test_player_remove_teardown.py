@@ -1,7 +1,7 @@
 """
 Tests for what removing a player tears down of its queue.
 
-An unregister does not stop the queue first, so its removal has to do what a stop would:
+Removing a player does not stop its queue first, so the removal has to do what a stop would:
 otherwise the prepared next track keeps its provider stream slot until the buffer's
 inactivity timeout, and the preload and enqueue-next work runs on for a queue that is gone.
 """
@@ -94,22 +94,3 @@ def test_removal_releases_the_queue_audio() -> None:
         assert buffer is not None
         buffer.clear.assert_called_once()
     mass.streams.audio.clear_crossfade_handover.assert_called_once_with(QUEUE_ID)
-
-
-def test_removal_without_release_keeps_the_playing_audio() -> None:
-    """A removal that keeps its audio leaves the buffers alone, but still cancels the next-track work."""
-    items = [_item("current"), _item("next")]
-    buffers = [item.streamdetails.buffer for item in items if item.streamdetails]
-    ctrl, mass = _controller(items)
-
-    ctrl.on_player_remove(QUEUE_ID, permanent=False, release_audio=False)
-
-    assert QUEUE_ID not in ctrl._queue_data
-    cancelled_tasks = {call.args[0] for call in mass.cancel_task.call_args_list}
-    assert f"preload_next_item_{QUEUE_ID}" in cancelled_tasks
-    for item, buffer in zip(items, buffers, strict=True):
-        assert item.streamdetails is not None
-        assert item.streamdetails.buffer is buffer
-        assert buffer is not None
-        buffer.clear.assert_not_called()
-    mass.streams.audio.clear_crossfade_handover.assert_not_called()

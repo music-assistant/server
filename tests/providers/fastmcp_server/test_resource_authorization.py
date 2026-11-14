@@ -31,6 +31,11 @@ from music_assistant.providers.fastmcp_server.server import build_tag_lookup
 from music_assistant.providers.fastmcp_server.target_filters import filter_collection_result
 from music_assistant.providers.fastmcp_server.token_identity import TokenIdentityRegistry
 
+# the players controller, where player-1 (the default user's player) has a legacy id
+_PLAYERS = SimpleNamespace(
+    resolve_player_id=lambda player_id: {"old-player-1": "player-1"}.get(player_id, player_id)
+)
+
 
 def _user(**changes: Any) -> Any:
     values = {
@@ -65,7 +70,8 @@ def _authorizer(
                 authenticate_with_token=AsyncMock(return_value=user or _user()),
                 get_token_id_from_token=AsyncMock(return_value=resolved_id),
             )
-        )
+        ),
+        players=_PLAYERS,
     )
     records = audits if audits is not None else []
 
@@ -147,7 +153,8 @@ async def test_resource_policy_allow_to_deny_during_auth_uses_live_denial() -> N
                     authenticate_with_token=authenticate_then_revoke,
                     get_token_id_from_token=AsyncMock(return_value="token-id"),
                 )
-            )
+            ),
+            players=_PLAYERS,
         ),
         auth_required_provider=lambda: True,
         token_provider=lambda: bearer,
@@ -244,6 +251,17 @@ async def test_player_and_queue_resources_apply_user_player_filter(uri: str) -> 
             uri,
             {str(Capability.QUERY_QUEUE if uri.startswith("queue") else Capability.QUERY_PLAYERS)},
         )
+
+
+@pytest.mark.parametrize("uri", ["player://old-player-1", "queue://old-player-1"])
+async def test_player_and_queue_resources_take_a_legacy_id_of_an_allowed_player(uri: str) -> None:
+    """A player/queue URI naming an allowed player by a legacy id passes the player filter."""
+    authorizer = _authorizer()
+    request = await authorizer.authorize(
+        uri,
+        {str(Capability.QUERY_QUEUE if uri.startswith("queue") else Capability.QUERY_PLAYERS)},
+    )
+    assert request is not None
 
 
 async def test_library_resource_provider_filter_hides_foreign_item_and_audits_once() -> None:

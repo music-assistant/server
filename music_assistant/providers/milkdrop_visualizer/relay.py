@@ -96,7 +96,7 @@ class MilkdropRelay:
             )
             await ws.close()
             return ws
-        self.logger.debug("Viewer session: query=%r -> target %s", query, target.display_name)
+        self.logger.debug("Viewer session: query=%r -> target %s", query, target.name)
 
         queue = ViewerQueue()
         tap = await self.taps.acquire(target)

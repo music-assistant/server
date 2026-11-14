@@ -80,7 +80,7 @@ def _controller(queue_item: QueueItem, fixed_content_length: bool) -> MagicMock:
     ctrl.mass.player_queues.queue_data.return_value = queue_data
     ctrl.mass.player_queues.get_item.return_value = queue_item
     ctrl.mass.player_queues.flow_stream_finished.return_value = False
-    ctrl.mass.players.get_player.return_value = player
+    ctrl.mass.players.get_output_protocol.return_value = player
     ctrl.mass.config.get_raw_core_config_value.return_value = 8
     ctrl.mass.config.get_raw_player_config_value.return_value = "disabled"
     pcm_format = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100)

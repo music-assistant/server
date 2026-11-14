@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 from music_assistant_models.enums import PlaybackState
@@ -44,10 +45,9 @@ def _controller() -> PlayerQueuesController:
 
 
 def _player(media: PlayerMedia | None) -> MagicMock:
-    """Build a native player reporting the given media."""
+    """Build a player whose rendering protocol reports the given media."""
     player = MagicMock()
-    player.active_output_protocol = "native"
-    player.current_media = media
+    player.resolve_output_protocol.return_value = SimpleNamespace(current_media=media)
     return player
 
 

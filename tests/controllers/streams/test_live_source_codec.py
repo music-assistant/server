@@ -21,21 +21,21 @@ from music_assistant.providers.sonos_s1.player import SonosPlayer as SonosS1Play
 
 
 def _controller(output_codec: str, prefer_wav_for_live_sources: bool) -> StreamsController:
-    """Return a streams controller with one configured HTTP player."""
+    """Return a streams controller with one configured HTTP output protocol."""
     controller = StreamsController.__new__(StreamsController)
     controller._base_url = "http://mass:8097"
     controller._flow_mode_owners = {}
     controller._boundary_mix_owners = {}
     controller.mass = mass = MagicMock()
-    player = MagicMock()
+    protocol = MagicMock()
     values = {
         CONF_OUTPUT_CODEC: output_codec,
         CONF_PREFER_WAV_FOR_LIVE_SOURCES: prefer_wav_for_live_sources,
     }
-    player.config.get_value.side_effect = lambda key, default=None: values.get(key, default)
-    player.flow_mode = False
-    player.supports_gapless = True
-    mass.players.get_player.return_value = player
+    protocol.config.get_value.side_effect = lambda key, default=None: values.get(key, default)
+    protocol.flow_mode = False
+    protocol.supports_feature.return_value = True
+    mass.players.get_output_protocol.return_value = protocol
     mass.player_queues.get.return_value = SimpleNamespace(
         crossfade_enabled=False,
         overlay_enabled=False,
@@ -98,10 +98,10 @@ async def test_sonos_prefers_wav_for_live_sources_by_default(
     player_class: type[SonosPlayer | SonosS1Player],
 ) -> None:
     """Sonos players default to the known-compatible low-latency WAV path."""
-    player = player_class.__new__(player_class)
-    player._attr_device_info = DeviceInfo(model="Era 300", manufacturer="Sonos")
+    protocol = player_class.__new__(player_class)
+    protocol._attr_device_info = DeviceInfo(model="Era 300", manufacturer="Sonos")
 
-    entries = await player.get_config_entries()
+    entries = await protocol.get_config_entries()
     entry = next(entry for entry in entries if entry.key == CONF_PREFER_WAV_FOR_LIVE_SOURCES)
 
     assert entry.default_value is True

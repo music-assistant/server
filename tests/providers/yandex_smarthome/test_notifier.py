@@ -40,6 +40,7 @@ class MockPlayer:
     supported_features: set[str] = field(default_factory=set)
     source_list: list[str] = field(default_factory=list)
     active_source: str | None = None
+    legacy_ids: list[str] = field(default_factory=list)
     group_members: list[str] = field(default_factory=list)
 
     @property
@@ -54,11 +55,12 @@ class MockEvent:
 
     event: str
     data: Any = None
+    object_id: str | None = None
 
 
-def _event(event: str, data: Any = None) -> MassEvent:
+def _event(event: str, data: Any = None, object_id: str | None = None) -> MassEvent:
     """Build a MockEvent viewed through the real MassEvent type."""
-    return cast("MassEvent", MockEvent(event=event, data=data))
+    return cast("MassEvent", MockEvent(event=event, data=data, object_id=object_id))
 
 
 def _make_mass(players: list[MockPlayer] | None = None) -> MagicMock:
@@ -194,11 +196,10 @@ class TestStateNotifierEvents:
         mass = _make_mass()
         notifier = _make_notifier(mass=mass)
 
-        event = _event(event=EventType.PLAYER_ADDED, data=MockPlayer())
+        event = _event(event=EventType.PLAYER_ADDED, data=MockPlayer(), object_id="p1")
         notifier._on_player_event(event)
 
-        # Discovery triggers create_task
-        mass.create_task.assert_called()
+        assert notifier._discovery_handle is not None
 
     def test_on_player_removed_triggers_discovery(self) -> None:
         """Test on player removed triggers discovery."""
@@ -208,7 +209,38 @@ class TestStateNotifierEvents:
         event = _event(event=EventType.PLAYER_REMOVED, data="p1")
         notifier._on_player_event(event)
 
-        mass.create_task.assert_called()
+        assert notifier._discovery_handle is not None
+
+    def test_on_player_turning_available_triggers_discovery(self) -> None:
+        """A registered player that comes back triggers discovery, its next update does not."""
+        mass = _make_mass()
+        player = MockPlayer(player_id="p1", available=False)
+        mass.players.get_player = MagicMock(return_value=player)
+        notifier = _make_notifier(mass=mass)
+        schedule_discovery = MagicMock()
+        notifier._schedule_discovery = schedule_discovery  # type: ignore[method-assign]
+        event = _event(event=EventType.PLAYER_UPDATED, data=player, object_id="p1")
+
+        notifier._on_player_event(event)
+        schedule_discovery.assert_not_called()
+
+        player.available = True
+        notifier._on_player_event(event)
+        notifier._on_player_event(event)
+        schedule_discovery.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_discovery_is_debounced(self) -> None:
+        """Device list changes within the debounce window send a single discovery."""
+        mass = _make_mass()
+        notifier = _make_notifier(mass=mass)
+
+        for _ in range(3):
+            notifier._schedule_discovery()
+
+        mass.loop.call_later.assert_called_once()
+        await notifier.stop()
+        mass.loop.call_later.return_value.cancel.assert_called_once()
 
     def test_on_none_data_ignored(self) -> None:
         """Test on none data ignored."""

@@ -22,6 +22,8 @@ class TargetKind(StrEnum):
 
     PLAYER = "player"
     PLAYERS = "players"
+    # a protocol, checked against the caller's players as the player it belongs to
+    PROTOCOL = "protocol"
     MUSIC_PROVIDER = "music_provider"
     MUSIC_PROVIDERS = "music_providers"
     MUSIC_REFERENCE = "music_reference"
@@ -74,6 +76,7 @@ TARGET_RULES: tuple[TargetRule, ...] = (
     TargetRule("players/*", "player_ids_to_add", TargetKind.PLAYERS),
     TargetRule("players/*", "player_ids_to_remove", TargetKind.PLAYERS),
     TargetRule("players/*", "members", TargetKind.PLAYERS),
+    TargetRule("players/*", "protocol_id", TargetKind.PROTOCOL),
     # Queue ids are player ids in Music Assistant's authorization model.
     TargetRule("player_queues/*", "player_id", TargetKind.PLAYER),
     TargetRule("player_queues/*", "queue_id", TargetKind.PLAYER),
@@ -139,6 +142,9 @@ def enforce_target_filters(
         return
     for argument, value in arguments.items():
         if value is None or (rule := target_rule(command, argument)) is None:
+            continue
+        if rule.kind is TargetKind.PROTOCOL:
+            _enforce_protocol_player(mass, str(value), getattr(user, "player_filter", None))
             continue
         if rule.kind in _REFERENCE_KINDS:
             values = _reference_provider_ids(value)
@@ -428,6 +434,13 @@ def _enforce_allowed(requested: set[str], configured: Any) -> None:
     """Reject requested identifiers outside one active allowlist."""
     allowed = _allowed_values(configured)
     if allowed is not None and not requested.issubset(allowed):
+        raise InsufficientPermissions("Command target is not permitted for the current user")
+
+
+def _enforce_protocol_player(mass: Any, protocol_id: str, configured: Any) -> None:
+    """Reject a protocol unless the player it belongs to is in the active player allowlist."""
+    allowed = _allowed_values(configured)
+    if allowed is not None and mass.players.get_player_id_of_protocol(protocol_id) not in allowed:
         raise InsufficientPermissions("Command target is not permitted for the current user")
 
 

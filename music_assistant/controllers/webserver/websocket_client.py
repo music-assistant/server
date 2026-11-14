@@ -41,6 +41,7 @@ from music_assistant.helpers.api import (
     parse_arguments,
     redact_json_secrets,
     redact_secrets,
+    run_api_command,
 )
 from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
@@ -88,7 +89,8 @@ class WebsocketClientHandler:
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
-        self._sendspin_player_is_private = False  # whether that bound player is a private client
+        # id of the private client player the bound sendspin player is attached to
+        self._own_player_id: str | None = None
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._is_ingress_proxy = is_request_from_ingress_proxy(request)
@@ -167,7 +169,7 @@ class WebsocketClientHandler:
         :param player_id: Id of the sendspin player this connection owns.
         """
         self._sendspin_player_id = player_id
-        self._sendspin_player_is_private = False
+        self._own_player_id = None
 
     async def disconnect(self) -> None:
         """Disconnect client and wait for its writer to finish."""
@@ -358,7 +360,7 @@ class WebsocketClientHandler:
                 ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
-            result: Any = handler.target(**args)
+            result: Any = run_api_command(self.mass, handler, args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 items: list[Any] = []
@@ -585,19 +587,19 @@ class WebsocketClientHandler:
         """
         Return whether the object is the private client player this connection announced.
 
-        Binding can happen before the sendspin player registers, so the private status is
-        latched the first time an event for the bound id arrives while the player exists,
-        and kept afterwards so the owner still receives its player's removal event. A
-        shared speaker announced as the client id never latches, so it stays filtered.
+        Binding can happen before the sendspin player attaches, so its player is looked up
+        whenever an event arrives, and the last one found is kept so the owner still
+        receives its player's removal event. A shared speaker announced as the client id
+        is not private and never counts, so it stays filtered.
 
         :param object_id: The event's object id (a player or queue id), or None.
         """
-        if object_id is None or object_id != self._sendspin_player_id:
+        if object_id is None or self._sendspin_player_id is None:
             return False
-        if not self._sendspin_player_is_private:
-            player = self.mass.players.get_player(object_id)
-            self._sendspin_player_is_private = player is not None and player.private
-        return self._sendspin_player_is_private
+        protocol = self.mass.players.get_protocol(self._sendspin_player_id)
+        if protocol is not None and protocol.private and protocol.player is not None:
+            self._own_player_id = protocol.player.player_id
+        return object_id == self._own_player_id
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""

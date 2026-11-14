@@ -123,7 +123,7 @@ Add a new folder to the `providers` folder with the name of provider. Add two fi
 
 **Configuring the manifest.json file**
 
-The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. See [the manifest section](#⚙️-manifest-file) for all available properties.
+The easiest way to get start is to copy the contents of the manifest of an existing Music Provider, e.g. Spotify or Youtube Music. See [the manifest section](#%EF%B8%8F-manifest-file) for all available properties.
 
 **Creating the provider**
 
@@ -188,11 +188,32 @@ All Providers (of all types) can be found in the `music_assistant/providers` fol
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
+A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and registers it with `mass.players.register()`. The server builds the `Player` that users see from the protocols of a device, and attaches the protocol to it: the protocol finds it as `self.player`. The contract between the two:
+
+* A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
+* It reads the final values of its player (`self.player.<field>`: what the player published last, the same values as in `self.player.state`) only for what the device has to display or follow: the current media and its position.
+* The grouping as users see it comes from the player too (`self.player.group_members`, `self.player.synced_to`, `self.player.active_group`); what a protocol reports about grouping names the protocol ids of its own provider.
+* A property of a protocol is read while the server derives the state of its player, when `self.player.<field>` is still the previous value. Such a property never reads a final value of its own player: it asks what is true right now (`self.player.attached_protocols`, `self.player.resolve_output_protocol()`).
+* Data that only lives while the server runs (`extra_data`, the stop and external source markers) stays on `self.player`.
+* `self.player` is already `None` when `on_detach()` runs: a protocol releases what it holds itself.
+* The same object can be attached again after a detach, when the server moves it to another player or changes its role: whatever `on_detach()` ends, `on_attach()` starts again.
+* `on_remove()` also reaches a protocol that is not attached, as long as its provider holds the object: the server keeps those only weakly, so a provider with a configured device list keeps the object of every device on it.
+* The config of a protocol has no name: the name the user gave the device is `self.player.config.name`.
+* Software players that share a host report an id of their own instance as `UUID` or `SERIAL_NUMBER` identifier.
+* A provider whose native protocol stands for devices of other makes (a Home Assistant media player) is ranked below the vendor's own protocol in `NATIVE_PRIORITY`: on a device that has both, it attaches as a control protocol of the vendor's player.
+* Every zone of a multi-zone chassis reports its zone as `ZONE` next to the identifiers of the chassis: `MAIN_ZONE` for the zone where the protocols of the chassis that report no zone (AirPlay, DLNA, ...) play, its own id for every other zone.
+
+The server asks a provider to look for its devices again when one may be found again: after a player is enabled, after a player that is not a group is removed, and when a protocol that is not attached moves to another player (in a merge, or when it is taken off its player) or is switched on again as an output. It then replays the cached mDNS records of the provider's `mdns_discovery` types and reruns the SSDP search of its `upnp_discovery` targets. So `discover_players()` only has to offer the known devices that this cannot reach.
+
+An audio protocol that matches no player and has no globally administered MAC address (none at all, or only a locally administered one) waits up to 15 seconds before it gets a player of its own, as the other protocols of its device may still identify it. A protocol that only exists while connected does not wait; a protocol that rides on another one waits for that one instead.
+
 ## 💽 Building your own Metadata Provider
 Will follow soon™
 
 ## 🔌 Building your own Plugin Provider
 Will follow soon™
+
+A provider of any type that stores the id of a player (in its config or setup data) can find it turned into a legacy id: the user merged that player into another one, which answers to the stored id from then on. Resolve a stored id with `mass.players.resolve_player_id()` where it is read, and compare the ids of events and live players with the resolved id. A browser or app player only stays while its client is away once something about it is stored; a plugin that stores something the user set up for such a player (a DJ on its queue, a choice in its settings) calls `mass.players.keep_player()` for it, so the player and what was set up are there when the client comes back. Drop what you store about a player on `PLAYER_REMOVED`: it is only sent for a player that is gone for good, removed by the user, merged into another one, or a browser or app player whose client disconnected while nothing was stored of it and its queue was empty. A disabled player is no removal: it gets a last `PLAYER_UPDATED`, disabled and unavailable, and `PLAYER_ADDED` when it is enabled again. A browser or app player that was removed and connects again is a new player under the same id, announced with `PLAYER_ADDED`. A player stays while its device is away, so neither `PLAYER_ADDED` nor `get_player()` tells whether the device is there: a device that goes away or comes back is a change of `available` in `PLAYER_UPDATED`.
 
 ## ⚙️ Manifest file
 The manifest file contains metadata and configuration about a provider. The supported properties are:

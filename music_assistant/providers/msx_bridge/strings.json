@@ -6,7 +6,7 @@
     },
     "player_idle_timeout": {
       "label": "Player Idle Timeout (minutes)",
-      "description": "Unregister MSX players after this many minutes without activity."
+      "description": "Show an MSX player as unavailable after this many minutes without activity, until its TV connects again."
     },
     "show_stop_notification": {
       "label": "Show playback stopped notification",

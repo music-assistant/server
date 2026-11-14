@@ -15,7 +15,7 @@ from music_assistant.providers.msx_bridge.party import render_qr
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
-from .fakes import FakeMass
+from .fakes import FakeMass, attach_tv
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def _reset_render_qr_cache() -> None:
 
 @pytest.fixture
 def player_config_mock() -> Mock:
-    """Return a mock PlayerConfig as returned by get_base_player_config()."""
+    """Return a mock PlayerConfig as returned by get_base_protocol_config()."""
     player_config = Mock()
     player_config.name = None
     player_config.default_name = None
@@ -79,9 +79,10 @@ def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> MSXBrid
 
 @pytest.fixture
 def player(provider: MSXBridgeProvider) -> MSXPlayer:
-    """Return an MSXPlayer with update_state mocked."""
+    """Return an MSXPlayer attached to its player, with update_state mocked."""
     p = MSXPlayer(provider, "msx_test", name="Test TV")
     p.update_state = Mock()  # type: ignore[misc,method-assign]
+    attach_tv(p)
     return p
 
 

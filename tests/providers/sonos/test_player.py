@@ -14,14 +14,16 @@ from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import PlaybackErrorEvent
 from aiosonos.exceptions import CannotConnect, FailedCommand
 from aiosonos.group import PlaybackActions
+from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
-from music_assistant_models.enums import PlaybackState, RepeatMode
+from music_assistant_models.enums import PlaybackState, ProtocolRole, RepeatMode
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import AnnouncementFeature
+from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.sonos.const import (
     PLAYER_SOURCE_MAP,
     SOURCE_LINE_IN,
@@ -45,7 +47,8 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     client.disconnect = AsyncMock()
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.player")
-    player._player_id = "sonos_player"
+    player._protocol_id = "sonos_player"
+    player._player = None
     player._listen_task = None
     player.connected = False
     player._connect_lock = asyncio.Lock()
@@ -65,18 +68,30 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
     player._attr_options = []
-    player._provider = MagicMock()
     player.client = client
-    player._on_unload_callbacks = []
+    player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
+    player._on_detach_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
     return player, client
+
+
+def _attach_to_player(protocol: SonosPlayer) -> Player:
+    """Attach a SonosPlayer to a player of its own, with a minted id, and return that player."""
+    player = Player(
+        protocol.mass,
+        "pl0123456789ab",
+        PlayerConfig(values={}, provider="sonos", player_id="pl0123456789ab"),
+    )
+    player.add_protocol(protocol, ProtocolRole.NATIVE)
+    protocol.set_player(player)
+    return player
 
 
 def _make_player() -> tuple[SonosPlayer, MagicMock]:
     """Create a SonosPlayer with mocked connection dependencies."""
     mass = MagicMock()
     mass.closing = False
-    mass.players.get_player.return_value = MagicMock()
+    mass.players.get_protocol.return_value = MagicMock()
     player, _ = _bind_player(mass)
     return player, mass
 
@@ -183,7 +198,7 @@ async def test_on_unload_disconnects_without_reconnecting(timer_mass: MusicAssis
     upnp: Any = player.upnp
     upnp.unfollow.reset_mock()
 
-    await player.on_unload()
+    await player.on_detach()
 
     assert player.connected is False
     client.disconnect.assert_awaited_once()
@@ -199,7 +214,7 @@ async def test_on_unload_of_an_offline_speaker_ends_no_subscription() -> None:
     """Test an unload does not wait for an unsubscribe a disconnected speaker cannot answer."""
     player, _ = _make_player()
 
-    await player.on_unload()
+    await player.on_detach()
 
     upnp: Any = player.upnp
     upnp.unfollow.assert_not_awaited()
@@ -217,7 +232,7 @@ async def test_reconnect_at_a_new_address_moves_upnp_along(timer_mass: MusicAssi
 
     assert player.upnp.location == "http://192.168.1.21:1400/xml/device_description.xml"
     old_upnp.unfollow.assert_awaited_once()
-    await player.on_unload()
+    await player.on_detach()
 
 
 @pytest.mark.asyncio
@@ -231,13 +246,28 @@ async def test_on_unload_cancels_a_pending_reconnect(timer_mass: MusicAssistant)
 
     player._connect = _connect  # type: ignore[method-assign]
     player.reconnect(0)
-    handle = timer_mass._tracked_timers[f"sonos_reconnect_{player.player_id}"]
+    handle = timer_mass._tracked_timers[f"sonos_reconnect_{player.protocol_id}"]
 
-    await player.on_unload()
+    await player.on_detach()
     await asyncio.sleep(0.05)
 
     assert handle.cancelled()
     assert connect_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_on_detach_cancels_a_scheduled_options_read(timer_mass: MusicAssistant) -> None:
+    """Test an options read that is still waiting to fire does not run after the detach."""
+    player, _ = _bind_player(timer_mass)
+    player._schedule_options_read()
+    handle = timer_mass._tracked_timers[f"sonos_options_{player.protocol_id}"]
+
+    with patch.object(player, "_update_options", AsyncMock()) as update_options:
+        await player.on_detach()
+        await asyncio.sleep(0.05)
+
+    assert handle.cancelled()
+    update_options.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -248,14 +278,14 @@ async def test_on_unload_cancels_a_scheduled_airplay_group_restore(
     player, client = _bind_player(timer_mass)
     player._attr_name = "Sonos Player"
     client.player.is_coordinator = True
-    client.player.group_members = [player.player_id, "sonos_player_2"]
+    client.player.group_members = [player.protocol_id, "sonos_player_2"]
     output_protocol = MagicMock()
     output_protocol.protocol_domain = "airplay"
 
     await player.on_protocol_playback(output_protocol)
-    handle = timer_mass._tracked_timers[f"restore_airplay_group_{player.player_id}"]
+    handle = timer_mass._tracked_timers[f"restore_airplay_group_{player.protocol_id}"]
 
-    await player.on_unload()
+    await player.on_detach()
 
     assert handle.cancelled()
     assert timer_mass._tracked_timers == {}
@@ -273,12 +303,12 @@ async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
         restoring.set()
         await asyncio.sleep(5)
 
-    task_id = f"restore_airplay_group_{player.player_id}"
+    task_id = f"restore_airplay_group_{player.protocol_id}"
     timer_mass.call_later(0, _restore_airplay_group, task_id=task_id)
     await restoring.wait()
     task = timer_mass._tracked_tasks[task_id]
 
-    await player.on_unload()
+    await player.on_detach()
 
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -304,7 +334,7 @@ async def test_on_unload_cancels_every_pending_hand_over_of_a_moved_group(
     for started in waiting:
         await started.wait()
 
-    await player.on_unload()
+    await player.on_detach()
 
     for task in tasks:
         with pytest.raises(asyncio.CancelledError):
@@ -319,11 +349,11 @@ async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
     player, client = _bind_player(timer_mass)
     player._attr_name = "Sonos Player"
     client.player.is_coordinator = True
-    client.player.group_members = [player.player_id, "sonos_player_2"]
+    client.player.group_members = [player.protocol_id, "sonos_player_2"]
     airplay_player = MagicMock()
     airplay_player.provider.domain = "airplay"
     timer_mass.players = MagicMock()
-    timer_mass.players.get_player.side_effect = lambda pid: (
+    timer_mass.players.get_protocol.side_effect = lambda pid: (
         airplay_player if pid == "airplay_player" else None
     )
     output_protocol = OutputProtocol(
@@ -335,18 +365,18 @@ async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
 
     await player.on_protocol_playback(output_protocol)
 
-    assert f"restore_airplay_group_{player.player_id}" in timer_mass._tracked_timers
+    assert f"restore_airplay_group_{player.protocol_id}" in timer_mass._tracked_timers
 
 
 @pytest.mark.asyncio
-async def test_on_unload_unsubscribes_before_disconnecting(timer_mass: MusicAssistant) -> None:
-    """Test the registered unload callbacks run before the client is disconnected."""
+async def test_on_detach_unsubscribes_before_disconnecting(timer_mass: MusicAssistant) -> None:
+    """Test the registered detach callbacks run before the client is disconnected."""
     player, client = _bind_player(timer_mass)
     calls: list[str] = []
-    player._on_unload_callbacks.append(lambda: calls.append("unsubscribe"))
+    player._on_detach_callbacks.append(lambda: calls.append("unsubscribe"))
     client.disconnect = AsyncMock(side_effect=lambda: calls.append("disconnect"))
 
-    await player.on_unload()
+    await player.on_detach()
 
     assert calls == ["unsubscribe", "disconnect"]
 
@@ -373,7 +403,7 @@ async def test_a_listener_ending_during_the_unload_cannot_rearm_a_reconnect(
     # release the listener so it is queued to run its finally, then unload without
     # yielding in between: the cancellations and connected=False must be indivisible
     socket_drops.set()
-    await player.on_unload()
+    await player.on_detach()
 
     with pytest.raises(asyncio.CancelledError):
         await listener
@@ -388,7 +418,7 @@ async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistan
     client.disconnect = AsyncMock(side_effect=OSError("speaker unreachable"))
     player.reconnect(0)
 
-    await player.on_unload()
+    await player.on_detach()
 
     assert player.connected is False
     assert timer_mass._tracked_timers == {}
@@ -402,6 +432,7 @@ def _make_externally_paused_player() -> tuple[SonosPlayer, MagicMock, MagicMock]
     player._attr_playback_state = PlaybackState.PAUSED
     player._attr_active_source = SOURCE_SPOTIFY
     player._attr_current_media = PlayerMedia(uri="spotify:track:1", title="Shout")
+    _attach_to_player(player)
     return player, mass, client
 
 
@@ -460,7 +491,9 @@ def _connected_player() -> tuple[SonosPlayer, MagicMock, MagicMock]:
     player._attr_source_list = []
     player._attr_group_members = []
     player._attr_can_group_with = set()
-    player._provider = MagicMock(instance_id="sonos")
+    player._provider = MagicMock(
+        instance_id="sonos", get_protocol=lambda pid: player.mass.players.get_protocol(pid)
+    )
     return player, mass, client
 
 
@@ -633,7 +666,7 @@ def test_a_group_child_reports_the_play_modes_of_its_coordinator() -> None:
     client.player.group.play_modes.repeat_one = None
     group_parent = MagicMock()
     _report_paused_spotify(group_parent.client.player.group)
-    mass.players.get_player.return_value = group_parent
+    mass.players.get_protocol.return_value = group_parent
 
     player.on_player_event(None)
 
@@ -1047,7 +1080,7 @@ def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> No
     group_parent.client.player.group.position = 0.0
     group_parent.client.player.group.container_type = ContainerType.LINEIN
     group_parent.client.player.group.playback_metadata = {}
-    mass.players.get_player.return_value = group_parent
+    mass.players.get_protocol.return_value = group_parent
 
     # twice: a transient entry would only be promoted to its template on the next update
     player.on_player_event(None)
@@ -1062,7 +1095,7 @@ def test_a_service_we_did_not_map_leaves_the_source_list_when_it_is_given_up_on(
     player, _ = _speaker_reporting_paused_qobuz()
     player.on_player_event(None)
 
-    player.mark_external_source_ended()
+    _attach_to_player(player).mark_external_source_ended()
 
     assert player._attr_active_source is None
     assert player.source_list == [PLAYER_SOURCE_MAP[SOURCE_LINE_IN]]
@@ -1077,7 +1110,9 @@ def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:
     player._attr_name = "Portable"
     player._config = MagicMock()
     player._config.name = None
-    player._provider = MagicMock(instance_id="sonos")
+    player._provider = MagicMock(
+        instance_id="sonos", get_protocol=lambda pid: player.mass.players.get_protocol(pid)
+    )
     return player, mass
 
 
@@ -1149,7 +1184,7 @@ async def test_a_goodbye_reads_as_sleep_only_when_we_control_power(power_control
     player._attr_playback_state = PlaybackState.PAUSED
     player._disconnect = AsyncMock()  # type: ignore[method-assign]
 
-    with patch.object(SonosPlayer, "power_control", power_control):
+    with patch.object(player, "_player", MagicMock(spec=Player, power_control=power_control)):
         await player.on_mdns_goodbye()
 
     if power_control == PLAYER_CONTROL_NATIVE:
@@ -1174,7 +1209,9 @@ async def test_reconnecting_only_powers_on_after_a_confirmed_sleep(
     player._attr_powered = False
     player._marked_asleep = marked_asleep
 
-    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE):
+    with patch.object(
+        player, "_player", MagicMock(spec=Player, power_control=PLAYER_CONTROL_NATIVE)
+    ):
         await _connect_player(player, client)
 
     assert player._attr_powered is marked_asleep
@@ -1192,7 +1229,9 @@ async def test_a_failed_connect_puts_a_portable_to_sleep_without_retrying() -> N
         side_effect=CannotConnect(OSError("no route to host"))
     )
 
-    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE):
+    with patch.object(
+        player, "_player", MagicMock(spec=Player, power_control=PLAYER_CONTROL_NATIVE)
+    ):
         await player._connect(retry_on_fail=5)
 
     assert player._attr_powered is False
@@ -1224,13 +1263,13 @@ async def test_set_members_returns_once_the_sonos_group_reports_the_new_member(
 ) -> None:
     """Test set_members waits for the Sonos group event before returning."""
     player, client = _bind_player(timer_mass)
-    timer_mass.players = MagicMock(get_player=MagicMock(return_value=None))
-    client.player.group_members = [player.player_id]
+    timer_mass.players = MagicMock(get_protocol=MagicMock(return_value=None))
+    client.player.group_members = [player.protocol_id]
 
     def _apply_new_member(**_kwargs: Any) -> None:
         asyncio.get_running_loop().call_later(
             0.3,
-            lambda: setattr(client.player, "group_members", [player.player_id, "sonos_player_2"]),
+            lambda: setattr(client.player, "group_members", [player.protocol_id, "sonos_player_2"]),
         )
 
     client.player.group.modify_group_members = AsyncMock(side_effect=_apply_new_member)
@@ -1246,8 +1285,8 @@ async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_membe
 ) -> None:
     """Test set_members returns without raising if the group never reports the new member."""
     player, client = _bind_player(timer_mass)
-    timer_mass.players = MagicMock(get_player=MagicMock(return_value=None))
-    client.player.group_members = [player.player_id]
+    timer_mass.players = MagicMock(get_protocol=MagicMock(return_value=None))
+    client.player.group_members = [player.protocol_id]
     client.player.group.modify_group_members = AsyncMock()
 
     with patch(
@@ -1256,7 +1295,7 @@ async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_membe
     ):
         await player.set_members(player_ids_to_add=["sonos_player_2"])
 
-    assert client.player.group_members == [player.player_id]
+    assert client.player.group_members == [player.protocol_id]
 
 
 @pytest.mark.asyncio
@@ -1273,7 +1312,7 @@ async def test_ungroup_leaves_a_group_whose_coordinator_is_offline_by_creating_i
     client.create_group = AsyncMock()
     coordinator, _ = _bind_player(mass)
     coordinator._attr_available = coordinator.connected = coordinator_state == "connected"
-    mass.players.get_player.return_value = None if coordinator_state == "unknown" else coordinator
+    mass.players.get_protocol.return_value = None if coordinator_state == "unknown" else coordinator
 
     await player.ungroup()
 
@@ -1301,4 +1340,28 @@ async def test_ungroup_without_a_coordinator_to_reach_leaves_the_group(situation
 
     client.player.leave_group.assert_awaited_once()
     client.create_group.assert_not_awaited()
-    mass.players.get_player.assert_not_called()
+    mass.players.get_protocol.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queue_playing", [True, False])
+async def test_pause_stops_a_speaker_playing_the_queue_of_its_player(queue_playing: bool) -> None:
+    """Test a speaker playing a Music Assistant queue is stopped instead of paused."""
+    player, mass, client = _connected_player()
+    client.player.is_passive = False
+    group = client.player.group
+    group.stop = AsyncMock()
+    group.pause = AsyncMock()
+    group.playback_actions.can_pause = True
+    player._player = MagicMock(spec=Player)
+    player._player.active_source = "pl0123456789ab"
+    mass.player_queues.get.return_value = MagicMock() if queue_playing else None
+
+    await player.pause()
+
+    mass.player_queues.get.assert_called_once_with("pl0123456789ab")
+    if queue_playing:
+        group.stop.assert_awaited_once()
+        group.pause.assert_not_awaited()
+    else:
+        group.pause.assert_awaited_once()

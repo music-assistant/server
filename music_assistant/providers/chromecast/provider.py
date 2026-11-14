@@ -10,12 +10,10 @@ import time
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-import pychromecast
 from pychromecast.controllers.multizone import MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
 
 from music_assistant.constants import (
-    CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_LOG_LEVEL,
     VERBOSE_LOG_LEVEL,
@@ -82,11 +80,14 @@ class ChromecastProvider(PlayerProvider):
         return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
     async def discover_players(self) -> None:
-        """Discover Cast players on the network."""
+        """Start the discovery of Cast devices, or offer again the ones it found unattached."""
+        assert self.browser is not None  # for type checking
         if self._discovery_running:
+            # the browser reports a device again only when its announcement changes, so a
+            # removed or re-enabled one is offered from what the browser already knows
+            await self.mass.loop.run_in_executor(None, self._offer_known_devices)
             return
         self._discovery_running = True
-        assert self.browser is not None  # for type checking
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -127,7 +128,7 @@ class ChromecastProvider(PlayerProvider):
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
-        cast_players = [player for player in self.players if isinstance(player, ChromecastPlayer)]
+        cast_players = [player for player in self.protocols if isinstance(player, ChromecastPlayer)]
         models: dict[str, int] = {}
         for cast_player in cast_players:
             model_name = cast_player.cast_info.model_name
@@ -178,42 +179,44 @@ class ChromecastProvider(PlayerProvider):
                 return
             disc_uuid: UUID = disc_info.uuid
 
-            player_id = str(disc_uuid)
+            protocol_id = str(disc_uuid)
 
             # (Re-)register as a dashboard endpoint; includes devices disabled as a
             # player, since dashboard casting targets a display, not a MA player.
             self.mass.loop.call_soon_threadsafe(self.dashboards.register, disc_uuid, disc_info)
 
             # If player already registered, just update cast info (fast path)
-            castplayer = self.mass.players.get_player(player_id)
+            castplayer = self.get_protocol(protocol_id)
             if castplayer:
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 castplayer.cast_info.update(disc_info)
-                socket_client = castplayer.cc.socket_client
-                if socket_client.services != disc_info.services:
-                    socket_client.services.clear()
-                    socket_client.services.update(disc_info.services)
+                # a protocol that is still attaching connects with the updated cast info
+                if castplayer.status_listener is not None:
+                    socket_client = castplayer.cc.socket_client
+                    if socket_client.services != disc_info.services:
+                        socket_client.services.clear()
+                        socket_client.services.update(disc_info.services)
                 self.mass.loop.call_soon_threadsafe(castplayer.update_state)
                 # An unavailable player may be a passive multichannel endpoint that
                 # slipped past the discovery filter (e.g. incomplete multizone info
                 # while the stereo pair was rebooting). Re-evaluate and remove it
                 # if it is now positively identified as such.
-                if self._should_recheck_multichannel_child(castplayer, player_id):
-                    self._pending_discoveries.add(player_id)
+                if self._should_recheck_multichannel_child(castplayer, protocol_id):
+                    self._pending_discoveries.add(protocol_id)
                     try:
                         asyncio.run_coroutine_threadsafe(
-                            self._recheck_multichannel_child(player_id, disc_info),
+                            self._recheck_multichannel_child(protocol_id, disc_info),
                             loop=self.mass.loop,
                         )
                     except RuntimeError:
                         # event loop already closed (shutdown): release the marker
-                        self._pending_discoveries.discard(player_id)
+                        self._pending_discoveries.discard(protocol_id)
                 return
 
             # Prevent duplicate discovery while async setup is in progress
-            if player_id in self._pending_discoveries:
+            if protocol_id in self._pending_discoveries:
                 return
-            self._pending_discoveries.add(player_id)
+            self._pending_discoveries.add(protocol_id)
 
         # Blocking work outside the lock to avoid blocking the discovery thread
         # for other devices while HTTP calls are in progress.
@@ -221,8 +224,8 @@ class ChromecastProvider(PlayerProvider):
         # On early return or exception, we clean it up here via finally.
         scheduled = False
         try:
-            if not self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLED, True):
-                self.logger.debug("Ignoring disabled player: %s", player_id)
+            if not self.mass.players.wants_protocol(protocol_id):
+                self.logger.debug("Ignoring disabled player: %s", protocol_id)
                 return
 
             self.logger.debug("Discovered new chromecast %s", disc_info)
@@ -237,35 +240,37 @@ class ChromecastProvider(PlayerProvider):
                     "Discovered a passive (multichannel) endpoint which will be ignored."
                 )
                 return
-            # create new Chromecast instance
-            chromecast = pychromecast.get_chromecast_from_cast_info(
-                disc_info,
-                self.mass.discovery.aiozc.zeroconf,
-            )
             # create and register the new ChromeCastPlayer
             asyncio.run_coroutine_threadsafe(
-                self._create_and_register_player(player_id, cast_info, chromecast),
+                self._create_and_register_player(protocol_id, cast_info),
                 loop=self.mass.loop,
             )
             scheduled = True
         finally:
             if not scheduled:
-                self._pending_discoveries.discard(player_id)
+                self._pending_discoveries.discard(protocol_id)
+
+    def _offer_known_devices(self) -> None:
+        """
+        Offer every device the discovery found that has no attached protocol.
+
+        NOTE: Runs in a worker thread like the discovery callbacks, NOT async friendly!
+        """
+        assert self.browser is not None  # for type checking
+        for uuid in list(self.browser.devices):
+            if not self.get_protocol(str(uuid)):
+                self._on_chromecast_discovered(uuid, "")
 
     async def _create_and_register_player(
-        self, player_id: str, cast_info: ChromecastInfo, chromecast: pychromecast.Chromecast
+        self, protocol_id: str, cast_info: ChromecastInfo
     ) -> None:
         """Create and register a new ChromecastPlayer."""
         try:
-            castplayer = ChromecastPlayer(
-                self, player_id, cast_info=cast_info, chromecast=chromecast
+            await self.mass.players.register(
+                ChromecastPlayer(self, protocol_id, cast_info=cast_info)
             )
-            await castplayer.async_setup()
-            await self.mass.players.register_or_update(castplayer)
-            # Set up Sendspin bridge
-            await self.bridge_manager.evaluate_bridge(castplayer)
         finally:
-            self._pending_discoveries.discard(player_id)
+            self._pending_discoveries.discard(protocol_id)
 
     def _on_chromecast_removed(
         self,
@@ -274,17 +279,16 @@ class ChromecastProvider(PlayerProvider):
         cast_info: CastInfo,
     ) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
-        player_id = str(uuid)
-        self.logger.debug("Chromecast removed: %s - %s", cast_info.friendly_name, player_id)
+        self.logger.debug("Chromecast removed: %s - %s", cast_info.friendly_name, uuid)
         # we ignore this for the player itself, as the Chromecast socket client handles that,
         # but the dashboard registration has no such fallback and must be dropped explicitly
         self.mass.loop.call_soon_threadsafe(self.dashboards.unregister, uuid)
 
     def _should_recheck_multichannel_child(
-        self, castplayer: ChromecastPlayer, player_id: str
+        self, castplayer: ChromecastPlayer, protocol_id: str
     ) -> bool:
         """Return whether an unavailable player should be re-evaluated as a multichannel child."""
-        if player_id in self._pending_discoveries:
+        if protocol_id in self._pending_discoveries:
             return False
         if castplayer.available or castplayer.cast_info.is_audio_group:
             return False
@@ -292,10 +296,10 @@ class ChromecastProvider(PlayerProvider):
             time.monotonic() - castplayer.last_multichannel_check
         ) > MULTICHANNEL_RECHECK_INTERVAL
 
-    async def _recheck_multichannel_child(self, player_id: str, disc_info: CastInfo) -> None:
+    async def _recheck_multichannel_child(self, protocol_id: str, disc_info: CastInfo) -> None:
         """Re-evaluate a player and remove it if it is a passive multichannel endpoint."""
         try:
-            castplayer = self.mass.players.get_player(player_id)
+            castplayer = self.get_protocol(protocol_id)
             if not isinstance(castplayer, ChromecastPlayer):
                 return
             castplayer.last_multichannel_check = time.monotonic()
@@ -303,13 +307,15 @@ class ChromecastProvider(PlayerProvider):
             await asyncio.to_thread(
                 cast_info.fill_out_missing_chromecast_info, self.mass.discovery.aiozc.zeroconf
             )
-            if cast_info.is_multichannel_child and self.mass.players.get_player(player_id):
+            if cast_info.is_multichannel_child and self.get_protocol(protocol_id):
                 self.logger.info(
                     "Removing %s as it is now identified as a passive (multichannel) endpoint",
                     castplayer.cast_info.friendly_name,
                 )
-                await self.mass.players.unregister(player_id, permanent=True)
+                # its bridge goes with it: the detach stops it, its bridge client is removed
+                # along with the protocol it rides on
+                await self.mass.players.remove_protocol(protocol_id)
         except Exception:
-            self.logger.debug("Multichannel re-check failed for %s", player_id, exc_info=True)
+            self.logger.debug("Multichannel re-check failed for %s", protocol_id, exc_info=True)
         finally:
-            self._pending_discoveries.discard(player_id)
+            self._pending_discoveries.discard(protocol_id)

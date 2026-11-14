@@ -11,16 +11,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from alexapy.errors import AlexapyError
+from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.alexa import AlexaPlayer, AlexaProvider
-from tests.common import MockProvider, create_mock_config
+from tests.common import MockProvider
 
 
 def _player() -> tuple[AlexaPlayer, Any]:
     """Return a player on an Echo at volume 20, and its provider."""
     provider = cast("Any", MockProvider("alexa", instance_id="alexa--1"))
-    provider.mass.config.get_base_player_config.return_value = create_mock_config("Echo")
+    provider.mass.config.get_base_protocol_config.return_value = PlayerConfig(
+        values={}, provider="alexa--1", player_id="Echo", default_name="Echo"
+    )
     provider.mass.loop.time.return_value = 100.0
     provider.get_volumes = AsyncMock(return_value={"SERIAL": 20})
     provider.step_volume = AsyncMock()
@@ -239,14 +242,14 @@ async def test_a_change_steps_from_the_echo_volume_now() -> None:
     assert player.volume_level == 40
 
 
-async def test_unload_drops_a_volume_change_on_its_way() -> None:
+async def test_detach_drops_a_volume_change_on_its_way() -> None:
     """A removed Echo gets no volume change that was still waiting or being sent."""
     player, provider = _player()
     with patch.object(player, "update_state"):
         await player.volume_set(40)
         provider.mass.call_later.call_args.args[1]()
         provider.mass.create_task.call_args.args[0].close()
-        await player.on_unload()
+        await player.on_detach()
     provider.mass.cancel_timer.assert_any_call("alexa_volume_Echo")
     provider.mass.create_task.return_value.cancel.assert_called_once()
 

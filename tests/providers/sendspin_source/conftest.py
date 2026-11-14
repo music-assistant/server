@@ -151,13 +151,28 @@ class _FakePlayer:
         player_id: str,
         state: PlaybackState = PlaybackState.IDLE,
         *,
-        display_name: str | None = None,
-        protocol_parent_id: str | None = None,
+        name: str | None = None,
     ) -> None:
         self.player_id = player_id
-        self.display_name = display_name or player_id
-        self.protocol_parent_id = protocol_parent_id
+        self.name = name or player_id
         self.queue = _FakeQueue(player_id, state)
+        self.available = True
+
+
+class _FakeProtocol:
+    """Sendspin protocol stand-in of a client: the player it is attached to, and its config."""
+
+    def __init__(
+        self, protocol_id: str, config: _FakeConfigController, player: _FakePlayer | None
+    ) -> None:
+        self.protocol_id = protocol_id
+        self.player = player
+        self._config = config
+
+    def get_config_value(self, key: str, default: Any = None) -> Any:
+        if (stored := self._config.values.get((self.protocol_id, key))) is not None:
+            return stored
+        return self._config.defaults.get((self.protocol_id, key), default)
 
 
 class _FakePlayers:
@@ -166,6 +181,8 @@ class _FakePlayers:
     def __init__(self) -> None:
         self.stopped: list[str] = []
         self.players: dict[str, _FakePlayer] = {}
+        # the Sendspin protocols of the clients, by client id
+        self.protocols: dict[str, _FakeProtocol] = {}
         self.stop_started: asyncio.Event | None = None
         self.release_stop: asyncio.Event | None = None
         # live source sessions, keyed on the player playing one
@@ -175,6 +192,9 @@ class _FakePlayers:
 
     def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
         return self.players.get(player_id)
+
+    def get_protocol(self, protocol_id: str) -> _FakeProtocol | None:
+        return self.protocols.get(protocol_id)
 
     def get_active_queue(self, player: _FakePlayer) -> _FakeQueue:
         return player.queue
@@ -243,18 +263,13 @@ class _FakeConfigController:
     """Config controller stand-in separating stored values from entry defaults."""
 
     def __init__(self) -> None:
+        # by (protocol id, key)
         self.values: dict[tuple[str, str], Any] = {}
+        # the defaults of the config entries a protocol declares, by (protocol id, key)
         self.defaults: dict[tuple[str, str], Any] = {}
 
-    def get_raw_player_config_value(self, player_id: str, key: str, default: Any = None) -> Any:
-        return self.values.get((player_id, key), default)
-
-    async def get_player_config_value(
-        self, player_id: str, key: str, *, default: Any = None
-    ) -> Any:
-        if (stored := self.values.get((player_id, key))) is not None:
-            return stored
-        return self.defaults.get((player_id, key), default)
+    def get_protocol_value(self, protocol_id: str, key: str, default: Any = None) -> Any:
+        return self.values.get((protocol_id, key), default)
 
 
 class _FakeMass:
@@ -366,9 +381,27 @@ async def make_provider(
         cast("Any", _FakeConfig(config_values)),
     )
     for client in clients:
-        get_players(provider).players[client.client_id] = _FakePlayer(client.client_id)
+        attach_client(provider, client.client_id, client.client_id)
     await provider.loaded_in_mass()
     return provider
+
+
+def attach_client(
+    provider: SendspinSourceProvider, client_id: str, player_id: str, **player: Any
+) -> _FakePlayer:
+    """
+    Attach the Sendspin protocol of a client to a player, which is created.
+
+    :param provider: The provider whose fake players controller holds it.
+    :param client_id: The client id, which is the id of its protocol.
+    :param player_id: The id of the player: the client id for a pre-split record, else
+        an id of its own.
+    :param player: More attributes of the player, such as its display name.
+    """
+    players = get_players(provider)
+    attached = players.players[player_id] = _FakePlayer(player_id, **player)
+    players.protocols[client_id] = _FakeProtocol(client_id, get_config(provider), attached)
+    return attached
 
 
 def get_config(provider: SendspinSourceProvider) -> _FakeConfigController:

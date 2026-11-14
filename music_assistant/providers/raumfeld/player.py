@@ -32,7 +32,7 @@ from music_assistant.constants import (
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     CONF_RESTART_ON_JOIN,
@@ -206,7 +206,7 @@ def _near_track_end(pos: dict[str, str]) -> bool:
     return not duration or elapsed >= duration - NEAR_END_WINDOW
 
 
-class RaumfeldPlayer(Player):
+class RaumfeldPlayer(PlayerProtocol):
     """A single Raumfeld room, exposed to Music Assistant as a player."""
 
     _attr_type = PlayerType.PLAYER
@@ -266,11 +266,11 @@ class RaumfeldPlayer(Player):
     def __init__(
         self,
         provider: RaumfeldPlayerProvider,
-        player_id: str,
+        protocol_id: str,
         room: str,
     ) -> None:
         """Init the player for the given Raumfeld room."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.room = room
         self._attr_name = room
         self._attr_available = True
@@ -297,7 +297,7 @@ class RaumfeldPlayer(Player):
         self._upnp_actions: dict[tuple[str, str, str], UpnpAction] = {}
         # timestamp of the last power command, see POWER_SETTLE_TIME
         self._power_changed_at = 0.0
-        self._advance_task_id = f"raumfeld_advance_{player_id}"
+        self._advance_task_id = f"raumfeld_advance_{protocol_id}"
         self._attr_device_info = DeviceInfo(
             model=provider.room_model(room) or "Raumfeld",
             manufacturer="Teufel",
@@ -312,8 +312,8 @@ class RaumfeldPlayer(Player):
         if renderer_uuid:
             self._attr_device_info.add_identifier(IdentifierType.UUID, renderer_uuid)
         # The IP is also needed for the room whose renderer runs on the host: its Chromecast
-        # and Sendspin outputs share no UUID with the renderer, so without it they end up
-        # in a universal player of their own, which this player can then not take over.
+        # and Sendspin outputs share no UUID with the renderer, so without it they would
+        # become players of their own.
         # The host's other renderers on that IP are its virtual zone renderers, which the
         # DLNA provider ignores, so they can no longer be linked to this room.
         if renderer_ip:
@@ -360,9 +360,9 @@ class RaumfeldPlayer(Player):
         """Return the player-specific config entries (sample-rate / bit-depth options)."""
         return [*PLAYER_CONFIG_ENTRIES]
 
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
+    async def on_detach(self) -> None:
+        """Handle logic when the protocol is detached from its player."""
+        await super().on_detach()
         self.mass.cancel_timer(self._announce_timer_id)
         self.mass.cancel_task(self._announce_task_id)
         self.mass.cancel_timer(self._event_poll_timer_id)
@@ -401,7 +401,7 @@ class RaumfeldPlayer(Player):
 
         :param room: The room's current name as reported by the host.
         """
-        # the player_id is tied to the hardware, but the host is addressed by room name, so
+        # the protocol id is tied to the hardware, but the host is addressed by room name, so
         # the stored name must track a rename or play/stop/volume would target a stale name
         if room == self.room:
             return
@@ -430,6 +430,26 @@ class RaumfeldPlayer(Player):
             return
         self._attr_device_info.model = model
         self.update_state()
+
+    async def set_renderer(self, renderer_uuid: str | None, renderer_ip: str | None) -> None:
+        """
+        Report the renderer the room plays through, as the host lists it now.
+
+        :param renderer_uuid: The UUID of the room's renderer, or ``None`` to keep the known one.
+        :param renderer_ip: The IP address of the room's renderer, or ``None`` to keep the known one.
+        """
+        identifiers = self._attr_device_info.identifiers
+        changed = False
+        for identifier_type, value in (
+            (IdentifierType.UUID, renderer_uuid),
+            (IdentifierType.IP_ADDRESS, renderer_ip),
+        ):
+            if value and identifiers.get(identifier_type) != value:
+                self._attr_device_info.add_identifier(identifier_type, value)
+                changed = True
+        if changed:
+            # publishes the identity of the room under its renderer's new address
+            await self.mass.players.register(self)
 
     def set_line_in(self, line_in: tuple[str, str] | None) -> None:
         """
@@ -468,11 +488,11 @@ class RaumfeldPlayer(Player):
         """
         Set this player's sync-group members (leader first), or ``[]`` when solo.
 
-        :param member_ids: Player ids in the group, with this player (the leader) first.
+        :param member_ids: Protocol ids of the rooms in the group, this room (the leader) first.
         """
         # keep the order MA already has for the same rooms, and stay quiet when nothing changed
         if set(member_ids) == set(self._attr_group_members) and (
-            not member_ids or member_ids[0] == self.player_id
+            not member_ids or member_ids[0] == self.protocol_id
         ):
             return
         added = set(member_ids) - set(self._attr_group_members)
@@ -486,15 +506,12 @@ class RaumfeldPlayer(Player):
     @property
     def leads_group(self) -> bool:
         """Return whether this player currently leads a sync group in Music Assistant."""
-        return len(self._attr_group_members) > 1 and self._attr_group_members[0] == self.player_id
+        return len(self._attr_group_members) > 1 and self._attr_group_members[0] == self.protocol_id
 
     @property
     def plays_own_queue(self) -> bool:
         """Return whether this player is playing a queue Music Assistant started on it."""
-        return (
-            self._attr_active_source == self.player_id
-            and self._attr_playback_state == PlaybackState.PLAYING
-        )
+        return self._queue_is_source() and self._attr_playback_state == PlaybackState.PLAYING
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]] | None:
@@ -506,7 +523,7 @@ class RaumfeldPlayer(Player):
         # the rates each of its rooms plays.
         rates = set(self._configured_sample_rates())
         for pid in self._attr_group_members[1:]:
-            if isinstance(member := self.mass.players.get_player(pid), RaumfeldPlayer):
+            if isinstance(member := self.provider.get_protocol(pid), RaumfeldPlayer):
                 rates &= set(member._configured_sample_rates())
         return sorted(rates) or [(44100, 16)]
 
@@ -690,7 +707,7 @@ class RaumfeldPlayer(Player):
             if media.media_type in (MediaType.FLOW_STREAM, MediaType.ANNOUNCEMENT)
             else self.get_supported_sample_rates()
         )
-        url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
         didl_metadata = create_didl_metadata(media, url)
         self._flow_url = url if self._is_queue_flow(url) else None
         self._announced_item_id = None
@@ -722,7 +739,7 @@ class RaumfeldPlayer(Player):
             )
         # optimistic state update; poll() will reconcile with the device
         self.set_current_media(uri=url, clear_all=True)
-        self._attr_active_source = self.player_id
+        self._attr_active_source = self._queue_id
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
@@ -872,7 +889,7 @@ class RaumfeldPlayer(Player):
                     add_rooms = [
                         room
                         for pid in player_ids_to_add
-                        if (room := self._player_id_to_room(pid)) is not None
+                        if (room := self._protocol_id_to_room(pid)) is not None
                     ]
                     await self._add_rooms_to_zone(add_rooms)
                     # the host pulls an added room into the running stream by itself, but
@@ -881,7 +898,7 @@ class RaumfeldPlayer(Player):
                         await self._wake_rooms(add_rooms)
                 for pid in player_ids_to_remove or []:
                     # only a room in this leader's zone is this leader's to take out
-                    if (room := self._player_id_to_room(pid)) is not None and room in (
+                    if (room := self._protocol_id_to_room(pid)) is not None and room in (
                         self._active_zone() or [self.room]
                     ):
                         await self.raumfeld.drop_room(room)
@@ -896,13 +913,13 @@ class RaumfeldPlayer(Player):
                 members[pid] = None
             for pid in player_ids_to_remove or []:
                 members.pop(pid, None)
-            other_member_ids = [pid for pid in members if pid != self.player_id]
+            other_member_ids = [pid for pid in members if pid != self.protocol_id]
             self._attr_group_members = (
-                [self.player_id, *other_member_ids] if other_member_ids else []
+                [self.protocol_id, *other_member_ids] if other_member_ids else []
             )
             self.update_state()
         for pid in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
-            if (member := self.mass.players.get_player(pid)) is not None:
+            if (member := self.provider.get_protocol(pid)) is not None:
                 member.update_state()
         if player_ids_to_add and self.plays_own_queue:
             # on its own, so waiting for the host to hook the rooms in holds up nothing
@@ -944,11 +961,11 @@ class RaumfeldPlayer(Player):
         # the queue goes to the rooms that play on, not to ones that left the zone before
         self.set_group_members(
             [
-                self.player_id,
+                self.protocol_id,
                 *(
                     pid
                     for pid in self._attr_group_members[1:]
-                    if self._player_id_to_room(pid) in playing_on[0]
+                    if self._protocol_id_to_room(pid) in playing_on[0]
                 ),
             ]
         )
@@ -1053,13 +1070,13 @@ class RaumfeldPlayer(Player):
         # a grouped follower shares the zone's transport/position with its leader, so it
         # polls only its own (per-room) volume and mirrors the leader's state: without that a
         # stopped group would leave the follower reading as playing until it is ungrouped
-        if self.synced_to and self.synced_to != self.player_id:
+        if self.synced_to and self.synced_to != self.protocol_id:
             generation = self._playback_generation
             await self._update_volume()
             if not self._reading_is_current(generation):
                 self.update_state()
                 return
-            leader = self.mass.players.get_player(self.synced_to)
+            leader = self.provider.get_protocol(self.synced_to)
             self._attr_playback_state = leader.playback_state if leader else PlaybackState.IDLE
             # the leader has this room read after each read of the zone it made on an event
             evented = self._rendering_events and self._zone_events is not None
@@ -1243,7 +1260,7 @@ class RaumfeldPlayer(Player):
 
     async def _poll_room_playback(self) -> None:
         """Read what the room's own renderer plays (Spotify Connect), outside any zone."""
-        if self.linked_foreign_player() is not None:
+        if self.player is not None and self.player.linked_foreign_protocol() is not None:
             # the host keeps a room flagged for Spotify Connect after its session ended, and
             # the renderer then reports the app cast to the speaker past the host
             self._clear_external()
@@ -1522,7 +1539,9 @@ class RaumfeldPlayer(Player):
 
     def _announcing(self) -> bool:
         """Return whether Music Assistant is playing an announcement on this player."""
-        return bool(self.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS))
+        return self.player is not None and bool(
+            self.player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
 
     def _reading_is_current(self, generation: int) -> bool:
         """
@@ -1554,17 +1573,19 @@ class RaumfeldPlayer(Player):
         """
         # Spotify Connect does that, and the room then no longer shares the group's session,
         # whether it followed or led it
-        if not self.synced_to or self.synced_to == self.player_id:
+        if not self.synced_to or self.synced_to == self.protocol_id:
             if not self._attr_group_members:
                 return False
             if time.time() < self._handover_until:
                 return True
-            queue = self.mass.player_queues.get_active_queue(self.player_id)
+            player = self.player
+            queue = self.mass.players.get_active_queue(player) if player is not None else None
             # a paused queue is handed over too, as MA does when a leader leaves its group:
             # the rooms that remain keep it, with its position, to resume later
             if (
-                queue is not None
-                and queue.queue_id == self.player_id
+                player is not None
+                and queue is not None
+                and queue.queue_id == player.player_id
                 and queue.state != PlaybackState.IDLE
             ):
                 # The other rooms play on in a zone of their own, from this room's queue.
@@ -1572,20 +1593,20 @@ class RaumfeldPlayer(Player):
                 # group, so they show and control what they play.
                 self._handover_until = time.time() + QUEUE_HANDOVER_TIMEOUT
                 self._clear_next()
-                self.mass.create_task(self.mass.players.cmd_ungroup(self.player_id))
+                self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
                 return True
-            remaining = [pid for pid in self._attr_group_members if pid != self.player_id]
+            remaining = [pid for pid in self._attr_group_members if pid != self.protocol_id]
             self.set_group_members([])
             # the other rooms keep sharing a zone on the host, so they stay a group here,
             # led by one of them
             if len(remaining) > 1:
-                new_leader = self.mass.players.get_player(remaining[0])
+                new_leader = self.provider.get_protocol(remaining[0])
                 if isinstance(new_leader, RaumfeldPlayer):
                     new_leader.set_group_members(remaining)
             return False
-        leader = self.mass.players.get_player(self.synced_to)
+        leader = self.provider.get_protocol(self.synced_to)
         if isinstance(leader, RaumfeldPlayer):
-            remaining = [pid for pid in leader.group_members if pid != self.player_id]
+            remaining = [pid for pid in leader.group_members if pid != self.protocol_id]
             leader.set_group_members(remaining if len(remaining) > 1 else [])
         return False
 
@@ -1602,7 +1623,7 @@ class RaumfeldPlayer(Player):
         """
         Restart the stream for rooms that joined, once they play, if it has to or is asked to.
 
-        :param joined: The player ids of the rooms that joined.
+        :param joined: The protocol ids of the rooms that joined.
         """
         if self._stream_rates is None:
             return
@@ -1631,18 +1652,18 @@ class RaumfeldPlayer(Player):
             newest[pid] = max(joined_generation, newest.get(pid, joined_generation))
         await self._restart_for_group_rates(joined=newest)
 
-    async def _wait_for_rooms_playing(self, player_ids: list[str]) -> None:
+    async def _wait_for_rooms_playing(self, protocol_ids: list[str]) -> None:
         """
         Wait until the given rooms' own renderers play, for at most JOIN_SETTLE_TIME.
 
         The wait ends early when a room shows it cannot hook into the running stream.
 
-        :param player_ids: The player ids of the rooms to wait for.
+        :param protocol_ids: The protocol ids of the rooms to wait for.
         """
         waiting = {
             url
-            for pid in player_ids
-            if isinstance(room := self.mass.players.get_player(pid), RaumfeldPlayer)
+            for pid in protocol_ids
+            if isinstance(room := self.provider.get_protocol(pid), RaumfeldPlayer)
             and (url := self.raumfeld.room_transport_url(room.room)) is not None
         }
         if not waiting:
@@ -1680,7 +1701,7 @@ class RaumfeldPlayer(Player):
         """
         Restart this room's queue where it is, if a room that joined cannot play its stream.
 
-        :param joined: The player ids of the rooms that joined, with the playback generation
+        :param joined: The protocol ids of the rooms that joined, with the playback generation
             of the stream each one joined, if known.
         """
         # the host pulls a joining room into the running stream as it is; a room that
@@ -1690,9 +1711,10 @@ class RaumfeldPlayer(Player):
         # A check started by a join in the Raumfeld app runs on its own, so it waits for a
         # play, seek or stop in progress and looks at the playback that leaves.
         # a Sync Group this room renders for owns the queue, so its lock goes first
-        # strict: the check never looks at playback without the lock
+        if (player := self.player) is None:
+            return
         try:
-            async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
+            async with self.mass.players.get_group_and_player_lock(player.player_id):
                 if joined is not None and self._joins_settling:
                     # a room joined while this waited for the lock and is still being hooked
                     # in; that join's check restarts once it plays, for these rooms as well
@@ -1719,7 +1741,7 @@ class RaumfeldPlayer(Player):
                     if not lagging:
                         return
                 # the queue that plays here: the room's own, or that of a Sync Group it renders
-                queue = self.mass.players.get_active_queue(self)
+                queue = self.mass.players.get_active_queue(player)
                 if queue is None or queue.current_item is None:
                     return
                 self.logger.debug(
@@ -1747,8 +1769,8 @@ class RaumfeldPlayer(Player):
         """Return whether a room of this group asks for a restart when a room joins."""
         # set on the room that lags (it is that room's speaker the user hears behind) or on
         # the leader, whose stream is the one that restarts
-        for pid in self._attr_group_members or [self.player_id]:
-            room = self if pid == self.player_id else self.mass.players.get_player(pid)
+        for pid in self._attr_group_members or [self.protocol_id]:
+            room = self if pid == self.protocol_id else self.provider.get_protocol(pid)
             if (
                 isinstance(room, RaumfeldPlayer)
                 and room.config.get_value(CONF_RESTART_ON_JOIN, False) is True
@@ -1765,7 +1787,7 @@ class RaumfeldPlayer(Player):
         for pid in self._attr_group_members[1:]:
             # a member still in this room's zone does not tell where the queue plays on: a
             # group can split with some members staying, and the others playing on
-            if (room := self._player_id_to_room(pid)) is None or room in own_zone:
+            if (room := self._protocol_id_to_room(pid)) is None or room in own_zone:
                 continue
             if (zone := self.raumfeld.get_zone_for_room(room)) is not None and zone not in zones:
                 zones.append(zone)
@@ -1796,7 +1818,7 @@ class RaumfeldPlayer(Player):
         of its own queue is dropped; a leader whose group left its zone waits for the zone
         watcher.
         """
-        if self.synced_to and self.synced_to != self.player_id:
+        if self.synced_to and self.synced_to != self.protocol_id:
             self._clear_next()
             return True
         return self._held_for_watcher()
@@ -1817,7 +1839,7 @@ class RaumfeldPlayer(Player):
         base_url = self.mass.streams.base_url
         uri = position.get("TrackURI") or ""
         parts = uri.removeprefix(f"{base_url}/").split("/") if uri.startswith(base_url) else []
-        return len(parts) > 2 and parts[0] in ("flow", "single") and parts[2] == self.player_id
+        return len(parts) > 2 and parts[0] in ("flow", "single") and parts[2] == self._queue_id
 
     async def _zone_plays(self, zone: list[str]) -> bool | None:
         """Return whether the zone is playing, or ``None`` while that cannot be told."""
@@ -1902,19 +1924,21 @@ class RaumfeldPlayer(Player):
         """Return whether the url is this room's queue played as one continuous flow stream."""
         base_url = self.mass.streams.base_url
         parts = url.removeprefix(f"{base_url}/").split("/") if url.startswith(base_url) else []
-        return len(parts) > 2 and parts[0] == "flow" and parts[2] == self.player_id
+        return len(parts) > 2 and parts[0] == "flow" and parts[2] == self._queue_id
 
     def _maybe_announce_flow_item(self) -> None:
         """Announce the flow stream's current track to the zone, if it has not been yet."""
         if (
             self._flow_url is None
-            or self._attr_active_source != self.player_id
+            or not self._queue_is_source()
             or self._attr_playback_state != PlaybackState.PLAYING
             # the zone is still starting the stream it was just given
             or time.time() - self._play_started_at < FLOW_ANNOUNCE_SETTLE_TIME
         ):
             return
-        if (queue := self.mass.player_queues.get(self.player_id)) is None:
+        if (queue_id := self._queue_id) is None or (
+            queue := self.mass.player_queues.get(queue_id)
+        ) is None:
             return
         current = queue.current_item
         # The queue moves on only after the timer announced the next track. It catches up
@@ -1941,12 +1965,12 @@ class RaumfeldPlayer(Player):
     @property
     def _announce_timer_id(self) -> str:
         """Return the id of the timer that announces the flow stream's next track."""
-        return f"raumfeld_announce_next_{self.player_id}"
+        return f"raumfeld_announce_next_{self.protocol_id}"
 
     @property
     def _announce_task_id(self) -> str:
         """Return the id of the task that sends an announcement to the zone."""
-        return f"raumfeld_announce_{self.player_id}"
+        return f"raumfeld_announce_{self.protocol_id}"
 
     def _schedule_next_announcement(self, queue: PlayerQueue) -> None:
         """
@@ -2000,15 +2024,16 @@ class RaumfeldPlayer(Player):
             self._flow_url is None
             or queue_item_id == self._announced_item_id
             # a station button or another source took over from the queue
-            or self._attr_active_source != self.player_id
+            or (queue_id := self._queue_id) is None
+            or self._attr_active_source != queue_id
             # a command that changes what plays is under way; the next reading tells
             or self._playback_changes
             # the room joined another room's zone, which announces its own queue
-            or (self.synced_to is not None and self.synced_to != self.player_id)
+            or (self.synced_to is not None and self.synced_to != self.protocol_id)
             or self._attr_playback_state != PlaybackState.PLAYING
         ):
             return
-        index = self.mass.player_queues.index_by_id(self.player_id, queue_item_id)
+        index = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
         if (
             forward_only
             and index is not None
@@ -2036,7 +2061,8 @@ class RaumfeldPlayer(Player):
 
         :param index: The queue index that plays now.
         """
-        queue = self.mass.player_queues.get(self.player_id)
+        queue_id = self._queue_id
+        queue = self.mass.player_queues.get(queue_id) if queue_id is not None else None
         return (
             queue is not None
             and queue.repeat_mode == RepeatMode.ALL
@@ -2059,7 +2085,9 @@ class RaumfeldPlayer(Player):
         # on and no request follows), so giving it the same flow url leaves the audio alone.
         if (zone := self._active_zone()) is None:
             return
-        if (item := self.mass.player_queues.get_item(self.player_id, queue_item_id)) is None:
+        if (queue_id := self._queue_id) is None or (
+            item := self.mass.player_queues.get_item(queue_id, queue_item_id)
+        ) is None:
             return
         media = await self.mass.player_queues.player_media_from_queue_item(item)
         if not self._reading_is_current(generation) or url != self._flow_url:
@@ -2202,7 +2230,7 @@ class RaumfeldPlayer(Player):
     @property
     def _event_poll_timer_id(self) -> str:
         """Return the id of the timer that reads the room after an event."""
-        return f"raumfeld_event_poll_{self.player_id}"
+        return f"raumfeld_event_poll_{self.protocol_id}"
 
     def _start_event_poll(self) -> None:
         """Read the room's state now, or again once a read that is running is done."""
@@ -2232,7 +2260,7 @@ class RaumfeldPlayer(Player):
         if not self.leads_group:
             return
         for member_id in self._attr_group_members[1:]:
-            member = self.mass.players.get_player(member_id)
+            member = self.provider.get_protocol(member_id)
             if isinstance(member, RaumfeldPlayer):
                 member._start_event_poll()
 
@@ -2335,9 +2363,10 @@ class RaumfeldPlayer(Player):
         """
         # a group rate check waits for this play to finish, so it sees the stream it started
         generation = self._playback_generation
-        # strict, like the queue's own play actions: never start the item without the lock
+        if (player := self.player) is None:
+            return
         try:
-            async with self.mass.players.get_group_and_player_lock(self.player_id, strict=True):
+            async with self.mass.players.get_group_and_player_lock(player.player_id):
                 if generation != self._playback_generation or not self._advance_armed:
                     # a play, seek or restart ran while this waited and replaced what ends
                     # here, or the room became a follower and its next item was dropped
@@ -2553,7 +2582,16 @@ class RaumfeldPlayer(Player):
                 return False
             await asyncio.sleep(ZONE_WAIT_INTERVAL)
 
-    def _player_id_to_room(self, player_id: str) -> str | None:
-        """Resolve a MA player_id of this provider back to its Raumfeld room name."""
-        player = self.mass.players.get_player(player_id)
-        return player.room if isinstance(player, RaumfeldPlayer) else None
+    def _protocol_id_to_room(self, protocol_id: str) -> str | None:
+        """Resolve a protocol id of this provider back to its Raumfeld room name."""
+        protocol = self.provider.get_protocol(protocol_id)
+        return protocol.room if isinstance(protocol, RaumfeldPlayer) else None
+
+    @property
+    def _queue_id(self) -> str | None:
+        """Return the id of the queue of the player this room is attached to."""
+        return self.player.player_id if self.player is not None else None
+
+    def _queue_is_source(self) -> bool:
+        """Return whether the active source is the queue of this room's player."""
+        return self._attr_active_source is not None and self._attr_active_source == self._queue_id

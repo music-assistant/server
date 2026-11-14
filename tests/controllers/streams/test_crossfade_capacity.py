@@ -183,7 +183,7 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
         display_name="Queue",
         index_in_buffer=0,
     )
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
@@ -277,7 +277,7 @@ async def test_crossfade_reads_its_window_past_the_resident_buffer(
         display_name="Queue",
         index_in_buffer=0,
     )
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)

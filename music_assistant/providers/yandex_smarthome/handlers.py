@@ -114,8 +114,8 @@ async def handle_devices_action(
             )
             continue
 
-        player_state = player.state if hasattr(player, "state") else player
-        if not is_player_exposable(player_state, exposed_ids=exposed_ids):  # type: ignore[arg-type]
+        player_state = player.state
+        if not is_player_exposable(player_state, exposed_ids=exposed_ids):
             results.append(
                 DeviceActionResult(
                     id=device_action.id,

@@ -43,7 +43,9 @@ async def display() -> AsyncGenerator[SendspinVisualizerPlayer]:
     group = SendspinGroup(server, client)
     client._group = group
     player = cast("Any", object.__new__(SendspinVisualizerPlayer))
-    player._player_id = "display"
+    player._protocol_id = "display"
+    # its player has an id of its own, which is what a group lists
+    player._player = SimpleNamespace(player_id="pl_display")
     player.api = client
     player._provider = SimpleNamespace(instance_id="sendspin")
     player.logger = logging.getLogger(__name__)
@@ -64,7 +66,9 @@ async def display() -> AsyncGenerator[SendspinVisualizerPlayer]:
         tasks.append(asyncio.create_task(coro))
 
     player.mass = SimpleNamespace(
-        players=SimpleNamespace(iter_players=iter_players, cmd_play=AsyncMock()),
+        players=SimpleNamespace(
+            iter_players=iter_players, iter_protocols=lambda _provider_id: [], cmd_play=AsyncMock()
+        ),
         create_task=create_task,
         subscribe=Mock(return_value=Mock()),
         candidates=candidates,
@@ -84,7 +88,7 @@ def _target(player_id: str = "group", **kwargs: Any) -> SimpleNamespace:
         available=kwargs.get("available", True),
         enabled=kwargs.get("enabled", True),
         group_members=[],
-        state=SimpleNamespace(static_group_members=kwargs.get("members", ["display"])),
+        static_group_members=kwargs.get("members", ["pl_display"]),
     )
 
 
@@ -125,7 +129,8 @@ async def test_grouped_display_preserves_audio_controls(
         with patch.object(display, "_schedule_membership_sync"):
             display._on_group_changed(group)
         leader = cast("Any", object.__new__(SendspinPlayer))
-        leader._player_id = "audio"
+        leader._protocol_id = "audio"
+        leader._player = None
         leader.mass = display.mass
         leader._provider = display.provider
         leader._handle_controller_event = AsyncMock()

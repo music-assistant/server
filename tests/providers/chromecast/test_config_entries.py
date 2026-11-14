@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -30,8 +30,7 @@ async def test_no_fixed_content_length_entry(model_name: str, cast_type: str) ->
         cast_type=cast_type,
         manufacturer="Google Inc.",
     )
-    with patch("music_assistant.providers.chromecast.player.CastStatusListener"):
-        player = ChromecastPlayer(MagicMock(), str(cast_info.uuid), cast_info, MagicMock())
+    player = ChromecastPlayer(MagicMock(), str(cast_info.uuid), cast_info)
 
     entries = await player.get_config_entries()
 

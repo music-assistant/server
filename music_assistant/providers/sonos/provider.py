@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
+from aiosonos.exceptions import CannotConnect, ConnectionFailed
 from aiosonos.utils import get_discovery_info
 from music_assistant_models.enums import EventType, IdentifierType
 from zeroconf import ServiceStateChange
@@ -37,9 +38,9 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
 
-def _refresh_task_id(player_id: str) -> str:
+def _refresh_task_id(protocol_id: str) -> str:
     """Return the debounce id for a speaker's pending cloud-queue refresh."""
-    return f"sonos_refresh_cloud_queue_{player_id}"
+    return f"sonos_refresh_cloud_queue_{protocol_id}"
 
 
 class SonosPlayerProvider(PlayerProvider):
@@ -71,27 +72,6 @@ class SonosPlayerProvider(PlayerProvider):
             self._handle_queue_items_updated, EventType.QUEUE_ITEMS_UPDATED
         )
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await super().loaded_in_mass()
-        # Handle config option for manual IP's
-        manual_ip_config = cast(
-            "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
-        )
-        for ip_address in manual_ip_config:
-            try:
-                # get discovery info from SONOS speaker so we can provide an ID & other info
-                discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, ip_address)
-            except ClientError as err:
-                self.logger.debug(
-                    "Ignoring %s (manual IP) as it is not reachable: %s", ip_address, str(err)
-                )
-                continue
-            player_id = discovery_info["device"]["id"]
-            sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
-            sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
-            await sonos_player.setup()
-
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._unloaded = True
@@ -118,12 +98,12 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
-        sonos_players = [player for player in self.players if isinstance(player, SonosPlayer)]
-        # active_output_protocol holds "native" or the player id of the protocol player in use
+        sonos_players = [player for player in self.protocols if isinstance(player, SonosPlayer)]
+        # active_output_protocol holds "native" or the id of the output protocol in use
         active_protocols = [
-            player.active_output_protocol
+            player.player.active_output_protocol
             for player in sonos_players
-            if player.active_output_protocol
+            if player.player is not None and player.player.active_output_protocol
         ]
         return {
             "speakers_total": len(sonos_players),
@@ -146,7 +126,8 @@ class SonosPlayerProvider(PlayerProvider):
         if state_change == ServiceStateChange.Removed:
             # a portable withdraws its announcement as it goes to sleep, long before the
             # websocket heartbeat notices
-            sonos_player = self.mass.players.get_player(name.split("@", 1)[0])
+            # an S1 speaker announces on the same service type, so the id can be foreign
+            sonos_player = self.mass.players.get_protocol(name.split("@", 1)[0])
             if isinstance(sonos_player, SonosPlayer):
                 self.mass.create_task(sonos_player.on_mdns_goodbye())
             return
@@ -155,10 +136,10 @@ class SonosPlayerProvider(PlayerProvider):
             # not a S2 player
             return
         name = name.split("@", 1)[1] if "@" in name else name
-        player_id = info.decoded_properties["uuid"]
-        assert isinstance(player_id, str)  # for type checking
+        protocol_id = info.decoded_properties["uuid"]
+        assert isinstance(protocol_id, str)  # for type checking
         # handle update for existing device
-        if sonos_player := self.mass.players.get_player(player_id):
+        if sonos_player := self.get_protocol(protocol_id):
             assert isinstance(sonos_player, SonosPlayer), (
                 "Player ID already exists but is not a SonosPlayer"
             )
@@ -176,19 +157,46 @@ class SonosPlayerProvider(PlayerProvider):
                 sonos_player.client.player_ip = cur_address
                 # schedule reconnect
                 sonos_player.reconnect()
-            self.mass.players.trigger_player_update(player_id)
+            sonos_player.update_state()
             return
-        if self._ignore_disabled_discovery(player_id, name):
+        if self._ignore_disabled_discovery(protocol_id, name):
             return
         # handle new player setup in a delayed task because mdns announcements
         # can arrive in (duplicated) bursts
-        task_id = f"setup_sonos_{player_id}"
+        task_id = f"setup_sonos_{protocol_id}"
         self._pending_setup_tasks.add(task_id)
-        self.mass.call_later(5, self._setup_player, player_id, name, info, task_id=task_id)
+        self.mass.call_later(5, self._setup_player, protocol_id, name, info, task_id=task_id)
+
+    async def discover_players(self) -> None:
+        """Set up the speakers at the manually configured IP addresses that are not attached."""
+        # the speakers that announce themselves are offered again by the mdns discovery
+        manual_ip_config = cast(
+            "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+        )
+        for ip_address in manual_ip_config:
+            try:
+                # get discovery info from SONOS speaker so we can provide an ID & other info
+                discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, ip_address)
+            except ClientError as err:
+                self.logger.debug(
+                    "Ignoring %s (manual IP) as it is not reachable: %s", ip_address, str(err)
+                )
+                continue
+            protocol_id = discovery_info["device"]["id"]
+            if self.get_protocol(protocol_id) or not self.mass.players.wants_protocol(protocol_id):
+                continue
+            sonos_player = SonosPlayer(self, protocol_id, discovery_info=discovery_info)
+            sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+            try:
+                await sonos_player.setup()
+            except (CannotConnect, ConnectionFailed) as err:
+                self.logger.debug(
+                    "Ignoring %s (manual IP) as it can not be connected: %s", ip_address, str(err)
+                )
 
     def _handle_queue_items_updated(self, event: MassEvent) -> None:
         """Tell the speakers playing a queue that its contents changed."""
-        for player in self.players:
+        for player in self.protocols:
             if not isinstance(player, SonosPlayer) or player.cloud_queue_id != event.object_id:
                 continue
             # invalidate straight away, so a window served before the command goes out does
@@ -196,7 +204,7 @@ class SonosPlayerProvider(PlayerProvider):
             player.bump_cloud_queue_version()
             # one edit can fan out into several of these (insert, autoplay refill, a duration
             # filled in), so coalesce the command itself into one per speaker
-            task_id = _refresh_task_id(player.player_id)
+            task_id = _refresh_task_id(player.protocol_id)
             self._pending_refresh_tasks.add(task_id)
             self.mass.call_later(1, player.refresh_cloud_queue, task_id=task_id)
 
@@ -209,14 +217,14 @@ class SonosPlayerProvider(PlayerProvider):
         else:
             logging.getLogger("aiosonos").setLevel(self.logger.level + 10)
 
-    async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
+    async def _setup_player(self, protocol_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        if self.mass.players.get_player(player_id):
+        if self.get_protocol(protocol_id):
             # set up in the meantime: this announcement arrived while an earlier
             # setup (mdns or manual IP) was still running
             self.logger.debug("Ignoring %s in discovery as it is already set up.", name)
             return
-        if self._ignore_disabled_discovery(player_id, name):
+        if self._ignore_disabled_discovery(protocol_id, name):
             return
         address = get_primary_ip_address(info)
         if address is None:
@@ -234,21 +242,21 @@ class SonosPlayerProvider(PlayerProvider):
             )
             return
         self.logger.debug("Discovered Sonos device %s on %s", name, address)
-        sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
+        sonos_player = SonosPlayer(self, protocol_id, discovery_info=discovery_info)
         sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         await sonos_player.setup()
 
-    def _ignore_disabled_discovery(self, player_id: str, name: str) -> bool:
+    def _ignore_disabled_discovery(self, protocol_id: str, name: str) -> bool:
         """
         Return whether discovery should ignore a disabled player.
 
-        :param player_id: The discovered Sonos player ID.
+        :param protocol_id: The discovered Sonos player ID.
         :param name: The discovered Sonos service name.
         """
-        if self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
-            self._ignored_disabled_players.discard(player_id)
+        if self.mass.players.wants_protocol(protocol_id):
+            self._ignored_disabled_players.discard(protocol_id)
             return False
-        if player_id not in self._ignored_disabled_players:
+        if protocol_id not in self._ignored_disabled_players:
             self.logger.debug("Ignoring %s in discovery as it is disabled.", name)
-            self._ignored_disabled_players.add(player_id)
+            self._ignored_disabled_players.add(protocol_id)
         return True

@@ -77,8 +77,8 @@ async def test_a_position_request_is_served_the_item_sitting_there_now() -> None
 
     assert "No streamdetails" in str(exc.value.reason)
     ctrl.mass.player_queues.get_item.assert_called_once_with(QUEUE_ID, 2)
-    player = ctrl.mass.players.get_player.return_value
-    player.on_queue_position_served.assert_called_once_with(2, ITEM_ID)
+    protocol = ctrl.mass.players.get_output_protocol.return_value
+    protocol.on_queue_position_served.assert_called_once_with(2, ITEM_ID)
     # the sweeps over open requests read the item from the request itself
     request.__setitem__.assert_called_once_with("queue_item_id", ITEM_ID)
 
@@ -92,7 +92,7 @@ async def test_a_position_past_the_end_of_the_queue_is_refused() -> None:
 
     assert "No queue item at position 7" in str(exc.value.reason)
     ctrl.audio.get_stream_details.assert_not_awaited()
-    ctrl.mass.players.get_player.return_value.on_queue_position_served.assert_not_called()
+    ctrl.mass.players.get_output_protocol.return_value.on_queue_position_served.assert_not_called()
 
 
 async def test_a_refused_request_is_logged_with_its_reason() -> None:
@@ -130,17 +130,17 @@ async def test_an_unknown_item_id_is_refused() -> None:
 
 
 def _url_controller() -> Any:
-    """Return a streams controller with one gapless, non-flow HTTP player."""
+    """Return a streams controller with one gapless, non-flow HTTP output protocol."""
     controller: Any = StreamsController.__new__(StreamsController)
     controller._base_url = "http://mass:8097"
     controller._flow_mode_owners = {}
     controller._boundary_mix_owners = {}
     controller.mass = mass = MagicMock()
-    player = MagicMock()
-    player.config.get_value.side_effect = lambda _key, default=None: default
-    player.flow_mode = False
-    player.supports_gapless = True
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.side_effect = lambda _key, default=None: default
+    protocol.flow_mode = False
+    protocol.supports_feature.return_value = True
+    mass.players.get_output_protocol.return_value = protocol
     mass.player_queues.get.return_value = SimpleNamespace(
         queue_id="queue-1",
         crossfade_enabled=False,
@@ -189,7 +189,7 @@ async def test_a_head_probe_does_not_bind_the_position() -> None:
             ctrl, _make_request("HEAD", queue_index="2")
         )
 
-    ctrl.mass.players.get_player.return_value.on_queue_position_served.assert_not_called()
+    ctrl.mass.players.get_output_protocol.return_value.on_queue_position_served.assert_not_called()
 
 
 def test_the_sweeps_read_a_flow_request_by_the_item_its_url_names() -> None:

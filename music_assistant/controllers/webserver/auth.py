@@ -32,7 +32,6 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
-    CONF_PLAYERS,
     DB_TABLE_BOOKMARKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
@@ -186,9 +185,6 @@ class AuthenticationManager:
 
         # migrate the Home Assistant system user of pre-existing installs to the service role
         await self._migrate_system_user_role()
-
-        # repair filters that were left pointing at removed providers/players
-        await self._prune_stale_user_filters()
 
         # clear rows left behind by user deletions from before those were cleaned up
         await self._prune_orphaned_user_rows()
@@ -2481,15 +2477,6 @@ class AuthenticationManager:
                 self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
         except Exception as err:
             self.logger.warning("Failed to clean up rows of deleted users: %s", err)
-
-    async def _prune_stale_user_filters(self) -> None:
-        """Drop user access filter entries for players that no longer exist."""
-        known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
-        # an empty config section means nothing is configured yet, which must not be
-        # mistaken for everything having been removed
-        await self._rewrite_user_filters(
-            keep_player=(lambda x: x in known_players) if known_players else None,
-        )
 
     async def _rewrite_user_filters(
         self,

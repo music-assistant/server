@@ -26,11 +26,10 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.setup_flow import SetupFlowStep
 
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PROVIDERS
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.util import import_module_in_thread, load_provider_module
-from music_assistant.models.player import Player
 from music_assistant.models.setup_flow import (
     AbortFlow,
     FlowReason,
@@ -48,6 +47,8 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
 
 LOGGER = logging.getLogger(__name__)
 
@@ -127,6 +128,10 @@ class SetupFlowMixin:
         def get(self, key: str, default: Any = None) -> Any: ...  # noqa: D102
 
         def set(self, key: str, value: Any, immediate: bool = False) -> None: ...  # noqa: D102
+
+        def set_protocol_setup_data(  # noqa: D102
+            self, protocol_id: str, setup_data: dict[str, Any]
+        ) -> None: ...
 
         def encrypt_string(self, str_value: str) -> str: ...  # noqa: D102
 
@@ -273,14 +278,13 @@ class SetupFlowMixin:
         """
         Start the setup flow for a player (e.g. pairing).
 
-        A player that itself needs no setup but wraps protocol child player(s) that do
-        (universal players, or native players wrapping protocol children) delegates to
-        the child's setup flow: to the single child that needs setup directly, or - when
-        more than one does - via a form that lets the user pick which child to set up.
-        The child's flow persists to the child's own config.
+        The flow is that of one of the protocols of the player and persists to that
+        protocol's own config. The player's own protocol comes first when it has a flow;
+        else the single audio protocol that needs setup runs directly, or - when more than
+        one does - a form lets the user pick which protocol to set up.
 
-        Also serves on-demand re-runs: when nothing needs setup (anymore), delegation
-        falls back to any child that merely has a flow, so a step the user skipped
+        Also serves on-demand re-runs: when nothing needs setup (anymore), the choice
+        falls back to any protocol that merely has a flow, so a step the user skipped
         earlier - an optional pairing, say - remains reachable.
 
         :param player_id: The player to set up.
@@ -291,42 +295,44 @@ class SetupFlowMixin:
         if player is None:
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
-        owner = f"provider.{player.provider.domain}"
         target_key = f"player_setup:{player_id}"
-        if player.implements_setup_flow:
-            # the player implements its own setup flow: run it directly
+        own = player.own_protocol
+        if own is not None and own.implements_setup_flow:
+            # the player's own protocol implements a setup flow: run it directly
             return await self._start_flow(
-                flow_coro=player.run_setup_flow,
-                context=self._player_flow_context(player),
+                flow_coro=own.run_setup_flow,
+                context=self._protocol_flow_context(own),
                 target_key=target_key,
                 required_scope=Scope.CONFIG_PLAYERS_WRITE,
                 finish_handler=self._finish_player_setup,
             )
-        # no direct setup: delegate to protocol child player(s), preferring the ones
+        # no direct setup: hand over to the audio protocol(s), preferring the ones
         # that actually need setup and falling back to any that can re-run their flow
-        children = self._protocol_children_with_setup_flow(player, needing_only=True)
-        if not children:
-            children = self._protocol_children_with_setup_flow(player, needing_only=False)
-        if len(children) == 1:
-            child = children[0]
+        protocols = self._audio_protocols_with_setup_flow(player, needing_only=True)
+        if not protocols:
+            protocols = self._audio_protocols_with_setup_flow(player, needing_only=False)
+        if len(protocols) == 1:
+            protocol = protocols[0]
             return await self._start_flow(
-                flow_coro=child.run_setup_flow,
-                context=self._player_flow_context(child),
-                # key on the child: a direct setup of the child must replace this flow
-                target_key=f"player_setup:{child.player_id}",
+                flow_coro=protocol.run_setup_flow,
+                context=self._protocol_flow_context(protocol),
+                # key on the protocol: a direct setup of it must replace this flow
+                target_key=f"player_setup:{protocol.protocol_id}",
                 required_scope=Scope.CONFIG_PLAYERS_WRITE,
                 finish_handler=self._finish_player_setup,
             )
-        if children:
+        if protocols:
             return await self._start_flow(
-                flow_coro=partial(self._run_child_selection_flow, children),
-                context=self._player_flow_context(player),
+                flow_coro=partial(self._run_protocol_selection_flow, protocols),
+                context=self._protocol_flow_context(protocols[0]),
                 target_key=target_key,
                 required_scope=Scope.CONFIG_PLAYERS_WRITE,
                 finish_handler=self._finish_player_setup,
             )
-        # nothing on this player (or its children) to configure
-        return self._synthesized_step(FlowStepType.ABORT, owner, reason="nothing_to_configure")
+        # nothing on this player (or its protocols) to configure
+        return self._synthesized_step(
+            FlowStepType.ABORT, player.translation_owner, reason="nothing_to_configure"
+        )
 
     @api_command("config/flows/submit")
     async def submit_setup_flow(
@@ -569,89 +575,84 @@ class SetupFlowMixin:
         self, session: SetupSession, values: dict[str, ConfigValueType]
     ) -> dict[str, str]:
         """Finish handler for player setup flows: persist and apply the collected setup data."""
-        player_id = session.context.player_id
-        assert player_id is not None  # always set for player flows
-        conf_key = f"{CONF_PLAYERS}/{player_id}"
-        raw_conf = self.get(conf_key)
-        if not raw_conf:
-            raise SetupFlowError(f"No config found for player {player_id}")
-        snapshot = dict(raw_conf.get("setup_data") or {})
-        self.set(f"{conf_key}/setup_data", {**snapshot, **self._encrypt_values(values)})
+        # the flow of a player is that of one of its protocols, which the context names
+        protocol_id = session.context.player_id
+        assert protocol_id is not None  # always set for player flows
+        protocol = self.mass.players.get_protocol(protocol_id)
+        if protocol is None:
+            raise SetupFlowError(f"Player {protocol_id} is not available")
+        snapshot = dict(protocol.config.setup_data)
+        self.set_protocol_setup_data(protocol_id, {**snapshot, **self._encrypt_values(values)})
         try:
-            config = await self.get_player_config(player_id)
             changed_keys = {f"setup_data/{key}" for key in values}
-            await self.mass.players.on_player_config_change(config, changed_keys)
+            await self.mass.players.on_protocol_config_change(protocol_id, changed_keys)
         except asyncio.CancelledError:
-            self.set(f"{conf_key}/setup_data", snapshot)
+            self.set_protocol_setup_data(protocol_id, snapshot)
             raise
         except Exception as err:
-            # reading back or applying the updated config failed: restore the previous setup_data
-            self.set(f"{conf_key}/setup_data", snapshot)
+            # applying the updated config failed: restore the previous setup_data
+            self.set_protocol_setup_data(protocol_id, snapshot)
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
                 translation_args=getattr(err, "translation_args", None),
                 translation_owner=getattr(err, "translation_owner", None),
             ) from err
-        self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
+        player_id = protocol.player.player_id if protocol.player else protocol_id
+        if protocol.player is not None:
+            self.mass.signal_event(
+                EventType.PLAYER_CONFIG_UPDATED,
+                object_id=player_id,
+                data=await self.get_player_config(player_id),
+            )
         return {"player_id": player_id}
 
-    def _player_flow_context(self, player: Player) -> SetupFlowContext:
-        """Build the setup flow context (with decrypted prefill) for the given player."""
-        raw_conf = self.get(f"{CONF_PLAYERS}/{player.player_id}") or {}
+    def _protocol_flow_context(self, protocol: PlayerProtocol) -> SetupFlowContext:
+        """Build the setup flow context (with decrypted prefill) for the given protocol."""
+        raw_conf = self.get(f"{CONF_PLAYER_PROTOCOLS}/{protocol.protocol_id}") or {}
         return SetupFlowContext(
             kind="setup",
             reason="user",
-            domain=player.provider.domain,
-            instance_id=player.provider.instance_id,
-            player_id=player.player_id,
-            setup_data=self._decrypt_values(raw_conf.get("setup_data") or {}),
+            domain=protocol.provider.domain,
+            instance_id=protocol.provider.instance_id,
+            player_id=protocol.protocol_id,
+            setup_data=self._decrypt_values(protocol.config.setup_data),
             values=self._decrypt_values(raw_conf.get("values") or {}),
         )
 
-    def _protocol_children_with_setup_flow(
+    def _audio_protocols_with_setup_flow(
         self, player: Player, *, needing_only: bool
-    ) -> list[Player]:
+    ) -> list[PlayerProtocol]:
         """
-        Return the player's protocol child players whose setup flow is available.
+        Return the player's audio protocols whose setup flow is available.
 
-        Covers the wrapper case: a universal player, or a native player wrapping
-        protocol children, whose own setup is a no-op but whose linked protocol
-        outputs still require pairing/credentials.
+        Covers the player whose own protocol has no setup of its own (or that has none),
+        but whose audio protocols still require pairing/credentials.
 
-        :param player: The (wrapper) player whose protocol children to inspect.
-        :param needing_only: Only return children that currently need setup.
+        :param player: The player whose audio protocols to inspect.
+        :param needing_only: Only return protocols that currently need setup.
         """
-        children: list[Player] = []
-        seen: set[str] = set()
-        for output_protocol in player.output_protocols:
-            child_id = output_protocol.output_protocol_id
-            if output_protocol.is_native or child_id in seen:
-                continue
-            seen.add(child_id)
-            child = self.mass.players.get_player(child_id)
-            if child is None or not child.has_setup_flow:
-                continue
-            if needing_only and not child.needs_setup:
-                continue
-            children.append(child)
-        return children
+        return [
+            protocol
+            for protocol in player.audio_protocols
+            if protocol.has_setup_flow and (protocol.needs_setup or not needing_only)
+        ]
 
-    async def _run_child_selection_flow(
-        self, children: list[Player], session: SetupSession
+    async def _run_protocol_selection_flow(
+        self, protocols: list[PlayerProtocol], session: SetupSession
     ) -> None:
         """
-        Run the wrapper flow that lets the user pick which protocol child to set up.
+        Run the flow that lets the user pick which protocol of a player to set up.
 
-        The selection form is owned by the parent; once a child is picked the session is
-        re-pointed at that child so its flow's steps localize and its ``finish()`` persists
-        under the child's own config.
+        Once a protocol is picked the session is re-pointed at it, so its flow's steps
+        localize and its ``finish()`` persists under the protocol's own config.
         """
         options = [
             ConfigValueOption(
-                value=child.player_id, title=f"{child.display_name} ({child.provider.name})"
+                value=protocol.protocol_id,
+                title=f"{protocol.display_name} ({protocol.provider.name})",
             )
-            for child in children
+            for protocol in protocols
         ]
         values = await session.form(
             [
@@ -659,25 +660,27 @@ class SetupFlowMixin:
                     key="child",
                     type=ConfigEntryType.STRING,
                     required=True,
-                    default_value=children[0].player_id,
+                    default_value=protocols[0].protocol_id,
                     options=options,
                 )
             ],
             step_id="select_child",
         )
-        child_id = str(values["child"])
-        child = next((candidate for candidate in children if candidate.player_id == child_id), None)
-        if child is None:
-            raise AbortFlow("nothing_to_configure")
-        child_raw = self.get(f"{CONF_PLAYERS}/{child_id}") or {}
-        session.retarget(
-            domain=child.provider.domain,
-            instance_id=child.provider.instance_id,
-            player_id=child_id,
-            setup_data=self._decrypt_values(child_raw.get("setup_data") or {}),
-            values=self._decrypt_values(child_raw.get("values") or {}),
+        protocol_id = str(values["child"])
+        protocol = next(
+            (candidate for candidate in protocols if candidate.protocol_id == protocol_id), None
         )
-        await child.run_setup_flow(session)
+        if protocol is None:
+            raise AbortFlow("nothing_to_configure")
+        context = self._protocol_flow_context(protocol)
+        session.retarget(
+            domain=context.domain,
+            instance_id=context.instance_id,
+            player_id=protocol_id,
+            setup_data=context.setup_data,
+            values=context.values,
+        )
+        await protocol.run_setup_flow(session)
 
     async def _get_setup_flow_module(self, manifest: ProviderManifest) -> Any | None:
         """

@@ -5,10 +5,10 @@ This module enables AirPlay devices to be controlled via the Sendspin protocol.
 Sendspin handles all synchronization and timing - AirPlay is just the output.
 
 The bridge:
-1. Registers AirPlay players as external Sendspin clients (using MAC as client_id)
+1. Registers AirPlay protocols as external Sendspin clients (using MAC as client_id)
 2. The Sendspin provider creates a SendspinPlayer for this external client
-3. Protocol linking parents the SendspinPlayer next to the AirPlayPlayer via the
-   declared underlying player (derived-transport edge)
+3. That SendspinPlayer rides on the AirPlay protocol (its underlying protocol) and is
+   attached to the player of that protocol as one of its outputs
 4. When grouped, Sendspin handles timing/sync, AirPlay streams audio
 
 Audio flow:
@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from aiosendspin.server.roles import AudioChunk
 
     from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .player import AirPlayPlayer
@@ -141,8 +142,8 @@ BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS: float = 30.0
 # run out the player stays out and idle.
 BRIDGE_REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
 
-# Player state fields that mean the AirPlay side moved the volume or the mute, so
-# the bridge role's copy of it has to follow.
+# Player state fields that mean the volume or the mute of a player moved, so the bridge
+# roles of its AirPlay protocols have to follow what those report.
 _VOLUME_STATE_FIELDS: frozenset[str] = frozenset({"volume_level", "volume_muted"})
 
 
@@ -156,7 +157,7 @@ def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     :param airplay_player: The AirPlay player to bridge.
     :return: The MAC address for use as client_id, or None if not available.
     """
-    mac = player_id_to_mac_address(airplay_player.player_id)
+    mac = player_id_to_mac_address(airplay_player.protocol_id)
     if is_valid_mac_address(mac):
         return bridge_client_id_from_mac(mac)
     return None
@@ -264,7 +265,7 @@ class SendspinAirPlayBridge:
         self.mass = provider.mass
         self.airplay_player = airplay_player
         self.sendspin_server = sendspin_server
-        self.logger = provider.logger.getChild(f"bridge.{airplay_player.player_id}")
+        self.logger = provider.logger.getChild(f"bridge.{airplay_player.protocol_id}")
 
         self._sendspin_client: SendspinClient | None = None
         self._bridge_client_id: str | None = None
@@ -324,7 +325,7 @@ class SendspinAirPlayBridge:
         # sendspin stream and immediately starts a new one; deferring the CLI
         # teardown across that gap lets the next stream reuse the connected
         # binary via flush-refill instead of a cold reconnect.
-        self._teardown_timer_id = f"bridge_teardown_{airplay_player.player_id}"
+        self._teardown_timer_id = f"bridge_teardown_{airplay_player.protocol_id}"
         # Guards the bridge's own registration teardown. Held across the stream
         # teardown, which takes the player's stream_spawn_lock, so a start path
         # must never be wrapped in this one: that would invert the two.
@@ -407,15 +408,16 @@ class SendspinAirPlayBridge:
             self._bridge_client_id,
         )
 
-        # Pre-register the AirPlay player_id so the resulting SendspinPlayer
-        # carries it as an AIRPLAY_ID identifier for cross-protocol matching.
+        # Pre-register the AirPlay protocol id so the resulting SendspinPlayer
+        # carries it as an AIRPLAY_ID identifier for cross-protocol matching,
+        # and rides on the AirPlay protocol.
         if sendspin_prov := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
             sendspin_prov.register_bridge_identifiers(
                 self._bridge_client_id,
-                {IdentifierType.AIRPLAY_ID: self.airplay_player.player_id},
+                {IdentifierType.AIRPLAY_ID: self.airplay_player.protocol_id},
             )
-            sendspin_prov.register_bridge_underlying_player(
-                self._bridge_client_id, self.airplay_player.player_id
+            sendspin_prov.register_bridge_underlying_protocol(
+                self._bridge_client_id, self.airplay_player.protocol_id
             )
 
         self._sendspin_client = self.sendspin_server.register_external_player(
@@ -463,9 +465,9 @@ class SendspinAirPlayBridge:
         """
         Adopt the AirPlay player's volume and mute into the bridge role.
 
-        The role is what the visible Sendspin player reports, so without this a
-        change made on the AirPlay side -- the device's own volume feedback, or a
-        mute released when a stream starts -- would leave the parent showing a
+        The role is what the Sendspin protocol of the bridge reports, so without this
+        a change made on the AirPlay side -- the device's own volume feedback, or a
+        mute released when a stream starts -- would leave the player showing a
         level and mute state the speaker is not at.
         """
         if not self._bridge_role:
@@ -1030,14 +1032,14 @@ class SendspinAirPlayBridge:
     def _on_volume_change(self, volume: int) -> None:
         """Forward volume changes to the AirPlay player."""
         # The level is already on the AirPlay device's scale, so it is applied as-is.
-        # Where the role is the parent's volume control - a parent with no volume of
-        # its own, while the bridge streams - a volume from Music Assistant arrives
-        # here having passed the controller and been scaled into the parent's min/max
-        # range, so routing it back through cmd_volume_set would scale it a second
+        # Where the role is the player's volume control - while the bridge streams, its
+        # Sendspin protocol is the player's active output - a volume from Music Assistant
+        # arrives here having passed the controller and been scaled into the player's
+        # min/max range, so routing it back through cmd_volume_set would scale it a second
         # time and return over the same route, settling the speaker below the level
         # that was asked for. A volume a Sendspin controller set never passed the
-        # parent at all: that is an externally changed volume like any other, clamped
-        # to the limits on the parent's state update.
+        # player at all: that is an externally changed volume like any other, clamped
+        # to the limits on the player's state update.
         self.mass.create_task(self.airplay_player.volume_set(volume))
 
     def _on_mute_change(self, muted: bool) -> None:
@@ -1744,47 +1746,59 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
                 return decision
         return None
 
-    def get_transport_command_target(self, airplay_player_id: str) -> str | None:
+    def get_transport_command_target(self, protocol_id: str) -> str | None:
         """
-        Return the visible Sendspin session player controlling an AirPlay bridge.
+        Return the player whose Sendspin session controls an AirPlay bridge.
 
-        :param airplay_player_id: The AirPlay player reporting the command.
-        :return: The owning Sendspin session player ID, or None when Sendspin does
-            not currently control the AirPlay player.
+        :param protocol_id: The id of the AirPlay protocol reporting the command.
+        :return: The id of the player of the Sendspin sync leader of the bridge client,
+            else of the player the bridge client belongs to; None when Sendspin does not
+            currently control the AirPlay protocol.
         """
-        if not (bridge := self._bridges.get(airplay_player_id)):
+        if not (bridge := self._bridges.get(protocol_id)):
             return None
         if not bridge.owns_airplay_stream:
             return None
         if not (bridge_client_id := bridge.bridge_client_id):
             return None
-        if not (bridge_player := self.mass.players.get_player(bridge_client_id)):
+        if not (bridge_client := self.mass.players.get_protocol(bridge_client_id)):
             return None
+        if (sync_leader_id := bridge_client.synced_to) and (
+            sync_leader := self.mass.players.get_player_by_protocol(sync_leader_id)
+        ):
+            return sync_leader.player_id
+        return bridge_client.player.player_id if bridge_client.player else None
 
-        sync_leader_id = bridge_player.synced_to
-        if sync_leader_id:
-            if sync_leader := self.mass.players.get_player(sync_leader_id):
-                return sync_leader.protocol_parent_id or sync_leader.player_id
-            return sync_leader_id
-        return bridge_player.protocol_parent_id or bridge_player.player_id
-
-    def stop_streaming(self, airplay_player_id: str) -> bool:
+    def stop_streaming(self, protocol_id: str) -> bool:
         """
-        Stop streaming for a bridged AirPlay player.
+        Stop streaming for a bridged AirPlay protocol.
 
-        :param airplay_player_id: The AirPlay player ID.
+        :param protocol_id: The id of the AirPlay protocol.
         :return: True if a bridge was found and stopped, False otherwise.
         """
-        if bridge := self._bridges.get(airplay_player_id):
+        if bridge := self._bridges.get(protocol_id):
             bridge.stop_streaming()
             return True
         return False
 
-    def _bridge_client_id(self, player: Player) -> str | None:
+    def sync_volume(self, protocol_id: str) -> None:
+        """
+        Adopt the volume and mute an AirPlay protocol reports into its bridge.
+
+        Call it whenever the AirPlay protocol's own volume or mute changed, such as by
+        the device's volume feedback: the bridge client reports what its bridge role
+        holds, which is the volume of the player while it plays over Sendspin.
+
+        :param protocol_id: The id of the AirPlay protocol.
+        """
+        if bridge := self._bridges.get(protocol_id):
+            bridge.sync_role_volume_state()
+
+    def _bridge_client_id(self, player: PlayerProtocol) -> str | None:
         """Return the Sendspin client_id used to bridge an AirPlay player."""
         return get_bridge_client_id(cast("AirPlayPlayer", player))
 
-    def _create_bridge(self, player: Player) -> SendspinAirPlayBridge:
+    def _create_bridge(self, player: PlayerProtocol) -> SendspinAirPlayBridge:
         """Create a bridge instance for an AirPlay player."""
         sendspin_server = self.sendspin_server
         assert sendspin_server is not None  # guaranteed by _lifecycle_allows_bridge
@@ -1794,15 +1808,15 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
             sendspin_server,
         )
 
-    def _should_have_bridge(self, player: Player) -> bool:
+    def _should_have_bridge(self, player: PlayerProtocol) -> bool:
         """Return whether an AirPlay player should have a Sendspin bridge."""
         return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None
 
     def _on_player_state_updated(
         self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
-        """Feed an AirPlay player's own volume/mute changes back into its bridge role."""
+        """Feed a volume/mute change of a player back into the bridge roles of its protocols."""
         if not changed_values.keys() & _VOLUME_STATE_FIELDS:
             return
-        if bridge := self._bridges.get(updated_player.player_id):
-            bridge.sync_role_volume_state()
+        for protocol_id in updated_player.attached_protocols:
+            self.sync_volume(protocol_id)

@@ -37,7 +37,8 @@ def _make_player(
     api: Any, *, cls: type[SendspinBasePlayer] = SendspinBasePlayer, dismissed: bool = False
 ) -> SendspinBasePlayer:
     player = cls.__new__(cls)
-    player._player_id = "client-1"
+    player._protocol_id = "client-1"
+    player._player = None
     player._provider = cast(
         "SendspinProvider",
         SimpleNamespace(
@@ -47,7 +48,7 @@ def _make_player(
     )
     player.api = cast("SendspinClient", api)
     player.mass = mock.MagicMock()
-    player.mass.config.get_raw_player_config_value = mock.Mock(return_value=dismissed)
+    player.mass.config.get_protocol_value = mock.Mock(return_value=dismissed)
     return player
 
 
@@ -99,7 +100,7 @@ def test_declined_audio_input_clears_the_pending_state() -> None:
     )
     player = _make_player(api, dismissed=True)
     assert player._source_input_pending is False
-    config_get = cast("mock.Mock", player.mass.config.get_raw_player_config_value)
+    config_get = cast("mock.Mock", player.mass.config.get_protocol_value)
     config_get.assert_called_once_with("client-1", CONF_SOURCE_INPUT_DECLINED, False)
 
 
@@ -111,7 +112,7 @@ def test_an_input_declined_by_an_older_version_is_asked_again() -> None:
         unpaired_access=True,
     )
     player = _make_player(api)
-    config_get = cast("mock.Mock", player.mass.config.get_raw_player_config_value)
+    config_get = cast("mock.Mock", player.mass.config.get_protocol_value)
     config_get.side_effect = lambda _player_id, key, default: (
         key == "source_approval_dismissed" or default
     )

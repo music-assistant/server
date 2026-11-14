@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 111
+API_SCHEMA_VERSION: Final[int] = 112
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -129,6 +129,8 @@ CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
 CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_PLAYER_SPLIT_SESSION_ONLY: Final[str] = "player_split_session_only"
+CONF_PLAYER_SPLIT_TREE: Final[str] = "player_split_tree"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
 # the registered folders that were a mountpoint when they were registered
 CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"
@@ -137,6 +139,7 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
+CONF_PLAYER_PROTOCOLS: Final[str] = "player_protocols"
 CONF_PLAYER_QUEUES: Final[str] = "player_queues"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
@@ -197,14 +200,30 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_MIN_VOLUME: Final[str] = "min_volume"
 CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
-CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
-CONF_PROTOCOL_PARENT_ID: Final[str] = (
-    "protocol_parent_id"  # cached native player ID for protocol player
-)
+CONF_LEGACY_IDS: Final[str] = "legacy_ids"  # ids a player is also known under
+# the player the user took a protocol off, which it is not merged back into by itself
+CONF_UNLINKED_FROM: Final[str] = "unlinked_from"
+CONF_LAST_SEEN: Final[str] = "last_seen"  # when a player last had an available protocol
+# a player that only exists while its device is connected (a browser tab, an app)
+CONF_SESSION_ONLY: Final[str] = "session_only"
+# the device info a player last published, for when none of its protocols is attached
+CONF_DEVICE_INFO: Final[str] = "device_info"
+# the defaults the own protocol of a player last gave it, for when that is not attached
+CONF_PROTOCOL_DEFAULTS: Final[str] = "protocol_defaults"
+# the identifiers a player from before the protocols kept their own stored for its device
+CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
+# the identifiers a protocol reported for its device, as [type, value] pairs
+CONF_PROTOCOL_IDENTIFIERS: Final[str] = "identifiers"
+# the ZONE identifier of the main zone of a chassis, where its protocols that report no
+# zone (AirPlay, DLNA, ...) play
+MAIN_ZONE: Final[str] = "main"
+# the moment a player was created, as a nanosecond timestamp so players created in
+# the same second still order
+CONF_CREATED_AT: Final[str] = "created_at"
 CONF_UNDERLYING_PLAYER_ID: Final[str] = (
-    "underlying_player_id"  # player this (bridge) protocol player is derived from
+    "underlying_player_id"  # protocol this (bridge) protocol is derived from
 )
-# Translation key of the warning a provider stores on a protocol player it considers
+# Translation key of the warning a provider stores on a protocol it considers
 # experimental. Its presence also makes the output's enable entry default to disabled;
 # a stored enabled state still wins, so the provider persists that one itself.
 CONF_PROTOCOL_EXPERIMENTAL_NOTE: Final[str] = "protocol_experimental_note"
@@ -974,8 +993,6 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
-ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
-ATTR_POWER_ON_IN_PROGRESS: Final[str] = "power_on_in_progress"
 ATTR_IDLE_SINCE: Final[str] = "idle_since"
 
 # Album type detection patterns
@@ -1015,6 +1032,14 @@ PROTOCOL_PRIORITY: Final[dict[str, int]] = {
     "dlna": 50,
 }
 
+# How a provider whose native protocol stands for a device of another make ranks below the
+# vendor's own native protocol of that device (0, any domain not listed): of two native
+# protocols of one device, the better ranked one is its native protocol, the other one its
+# control protocol.
+NATIVE_PRIORITY: Final[dict[str, int]] = {
+    "hass_players": 1,
+}
+
 PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     # Player features that may be copied from (inactive) protocol implementations
     PlayerFeature.PLAY_ANNOUNCEMENT,
@@ -1031,7 +1056,7 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
-    # Player features that may be copied from the protocol player that plays an app
+    # Player features that may be copied from the audio protocol that plays an app
     # Music Assistant did not start
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.PAUSE,
@@ -1039,6 +1064,10 @@ FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
+
+# setup reason of a player without any protocol whose provider is not installed
+SETUP_REASON_PROVIDER_NOT_INSTALLED: Final[str] = "provider_not_installed"
+
 DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)

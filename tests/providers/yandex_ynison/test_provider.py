@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlaybackState,
+    ProtocolRole,
     ProviderFeature,
     ProviderType,
     RepeatMode,
@@ -69,6 +70,7 @@ from music_assistant.providers.yandex_ynison.ynison_client import (
     YnisonState,
     make_version_block,
 )
+from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
 
 def _arm_play_media_recorder(provider: YandexYnisonProvider) -> list[tuple[str, str]]:
@@ -153,6 +155,8 @@ def _make_mock_mass() -> MagicMock:
     # Players
     mass.players.all_players = MagicMock(return_value=[])
     mass.players.get_player = MagicMock(return_value=None)
+    mass.players.get_player_by_protocol = MagicMock(return_value=None)
+    mass.players.resolve_player_id = MagicMock(side_effect=lambda player_id: player_id)
     mass.players.cmd_stop = AsyncMock()
     mass.players.cmd_pause = AsyncMock()
     mass.players.cmd_play = AsyncMock()
@@ -190,6 +194,29 @@ def _make_provider(player_id: str = "player1") -> YandexYnisonProvider:
     return provider
 
 
+def _attach_protocols(provider: YandexYnisonProvider, protocols: dict[str, str]) -> None:
+    """
+    Attach protocols to players that the provider's players controller looks up.
+
+    :param provider: The provider whose mass gets the lookup of a protocol's player.
+    :param protocols: The player id each protocol id is attached to.
+    """
+    registry = mock_player_mass()
+    mock_provider = MockProvider("sendspin", mass=registry)
+    for protocol_id, player_id in protocols.items():
+        player = registry.players.get_player(player_id)
+        attach_mock(
+            mock_provider,
+            protocol_id,
+            player=player,
+            player_id=player_id,
+            role=ProtocolRole.AUDIO if player else ProtocolRole.NATIVE,
+        )
+    _stub_attr(
+        provider.mass.players, "get_player_by_protocol", registry.players.get_player_by_protocol
+    )
+
+
 # ------------------------------------------------------------------
 # Provider init
 # ------------------------------------------------------------------
@@ -212,7 +239,7 @@ class TestProviderInit:
             }
         )
         player = MagicMock()
-        player.display_name = "Living room"
+        player.name = "Living room"
         mass.players.get_player.return_value = player
 
         provider = YandexYnisonProvider(
@@ -268,7 +295,7 @@ class TestProviderInit:
         """The Ynison device name must be derived from the current player name."""
         provider = _make_provider("living-room")
         player = MagicMock()
-        player.display_name = "Kitchen"
+        player.name = "Kitchen"
         provider.mass.players.get_player.return_value = player
 
         assert provider._display_name == "Kitchen"
@@ -277,7 +304,7 @@ class TestProviderInit:
         """Provider startup before player registration still advertises its stored name."""
         provider = _make_provider("living-room")
         provider.mass.players.get_player.return_value = None
-        provider.mass.config.get_raw_player_config_value.side_effect = lambda player_id, key: (
+        provider.mass.config.get_player_value.side_effect = lambda player_id, key: (
             "Stored kitchen" if (player_id, key) == ("living-room", "name") else None
         )
 
@@ -287,14 +314,14 @@ class TestProviderInit:
         """A rename must refresh the snapshotted Ynison identity without reload loops."""
         provider = _make_provider("living-room")
         player = MagicMock()
-        player.display_name = "Kitchen"
+        player.name = "Kitchen"
         provider.mass.players.get_player.return_value = player
         provider._advertised_name = "Kitchen"
 
         await provider._on_connected_player_event(MagicMock())
         provider.mass.call_later.assert_not_called()
 
-        player.display_name = "Dining room"
+        player.name = "Dining room"
         await provider._on_connected_player_event(MagicMock())
 
         provider.mass.call_later.assert_called_once_with(
@@ -392,7 +419,7 @@ class TestPlayerSelection:
         provider = _make_provider("gone-player")
         other = MagicMock()
         other.player_id = "other-player"
-        other.state.playback_state = PlaybackState.PLAYING
+        other.playback_state = PlaybackState.PLAYING
         provider.mass.players.all_players.return_value = [other]  # type: ignore[attr-defined]
 
         assert provider._get_target_player_id() is None
@@ -410,6 +437,26 @@ class TestPlayerSelection:
         provider.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
 
         assert provider._get_target_player_id() is None
+
+    def test_specific_player_unavailable(self) -> None:
+        """Returns None when the configured player is registered but unavailable."""
+        provider = _make_provider("my-player")
+        player = MagicMock()
+        player.available = False
+        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+
+        assert provider._get_target_player_id() is None
+
+    def test_unavailable_active_player_falls_back_to_configured_player(self) -> None:
+        """An active player that turned unavailable is dropped for the configured player."""
+        provider = _make_provider("my-player")
+        provider._active_player_id = "active-one"
+        players = {"active-one": MagicMock(), "my-player": MagicMock()}
+        players["active-one"].available = False
+        provider.mass.players.get_player.side_effect = players.get  # type: ignore[attr-defined]
+
+        assert provider._get_target_player_id() == "my-player"
+        assert provider._active_player_id is None
 
     def test_active_player_takes_priority(self) -> None:
         """Active player takes priority over auto selection."""
@@ -429,11 +476,12 @@ class TestSourceSelection:
     """Tests for on_source_selected (the new PluginProvider hook)."""
 
     async def test_on_source_selected_sets_active(self) -> None:
-        """Selecting source sets the active player and records the session id."""
+        """Selecting source sets the player of the consuming protocol and records the session id."""
         provider = _make_provider()
+        _attach_protocols(provider, {"ap_new": "pl_new"})
 
-        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
-        assert provider._active_player_id == "new-player"
+        await provider.on_source_selected("main", "ap_new", "pl_new", "session_1")
+        assert provider._active_player_id == "pl_new"
         assert provider._active_session_id == "session_1"
 
     async def test_on_source_selected_publishes_last_ynison_options(self) -> None:
@@ -455,6 +503,9 @@ class TestSourceSelection:
     async def test_bridge_selection_does_not_stop_its_own_queue_player(self) -> None:
         """Selecting a bridge consumer for the same owner must leave playback running."""
         provider = _make_provider()
+        _attach_protocols(
+            provider, {"base-player": "base-player", "spb_base-player": "base-player"}
+        )
         provider._active_player_id = "base-player"
 
         await provider.on_source_selected(
@@ -465,8 +516,20 @@ class TestSourceSelection:
         )
 
         provider.mass.players.cmd_stop.assert_not_awaited()
-        assert provider._active_player_id == "spb_base-player"
+        assert provider._active_player_id == "base-player"
         assert provider._in_use_by_player == "base-player"
+
+    async def test_reselecting_the_group_member_that_consumes_does_not_stop_it(self) -> None:
+        """A new session of a group consumed by the same member leaves that member playing."""
+        provider = _make_provider()
+        _attach_protocols(provider, {"leaf_1": "pl_leaf_1"})
+        provider._active_player_id = "pl_leaf_1"
+
+        await provider.on_source_selected("main", "leaf_1", "group_1", "session_2")
+
+        provider.mass.players.cmd_stop.assert_not_awaited()
+        assert provider._active_player_id == "pl_leaf_1"
+        assert provider._in_use_by_player == "group_1"
 
     async def test_bridge_owner_is_allowed_when_player_switching_is_disabled(self) -> None:
         """A configured owner remains valid when its physical consumer is a bridge."""
@@ -484,6 +547,9 @@ class TestSourceSelection:
             {ProviderFeature.AUDIO_SOURCE},
         )
         mass.players.get_player.return_value = MagicMock()
+        _attach_protocols(
+            provider, {"base-player": "base-player", "spb_base-player": "base-player"}
+        )
 
         await provider.on_source_selected(
             "main",
@@ -499,7 +565,7 @@ class TestSourceSelection:
         )
 
         mass.player_queues.play_media.assert_not_awaited()
-        assert provider._active_player_id == "spb_base-player"
+        assert provider._active_player_id == "base-player"
         assert provider._in_use_by_player == "base-player"
         assert provider._active_session_id == "session_2"
 
@@ -509,6 +575,7 @@ class TestSourceSelection:
         provider._active_player_id = "old-player"
         provider.mass.players.cmd_stop = AsyncMock(side_effect=PlayerCommandFailed("stop failed"))
 
+        _attach_protocols(provider, {"new-player": "new-player"})
         await provider.on_source_selected("main", "new-player", "new-player", "session_1")
 
         assert provider._active_player_id == "new-player"
@@ -522,6 +589,7 @@ class TestSourceSelection:
             side_effect=PlayerUnavailableError("old-player is gone")
         )
 
+        _attach_protocols(provider, {"new-player": "new-player"})
         await provider.on_source_selected("main", "new-player", "new-player", "session_1")
 
         assert provider._active_player_id == "new-player"
@@ -724,7 +792,7 @@ class TestYnisonStateHandling:
         # Setup a target player
         player = MagicMock()
         player.player_id = "player1"
-        player.display_name = "Player 1"
+        player.name = "Player 1"
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
 
@@ -974,9 +1042,8 @@ class TestYnisonStateHandling:
     async def test_duration_updated_from_stream_details(self) -> None:
         """Duration is updated from stream_details and pushed to Ynison."""
         provider = _make_provider()
-        # trigger_player_update needs the actual player id (bridge), not the
-        # queue id — bridge players (`spb_*`) wrap the bare ALSA UUID and the
-        # MA UI's state machine lives on the bridge.
+        # trigger_player_update goes to the player MA streams to (a group
+        # member when the owner is a group), not to the owner's queue id.
         provider._active_player_id = "spb_bridge1"
         provider._in_use_by_player = "player1"
         mock_ynison = MagicMock()
@@ -2190,12 +2257,17 @@ class TestPlayerRateSnap:
         )
 
     @staticmethod
-    def _link_player(provider: YandexYnisonProvider, rates: list[tuple[int, int]]) -> MagicMock:
-        player = MagicMock()
-        player.get_supported_sample_rates = MagicMock(return_value=rates)
+    def _link_player(provider: YandexYnisonProvider, rates: list[tuple[int, int]]) -> MockProtocol:
+        """Make p1 the target player, rendered by a protocol that supports the given rates."""
+        registry = mock_player_mass()
+        player, protocol = attach_mock(
+            MockProvider("airplay", mass=registry), "ap_1", player_id="p1"
+        )
+        protocol._attr_supported_sample_rates = rates
+        player.update_state()
         provider._active_player_id = "p1"
-        provider.mass.players.get_player = MagicMock(return_value=player)  # type: ignore[attr-defined]
-        return player
+        provider.mass.players.get_player = registry.players.get_player  # type: ignore[method-assign]
+        return protocol
 
     async def test_hi_res_rate_snapped_down_to_supported(self) -> None:
         """A 96 kHz hint on a 48 kHz-max player declares 48 kHz (fast-path hit)."""
@@ -2220,6 +2292,23 @@ class TestPlayerRateSnap:
         provider._update_normalized_format(hint=self._hint(48000))
         assert provider._normalized_format.sample_rate == 48000
 
+    async def test_rate_follows_the_protocol_that_renders_the_player(self) -> None:
+        """The rates of the active output protocol apply, not those of the native one."""
+        provider = _make_provider()
+        native = self._link_player(provider, [(44100, 16)])
+        player = native.player
+        assert player is not None
+        _output_player, airplay = attach_mock(
+            MockProvider("airplay", mass=cast("MagicMock", native.mass)),
+            "ap_2",
+            player=player,
+            role=ProtocolRole.AUDIO,
+        )
+        airplay._attr_supported_sample_rates = [(44100, 16), (48000, 24)]
+        player._active_output_protocol = "ap_2"
+        provider._update_normalized_format(hint=self._hint(96000))
+        assert provider._normalized_format.sample_rate == 48000
+
     async def test_no_resolvable_player_keeps_hint_rate(self) -> None:
         """With no target player the hint rate survives and nothing raises (AC10)."""
         provider = _make_provider()
@@ -2238,8 +2327,12 @@ class TestPlayerRateSnap:
     async def test_invalid_capability_data_propagates(self) -> None:
         """A defective player capability implementation cannot select guessed PCM."""
         provider = _make_provider()
-        player = self._link_player(provider, [])
-        player.get_supported_sample_rates.side_effect = ValueError("invalid capabilities")
+        protocol = self._link_player(provider, [])
+        _stub_attr(
+            protocol,
+            "get_supported_sample_rates",
+            MagicMock(side_effect=ValueError("invalid capabilities")),
+        )
 
         with pytest.raises(ValueError, match="invalid capabilities"):
             provider._update_normalized_format(hint=self._hint(96000))
@@ -2247,9 +2340,10 @@ class TestPlayerRateSnap:
     async def test_unexpected_capability_error_propagates(self) -> None:
         """An internal capability error must not be hidden by rate fallback."""
         provider = _make_provider()
-        player = self._link_player(provider, [])
-        player.get_supported_sample_rates.side_effect = RuntimeError("bug")
-        player.resolve_output_player.return_value = player
+        protocol = self._link_player(provider, [])
+        _stub_attr(
+            protocol, "get_supported_sample_rates", MagicMock(side_effect=RuntimeError("bug"))
+        )
 
         with pytest.raises(RuntimeError, match="bug"):
             provider._update_normalized_format(hint=self._hint(96000))
@@ -3012,18 +3106,18 @@ class TestPausePlayback:
         """
         On a successful cmd_stop, `_active_player_id` demotes to the queue id.
 
-        Queues live on the bare ALSA UUID; bridge wrappers (`spb_*`) do
-        not own one. Resume's `play_media(_active_player_id, ...)`
-        must target the queue id — otherwise MA raises
-        `PlayerUnavailableError`. The demotion happens AFTER cmd_stop
-        so a failure path leaves the bridge id intact for next attempt.
+        The session lives on the owner's queue, not on the player MA
+        streams to (a group member when the owner is a group). Resume's
+        `play_media(_active_player_id, ...)` must target the owner —
+        otherwise it plays on the member alone. The demotion happens AFTER
+        cmd_stop so a failure path leaves the consumer id intact for next attempt.
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
         provider._in_use_by_player = "player1"
 
         # capture _active_player_id at the moment cmd_stop is invoked —
-        # must still be the bridge id (rewrite is post-success).
+        # must still be the consumer id (rewrite is post-success).
         captured: dict[str, str | None] = {}
 
         async def _capture_stop(_player_id: str) -> None:
@@ -3044,11 +3138,10 @@ class TestPausePlayback:
         """
         A cmd_stop failure must not demote `_active_player_id`.
 
-        If we demoted to the queue id but cmd_stop never reached MA,
-        the next `_activate_playback` would try `play_media(bare_uuid)`
-        without MA ever having released the bridge — wedges the bridge
-        in an inconsistent state. Better to keep the bridge id pinned
-        and let the next pause attempt redo the cycle.
+        If we demoted to the owner but cmd_stop never reached MA, the
+        next `_activate_playback` would try `play_media(owner)` while MA
+        still streams to the consuming player. Better to keep the
+        consumer id pinned and let the next pause attempt redo the cycle.
         """
         provider = _make_provider()
         provider._active_player_id = "spb_bridge1"
@@ -3148,8 +3241,8 @@ class TestEchoSuppression:
     def _player(self, provider: YandexYnisonProvider) -> MagicMock:
         player = MagicMock()
         player.player_id = "player1"
-        player.display_name = "Player 1"
-        player.state.playback_state = PlaybackState.PLAYING
+        player.name = "Player 1"
+        player.playback_state = PlaybackState.PLAYING
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
         return player
@@ -3574,8 +3667,8 @@ class TestActivatePlayback:
 
         player = MagicMock()
         player.player_id = "player1"
-        player.display_name = "Player 1"
-        player.state.playback_state = PlaybackState.IDLE
+        player.name = "Player 1"
+        player.playback_state = PlaybackState.IDLE
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
 
@@ -3599,7 +3692,7 @@ class TestActivatePlayback:
         """
         provider = _make_provider()
         # Post-pause state: AriaCast path demoted _active_player_id to
-        # the queue id (bare UUID) after cmd_stop succeeded.
+        # the owner's queue id after cmd_stop succeeded.
         provider._stream_stop_event.set()
         provider._active_player_id = "player1"
         provider._in_use_by_player = None
@@ -3618,8 +3711,8 @@ class TestActivatePlayback:
 
         assert len(play_media_calls) == 1
         target_id, uri = play_media_calls[0]
-        # Target must be the (queue id) bare player, NOT the bridge.
-        # Bridge id has no queue → PlayerUnavailableError.
+        # Target must be the owner, whose queue holds the session, NOT the
+        # player MA streamed to.
         assert target_id == "player1"
         assert uri == str(provider._audio_source.uri)
         assert not provider._stream_stop_event.is_set()
@@ -4932,3 +5025,57 @@ class TestStableOnlySource:
         )
         assert not hasattr(provider, "_dynamic_task")
         assert provider._normalized_format.content_type == ContentType.PCM_S16LE
+
+
+# ------------------------------------------------------------------
+# A configured player that was merged into another one
+# ------------------------------------------------------------------
+
+
+def _merged_provider() -> YandexYnisonProvider:
+    """Create a provider whose configured player "player1" was merged into "player2"."""
+    mass = _make_mock_mass()
+    mass.players.resolve_player_id = MagicMock(
+        side_effect=lambda player_id: "player2" if player_id == "player1" else player_id
+    )
+    merged_into = MagicMock()
+    merged_into.player_id = "player2"
+    merged_into.name = "Kitchen"
+    merged_into.available = True
+    mass.players.get_player = MagicMock(
+        side_effect=lambda player_id: merged_into if player_id == "player2" else None
+    )
+    config = _make_mock_config({CONF_MASS_PLAYER_ID: "player1", CONF_ALLOW_PLAYER_SWITCH: False})
+    return YandexYnisonProvider(mass, _make_mock_manifest(), config, {ProviderFeature.AUDIO_SOURCE})
+
+
+class TestMergedConnectedPlayer:
+    """The configured player answers to another id once it was merged."""
+
+    async def test_locked_source_is_accepted_on_the_player_it_went_into(self) -> None:
+        """The player the configured one was merged into owns the source: no redirect."""
+        provider = _merged_provider()
+
+        await provider.on_source_selected("main", "player2", "player2", "session_1")
+
+        provider.mass.player_queues.play_media.assert_not_awaited()
+        assert provider._active_player_id == "player2"
+
+    async def test_playback_targets_and_names_the_player_it_went_into(self) -> None:
+        """Playback goes to the merged player, which is advertised by its name."""
+        provider = _merged_provider()
+
+        assert provider._get_target_player_id() == "player2"
+        assert provider._display_name == "Kitchen"
+
+    async def test_renames_of_the_player_it_went_into_are_followed(self) -> None:
+        """The events of the player the configured one was merged into are watched."""
+        provider = _merged_provider()
+        _stub_attr(provider, "_resolve_token", AsyncMock(return_value=SecretStr("test-token")))
+
+        await provider.handle_async_init()
+
+        id_filters = [
+            call.kwargs.get("id_filter") for call in provider.mass.subscribe.call_args_list
+        ]
+        assert "player2" in id_filters

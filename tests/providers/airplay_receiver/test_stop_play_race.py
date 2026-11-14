@@ -17,6 +17,7 @@ def provider() -> MagicMock:
     """Create a mock provider + daemon with the real play-state handling bound to it."""
     mock = MagicMock()
     mock.logger = MagicMock()
+    mock.mass.players.resolve_player_id.side_effect = lambda player_id: player_id
     daemon = MagicMock()
     daemon.first_volume_event_received = False
     # queue_id == player_id in MA: the stop and the follow-up play target the same
@@ -90,6 +91,24 @@ async def test_play_without_pending_stop_starts_immediately(provider: MagicMock)
     await asyncio.sleep(0.01)
 
     provider.mass.player_queues.play_media.assert_awaited_once_with("player1", "airplay://source")
+
+
+async def test_play_starts_on_the_player_the_connected_one_was_merged_into(
+    provider: MagicMock,
+) -> None:
+    """A session on the receiver of a merged player plays on the player it went into."""
+    provider.daemon.in_use_by_player = None
+    provider.daemon.active_player_id = None
+    provider.mass.players.resolve_player_id.side_effect = lambda player_id: (
+        "player2" if player_id == "player1" else player_id
+    )
+    provider.mass.player_queues.play_media = AsyncMock()
+
+    _handle(provider, "playing")
+    await asyncio.sleep(0.01)
+
+    provider.mass.player_queues.play_media.assert_awaited_once_with("player2", "airplay://source")
+    assert provider.daemon.active_player_id == "player2"
 
 
 async def test_play_proceeds_when_stop_fails(provider: MagicMock) -> None:

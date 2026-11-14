@@ -35,6 +35,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from . import protobuf
 from .alice import AliceActivity, AliceTracker, AliceUpdate
@@ -186,18 +187,18 @@ def _update_form(name: str, **kwargs: str) -> dict[str, Any]:
     }
 
 
-class YandexStationPlayer(Player):
+class YandexStationPlayer(PlayerProtocol):
     """Represents a single Yandex Station smart speaker."""
 
     def __init__(
         self,
         provider: YandexStationProvider,
-        player_id: str,
+        protocol_id: str,
         device_info: dict[str, Any],
         glagol: YandexGlagol,
     ) -> None:
         """Initialize the player."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self._device_info = device_info
         self.glagol = glagol
 
@@ -328,9 +329,9 @@ class YandexStationPlayer(Player):
         # track, so those are excluded by type.
         target_options = sorted(
             (
-                ConfigValueOption(p.player_id, p.display_name)
+                ConfigValueOption(p.player_id, p.name)
                 for p in self.mass.players.all_players(return_unavailable=True)
-                if p.player_id != self.player_id and p.type in PLAYBACK_TARGET_TYPES
+                if p is not self.player and p.type in PLAYBACK_TARGET_TYPES
             ),
             key=lambda o: (o.title or "").lower(),
         )
@@ -399,9 +400,9 @@ class YandexStationPlayer(Player):
         if self._voice.holds_playback:
             # The stream Alice stopped is gone from the Station; play resumes its
             # queue now instead of waiting for her answer or the scheduled resume.
-            source = self._voice.source or self.player_id
+            source = self._voice.source or self._queue_id
             self._end_voice_interruption()
-            await self.mass.players.cmd_resume(self.player_id, source=source)
+            await self.mass.players.cmd_resume(self._queue_id, source=source)
             return
         # The user's command supersedes an auto-resume after Alice, whatever its outcome.
         self._end_voice_interruption()
@@ -504,11 +505,13 @@ class YandexStationPlayer(Player):
             self._end_voice_interruption()
         self._external_play_generation += 1
         generation = self._external_play_generation
-        _LOGGER.debug("[%s] play_media called: %s", self.player_id, media.title or media.uri)
+        _LOGGER.debug("[%s] play_media called: %s", self.protocol_id, media.title or media.uri)
         if not resumed:
-            self._resolving_play = (generation, media.source_id or self.player_id)
+            self._resolving_play = (generation, media.source_id or self._queue_id)
         try:
-            stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+            stream_url = await self.provider.mass.streams.resolve_stream_url(
+                self.protocol_id, media
+            )
         finally:
             if self._resolving_play is not None and self._resolving_play[0] == generation:
                 self._resolving_play = None
@@ -518,13 +521,13 @@ class YandexStationPlayer(Player):
             return
         if self._voice_control_enabled and self._alice.activity == AliceActivity.REQUEST:
             # Alice is handling a request; start the queue once she is done.
-            _LOGGER.debug("[%s] Alice active — deferring play_media", self.player_id)
-            self._voice.begin(media.source_id or self.player_id, self._attr_volume_level or 0)
+            _LOGGER.debug("[%s] Alice active — deferring play_media", self.protocol_id)
+            self._voice.begin(media.source_id or self._queue_id, self._attr_volume_level or 0)
             if self._attr_playback_state != PlaybackState.PLAYING:
                 self._attr_playback_state = PlaybackState.PAUSED
                 self.update_state()
             return
-        _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.player_id, len(stream_url))
+        _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.protocol_id, len(stream_url))
 
         audio_client = self._audio_client
         command = _stream_command(stream_url, media, audio_client=audio_client)
@@ -533,7 +536,7 @@ class YandexStationPlayer(Player):
         self._start_external_session(media, audio_client=audio_client)
         try:
             result = await self.glagol.send(command)
-            _LOGGER.debug("[%s] %s result: %s", self.player_id, directive, result)
+            _LOGGER.debug("[%s] %s result: %s", self.protocol_id, directive, result)
             _raise_if_failed(result, directive)
         except PlayerCommandFailed, asyncio.CancelledError:
             # Only clear the session this call started; a newer play_media
@@ -574,7 +577,7 @@ class YandexStationPlayer(Player):
             await self.volume_set(volume_level)
 
         try:
-            _LOGGER.debug("[%s] Audio announcement: %s", self.player_id, announcement.uri)
+            _LOGGER.debug("[%s] Audio announcement: %s", self.protocol_id, announcement.uri)
             result = await self.glagol.send(
                 _stream_command(announcement.uri, announcement, audio_client=self._audio_client)
             )
@@ -608,8 +611,17 @@ class YandexStationPlayer(Player):
         """
         _raise_if_failed(await self.glagol.send_text(text), "send_command")
 
-    async def on_unload(self) -> None:
-        """Clean up on player unload."""
+    async def on_attach(self, player: Player) -> None:
+        """
+        Connect to the Station while the protocol is attached, once its local endpoint is known.
+
+        :param player: The player the protocol is attached to.
+        """
+        if self.glagol.device.get("host") and self.glagol.device.get("port"):
+            await self.async_setup()
+
+    async def on_detach(self) -> None:
+        """Clean up when the protocol is detached from its player."""
         self._end_voice_interruption()
         # End any active intercept session so the Station's volume is
         # restored before we tear down — otherwise users unloading the
@@ -617,8 +629,15 @@ class YandexStationPlayer(Player):
         # vol=0 with no way for our code to fix it.
         if self._intercept_active:
             await self._end_intercept_session(clear_debounce=True)
-        await super().on_unload()
+        await super().on_detach()
         await self.glagol.stop()
+
+    @property
+    def _queue_id(self) -> str:
+        """Return the id of the queue of the Station's player, which its resumes target."""
+        # Glagol reports, and so Music Assistant playback runs, only while the protocol is
+        # attached: the protocol id only stands in for the moment it is detached
+        return self.player.player_id if self.player is not None else self.protocol_id
 
     @property
     def _voice_control_enabled(self) -> bool:
@@ -651,7 +670,7 @@ class YandexStationPlayer(Player):
     @property
     def _voice_resume_task_id(self) -> str:
         """Scheduler id of the auto-resume after an Alice request."""
-        return f"yandex_station_voice_resume_{self.player_id}"
+        return f"yandex_station_voice_resume_{self.protocol_id}"
 
     def _start_external_session(self, media: PlayerMedia, *, audio_client: bool) -> None:
         """Record the Music Assistant stream the Station is about to be told to play."""
@@ -687,7 +706,7 @@ class YandexStationPlayer(Player):
 
     def _interrupt_for_voice(self) -> None:
         """Record that an Alice request stopped the Music Assistant stream."""
-        _LOGGER.debug("[%s] Alice stopped the MA stream", self.player_id)
+        _LOGGER.debug("[%s] Alice stopped the MA stream", self.protocol_id)
         # The next track MA is preparing must not start over Alice either.
         self._external_play_generation += 1
         source = self._external_media.source_id if self._external_media else None
@@ -697,7 +716,7 @@ class YandexStationPlayer(Player):
         self._attr_playback_state = PlaybackState.PAUSED
         # The queue that owned the stream (a group's queue for a group stream) is
         # the one resumed.
-        self._voice.begin(source or self.player_id, self._attr_volume_level or 0)
+        self._voice.begin(source or self._queue_id, self._attr_volume_level or 0)
 
     def _finish_voice_interruption(self, spoke: bool) -> None:
         """
@@ -709,11 +728,11 @@ class YandexStationPlayer(Player):
             if self._voice.holds_playback:
                 # Resumed once the resume the core is running has returned.
                 return
-            _LOGGER.debug("[%s] Silent voice command — staying stopped", self.player_id)
+            _LOGGER.debug("[%s] Silent voice command — staying stopped", self.protocol_id)
             if self._attr_playback_state == PlaybackState.PAUSED:
                 self._attr_playback_state = PlaybackState.IDLE
             return
-        _LOGGER.debug("[%s] Voice command ended — scheduling auto-resume", self.player_id)
+        _LOGGER.debug("[%s] Voice command ended — scheduling auto-resume", self.protocol_id)
         self.mass.call_later(
             VOICE_RESUME_DELAY, self._resume_after_voice, task_id=self._voice_resume_task_id
         )
@@ -726,7 +745,7 @@ class YandexStationPlayer(Player):
         self._resolving_play = None
         if generation != self._external_play_generation:
             return
-        _LOGGER.debug("[%s] Alice request — holding the pending play_media", self.player_id)
+        _LOGGER.debug("[%s] Alice request — holding the pending play_media", self.protocol_id)
         self._external_play_generation += 1
         self._voice.begin(source, self._attr_volume_level or 0)
         if self._attr_playback_state != PlaybackState.PLAYING:
@@ -735,7 +754,7 @@ class YandexStationPlayer(Player):
     def _defer_voice_resume_to_new_request(self) -> None:
         """Hand a scheduled auto-resume over to an Alice request that just started."""
         if self._voice.request_started(self._attr_volume_level or 0):
-            _LOGGER.debug("[%s] New Alice request — it decides the auto-resume", self.player_id)
+            _LOGGER.debug("[%s] New Alice request — it decides the auto-resume", self.protocol_id)
             self.mass.cancel_timer(self._voice_resume_task_id)
 
     def _end_voice_interruption(self) -> None:
@@ -747,7 +766,7 @@ class YandexStationPlayer(Player):
         """Return True, and record the drop, if the running resume's stream must not play."""
         if not self._voice.drops_resumed_stream:
             return False
-        _LOGGER.debug("[%s] Voice resume overruled — dropping its stream", self.player_id)
+        _LOGGER.debug("[%s] Voice resume overruled — dropping its stream", self.protocol_id)
         self._voice.drop_resumed_stream()
         return True
 
@@ -756,9 +775,9 @@ class YandexStationPlayer(Player):
         if (source := self._voice.start_resume()) is None:
             return
         try:
-            await self.mass.players.cmd_resume(self.player_id, source=source)
+            await self.mass.players.cmd_resume(self._queue_id, source=source)
         except (PlayerCommandFailed, PlayerUnavailableError) as exc:
-            _LOGGER.warning("[%s] Resume after voice command failed: %s", self.player_id, exc)
+            _LOGGER.warning("[%s] Resume after voice command failed: %s", self.protocol_id, exc)
             if (
                 self._voice.awaits_resumed_stream
                 and not self._voice.holds_playback
@@ -842,7 +861,7 @@ class YandexStationPlayer(Player):
                     _raise_if_failed(result, "alice-remute")
                     self._station_muted_by_intercept = True
                 except Exception as exc:
-                    _LOGGER.debug("[%s] alice-remute failed: %s", self.player_id, exc)
+                    _LOGGER.debug("[%s] alice-remute failed: %s", self.protocol_id, exc)
             if alice.ended is not None:
                 self._station_unmuted_for_phrase = False
 
@@ -889,7 +908,7 @@ class YandexStationPlayer(Player):
             )
             _raise_if_failed(result, "alice-unmute")
         except Exception as exc:
-            _LOGGER.debug("[%s] alice-unmute failed: %s", self.player_id, exc)
+            _LOGGER.debug("[%s] alice-unmute failed: %s", self.protocol_id, exc)
             return False
         self._station_muted_by_intercept = False
         # Pre-set the mirror baseline so the next state update (with the new
@@ -941,24 +960,24 @@ class YandexStationPlayer(Player):
         if not self.mass.get_provider("yandex_music"):
             _LOGGER.warning(
                 "[%s] intercept: yandex_music provider not configured",
-                self.player_id,
+                self.protocol_id,
             )
             if new_track and self._intercept_active:
                 await self._pause_target(clear_session=True, clear_debounce=False)
             return
 
         target_player = self.mass.players.get_player(target_id)
-        if target_player is None or not getattr(target_player, "available", True):
+        if target_player is None or not target_player.available_for_playback:
             _LOGGER.warning(
                 "[%s] intercept: target player %s not available",
-                self.player_id,
+                self.protocol_id,
                 target_id,
             )
             if new_track and self._intercept_active:
                 await self._pause_target(clear_session=True, clear_debounce=False)
             return
 
-        _LOGGER.debug("[%s] intercept: raw playerState.id=%r", self.player_id, track_id)
+        _LOGGER.debug("[%s] intercept: raw playerState.id=%r", self.protocol_id, track_id)
         parsed_id = _parse_yandex_track_id(track_id)
 
         # Resolve first — if the track can't be found or the URI is missing
@@ -972,7 +991,7 @@ class YandexStationPlayer(Player):
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] intercept resolve failed for %r: %s",
-                self.player_id,
+                self.protocol_id,
                 track_id,
                 exc,
             )
@@ -983,7 +1002,7 @@ class YandexStationPlayer(Player):
         if not track_uri:
             _LOGGER.warning(
                 "[%s] intercept: resolved track has no uri: %r",
-                self.player_id,
+                self.protocol_id,
                 track,
             )
             if new_track and self._intercept_active:
@@ -1024,7 +1043,7 @@ class YandexStationPlayer(Player):
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] intercept handoff failed for %r: %s",
-                self.player_id,
+                self.protocol_id,
                 track_id,
                 exc,
             )
@@ -1061,7 +1080,7 @@ class YandexStationPlayer(Player):
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] failed to restore Station volume to %s%%: %s",
-                self.player_id,
+                self.protocol_id,
                 vol_pct,
                 exc,
             )
@@ -1136,7 +1155,7 @@ class YandexStationPlayer(Player):
                 _LOGGER.debug(
                     "[%s] target %s does not support volume_set or is unavailable"
                     " — skipping mirror",
-                    self.player_id,
+                    self.protocol_id,
                     target_id,
                 )
             self._last_mirrored_volume = target_vol
@@ -1161,7 +1180,7 @@ class YandexStationPlayer(Player):
             except UnsupportedFeaturedException, PlayerUnavailableError:
                 _LOGGER.debug(
                     "[%s] target %s does not support seek or is unavailable — skipping mirror",
-                    self.player_id,
+                    self.protocol_id,
                     target_id,
                 )
         self._last_progress = progress
@@ -1195,7 +1214,7 @@ class YandexStationPlayer(Player):
         except Exception as exc:
             _LOGGER.warning(
                 "[%s] intercept: cmd_pause(%s) failed: %s",
-                self.player_id,
+                self.protocol_id,
                 target_id,
                 exc,
             )
@@ -1265,7 +1284,7 @@ class YandexStationPlayer(Player):
         ):
             # The Station plays its own content without a stop in between, e.g.
             # music Alice was asked for: the stream is gone.
-            _LOGGER.debug("[%s] Station playback replaced the MA stream", self.player_id)
+            _LOGGER.debug("[%s] Station playback replaced the MA stream", self.protocol_id)
             self._external_play_generation += 1
             self._end_external_session()
         if self._external_playing:
@@ -1295,7 +1314,7 @@ class YandexStationPlayer(Player):
             ):
                 # The stream stopped without Alice: it finished, or the user stopped
                 # it on the Station. Either way it is gone; the core resumes the queue.
-                _LOGGER.debug("[%s] MA stream stopped on the Station", self.player_id)
+                _LOGGER.debug("[%s] MA stream stopped on the Station", self.protocol_id)
                 if not (self._external_audio_client and duration and progress >= duration):
                     # Stopped by the user: the next track MA prepares must not start.
                     self._external_play_generation += 1
@@ -1312,7 +1331,7 @@ class YandexStationPlayer(Player):
             # A stream handed to the Station outside a session is one that already
             # ended, still reported for a moment after the stop; it is not the
             # Station's own playback.
-            _LOGGER.debug("[%s] Ignoring a report of an ended MA stream", self.player_id)
+            _LOGGER.debug("[%s] Ignoring a report of an ended MA stream", self.protocol_id)
         elif playing:
             if (
                 self._attr_playback_state != PlaybackState.PLAYING
@@ -1358,7 +1377,7 @@ class YandexStationPlayer(Player):
             if audio_client != self._audio_client:
                 _LOGGER.debug(
                     "[%s] audio_client capability: %s",
-                    self.player_id,
+                    self.protocol_id,
                     audio_client,
                 )
             self._audio_client = audio_client
@@ -1366,7 +1385,7 @@ class YandexStationPlayer(Player):
         state = data.get("state", {})
         if not state:
             _LOGGER.debug(
-                "[%s] No 'state' in Glagol data, keys: %s", self.player_id, list(data.keys())
+                "[%s] No 'state' in Glagol data, keys: %s", self.protocol_id, list(data.keys())
             )
             self.update_state()
             return
@@ -1385,7 +1404,7 @@ class YandexStationPlayer(Player):
         _LOGGER.debug(
             "[%s] playing=%s vol=%s prog=%s dur=%s title=%s extra=%s alice=%s "
             "requestID=%s id=%s type=%s playerType=%s",
-            self.player_id,
+            self.protocol_id,
             playing,
             state.get("volume"),
             player_state.get("progress"),

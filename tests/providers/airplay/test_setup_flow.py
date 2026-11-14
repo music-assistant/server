@@ -131,32 +131,33 @@ def _service_info(
     return info
 
 
-def _stub_setup_data(provider: MagicMock, player_id: str, setup_data: dict[str, Any]) -> None:
-    """Route the player's setup_data through the mocked mass.config get surface."""
+def _stub_setup_data(provider: MagicMock, protocol_id: str, setup_data: dict[str, Any]) -> None:
+    """Route the protocol's setup_data through its config and the mocked mass.config setter."""
 
-    def _config_get(key: str, default: Any = None) -> Any:
-        if key == f"players/{player_id}/setup_data":
-            return setup_data
-        if key == f"players/{player_id}":
-            return {"player_id": player_id}
-        return default
+    def _set_setup_value(stored_protocol_id: str, key: str, value: Any, **_kwargs: object) -> None:
+        assert stored_protocol_id == protocol_id
+        setup_data[key] = value
 
-    provider.mass.config.get.side_effect = _config_get
+    provider.mass.config.set_protocol_setup_value.side_effect = _set_setup_value
     provider.mass.config.decrypt_string.side_effect = lambda value: value
     provider.mass.config.encrypt_string.side_effect = lambda value: value
     # Raw player config values (device password, password-invalid marker) come from
     # their own store; without this they would read back as (truthy) mocks. The
     # player's config reads from the same store so a stored password is observed.
     raw_values: dict[str, Any] = {}
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: raw_values.get(key, default)
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, key, default=None: (
+        raw_values.get(key, default)
     )
-    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        raw_values.get(key, default)
+    )
+    provider.mass.config.set_protocol_value.side_effect = lambda _player_id, key, value: (
         raw_values.__setitem__(key, value)
     )
     config = MagicMock()
     config.get_value.side_effect = lambda key, default=None: raw_values.get(key, default)
-    provider.mass.config.get_base_player_config.return_value = config
+    config.setup_data = setup_data
+    provider.mass.config.get_base_protocol_config.return_value = config
 
 
 def _streaming_player(
@@ -180,7 +181,7 @@ def _streaming_player(
         )
     return AirPlayPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer="Apple" if not raop else "Denon",
@@ -198,9 +199,6 @@ def _control_player(
     provider.instance_id = "airplay"
     provider.dacp_id = "0123456789ABCDEF"
     provider.logger = logging.getLogger("test.airplay.flow")
-    config = MagicMock()
-    config.get_value.side_effect = lambda _key, default=None: default
-    provider.mass.config.get_base_player_config.return_value = config
     _stub_setup_data(provider, player_id, setup_data or {})
     airplay_info = _service_info(
         AIRPLAY_DISCOVERY_TYPE,
@@ -215,7 +213,7 @@ def _control_player(
     companion_info = _service_info(COMPANION_DISCOVERY_TYPE, {"rpFl": "0x367A2"}, port=49152)
     return AirPlayControlPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         raop_discovery_info=None,
         airplay_discovery_info=airplay_info,
         companion_discovery_info=companion_info,
@@ -615,7 +613,7 @@ def _password_player(
     _stub_setup_data(provider, player_id, setup_data or {})
     return AirPlayPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         display_name="Test HomePod",
         address="127.0.0.1",
         manufacturer="Apple",
@@ -634,7 +632,7 @@ def _raop_password_player(*, player_id: str = "test_player") -> AirPlayPlayer:
     _stub_setup_data(provider, player_id, {})
     return AirPlayPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         display_name="Test Speaker",
         address="127.0.0.1",
         manufacturer="Denon",
@@ -664,7 +662,7 @@ async def test_streaming_password_pairing_persists_the_device_password() -> None
     # the pairing credentials still go to setup_data...
     assert collected == {CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS}
     # ...and the password itself is persisted so every stream can present it
-    player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+    player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD, "hunter2"
     )
 
@@ -712,7 +710,7 @@ async def test_raop_password_device_is_asked_for_its_password_without_pairing() 
     # no pairing session is ever built for a device that has nothing to pair
     pairing_cls.assert_not_called()
     assert collected == {}
-    player.mass.config.set_raw_player_config_value.assert_any_call(  # type: ignore[attr-defined]
+    player.mass.config.set_protocol_value.assert_any_call(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD, "hunter2"
     )
     assert player.needs_setup is False

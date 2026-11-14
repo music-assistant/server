@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import ProviderFeature
+
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
 from .provider import SamsungWamProvider
@@ -56,7 +58,7 @@ async def setup(
     :param config: The provider configuration.
     :return: The initialized provider instance.
     """
-    prov = SamsungWamProvider(mass, manifest, config)
+    prov = SamsungWamProvider(mass, manifest, config, {ProviderFeature.SYNC_PLAYERS})
 
     # Suppress high-frequency SpeakerStatus events from pywam unless verbose logging is enabled
     pywam_events_logger = logging.getLogger("pywam.events")

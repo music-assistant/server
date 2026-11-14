@@ -164,7 +164,7 @@ async def _announce_over_live_session(
             streams: dict[str, AirPlayStream] = {}
             for member in members:
                 assert member.stream is not None  # guaranteed by _live_members
-                streams[member.player_id] = member.stream
+                streams[member.protocol_id] = member.stream
             # one clip file per distinct member stdin format, shared by all
             # members on that format
             for stream in streams.values():
@@ -176,8 +176,8 @@ async def _announce_over_live_session(
             at_unix_ms = _resolve_announce_instant(player, members, render.key)
             delivered = await asyncio.gather(
                 *[
-                    streams[member.player_id].announce(
-                        clip_files[_format_key(streams[member.player_id].pcm_format)],
+                    streams[member.protocol_id].announce(
+                        clip_files[_format_key(streams[member.protocol_id].pcm_format)],
                         at_unix_ms,
                         _member_duck_db(member, volume_level),
                     )
@@ -205,7 +205,7 @@ async def _announce_over_live_session(
             ]
         )
         started: dict[str, tuple[int, int]] = {
-            member.player_id: ack
+            member.protocol_id: ack
             for member, ack in zip(members, acks, strict=True)
             if ack is not None
         }
@@ -218,8 +218,8 @@ async def _announce_over_live_session(
                 "the running cliairplay binary may not support announcements yet "
                 "(version mismatch)"
             )
-        armed = [member for member in members if member.player_id in started]
-        if failed := [m.display_name for m in members if m.player_id not in started]:
+        armed = [member for member in members if member.protocol_id in started]
+        if failed := [m.display_name for m in members if m.protocol_id not in started]:
             player.logger.warning(
                 "Announcement was not played on %d member(s) of %s: %s",
                 len(failed),
@@ -311,7 +311,7 @@ def _live_members(player: AirPlayPlayer) -> list[AirPlayPlayer]:
         # A Sendspin-bridged player plays without a stream session, but its
         # stream is a regular AirPlayStream the clip mixes into (self-only).
         provider = cast("AirPlayProvider", player.provider)
-        bridge = provider.bridge_manager.get_bridge(player.player_id)
+        bridge = provider.bridge_manager.get_bridge(player.protocol_id)
         if bridge is not None and bridge.owns_airplay_stream:
             return [player]
         return []
@@ -361,7 +361,7 @@ def _resolve_announce_instant(
     for key in [key for key, at_ms in plans.items() if at_ms <= now_ms]:
         del plans[key]
     plan_key = (
-        _owning_group_entity(player) or player.synced_to or player.player_id,
+        _owning_group_entity(player) or player.synced_to or player.protocol_id,
         render_key,
     )
     if (at_unix_ms := plans.get(plan_key)) is not None:
@@ -391,18 +391,12 @@ def _owning_group_entity(player: AirPlayPlayer) -> str | None:
     """
     Return the id of the group ENTITY that owns this player's session, if any.
 
-    ``active_group`` only ever names a real group player (e.g. a syncgroup) -
-    but a protocol player never carries it itself: the model keeps the group
-    state on the device player it renders for, so the ownership is read
-    through the protocol parent when needed.
+    ``active_group`` only ever names a real group player (e.g. a syncgroup), and
+    the group state lives on the player this protocol renders for.
     """
-    if player.state.active_group:
-        return player.state.active_group
-    if player.protocol_parent_id and (
-        parent := player.mass.players.get_player(player.protocol_parent_id)
-    ):
-        return parent.state.active_group
-    return None
+    if player.player is None:
+        return None
+    return player.player.active_group
 
 
 def _member_span_ms(stream: AirPlayStream) -> int:
@@ -414,19 +408,15 @@ def _member_span_ms(stream: AirPlayStream) -> int:
     return AIRPLAY_ANNOUNCE_FALLBACK_SPAN_MS
 
 
-def _volume_target(member: AirPlayPlayer) -> Player:
+def _volume_target(member: AirPlayPlayer) -> Player | None:
     """
     Return the player whose volume control owns this member's output.
 
     An AirPlay volume writes the receiver's own level, so it may only be set when
-    nothing else owns it; on a device that is also reachable through a native
-    provider the announcement volume belongs on that parent instead.
+    nothing else owns it: the announcement volume is set on the player, whose volume
+    control decides where it lands. None while the member is not attached.
     """
-    if (parent_id := member.protocol_parent_id) and (
-        parent := member.mass.players.get_player(parent_id)
-    ):
-        return parent
-    return member
+    return member.player
 
 
 def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
@@ -448,8 +438,9 @@ def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
     duck_db = float(AIRPLAY_ANNOUNCE_DUCK_DB)
     if volume_level is None:
         return duck_db
-    target = _volume_target(member)
-    if (prev_volume := target.state.volume_level) is None:
+    if (target := _volume_target(member)) is None:
+        return duck_db
+    if (prev_volume := target.volume_level) is None:
         return duck_db
     # the levels are logical, and the volume limits configured on the target decide
     # what they land on: the device levels are what the rise is actually made of
@@ -501,8 +492,9 @@ async def _apply_announcement_volume(
     """
     targets: list[Player] = []
     for member in members:
-        target = _volume_target(member)
-        prev_volume = target.state.volume_level
+        if (target := _volume_target(member)) is None:
+            continue
+        prev_volume = target.volume_level
         if prev_volume is None or prev_volume == volume_level or target.player_id in bumped:
             continue
         bumped[target.player_id] = prev_volume
@@ -516,7 +508,7 @@ async def _apply_announcement_volume(
     for target, result in zip(targets, results, strict=True):
         if isinstance(result, BaseException):
             target.logger.warning(
-                "Could not set the announcement volume on %s: %r", target.display_name, result
+                "Could not set the announcement volume on %s: %r", target.name, result
             )
 
 

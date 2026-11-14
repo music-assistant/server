@@ -42,6 +42,7 @@ from music_assistant.helpers.config_entries import (
     create_publish_name_template_entry,
     resolve_publish_name,
 )
+from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 from .base import (
@@ -129,7 +130,8 @@ NOT_ACTIVE_DEVICE_MESSAGE = (
 class _PlayerDaemon:
     """State for one connected player's Spotify Connect daemon."""
 
-    # the connected player this daemon plays on; doubles as the AudioSource item_id
+    # the connected player this daemon plays on, as stored (also after that player was
+    # merged into another one); doubles as the AudioSource item_id and keys the device
     player_id: str
     # player_id sanitized for use in filesystem paths and identity keys
     safe_player_id: str
@@ -208,8 +210,10 @@ class SpotifyConnectProvider(PluginProvider):
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._daemons: dict[str, _PlayerDaemon] = {}
         # players whose daemon gave up permanently; skipped by reconcile until the
-        # player re-registers or the provider reloads
+        # player comes back or the provider reloads
         self._failed_player_ids: set[str] = set()
+        # seeded where the player events are subscribed, so no event is missed in between
+        self._availability: PlayerAvailabilityTracker
         self._reconcile_lock = asyncio.Lock()
         self._unload_called = False
         self._unsubscribe: Callable[[], None] | None = None
@@ -295,18 +299,10 @@ class SpotifyConnectProvider(PluginProvider):
         """Start the Connect daemons and follow the connected players' lifecycle."""
         await super().loaded_in_mass()
         if self._assigned_player_ids:
-            self._unsubscribe = self.mass.subscribe(
-                self._on_player_event,
-                event_filter=(
-                    EventType.PLAYER_ADDED,
-                    EventType.PLAYER_REMOVED,
-                    EventType.PLAYER_CONFIG_UPDATED,
-                    EventType.PLAYER_UPDATED,
-                ),
-                id_filter=self._assigned_player_ids,
-            )
-        # players register after plugins load, so on a cold boot this typically starts
-        # nothing yet: the PLAYER_ADDED events drive the actual daemon startups
+            self._availability = PlayerAvailabilityTracker(self.mass)
+            self._subscribe_player_events()
+        # players come online after plugins load, so on a cold boot this typically starts
+        # nothing yet: the events of players becoming available drive the daemon startups
         await self._reconcile()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -330,8 +326,11 @@ class SpotifyConnectProvider(PluginProvider):
 
     def get_player_audio_sources(self, player_id: str) -> list[AudioSource]:
         """Return the AudioSource bound to the given connected player, if any."""
-        daemon = self._daemons.get(player_id)
-        return [daemon.audio_source] if daemon else []
+        return [
+            daemon.audio_source
+            for stored_id, daemon in self._daemons.items()
+            if self.mass.players.resolve_player_id(stored_id) == player_id
+        ]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -449,9 +448,9 @@ class SpotifyConnectProvider(PluginProvider):
         if daemon is None or not player_id:
             return
 
-        # Cache the owner_player_id (== user-facing MA player) rather than the
-        # protocol-level player_id. Some protocol players are ephemeral bridges
-        # whose ID is invalid for play_media / queue lookups once torn down.
+        # Cache the owner_player_id (the user-facing MA player) rather than
+        # player_id: that is the id of the protocol the stream is fetched under,
+        # which is no id for play_media or queue lookups.
         active_player_id = owner_player_id
         prev_player_id = (
             daemon.active_player_id if daemon.active_player_id != active_player_id else None
@@ -630,45 +629,61 @@ class SpotifyConnectProvider(PluginProvider):
         """Reconcile the Connect daemons after a connected player's lifecycle event."""
         if self._unload_called:
             return
-        if event.event == EventType.PLAYER_REMOVED:
+        # a removal passes the tracker too, so the player's return is recognized
+        came_available = self._availability.became_available(event)
+        if event.event == EventType.PLAYER_REMOVED and event.object_id:
+            if self.mass.players.resolve_player_id(event.object_id) != event.object_id:
+                # merged into another player: the daemon plays on that one from now on
+                self._subscribe_player_events()
+                await self._reconcile()
+                return
             # permanent removal: stop the daemon; a temporarily unavailable player
             # (which fires only PLAYER_UPDATED) keeps its running daemon so the
             # advertised device identity stays stable across the outage
             async with self._reconcile_lock:
-                if event.object_id and (daemon := self._daemons.pop(event.object_id, None)):
-                    # the session may be consumed by ANOTHER player (cross-select or
-                    # sync-group owner); release it so that player is not left bound
-                    # to a source that can no longer stream
-                    self._clear_active_player(daemon)
-                    await self._stop_daemon(daemon)
+                for stored_id in self._stored_ids_of(event.object_id):
+                    if daemon := self._daemons.pop(stored_id, None):
+                        # the session may be consumed by ANOTHER player (cross-select or
+                        # sync-group owner); release it so that player is not left bound
+                        # to a source that can no longer stream
+                        self._clear_active_player(daemon)
+                        await self._stop_daemon(daemon)
             return
-        if event.event == EventType.PLAYER_ADDED and event.object_id:
-            # a re-registered player earns a permanently failed daemon a fresh start
-            self._failed_player_ids.discard(event.object_id)
+        if came_available and event.object_id:
+            # a player that comes back earns a permanently failed daemon a fresh start
+            self._failed_player_ids.difference_update(self._stored_ids_of(event.object_id))
         await self._reconcile()
 
     async def _reconcile(self) -> None:
         """
         Align the running Connect daemons with the connected players.
 
-        Starts a daemon for every connected player that is registered, and restarts
-        a daemon whose advertised name drifted from the player's current name.
+        Starts a daemon for every connected player that is available, and restarts
+        a daemon whose advertised name drifted from the player's current name. A player
+        keeps one daemon, also when several connected players were merged into it.
         """
         async with self._reconcile_lock:
             if self._unload_called:
                 return
             template = self.get_config_value(CONF_PUBLISH_NAME_TEMPLATE)
-            for player_id in self._assigned_player_ids:
+            daemon_ids = self._daemon_ids.values()
+            for stored_id in self._daemons.keys() - daemon_ids:
+                # merged into another connected player, whose own daemon stays
+                merged = self._daemons.pop(stored_id)
+                self._clear_active_player(merged)
+                await self._stop_daemon(merged)
+                self.mass.players.trigger_player_update(stored_id)
+            for player_id in daemon_ids:
                 if player_id in self._failed_player_ids:
                     # this daemon gave up permanently; blocked from restarts until the
-                    # player re-registers or the provider reloads
+                    # player comes back or the provider reloads
                     continue
-                player = self.mass.players.get_player(player_id)
+                player = get_available_player(self.mass, player_id)
                 if player is None:
-                    # not (yet) registered: never start a daemon for it; an already
+                    # not available (yet): never start a daemon for it; an already
                     # running one is deliberately kept (see _on_player_event)
                     continue
-                publish_name = resolve_publish_name(template, player.display_name)
+                publish_name = resolve_publish_name(template, player.name)
                 daemon = self._daemons.get(player_id)
                 if daemon is not None and daemon.publish_name == publish_name:
                     continue
@@ -680,26 +695,73 @@ class SpotifyConnectProvider(PluginProvider):
                     self._clear_active_player(daemon)
                     del self._daemons[player_id]
                     await self._stop_daemon(daemon)
-                await self._start_daemon(player, publish_name)
+                await self._start_daemon(player_id, player, publish_name)
                 # the standing source entry feeds the player's cached source list
                 self.mass.players.trigger_player_update(player_id)
 
-    async def _start_daemon(self, player: Player, publish_name: str) -> None:
+    @property
+    def _connected_player_ids(self) -> tuple[str, ...]:
+        """Return the ids the connected players answer to now, also after one was merged."""
+        return tuple(self._daemon_ids)
+
+    @property
+    def _daemon_ids(self) -> dict[str, str]:
+        """
+        Return the stored id that keys the daemon of each connected player, by its id now.
+
+        That is the id of the player itself when it is connected, else the first connected
+        player that was merged into it: the daemon keeps the Spotify device it had.
+        """
+        daemon_ids: dict[str, str] = {}
+        for stored_id in self._assigned_player_ids:
+            player_id = self.mass.players.resolve_player_id(stored_id)
+            if player_id not in daemon_ids or stored_id == player_id:
+                daemon_ids[player_id] = stored_id
+        return daemon_ids
+
+    def _stored_ids_of(self, player_id: str) -> set[str]:
+        """
+        Return the stored ids of the connected players that answer to a player id now.
+
+        :param player_id: Id of a player.
+        """
+        return {
+            stored_id
+            for stored_id in self._assigned_player_ids
+            if self.mass.players.resolve_player_id(stored_id) == player_id
+        }
+
+    def _subscribe_player_events(self) -> None:
+        """Follow the lifecycle events of the connected players."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+        self._unsubscribe = self.mass.subscribe(
+            self._on_player_event,
+            event_filter=(
+                EventType.PLAYER_ADDED,
+                EventType.PLAYER_REMOVED,
+                EventType.PLAYER_CONFIG_UPDATED,
+                EventType.PLAYER_UPDATED,
+            ),
+            id_filter=self._connected_player_ids,
+        )
+
+    async def _start_daemon(self, player_id: str, player: Player, publish_name: str) -> None:
         """
         Create the daemon state for a connected player and start its backend.
 
-        :param player: The (registered) player this daemon plays on.
+        :param player_id: The connected player as stored, which keys the daemon and its device.
+        :param player: The (available) player this daemon plays on.
         :param publish_name: The device name to advertise in the Spotify app.
         """
-        player_id = player.player_id
         daemon = _PlayerDaemon(
             player_id=player_id,
             safe_player_id=re.sub(r"[^A-Za-z0-9_.-]", "_", player_id),
             publish_name=publish_name,
             stream_metadata=StreamMetadata(title=f"Spotify Connect | {publish_name}"),
         )
-        daemon.backend = self._create_backend(daemon, player.display_name)
-        daemon.audio_source = self._build_audio_source(daemon, player.display_name)
+        daemon.backend = self._create_backend(daemon, player.name)
+        daemon.audio_source = self._build_audio_source(daemon, player.name)
         self._daemons[player_id] = daemon
         try:
             await daemon.backend.start()
@@ -968,7 +1030,9 @@ class SpotifyConnectProvider(PluginProvider):
         if not daemon.playing or daemon.in_use_by_player:
             return
         # an explicitly selected player wins, else the daemon's own connected player
-        target_player_id = daemon.active_player_id or daemon.player_id
+        target_player_id = daemon.active_player_id or self.mass.players.resolve_player_id(
+            daemon.player_id
+        )
         self.logger.info(
             "Starting Spotify Connect playback [%s] on player %s",
             daemon.publish_name,
@@ -1223,11 +1287,11 @@ class SpotifyConnectProvider(PluginProvider):
         player = self.mass.players.get_player(player_id)
         if player is None:
             return
-        volume_level = player.state.volume_level
+        volume_level = player.volume_level
         if volume_level is None:
             # a group has no level of its own, and the group volume is the level its
             # own volume commands interpolate the members from
-            volume_level = player.state.group_volume
+            volume_level = player.group_volume
         if volume_level is None:
             return
         # clamp: the logical volume can be out of range until volume limit

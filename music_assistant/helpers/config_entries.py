@@ -8,6 +8,8 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, PlayerType
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant_models.config_entries import ConfigValueType
 
     from music_assistant.mass import MusicAssistant
@@ -45,7 +47,7 @@ def create_player_selector(
     :param key: The config entry key for the selected player.
     :param selected_value: Previously selected player id to prefill when still available.
     """
-    options = _player_options(mass)
+    options = _player_options(mass, [selected_value] if isinstance(selected_value, str) else [])
     selected = selected_value if any(option.value == selected_value for option in options) else None
     return ConfigEntry(
         key=key,
@@ -67,7 +69,7 @@ def create_connected_players_entry(
     :param selected: Currently selected player ids; ids not registered right now stay
         listed (with the id as title) so saving the form does not silently drop them.
     """
-    options = _player_options(mass)
+    options = _player_options(mass, selected or [])
     known_ids = {option.value for option in options}
     options += [
         ConfigValueOption(player_id, title=player_id)
@@ -116,13 +118,22 @@ def resolve_publish_name(template: ConfigValueType, player_name: str) -> str:
     return f"{player_name} | Music Assistant"
 
 
-def _player_options(mass: MusicAssistant) -> list[ConfigValueOption]:
-    """Return a picker option for every registered playback-capable player."""
+def _player_options(mass: MusicAssistant, selected: Iterable[str]) -> list[ConfigValueOption]:
+    """
+    Return a picker option for every registered playback-capable player.
+
+    A session-only player (a browser or app player) is only offered while it is selected.
+
+    :param mass: The Music Assistant instance providing the current players.
+    :param selected: The ids of the players selected now.
+    """
+    selected_ids = set(selected)
     return [
-        ConfigValueOption(player.player_id, title=player.display_name)
+        ConfigValueOption(player.player_id, title=player.name)
         for player in sorted(
             mass.players.all_players(False, False),
-            key=lambda player: player.display_name.lower(),
+            key=lambda player: player.name.lower(),
         )
         if player.type in PLAYBACK_TARGET_TYPES
+        and (not player.session_only or player.player_id in selected_ids)
     ]

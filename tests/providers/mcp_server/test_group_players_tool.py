@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.errors import InsufficientPermissions
 
-from music_assistant.constants import CONF_HIDE_IN_UI
 from music_assistant.controllers.players import PlayerController
 from music_assistant.providers.mcp_server.registry import TOOLS, ToolError
 from tests.common import as_user, grouping_player_controller
@@ -18,12 +17,8 @@ from tests.common import as_user, grouping_player_controller
 def controller() -> PlayerController:
     """Build a players controller over three ungrouped players the tool can see."""
     controller = grouping_player_controller("a", "b", "c")
-    for player in controller._players.values():
-        cast("MagicMock", player._config.get_value).side_effect = lambda key, _default=None: (
-            False if key == CONF_HIDE_IN_UI else "none"
-        )
-        player._cache.clear()
-        player.update_state(force_update=True, signal_event=False)
+    # the tool only offers players that are not hidden
+    assert not any(player.hide_in_ui for player in controller._players.values())
     return controller
 
 
@@ -56,6 +51,20 @@ async def test_grouping_own_players_is_permitted(controller: PlayerController) -
     """The tool groups the players the user has access to."""
     with as_user(["a", "c"]):
         await _group_players(controller, "a", ["c"])
+
+    cast("MagicMock", controller._handle_set_members).assert_awaited_once_with(
+        controller._players["a"], ["c"], None
+    )
+
+
+async def test_a_player_is_found_by_the_id_of_a_player_merged_into_it(
+    controller: PlayerController,
+) -> None:
+    """An id the agent kept from before a merge names the player it went into."""
+    controller._legacy_ids["old_a"] = "a"
+
+    with as_user(["a", "c"]):
+        await _group_players(controller, "old_a", ["c"])
 
     cast("MagicMock", controller._handle_set_members).assert_awaited_once_with(
         controller._players["a"], ["c"], None

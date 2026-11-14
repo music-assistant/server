@@ -95,7 +95,7 @@ def _request(
 ) -> AsyncGenerator[bytes]:
     """Open the item's own stream, as the player's request for its url does."""
     return audio.get_queue_item_stream_with_smartfade(
-        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", SimpleNamespace(protocol_id="player-1", name="Player")),
         cast("Any", queue_item),
         TEST_PCM_FORMAT,
         crossfade_mode=crossfade_mode,
@@ -230,7 +230,7 @@ async def test_a_rate_switch_the_player_cannot_play_gapless_is_a_plain_cut(
     audio.select_pcm_format = AsyncMock(  # type: ignore[method-assign]
         return_value=replace(TEST_PCM_FORMAT, sample_rate=48000)
     )
-    mass.config.get_raw_player_config_value.return_value = False
+    mass.config.get_protocol_value.return_value = False
     opened = _install_item_streams(monkeypatch, audio)
 
     clip_stream = _request(audio, clip, CrossfadeMode.VOICE_OVER)
@@ -266,12 +266,12 @@ def test_a_declared_overlap_follows_the_sample_rate_rule_of_the_player(
     """A rate switch only matters between item streams; a flow stream plays one rate."""
     track = _declared_track()
     audio, mass = _item_audio(monkeypatch, next_item=track, load_next=[track])
-    mass.config.get_raw_player_config_value.return_value = player_plays_gapless_across_rates
+    mass.config.get_protocol_value.return_value = player_plays_gapless_across_rates
 
     allowed = audio.crossfade_allowed(
         cast("Any", _clip()),
         crossfade_mode=CrossfadeMode.VOICE_OVER,
-        player_id="player-1",
+        protocol_id="player-1",
         flow_mode=flow_mode,
         next_queue_item=cast("Any", track),
         sample_rate=44100,
@@ -427,7 +427,7 @@ async def test_a_declared_clip_plays_plainly_on_a_player_without_gapless(
     """A player that leaves a gap between two items gets the clip whole."""
     controller, request, seen = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
     _declare_clip(controller)
-    controller.mass.players.get_player.return_value.state.supported_features = set()
+    controller.mass.players.get_output_protocol.return_value.supported_features = set()
 
     with pytest.raises(_FfmpegArgsCaptured):
         await controller.serve_queue_item_stream(request)

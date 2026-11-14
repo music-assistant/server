@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.player import get_available_player
 from music_assistant.helpers.util import join_task
 from music_assistant.helpers.virtual_player import cleanup_virtual_player
 
@@ -92,10 +93,10 @@ class SharedPlaybackSession:
         :param mass: MusicAssistant instance.
         :param venue_player_id: The player_id of the player that owns the queue
             and plays out loud.
-        :raises SetupFailedError: If the venue player is unknown.
+        :raises SetupFailedError: If the venue player is unknown or unavailable.
         :return: The created session.
         """
-        if mass.players.get_player(venue_player_id) is None:
+        if get_available_player(mass, venue_player_id) is None:
             raise SetupFailedError(f"Venue player {venue_player_id} is not available")
         return cls(mass, SharedPlaybackMode.VENUE, venue_player_id)
 
@@ -182,13 +183,13 @@ class SharedPlaybackSession:
         """
         if (host_player := self._get_host_player()) is None:
             return False
-        if PlayerFeature.SET_MEMBERS not in host_player.state.supported_features:
+        if PlayerFeature.SET_MEMBERS not in host_player.supported_features:
             return False
-        # state.can_group_with handles all protocol expansion and translation,
+        # can_group_with handles all protocol expansion and translation,
         # for both a real venue player and a (virtual) Sendspin host player
         return (
-            web_player_id in host_player.state.can_group_with
-            or web_player_id in host_player.state.group_members
+            web_player_id in host_player.can_group_with
+            or web_player_id in host_player.group_members
         )
 
     async def add_guest_listener(self, web_player_id: str) -> None:
@@ -216,14 +217,14 @@ class SharedPlaybackSession:
         host_player = self._get_host_player()
         if host_player is None or not self._guest_listeners:
             return
-        group_members = set(host_player.state.group_members)
+        group_members = set(host_player.group_members)
         for web_player_id in sorted(self._guest_listeners):
             if web_player_id in group_members:
                 continue
             guest_player = self.mass.players.get_player(web_player_id)
             if (
                 guest_player is None
-                or not guest_player.state.available
+                or not guest_player.available
                 or not self.can_listen_in(web_player_id)
             ):
                 continue
@@ -386,6 +387,6 @@ class SharedPlaybackSession:
     def _get_host_player(self) -> Player | None:
         """Return the (available) player hosting this session, if any."""
         player = self.mass.players.get_player(self._player_id)
-        if player is None or not player.state.available:
+        if player is None or not player.available:
             return None
         return player

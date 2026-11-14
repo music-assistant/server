@@ -64,7 +64,6 @@ async def timer_mass() -> AsyncGenerator[MusicAssistant]:
     mass._tracked_tasks = {}
     mass.config = MagicMock()
     mass.players = MagicMock()
-    mass.players.all_players.return_value = []
     yield mass
     for handle in mass._tracked_timers.values():
         handle.cancel()
@@ -77,12 +76,14 @@ def _make_player(mass: MusicAssistant, uid: str, name: str) -> SonosPlayer:
     provider = MagicMock()
     provider.mass = mass
     provider.topology_condition = asyncio.Condition()
+    provider.get_protocol = lambda protocol_id: mass.players.get_protocol(protocol_id)
+    provider.protocols = []
     return SonosPlayer(provider=provider, soco=_make_soco(uid, name), fixed_volume=False)
 
 
 def _poll_id(player: SonosPlayer) -> str:
     """Return the task id that debounces the follow-up poll of the given speaker."""
-    return f"sonos_poll_{player.player_id}"
+    return f"sonos_poll_{player.protocol_id}"
 
 
 def _pending_polls(mass: MusicAssistant) -> list[str]:
@@ -339,12 +340,12 @@ async def test_set_members_polls_the_speakers_it_regrouped(timer_mass: MusicAssi
     kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
     hallway = _make_player(timer_mass, "RINCON_000E58CCCCCC01400", "Hallway")
-    cast("MagicMock", timer_mass.players).get_player.side_effect = {
-        study.player_id: study,
-        hallway.player_id: hallway,
+    cast("MagicMock", timer_mass.players).get_protocol.side_effect = {
+        study.protocol_id: study,
+        hallway.protocol_id: hallway,
     }.get
 
-    await kitchen.set_members(player_ids_to_add=[study.player_id, hallway.player_id])
+    await kitchen.set_members(player_ids_to_add=[study.protocol_id, hallway.protocol_id])
 
     assert _pending_polls(timer_mass) == sorted([_poll_id(study), _poll_id(hallway)])
 
@@ -355,11 +356,11 @@ async def test_join_failure_names_the_speaker_that_refused(
     """A speaker that refuses to join is named in the failure, not the group leader."""
     kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
-    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    cast("MagicMock", timer_mass.players).get_protocol.side_effect = {study.protocol_id: study}.get
     study.soco.join.side_effect = SoCoException("the speaker refused to join")
 
     with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
-        await kitchen.set_members(player_ids_to_add=[study.player_id])
+        await kitchen.set_members(player_ids_to_add=[study.protocol_id])
 
     assert "Kitchen" not in str(exc_info.value)
 
@@ -372,16 +373,16 @@ async def test_grouping_leaves_the_speakers_after_a_failure_untouched(
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
     hallway = _make_player(timer_mass, "RINCON_000E58CCCCCC01400", "Hallway")
     attic = _make_player(timer_mass, "RINCON_000E58DDDDDD01400", "Attic")
-    cast("MagicMock", timer_mass.players).get_player.side_effect = {
-        study.player_id: study,
-        hallway.player_id: hallway,
-        attic.player_id: attic,
+    cast("MagicMock", timer_mass.players).get_protocol.side_effect = {
+        study.protocol_id: study,
+        hallway.protocol_id: hallway,
+        attic.protocol_id: attic,
     }.get
     hallway.soco.join.side_effect = SoCoException("the speaker refused to join")
 
     with pytest.raises(PlayerCommandFailed, match="Hallway"):
         await kitchen.set_members(
-            player_ids_to_add=[study.player_id, hallway.player_id, attic.player_id]
+            player_ids_to_add=[study.protocol_id, hallway.protocol_id, attic.protocol_id]
         )
 
     assert _pending_polls(timer_mass) == [_poll_id(study)]
@@ -394,31 +395,31 @@ async def test_unjoin_failure_names_the_speaker_that_refused(
     """A speaker that refuses to leave a group is named in the failure, not the group leader."""
     kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
-    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    cast("MagicMock", timer_mass.players).get_protocol.side_effect = {study.protocol_id: study}.get
     study.soco.unjoin.side_effect = SoCoException("the speaker refused to leave")
 
     with pytest.raises(PlayerCommandFailed, match="Study") as exc_info:
-        await kitchen.set_members(player_ids_to_remove=[study.player_id])
+        await kitchen.set_members(player_ids_to_remove=[study.protocol_id])
 
     assert "Kitchen" not in str(exc_info.value)
 
 
-async def test_unload_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
-    """An unloaded speaker is not polled by a command that was still in flight."""
+async def test_detach_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
+    """A detached speaker is not polled by a command that was still in flight."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     await player.volume_set(30)
     handle = timer_mass._tracked_timers[_poll_id(player)]
 
-    await player.on_unload()
+    await player.on_detach()
 
     assert _pending_polls(timer_mass) == []
     assert handle.cancelled()
 
 
-async def test_unload_cancels_a_poll_that_already_started(
+async def test_detach_cancels_a_poll_that_already_started(
     timer_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A poll that started just before the speaker was unloaded is aborted."""
+    """A poll that started just before the speaker was detached is aborted."""
     monkeypatch.setattr(player_module, "COMMAND_POLL_DELAY", 0)
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     polling = asyncio.Event()
@@ -432,18 +433,18 @@ async def test_unload_cancels_a_poll_that_already_started(
     await polling.wait()
     task = timer_mass._tracked_tasks[_poll_id(player)]
 
-    await player.on_unload()
+    await player.on_detach()
 
     with pytest.raises(asyncio.CancelledError):
         await task
 
 
-async def test_unloaded_player_ignores_results_from_a_running_poll(
+async def test_detached_player_ignores_results_from_a_running_poll(
     timer_mass: MusicAssistant,
 ) -> None:
-    """A poll left running in its worker thread cannot update an unloaded speaker."""
+    """A poll left running in its worker thread cannot update a detached speaker."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
-    await player.on_unload()
+    await player.on_detach()
 
     with patch.object(player, "_update_attributes") as update_attributes:
         player.update_player()
@@ -451,17 +452,17 @@ async def test_unloaded_player_ignores_results_from_a_running_poll(
     update_attributes.assert_not_called()
 
 
-async def test_unloaded_player_ignores_group_topology_updates(
+async def test_detached_player_ignores_group_topology_updates(
     timer_mass: MusicAssistant,
 ) -> None:
-    """A group update raised by a running poll cannot update an unloaded speaker."""
+    """A group update raised by a running poll cannot update a detached speaker."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     # let the speaker report itself as coordinator of a two-speaker group, so a
-    # topology update would regroup and signal the change if it were not unloaded
+    # topology update would regroup and signal the change if it were not detached
     member = MagicMock(uid="RINCON_000E58BBBBBB01400", is_visible=True)
-    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.coordinator.uid = player.protocol_id
     player.soco.group.members = [player.soco.group.coordinator, member]
-    await player.on_unload()
+    await player.on_detach()
 
     with patch.object(player, "update_state") as update_state:
         await player.create_update_groups_coro()
@@ -471,44 +472,44 @@ async def test_unloaded_player_ignores_group_topology_updates(
     update_state.assert_not_called()
 
 
-async def test_on_unload_unsubscribes_from_soco_events(timer_mass: MusicAssistant) -> None:
-    """Unloading a speaker also tears down its soco event subscriptions."""
+async def test_on_detach_unsubscribes_from_soco_events(timer_mass: MusicAssistant) -> None:
+    """Detaching a speaker also tears down its soco event subscriptions."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     subscription = MagicMock()
     subscription.unsubscribe = AsyncMock()
     player._subscriptions = [subscription]
 
-    await player.on_unload()
+    await player.on_detach()
 
     subscription.unsubscribe.assert_awaited_once()
     assert player._subscriptions == []
 
 
-async def test_on_unload_unsubscribes_even_when_already_unavailable(
+async def test_on_detach_unsubscribes_even_when_already_unavailable(
     timer_mass: MusicAssistant,
 ) -> None:
-    """Unlike offline(), on_unload() must still tear down an unavailable speaker's events."""
+    """Unlike offline(), on_detach() must still tear down an unavailable speaker's events."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     subscription = MagicMock()
     subscription.unsubscribe = AsyncMock()
     player._subscriptions = [subscription]
     player._attr_available = False
 
-    await player.on_unload()
+    await player.on_detach()
 
     subscription.unsubscribe.assert_awaited_once()
     assert player._subscriptions == []
 
 
-async def test_unloaded_player_is_not_resubscribed_by_a_late_poll(
+async def test_detached_player_is_not_resubscribed_by_a_late_poll(
     timer_mass: MusicAssistant,
 ) -> None:
-    """A poll that reaches an unloaded speaker must not subscribe it to events again."""
+    """A poll that reaches a detached speaker must not subscribe it to events again."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     # the speaker was marked unavailable earlier, so it carries no subscriptions and
-    # unloading it leaves that unavailable state behind for a late poll to act on
+    # detaching it leaves that unavailable state behind for a late poll to act on
     player._attr_available = False
-    await player.on_unload()
+    await player.on_detach()
 
     with patch.object(player, "subscribe", AsyncMock()) as subscribe:
         await player.poll()
@@ -522,7 +523,7 @@ async def test_speaker_answering_a_poll_again_is_resubscribed(
 ) -> None:
     """A speaker that answers a poll after being unavailable is subscribed to events again."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
-    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.coordinator.uid = player.protocol_id
     player.soco.group.members = [player.soco.group.coordinator]
     player._attr_available = False
 
@@ -572,7 +573,7 @@ async def test_successful_poll_counts_as_speaker_activity(
 ) -> None:
     """A successful poll counts as activity, so the speaker is not pinged."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
-    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.coordinator.uid = player.protocol_id
     player.soco.group.members = [player.soco.group.coordinator]
     before = time.monotonic()
 
@@ -588,7 +589,7 @@ async def test_unavailable_speaker_is_pinged_despite_recent_activity(
 ) -> None:
     """A speaker taken offline by a failed renewal is pinged so it can recover quickly."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
-    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.coordinator.uid = player.protocol_id
     player.soco.group.members = [player.soco.group.coordinator]
     player._attr_available = False
     player._last_activity = time.monotonic()
@@ -604,10 +605,10 @@ async def test_unavailable_speaker_is_pinged_despite_recent_activity(
     assert player._attr_available is True
 
 
-async def test_unloading_mid_subscribe_keeps_no_subscriptions(
+async def test_detaching_mid_subscribe_keeps_no_subscriptions(
     timer_mass: MusicAssistant,
 ) -> None:
-    """A speaker unloaded while subscribing must not keep the subscriptions it created."""
+    """A speaker detached while subscribing must not keep the subscriptions it created."""
     player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     subscribing = asyncio.Event()
     speaker_responds = asyncio.Event()
@@ -621,13 +622,13 @@ async def test_unloading_mid_subscribe_keeps_no_subscriptions(
         subscribe_task = asyncio.create_task(player.subscribe())
         await subscribing.wait()
 
-        unload_task = asyncio.create_task(player.on_unload())
+        detach_task = asyncio.create_task(player.on_detach())
         await asyncio.sleep(0)
-        assert not unload_task.done()
+        assert not detach_task.done()
 
         speaker_responds.set()
         async with asyncio.timeout(5):
-            await asyncio.gather(subscribe_task, unload_task)
+            await asyncio.gather(subscribe_task, detach_task)
 
     assert player._subscriptions == []
 
@@ -702,8 +703,8 @@ async def test_update_ip_skips_setup_when_the_new_address_stays_silent(
     assert sonos_player.soco is new_soco
 
 
-async def test_update_ip_leaves_an_unloaded_speaker_alone(sonos_player: SonosPlayer) -> None:
-    """An unloaded speaker must not be reconnected, its subscriptions would leak."""
+async def test_update_ip_leaves_a_detached_speaker_alone(sonos_player: SonosPlayer) -> None:
+    """A detached speaker must not be reconnected, its subscriptions would leak."""
     sonos_player._attr_available = False
     sonos_player._unloaded = True
     original_soco = sonos_player.soco
@@ -728,7 +729,7 @@ async def test_update_ip_leaves_a_responding_speaker_alone(sonos_player: SonosPl
 
 async def test_setup_reads_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
     """Reading the initial state of a speaker must not stall the event loop."""
-    cast("MagicMock", sonos_player.mass.players).register_or_update = AsyncMock()
+    attach = cast("MagicMock", sonos_player.mass.players).register = AsyncMock()
     reading_threads: list[int] = []
 
     with (
@@ -744,6 +745,7 @@ async def test_setup_reads_the_speaker_off_the_event_loop(sonos_player: SonosPla
 
     assert len(reading_threads) == 1
     assert reading_threads[0] != threading.get_ident()
+    attach.assert_awaited_once_with(sonos_player)
 
 
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:

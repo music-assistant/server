@@ -23,7 +23,7 @@ from .constants import (
     POLL_INTERVAL,
 )
 from .mdns import controller_id, controller_matches_host
-from .player import AmpliPiZonePlayer
+from .player import AmpliPiZonePlayer, zone_protocol_id
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -117,8 +117,6 @@ class AmpliPiPlayerProvider(PlayerProvider):
             # but it is pending" warnings and surfaces any cleanup errors)
             with suppress(asyncio.CancelledError):
                 await self._poll_task
-        for player in list(self._players.values()):
-            await self.mass.players.unregister(player.player_id)
         self._players.clear()
         # only delete our streams when the provider is being removed; on a plain reload
         # they are kept (and re-adopted) so playback survives and they can be reused
@@ -180,14 +178,21 @@ class AmpliPiPlayerProvider(PlayerProvider):
             return new_stream_id
 
     async def discover_players(self) -> None:
-        """Discover (register) the zones of the AmpliPi controller as players."""
+        """Register the zones of the AmpliPi controller that have no attached protocol."""
         for zone in self._status.zones:
-            if zone.disabled or zone.id is None or zone.id in self._players:
+            if zone.disabled or zone.id is None:
                 continue
-            player = AmpliPiZonePlayer(self, zone.id)
+            player = self._players.get(zone.id)
+            protocol_id = zone_protocol_id(self.instance_id, zone.id)
+            if (player and self.get_protocol(protocol_id) is player) or (
+                not self.mass.players.wants_protocol(protocol_id)
+            ):
+                continue
+            player = player or AmpliPiZonePlayer(self, zone.id)
             self._players[zone.id] = player
-            await self.mass.players.register_or_update(player)
-            player.update_from_status(self._status)
+            await self.mass.players.register(player)
+            if self.get_protocol(protocol_id) is player:
+                player.update_from_status(self._status)
 
     @property
     def status(self) -> Status:
@@ -209,10 +214,18 @@ class AmpliPiPlayerProvider(PlayerProvider):
             and stream.type not in EXCLUDED_SELECTABLE_STREAM_TYPES
         ]
 
-    def zone_id_for(self, player_id: str) -> int | None:
-        """Return the AmpliPi zone id for the given Music Assistant player_id."""
+    def forget_zone(self, zone_id: int) -> None:
+        """
+        Let go of the player of a zone, so that the zone is registered as a new player.
+
+        :param zone_id: ID of the AmpliPi zone.
+        """
+        self._players.pop(zone_id, None)
+
+    def zone_id_for(self, protocol_id: str) -> int | None:
+        """Return the AmpliPi zone id of the given zone protocol."""
         for zone_id, player in self._players.items():
-            if player.player_id == player_id:
+            if player.protocol_id == protocol_id:
                 return zone_id
         return None
 

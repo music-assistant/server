@@ -536,6 +536,11 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
    resolved for the caller must be one of that user's music sources
    (`mass.music.get_visible_provider` / `resolve_visible_provider`, which leave the other
    provider types unrestricted), never the plain `mass.get_provider` lookup
+5. Give an argument that takes a player or queue id one of the names in `PLAYER_ID_ARGUMENTS`
+   ([helpers/api.py](../../helpers/api.py)). A player keeps answering to its legacy ids, and
+   it is in those arguments that every API transport resolves them before the handler runs.
+   `source` and `source_id` are the exception: they also take source ids that are no queue,
+   so the players controller resolves them, not the dispatcher
 
 ### Testing Authentication
 

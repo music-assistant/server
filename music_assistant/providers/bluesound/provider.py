@@ -62,14 +62,14 @@ class BluesoundPlayerProvider(PlayerProvider):
             self.logger.debug("Ignoring incomplete mdns discovery for Bluesound player: %s", name)
             return
 
-        player_id: str | None
+        protocol_id: str | None
         if info.type == MUSP_MDNS_TYPE:
             # this is a multi-zone device, we need to fetch the mac address of the main device
             mac_address = await self._get_chassis_mac_address(ip_address, port)
-            player_id = f"{mac_address}:{port}"
+            protocol_id = f"{mac_address}:{port}"
         else:
             mac_address = info.decoded_properties.get("mac")
-            player_id = mac_address
+            protocol_id = mac_address
 
         if not mac_address:
             self.logger.debug(
@@ -79,8 +79,8 @@ class BluesoundPlayerProvider(PlayerProvider):
             return
 
         # Handle update of existing player
-        assert player_id is not None  # for type checker
-        if bluos_player := self.mass.players.get_player(player_id):
+        assert protocol_id is not None  # for type checker
+        if bluos_player := self.get_protocol(protocol_id):
             bluos_player = cast("BluesoundPlayer", bluos_player)
             # Check if the IP address has changed
             if ip_address and ip_address != bluos_player.ip_address:
@@ -94,6 +94,10 @@ class BluesoundPlayerProvider(PlayerProvider):
                 await bluos_player.update_attributes()
                 return
 
+        if not self.mass.players.wants_protocol(protocol_id):
+            self.logger.debug("Ignoring disabled player: %s", name)
+            return
+
         # New player discovered
         self.logger.debug("Discovered player: %s", name)
 
@@ -106,8 +110,8 @@ class BluesoundPlayerProvider(PlayerProvider):
         )
 
         # Create BluOS player
-        bluos_player = BluesoundPlayer(self, player_id, discovery_info, name, ip_address, port)
-        self.player_map[(ip_address, port)] = player_id
+        bluos_player = BluesoundPlayer(self, protocol_id, discovery_info, name, ip_address, port)
+        self.player_map[(ip_address, port)] = protocol_id
 
         # Register with Music Assistant
         await bluos_player.setup()

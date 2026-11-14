@@ -117,13 +117,24 @@ def _restricted_client(
     return client
 
 
-def _stub_players(monkeypatch: pytest.MonkeyPatch, mass: MusicAssistant, **players: bool) -> None:
-    """Stub the player registry with the given players, mapping id -> is_private."""
+def _stub_protocols(
+    monkeypatch: pytest.MonkeyPatch, mass: MusicAssistant, **protocols: bool
+) -> None:
+    """
+    Stub the protocol registry with the given client protocols, mapping id -> is_private.
+
+    A private client player has its protocol id as player id (a session-only player), a
+    shared speaker a player id of its own (``pl_<protocol id>``).
+    """
     registry = {
-        player_id: SimpleNamespace(player_id=player_id, private=private)
-        for player_id, private in players.items()
+        protocol_id: SimpleNamespace(
+            protocol_id=protocol_id,
+            private=private,
+            player=SimpleNamespace(player_id=protocol_id if private else f"pl_{protocol_id}"),
+        )
+        for protocol_id, private in protocols.items()
     }
-    monkeypatch.setattr(mass, "players", SimpleNamespace(get_player=registry.get), raising=False)
+    monkeypatch.setattr(mass, "players", SimpleNamespace(get_protocol=registry.get), raising=False)
 
 
 async def test_player_events_honor_the_user_player_filter(
@@ -148,7 +159,7 @@ async def test_own_private_client_player_events_are_delivered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A restricted user receives events for the private client player they connected on."""
-    _stub_players(monkeypatch, mass_minimal, browser=True)
+    _stub_protocols(monkeypatch, mass_minimal, browser=True)
     client = _restricted_client(webserver, player_filter=["kitchen"])
     client.bind_sendspin_player("browser")
 
@@ -157,17 +168,41 @@ async def test_own_private_client_player_events_are_delivered(
     assert "browser" in get_written_message(client)
 
 
+async def test_own_private_client_events_follow_the_id_of_its_player(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The events of the own client player name its player, whose id the client may not know."""
+    # a session-only player gets an id of its own when its protocol id is taken
+    browser = SimpleNamespace(
+        protocol_id="browser", private=True, player=SimpleNamespace(player_id="pl_browser")
+    )
+    players = SimpleNamespace(get_protocol={"browser": browser}.get)
+    monkeypatch.setattr(mass_minimal, "players", players, raising=False)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "pl_browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "pl_browser" in get_written_message(client)
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert client._to_write.empty()
+
+
 async def test_events_reach_own_client_bound_before_registration(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Binding can precede registration; once the player exists its events reach the owner."""
-    _stub_players(monkeypatch, mass_minimal)  # player not registered yet at bind time
+    _stub_protocols(monkeypatch, mass_minimal)  # player not registered yet at bind time
     client = _restricted_client(webserver, player_filter=["kitchen"])
     client.bind_sendspin_player("browser")
 
-    _stub_players(monkeypatch, mass_minimal, browser=True)  # player now registered
+    _stub_protocols(monkeypatch, mass_minimal, browser=True)  # player now registered
     mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
     await drain_event_callbacks()
     assert "browser" in get_written_message(client)
@@ -179,7 +214,7 @@ async def test_own_private_client_removal_event_is_delivered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The own private client still gets its removal event after it left the registry."""
-    _stub_players(monkeypatch, mass_minimal, browser=True)
+    _stub_protocols(monkeypatch, mass_minimal, browser=True)
     client = _restricted_client(webserver, player_filter=["kitchen"])
     client.bind_sendspin_player("browser")
     # an event while the player exists latches its private status
@@ -187,7 +222,7 @@ async def test_own_private_client_removal_event_is_delivered(
     await drain_event_callbacks()
     assert "browser" in get_written_message(client)
 
-    _stub_players(monkeypatch, mass_minimal)  # player has left the registry
+    _stub_protocols(monkeypatch, mass_minimal)  # player has left the registry
     mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
     await drain_event_callbacks()
     assert "browser" in get_written_message(client)
@@ -199,7 +234,7 @@ async def test_own_client_removal_delivered_after_becoming_restricted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A client restricted only after registering still receives its own removal event."""
-    _stub_players(monkeypatch, mass_minimal, browser=True)
+    _stub_protocols(monkeypatch, mass_minimal, browser=True)
     client = _restricted_client(webserver, player_filter=[])  # unrestricted for now
     client.bind_sendspin_player("browser")
     # while unrestricted, the registration event latches the private status
@@ -211,7 +246,7 @@ async def test_own_client_removal_delivered_after_becoming_restricted(
     client._authenticated_user = User(
         user_id="restricted", username="restricted", role=UserRole.USER, player_filter=["kitchen"]
     )
-    _stub_players(monkeypatch, mass_minimal)
+    _stub_protocols(monkeypatch, mass_minimal)
     mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
     await drain_event_callbacks()
     assert "browser" in get_written_message(client)
@@ -222,12 +257,12 @@ async def test_shared_speaker_claimed_as_client_stays_filtered(
     webserver: WebserverController,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Announcing a shared speaker's id as the client id does not unlock its events."""
-    _stub_players(monkeypatch, mass_minimal, living_room=False)
+    """Announcing a shared speaker's protocol id as the client id does not unlock its events."""
+    _stub_protocols(monkeypatch, mass_minimal, living_room=False)
     client = _restricted_client(webserver, player_filter=["kitchen"])
     client.bind_sendspin_player("living_room")  # a shared, non-private speaker
 
-    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "pl_living_room", {"name": "Living room"})
     await drain_event_callbacks()
     assert client._to_write.empty()
 

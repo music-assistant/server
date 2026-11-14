@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -22,21 +20,19 @@ from music_assistant.helpers.audio import (
     resolve_output_player_ids,
 )
 from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 
-def test_resolve_output_player_ids_resolves_parents_and_duplicates() -> None:
-    """Output destinations use visible protocol parents without duplicates."""
-    mass = MagicMock()
-    players = {
-        "leader": SimpleNamespace(protocol_parent_id=None),
-        "protocol-child": SimpleNamespace(protocol_parent_id="child"),
-        "child": SimpleNamespace(protocol_parent_id=None),
-    }
-    mass.players.get_player.side_effect = players.get
+def test_resolve_output_player_ids_names_players_without_duplicates() -> None:
+    """Output destinations name the player of a protocol, each player once."""
+    mass = mock_player_mass()
+    provider = MockProvider("test", mass=mass)
+    attach_mock(provider, "leader-device", player_id="leader")
+    attach_mock(provider, "child-device", player_id="child")
 
     result = resolve_output_player_ids(
         mass,
-        ("leader", "leader", "protocol-child", "child", "missing", "missing"),
+        ("leader", "leader", "child-device", "child", "missing", "missing"),
     )
 
     assert result == {"leader", "child", "missing"}

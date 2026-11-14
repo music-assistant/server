@@ -147,7 +147,10 @@ class StateSyncHandler(WamPlayerFeatureBase):
             and hasattr(event, "data")
             and isinstance(event.data, dict)
             and "playtime" in event.data
-            and not self.player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+            and not (
+                self.player.player
+                and self.player.player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+            )
         ):
             try:
                 playtime = float(event.data["playtime"])
@@ -168,7 +171,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
             return
 
         speaker_attrs = StateSyncMapper.create_speaker_attributes(self.speaker)
-        group_children = self.player.prov.groups.states.get(self.player.player_id, set())
+        group_children = self.player.prov.groups.states.get(self.player.protocol_id, set())
 
         # If the speaker has externally switched away from the Wi-Fi stream (e.g. a phone
         # connecting via Bluetooth), clear the stream flag and capture the new source
@@ -182,7 +185,9 @@ class StateSyncHandler(WamPlayerFeatureBase):
             external_source = speaker_attrs.source
 
         queue_id = None
-        if queue := self.mass.player_queues.get(self.player.player_id):
+        if (player := self.player.player) and (
+            queue := self.mass.player_queues.get(player.player_id)
+        ):
             queue_id = queue.queue_id
 
         StateSyncMapper.apply_attributes_to_player(
@@ -196,7 +201,8 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
         # Must be set after the state update to prevent the source display from briefly reverting
         if external_source:
-            self.player.set_active_mass_source(external_source)
+            if player := self.player.player:
+                player.set_active_mass_source(external_source)
             # Stopping the queue alone won't terminate the stream as the speaker keeps
             # its HTTP connection alive in the background
             if queue_id:
@@ -225,7 +231,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
             return
         if not self.player.connected or self.player.synced_to:
             return
-        if self.mass.players.get_player(self.player.player_id) is not self.player:
+        if self.player.provider.get_protocol(self.player.protocol_id) is not self.player:
             return
 
         self._terminating_wifi_stream = True
@@ -255,7 +261,8 @@ class StateSyncHandler(WamPlayerFeatureBase):
             finally:
                 # Restore the target source to cancel any timer that fired while the
                 # speaker was briefly back on Wi-Fi
-                self.player.set_active_mass_source(target_source)
+                if player := self.player.player:
+                    player.set_active_mass_source(target_source)
         finally:
             self._terminating_wifi_stream = False
 
@@ -283,12 +290,12 @@ class StateSyncHandler(WamPlayerFeatureBase):
             await new_speaker.update()
 
             attrs = StateSyncMapper.create_speaker_attributes(new_speaker)
-            if not attrs.mac or attrs.mac != self.player.player_id:
+            if not attrs.mac or attrs.mac != self.player.protocol_id:
                 raise ConnectionError("MAC address verification failed after reconnect")  # noqa: TRY301 - triggers disconnect cleanup below
 
             # Guard against the case where this player instance has been replaced (e.g. after
             # a provider restart). Continuing would leave a dangling pywam connection open
-            if self.mass.players.get_player(self.player.player_id) is not self.player:
+            if self.player.provider.get_protocol(self.player.protocol_id) is not self.player:
                 raise ConnectionError("Player instance superseded; aborting reconnect")  # noqa: TRY301 - triggers disconnect cleanup below
 
             self.suppress_speaker_status_events(new_speaker)

@@ -55,29 +55,29 @@ class FullyKioskDashboards:
             return
         # a connect awaiting the device response may resolve after the player was
         # removed; never resurrect an endpoint for it
-        if self.mass.players.get_player(player.player_id) is not player:
+        if self.provider.get_protocol(player.protocol_id) is not player:
             return
         device = DashboardDevice(
-            dashboard_id=player.player_id,
+            dashboard_id=player.protocol_id,
             name=player.display_name,
             supported_types=set(SUPPORTED_DASHBOARD_TYPES),
             provider_domain_hint=self.provider.domain,
         )
-        self._unregister_callbacks[player.player_id] = (
+        self._unregister_callbacks[player.protocol_id] = (
             self.mass.dashboard.register_dashboard_handler(
                 device,
-                functools.partial(self._on_show, player.player_id),
-                functools.partial(self._on_hide, player.player_id),
+                functools.partial(self._on_show, player.protocol_id),
+                functools.partial(self._on_hide, player.protocol_id),
             )
         )
 
-    def unregister(self, player_id: str) -> None:
+    def unregister(self, protocol_id: str) -> None:
         """
         Drop a player's dashboard registration.
 
-        :param player_id: The player whose registration to drop.
+        :param protocol_id: The id of the player whose registration to drop.
         """
-        if unregister_callback := self._unregister_callbacks.pop(player_id, None):
+        if unregister_callback := self._unregister_callbacks.pop(protocol_id, None):
             unregister_callback()
 
     async def unload(self) -> None:
@@ -88,12 +88,12 @@ class FullyKioskDashboards:
         self._unregister_callbacks.clear()
 
     async def _on_show(
-        self, player_id: str, dashboard: DashboardType, target_player_id: str | None
+        self, protocol_id: str, dashboard: DashboardType, target_player_id: str | None
     ) -> None:
         """Wake a Fully Kiosk device and load a Music Assistant dashboard in its webview."""
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_protocol(protocol_id)
         if not isinstance(player, FullyKioskPlayer) or player.fully_kiosk is None:
-            raise PlayerUnavailableError(f"Fully Kiosk device {player_id} is no longer available")
+            raise PlayerUnavailableError(f"Fully Kiosk device {protocol_id} is no longer available")
         client = player.fully_kiosk
         url = await self.mass.dashboard.resolve_dashboard_url(
             dashboard, target_player_id, prefer_local=True
@@ -115,9 +115,9 @@ class FullyKioskDashboards:
                 translation_args=[player.display_name],
             ) from None
 
-    async def _on_hide(self, player_id: str) -> None:
+    async def _on_hide(self, protocol_id: str) -> None:
         """Return a Fully Kiosk device's webview to its configured start page."""
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_protocol(protocol_id)
         if not isinstance(player, FullyKioskPlayer) or player.fully_kiosk is None:
             # nothing connected to this device: it can't be showing a dashboard
             return

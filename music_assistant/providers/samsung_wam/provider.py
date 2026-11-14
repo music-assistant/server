@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-from music_assistant_models.enums import ProviderFeature
 from pywam.device import SPEAKER_MODELS
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
@@ -28,14 +27,9 @@ class SamsungWamProvider(PlayerProvider):
     groups: GroupingCoordinator
     discovery: DiscoveryHandler
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.SYNC_PLAYERS}
-
     def get_players(self) -> list[WamPlayer]:
         """Return all registered WAM players."""
-        return cast("list[WamPlayer]", self.players)
+        return cast("list[WamPlayer]", self.protocols)
 
     def get_player(self, player_id: str) -> WamPlayer | None:
         """
@@ -44,7 +38,7 @@ class SamsungWamProvider(PlayerProvider):
         :param player_id: The player ID to look up.
         :return: The matching WamPlayer, or None if not found.
         """
-        return cast("WamPlayer | None", self.mass.players.get_player(player_id))
+        return cast("WamPlayer | None", self.get_protocol(player_id))
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all config entries for this provider."""
@@ -61,6 +55,10 @@ class SamsungWamProvider(PlayerProvider):
         await self.discovery.start()
         self.groups.start_sync_task()
 
+    async def discover_players(self) -> None:
+        """Set up the speakers at the manually configured addresses that are not attached."""
+        await self.discovery.probe_manual_ips()
+
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle close/cleanup of the provider.
@@ -69,9 +67,6 @@ class SamsungWamProvider(PlayerProvider):
         """
         await self.discovery.stop()
         self.groups.stop_sync_task()
-        for player in list(self.get_players()):
-            self.logger.debug("Unloading player %s", player.log_name)
-            await self.mass.players.unregister(player.player_id, is_removed)
         self.groups.states.clear()
 
     async def on_upnp_service_discovered(

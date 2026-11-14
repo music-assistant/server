@@ -1,6 +1,17 @@
 """Helpers for player behavior."""
 
-from music_assistant_models.enums import PlayerType
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import TYPE_CHECKING
+
+from music_assistant_models.enums import EventType, PlayerType
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
+
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
 
 _DEFAULT_ICONS_BY_PROVIDER = {
     "airplay": "airplay",
@@ -43,9 +54,11 @@ _DEFAULT_ICON_MATCHES = (
 )
 
 
+# asked for at every state update of a player, with the few values its device reports
+@lru_cache(maxsize=512)
 def get_default_player_icon(
     player_type: PlayerType,
-    provider_domain: str,
+    provider_domain: str | None,
     manufacturer: str | None,
     model: str | None,
 ) -> str:
@@ -53,7 +66,8 @@ def get_default_player_icon(
     Return the most appropriate default icon for a player.
 
     :param player_type: The player's functional type.
-    :param provider_domain: The domain of the player provider.
+    :param provider_domain: The domain of the provider of the player's own protocol, None
+        for a player without one.
     :param manufacturer: The device manufacturer reported by the provider.
     :param model: The device model reported by the provider.
     """
@@ -72,6 +86,63 @@ def get_default_player_icon(
         if any(match in device_description for match in matches):
             return icon
 
-    if provider_icon := _DEFAULT_ICONS_BY_PROVIDER.get(provider_domain):
+    if provider_domain and (provider_icon := _DEFAULT_ICONS_BY_PROVIDER.get(provider_domain)):
         return provider_icon
     return "speaker"
+
+
+def get_available_player(mass: MusicAssistant, player_id: str) -> Player | None:
+    """
+    Return the player if it is available, else None (also for an unknown player).
+
+    Available is what clients see as available: a player switched off at its power
+    control counts as available, because playing to it powers it on.
+
+    :param mass: The MusicAssistant instance.
+    :param player_id: Id of the player to look up.
+    """
+    player = mass.players.get_player(player_id)
+    if player is None or not player.available:
+        return None
+    return player
+
+
+class PlayerAvailabilityTracker:
+    """Tell from player events when a player becomes available, see get_available_player."""
+
+    def __init__(self, mass: MusicAssistant) -> None:
+        """
+        Initialize the tracker; players that are available now are not reported.
+
+        :param mass: The MusicAssistant instance.
+        """
+        self._mass = mass
+        self._available = {
+            player.player_id for player in mass.players.iter_players(return_unavailable=False)
+        }
+
+    def became_available(self, event: MassEvent) -> bool:
+        """
+        Return whether the event's player became available since the previous event passed.
+
+        A player comes back by registering (PLAYER_ADDED) or by turning available while
+        registered (PLAYER_UPDATED), so pass every PLAYER_ADDED, PLAYER_UPDATED and
+        PLAYER_REMOVED event of the players to follow. A removed player counts as
+        unavailable.
+
+        :param event: A player event.
+        """
+        player_id = event.object_id
+        if player_id is None:
+            return False
+        available = (
+            event.event != EventType.PLAYER_REMOVED
+            and get_available_player(self._mass, player_id) is not None
+        )
+        if not available:
+            self._available.discard(player_id)
+            return False
+        if player_id in self._available:
+            return False
+        self._available.add(player_id)
+        return True

@@ -281,7 +281,7 @@ async def test_poll_reads_only_what_the_events_miss(
 ) -> None:
     """With events, only the opted-in device settings are polled; without, everything."""
     mass = MagicMock()
-    mass.config.get_raw_player_config_value.return_value = show_device_settings
+    mass.config.get_protocol_value.return_value = show_device_settings
     player, _ = _bind_player(mass)
     player.connected = True
     upnp: Any = player.upnp

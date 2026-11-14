@@ -17,6 +17,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.models.player import Player
 from music_assistant.providers.sonos.cloud_queue import SonosCloudQueue, _requested_max
 from music_assistant.providers.sonos.const import PLAYBACK_STATE_MAP
 from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
@@ -92,7 +93,8 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player = SonosPlayer.__new__(SonosPlayer)
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.cloud_queue")
-    player._player_id = "sonos_player"
+    player._protocol_id = "sonos_player"
+    player._player = None
     player.connected = True
     player.cloud_queue_id = QUEUE_ID
     player.cloud_queue_version = 1.0
@@ -400,7 +402,7 @@ async def test_stop_forgets_the_cloud_queue() -> None:
     client.player.is_passive = False
     client.player.group.stop = AsyncMock()
     player.client = client
-    player.mark_stop_called = MagicMock()  # type: ignore[misc, method-assign]
+    attached_to = player._player = MagicMock(spec=Player)
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
     player._announcement_media = PlayerMedia(
         uri="http://announcement", media_type=MediaType.ANNOUNCEMENT
@@ -408,6 +410,7 @@ async def test_stop_forgets_the_cloud_queue() -> None:
 
     await player.stop()
 
+    attached_to.mark_stop_called.assert_called_once_with()
     assert player.cloud_queue_id is None
     assert player._announcement_media is None
 
@@ -488,7 +491,7 @@ async def test_itemwindow_logs_the_speakers_request_at_debug(
 ) -> None:
     """Test a support case can read what the speaker asked for from one debug line."""
     player = MagicMock(spec=SonosPlayer)
-    player.player_id = "RINCON_TEST"
+    player.protocol_id = "RINCON_TEST"
     player.cloud_queue_version = 12.5
     player.cloud_queue_item_generation = 4
     player.bare_item_id = SonosPlayer.bare_item_id
@@ -528,7 +531,7 @@ async def test_itemwindow_logs_the_end_of_queue_fallback_at_debug(
 ) -> None:
     """Test the served window is logged even when the queue can no longer be described."""
     player = MagicMock(spec=SonosPlayer)
-    player.player_id = "RINCON_TEST"
+    player.protocol_id = "RINCON_TEST"
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 1
     player.build_cloud_queue_window = AsyncMock(side_effect=InvalidDataError("no session"))
@@ -550,7 +553,7 @@ async def test_version_logs_the_speakers_poll_at_debug(
 ) -> None:
     """Test the version poll reports which version the speaker holds and which we serve."""
     player = MagicMock(spec=SonosPlayer)
-    player.player_id = "RINCON_TEST"
+    player.protocol_id = "RINCON_TEST"
     player.cloud_queue_version = 12.5
     cloud_queue = _make_cloud_queue()
     request = MagicMock()
@@ -934,12 +937,12 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     provider.logger = logging.getLogger("test.sonos.cloud_queue")
     provider._pending_refresh_tasks = set()
     playing, other = MagicMock(spec=SonosPlayer), MagicMock(spec=SonosPlayer)
-    playing.player_id = "playing"
+    playing.protocol_id = "playing"
     playing.cloud_queue_id = QUEUE_ID
-    other.player_id = "other"
+    other.protocol_id = "other"
     other.cloud_queue_id = "another_queue"
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(type(provider), "players", property(lambda _self: [playing, other]))
+        patch.setattr(type(provider), "protocols", property(lambda _self: [playing, other]))
         provider._handle_queue_items_updated(MagicMock(object_id=QUEUE_ID))
 
     # the version must be invalidated before the (debounced) command goes out, or a window

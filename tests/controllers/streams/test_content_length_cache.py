@@ -51,7 +51,7 @@ def _controller(queue_item: QueueItem) -> MagicMock:
     ctrl.mass.player_queues.get.return_value = queue_data.queue
     ctrl.mass.player_queues.queue_data.return_value = queue_data
     ctrl.mass.player_queues.get_item.return_value = queue_item
-    ctrl.mass.players.get_player.return_value = player
+    ctrl.mass.players.get_output_protocol.return_value = player
     ctrl.mass.config.get_raw_core_config_value.return_value = 8
     # the cache write is scheduled as a task; the test only reads what was handed over
     ctrl.mass.create_task.side_effect = lambda coro, **_kwargs: coro.close()

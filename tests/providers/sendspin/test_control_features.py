@@ -13,7 +13,7 @@ from aiosendspin.server import VolumeChangedEvent
 from music_assistant_models.enums import PlayerFeature
 
 import music_assistant.providers.sendspin.player as player_module
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.sendspin.player import SendspinBasePlayer, SendspinPlayer
 
 if TYPE_CHECKING:
@@ -29,12 +29,13 @@ CONTROL_FEATURES = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
 def player_role(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Return the player role every test player resolves, with no commands declared yet."""
 
-    def _init_player(self: Player, provider: PlayerProvider, player_id: str) -> None:
+    def _init_player(self: PlayerProtocol, provider: PlayerProvider, protocol_id: str) -> None:
         self._provider = provider
-        self._player_id = player_id
+        self._protocol_id = protocol_id
+        self._player = None
 
     role = SimpleNamespace(state_supported_commands=[])
-    monkeypatch.setattr(Player, "__init__", _init_player)
+    monkeypatch.setattr(PlayerProtocol, "__init__", _init_player)
     monkeypatch.setattr(SendspinBasePlayer, "_refresh_client_info", Mock())
     monkeypatch.setattr(SendspinBasePlayer, "_subscribe_client_callbacks", Mock())
     monkeypatch.setattr(SendspinPlayer, "_refresh_client_info", Mock())

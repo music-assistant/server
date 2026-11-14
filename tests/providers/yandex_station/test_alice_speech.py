@@ -23,7 +23,8 @@ from music_assistant.providers.yandex_station.provider import YandexStationProvi
 def _make_player(send_result: dict[str, Any] | None = None) -> YandexStationPlayer:
     """Build a bare player whose Glagol client records the sent payloads."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "station_1"
+    player._protocol_id = "station_1"
+    player._player = MagicMock(player_id="pl_station_1")
     glagol = YandexGlagol.__new__(YandexGlagol)
     object.__setattr__(glagol, "send", AsyncMock(return_value=send_result or {"status": "SUCCESS"}))
     player.glagol = glagol
@@ -33,7 +34,12 @@ def _make_player(send_result: dict[str, Any] | None = None) -> YandexStationPlay
 def _make_provider(
     players: dict[str, Any] | None = None, *, text_commands: bool = False
 ) -> YandexStationProvider:
-    """Build a bare provider with a mocked mass that records API registrations."""
+    """
+    Build a bare provider with a mocked mass that records API registrations.
+
+    :param players: The protocols of the players the core knows, by the id of their player.
+    :param text_commands: Whether text requests to Alice are enabled.
+    """
     provider = YandexStationProvider.__new__(YandexStationProvider)
     provider.config = MagicMock()
     provider.config.get_value = MagicMock(
@@ -41,9 +47,16 @@ def _make_provider(
     )
     mass = MagicMock()
     mass.register_api_command = MagicMock(side_effect=lambda *_a, **_kw: MagicMock())
-    mass.players.get_player = MagicMock(side_effect=lambda pid: (players or {}).get(pid))
+    known = {
+        player_id: MagicMock(attached_protocols={f"protocol_of_{player_id}": protocol})
+        for player_id, protocol in (players or {}).items()
+    }
+    mass.players.get_player = MagicMock(side_effect=known.get)
     provider.mass = mass
     provider._unregister_api_commands = []
+    for player in (players or {}).values():
+        if isinstance(player, YandexStationPlayer):
+            player._provider = provider
     return provider
 
 
@@ -133,9 +146,9 @@ async def test_send_command_raises_on_non_success_status() -> None:
 async def test_api_say_routes_to_player() -> None:
     """The say API command reaches the addressed Station."""
     player = _make_player()
-    provider = _make_provider({"station_1": player})
+    provider = _make_provider({"pl_station_1": player})
 
-    await provider.say("station_1", "Привет")
+    await provider.say("pl_station_1", "Привет")
 
     assert _sent(player)[0]["command"] == "serverAction"
 
@@ -143,9 +156,9 @@ async def test_api_say_routes_to_player() -> None:
 async def test_api_command_routes_to_player() -> None:
     """The command API command reaches the addressed Station."""
     player = _make_player()
-    provider = _make_provider({"station_1": player})
+    provider = _make_provider({"pl_station_1": player})
 
-    await provider.command("station_1", "сколько времени")
+    await provider.command("pl_station_1", "сколько времени")
 
     assert _sent(player) == [{"command": "sendText", "text": "сколько времени"}]
 

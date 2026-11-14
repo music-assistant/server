@@ -86,6 +86,7 @@ class CommandRegistry:
         self.handlers: dict[str, Callable[..., Any]] = {}
         self.command_handlers: dict[str, APICommandHandler] = {}
         self.webserver: Any = None
+        self.players = SimpleNamespace(resolve_player_id=lambda player_id: player_id)
         self.translations = SimpleNamespace(get_translation=MagicMock(return_value=None))
         self.options: dict[str, dict[str, Any]] = {}
         self.removed: list[str] = []

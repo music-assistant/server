@@ -25,6 +25,9 @@ from music_assistant.providers.musiccast.musiccast import (
 from music_assistant.providers.musiccast.player import MusicCastPlayer
 from music_assistant.providers.musiccast.provider import MusicCastPlayerHelper, MusicCastProvider
 
+# the real server with fake providers, for the tests of MusicCast zones on a running server
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 INPUT_LIST = ["server", "spotify", "audio1", "audio2", "main_sync", "mc_link"]
 
 
@@ -163,11 +166,13 @@ def link(server: MusicCastZoneDevice, client: MusicCastZoneDevice) -> None:
 
 
 class MusicCastNetwork:
-    """Provider with fake devices, a player registry and per player config values."""
+    """Provider with fake devices, a registry of attached protocols and per zone config values."""
 
     def __init__(self) -> None:
         """Init an empty network."""
         self.registry: dict[str, MusicCastPlayer] = {}
+        # protocol ids of the zones whose player the user disabled
+        self.disabled: set[str] = set()
         self.tasks: list[asyncio.Future[Any]] = []
         self.config_values: dict[str, Any] = {
             CONF_PLAYER_HANDLE_SOURCE_DISABLED: False,
@@ -175,11 +180,14 @@ class MusicCastNetwork:
             CONF_PLAYER_TURN_OFF_ON_LEAVE: False,
         }
         mass = MagicMock()
-        mass.players.get_player.side_effect = self.registry.get
-        mass.players.register_or_update.side_effect = self._register
+        mass.players.get_protocol.side_effect = self.registry.get
+        mass.players.register.side_effect = self._attach
+        mass.players.wants_protocol.side_effect = lambda protocol_id: (
+            protocol_id not in self.disabled
+        )
         mass.create_task.side_effect = self._create_task
         mass.streams.base_url = "http://ma:8097"
-        mass.config.get_base_player_config.side_effect = self._player_config
+        mass.config.get_base_protocol_config.side_effect = self._protocol_config
         self.mass = mass
         config = MagicMock(instance_id="musiccast")
         config.get_value.return_value = None
@@ -188,7 +196,7 @@ class MusicCastNetwork:
         self.provider = provider
 
     def add_device(self, ip: str, device_id: str) -> MusicCastPhysicalDevice:
-        """Add a known device with registered players for all its zones."""
+        """Add a known device with attached protocols for all its zones."""
         physical_device = MusicCastPhysicalDevice(
             device=FakeMusicCastDevice(ip, device_id), controller=self.provider.mc_controller
         )
@@ -198,18 +206,18 @@ class MusicCastNetwork:
             physical_device.zone_devices[zone_name] = zone_device
             player = MusicCastPlayer(
                 provider=self.provider,
-                player_id=f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_name}",
+                protocol_id=f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_name}",
                 physical_device=physical_device,
                 zone_device=zone_device,
             )
-            self.registry[player.player_id] = player
+            self.registry[player.protocol_id] = player
             setattr(helper, f"player_{zone_name}", player)
         self.provider.musiccast_player_helpers[device_id] = helper
         return physical_device
 
-    def player(self, player_id: str) -> MusicCastPlayer:
-        """Return a player, registered or not."""
-        device_id, _, zone_name = player_id.partition(PLAYER_ZONE_SPLITTER)
+    def player(self, protocol_id: str) -> MusicCastPlayer:
+        """Return the protocol of a zone, attached or not."""
+        device_id, _, zone_name = protocol_id.partition(PLAYER_ZONE_SPLITTER)
         player = getattr(self.provider.musiccast_player_helpers[device_id], f"player_{zone_name}")
         assert isinstance(player, MusicCastPlayer)
         return player
@@ -219,10 +227,12 @@ class MusicCastNetwork:
         self.tasks.append(task)
         return task
 
-    async def _register(self, player: MusicCastPlayer) -> None:
-        self.registry[player.player_id] = player
+    async def _attach(self, player: MusicCastPlayer) -> None:
+        # the controller attaches nothing for a disabled player
+        if player.protocol_id not in self.disabled:
+            self.registry[player.protocol_id] = player
 
-    def _player_config(self, player_id: str, provider_id: str) -> SimpleNamespace:
+    def _protocol_config(self, protocol_id: str, provider_id: str) -> SimpleNamespace:
         return SimpleNamespace(
             name=None,
             default_name=None,

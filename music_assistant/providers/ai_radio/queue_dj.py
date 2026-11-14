@@ -113,6 +113,8 @@ class AIRadioQueueDJMixin:
                 # only if we're still the live state: a newer switch may have replaced us.
                 # flipped after cleanup so a racing pass doesn't mark old clips' gaps served
                 armed.ready = True
+            # the DJ is set up for its player, which is kept also while a browser or app is away
+            self.mass.players.keep_player(queue_id)
             self._schedule_replan(queue_id)
         return await self.get_queue_dj_status()
 

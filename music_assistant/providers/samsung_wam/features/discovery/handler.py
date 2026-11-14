@@ -43,13 +43,17 @@ class DiscoveryHandler(WamProviderFeatureBase):
         self._discovery_locks: dict[str, asyncio.Lock] = {}
 
     async def start(self) -> None:
-        """Start speaker discovery."""
+        """Start the periodic probe of the manually configured addresses."""
+        self.mass.create_task(self._periodic_probe_task(), task_id=PROBE_TASK_ID)
+
+    async def probe_manual_ips(self) -> None:
+        """Probe the manually configured addresses that no attached speaker has."""
         manual_ips: list[str] = (
             cast("list[str]", self.provider.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
             or []
         )
-        await self._probe_ips(manual_ips)
-        self.mass.create_task(self._periodic_probe_task(), task_id=PROBE_TASK_ID)
+        attached_ips = {player.ip_address for player in self.players}
+        await self._probe_ips([ip for ip in manual_ips if ip not in attached_ips])
 
     async def stop(self) -> None:
         """Stop speaker discovery."""
@@ -175,7 +179,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
             await temp_speaker.disconnect()
             return
 
-        if not self.mass.config.get_raw_player_config_value(attrs.mac, "enabled", True):
+        if not self.mass.players.wants_protocol(attrs.mac):
             self.logger.debug("Player at %s is disabled in configuration", ip_address)
             await temp_speaker.disconnect()
             return
@@ -184,14 +188,16 @@ class DiscoveryHandler(WamProviderFeatureBase):
             player = WamPlayer(self.provider, ip_address, udn, attrs.mac, temp_speaker)
             player.state_sync.apply_initial_state(attrs)
 
-            await self.mass.players.register_or_update(player)
-            player.state_sync.subscribe_speaker_events()
-            self.provider.groups.register_player(player)
+            await self.mass.players.register(player)
+            if player.player is None:
+                # not attached: the user disabled the player meanwhile
+                await player.on_detach()
+                return
 
             if attrs.source and attrs.source not in (WamSource.WIFI, "Unknown"):
                 # Set immediately if the speaker is already on an external input,
                 # so the UI reflects the correct source on first register
-                player.set_active_mass_source(attrs.source)
+                player.player.set_active_mass_source(attrs.source)
         except Exception as err:
             self.logger.warning("Failed to set up player at %s: %s", ip_address, err)
             await temp_speaker.disconnect()

@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import shortuuid
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import ProtocolRole
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_DYNAMIC_GROUP_MEMBERS, CONF_GROUP_MEMBERS
 from music_assistant.models.player_provider import PlayerProvider
@@ -30,44 +31,36 @@ class UniversalGroupProvider(PlayerProvider):
     async def create_group_player(
         self, name: str, members: list[str], dynamic: bool = True
     ) -> Player:
-        """Create new Universal Group Player."""
+        """
+        Create new Universal Group Player.
+
+        :param name: Name of the group player.
+        :param members: List of player ids to add to the group.
+        :param dynamic: Whether the group is dynamic (members can change).
+        """
         # filter out members that are not registered players
         # TODO: do we want to filter out groups here to prevent nested groups?
         members = [x for x in members if x in [y.player_id for y in self.mass.players]]
-        # generate a new player_id for the group player
-        player_id = f"{UGP_PREFIX}{shortuuid.random(8).lower()}"
-        self.mass.config.create_default_player_config(
-            player_id=player_id,
+        protocol_id = f"{UGP_PREFIX}{shortuuid.random(8).lower()}"
+        self.mass.config.create_protocol_record(
+            protocol_id,
             provider=self.instance_id,
-            player_type=PlayerType.GROUP,
-            name=name,
-            enabled=True,
-            values={
-                CONF_GROUP_MEMBERS: members,
-                CONF_DYNAMIC_GROUP_MEMBERS: dynamic,
-            },
+            player_id=None,
+            role=ProtocolRole.VIRTUAL,
+            default_name=name,
         )
-        return await self._register_player(player_id)
-
-    async def remove_group_player(self, player_id: str) -> None:
-        """
-        Remove a group player.
-
-        Only called for providers that support REMOVE_GROUP_PLAYER feature.
-
-        :param player_id: ID of the group player to remove.
-        """
-        # we simply permanently unregister the player and wipe its config
-        await self.mass.players.unregister(player_id, True)
+        self.mass.config.set_protocol_value(protocol_id, CONF_GROUP_MEMBERS, members)
+        self.mass.config.set_protocol_value(protocol_id, CONF_DYNAMIC_GROUP_MEMBERS, dynamic)
+        group = UniversalGroupPlayer(self, protocol_id)
+        # attaching creates the player of the group, which keeps the record stored above
+        await self.mass.players.register(group)
+        if (player := group.player) is None:
+            raise PlayerCommandFailed(f"Could not create group player {name}")
+        return player
 
     async def discover_players(self) -> None:
-        """Discover players."""
-        for player_conf in await self.mass.config.get_player_configs(self.instance_id):
-            if player_conf.player_id.startswith(UGP_PREFIX):
-                await self._register_player(player_conf.player_id)
-
-    async def _register_player(self, player_id: str) -> Player:
-        """Register a universal group player."""
-        group = UniversalGroupPlayer(self, player_id)
-        await self.mass.players.register_or_update(group)
-        return group
+        """Register every stored universal group that has no attached protocol."""
+        for protocol_id in self.mass.config.get_protocol_ids_of_provider(self.instance_id):
+            if self.get_protocol(protocol_id):
+                continue  # already attached
+            await self.mass.players.register(UniversalGroupPlayer(self, protocol_id))

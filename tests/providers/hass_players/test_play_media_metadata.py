@@ -17,7 +17,7 @@ async def _play_metadata(
     player: HomeAssistantPlayer, hass_domain: str, media: PlayerMedia
 ) -> dict[str, Any]:
     """Play media on a player of the given HA integration and return the sent metadata."""
-    player._extra_data = {"hass_domain": hass_domain}
+    player._entity_data = {"hass_domain": hass_domain}
     await player.play_media(media)
     service_data = player.hass.call_service.await_args.kwargs["service_data"]
     metadata: dict[str, Any] = service_data["extra"]["metadata"]

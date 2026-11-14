@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, PlayerFeature, ProtocolRole
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant import constants as _constants
@@ -17,13 +17,15 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_FLOW_MODE,
     CONF_FLOW_MODE,
-    CONF_PLAYERS,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_EXPERIMENTAL_NOTE,
     CONF_PROTOCOL_KEY_SPLITTER,
 )
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import LinkedOutputProtocol
+from tests.common import use_player_registry
+
+from .helpers import attach_on_config
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueOption
@@ -34,13 +36,15 @@ _STRINGS_PATH = Path(_constants.__file__).resolve().parent / "strings.json"
 _AIRPLAY_ID = "airplay_aabbccddeeff"
 _DLNA_ID = "dlna_aabbccddeeff"
 _DLNA_PREFIX = f"{_DLNA_ID}{CONF_PROTOCOL_KEY_SPLITTER}"
-_PARENT_ID = "soundtouch_aabbccddeeff"
+# a player that was first seen after the split, and the id of its own protocol
+_PLAYER_ID = "pl0123456789ab"
+_OWN_ID = "soundtouch_aabbccddeeff"
 
 
 def _make_output_protocol(
     output_protocol_id: str, domain: str, priority: int, *, available: bool
 ) -> OutputProtocol:
-    """Return an output protocol entry for a linked protocol player."""
+    """Return an output protocol entry for an audio protocol of a player."""
     return OutputProtocol(
         output_protocol_id=output_protocol_id,
         name=domain.title(),
@@ -50,12 +54,28 @@ def _make_output_protocol(
     )
 
 
-def _make_protocol_player(*, available: bool, needs_setup: bool) -> MagicMock:
-    """Return a protocol player mock in the given availability/setup state."""
+def _make_protocol(*, available: bool, needs_setup: bool) -> MagicMock:
+    """Return a protocol mock in the given availability/setup state."""
+    protocol = MagicMock()
+    protocol.available = available
+    protocol.needs_setup = needs_setup
+    protocol.available_for_playback = available and not needs_setup
+    return protocol
+
+
+def _make_player(
+    protocols: list[OutputProtocol], attached: dict[str, MagicMock] | None = None
+) -> MagicMock:
+    """
+    Return a mock player without an own protocol that lists the given outputs.
+
+    :param protocols: The outputs the player lists.
+    :param attached: The attached audio protocols of the player, by their id.
+    """
     player = MagicMock()
-    player.available = available
-    player.needs_setup = needs_setup
-    player.available_for_playback = available and not needs_setup
+    player.output_protocols = protocols
+    player.own_protocol = None
+    player.attached_protocols = attached or {}
     return player
 
 
@@ -72,11 +92,8 @@ async def _preferred_output_entry(
     protocol_player: MagicMock | None = None,
 ) -> ConfigEntry:
     """Build the preferred-output-protocol entry for a player with the given outputs."""
-    player = MagicMock()
-    player.needs_setup = False
-    player.output_protocols = protocols
-    mass.players = MagicMock()
-    mass.players.get_player.return_value = protocol_player
+    player = _make_player(protocols, {_AIRPLAY_ID: protocol_player} if protocol_player else None)
+    use_player_registry(mass)
     # the entries name each protocol after its provider, which mass_minimal does not load
     with patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest):
         entries = await mass.config._create_output_protocol_config_entries(player)
@@ -90,20 +107,19 @@ async def _protocol_block_entries(
     Build the config block a player renders for a single (non-native) output protocol.
 
     :param mass: the MusicAssistant instance to build the entries with.
-    :param protocol_entries: the config entries the protocol's own player reports.
+    :param protocol_entries: the config entries the protocol reports.
     """
-    player = MagicMock()
-    player.needs_setup = False
-    player.output_protocols = [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)]
-    protocol_player = _make_protocol_player(available=True, needs_setup=False)
-    protocol_player.translation_owner = "dlna"
-    mass.players = MagicMock()
-    mass.players.get_player.return_value = protocol_player
+    protocol = _make_protocol(available=True, needs_setup=False)
+    protocol.translation_owner = "dlna"
+    player = _make_player(
+        [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)], {_DLNA_ID: protocol}
+    )
+    use_player_registry(mass)
     with (
         patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest),
         # the block is only built for a protocol whose provider is loaded
         patch.object(mass, "get_provider", return_value=MagicMock()),
-        patch.object(mass.config, "_get_player_config_entries", return_value=protocol_entries),
+        patch.object(mass.config, "_get_protocol_config_entries", return_value=protocol_entries),
     ):
         entries = await mass.config._create_output_protocol_config_entries(player)
     return {entry.key: entry for entry in entries}
@@ -111,43 +127,41 @@ async def _protocol_block_entries(
 
 async def _control_only_player_entries(
     mass: MusicAssistant,
-    parent_entries: list[ConfigEntry],
+    own_entries: list[ConfigEntry],
     protocol_entries: list[ConfigEntry],
 ) -> dict[str, ConfigEntry]:
     """
     Build the full config surface of a control-only player, the way the api renders it.
 
     :param mass: the MusicAssistant instance to build the entries with.
-    :param parent_entries: the config entries the control-only player itself reports.
-    :param protocol_entries: the config entries its linked protocol player reports.
+    :param own_entries: the config entries its control-only protocol reports.
+    :param protocol_entries: the config entries its DLNA protocol reports.
     """
-    player = MagicMock()
-    player.player_id = _PARENT_ID
-    player.needs_setup = False
-    # no native protocol: this player only controls, playback goes through the linked protocol
-    player.output_protocols = [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)]
-    player.linked_output_protocols = [
-        LinkedOutputProtocol(output_protocol_id=_DLNA_ID, protocol_domain="dlna", priority=50)
-    ]
-    protocol_player = _make_protocol_player(available=True, needs_setup=False)
-    protocol_player.player_id = _DLNA_ID
-    protocol_player.translation_owner = "dlna"
-    players = {_PARENT_ID: player, _DLNA_ID: protocol_player}
-    own_entries = {_PARENT_ID: parent_entries, _DLNA_ID: protocol_entries}
-    mass.players = MagicMock()
-    mass.players.get_player.side_effect = lambda player_id, *_: players.get(player_id)
-    mass.players.player_controls.return_value = []
-    with (
-        patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest),
-        # the block is only built for a protocol whose provider is loaded
-        patch.object(mass, "get_provider", return_value=MagicMock()),
-        patch.object(
-            mass.config,
-            "_get_player_config_entries",
-            side_effect=lambda target: own_entries[target.player_id],
-        ),
+    # no native output: this player only controls, playback goes through its DLNA protocol
+    player, _ = attach_on_config(
+        mass,
+        "soundtouch",
+        _OWN_ID,
+        "Kitchen",
+        player_id=_PLAYER_ID,
+        features={PlayerFeature.VOLUME_SET, PlayerFeature.POWER},
+    )
+    attach_on_config(
+        mass,
+        "dlna",
+        _DLNA_ID,
+        "Kitchen",
+        role=ProtocolRole.AUDIO,
+        player=player,
+        features={PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA},
+    )
+    entries_by_protocol = {_OWN_ID: own_entries, _DLNA_ID: protocol_entries}
+    with patch.object(
+        mass.config,
+        "_get_protocol_config_entries",
+        side_effect=lambda protocol: entries_by_protocol[protocol.protocol_id],
     ):
-        entries = await mass.config.get_player_config_entries(_PARENT_ID)
+        entries = await mass.config.get_player_config_entries(_PLAYER_ID)
     return {entry.key: entry for entry in entries}
 
 
@@ -173,14 +187,14 @@ async def test_output_that_needs_setup_is_offered_disabled(mass_minimal: MusicAs
             _make_output_protocol(_AIRPLAY_ID, "airplay", 10, available=False),
             _make_output_protocol(_DLNA_ID, "dlna", 50, available=True),
         ],
-        _make_protocol_player(available=True, needs_setup=True),
+        _make_protocol(available=True, needs_setup=True),
     )
     _assert_disabled_with_reason(_option(entry, _AIRPLAY_ID), "needs_setup")
     assert _option(entry, _DLNA_ID).disabled is False
 
 
 async def test_offline_output_reports_unavailable(mass_minimal: MusicAssistant) -> None:
-    """An output whose player is gone reads as unavailable rather than needing setup."""
+    """An output that is not attached reads as unavailable rather than needing setup."""
     entry = await _preferred_output_entry(
         mass_minimal,
         [_make_output_protocol(_AIRPLAY_ID, "airplay", 10, available=False)],
@@ -191,11 +205,11 @@ async def test_offline_output_reports_unavailable(mass_minimal: MusicAssistant) 
 
 async def test_output_turned_off_reports_turned_off(mass_minimal: MusicAssistant) -> None:
     """An output the user turned off says so, so the enable toggle below makes sense."""
-    mass_minimal.config.set(f"{CONF_PLAYERS}/{_AIRPLAY_ID}/{CONF_ENABLED}", False)
+    mass_minimal.config.set(f"{CONF_PLAYER_PROTOCOLS}/{_AIRPLAY_ID}/{CONF_ENABLED}", False)
     entry = await _preferred_output_entry(
         mass_minimal,
         [_make_output_protocol(_AIRPLAY_ID, "airplay", 10, available=False)],
-        _make_protocol_player(available=True, needs_setup=True),
+        _make_protocol(available=True, needs_setup=True),
     )
     _assert_disabled_with_reason(_option(entry, _AIRPLAY_ID), "turned_off")
 
@@ -326,12 +340,9 @@ async def _preferred_entry_with_default_domain(
     default_domain: str | None,
 ) -> ConfigEntry:
     """Build the preferred-output entry for a player that declares a default protocol domain."""
-    player = MagicMock()
-    player.needs_setup = False
-    player.output_protocols = protocols
+    player = _make_player(protocols)
     player.default_output_protocol_domain = default_domain
-    mass.players = MagicMock()
-    mass.players.get_player.return_value = None
+    use_player_registry(mass)
     with patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest):
         entries = await mass.config._create_output_protocol_config_entries(player)
     return next(entry for entry in entries if entry.key == CONF_PREFERRED_OUTPUT_PROTOCOL)
@@ -349,7 +360,7 @@ async def test_default_domain_available_stays_auto(
         ],
         default_domain="dlna",
     )
-    # The stored default must not depend on which linked protocols happen to be available;
+    # The stored default must not depend on which audio protocols happen to be available;
     # runtime selection applies the default domain, but the persisted entry stays "auto".
     assert entry.default_value == "auto"
     # auto and both protocols remain selectable so the user can still override
@@ -412,7 +423,7 @@ async def test_experimental_output_defaults_to_off_with_a_warning(
 ) -> None:
     """An output its provider flagged as experimental is opt-in and says why."""
     mass_minimal.config.set(
-        f"{CONF_PLAYERS}/{_DLNA_ID}/values/{CONF_PROTOCOL_EXPERIMENTAL_NOTE}",
+        f"{CONF_PLAYER_PROTOCOLS}/{_DLNA_ID}/values/{CONF_PROTOCOL_EXPERIMENTAL_NOTE}",
         "sendspin_cast_experimental",
     )
     entries = await _protocol_block_entries(mass_minimal, [])
@@ -434,22 +445,24 @@ async def test_experimental_output_defaults_to_off_with_a_warning(
 async def test_warning_of_a_switched_off_output_still_resolves(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """A note on an output whose player is gone resolves against that player's provider."""
+    """A note on an output that is not attached resolves against the provider of its config."""
+    use_player_registry(mass_minimal)
     mass_minimal.config.set(
-        f"{CONF_PLAYERS}/{_DLNA_ID}",
-        {"player_id": _DLNA_ID, "provider": "sendspin--abc123", "enabled": False},
+        f"{CONF_PLAYER_PROTOCOLS}/{_DLNA_ID}",
+        {"protocol_id": _DLNA_ID, "provider": "sendspin--abc123", "enabled": False},
     )
     mass_minimal.config.set(
-        f"{CONF_PLAYERS}/{_DLNA_ID}/values/{CONF_PROTOCOL_EXPERIMENTAL_NOTE}",
+        f"{CONF_PLAYER_PROTOCOLS}/{_DLNA_ID}/values/{CONF_PROTOCOL_EXPERIMENTAL_NOTE}",
         "sendspin_cast_experimental",
     )
     # the config parse stamps every entry with the player's own owner, so an output with
-    # no registered player to ask must fall back to the provider in its stored config
+    # no attached protocol to ask must fall back to the provider in its stored config
     assert mass_minimal.config._stored_protocol_translation_owner(_DLNA_ID) == "provider.sendspin"
 
 
 async def test_note_of_an_unknown_output_has_no_owner(mass_minimal: MusicAssistant) -> None:
     """An output without a stored config resolves to no owner rather than a wrong one."""
+    use_player_registry(mass_minimal)
     assert mass_minimal.config._stored_protocol_translation_owner("nope_1234") is None
 
 

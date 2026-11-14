@@ -27,7 +27,9 @@ def _fake_player() -> Any:
     # __init__ is skipped: it needs a provider, cast info and a live Chromecast connection.
     # Typed as Any because the collaborators below are read back as the mocks they are.
     fake = cast("Any", ChromecastPlayer.__new__(ChromecastPlayer))
+    fake._player = None
     fake.mass = MagicMock()
+    fake._provider = MagicMock(get_protocol=lambda pid: fake.mass.players.get_protocol(pid))
     fake.logger = MagicMock()
     fake.cc = MagicMock(app_id=MASS_APP_ID)
     fake.update_state = MagicMock()
@@ -35,8 +37,9 @@ def _fake_player() -> Any:
     fake._app_quit_task_id = "cast_quit_app_test"
     fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.active_cast_group = None
-    # display_name is a cached property, normally built from the config in __init__
-    fake._cache = {"display_name": "Test Cast"}
+    # an unattached protocol shows the name its device reports
+    fake._cache = {}
+    fake._attr_name = "Test Cast"
     # playback_state is a read-only property, so it is seeded through its backing field
     fake._attr_playback_state = PlaybackState.IDLE
     return fake
@@ -102,14 +105,14 @@ def test_group_error_is_not_logged_by_every_member() -> None:
     group.cc.media_controller.status = _error_status()
     member = _fake_player()
     member.active_cast_group = "group-uuid"
-    member.mass.players.get_player = MagicMock(return_value=group)
+    member.mass.players.get_protocol = MagicMock(return_value=group)
 
     member._handle_media_status(_error_status())
 
     member.logger.warning.assert_not_called()
     # assert the group status was really processed, so the check above cannot pass
     # just because the member bailed out before reaching the error handling
-    member.mass.players.get_player.assert_called_once_with("group-uuid")
+    member.mass.players.get_protocol.assert_called_once_with("group-uuid")
     member.update_state.assert_called_once()
 
 

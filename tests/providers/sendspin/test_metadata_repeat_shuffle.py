@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
-from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
+from music_assistant_models.enums import MediaType, RepeatMode
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -21,17 +21,15 @@ async def test_repeat_and_shuffle_reach_clients_through_the_controller_only() ->
     player._content_takeover_pending = False
     player._metadata_lock = asyncio.Lock()
     player._metadata_publish_allowed.return_value = True
-    player.state = SimpleNamespace(
-        current_media=PlayerMedia(
-            uri="track-1",
-            media_type=MediaType.TRACK,
-            title="Title",
-            duration=180,
-            source_id="queue-1",
-            queue_item_id="item-1",
-        ),
-        playback_state=PlaybackState.PLAYING,
+    player._player_media = PlayerMedia(
+        uri="track-1",
+        media_type=MediaType.TRACK,
+        title="Title",
+        duration=180,
+        source_id="queue-1",
+        queue_item_id="item-1",
     )
+    player._player_playing = True
     player.mass.player_queues.get.return_value = SimpleNamespace(
         repeat_mode=RepeatMode.ALL, shuffle_enabled=True
     )
@@ -60,7 +58,7 @@ def test_queue_update_publishes_repeat_and_shuffle_for_the_playing_queue_only() 
     player = MagicMock()
     player.synced_to = None
     player._content_takeover_pending = False
-    player.state.current_media = PlayerMedia(
+    player._player_media = PlayerMedia(
         uri="track-1", media_type=MediaType.TRACK, source_id="queue-1", queue_item_id="item-1"
     )
     player.mass.player_queues.get.return_value = MagicMock(

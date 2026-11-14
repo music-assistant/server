@@ -84,7 +84,6 @@ ALLOWED_BUILTIN_PROVIDERS = {
     "playlist_metadata",
     "radio_playlist",
     "sync_group",
-    "universal_player",
 }
 
 YAPPI_TOP_LIMIT = 15
@@ -177,10 +176,13 @@ class ControlApi:
 
     async def _handle_resolve_stream_url(self, request: web.Request) -> web.Response:
         body = await request.json()
-        player = self.mass.players.get_player(body["player_id"])
-        if player is None or player.current_media is None:
+        # the stream is resolved for the protocol that renders the audio of the player
+        protocol = self.mass.players.get_output_protocol(body["player_id"])
+        if protocol is None or protocol.current_media is None:
             return web.json_response({"error": "player not found or no current media"}, status=404)
-        url = await self.mass.streams.resolve_stream_url(player.player_id, player.current_media)
+        url = await self.mass.streams.resolve_stream_url(
+            protocol.protocol_id, protocol.current_media
+        )
         return web.json_response({"url": url})
 
     async def _handle_statistics_query_benchmark(self, request: web.Request) -> web.Response:

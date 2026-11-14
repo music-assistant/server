@@ -20,6 +20,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 from music_assistant_models.errors import ActionUnavailable
 
+from music_assistant.helpers.player import PlayerAvailabilityTracker, get_available_player
 from music_assistant.helpers.util import format_ip_for_url, is_port_in_use, select_free_port
 from music_assistant.models.plugin import PluginProvider
 
@@ -98,12 +99,16 @@ class PlexConnectProvider(PluginProvider):
 
         self._plex_provider: PlexProvider | None = None
         self._player_instance: PlayerRemoteInstance | None = None
+        # the player the instance was set up for, which a later merge may take in
+        self._instance_player_id: str | None = None
         self._allocated_port: int | None = None
         self._plextv_pin: PlexPin | None = None
         self._plextv_device_id: str | None = None
         self._plextv_register_task: asyncio.Task[None] | None = None
         self._stop_called: bool = False
         self._on_unload_callbacks: list[Callable[..., None]] = []
+        # seeded where the player events are subscribed, so no event is missed in between
+        self._availability: PlayerAvailabilityTracker
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -155,20 +160,22 @@ class PlexConnectProvider(PluginProvider):
 
         self.logger.debug(f"Plex provider {self.plex_provider_id} is ready")
 
-        # Subscribe to player events first
+        # Subscribe to player events first; the availability check below must follow
+        # without an await, so the tracker and the check see the same player state
+        self._availability = PlayerAvailabilityTracker(self.mass)
+        # the player's events are picked out by the handler: once the player is merged
+        # into another one, the events come under the id of that one
         self._on_unload_callbacks.append(
             self.mass.subscribe(
                 self._on_mass_player_event,
-                (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED),
-                id_filter=self.mass_player_id,
+                (EventType.PLAYER_ADDED, EventType.PLAYER_UPDATED, EventType.PLAYER_REMOVED),
             )
         )
 
         # Now try to setup the player instance
-        player = self.mass.players.get_player(self.mass_player_id)
-        if not player:
+        if get_available_player(self.mass, self._player_id) is None:
             self.logger.info(
-                f"Player {self.mass_player_id} not found yet, waiting for PLAYER_ADDED event"
+                f"Player {self._player_id} not available yet, waiting for it to come online"
             )
         else:
             # Setup the player instance immediately
@@ -208,6 +215,11 @@ class PlexConnectProvider(PluginProvider):
         for callback in self._on_unload_callbacks:
             callback()
         self._on_unload_callbacks.clear()
+
+    @property
+    def _player_id(self) -> str:
+        """Return the id the connected player answers to now, also after it was merged."""
+        return self.mass.players.resolve_player_id(self.mass_player_id)
 
     def _option_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the editable option entries for this instance."""
@@ -379,10 +391,8 @@ class PlexConnectProvider(PluginProvider):
 
     def _plextv_client(self) -> PlexTvClient:
         """Return a plex.tv client presenting this instance's player identity."""
-        player = self.mass.players.get_player(self.mass_player_id)
-        player_name = self.custom_player_name or (
-            player.display_name if player else "Music Assistant"
-        )
+        player = self.mass.players.get_player(self._player_id)
+        player_name = self.custom_player_name or (player.name if player else "Music Assistant")
         identity = PlexTvIdentity(
             client_id=compute_client_id(self.plex_provider_id, self.mass_player_id),
             name=player_name,
@@ -492,9 +502,9 @@ class PlexConnectProvider(PluginProvider):
             self.logger.error("Cannot setup player instance: Plex provider not available")
             return
 
-        player = self.mass.players.get_player(self.mass_player_id)
+        player = self.mass.players.get_player(self._player_id)
         if not player:
-            self.logger.warning(f"Player {self.mass_player_id} not found")
+            self.logger.warning(f"Player {self._player_id} not found")
             return
 
         # Resolve the long-term port for this instance (persisted across restarts)
@@ -502,12 +512,13 @@ class PlexConnectProvider(PluginProvider):
             self._allocated_port = await self._resolve_port()
 
         # Use custom name if provided, otherwise use player's display name
-        player_name = self.custom_player_name or player.display_name
+        player_name = self.custom_player_name or player.name
 
         # Create remote control instance
+        self._instance_player_id = player.player_id
         self._player_instance = PlayerRemoteInstance(
             plex_provider=self._plex_provider,
-            ma_player_id=self.mass_player_id,
+            ma_player_id=player.player_id,
             player_name=player_name,
             port=self._allocated_port,
             device_class=self.device_class,
@@ -534,22 +545,35 @@ class PlexConnectProvider(PluginProvider):
             await self._player_instance.stop()
             self._player_instance = None
 
+    async def _restart_player_instance(self) -> None:
+        """Start the Plex remote control instance again, on the player it is connected to now."""
+        await self._teardown_player_instance()
+        if get_available_player(self.mass, self._player_id) is not None:
+            await self._setup_player_instance()
+
     def _on_mass_player_event(self, event: MassEvent) -> None:
         """
-        Handle player added/removed events.
+        Handle player added/updated/removed events.
 
         :param event: The event that occurred.
         """
-        if event.object_id != self.mass_player_id:
+        player_id = self._player_id
+        if event.object_id not in (self.mass_player_id, player_id, self._instance_player_id):
             return
 
+        # a removal passes the tracker too, so the player's return is recognized
+        came_available = self._availability.became_available(event)
         if event.event == EventType.PLAYER_REMOVED:
+            if event.object_id != player_id:
+                self.logger.info(f"Player {event.object_id} was merged into {player_id}")
+                self.mass.create_task(self._restart_player_instance())
+                return
             # Player was removed - stop the instance
-            self.logger.info(f"Player {self.mass_player_id} removed, stopping Plex Connect")
+            self.logger.info(f"Player {player_id} removed, stopping Plex Connect")
             self.mass.create_task(self._teardown_player_instance())
 
-        elif event.event == EventType.PLAYER_ADDED:
-            # Player was added - start the instance (if not already running)
+        elif came_available:
+            # Player came online - start the instance (if not already running)
             if not self._player_instance:
-                self.logger.info(f"Player {self.mass_player_id} added, starting Plex Connect")
+                self.logger.info(f"Player {player_id} available, starting Plex Connect")
                 self.mass.create_task(self._setup_player_instance())

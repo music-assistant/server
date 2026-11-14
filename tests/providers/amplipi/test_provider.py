@@ -6,7 +6,7 @@ import asyncio
 from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
@@ -22,6 +22,7 @@ from music_assistant.providers.amplipi.constants import (
     MA_STREAM_TYPE,
     MDNS_TYPE,
 )
+from music_assistant.providers.amplipi.player import AmpliPiZonePlayer
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
 if TYPE_CHECKING:
@@ -43,6 +44,9 @@ def _provider() -> AmpliPiPlayerProvider:
     prov.logger = MagicMock()
     prov.api = MagicMock()
     prov.mass = MagicMock()
+    prov.mass.players.register = AsyncMock()
+    prov.mass.players.get_protocol.return_value = None
+    prov.mass.players.wants_protocol.return_value = True
     prov._players = {}
     prov._ma_streams = {}
     prov._streams = []
@@ -211,7 +215,7 @@ class TestLifecycle:
         assert prov._ma_streams == {0: 7, 2: 8}
 
     async def test_unload_reload_keeps_streams(self) -> None:
-        """A plain reload cancels (and awaits) polling and unregisters players, keeping streams."""
+        """A plain reload cancels (and awaits) polling and lets go of the zones, keeping streams."""
         prov = _provider()
 
         async def _poll() -> None:
@@ -219,17 +223,13 @@ class TestLifecycle:
 
         task = asyncio.ensure_future(_poll())
         prov._poll_task = task
-        player = MagicMock()
-        player.player_id = "amplipi_test_zone_0"
-        prov._players = {0: player}
-        prov.mass.players.unregister = AsyncMock()  # type: ignore[method-assign]
+        prov._players = {0: MagicMock()}
         prov.api.delete_stream = AsyncMock()
 
         await prov.unload()
 
         # the poll task is cancelled and awaited to completion
         assert task.cancelled()
-        prov.mass.players.unregister.assert_awaited_once_with("amplipi_test_zone_0")
         assert prov._players == {}
         prov.api.delete_stream.assert_not_awaited()
 
@@ -292,7 +292,7 @@ class TestDiscoverAndHelpers:
     """Test discover_players and small helpers."""
 
     async def test_discover_registers_enabled_zones(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Disabled zones and zones without an id are skipped; the rest are registered."""
+        """Disabled zones and zones without an id are skipped; the rest are attached."""
         prov = _provider()
         prov._status = SimpleNamespace(
             zones=[
@@ -303,30 +303,59 @@ class TestDiscoverAndHelpers:
             ],
             sources=[],
         )
-        prov.mass.players.register_or_update = AsyncMock()  # type: ignore[method-assign]
         monkeypatch.setattr(
             "music_assistant.providers.amplipi.provider.AmpliPiZonePlayer",
-            lambda _provider, zone_id: SimpleNamespace(
-                player_id=f"z{zone_id}", update_from_status=MagicMock()
-            ),
+            lambda _provider, _zone_id: SimpleNamespace(update_from_status=MagicMock()),
         )
         await prov.discover_players()
 
         assert set(prov._players) == {0, 2}
-        assert prov.mass.players.register_or_update.await_count == 2
+        assert cast("MagicMock", prov.mass.players).register.await_count == 2
 
-    async def test_discover_skips_already_registered(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A zone already in _players is not registered again."""
+    async def test_discover_skips_attached_and_unwanted_zones(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An attached zone is left alone, a disabled one is not built, a detached one returns."""
         prov = _provider()
-        prov._players = {0: MagicMock()}
-        prov._status = SimpleNamespace(zones=[_zone(0)], sources=[])
-        prov.mass.players.register_or_update = AsyncMock()  # type: ignore[method-assign]
-        monkeypatch.setattr(
-            "music_assistant.providers.amplipi.provider.AmpliPiZonePlayer",
-            lambda _provider, _zone_id: SimpleNamespace(player_id="z0"),
+        attached, detached = MagicMock(), MagicMock()
+        prov._players = {0: attached, 2: detached}
+        prov._status = SimpleNamespace(zones=[_zone(0), _zone(1), _zone(2)], sources=[])
+        cast("MagicMock", prov.mass.players).get_protocol.side_effect = lambda protocol_id: (
+            attached if protocol_id == "amplipi_test_zone_0" else None
         )
+        cast("MagicMock", prov.mass.players).wants_protocol.side_effect = lambda protocol_id: (
+            protocol_id != "amplipi_test_zone_1"
+        )
+        built = MagicMock()
+        monkeypatch.setattr("music_assistant.providers.amplipi.provider.AmpliPiZonePlayer", built)
         await prov.discover_players()
-        prov.mass.players.register_or_update.assert_not_awaited()
+        built.assert_not_called()
+        cast("MagicMock", prov.mass.players).register.assert_awaited_once_with(detached)
+
+    async def test_removed_zone_is_registered_again_as_a_new_player(self) -> None:
+        """A removed zone player is let go of, so the next discovery registers a new one."""
+        prov = _provider()
+        prov._status = SimpleNamespace(zones=[_zone(0), _zone(1)], sources=[])
+        removed, kept = (AmpliPiZonePlayer.__new__(AmpliPiZonePlayer) for _ in range(2))
+        for zone_id, player in enumerate((removed, kept)):
+            player._provider = prov
+            player._zone_id = zone_id
+        prov._players = {0: removed, 1: kept}
+
+        await removed.on_remove()
+        assert prov._players == {1: kept}
+        cast("MagicMock", prov.mass.players).get_protocol.side_effect = lambda protocol_id: (
+            kept if protocol_id == "amplipi_test_zone_1" else None
+        )
+
+        with patch(
+            "music_assistant.providers.amplipi.provider.AmpliPiZonePlayer",
+            lambda _provider, _zone_id: SimpleNamespace(update_from_status=MagicMock()),
+        ):
+            await prov.discover_players()
+        assert set(prov._players) == {0, 1}
+        assert prov._players[0] is not removed
+        cast("MagicMock", prov.mass.players).register.assert_awaited_once_with(prov._players[0])
 
     def test_status_property(self) -> None:
         """The status property returns the last polled status."""
@@ -335,11 +364,11 @@ class TestDiscoverAndHelpers:
         assert prov.status == "STATUS"
 
     def test_zone_id_for(self) -> None:
-        """zone_id_for maps a player_id back to its zone id, or None when unknown."""
+        """zone_id_for maps a protocol id back to its zone id, or None when unknown."""
         prov = _provider()
         prov._players = {
-            0: SimpleNamespace(player_id="a"),  # type: ignore[dict-item]
-            1: SimpleNamespace(player_id="b"),  # type: ignore[dict-item]
+            0: SimpleNamespace(protocol_id="a"),  # type: ignore[dict-item]
+            1: SimpleNamespace(protocol_id="b"),  # type: ignore[dict-item]
         }
         assert prov.zone_id_for("b") == 1
         assert prov.zone_id_for("missing") is None

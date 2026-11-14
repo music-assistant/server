@@ -14,7 +14,9 @@ from music_assistant.constants import CONF_SSL_FINGERPRINT, CONF_USE_SSL, CONF_V
 from music_assistant.providers.fully_kiosk.dashboard import FullyKioskDashboards
 from music_assistant.providers.fully_kiosk.player import FullyKioskPlayer
 from music_assistant.providers.fully_kiosk.provider import FullyKioskProvider
-from tests.common import MockProvider, create_mock_config
+from tests.common import MockProvider
+
+from .conftest import mock_protocol_config
 
 PLAYER_ID = "fully_kiosk_10.0.0.5_2323"
 
@@ -24,7 +26,8 @@ def _make_dashboards(player: FullyKioskPlayer | None = None) -> FullyKioskDashbo
     provider = MagicMock()
     provider.domain = "fully_kiosk"
     provider.translation_owner = "provider.fully_kiosk"
-    provider.mass.players.get_player.return_value = player
+    provider.mass.players.get_protocol.return_value = player
+    provider.get_protocol = lambda pid: provider.mass.players.get_protocol(pid)
     provider.mass.dashboard.register_dashboard_handler.return_value = MagicMock()
     return FullyKioskDashboards(provider)
 
@@ -37,8 +40,8 @@ def _make_player(
 ) -> FullyKioskPlayer:
     """Build a real FullyKioskPlayer, optionally with a connected client mock."""
     provider = MockProvider("fully_kiosk", instance_id="fully_kiosk--1")
-    provider.mass.config.get_base_player_config.return_value = create_mock_config(display_name)
-    player = FullyKioskPlayer(provider=provider, player_id=player_id, host="10.0.0.5")  # type: ignore[arg-type]
+    provider.mass.config.get_base_protocol_config.return_value = mock_protocol_config(display_name)
+    player = FullyKioskPlayer(provider=provider, protocol_id=player_id, host="10.0.0.5")  # type: ignore[arg-type]
     player._attr_name = display_name
     if connected:
         client = MagicMock()
@@ -55,8 +58,8 @@ def _make_connectable_player(*, player_id: str = PLAYER_ID) -> tuple[FullyKioskP
     """Build a real player with a mocked provider.dashboards, ready to drive _connect()/poll()."""
     provider = MockProvider("fully_kiosk", instance_id="fully_kiosk--1")
     provider.dashboards = MagicMock()
-    provider.mass.config.get_base_player_config.return_value = create_mock_config("Kiosk")
-    player = FullyKioskPlayer(provider=provider, player_id=player_id, host="10.0.0.5")  # type: ignore[arg-type]
+    provider.mass.config.get_base_protocol_config.return_value = mock_protocol_config("Kiosk")
+    player = FullyKioskPlayer(provider=provider, protocol_id=player_id, host="10.0.0.5")  # type: ignore[arg-type]
     player.get_setup_value = MagicMock(return_value="secret")  # type: ignore[method-assign]
     ssl_config = {CONF_USE_SSL: False, CONF_VERIFY_SSL: True, CONF_SSL_FINGERPRINT: ""}
     player.config.get_value = MagicMock(side_effect=ssl_config.get)  # type: ignore[method-assign]
@@ -176,11 +179,11 @@ async def test_password_cleared_unregisters_dashboard_endpoint() -> None:
     dashboards.unregister.assert_called_once_with(PLAYER_ID)
 
 
-async def test_on_unload_unregisters_dashboard_endpoint() -> None:
-    """Unloading the player drops its dashboard endpoint registration."""
+async def test_on_detach_unregisters_dashboard_endpoint() -> None:
+    """Detaching the player drops its dashboard endpoint registration."""
     player, dashboards = _make_connectable_player()
 
-    await player.on_unload()
+    await player.on_detach()
 
     dashboards.unregister.assert_called_once_with(PLAYER_ID)
 
@@ -297,7 +300,7 @@ async def test_on_show_wakes_and_loads_url_in_order() -> None:
     """on_show resolves the local url and drives the device in the documented order."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     target = "http://192.168.1.10:8095/?dashboard=ABC123&path=%2Fparty"
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=target)  # type: ignore[method-assign]
     client = _client_of(player)
@@ -324,7 +327,7 @@ async def test_on_show_wakes_and_loads_url_in_order() -> None:
 async def test_on_show_missing_player_raises_unavailable() -> None:
     """on_show for a player that vanished raises PlayerUnavailableError."""
     dashboards = _make_dashboards()
-    dashboards.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = None  # type: ignore[attr-defined]
 
     with pytest.raises(PlayerUnavailableError):
         await dashboards._on_show(PLAYER_ID, DashboardType.PARTY, None)
@@ -334,7 +337,7 @@ async def test_on_show_disconnected_player_raises_unavailable() -> None:
     """on_show for a player without an active client connection raises PlayerUnavailableError."""
     dashboards = _make_dashboards()
     player = _make_player(connected=False)
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     with pytest.raises(PlayerUnavailableError):
         await dashboards._on_show(PLAYER_ID, DashboardType.PARTY, None)
@@ -344,7 +347,7 @@ async def test_on_show_device_error_raises_translated_unavailable_without_leakin
     """A device-side failure surfaces as a translated error that never echoes the url."""
     dashboards = _make_dashboards()
     player = _make_player(display_name="Living Room Kiosk")
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     target = "http://192.168.1.10:8095/?dashboard=SECRETCODE&path=%2Fparty"
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=target)  # type: ignore[method-assign]
     _client_of(player).toForeground.side_effect = FullyKioskError("Error", "boom")
@@ -367,7 +370,7 @@ async def test_on_hide_loads_start_url() -> None:
     """on_hide returns the kiosk to its configured start page."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     await dashboards._on_hide(PLAYER_ID)
 
@@ -378,7 +381,7 @@ async def test_on_hide_disconnected_player_is_noop() -> None:
     """on_hide for an already-disconnected player is a graceful no-op."""
     dashboards = _make_dashboards()
     player = _make_player(connected=False)
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     await dashboards._on_hide(PLAYER_ID)  # must not raise
 
@@ -386,7 +389,7 @@ async def test_on_hide_disconnected_player_is_noop() -> None:
 async def test_on_hide_missing_player_is_noop() -> None:
     """on_hide for a player that vanished is a graceful no-op."""
     dashboards = _make_dashboards()
-    dashboards.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = None  # type: ignore[attr-defined]
 
     await dashboards._on_hide(PLAYER_ID)  # must not raise
 
@@ -395,7 +398,7 @@ async def test_on_hide_device_error_raises_command_failed() -> None:
     """A device-side failure while hiding surfaces as PlayerCommandFailed."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     _client_of(player).loadStartUrl.side_effect = FullyKioskError("Error", "boom")
 
     with pytest.raises(PlayerCommandFailed) as exc_info:

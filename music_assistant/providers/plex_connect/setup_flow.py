@@ -39,11 +39,11 @@ async def run_setup(session: SetupSession) -> None:
         # the engine's depends_on check only guarantees an enabled plex config exists,
         # not that the instance actually loaded
         raise AbortFlow("no_plex_provider")
-    player_options = _player_options(session.mass)
-    if not player_options:
-        raise AbortFlow("no_players")
     setup_data = dict(session.context.setup_data)
     original_values = {**session.context.values, **setup_data}
+    player_options = _player_options(session.mass, original_values.get(CONF_MASS_PLAYER_ID))
+    if not player_options:
+        raise AbortFlow("no_players")
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
         # setup_data (reconfigure) wins over the instance's stored option values, which
@@ -93,15 +93,23 @@ def _plex_provider_options(mass: MusicAssistant) -> list[ConfigValueOption]:
     ]
 
 
-def _player_options(mass: MusicAssistant) -> list[ConfigValueOption]:
-    """Return a picker option for every available and enabled Music Assistant player."""
+def _player_options(mass: MusicAssistant, selected: ConfigValueType) -> list[ConfigValueOption]:
+    """
+    Return a picker option for every available and enabled Music Assistant player.
+
+    A session-only player (a browser or app player) is only offered while it is selected.
+
+    :param mass: The Music Assistant instance providing the current players.
+    :param selected: The id of the player selected now.
+    """
     return [
-        ConfigValueOption(player.player_id, title=player.display_name)
+        ConfigValueOption(player.player_id, title=player.name)
         for player in sorted(
             mass.players.all_players(False, False),
-            key=lambda player: player.display_name.lower(),
+            key=lambda player: player.name.lower(),
         )
         if player.type in PLAYBACK_TARGET_TYPES
+        and (not player.session_only or player.player_id == selected)
     ]
 
 

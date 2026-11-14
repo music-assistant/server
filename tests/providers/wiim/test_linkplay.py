@@ -1,4 +1,4 @@
-"""Tests for the generic LinkPlay grouping/identity shell of the WiiM provider."""
+"""Tests for the generic LinkPlay control protocol of the WiiM provider."""
 
 from __future__ import annotations
 
@@ -7,16 +7,9 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import (
-    IdentifierType,
-    PlaybackState,
-    PlayerFeature,
-    PlayerType,
-)
+from music_assistant_models.enums import IdentifierType, PlayerFeature, PlayerType, ProtocolRole
 from pywiim import WiiMError
 
-from music_assistant.controllers.players.protocol_linking import ProtocolLinkingMixin
-from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX
 from music_assistant.providers.wiim.grouping import NativeGroupRole
 from music_assistant.providers.wiim.helpers import (
@@ -147,7 +140,7 @@ def mock_provider() -> MagicMock:
     provider = MagicMock()
     provider.instance_id = "wiim_test"
     provider.domain = "wiim"
-    provider.players = []
+    provider.protocols = []
     provider.native_groups = _mock_native_groups()
     provider.mass = MagicMock()
     provider.mass.players = MagicMock()
@@ -157,9 +150,9 @@ def mock_provider() -> MagicMock:
     config.enabled = True
     config.player_type = None
     config.get_value = MagicMock(return_value=None)
-    provider.mass.config.get_base_player_config.return_value = config
+    provider.mass.config.get_base_protocol_config.return_value = config
     # used by the core final-state calculation to resolve power/volume controls
-    provider.mass.config.get_raw_player_config_value = MagicMock(
+    provider.mass.config.get_player_value = MagicMock(
         side_effect=lambda _player_id, _key, default=None: default
     )
     return provider
@@ -219,7 +212,7 @@ def _make_shell(
 ) -> LinkPlayPlayer:
     player = LinkPlayPlayer(
         provider=provider,
-        player_id=player_id,
+        protocol_id=player_id,
         client=client,
         upnp_device=upnp_device,
         description_url="http://192.168.1.50:49152/description.xml",
@@ -232,14 +225,25 @@ def _make_shell(
 
 
 class TestShellConstruction:
-    """The shell exposes device identity and a grouping-only native capability."""
+    """The protocol exposes device identity and a grouping-only native capability."""
 
-    def test_is_a_native_player(
+    def test_is_a_control_protocol(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """The shell is a native PlayerType.PLAYER so the controller can link protocols."""
+        """The protocol controls a player of its own, whose audio comes from other protocols."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        assert player._attr_type == PlayerType.PLAYER
+        assert player.role == ProtocolRole.CONTROL
+        assert player.type == PlayerType.PLAYER
+
+    def test_reports_the_reachability_of_the_linkplay_api(
+        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """The availability it reports is that of the LinkPlay HTTP API, not of an output."""
+        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
+        player._linkplay_available = True
+        assert player.available is True
+        player._linkplay_available = False
+        assert player.available is False
 
     def test_prefers_dlna_default_output(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
@@ -320,46 +324,11 @@ class TestHealthGating:
     ) -> None:
         """A peer is native-compatible exactly when the coordinator offers it as a candidate."""
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        peer = MagicMock(player_id=PEER_PLAYER_ID)
+        peer = MagicMock(protocol_id=PEER_PLAYER_ID)
         mock_provider.native_groups.can_group_with.return_value = {PEER_PLAYER_ID}
         assert player.is_native_group_compatible(peer) is True
-        other = MagicMock(player_id="wiim_uuid:not-a-candidate")
+        other = MagicMock(protocol_id="wiim_uuid:not-a-candidate")
         assert player.is_native_group_compatible(other) is False
-
-
-class TestPlaybackAvailability:
-    """Playback availability derives from linked protocols, not the LinkPlay API (B2)."""
-
-    def test_available_from_linked_protocol_even_when_api_unhealthy(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A reachable linked DLNA keeps the shell available even if the LinkPlay API is down."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player._linkplay_available = False
-        player.set_linked_output_protocols([LinkedOutputProtocol("dlna_x", "dlna", priority=50)])
-        protocol_player = MagicMock(available_for_playback=True)
-        mock_provider.mass.players.get_player.return_value = protocol_player
-        assert player.available is True
-
-    def test_unavailable_without_linked_protocols(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """With no linked protocol players there is nothing to play through."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        assert player.available is False
-
-    def test_backing_ids_derive_from_linked_protocols(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """The backing protocol ids come from the linked output protocols."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player.set_linked_output_protocols(
-            [
-                LinkedOutputProtocol("dlna_x", "dlna", priority=50),
-                LinkedOutputProtocol("ap_x", "airplay", priority=10),
-            ]
-        )
-        assert player._backing_protocol_player_ids() == ["dlna_x", "ap_x"]
 
 
 class TestGrouping:
@@ -426,16 +395,6 @@ class TestGrouping:
         player = _make_shell(mock_provider, mock_client, mock_upnp_device)
         assert player.grouping_rebuild_lock is player._rebuild_lock
 
-    def test_native_follower_suppresses_playback(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A native follower reports idle and no media instead of its delegated state."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
-        assert player.playback_state == PlaybackState.IDLE
-        assert player.current_media is None
-        assert player.active_source is None
-
 
 class TestTopology:
     """The coordinator publishes resolved membership onto the shell."""
@@ -467,45 +426,6 @@ class TestTopology:
         await player.poll()
         mock_client.get_device_info_model.assert_awaited()
         mock_provider.native_groups.refresh_leader.assert_awaited_with(player, force=True)
-
-    def test_becoming_follower_clears_active_output_protocol(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A shell that was playing through DLNA drops that output when it becomes a follower."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player.set_active_output_protocol("dlna_x")
-        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
-
-        player.on_native_group_update()
-
-        assert player.active_output_protocol is None
-        assert player.playback_state == PlaybackState.IDLE
-        assert player.current_media is None
-
-    def test_leaving_follower_does_not_resurrect_protocol(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """The dropped output stays cleared after leaving; normal playback reselects it."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player.set_active_output_protocol("dlna_x")
-        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
-        player.on_native_group_update()
-
-        mock_provider.native_groups.role_of.return_value = NativeGroupRole.STANDALONE
-        player.on_native_group_update()
-
-        assert player.active_output_protocol is None
-
-    def test_standalone_update_keeps_active_output_protocol(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """A non-follower topology update never touches the active output (no churn)."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player.set_active_output_protocol("dlna_x")
-
-        player.on_native_group_update()  # role stays standalone
-
-        assert player.active_output_protocol == "dlna_x"
 
 
 class TestGroupCompatibility:
@@ -576,13 +496,13 @@ class TestRefreshResilience:
         """A shell built without a primed device info probes the API during setup."""
         player = LinkPlayPlayer(
             provider=mock_provider,
-            player_id=EDIFIER_PLAYER_ID,
+            protocol_id=EDIFIER_PLAYER_ID,
             client=mock_client,
             upnp_device=mock_upnp_device,
             description_url="http://192.168.1.50:49152/description.xml",
         )
         player.update_state = MagicMock()  # type: ignore[misc,method-assign]
-        mock_provider.players = [player]
+        mock_provider.protocols = [player]
         assert player._linkplay_available is False
         await player.setup()
         mock_client.get_device_info_model.assert_awaited_once()
@@ -600,7 +520,7 @@ class TestAddressChange:
         new_client = MagicMock(host="192.168.1.99")
         new_client.get_device_info_model = AsyncMock(return_value=SimpleNamespace(uuid=""))
         new_client.get_slaves_info = AsyncMock(return_value=_slaves([]))
-        mock_provider.players = [player]
+        mock_provider.protocols = [player]
         with patch(
             "music_assistant.providers.wiim.linkplay_player.WiiMClient", return_value=new_client
         ):
@@ -629,15 +549,13 @@ class TestAddressChange:
 class TestProviderRouting:
     """Discovery classifies a device and routes it to the correct backend."""
 
-    async def test_generic_device_registers_shell(
+    async def test_generic_device_attaches_its_control_protocol(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A reachable generic LinkPlay device is registered as a shell."""
-        mock_provider.players = []
+        """A reachable generic LinkPlay device is attached as a LinkPlay control protocol."""
+        mock_provider.protocols = []
         registered: list[Any] = []
-        mock_provider.mass.players.register_or_update = AsyncMock(
-            side_effect=lambda p: registered.append(p)
-        )
+        mock_provider.mass.players.register = AsyncMock(side_effect=registered.append)
         with patch("music_assistant.providers.wiim.provider.WiiMClient", return_value=mock_client):
             await WiimProvider.try_add_linkplay_player(
                 mock_provider,
@@ -649,19 +567,19 @@ class TestProviderRouting:
             )
         assert registered
         assert isinstance(registered[0], LinkPlayPlayer)
-        # discovery does a single authoritative device-info probe that primes the shell:
-        # setup must not repeat it, and the shell is registered already reachable.
+        # discovery does a single authoritative device-info probe that primes the protocol:
+        # setup must not repeat it, and the protocol is attached already reachable.
         mock_client.get_device_info_model.assert_awaited_once()
         assert registered[0]._linkplay_available is True
-        # the live topology is read only after the player is registered (a read taken during
-        # setup, before registration, would be discarded by the coordinator).
+        # the live topology is read only after the protocol is attached (a read taken during
+        # setup, before the attach, would be discarded by the coordinator).
         mock_provider.native_groups.refresh_leader.assert_awaited_with(registered[0], force=True)
 
-    async def test_unreachable_device_not_registered(
+    async def test_unreachable_device_not_attached(
         self, mock_provider: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
-        """A device that does not answer the LinkPlay API is not registered."""
-        mock_provider.mass.players.register_or_update = AsyncMock()
+        """A device that does not answer the LinkPlay API is not attached."""
+        mock_provider.mass.players.register = AsyncMock()
         bad_client = MagicMock()
         bad_client.get_device_info_model = AsyncMock(side_effect=WiiMError("no api"))
         with patch("music_assistant.providers.wiim.provider.WiiMClient", return_value=bad_client):
@@ -672,134 +590,72 @@ class TestProviderRouting:
                 mock_upnp_device,
                 "http://192.168.1.50:49152/description.xml",
             )
-        mock_provider.mass.players.register_or_update.assert_not_called()
+        mock_provider.mass.players.register.assert_not_called()
 
+    async def test_device_of_a_disabled_player_is_not_contacted(
+        self, mock_provider: MagicMock, mock_upnp_device: MagicMock
+    ) -> None:
+        """Discovery leaves a LinkPlay device alone while the server does not want it."""
+        mock_provider.mass.players.wants_protocol = MagicMock(return_value=False)
+        mock_provider.mass.players.register = AsyncMock()
+        with patch("music_assistant.providers.wiim.provider.WiiMClient") as client_class:
+            await WiimProvider.try_add_linkplay_player(
+                mock_provider,
+                EDIFIER_PLAYER_ID,
+                "192.168.1.50",
+                mock_upnp_device,
+                "http://192.168.1.50:49152/description.xml",
+            )
+        client_class.assert_not_called()
+        mock_provider.mass.players.register.assert_not_called()
+        mock_provider.mass.players.wants_protocol.assert_called_once_with(EDIFIER_PLAYER_ID)
 
-class TestDefaultProtocolSelection:
-    """The default_output_protocol_domain steers automatic output selection."""
+    @pytest.mark.parametrize("wanted", [True, False], ids=["skipped", "disabled"])
+    async def test_official_device_the_attach_does_not_take_gets_no_connection(
+        self, mock_provider: MagicMock, wanted: bool
+    ) -> None:
+        """
+        An official device sets up its SDK connection only once it is attached.
 
-    def _controller(self, protocol_players: dict[str, Any], preferred: Any = None) -> MagicMock:
-        controller = MagicMock()
-        controller.get_player.side_effect = protocol_players.get
-        controller.mass.config.get_raw_player_config_value.return_value = preferred
-        controller._get_grouped_output_protocol.return_value = None
-        controller.logger = MagicMock()
-        return controller
+        :param wanted: Whether the server wants the protocol; when it does, the attach
+            skips it (its player got disabled meanwhile).
+        """
+        mock_provider.mass.players.wants_protocol = MagicMock(return_value=wanted)
+        mock_provider.mass.players.register = AsyncMock()
+        # nothing is attached under the id: the controller kept the object for itself
+        mock_provider.get_protocol = MagicMock(return_value=None)
+        with patch(
+            "music_assistant.providers.wiim.player.async_create_wiim_device", AsyncMock()
+        ) as create_device:
+            await WiimProvider.try_add_player(
+                mock_provider,
+                "wiim_uuid:official",
+                "192.168.1.60",
+                MagicMock(udn="uuid:official", friendly_name="WiiM Pro"),
+                "http://192.168.1.60:49152/description.xml",
+            )
+        assert mock_provider.mass.players.register.await_count == (1 if wanted else 0)
+        create_device.assert_not_awaited()
+        mock_provider.native_groups.refresh_leader.assert_not_awaited()
 
-    def _shell_player(self, links: list[LinkedOutputProtocol]) -> MagicMock:
-        player = MagicMock()
-        player.default_output_protocol_domain = "dlna"
-        player.supported_features = set()  # no native PLAY_MEDIA
-        player.linked_output_protocols = links
-        player.get_linked_protocol.side_effect = lambda pid: next(
-            (link for link in links if link.output_protocol_id == pid), None
-        )
-        return player
+    async def test_discovery_offers_the_manually_added_addresses(
+        self, mock_provider: MagicMock
+    ) -> None:
+        """discover_players() probes every manually configured address."""
+        mock_provider.config.get_value = MagicMock(return_value=[" 192.168.1.70 ", "192.168.1.71"])
+        mock_provider._discover_device = AsyncMock()
+        mock_provider._candidate_locations = MagicMock(side_effect=lambda ip: (ip,))
 
-    def test_prefers_default_domain_when_available(self) -> None:
-        """With DLNA available, the DLNA output is chosen over the higher-priority AirPlay."""
-        links = [
-            LinkedOutputProtocol("dlna_x", "dlna", priority=50),
-            LinkedOutputProtocol("ap_x", "airplay", priority=10),
+        await WiimProvider.discover_players(mock_provider)
+
+        assert [call.args[0] for call in mock_provider._discover_device.await_args_list] == [
+            "192.168.1.70",
+            "192.168.1.71",
         ]
-        players = {
-            "dlna_x": MagicMock(available_for_playback=True),
-            "ap_x": MagicMock(available_for_playback=True),
-        }
-        controller = self._controller(players)
-        player = self._shell_player(links)
-        target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
-        assert target is players["dlna_x"]
-
-    def test_falls_back_to_priority_when_default_absent(self) -> None:
-        """Without an available DLNA, selection falls back to priority (AirPlay)."""
-        links = [
-            LinkedOutputProtocol("dlna_x", "dlna", priority=50),
-            LinkedOutputProtocol("ap_x", "airplay", priority=10),
-        ]
-        players = {
-            "dlna_x": MagicMock(available_for_playback=False),
-            "ap_x": MagicMock(available_for_playback=True),
-        }
-        controller = self._controller(players)
-        player = self._shell_player(links)
-        target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
-        assert target is players["ap_x"]
-
-    def test_explicit_user_preference_wins(self) -> None:
-        """An explicit stored user preference overrides the default domain."""
-        links = [
-            LinkedOutputProtocol("dlna_x", "dlna", priority=50),
-            LinkedOutputProtocol("ap_x", "airplay", priority=10),
-        ]
-        players = {
-            "dlna_x": MagicMock(available_for_playback=True),
-            "ap_x": MagicMock(available_for_playback=True),
-        }
-        controller = self._controller(players, preferred="ap_x")
-        player = self._shell_player(links)
-        target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
-        assert target is players["ap_x"]
-
-    def test_explicit_auto_resolves_to_default_domain(self) -> None:
-        """Selecting Auto resolves to the default domain, just like an unset value."""
-        links = [
-            LinkedOutputProtocol("dlna_x", "dlna", priority=50),
-            LinkedOutputProtocol("ap_x", "airplay", priority=10),
-        ]
-        players = {
-            "dlna_x": MagicMock(available_for_playback=True),
-            "ap_x": MagicMock(available_for_playback=True),
-        }
-        controller = self._controller(players, preferred="auto")
-        player = self._shell_player(links)
-        target, _ = ProtocolLinkingMixin._select_best_output_protocol(controller, player)
-        assert target is players["dlna_x"]
 
 
 class TestFinalGroupingState:
     """The FINAL state gates native grouping by API health but keeps linked-protocol grouping."""
-
-    @staticmethod
-    def _final_supported_features(player: LinkPlayPlayer) -> set[PlayerFeature]:
-        return cast(
-            "set[PlayerFeature]",
-            player._Player__final_supported_features,  # type: ignore[attr-defined]
-        )
-
-    def _link_grouping_protocol(self, player: LinkPlayPlayer, mock_provider: MagicMock) -> None:
-        """Link a DLNA protocol player that itself supports SET_MEMBERS."""
-        player.set_linked_output_protocols([LinkedOutputProtocol("dlna_x", "dlna", priority=50)])
-        protocol_player = MagicMock()
-        protocol_player.available = True
-        protocol_player.available_for_playback = True
-        protocol_player.supported_features = {PlayerFeature.SET_MEMBERS, PlayerFeature.PAUSE}
-        mock_provider.mass.players.get_player.return_value = protocol_player
-
-    def test_protocol_grouping_survives_api_outage(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """With the LinkPlay API down, a linked protocol still supplies SET_MEMBERS to the final state."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player._linkplay_available = False
-        self._link_grouping_protocol(player, mock_provider)
-
-        # native raw is gated, but the broad lock is off, so the linked protocol re-adds it
-        assert PlayerFeature.SET_MEMBERS not in player.supported_features
-        assert player.grouping_locked is False
-        assert PlayerFeature.SET_MEMBERS in self._final_supported_features(player)
-
-    def test_unknown_leader_follower_withdraws_even_protocol_grouping(
-        self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock
-    ) -> None:
-        """The broad lock withdraws grouping in the final state even a linked protocol would add."""
-        player = _make_shell(mock_provider, mock_client, mock_upnp_device)
-        player._linkplay_available = True
-        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
-        self._link_grouping_protocol(player, mock_provider)
-
-        assert player.grouping_locked is True
-        assert PlayerFeature.SET_MEMBERS not in self._final_supported_features(player)
 
     def test_healthy_native_keeps_set_members(
         self, mock_provider: MagicMock, mock_client: MagicMock, mock_upnp_device: MagicMock

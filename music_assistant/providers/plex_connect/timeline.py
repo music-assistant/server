@@ -38,9 +38,8 @@ class TimelineMixin:
         Resolve the Plex playback state string from MA player/queue state.
 
         The queue is the source of truth for playback: for synced or grouped
-        players (and players using a protocol output) the child player's own
-        ``playback_state`` stays idle while the active queue (on the sync
-        leader / group / protocol parent) is actually playing. Relying on
+        players the child player's own ``playback_state`` stays idle while the
+        active queue (on the sync leader / group) is actually playing. Relying on
         ``player.playback_state`` therefore reports "paused" for those players
         even though MA is playing.
 
@@ -51,9 +50,9 @@ class TimelineMixin:
         if queue is not None:
             state = queue.state
         elif player is not None:
-            # player.state.playback_state is MA's resolved/final state, which already
-            # follows the active output protocol player and sync leader.
-            state = player.state.playback_state
+            # player.playback_state is MA's resolved/final state, which already
+            # follows the active output protocol and sync leader.
+            state = player.playback_state
         else:
             return "stopped"
 
@@ -159,7 +158,7 @@ class TimelineMixin:
 
         # group_volume is MA's effective, group-aware volume: for groups/syncgroups it
         # averages the (powered) members, otherwise it returns the player's own resolved
-        # volume (following any attached volume control / protocol player).
+        # volume (following its volume control, which can be one of its output protocols).
         volume = int(player.group_volume or 0) if player else 0
 
         shuffle = 0

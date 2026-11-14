@@ -10,7 +10,8 @@ from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SessionErrorEvent
 from aiosonos.group import SonosGroup
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.config_entries import PlayerConfig
+from music_assistant_models.enums import MediaType, PlaybackState, ProtocolRole
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -18,9 +19,10 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players.controller import PlayerController
+from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import SOURCE_AIRPLAY, SOURCE_MUSIC_ASSISTANT
 from music_assistant.providers.sonos.player import SonosPlayer
-from tests.common import MockProvider, create_mock_config
+from tests.common import MockProvider, mock_player_mass
 
 if TYPE_CHECKING:
     from aiosonos.api.models import (
@@ -31,19 +33,19 @@ if TYPE_CHECKING:
         SessionError,
     )
 
+# the speakers' own protocol ids, which their groups report
 SPEAKER = "RINCON_F0F6C1CC8D0401400"
 MEMBER = "RINCON_F0F6C1CC8D0501400"
+# the players of the speakers, with ids of their own: the ids of their queues
+SPEAKER_PLAYER = "pl_speaker"
+MEMBER_PLAYER = "pl_member"
 OUR_SESSION = "session-ours"
 
 
 def _mass() -> MagicMock:
     """Return a mocked mass with the real players controller and a bare queues controller."""
-    mass = MagicMock()
-    mass.closing = False
+    mass = mock_player_mass()
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
-    mass.config.get_raw_player_config_value = MagicMock(
-        side_effect=lambda _player_id, _key, default=None: default
-    )
     mass.streams.get_announcement_duration = AsyncMock(return_value=3)
     mass.players = PlayerController(mass)
     queues = PlayerQueuesController.__new__(PlayerQueuesController)
@@ -55,21 +57,36 @@ def _mass() -> MagicMock:
     return mass
 
 
-def _speaker(mass: MagicMock, player_id: str = SPEAKER, leader: str | None = None) -> SonosPlayer:
+def _protocol_config(name: str) -> MagicMock:
+    """Return a mocked config of a protocol without a custom name or a power control."""
+    config = MagicMock()
+    config.name = None
+    config.default_name = name
+    config.get_value = MagicMock(return_value="none")
+    return config
+
+
+def _speaker(
+    mass: MagicMock,
+    protocol_id: str = SPEAKER,
+    player_id: str = SPEAKER_PLAYER,
+    leader: str | None = None,
+) -> SonosPlayer:
     """
-    Register a connected speaker, with its queue, that coordinates its own group or joins one.
+    Attach a connected speaker, with its queue, that coordinates its own group or joins one.
 
     :param mass: The mocked mass from _mass.
-    :param player_id: The id of the speaker.
-    :param leader: The speaker coordinating the group this one joins, if any.
+    :param protocol_id: The id of the speaker's protocol.
+    :param player_id: The id of the speaker's player.
+    :param leader: The protocol id of the speaker coordinating the group this one joins, if any.
     """
     provider = MockProvider("sonos", instance_id="sonos", mass=mass)
-    mass.config.get_base_player_config.return_value = create_mock_config(player_id)
+    mass.config.get_base_protocol_config.return_value = _protocol_config(protocol_id)
     discovery_info = cast("DiscoveryInfo", {"device": {}})
-    player = SonosPlayer(cast("Any", provider), player_id, discovery_info)
+    player = SonosPlayer(cast("Any", provider), protocol_id, discovery_info)
     client = MagicMock()
-    client.player_id = player_id
-    coordinator = leader or player_id
+    client.player_id = protocol_id
+    coordinator = leader or protocol_id
     group_data = cast(
         "Group",
         {"id": f"{coordinator}:1", "name": "Group", "coordinatorId": coordinator, "playerIds": []},
@@ -78,7 +95,7 @@ def _speaker(mass: MagicMock, player_id: str = SPEAKER, leader: str | None = Non
     client.player.group = SonosGroup(client, group_data)
     client.player.is_coordinator = leader is None
     client.player.is_passive = False
-    client.player.group_members = [player_id]
+    client.player.group_members = [protocol_id]
     client.player.has_fixed_volume = False
     client.player.volume_muted = False
     client.player.volume_level = 20
@@ -89,8 +106,16 @@ def _speaker(mass: MagicMock, player_id: str = SPEAKER, leader: str | None = Non
     player.connected = True
     player._attr_available = True
     player._attr_powered = True
-    mass.players._players[player_id] = player
-    player.set_initialized()
+    owner = Player(
+        mass,
+        player_id,
+        PlayerConfig(values={}, provider=provider.instance_id, player_id=player_id),
+    )
+    mass.players._players[player_id] = owner
+    mass.players._protocols[protocol_id] = player
+    owner.add_protocol(player, ProtocolRole.NATIVE)
+    player.set_player(owner)
+    owner.set_initialized()
     queue = PlayerQueue(
         queue_id=player_id, active=False, display_name=player_id, available=True, items=1
     )
@@ -105,7 +130,7 @@ def _session_api(player: SonosPlayer) -> MagicMock:
     return cast("MagicMock", client.api.playback_session)
 
 
-def _cloud_queue_container(queue_id: str = SPEAKER) -> dict[str, Any]:
+def _cloud_queue_container(queue_id: str = SPEAKER_PLAYER) -> dict[str, Any]:
     """Return the container a speaker reports for a Music Assistant cloud queue."""
     return {
         "type": "trackList",
@@ -121,7 +146,7 @@ def _stream_container() -> dict[str, Any]:
         "type": "track",
         "name": "Shout",
         "service": {"name": "Music Assistant", "id": "mass"},
-        "id": {"objectId": f"mass:{SPEAKER}:abc"},
+        "id": {"objectId": f"mass:{SPEAKER_PLAYER}:abc"},
     }
 
 
@@ -160,8 +185,14 @@ def _update(mass: MagicMock, *players: SonosPlayer) -> PlayerQueue:
     for player in players:
         player.on_player_event(None)
     for player in players:
-        mass.player_queues.on_player_update(player, {})
-    return cast("PlayerQueue", mass.player_queues.get(players[0].player_id))
+        mass.player_queues.on_player_update(_player(player), {})
+    return cast("PlayerQueue", mass.player_queues.get(_player(players[0]).player_id))
+
+
+def _player(protocol: SonosPlayer) -> Player:
+    """Return the player a speaker's protocol is attached to."""
+    assert protocol.player is not None
+    return protocol.player
 
 
 def _queue_media() -> PlayerMedia:
@@ -169,7 +200,7 @@ def _queue_media() -> PlayerMedia:
     return PlayerMedia(
         uri="library://track/1",
         media_type=MediaType.TRACK,
-        source_id=SPEAKER,
+        source_id=SPEAKER_PLAYER,
         queue_item_id="abc",
         queue_session_id="queue-session",
     )
@@ -238,8 +269,8 @@ async def test_a_shutdown_leaves_a_session_we_did_not_start_playing(
     # a stop without a session of ours makes one, which ends the session that plays
     _session_api(player).create_session.assert_not_awaited()
     _session_api(player).leave_session.assert_not_awaited()
-    assert player.state.active_source == SOURCE_MUSIC_ASSISTANT
-    assert player.state.playback_state == PlaybackState.PLAYING
+    assert _player(player).active_source == SOURCE_MUSIC_ASSISTANT
+    assert _player(player).playback_state == PlaybackState.PLAYING
     assert queue.active is False
     assert queue.state == PlaybackState.IDLE
 
@@ -255,13 +286,13 @@ async def test_a_shutdown_still_stops_our_own_queue(flow_mode: bool) -> None:
     with _flow_mode(flow_mode):
         await _play(player, _queue_media(), lambda: None)
     # the stream session the queue controller opens when it starts the queue
-    mass.player_queues._queue_data[SPEAKER].session_id = "queue-session"
+    mass.player_queues._queue_data[SPEAKER_PLAYER].session_id = "queue-session"
     _report(group, container)
 
     queue = _update(mass, player)
     await mass.player_queues.close()
 
-    assert player.state.active_source == SPEAKER
+    assert _player(player).active_source == SPEAKER_PLAYER
     assert queue.active is True
     _session_api(player).leave_session.assert_awaited_once_with(OUR_SESSION)
     _session_api(player).create_session.assert_not_awaited()
@@ -294,9 +325,9 @@ def test_our_own_queue_stays_our_queue(flow_mode: bool) -> None:
     assert group is not None
     group.active_session_id = OUR_SESSION
     if flow_mode:
-        player._flow_queue_id = SPEAKER
+        player._flow_queue_id = SPEAKER_PLAYER
     else:
-        player.cloud_queue_id = SPEAKER
+        player.cloud_queue_id = SPEAKER_PLAYER
     _report(group, _stream_container() if flow_mode else _cloud_queue_container())
 
     queue = _update(mass, player)
@@ -314,7 +345,7 @@ def test_our_queue_stays_ours_when_the_library_lost_track_of_its_session() -> No
     player = _speaker(mass)
     group = player.client.player.group
     assert group is not None
-    player.cloud_queue_id = SPEAKER
+    player.cloud_queue_id = SPEAKER_PLAYER
     _report(group, _cloud_queue_container())
 
     queue = _update(mass, player)
@@ -330,7 +361,7 @@ def test_a_paused_session_of_ours_stays_ours() -> None:
     group = player.client.player.group
     assert group is not None
     group.active_session_id = OUR_SESSION
-    player.cloud_queue_id = SPEAKER
+    player.cloud_queue_id = SPEAKER_PLAYER
     _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
 
     queue = _update(mass, player)
@@ -394,7 +425,7 @@ async def test_a_session_that_took_ours_over_is_not_our_queue() -> None:
     assert group is not None
     with _flow_mode(False):
         await _play(player, _queue_media(), lambda: None)
-    mass.player_queues._queue_data[SPEAKER].session_id = "queue-session"
+    mass.player_queues._queue_data[SPEAKER_PLAYER].session_id = "queue-session"
     _report(group, _cloud_queue_container())
     assert _update(mass, player).state == PlaybackState.PLAYING
 
@@ -403,7 +434,7 @@ async def test_a_session_that_took_ours_over_is_not_our_queue() -> None:
     _report(group, _cloud_queue_container())
     queue = _update(mass, player)
 
-    assert player.state.active_source == SOURCE_MUSIC_ASSISTANT
+    assert _player(player).active_source == SOURCE_MUSIC_ASSISTANT
     assert queue.active is False
     assert queue.state == PlaybackState.IDLE
 
@@ -411,9 +442,9 @@ async def test_a_session_that_took_ours_over_is_not_our_queue() -> None:
 @pytest.mark.parametrize(
     ("session_id", "queue_id", "expected"),
     [
-        (OUR_SESSION, SPEAKER, None),
+        (OUR_SESSION, SPEAKER_PLAYER, None),
         # the coordinator's connection dropped and came back
-        (None, SPEAKER, None),
+        (None, SPEAKER_PLAYER, None),
         (None, None, SOURCE_MUSIC_ASSISTANT),
     ],
 )
@@ -423,7 +454,7 @@ def test_a_group_member_follows_whose_session_its_coordinator_plays(
     """Test the members of a group read the session as their coordinator does."""
     mass = _mass()
     leader = _speaker(mass)
-    member = _speaker(mass, MEMBER, leader=SPEAKER)
+    member = _speaker(mass, MEMBER, MEMBER_PLAYER, leader=SPEAKER)
     cast("MagicMock", leader.client).player.group_members = [SPEAKER, MEMBER]
     group = leader.client.player.group
     assert group is not None
@@ -443,14 +474,14 @@ def test_our_queue_over_airplay_is_still_our_queue() -> None:
     player = _speaker(mass)
     group = player.client.player.group
     assert group is not None
-    player.set_active_mass_source(SPEAKER)
-    player.set_active_output_protocol("airplay_protocol_player")
+    _player(player).set_active_mass_source(SPEAKER_PLAYER)
+    _player(player).set_active_output_protocol("airplay_protocol_player")
     _report(group, _airplay_container())
 
     queue = _update(mass, player)
 
     assert player._attr_active_source == SOURCE_AIRPLAY
-    assert player.state.active_source == SPEAKER
+    assert _player(player).active_source == SPEAKER_PLAYER
     assert queue.active is True
     assert queue.state == PlaybackState.PLAYING
 
@@ -459,10 +490,10 @@ async def _play_our_queue(mass: MagicMock, player: SonosPlayer) -> SonosGroup:
     """Start our queue on the speaker as the controllers would, and let the speaker report it."""
     group = player.client.player.group
     assert group is not None
-    player.set_active_mass_source(player.player_id)
+    _player(player).set_active_mass_source(_player(player).player_id)
     with _flow_mode(False):
         await _play(player, _queue_media(), lambda: None)
-    mass.player_queues._queue_data[player.player_id].session_id = "queue-session"
+    mass.player_queues._queue_data[_player(player).player_id].session_id = "queue-session"
     _report(group, _cloud_queue_container())
     return group
 
@@ -484,7 +515,7 @@ async def test_play_after_we_stopped_our_queue_resumes_it(
     player = _speaker(mass)
     group = await _play_our_queue(mass, player)
     _update(mass, player)
-    await getattr(mass.players, command)(SPEAKER)
+    await getattr(mass.players, command)(SPEAKER_PLAYER)
     _session_api(player).leave_session.assert_awaited_once_with(OUR_SESSION)
     # the speaker keeps showing what our session played
     _report(group, _cloud_queue_container(), reported)
@@ -492,14 +523,14 @@ async def test_play_after_we_stopped_our_queue_resumes_it(
     resume = AsyncMock()
     mass.player_queues.resume = resume
 
-    await mass.players.cmd_play(SPEAKER)
+    await mass.players.cmd_play(SPEAKER_PLAYER)
 
-    assert player.state.playback_state == PlaybackState.IDLE
-    assert player.state.active_source == SPEAKER
+    assert _player(player).playback_state == PlaybackState.IDLE
+    assert _player(player).active_source == SPEAKER_PLAYER
     assert queue.active is True
     # the pause, next, previous and seek commands go to the same queue
-    assert mass.players.get_active_queue(player) is queue
-    resume.assert_awaited_once_with(SPEAKER)
+    assert mass.players.get_active_queue(_player(player)) is queue
+    resume.assert_awaited_once_with(SPEAKER_PLAYER)
     cast("MagicMock", player.client).api.playback.play.assert_not_awaited()
 
 
@@ -507,20 +538,20 @@ async def test_play_on_a_member_after_its_group_stopped_resumes_the_queue() -> N
     """Test a member of a group we stopped hands play to the coordinator's queue."""
     mass = _mass()
     leader = _speaker(mass)
-    member = _speaker(mass, MEMBER, leader=SPEAKER)
+    member = _speaker(mass, MEMBER, MEMBER_PLAYER, leader=SPEAKER)
     cast("MagicMock", leader.client).player.group_members = [SPEAKER, MEMBER]
     group = await _play_our_queue(mass, leader)
     _update(mass, leader, member)
-    await mass.players.cmd_stop(MEMBER)
+    await mass.players.cmd_stop(MEMBER_PLAYER)
     _session_api(leader).leave_session.assert_awaited_once_with(OUR_SESSION)
     _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
     _update(mass, leader, member)
     resume = AsyncMock()
     mass.player_queues.resume = resume
 
-    await mass.players.cmd_play(MEMBER)
+    await mass.players.cmd_play(MEMBER_PLAYER)
 
-    resume.assert_awaited_once_with(SPEAKER)
+    resume.assert_awaited_once_with(SPEAKER_PLAYER)
     cast("MagicMock", leader.client).api.playback.play.assert_not_awaited()
 
 
@@ -535,11 +566,11 @@ async def test_play_after_our_queue_ran_out_resumes_it() -> None:
     resume = AsyncMock()
     mass.player_queues.resume = resume
 
-    await mass.players.cmd_play(SPEAKER)
+    await mass.players.cmd_play(SPEAKER_PLAYER)
 
     assert player._attr_active_source is None
     assert queue.active is True
-    resume.assert_awaited_once_with(SPEAKER)
+    resume.assert_awaited_once_with(SPEAKER_PLAYER)
 
 
 async def test_a_session_started_after_we_stopped_ours_is_not_ours() -> None:
@@ -548,7 +579,7 @@ async def test_a_session_started_after_we_stopped_ours_is_not_ours() -> None:
     player = _speaker(mass)
     group = await _play_our_queue(mass, player)
     _update(mass, player)
-    await mass.players.cmd_stop(SPEAKER)
+    await mass.players.cmd_stop(SPEAKER_PLAYER)
     _report(group, _cloud_queue_container(), SonosPlayBackState.PLAYBACK_STATE_PAUSED)
     _update(mass, player)
 
@@ -556,7 +587,7 @@ async def test_a_session_started_after_we_stopped_ours_is_not_ours() -> None:
     queue = _update(mass, player)
     await mass.player_queues.close()
 
-    assert player.state.active_source == SOURCE_MUSIC_ASSISTANT
+    assert _player(player).active_source == SOURCE_MUSIC_ASSISTANT
     assert queue.active is False
     assert queue.state == PlaybackState.IDLE
     # the leave of our own stop is all that went to the speaker

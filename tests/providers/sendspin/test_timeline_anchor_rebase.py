@@ -108,7 +108,7 @@ async def _run_commit_loop(
     player = MagicMock()
     player.player_id = "leader"
     player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
-    player.mass.config.get_raw_player_config_value.return_value = "stereo"
+    player.mass.config.get_protocol_value.return_value = "stereo"
     player.mass.streams.get_stream.return_value = _fake_audio_source(len(commit_timestamps))
     player.api.group.stop = AsyncMock()
 

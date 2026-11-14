@@ -46,10 +46,10 @@ def _make_bridge(
     mass.loop = loop
     mass.create_task = MagicMock(side_effect=asyncio.ensure_future)
     mass.streams.publish_ip = "192.168.1.10"
-    mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+    mass.config.get_protocol_value = MagicMock(return_value=None)
 
     cast_player = MagicMock()
-    cast_player.player_id = "cc_player"
+    cast_player.protocol_id = "cc_player"
     cast_player.display_name = "Bar"
     cast_player.available = True
     cast_player.cc.app_id = app_id

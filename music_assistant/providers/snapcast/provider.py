@@ -21,7 +21,7 @@ from snapcast.control.server import CONTROL_PORT, Snapserver
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import CONF_ENABLED, CONF_LOG_LEVEL, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_LOG_LEVEL, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import get_ip_pton
@@ -59,7 +59,6 @@ from music_assistant.providers.snapcast.constants import (
 )
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.snapcast.player import SnapCastPlayer
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -345,11 +344,17 @@ class SnapCastProvider(PlayerProvider):
         if f"values/{CONF_LOG_LEVEL}" in changed_keys:
             self._set_snapcast_log_level()
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await super().loaded_in_mass()
-        # initial load of players
-        self._handle_update()
+    async def discover_players(self) -> None:
+        """Attach the clients of the snapserver that have no attached protocol."""
+        for snap_client in self._snapserver.clients:
+            if not snap_client.identifier:
+                continue
+            protocol_id = self._generate_and_register_id(snap_client.identifier)
+            if self.get_protocol(protocol_id) is None and (
+                player := self._handle_player_init(snap_client)
+            ):
+                snap_client.set_callback(player._handle_player_update)
+        self._update_group_callbacks()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
@@ -358,7 +363,7 @@ class SnapCastProvider(PlayerProvider):
         for snap_client in self._snapserver.clients:
             if not (player_id := self._get_ma_id(snap_client.identifier)):
                 continue
-            if not (player := self.mass.players.get_player(player_id, raise_unavailable=False)):
+            if not (player := self.get_protocol(player_id)):
                 continue
             if player.playback_state != PlaybackState.PLAYING:
                 continue
@@ -571,7 +576,7 @@ class SnapCastProvider(PlayerProvider):
                 self._controlscript_available = False
 
     def _get_ma_id(self, snap_client_id: str) -> str | None:
-        """Return the MA player id for the given snapclient id, or None if not registered."""
+        """Return the MA protocol id for the given snapclient id, or None if not known."""
         return self._ids_map.inverse.get(snap_client_id)
 
     def _get_snapclient_id(self, player_id: str) -> str:
@@ -589,25 +594,23 @@ class SnapCastProvider(PlayerProvider):
         return search_dict[snap_client_id]
 
     def _handle_player_init(self, snap_client: SnapclientProto) -> SnapCastPlayer | None:
-        """Process Snapcast add to Player controller."""
-        player_id = self._generate_and_register_id(snap_client.identifier)
-        if not self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLED, True):
-            self.logger.debug("Ignoring disabled snapcast player: %s", player_id)
+        """Register the protocol of a snapclient."""
+        protocol_id = self._generate_and_register_id(snap_client.identifier)
+        if not self.mass.players.wants_protocol(protocol_id):
+            self.logger.debug("Ignoring disabled snapcast player: %s", protocol_id)
             return None
-        player = self.mass.players.get_player(player_id, raise_unavailable=False)
+        player = self.get_protocol(protocol_id)
         if not player:
-            snap_client = self._snapserver.client(self._get_snapclient_id(player_id))
+            snap_client = self._snapserver.client(self._get_snapclient_id(protocol_id))
             player = SnapCastPlayer(
                 provider=self,
-                player_id=player_id,
+                protocol_id=protocol_id,
                 snap_client=snap_client,
             )
             player.setup()
         else:
             player = cast("SnapCastPlayer", player)  # for type checking
-        asyncio.run_coroutine_threadsafe(
-            self.mass.players.register_or_update(player), loop=self.mass.loop
-        )
+        asyncio.run_coroutine_threadsafe(self.mass.players.register(player), loop=self.mass.loop)
         return player
 
     def _handle_update(self) -> None:
@@ -652,8 +655,12 @@ class SnapCastProvider(PlayerProvider):
             task_id=f"load_provider_{self.instance_id}",
         )
 
-    async def remove_player(self, player_id: str) -> None:
-        """Remove the client from the snapserver when it is deleted."""
+    async def remove_client(self, player_id: str) -> None:
+        """
+        Remove the client of a player from the snapserver.
+
+        :param player_id: ID of the protocol of the client.
+        """
         success, error_msg = await self._snapserver.delete_client(
             self._get_snapclient_id(player_id)
         )
@@ -775,7 +782,7 @@ class SnapCastProvider(PlayerProvider):
             for client_id in group_members:
                 if (ma_player_id := self._get_ma_id(client_id)) is None:
                     continue
-                if ma_player := cast("SnapCastPlayer", self.mass.players.get_player(ma_player_id)):
+                if ma_player := cast("SnapCastPlayer", self.get_protocol(ma_player_id)):
                     client = self._snapserver.client(client_id)
                     if client is not None:
                         if client.group is not None:
@@ -841,7 +848,7 @@ class SnapCastProvider(PlayerProvider):
             )
             stream_name += f"{media.source_id}_{uniq}" if uniq else media.source_id
             source_id = media.source_id
-        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
+        elif media.source_id and await self._is_shared_group_stream(media):
             stream_name += media.source_id
         elif media.source_id and media.queue_item_id:
             stream_name += media.source_id
@@ -960,7 +967,7 @@ class SnapCastProvider(PlayerProvider):
         if player_id is None:
             return None
 
-        if ma_player := self.mass.players.get_player(player_id):
+        if ma_player := self.get_protocol(player_id):
             assert isinstance(ma_player, SnapCastPlayer)  # for type checking
             return ma_player
 
@@ -974,3 +981,15 @@ class SnapCastProvider(PlayerProvider):
             logging.getLogger("snapcast").setLevel(logging.DEBUG)
         else:
             logging.getLogger("snapcast").setLevel(self.logger.level + 10)
+
+    async def _is_shared_group_stream(self, media: PlayerMedia) -> bool:
+        """Return whether media is the one stream a group renders for all of its members."""
+        if not media.source_id or not (group := self.mass.players.get_player(media.source_id)):
+            return False
+        if (protocol := group.own_protocol) is None:
+            return False
+        if (shared_stream := protocol.get_shared_stream(media, self.stream_audio_format)) is None:
+            return False
+        # only asked to tell the media apart: the snapcast stream fetches the audio itself
+        await shared_stream.aclose()
+        return True

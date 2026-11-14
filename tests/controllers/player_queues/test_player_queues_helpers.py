@@ -269,7 +269,7 @@ class _FakeLock:
 class _FakePlayer:
     def __init__(self, player_id: str) -> None:
         self.player_id = player_id
-        self.display_name = player_id
+        self.name = player_id
         self.offline_by_power_control = False
 
 
@@ -281,14 +281,15 @@ class _FakePlayers:
         self.powered_on: list[tuple[str, bool]] = []
 
     @contextlib.asynccontextmanager
-    async def get_group_and_player_lock(
-        self, queue_id: str, strict: bool = False
-    ) -> AsyncIterator[None]:
+    async def get_group_and_player_lock(self, queue_id: str) -> AsyncIterator[None]:
         self.locks_held += 1
         try:
             yield
         finally:
             self.locks_held -= 1
+
+    def resolve_player_id(self, player_id: str) -> str:
+        return player_id
 
     async def _power_on_switched_off_player(self, player_id: str) -> _FakePlayer:
         self.powered_on.append((player_id, self.locks_held > 0))

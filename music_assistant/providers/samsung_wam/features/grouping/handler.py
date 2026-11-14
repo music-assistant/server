@@ -28,12 +28,12 @@ class GroupingHandler(WamPlayerFeatureBase):
         :param group_children: A list of WamPlayer instances to join.
         :param group_name: The name to apply to the newly formed group.
         """
-        child_players = [{"ip": p.ip_address, "mac": p.player_id} for p in group_children]
+        child_players = [{"ip": p.ip_address, "mac": p.protocol_id} for p in group_children]
 
         group_command = api_call.set_multispk_group_mainspk(
             name=group_name,
             spknum=len(child_players) + 1,
-            audiosourcemacaddr=self.player.player_id,
+            audiosourcemacaddr=self.player.protocol_id,
             audiosourcename=self.player.name,
             subspeakers=child_players,
         )

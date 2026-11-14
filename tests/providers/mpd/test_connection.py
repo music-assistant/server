@@ -487,3 +487,30 @@ async def test_hanging_connect_attempt_is_given_up_and_retried(
     assert player._client is None
     assert player.available is False
     _assert_reconnect_scheduled(player)
+
+
+async def test_a_poll_that_fails_after_a_detach_arms_no_reconnect(
+    make_mpd_player: Callable[..., MPDPlayer],
+) -> None:
+    """A poll still waiting on the connection when the player is detached must not reconnect."""
+    player = make_mpd_player()
+    client = _mock_client()
+    lost = asyncio.Event()
+
+    async def _status() -> dict[str, str]:
+        await lost.wait()
+        raise MPDConnectionError("Connection lost while reading line")
+
+    client.status = _status
+    player._client = client
+    mass = cast("MagicMock", player.mass)
+    mass.call_later.reset_mock()
+    poll = asyncio.create_task(player.poll())
+    await asyncio.sleep(0)
+
+    await player.on_detach()
+    lost.set()
+    await poll
+
+    client.disconnect.assert_called_once()
+    mass.call_later.assert_not_called()

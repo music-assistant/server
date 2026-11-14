@@ -139,7 +139,7 @@ class _SessionHarness:
         self.ffmpegs: list[_FifoFFMpeg] = []
         self._yielding_writes = yielding_writes
 
-        player = MagicMock(player_id=LEADER_ID)
+        player = MagicMock(protocol_id=LEADER_ID)
         player.mass.streams.get_stream = MagicMock(side_effect=lambda *_a, **_k: self._source())
         self.session = SendspinPlaybackSession(player)
         session = self.session
@@ -355,7 +355,7 @@ async def test_leader_switch_to_dsp_member_keeps_alignment(
         _assert_aligned(harness.offsets_us(harness.session._member_pipelines[DSP_ID].channel_id))
 
         # SendspinPlayer.set_members on the old leader, then the new leader's membership sync.
-        await harness.session.transfer_to(MagicMock(player_id=DSP_ID))
+        await harness.session.transfer_to(MagicMock(protocol_id=DSP_ID))
         await harness.session.sync_members({PLAIN_ID})
         # PlayerV1Role.get_audio_requirements re-resolves its channel on every call.
         leader_channel = harness.session._resolve_channel_for_player(DSP_ID)

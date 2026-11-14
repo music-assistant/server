@@ -16,6 +16,7 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import CONF_REQUIRES_FIXED_CONTENT_LENGTH
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.announcements import (
     ANNOUNCEMENT_PCM_FORMAT,
@@ -260,31 +261,43 @@ async def test_a_reader_can_start_before_the_render_finished() -> None:
 
 
 def test_announcement_fixed_content_length_prefers_fetching_player() -> None:
-    """The fixed content length setting comes from the player that fetches the announcement."""
+    """The fixed content length setting comes from the protocol that fetches the announcement."""
     controller = StreamsController.__new__(StreamsController)
     controller.mass = mass = MagicMock()
-    fetcher = MagicMock()
-    fetcher.get_output_config_value.return_value = False
-    parent = MagicMock()
-    parent.get_output_config_value.return_value = True
-    players = {"fetcher": fetcher, "parent": parent}
-    mass.players.get_player = MagicMock(side_effect=lambda pid: players.get(pid))
+    fetcher = _protocol_requiring_fixed_content_length(False)
+    rendering = _protocol_requiring_fixed_content_length(True)
+    mass.players.get_protocol = MagicMock(side_effect={"fetcher": fetcher}.get)
+    mass.players.get_player = MagicMock(side_effect={"player": _rendering_through(rendering)}.get)
 
-    # a known fetcher (e.g. a linked protocol player) provides the setting
+    # a known fetcher (e.g. an audio protocol of the player) provides the setting
     assert not controller._announcement_requires_fixed_content_length(
-        "parent", _announce_data("fetcher")
+        "player", _announce_data("fetcher")
     )
 
-    # without a recorded fetcher, resolve against the visible player's output path
-    assert controller._announcement_requires_fixed_content_length("parent", _announce_data(None))
+    # without a recorded fetcher, resolve against the protocol the player renders through
+    assert controller._announcement_requires_fixed_content_length("player", _announce_data(None))
 
-    # a dangling fetcher id falls back to the visible player
-    assert controller._announcement_requires_fixed_content_length("parent", _announce_data("ghost"))
+    # a dangling fetcher id falls back to the protocol the player renders through
+    assert controller._announcement_requires_fixed_content_length("player", _announce_data("ghost"))
 
     # unknown player resolves to no fixed content length
     assert not controller._announcement_requires_fixed_content_length(
         "unknown", _announce_data(None)
     )
+
+
+def _rendering_through(protocol: MagicMock) -> MagicMock:
+    """Return a player double whose audio is rendered by the given protocol."""
+    return MagicMock(resolve_output_protocol=MagicMock(return_value=protocol))
+
+
+def _protocol_requiring_fixed_content_length(required: bool) -> MagicMock:
+    """Return a protocol double whose config holds the given fixed content length setting."""
+    protocol = MagicMock()
+    protocol.get_config_value.side_effect = lambda key, default=None: (
+        required if key == CONF_REQUIRES_FIXED_CONTENT_LENGTH else default
+    )
+    return protocol
 
 
 ANNOUNCEMENT_AUDIO = b"announcement-audio"
@@ -313,11 +326,13 @@ def _announcement_controller(fixed_content_length: bool) -> tuple[StreamsControl
     controller.logger = logging.getLogger("test.streams.announcement")
     controller.announcement_renderer = AnnouncementRenderer()
     controller.announcement_renderer._by_player = {"player1": _announce_data(None)}
-    player = MagicMock()
-    player.display_name = "Player A"
-    player.get_output_config_value.return_value = fixed_content_length
+    protocol = _protocol_requiring_fixed_content_length(fixed_content_length)
+    protocol.display_name = "Player A"
+    mass.players.get_output_protocol = MagicMock(
+        side_effect=lambda pid: protocol if pid == "player1" else None
+    )
     mass.players.get_player = MagicMock(
-        side_effect=lambda pid, *_args, **_kwargs: player if pid == "player1" else None
+        side_effect=lambda pid: _rendering_through(protocol) if pid == "player1" else None
     )
     # no queue is registered for this player: announcements must be served regardless
     mass.player_queues.get = MagicMock(return_value=None)

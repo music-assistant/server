@@ -1,8 +1,8 @@
 """
 Tests for Player.playback_domains and Player.get_linked_protocol.
 
-Covers the live availability view: native playback, linked protocol players that
-are (un)available, and wrapper players that only contribute their linked protocols.
+Covers the live availability view: native playback, audio protocols that are
+(un)available or detached, and players that only have an audio protocol.
 """
 
 from __future__ import annotations
@@ -10,62 +10,59 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlayerFeature, ProtocolRole
 
-from music_assistant.models.player import LinkedOutputProtocol
-from tests.common import MockPlayer, MockProvider
+from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
+from tests.common import MockProtocol, MockProvider, attach_mock, mock_player_mass
 
 
 @pytest.fixture
 def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
-    mass = MagicMock()
-    mass.closing = False
-    mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value=None)
-    mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
-    mass.config.set = MagicMock()
-    mass.players.get_player = MagicMock(return_value=None)
+    mass = mock_player_mass()
+    mass.config.get_player_value = MagicMock(return_value=None)
     return mass
 
 
-def _make_native_player(mock_mass: MagicMock, domain: str = "sonos") -> MockPlayer:
-    """Create a native player (own playback path) of the given provider domain."""
+def _make_native_player(mock_mass: MagicMock, domain: str = "sonos") -> Player:
+    """Create a player with a native protocol (own playback path) of the given provider domain."""
     provider = MockProvider(domain, instance_id=domain, mass=mock_mass)
-    player = MockPlayer(provider, "parent", "Parent")
-    player._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
-    player._cache.clear()
+    player, protocol = attach_mock(provider, "parent", "Parent")
+    protocol._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
     return player
+
+
+def _own(player: Player) -> PlayerProtocol:
+    """Return the native protocol of a player."""
+    assert player.own_protocol is not None
+    return player.own_protocol
 
 
 def _link_protocol(
     mock_mass: MagicMock,
-    parent: MockPlayer,
+    parent: Player,
     protocol_id: str,
     domain: str,
     available: bool,
     needs_setup: bool = False,
-) -> MockPlayer:
-    """Link a protocol player of the given domain to the parent and register it."""
+) -> MockProtocol:
+    """Attach an audio protocol of the given domain to the parent."""
     provider = MockProvider(domain, instance_id=domain, mass=mock_mass)
-    protocol_player = MockPlayer(provider, protocol_id, domain, player_type=PlayerType.PROTOCOL)
-    protocol_player._attr_available = available
-    protocol_player._attr_needs_setup = needs_setup
-    protocol_player._cache.clear()
-    parent.set_linked_output_protocols(
-        [
-            *parent.linked_output_protocols,
-            LinkedOutputProtocol(
-                output_protocol_id=protocol_id,
-                protocol_domain=domain,
-                priority=10,
-            ),
-        ]
-    )
-    registered = {protocol_player.player_id: protocol_player}
-    mock_mass.players.get_player = MagicMock(side_effect=lambda pid: registered.get(pid))
+    _, protocol = attach_mock(provider, protocol_id, domain, role=ProtocolRole.AUDIO, player=parent)
+    protocol._attr_available = available
+    protocol._attr_needs_setup = needs_setup
     parent._cache.clear()
-    return protocol_player
+    return protocol
+
+
+def _detach(mock_mass: MagicMock, player: Player, protocol_id: str, domain: str) -> None:
+    """Detach a protocol from a player, leaving the stored record of it behind."""
+    player.remove_protocol(protocol_id)
+    mock_mass.config.get_protocol_record = MagicMock(
+        return_value={"provider": domain, "role": ProtocolRole.AUDIO.value}
+    )
+    player._cache.clear()
 
 
 class TestPlaybackDomains:
@@ -79,14 +76,14 @@ class TestPlaybackDomains:
     def test_unavailable_native_player_reports_nothing(self, mock_mass: MagicMock) -> None:
         """Test that an offline native player no longer offers its own domain."""
         player = _make_native_player(mock_mass)
-        player._attr_available = False
+        _own(player)._attr_available = False
         player._cache.clear()
         assert player.playback_domains == set()
 
     def test_native_player_needing_setup_reports_nothing(self, mock_mass: MagicMock) -> None:
         """Test that a player that still needs setup cannot accept a stream."""
         player = _make_native_player(mock_mass)
-        player._attr_needs_setup = True
+        _own(player)._attr_needs_setup = True
         player._cache.clear()
         assert player.playback_domains == set()
 
@@ -108,42 +105,34 @@ class TestPlaybackDomains:
         _link_protocol(mock_mass, player, "ap_1", "airplay", available=True, needs_setup=True)
         assert player.playback_domains == {"sonos"}
 
-    def test_unregistered_linked_protocol_is_left_out(self, mock_mass: MagicMock) -> None:
-        """Test that a linked protocol without a live player is not reported."""
+    def test_detached_protocol_is_left_out(self, mock_mass: MagicMock) -> None:
+        """Test that a protocol of the player that is not attached is not reported."""
         player = _make_native_player(mock_mass)
         _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
-        mock_mass.players.get_player = MagicMock(return_value=None)
-        player._cache.clear()
+        _detach(mock_mass, player, "ap_1", "airplay")
         assert player.playback_domains == {"sonos"}
 
-    def test_wrapper_player_only_reports_linked_protocols(self, mock_mass: MagicMock) -> None:
-        """Test that a UniversalPlayer never contributes its own domain."""
-        provider = MockProvider("universal_player", instance_id="universal_player", mass=mock_mass)
-        player = MockPlayer(provider, "up_1", "Universal")
-        player._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
-        player._cache.clear()
-        _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
-        assert player.playback_domains == {"airplay"}
-
-    def test_protocol_endpoint_reports_own_domain(self, mock_mass: MagicMock) -> None:
-        """Test that a player that is itself a protocol endpoint reports its domain."""
+    def test_player_without_a_native_protocol_reports_its_audio_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a player that only has an audio protocol reports that protocol's domain."""
         provider = MockProvider("airplay", instance_id="airplay", mass=mock_mass)
-        player = MockPlayer(provider, "ap_1", "AirPlay", player_type=PlayerType.PROTOCOL)
-        player._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        player, protocol = attach_mock(provider, "ap_1", "AirPlay", role=ProtocolRole.AUDIO)
+        protocol._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
         player._cache.clear()
         assert player.playback_domains == {"airplay"}
 
-        player._attr_available = False
+        protocol._attr_available = False
         player._cache.clear()
         assert player.playback_domains == set()
 
     def test_recomputed_after_state_update(self, mock_mass: MagicMock) -> None:
         """Test that the cached value follows the protocol player going offline."""
         player = _make_native_player(mock_mass)
-        protocol_player = _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
+        protocol = _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
         assert player.playback_domains == {"sonos", "airplay"}
 
-        protocol_player._attr_available = False
+        protocol._attr_available = False
         player.update_state(signal_event=False)
         assert player.playback_domains == {"sonos"}
 
@@ -166,23 +155,23 @@ class TestGetLinkedProtocol:
     def test_reports_offline_protocol_player(self, mock_mass: MagicMock) -> None:
         """Test that an unchanged link stops claiming availability once its player drops."""
         player = _make_native_player(mock_mass)
-        protocol_player = _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
+        protocol = _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
 
-        protocol_player._attr_available = False
+        protocol._attr_available = False
         output_protocol = player.get_linked_protocol("ap_1")
         assert output_protocol is not None
         assert output_protocol.available is False
 
-    def test_unregistered_protocol_player_falls_back_to_domain(self, mock_mass: MagicMock) -> None:
-        """Test that a link without a live player reports the domain and no availability."""
+    def test_detached_protocol_stays_listed_by_its_domain(self, mock_mass: MagicMock) -> None:
+        """Test that a protocol that is not attached is no output to pick, but stays listed."""
         player = _make_native_player(mock_mass)
         _link_protocol(mock_mass, player, "ap_1", "airplay", available=True)
-        mock_mass.players.get_player = MagicMock(return_value=None)
+        _detach(mock_mass, player, "ap_1", "airplay")
 
-        output_protocol = player.get_linked_protocol("ap_1")
-        assert output_protocol is not None
-        assert output_protocol.name == "Airplay"
-        assert output_protocol.available is False
+        assert player.get_linked_protocol("ap_1") is None
+        listed = next(o for o in player._output_protocols if o.output_protocol_id == "ap_1")
+        assert listed.name == "Airplay"
+        assert listed.available is False
 
     def test_unknown_protocol_id_returns_none(self, mock_mass: MagicMock) -> None:
         """Test that an id that is not linked resolves to nothing."""

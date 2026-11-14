@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant.providers.dlna.player import DLNAPlayer
-from tests.common import MockProvider
+from tests.common import MockProvider, use_player_registry
 
 TEUFEL = "Lautsprecher Teufel GmbH"
 AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1"
@@ -56,37 +56,58 @@ def test_other_manufacturers_are_kept() -> None:
 
 
 async def test_setup_ignores_a_zone_renderer() -> None:
-    """Setup skips a zone renderer instead of registering it as a player."""
+    """Setup skips a zone renderer instead of attaching it as a protocol."""
     player = _player(TEUFEL, AV_TRANSPORT)
-    register = AsyncMock()
+    attach = AsyncMock()
     disconnect = AsyncMock()
-    delete_config = MagicMock()
+    remove_protocol = AsyncMock()
+    record = {"player_id": "pl0123456789ab", "provider": "dlna_test", "enabled": True}
     with (
         patch.object(player, "_device_connect", AsyncMock()),
         patch.object(player, "_device_disconnect", disconnect),
-        patch.object(player.mass.players, "register_or_update", register),
-        patch.object(player.mass.players, "delete_player_config", delete_config),
+        patch.object(player.mass.config, "get_protocol_record", MagicMock(return_value=record)),
+        patch.object(player.mass.players, "register", attach),
+        patch.object(player.mass.players, "remove_protocol", remove_protocol),
     ):
         assert await player.setup() is False
-    register.assert_not_called()
-    # it is never registered, so never unloaded: its event subscriptions end here
+    attach.assert_not_called()
+    # it is never attached, so never detached: its event subscriptions end here
     disconnect.assert_awaited_once()
-    # its stored config goes too, so an existing install stops restoring it as a player
-    delete_config.assert_called_once_with("uuid:dlna-player")
+    # its stored protocol goes too, so an existing install stops restoring it as a player
+    remove_protocol.assert_awaited_once_with("uuid:dlna-player")
+
+
+async def test_setup_ignores_a_zone_renderer_without_a_stored_config() -> None:
+    """A zone renderer with no stored config has nothing to clean up."""
+    player = _player(TEUFEL, AV_TRANSPORT)
+    remove_protocol = AsyncMock()
+    with (
+        patch.object(player, "_device_connect", AsyncMock()),
+        patch.object(player, "_device_disconnect", AsyncMock()),
+        patch.object(player.mass.config, "get_protocol_record", MagicMock(return_value=None)),
+        patch.object(player.mass.players, "remove_protocol", remove_protocol),
+    ):
+        assert await player.setup() is False
+    remove_protocol.assert_not_called()
 
 
 async def test_setup_keeps_a_speaker_renderer_config() -> None:
-    """A speaker's own renderer is set up as usual and its config is left alone."""
+    """A speaker's own renderer is attached as usual and its config is left alone."""
     player = _player(TEUFEL, AV_TRANSPORT, RAUMFELD_GENERATOR)
-    delete_config = MagicMock()
+    registry = use_player_registry(player.mass)._protocols
+    attach = AsyncMock(
+        side_effect=lambda protocol: registry.update({protocol.protocol_id: protocol})
+    )
+    remove_protocol = AsyncMock()
     disconnect = AsyncMock()
     with (
         patch.object(player, "_device_connect", AsyncMock()),
         patch.object(player, "_device_disconnect", disconnect),
         patch.object(player, "set_static_attributes", MagicMock()),
-        patch.object(player.mass.players, "register_or_update", AsyncMock()),
-        patch.object(player.mass.players, "delete_player_config", delete_config),
+        patch.object(player.mass.players, "register", attach),
+        patch.object(player.mass.players, "remove_protocol", remove_protocol),
     ):
         assert await player.setup() is True
-    delete_config.assert_not_called()
+    attach.assert_awaited_once_with(player)
+    remove_protocol.assert_not_called()
     disconnect.assert_not_awaited()

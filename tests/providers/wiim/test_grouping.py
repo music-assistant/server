@@ -14,7 +14,7 @@ from music_assistant.providers.wiim.constants import BACKEND_GENERIC, BACKEND_OF
 from music_assistant.providers.wiim.grouping import NativeGroupCoordinator, NativeGroupRole
 
 # Two verified LinkPlay identities: the leader and a follower whose 24-char HTTP
-# slave uuid maps to the follower's UDN-derived player id.
+# slave uuid maps to the follower's UDN-derived protocol id.
 LEADER_ID = "wiim_uuid:11111111-2222-3333-4444-555555555555"
 LEADER_MASTER_UUID = "11111111-2222-3333-4444-555555555555"
 OTHER_MASTER_UUID = "99999999-8888-7777-6666-555555555555"
@@ -96,7 +96,7 @@ def _make_player(
 ) -> MagicMock:
     """Build a fake native player exposing exactly the coordinator's needed surface."""
     player = MagicMock()
-    player.player_id = player_id
+    player.protocol_id = player_id
     player.linkplay_backend = backend
     player.native_available = available
     player.native_ip = ip
@@ -129,14 +129,14 @@ def _fast_membership_verify(monkeypatch: pytest.MonkeyPatch) -> None:
 def _make_coordinator(*players: MagicMock) -> tuple[NativeGroupCoordinator, MagicMock]:
     """Create a coordinator over a provider whose player list is the given players."""
     provider = MagicMock()
-    provider.players = list(players)
+    provider.protocols = list(players)
     provider.mass = MagicMock()
     provider.logger = MagicMock()
     provider.wiim_controller = MagicMock(
         async_join_group=AsyncMock(), async_ungroup_device=AsyncMock()
     )
-    by_id = {player.player_id: player for player in players}
-    provider.mass.players.get_player.side_effect = by_id.get
+    by_id = {player.protocol_id: player for player in players}
+    provider.get_protocol = MagicMock(side_effect=by_id.get)
     return NativeGroupCoordinator(provider), provider
 
 
@@ -209,16 +209,19 @@ class TestTopologyResolution:
         coordinator, _ = _make_coordinator(old_leader, new_leader, follower)
 
         # old leader read the follower first; the new leader read it more recently
-        coordinator.set_leader_slaves(old_leader.player_id, [FOLLOWER_HTTP_UUID])
-        coordinator.set_leader_slaves(new_leader.player_id, [FOLLOWER_HTTP_UUID])
-        coordinator._refreshed_at[old_leader.player_id] = 100.0
-        coordinator._refreshed_at[new_leader.player_id] = 200.0
+        coordinator.set_leader_slaves(old_leader.protocol_id, [FOLLOWER_HTTP_UUID])
+        coordinator.set_leader_slaves(new_leader.protocol_id, [FOLLOWER_HTTP_UUID])
+        coordinator._refreshed_at[old_leader.protocol_id] = 100.0
+        coordinator._refreshed_at[new_leader.protocol_id] = 200.0
         await coordinator.reconcile()
 
-        assert coordinator.leader_of(FOLLOWER_ID) == new_leader.player_id
-        assert coordinator.members_of(new_leader.player_id) == [new_leader.player_id, FOLLOWER_ID]
-        assert coordinator.members_of(old_leader.player_id) == []
-        assert coordinator.role_of(old_leader.player_id) == NativeGroupRole.STANDALONE
+        assert coordinator.leader_of(FOLLOWER_ID) == new_leader.protocol_id
+        assert coordinator.members_of(new_leader.protocol_id) == [
+            new_leader.protocol_id,
+            FOLLOWER_ID,
+        ]
+        assert coordinator.members_of(old_leader.protocol_id) == []
+        assert coordinator.role_of(old_leader.protocol_id) == NativeGroupRole.STANDALONE
 
 
 class TestReconcileNotifications:
@@ -369,7 +372,7 @@ class TestSelfHealing:
         assert coordinator.members_of(LEADER_ID) == []  # follower not registered yet
 
         follower = _make_player(FOLLOWER_ID, BACKEND_GENERIC)
-        provider.players.append(follower)
+        provider.protocols.append(follower)
         await coordinator.reconcile()
 
         assert coordinator.members_of(LEADER_ID) == [LEADER_ID, FOLLOWER_ID]
@@ -1014,7 +1017,7 @@ class TestMixedGrouping:
 
         # the leader is unregistered before the member's next live read; the recorded
         # self-follower role keeps the member suppressed rather than groupable
-        provider.players.remove(leader)
+        provider.protocols.remove(leader)
         coordinator.unregister(LEADER_ID)
         await coordinator.reconcile()
 
@@ -1142,8 +1145,8 @@ class TestSetMembersLifecycle:
         """A grouping target that is not a registered native player fails typed."""
         leader = _make_player(LEADER_ID, BACKEND_OFFICIAL)
         coordinator, provider = _make_coordinator(leader)
-        provider.mass.players.get_player.side_effect = None
-        provider.mass.players.get_player.return_value = None
+        provider.get_protocol.side_effect = None
+        provider.get_protocol.return_value = None
 
         with pytest.raises(PlayerCommandFailed):
             await coordinator.set_members(leader, ["wiim_uuid:ghost"], None)
@@ -1160,7 +1163,7 @@ class TestRegistrationCleanup:
         coordinator.set_leader_slaves(LEADER_ID, [FOLLOWER_HTTP_UUID])
         await coordinator.reconcile()
 
-        provider.players.remove(leader)
+        provider.protocols.remove(leader)
         coordinator.unregister(LEADER_ID)
         await coordinator.reconcile()
 
@@ -1174,7 +1177,7 @@ class TestRegistrationCleanup:
         coordinator.set_leader_slaves(LEADER_ID, [FOLLOWER_HTTP_UUID])
         await coordinator.reconcile()
 
-        provider.players.remove(leader)  # gone, but no explicit unregister
+        provider.protocols.remove(leader)  # gone, but no explicit unregister
         await coordinator.reconcile()
 
         assert LEADER_ID not in coordinator._raw_slaves  # pruned
@@ -1192,7 +1195,7 @@ class TestRegistrationCleanup:
         coordinator, provider = _make_coordinator(leader, follower)
         # a fast unregister/re-register replaced the player instance during the read
         replacement = _make_player(LEADER_ID, BACKEND_OFFICIAL)
-        provider.mass.players.get_player.side_effect = {
+        provider.get_protocol.side_effect = {
             LEADER_ID: replacement,
             FOLLOWER_ID: follower,
         }.get

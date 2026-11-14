@@ -10,6 +10,9 @@ from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.hass_players.player import HomeAssistantPlayer
 
+# the real server with fake providers, for the tests of the provider's lifecycle
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 BASE_URL = "http://10.0.0.5:8097"
 PLAYER_ID = "media_player.bedroom"
 
@@ -24,10 +27,11 @@ def player() -> HomeAssistantPlayer:
     mass.streams.resolve_stream_url = AsyncMock(return_value=f"{BASE_URL}/flow/s1/q1/i1/x.mp3")
     player.mass = mass
     player.logger = logging.getLogger("test.hass_players.player")
-    player._player_id = PLAYER_ID
+    player._protocol_id = PLAYER_ID
+    player._player = None
     player._provider = MagicMock()
     player._provider.mass = mass
-    player._extra_data = {}
+    player._entity_data = {}
     player.hass = MagicMock()
     player.hass.call_service = AsyncMock()
     player._hass_attributes = {}

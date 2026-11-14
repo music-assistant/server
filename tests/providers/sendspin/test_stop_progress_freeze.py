@@ -71,7 +71,7 @@ async def test_session_is_cancelled_even_if_the_group_stop_fails() -> None:
 async def test_stop_keeps_a_parked_item_frozen() -> None:
     """A stop that leaves current media keeps its metadata frozen, but no beats."""
     mock = _player_mock()
-    mock.state.current_media = PlayerMedia(uri="track-1", queue_item_id="item-1")
+    mock._player_media = PlayerMedia(uri="track-1", queue_item_id="item-1")
     mock._published_item = ("track-1", "item-1")
 
     await SendspinPlayer.stop(mock)
@@ -86,14 +86,14 @@ async def test_stop_republishes_when_the_display_shows_another_item() -> None:
     """A stop that cancelled the push of a new item publishes that item."""
     mock = _player_mock()
     mock.synced_to = None
-    mock.state.current_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
+    mock._player_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
     mock._published_item = ("track-1", "item-1")
 
     await SendspinPlayer.stop(mock)
 
     mock.mass.create_task.assert_called_once()
     assert (
-        mock.mass.create_task.call_args.kwargs["task_id"] == f"sendspin_metadata_{mock.player_id}"
+        mock.mass.create_task.call_args.kwargs["task_id"] == f"sendspin_metadata_{mock.protocol_id}"
     )
 
 
@@ -108,7 +108,7 @@ async def test_stop_republishes_nothing_where_nothing_was_shown(
     """A synced member or an empty display gets no metadata from the stop."""
     mock = _player_mock()
     mock.synced_to = synced_to
-    mock.state.current_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
+    mock._player_media = PlayerMedia(uri="track-2", queue_item_id="item-2")
     mock._published_item = published_item
 
     await SendspinPlayer.stop(mock)
@@ -119,7 +119,7 @@ async def test_stop_republishes_nothing_where_nothing_was_shown(
 async def test_stop_without_current_media_clears_metadata() -> None:
     """Nothing left to show clears the metadata."""
     mock = _player_mock()
-    mock.state.current_media = None
+    mock._player_media = None
 
     await SendspinPlayer.stop(mock)
 
