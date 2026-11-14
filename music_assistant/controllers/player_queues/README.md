@@ -136,7 +136,7 @@ All live state lives in memory on the controller instance in one `PlayerQueueDat
 keyed by `queue_id` (`state.py`). Each record wraps the wire `PlayerQueue` and holds the rest of the
 server-side state around it: the ordered `QueueItem` list, the full media items behind the dynamic
 `sources`, the enqueued parent items and the owning user, plus the runtime-only fields — a
-previous-state snapshot, a transitioning flag, an in-progress play-action refcount, a
+previous-state snapshot, a transitioning flag, a paused flag, an in-progress play-action refcount, a
 last-counted-play marker, the flow-buffer-completed session, and the
 current stream session's id, flow play-log and next-enqueued item id.
 
@@ -195,6 +195,14 @@ stream-time). It diffs the incoming state against the previous-state snapshot to
 **Flow mode** is the special case here: instead of one stream per track, the whole queue is a
 single continuous stream of concatenated items, so the player's cumulative stream index and
 position must be mapped back to a per-track index and per-track elapsed time.
+
+A queue whose player goes idle on its last item, with that item played (or, in flow mode,
+streamed) to its end, is taken for ended 5 seconds later, unless it plays again by then. That
+check runs in a task of its own and holds no lock, so before it reads the queue it waits for the
+command that holds the player's playback lock: a play action that is still starting the queue is
+done first, and has the queue. A pause is never that end: a queue that was paused stays where it
+was paused until it plays again, also when the pause left its player idle (a player without a
+pause of its own is stopped, and a paused player is stopped once the pause timeout passes).
 
 Data flow: player state → diff against the previous snapshot → updated `PlayerQueue` fields →
 signalled events + cache write.

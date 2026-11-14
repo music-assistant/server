@@ -1057,6 +1057,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_active = queue.active
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
+            self._queue_data[queue_id].paused = True
         if (
             player := self.mass.players.get_player(queue_id)
         ) is not None and player.offline_by_power_control:

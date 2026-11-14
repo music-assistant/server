@@ -75,6 +75,9 @@ class PlayerQueueData:
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
     transitioning: bool = False
+    # the queue was paused and has not played since. A pause can leave its player idle (one that
+    # stops to pause, one stopped once the pause timeout passed), which is not the end of the queue
+    paused: bool = False
     play_action_refcount: int = 0
     # skip seconds awaiting the playback lock and the item they apply to; a burst of presses
     # is merged into one seek

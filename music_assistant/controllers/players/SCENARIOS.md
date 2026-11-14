@@ -45,6 +45,7 @@ once and that every test it names exists.
 - [Grouping](#grouping) (GROUP)
 - [Where playback goes](#where-playback-goes) (OUTPUT)
 - [Volume](#volume) (VOLUME)
+- [A pause and the end of a queue](#a-pause-and-the-end-of-a-queue) (PAUSE)
 
 ## A device appears
 
@@ -1520,3 +1521,49 @@ a volume command reaches it.
 - End-to-end: **possible with** a Sendspin client of the lab that opens a second connection right
   after its first one, checked after a restart of the server.
 - Proven by: `tests/providers/sendspin/test_reported_volume.py::test_a_device_keeps_its_reported_volume_when_a_second_connection_replaces_the_first`
+
+## A pause and the end of a queue
+
+A queue whose player stops on its last item is taken for ended 5 s later: it is parked on its
+last item and a play starts it over. A pause is not that end, also when it stops the player. In
+the examples the Kitchen speaker is a Sendspin speaker without a pause of its own, so a pause
+stops it, and it has the whole last track of its queue in its buffer.
+
+### PAUSE-1 · A pause on a player that can not pause is not the end of its queue
+
+The Kitchen speaker is paused 5 s into the last track of its queue. The speaker stops and the
+queue is idle on that track at 5 s. It still is 5 s later, and a minute later.
+
+- End-to-end: **yes**. The `elapsed_tracks_pause` check of the lab on its Sendspin player.
+- Proven by: `test_paused_queue.py::test_a_pause_on_a_player_that_can_not_pause_is_not_the_end_of_its_queue`
+
+### PAUSE-2 · A queue paused on a player that can not pause plays on from there
+
+The Kitchen speaker is paused 5 s into the last track of its queue and resumed 4.5 s, 5 s, 5.5 s
+or 40 s later. The track plays on from 5 s. Once it has played to its end, the queue is taken
+for ended after 5 s as any other.
+
+- End-to-end: **yes**. The `elapsed_tracks_pause` check of the lab on its Sendspin player, which
+  resumes 5 s after the pause.
+- Proven by: `test_paused_queue.py::test_a_queue_paused_on_a_player_that_can_not_pause_plays_on_from_there`
+
+### PAUSE-3 · A paused queue that is stopped at the pause timeout is not ended
+
+A speaker with a pause of its own is paused 5 s into the last track of its queue and stays
+paused. After the pause timeout of 30 s the server stops it. The queue is idle on that track at
+5 s, and a resume plays the track on from there.
+
+- End-to-end: **possible with** a player of the lab that has a pause of its own and plays in flow
+  mode, paused for longer than the pause timeout.
+- Proven by: `test_paused_queue.py::test_a_paused_queue_that_is_stopped_at_the_pause_timeout_is_not_ended`
+
+### PAUSE-4 · A play that starts as an ended queue is settled plays
+
+The Kitchen speaker has played its queue to the end. Half a second before the queue is taken for
+ended, a resume, a play of another track or a play of the first item starts, and its music
+source takes a second to deliver audio. The play starts the speaker once, as soon as the audio
+is there, and the queue is not taken for ended.
+
+- End-to-end: **no**: it needs a play that starts within the few milliseconds in which the
+  server takes the queue for ended.
+- Proven by: `test_paused_queue.py::test_a_play_that_starts_as_an_ended_queue_is_settled_plays`

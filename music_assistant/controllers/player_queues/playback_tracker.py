@@ -308,8 +308,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # a stopped queue as one that ran out of items
         self._handle_sleep_timer(queue, prev_state, new_state)
 
-        # check if we need to clear the queue if we reached the end
-        if "state" in changed_keys and queue.state == PlaybackState.IDLE:
+        if "state" in changed_keys and queue.state == PlaybackState.PLAYING:
+            # playing again ends a pause
+            queue_data.paused = False
+        # check if we need to clear the queue if we reached the end, which a queue that went
+        # idle for a pause did not
+        if "state" in changed_keys and queue.state == PlaybackState.IDLE and not queue_data.paused:
             self._handle_end_of_queue(queue, prev_state, new_state)
 
         # refill the queue (dynamic mode or autoplay) when running low on tracks, and keep the
@@ -545,6 +549,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             player = self.mass.players.get_player(queue.queue_id)
             return player is not None and player.offline_by_power_control
 
+        async def _await_turn() -> None:
+            # a play action that is still starting the queue holds its player, and the queue
+            # only follows its player once that action is done
+            async with self.mass.players.get_group_and_player_lock(queue.queue_id):
+                pass
+
         async def _settle_or_resume_delayed() -> None:
             if sleep_timer_stopped_target is not None:
                 # the sleep timer ended playback here: nothing resumes or refills the queue
@@ -552,6 +562,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 return
             for _ in range(5):
                 await asyncio.sleep(1)
+                await _await_turn()
                 if self._queue_data.get(queue.queue_id) is not queue_data:
                     # the queue was removed or re-registered while we waited
                     return
@@ -593,8 +604,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     dynamic_tracks = await without_disliked_tracks(
                         self.mass, queue_data.userid, dynamic_tracks
                     )
+                    await _await_turn()
                     if self._queue_data.get(queue.queue_id) is not queue_data or _switched_off():
                         # the queue was removed or re-registered while tracks were fetched
+                        return
+                    if queue.state != PlaybackState.IDLE:
+                        # a play action started the queue while tracks were fetched
                         return
                     if dynamic_tracks:
                         queue_items = [
@@ -630,8 +645,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         queue.display_name,
                         err,
                     )
+            await _await_turn()
             if self._queue_data.get(queue.queue_id) is not queue_data:
                 # the queue was removed or re-registered while the source was fetched
+                return
+            if queue.state != PlaybackState.IDLE:
+                # a play action started the queue while the source was fetched
                 return
             self._finish_queue(queue, prev_item)
 
