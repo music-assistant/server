@@ -136,6 +136,14 @@ def _entry(
             id="version not listed, withdrawn",
         ),
         pytest.param(
+            HASH,
+            _entry(versions={NEWER: HASH}, blocked_versions={NEWER: "Leaks the password"}),
+            True,
+            True,
+            Decision(Verdict.NOT_FOR_THIS_VERSION),
+            id="version not listed, latest blocked",
+        ),
+        pytest.param(
             "bbbb", _entry(), True, True, Decision(Verdict.REINSTALL), id="folder changed"
         ),
         pytest.param(None, _entry(), True, True, Decision(Verdict.REINSTALL), id="no folder"),
@@ -155,6 +163,18 @@ def _entry(
             True,
             Decision(Verdict.REINSTALL),
             id="update on offer, folder changed",
+        ),
+        pytest.param(
+            HASH,
+            _entry(
+                versions={VERSION: HASH, NEWER: "bbbb"},
+                latest=NEWER,
+                blocked_versions={NEWER: "Leaks the password"},
+            ),
+            True,
+            True,
+            Decision(Verdict.LOAD),
+            id="update to a blocked version",
         ),
         pytest.param(
             HASH,

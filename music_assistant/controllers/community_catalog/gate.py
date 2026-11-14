@@ -85,19 +85,17 @@ def evaluate(
         return Decision(Verdict.CATALOG_UNREACHABLE)
     if entry is None:
         return Decision(Verdict.NOT_LISTED)
-    latest = entry.latest
-    offered = (
-        entry.status == IndexStatus.LISTED
-        and latest in entry.versions
-        and latest != installed.failed_version
-    )
+    offered = entry.offered_version
+    if offered == installed.failed_version:
+        # a version the server went back from is not tried again
+        offered = None
     release = entry.versions.get(installed.version)
     if release is None or release.content_hash != installed.content_hash:
         if offered:
-            return Decision(Verdict.SWITCH, version=latest)
+            return Decision(Verdict.SWITCH, version=offered)
         return Decision(Verdict.NOT_FOR_THIS_VERSION)
     if folder_hash != installed.content_hash:
         return Decision(Verdict.REINSTALL)
-    if offered and latest != installed.version:
-        return Decision(Verdict.LOAD, version=latest)
+    if offered and offered != installed.version:
+        return Decision(Verdict.LOAD, version=offered)
     return Decision(Verdict.LOAD)
