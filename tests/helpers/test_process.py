@@ -86,6 +86,18 @@ async def test_communicate_releases_streams(timeout: bool) -> None:
     assert await asyncio.wait_for(proc.read_stderr(), 0.1) == b""
 
 
+async def test_communicate_after_the_process_exited() -> None:
+    """A process that exited before communicate still hands over its output."""
+    args = [sys.executable, "-c", "print('done')"]
+    async with AsyncProcess(args, stdin=False, stdout=True, stderr=True) as proc:
+        assert proc.proc is not None
+        await asyncio.wait_for(proc.proc.wait(), 5)
+        assert await proc.communicate(timeout=5) == (b"done\n", b"")
+
+    with pytest.raises(RuntimeError):
+        await proc.communicate()
+
+
 @pytest.fixture(name="piped_process")
 async def piped_process_fixture() -> AsyncGenerator[tuple[AsyncProcess, int]]:
     """
