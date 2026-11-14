@@ -36,7 +36,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.provider_access")
 _UNREADABLE_ACCESS = ProviderAccess(sharing=ProviderSharing.PRIVATE)
 
 # the media types a member who may not get explicit content is kept from by their own flag;
-# a podcast episode follows its podcast
+# a podcast episode goes by its own flag and by its podcast's
 EXPLICIT_FLAGGED_MEDIA_TYPES = frozenset(
     {MediaType.TRACK, MediaType.ALBUM, MediaType.PODCAST, MediaType.AUDIOBOOK}
 )
@@ -401,8 +401,8 @@ def explicit_allowed_by_flag(item: object, user: User | None) -> bool:
     """
     Return whether the user may see and play the item, judged by the flags it carries.
 
-    The part of :func:`explicit_allowed` that needs no look up: a library reference, or an
-    episode that only maps its podcast, counts as allowed here.
+    The part of :func:`explicit_allowed` that needs no look up: a library reference, or the
+    podcast an episode only maps, counts as allowed here.
 
     :param item: A media item, item mapping or browse folder.
     :param user: The user the item is for, None for no restriction.
@@ -411,8 +411,10 @@ def explicit_allowed_by_flag(item: object, user: User | None) -> bool:
         return True
     if getattr(item, "media_type", None) in EXPLICIT_FLAGGED_MEDIA_TYPES:
         return not _flagged_explicit(item)
-    if isinstance(item, PodcastEpisode) and isinstance(item.podcast, Podcast):
-        return not _flagged_explicit(item.podcast)
+    if isinstance(item, PodcastEpisode):
+        if _flagged_explicit(item):
+            return False
+        return not (isinstance(item.podcast, Podcast) and _flagged_explicit(item.podcast))
     return True
 
 
@@ -425,8 +427,9 @@ async def explicit_allowed(
     """
     Return whether the user may see and play the item, as far as explicit content goes.
 
-    Tracks, albums, podcasts and audiobooks go by their own flag, a podcast episode by its
-    podcast. An item without a flag, or one that can not be resolved, counts as allowed.
+    Tracks, albums, podcasts and audiobooks go by their own flag, a podcast episode by its own
+    flag and by its podcast's. An item without a flag, or one that can not be resolved, counts
+    as allowed.
 
     :param mass: The MusicAssistant instance.
     :param item: A media item, item mapping or browse folder.
@@ -445,6 +448,8 @@ async def explicit_allowed(
         except MusicAssistantError:
             return True
     if isinstance(item, PodcastEpisode) and isinstance(item.podcast, ItemMapping):
+        if _flagged_explicit(item):
+            return False
         return not await _podcast_explicit(mass, item, podcasts if podcasts is not None else {})
     return explicit_allowed_by_flag(item, user)
 

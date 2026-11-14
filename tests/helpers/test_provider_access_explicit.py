@@ -60,8 +60,10 @@ def _podcast(explicit: bool | None) -> Podcast:
     )
 
 
-def _episode(item_id: str, podcast: Podcast | ItemMapping) -> PodcastEpisode:
-    """Return an episode of the given podcast."""
+def _episode(
+    item_id: str, podcast: Podcast | ItemMapping, explicit: bool | None = None
+) -> PodcastEpisode:
+    """Return an episode of the given podcast, with the given explicit flag of its own."""
     return PodcastEpisode(
         item_id=item_id,
         provider=PROVIDER,
@@ -69,6 +71,7 @@ def _episode(item_id: str, podcast: Podcast | ItemMapping) -> PodcastEpisode:
         podcast=podcast,
         position=1,
         duration=600,
+        metadata=MediaItemMetadata(explicit=explicit),
         provider_mappings=_mappings(item_id),
     )
 
@@ -150,6 +153,18 @@ async def test_an_episode_follows_its_full_podcast() -> None:
 
     assert not await explicit_allowed(mass, _episode("ep", _podcast(True)), KID)
     assert await explicit_allowed(mass, _episode("ep", _podcast(False)), KID)
+    mass.music.podcasts.get.assert_not_awaited()
+
+
+async def test_an_episode_flagged_explicit_itself_is_kept_from_the_member() -> None:
+    """An explicit episode of a clean podcast is kept from the member, without a look up."""
+    mass = _mass(podcast=_podcast(False))
+
+    for podcast in (_podcast(False), PODCAST_MAPPING):
+        episode = _episode("ep", podcast, explicit=True)
+        assert not await explicit_allowed(mass, episode, KID)
+        assert not explicit_allowed_by_flag(episode, KID)
+        assert await explicit_allowed(mass, episode, PARENT)
     mass.music.podcasts.get.assert_not_awaited()
 
 
