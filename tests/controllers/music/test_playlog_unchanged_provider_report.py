@@ -114,3 +114,43 @@ async def test_provider_report_keeps_its_time(
         assert abs(row["timestamp"] - utc_timestamp()) < 60
     else:
         assert row["timestamp"] == expected_timestamp
+
+
+@pytest.mark.parametrize(
+    ("progress_timestamp", "expected_row"), [(1000, (120, 2000)), (3000, (300, 3000))]
+)
+async def test_older_provider_report_keeps_newer_progress(
+    mass: MusicAssistant, progress_timestamp: int, expected_row: tuple[int, int]
+) -> None:
+    """A changed progress the provider recorded before the stored one does not replace it."""
+    listener = await mass.webserver.auth.create_user(f"older{progress_timestamp}")
+    audiobook = await _add_audiobook(mass, f"older_{progress_timestamp}")
+    row_key = {
+        "item_id": audiobook.item_id,
+        "provider": "library",
+        "media_type": MediaType.AUDIOBOOK.value,
+        "userid": listener.user_id,
+    }
+    await mass.music.database.insert(
+        DB_TABLE_MEDIA_PROGRESS,
+        {
+            **row_key,
+            "name": "Book",
+            "seconds_played": 120,
+            "fully_played": False,
+            "timestamp": 2000,
+        },
+    )
+
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=False,
+        seconds_played=300,
+        user_initiated=False,
+        provider_instance_id=PROVIDER_INSTANCE,
+        progress_timestamp=progress_timestamp,
+    )
+
+    row = await mass.music.database.get_row(DB_TABLE_MEDIA_PROGRESS, row_key)
+    assert row is not None
+    assert (row["seconds_played"], row["timestamp"]) == expected_row

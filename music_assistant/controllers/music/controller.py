@@ -1981,7 +1981,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(  # noqa: PLR0913
+    async def mark_item_played(  # noqa: PLR0913, PLR0915
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
@@ -2014,7 +2014,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param provider_instance_id: The provider instance reporting the play, whose user it is.
             A report equal to the stored progress keeps its timestamp.
         :param progress_timestamp: When the progress was made (epoch seconds), as the reporting
-            provider recorded it. Defaults to now; a time in the future counts as now.
+            provider recorded it. Defaults to now; a time in the future counts as now. A report
+            older than the stored progress of a user leaves that user's progress alone.
         """
         timestamp = min(progress_timestamp or float("inf"), utc_timestamp())
         # we deliberately skip one-off items: sound effects and live inputs whoever owns
@@ -2078,35 +2079,40 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # the column default of 1.0 for a brand new row.
             if playback_speed is not None:
                 params["playback_speed"] = playback_speed
+            playlog_written = False
             for user_id in user_ids:
                 params["userid"] = user_id
                 params["timestamp"] = timestamp
-                # provider syncs repeat unchanged progress, which must not stamp it as just
-                # played: the timestamp orders the in progress items
-                if (
-                    provider_instance_id
-                    and (
-                        row := await self.database.get_row(
-                            DB_TABLE_MEDIA_PROGRESS,
-                            {key: params[key] for key in PLAYLOG_CONFLICT_KEYS},
-                        )
+                if provider_instance_id and (
+                    row := await self.database.get_row(
+                        DB_TABLE_MEDIA_PROGRESS,
+                        {key: params[key] for key in PLAYLOG_CONFLICT_KEYS},
                     )
-                    and bool(row["fully_played"]) == fully_played
-                    and row["seconds_played"] == seconds_played
                 ):
-                    params["timestamp"] = row["timestamp"]
+                    if (
+                        bool(row["fully_played"]) == fully_played
+                        and row["seconds_played"] == seconds_played
+                    ):
+                        # provider syncs repeat unchanged progress, which must not stamp it as
+                        # just played: the timestamp orders the in progress items
+                        params["timestamp"] = row["timestamp"]
+                    elif progress_timestamp is not None and row["timestamp"] > timestamp:
+                        # the stored progress is newer than the one the provider reports
+                        continue
                 recorded_play = await self._record_completed_play(
                     params, user_is_resolved=user is not None
                 )
                 await self._upsert_playlog(params)
                 play_history_written = recorded_play or play_history_written
+                playlog_written = True
             await self.database.commit()
-            self._signal_playlog_updated(
-                reference,
-                fully_played=fully_played,
-                seconds_played=seconds_played or 0,
-                userid=user.user_id if user else None,
-            )
+            if playlog_written:
+                self._signal_playlog_updated(
+                    reference,
+                    fully_played=fully_played,
+                    seconds_played=seconds_played or 0,
+                    userid=user.user_id if user else None,
+                )
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
