@@ -1103,13 +1103,14 @@ def test_a_group_left_on_a_protocol_regroups_natively_at_a_fresh_start() -> None
     assert plan.progress is None
 
 
-@pytest.mark.parametrize("why", ["preferred", "unavailable", "synced"])
+@pytest.mark.parametrize("why", ["preferred", "not_playable", "synced"])
 def test_a_group_that_still_needs_its_protocol_stays(why: str) -> None:
-    """A preferred bridge, a member away, or a synced protocol leave the group alone."""
+    """A preferred bridge, a member that can not play, or a synced protocol leave the group alone."""
     world = _World()
     _left_on_bridge(world, preferred="airplay_a" if why == "preferred" else None)
-    if why == "unavailable":
-        world.players["b"] = replace(world.players["b"], available=False)
+    if why == "not_playable":
+        # away, or still to be set up
+        world.players["b"] = replace(world.players["b"], available_for_playback=False)
     if why == "synced":
         world.protocols["airplay_a"] = replace(world.protocols["airplay_a"], synced_to="airplay_z")
     plan = _plan(world, ChangeKind.REGROUP_FOR_START, "a")

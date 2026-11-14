@@ -524,10 +524,8 @@ class UniversalGroupPlayer(PlayerProtocol):
         self._attr_group_members = []
         for static_group_member in self._attr_static_group_members:
             if (
-                (member_player := self.mass.players.get_player(static_group_member))
-                and member_player.available
-                and member_player.enabled
-            ):
+                member_player := self.mass.players.get_player(static_group_member)
+            ) and member_player.available_for_playback:
                 self._attr_group_members.append(static_group_member)
         # ensure each member is free of any prior group/sync allegiance and ready to play
         group_player = self._group_player

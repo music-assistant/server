@@ -321,6 +321,21 @@ class TestPowerlessLifecycle:
         # power command was NOT used to capture the members
         mass.players.cmd_power.assert_not_awaited()
 
+    async def test_a_member_that_still_needs_setup_is_not_captured(self) -> None:
+        """A device that answers but still has to be set up can not take the stream of the group."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        ugp._attr_static_group_members = ["m1", "unpaired"]
+        member = _make_member(mass, "m1")
+        unpaired = _make_member(mass, "unpaired")
+        assert unpaired.own_protocol is not None
+        unpaired.own_protocol._attr_needs_setup = True
+        _group_members_of(mass, member)
+
+        await ugp._capture_members()
+
+        assert ugp._attr_group_members == ["m1"]
+
     async def test_play_media_releases_a_member_from_another_group(self) -> None:
         """A member another dynamic group holds is taken out of it through the controller."""
         mass = _make_mock_mass()

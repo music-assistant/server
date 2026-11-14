@@ -63,7 +63,7 @@ def _controller(resolved: Any = None) -> tuple[Any, MagicMock, MagicMock]:
     player = MagicMock()
     player.player_id = PLAYER_ID
     player.display_name = "Player 1"
-    player.available = True
+    player.available_for_playback = True
     player.offline_by_power_control = False
     player.state.active_source = None
     player.state.active_group = None
@@ -508,7 +508,7 @@ async def test_cmd_stop_locks_the_redirected_playback_owner() -> None:
     group_id = "group_1"
     group = MagicMock()
     group.player_id = group_id
-    group.available = True
+    group.available_for_playback = True
     group.state.active_group = None
     group.state.synced_to = None
     controller._players[group_id] = group

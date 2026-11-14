@@ -3095,7 +3095,7 @@ class TestOfflinePowerControl:
         power_on.assert_awaited_once()
         # it does not drop out of sight while it starts up
         assert state_while_starting == [(True, True)]
-        assert player.available is True
+        assert player._reachable is True
         assert not player.power_on_in_progress
         assert player.state.available is True
         assert player.state.powered is True
@@ -3115,7 +3115,7 @@ class TestOfflinePowerControl:
 
         online_player = await controller._power_on_switched_off_player("player_1")
 
-        assert online_player.available is True
+        assert online_player._reachable is True
         assert control.power_state is True
         online_player.update_state(signal_event=False)
         assert online_player.state.powered is True
@@ -3125,7 +3125,7 @@ class TestOfflinePowerControl:
         controller, player, _protocol, _control = self._setup(mock_mass, auto_play=True)
         online_at_resume: list[bool] = []
         resume = cast("AsyncMock", mock_mass.player_queues.resume)
-        resume.side_effect = lambda _queue_id: online_at_resume.append(player.available)
+        resume.side_effect = lambda _queue_id: online_at_resume.append(player._reachable)
 
         await controller.cmd_power("player_1", True)
 
@@ -3198,7 +3198,7 @@ class TestOfflinePowerControl:
         setattr(
             controller,
             handler,
-            AsyncMock(side_effect=lambda *_args: online_at_handler.append(player.available)),
+            AsyncMock(side_effect=lambda *_args: online_at_handler.append(player._reachable)),
         )
 
         await getattr(controller, command)("player_1", argument)
@@ -3218,7 +3218,7 @@ class TestOfflinePowerControl:
             setattr(
                 controller,
                 handler,
-                AsyncMock(side_effect=lambda *_args: online_at_handler.append(player.available)),
+                AsyncMock(side_effect=lambda *_args: online_at_handler.append(player._reachable)),
             )
 
         await asyncio.gather(
@@ -3519,7 +3519,7 @@ class TestOfflinePowerControl:
 
         await controller.cmd_power("player_1", True)
 
-        assert player.available is True
+        assert player._reachable is True
 
     async def test_play_pause_on_a_player_cut_off_mid_song_powers_it_on_and_plays(
         self, mock_mass: MagicMock
@@ -3591,7 +3591,7 @@ class TestOfflinePowerControl:
         controller.get_announcement_volume = MagicMock(return_value=None)  # type: ignore[method-assign]
         player = controller._players["player_1"]
         controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
-            side_effect=lambda *_args: steps.append(f"play (online: {player.available})")
+            side_effect=lambda *_args: steps.append(f"play (online: {player._reachable})")
         )
 
     @pytest.mark.usefixtures("running_background_tasks")

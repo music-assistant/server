@@ -342,7 +342,7 @@ class TestOfflineByPowerControl:
         player._config.enabled = False
         player._cache.clear()
 
-        assert player.available is True
+        assert player._reachable is True
         assert player.available_for_playback is False
 
 

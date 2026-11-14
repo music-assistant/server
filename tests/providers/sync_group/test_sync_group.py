@@ -1200,6 +1200,19 @@ class TestSetMembersDoesNotRegisterIncompatible:
         # but _handle_set_members on the leader is not called (no leader yet)
         mass.players._handle_set_members.assert_not_awaited()
 
+    async def test_member_that_still_needs_setup_is_not_added(self) -> None:
+        """A device that answers but still has to be set up can not take a stream: it stays out."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        unpaired = _make_member(mass, "unpaired", "airplay")
+        _protocol(unpaired, "airplay")._attr_needs_setup = True
+        sgp.sync_leader = None
+        sgp._attr_group_members = []
+
+        await sgp.set_members(player_ids_to_add=["unpaired"])
+
+        assert sgp._attr_group_members == []
+
     async def test_the_player_of_the_group_is_not_added_to_itself(self) -> None:
         """The group's own player id is no member, its protocol id is no player at all."""
         mass = _make_mock_mass()

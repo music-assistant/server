@@ -763,19 +763,6 @@ class Player:
         return self._config.enabled
 
     @property
-    def available(self) -> bool:
-        """
-        Return if a protocol of the player that can render audio reaches its device.
-
-        A control protocol alone does not count: there is nothing to play on.
-        """
-        # a plain loop: this is read for every player the state of another one refers to
-        for protocol_id, protocol in self._protocols.items():
-            if protocol.available and self._roles[protocol_id] != ProtocolRole.CONTROL:
-                return True
-        return False
-
-    @property
     def available_for_playback(self) -> bool:
         """
         Return if the player can currently be used to play (or control) audio.
@@ -805,7 +792,7 @@ class Player:
         so it can be powered on (or played to) from there, while the device itself is not
         reachable.
         """
-        return self._offline_by_power_control(self.available)
+        return self._offline_by_power_control(self._reachable)
 
     @property
     def has_setup_flow(self) -> bool:
@@ -1388,7 +1375,7 @@ class Player:
             for protocol_id, protocol in self._protocols.items()
         }
         # read once: every protocol is asked for it
-        reachable = self.available
+        reachable = self._reachable
         self._track_availability(reachable)
         # calculate the new state
         prev_state = self._state
@@ -1759,6 +1746,19 @@ class Player:
         """Check inequality of two Player objects."""
         return not self.__eq__(other)
 
+    @property
+    def _reachable(self) -> bool:
+        """
+        Return if a protocol of the player that can render audio reaches its device.
+
+        A control protocol alone does not count: there is nothing to play on.
+        """
+        # a plain loop: this is read for every player the state of another one refers to
+        for protocol_id, protocol in self._protocols.items():
+            if protocol.available and self._roles[protocol_id] != ProtocolRole.CONTROL:
+                return True
+        return False
+
     def _index_protocols(self) -> None:
         """Rebuild what is kept per role of the attached protocols."""
         self._own_protocol = next(
@@ -1911,7 +1911,7 @@ class Player:
         """
         Return if the device is offline because it is switched off at its external power control.
 
-        :param reachable: Whether the player is available (see available).
+        :param reachable: Whether a protocol that renders audio reaches the device.
         """
         if reachable or self.type == PlayerType.GROUP:
             return False
@@ -1935,7 +1935,7 @@ class Player:
         """
         Keep when the player was last seen and since when it is unavailable.
 
-        :param reachable: Whether the player is available (see available).
+        :param reachable: Whether a protocol that renders audio reaches the device.
         """
         if reachable == self._was_available:
             return
@@ -2147,7 +2147,7 @@ class Player:
         calculated position - is event-relevant.
 
         :param prev_state: The state the player had before the current one.
-        :param reachable: Whether the player is available (see available).
+        :param reachable: Whether a protocol that renders audio reaches the device.
         """
         prev_fingerprint = self._state_fingerprint or _state_fingerprint(prev_state)
         new_fingerprint = _state_fingerprint(self._state)
@@ -2176,7 +2176,7 @@ class Player:
         """
         Collect everything the state of the player is derived from.
 
-        :param reachable: Whether the player is available (see available).
+        :param reachable: Whether a protocol that renders audio reaches the device.
         """
         own_protocol = self._own_protocol
         own = (
@@ -2436,7 +2436,7 @@ class Player:
             peer = peers[player_id] = PeerSnapshot(
                 player_id,
                 player.type,
-                player.available,
+                player._reachable,
                 own.grouping_locked if own else False,
                 player.state,
             )

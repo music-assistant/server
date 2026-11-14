@@ -41,6 +41,7 @@ from music_assistant.providers.yandex_station.player import (
     YandexStationPlayer,
     _parse_yandex_track_id,
 )
+from tests.common import MockProvider, attach_mock, mock_player_mass
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -1125,12 +1126,26 @@ async def test_alice_active_blocks_new_handoff_in_same_tick() -> None:
     player.mass.player_queues.play_media.assert_not_awaited()
 
 
-async def test_target_with_available_false_is_rejected() -> None:
-    """get_player can return an object with available=False — must not silence Station."""
+async def test_target_that_can_not_be_played_to_is_rejected() -> None:
+    """A target that can not be played to right now must not silence the Station."""
     player = _make_intercept_player()
     unavailable = MagicMock()
-    unavailable.available = False
+    unavailable.available_for_playback = False
     player.mass.players.get_player = MagicMock(return_value=unavailable)
+    state, player_state, _ = _state()
+
+    await player._handle_intercept_tick(state, player_state, True, _alice(player, state))
+
+    player.glagol.send.assert_not_awaited()
+    player.mass.player_queues.play_media.assert_not_awaited()
+
+
+async def test_target_that_still_needs_setup_is_rejected() -> None:
+    """A target whose device answers but still has to be set up must not silence the Station."""
+    player = _make_intercept_player()
+    target, protocol = attach_mock(MockProvider("airplay", mass=mock_player_mass()), "ap_target")
+    protocol._attr_needs_setup = True
+    player.mass.players.get_player = MagicMock(return_value=target)
     state, player_state, _ = _state()
 
     await player._handle_intercept_tick(state, player_state, True, _alice(player, state))

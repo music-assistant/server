@@ -541,7 +541,6 @@ def _player_view(players: _PlayerControllerBase, player: Player) -> PlayerView:
         type=player.type,
         listed=state.available and state.enabled,
         iterated=state.available and state.enabled and player.initialized.is_set(),
-        available=player.available,
         available_for_playback=player.available_for_playback,
         powered=state.powered,
         power_control=state.power_control,

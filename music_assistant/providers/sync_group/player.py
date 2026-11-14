@@ -277,7 +277,7 @@ class SyncGroupPlayer(PlayerProtocol):
         group_player_id = self.player.player_id if self.player else None
         can_group_with = set()
         for player in self.mass.players.iter_players(return_unavailable=False):
-            if not player.available or player.type == PlayerType.GROUP:
+            if not player.available_for_playback or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
                 continue
             if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
@@ -629,7 +629,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 )
                 continue
             member = self.mass.players.get_player(member_id)
-            if member is None or not member.available:
+            if member is None or not member.available_for_playback:
                 continue
             if not sync_leader:
                 # no leader yet (e.g. empty group) - just register the member
