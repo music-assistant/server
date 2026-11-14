@@ -991,14 +991,15 @@ class Player:
 
         That takes a protocol that can render audio: a control protocol alone does not
         count. Neither a device that still needs setup - an unpaired AirPlay receiver, for
-        example - nor a disabled player can accept a stream.
+        example - nor a disabled player can accept a stream, and neither can a device that
+        is switched off at its power control, whatever its protocols still report.
 
         For the players controller and the models, where a stream or a command goes to the
         device at this instant. Everyone else reads available: a player that is switched off
         at its power control is available too (see offline_by_power_control), and a command
         that starts playback on it powers it on first.
         """
-        if not self._config.enabled:
+        if not self._config.enabled or self.offline_by_power_control:
             return False
         for protocol_id, protocol in self._protocols.items():
             if protocol.available_for_playback and self._roles[protocol_id] != ProtocolRole.CONTROL:
@@ -1009,6 +1010,9 @@ class Player:
     def offline_by_power_control(self) -> bool:
         """
         Return if the device is offline because it is switched off at its external power control.
+
+        The protocol that reports for the device tells whether it is there (see
+        device_protocol): another one may read available long after the power was cut.
 
         Also True while Music Assistant powers it on through that control and waits for it
         to come online. Such a player is reported to clients as available and powered off,
@@ -2104,7 +2108,11 @@ class Player:
 
         :param reachable: Whether a protocol that renders audio reaches the device.
         """
-        if reachable or self.reported_type == PlayerType.GROUP:
+        device = self.device_protocol
+        # the device is there while the protocol that reports for it reaches it, and
+        # there is something to play on
+        is_there = reachable and device is not None and device.available
+        if is_there or self.reported_type == PlayerType.GROUP:
             return False
         control = self.mass.players.get_player_control(self._power_control)
         if control is None or not control.supports_power:

@@ -168,6 +168,17 @@ def _power_ons(setup: _Setup) -> dict[str, int]:
     }
 
 
+def _receiver(mock_mass: MagicMock, speaker: _Speaker) -> None:
+    """Give a member a second protocol, which reaches its device whatever its plug does."""
+    attach_mock(
+        MockProvider("airplay", instance_id="airplay", mass=mock_mass),
+        f"airplay_{speaker.player.player_id}",
+        role=ProtocolRole.AUDIO,
+        player=speaker.player,
+    )
+    speaker.player.update_state(signal_event=False, force_update=True)
+
+
 async def test_the_switched_off_members_are_powered_on_together_without_a_lock(
     mock_mass: MagicMock,
 ) -> None:
@@ -521,6 +532,59 @@ async def test_a_member_that_went_away_after_it_was_online_is_not_waited_for(
 
     assert await controller._power_on_members(setup.group) == set()
     assert asyncio.get_running_loop().time() == started
+    assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+async def test_a_member_is_waited_for_until_its_own_protocol_is_back(
+    mock_mass: MagicMock,
+) -> None:
+    """A switched-off member is powered on and waited for, whatever its second protocol reads."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    _receiver(mock_mass, setup.speakers["den"])
+    started = asyncio.get_running_loop().time()
+
+    assert await setup.controller._power_on_members(setup.group) == set()
+
+    assert BOOT_TIME <= asyncio.get_running_loop().time() - started < BOOT_TIME + 1
+    assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+async def test_a_member_that_is_called_off_is_left_out_whatever_its_second_protocol_reads(
+    mock_mass: MagicMock,
+) -> None:
+    """A power on that is called off does not end as online through a second protocol."""
+    setup = _setup(
+        mock_mass, "kitchen", "office", "den", switched_off=("office", "den"), stays_away=("den",)
+    )
+    controller = setup.controller
+    den = setup.speakers["den"]
+    _receiver(mock_mass, den)
+    waiting = asyncio.create_task(controller._power_on_members(setup.group))
+    await asyncio.sleep(0.75)
+
+    controller._cancel_power_on(den.player)
+
+    assert await waiting == {"den"}
+
+
+async def test_a_member_that_still_boots_is_waited_for_again_whatever_its_second_protocol_reads(
+    mock_mass: MagicMock,
+) -> None:
+    """A member whose own protocol is not back still boots, and its control is left alone."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    den = setup.speakers["den"]
+    _receiver(mock_mass, den)
+    await _call_off(setup, after=BOOT_TIME / 4)
+    await asyncio.sleep(BOOT_TIME / 4)
+    started = asyncio.get_running_loop().time()
+
+    waiting = asyncio.create_task(controller._power_on_members(setup.group))
+    await asyncio.sleep(0.1)
+
+    assert den.player.power_on_in_progress
+    assert await waiting == set()
+    assert BOOT_TIME / 4 < asyncio.get_running_loop().time() - started < BOOT_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 

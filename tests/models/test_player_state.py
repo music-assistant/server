@@ -357,6 +357,17 @@ class TestAvailability:
 
         assert state.available is (enabled and available_for_playback)
 
+    def test_switched_off_player_with_a_protocol_that_can_play_needs_no_setup(self) -> None:
+        """A protocol that is reachable and set up keeps a switched-off player usable as it is."""
+        state = _derive(
+            offline_by_power_control=True,
+            own=_own(available=False, available_for_playback=False, needs_setup=True),
+            linked=(make_protocol_snapshot("receiver", role=ProtocolRole.AUDIO),),
+        )
+
+        assert state.available is True
+        assert state.needs_setup is False
+
 
 class TestSyncedTo:
     """The player a player is synced to."""
@@ -2009,6 +2020,22 @@ class TestGroupVolume:
         )
 
         assert state.group_volume == 70
+
+    def test_leader_that_is_being_powered_on_does_not_count(self) -> None:
+        """A leader whose device is switched off does not count, whatever a protocol reports."""
+        state = _derive(
+            offline_by_power_control=True,
+            powered=True,
+            volume_control=PLAYER_CONTROL_NATIVE,
+            volume_level=70,
+            own=_own(group_members=[PLAYER_ID, "member"]),
+            peers={
+                PLAYER_ID: _peer(PLAYER_ID),
+                "member": _peer("member", volume_control=PLAYER_CONTROL_NATIVE, volume_level=40),
+            },
+        )
+
+        assert state.group_volume == 40
 
     def test_group_player_does_not_count_itself(self) -> None:
         """A group player has no volume of its own, only its members count."""

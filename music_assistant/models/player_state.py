@@ -1299,7 +1299,9 @@ def _volume_members(inputs: StateInputs, state: PlayerState) -> list[PlayerState
         if (peer.player_id if peer else member_id) == inputs.player_id:
             if inputs.player_type != PlayerType.PLAYER:
                 continue
-            available_for_playback: bool | None = _playable(inputs)
+            available_for_playback: bool | None = (
+                _playable(inputs) and not inputs.offline_by_power_control
+            )
             member = state
         elif peer:
             available_for_playback = peer.available_for_playback
