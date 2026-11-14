@@ -717,12 +717,15 @@ def _parse_union(
     if value is None and NoneType in sub_value_types:
         # an optional annotation with no value needs no further parsing
         return None
-    for sub_arg_type in sub_value_types:
-        # try them all until one succeeds
-        try:
-            return parse_value(name, value, sub_arg_type, allow_value_convert=allow_value_convert)
-        except KeyError, TypeError, ValueError, MissingField:
-            pass
+    # try them all strictly first, so an int matches `int` before `float` in a union,
+    # then retry with conversion so a JSON whole number is accepted for `float | None`
+    convert_passes = (False, True) if not allow_value_convert else (True,)
+    for convert in convert_passes:
+        for sub_arg_type in sub_value_types:
+            try:
+                return parse_value(name, value, sub_arg_type, allow_value_convert=convert)
+            except KeyError, TypeError, ValueError, MissingField:
+                pass
     # if we get to this point, all possibilities failed
     # find out if we should raise or log this
     err = f"Value of type {type(value)} is invalid for {name}, expected value of type {value_type}"

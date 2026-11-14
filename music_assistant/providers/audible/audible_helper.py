@@ -30,6 +30,8 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Audiobook,
@@ -47,6 +49,11 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -63,6 +70,10 @@ AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
 PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
 # legacy series report their episodes as show issues rather than podcast episodes
 SHOW_CONTENT_TYPE = "Show"
+
+# Audible publishes no rate limit for its API, so stay at a modest 4 requests per second
+API_RATE_LIMIT = 4
+API_RATE_PERIOD = 1
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -209,6 +220,7 @@ class AudibleHelper:
         self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
+        self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
     async def _fetch_library_items(
         self,
@@ -402,7 +414,8 @@ class AudibleHelper:
         try:
             # Podcasts use Mpeg (non-DRM MP3), audiobooks use HLS
             if media_type == MediaType.PODCAST_EPISODE:
-                playback_info = await self.client.post(
+                playback_info = await self._request(
+                    "post",
                     f"content/{asin}/licenserequest",
                     body={
                         "consumption_type": "Streaming",
@@ -411,7 +424,8 @@ class AudibleHelper:
                     },
                 )
             else:
-                playback_info = await self.client.post(
+                playback_info = await self._request(
+                    "post",
                     f"content/{asin}/licenserequest",
                     body={
                         "quality": "High",
@@ -606,8 +620,10 @@ class AudibleHelper:
                 self.logger.warning(f"No ACR available for ASIN {asin}, cannot report position")
                 return
 
-            await self.client.put(
-                f"lastpositions/{asin}", body={"acr": acr, "asin": asin, "position_ms": position_ms}
+            await self._request(
+                "put",
+                f"lastpositions/{asin}",
+                body={"acr": acr, "asin": asin, "position_ms": position_ms},
             )
 
             self.logger.debug(f"Successfully reported position {position_ms}ms for ASIN {asin}")
@@ -655,8 +671,8 @@ class AudibleHelper:
             )
         if not response:
             try:
-                response = await self.client.get(path, **kwargs)
-            except audible.exceptions.RequestError as exc:
+                response = await self._request("get", path, **kwargs)
+            except (audible.exceptions.RequestError, RetriesExhausted) as exc:
                 raise ProviderUnavailableError(
                     f"Audible API request failed for '{path}': {exc}"
                 ) from exc
@@ -1241,6 +1257,24 @@ class AudibleHelper:
     async def deregister(self) -> None:
         """Deregister this provider from Audible."""
         await asyncio.to_thread(self.client.auth.deregister_device)
+
+    @throttle_with_retries
+    async def _request(self, /, method: str, path: str, **kwargs: Any) -> Any:
+        """
+        Send a request to the Audible API within the rate limit of the provider.
+
+        :param method: The HTTP method of the request: get, post or put.
+        :param path: The API path to request.
+        :param kwargs: Further arguments for the Audible client, such as query params or body.
+        :raises RetriesExhausted: When Audible keeps rate limiting the account.
+        """
+        try:
+            return await getattr(self.client, method)(path, **kwargs)
+        except audible.exceptions.RatelimitError as err:
+            raise RateLimited(
+                "Audible rate limit",
+                backoff_time=parse_retry_after(err.response.headers.get("Retry-After")),
+            ) from err
 
 
 def _html_to_txt(html_text: str) -> str:

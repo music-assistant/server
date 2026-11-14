@@ -44,6 +44,10 @@ RESOLUTION_BUFFER_SMALL = 15
 # Genre chart pool (single fetch); sized so the hourly rotation surfaces more of the genre per day
 RESOLUTION_BUFFER_LARGE = 60
 
+# Size of the single artist top tracks fetch: a deeper ranking finds more of the library's tracks
+# at no extra request
+ARTIST_TOP_TRACKS_FETCH_LIMIT = 100
+
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
 
