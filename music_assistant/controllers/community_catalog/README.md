@@ -1,6 +1,6 @@
 # Community Catalog Controller
 
-Installs and loads providers that community members build and maintain in their own repositories. The Music Assistant project curates a registry that publishes an index per server line (`nightly`, `beta`, `<major>.<minor>`). A server installs only what the index of its own line offers, and stops loading whatever the index blocks. The catalog is off until an admin switches it on; nothing of it runs in safe mode.
+Installs and loads providers that community members build and maintain in their own repositories. The Music Assistant project curates a registry that publishes an index per server line (`nightly`, `beta`, `<major>.<minor>`). A server installs only what the index of its own line offers, and stops loading whatever the index blocks. The community catalog is off until an admin switches it on; nothing of it runs in safe mode.
 
 ## Package Layout
 
@@ -56,6 +56,8 @@ After a fetch that changed the index (the daily check or a refresh), `evaluate()
 Install downloads the latest version the index offers, resolves its requirements together with those of every loaded community provider, installs them, makes the version live, writes the state and registers the provider. A clash, a download that does not match the index, or a requirement change to a package that is already imported refuses the install before anything goes live. No settings entry is created: the provider appears among the manifests and is added the usual way.
 
 Remove drops the provider from the state, stops it and deletes its folders. Its settings entries stay. Its requirements stay in the dependency folder until the next start resolves without them.
+
+The switch cannot go off while a provider the admin installed is still installed: saving it is refused, so those are removed first. A moved provider the server installed by itself does not count (see Moved Providers): with the switch off it loads, is switched to another version when the index asks for that, and is updated only by hand.
 
 ## Updates
 

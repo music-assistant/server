@@ -27,14 +27,16 @@ DOMAIN = "community_catalog"
 async def test_switch_is_hidden_and_off(mass: MusicAssistant) -> None:
     """The switch is a hidden entry that starts off, and the catalog is in no list of the app."""
     entries = await mass.config.get_core_config_entries(DOMAIN)
-    enabled = next(entry for entry in entries if entry.key == "catalog_enabled")
+    enabled = next(entry for entry in entries if entry.key == "community_catalog_enabled")
 
     assert enabled.type == ConfigEntryType.BOOLEAN
     assert enabled.hidden is True
     assert enabled.default_value is False
-    assert (await mass.config.get_core_config(DOMAIN)).get_value("catalog_enabled") is False
+    assert (await mass.config.get_core_config(DOMAIN)).get_value(
+        "community_catalog_enabled"
+    ) is False
     assert mass.translations.get_translation(
-        f"core.{DOMAIN}.config_entries.catalog_enabled.description"
+        f"core.{DOMAIN}.config_entries.community_catalog_enabled.description"
     )
     assert DOMAIN not in [config.domain for config in await mass.config.get_core_configs()]
     assert DOMAIN not in [manifest.domain for manifest in mass.get_provider_manifests()]
@@ -48,7 +50,7 @@ async def test_auto_update_is_hidden_and_off(mass: MusicAssistant) -> None:
     assert auto_update.type == ConfigEntryType.BOOLEAN
     assert auto_update.hidden is True
     assert auto_update.default_value is False
-    assert auto_update.depends_on == "catalog_enabled"
+    assert auto_update.depends_on == "community_catalog_enabled"
     assert (await mass.config.get_core_config(DOMAIN)).get_value("auto_update") is False
     assert mass.translations.get_translation(
         f"core.{DOMAIN}.config_entries.auto_update.description"
@@ -158,7 +160,7 @@ async def test_kept_copy_after_a_restart(tmp_path: Path, registry: Registry) -> 
 async def test_safe_mode(tmp_path: Path, registry: Registry) -> None:
     """In safe mode the commands refuse, and switching on fetches nothing."""
     async with full_mass_context(tmp_path, safe_mode=True) as mass:
-        await mass.config.save_core_config(DOMAIN, {"catalog_enabled": True})
+        await mass.config.save_core_config(DOMAIN, {"community_catalog_enabled": True})
 
         assert mass.get_task(_INDEX_CHECK) is None
         with pytest.raises(ActionUnavailable):
@@ -174,7 +176,7 @@ async def _switch(mass: MusicAssistant, *, enabled: bool) -> None:
     """Save the switch, as the app does, and wait for the check it starts."""
     # the start reads the switch too
     await _wait_for_start(mass)
-    await mass.config.save_core_config(DOMAIN, {"catalog_enabled": enabled})
+    await mass.config.save_core_config(DOMAIN, {"community_catalog_enabled": enabled})
     if (task := mass.get_task(_INDEX_CHECK)) is not None:
         await task
 

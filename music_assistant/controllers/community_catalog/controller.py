@@ -134,7 +134,20 @@ class CommunityCatalogController(CoreController):
         await self._store.load()
 
     async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
-        """Handle logic when the config is updated."""
+        """
+        Handle logic when the config is updated.
+
+        :raises ActionUnavailable: The community catalog is switched off while something the
+            admin installed from it is still installed.
+        """
+        if (
+            f"values/{CONF_ENABLED}" in changed_keys
+            and not config.get_value(CONF_ENABLED)
+            and self._installed_by_admin()
+        ):
+            # the config controller puts the saved switch back on
+            msg = "Remove what you installed from the community catalog before you switch it off"
+            raise ActionUnavailable(msg)
         await super().update_config(config, changed_keys)
         if self.mass.safe_mode:
             return
@@ -349,6 +362,11 @@ class CommunityCatalogController(CoreController):
             or self._store.state.installed
             or self._waiting_moves()
         )
+
+    def _installed_by_admin(self) -> set[str]:
+        """Return the installed providers that the server did not install by itself after a move."""
+        state = self._store.state
+        return set(state.installed) - set(state.moved)
 
     def _waiting_moves(self) -> set[str]:
         """Return the moved providers that the server is to install from the catalog by itself."""

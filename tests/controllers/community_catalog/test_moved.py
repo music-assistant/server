@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -29,6 +30,7 @@ from tests.controllers.community_catalog.test_controller import (  # noqa: F401 
     _state,
     catalog,
 )
+from tests.controllers.community_catalog.test_settings import _switch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -71,6 +73,49 @@ async def test_installed_with_the_switch_off(
     async with _server(tmp_path) as mass:
         _assert_loaded(mass, folder, MOVED)
         assert _state(folder) == state
+
+
+@pytest.mark.usefixtures("moved")
+async def test_switch_goes_off_with_a_moved_provider(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """What the server installed by itself lets the switch go off, and keeps the index checked."""
+    folder = tmp_path / "data" / "community_providers"
+    await _move(tmp_path, registry, github)
+
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        await _switch(mass, enabled=False)
+
+        assert mass.community_catalog.config.get_value(CONF_ENABLED) is False
+        _assert_loaded(mass, folder, MOVED)
+    requests = len(registry.requests)
+
+    async with _server(tmp_path) as mass:
+        assert len(registry.requests) == requests + 1
+        assert _INDEX_CHECK in mass._tracked_timers
+        _assert_loaded(mass, folder, MOVED)
+
+
+@pytest.mark.usefixtures("moved")
+async def test_switch_leaves_a_running_check_to_finish(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """Turning the switch never cuts a check short: it may be stopping a provider."""
+    await _move(tmp_path, registry, github)
+
+    async with _server(tmp_path) as mass:
+        registry.delay = 0.2
+        requests = len(registry.requests)
+        check = mass.create_task(mass.community_catalog._check_index(), task_id=_INDEX_CHECK)
+        await asyncio.sleep(0)
+
+        await mass.config.save_core_config("community_catalog", {CONF_ENABLED: True})
+        await mass.config.save_core_config("community_catalog", {CONF_ENABLED: False})
+
+        assert mass.get_task(_INDEX_CHECK) is check
+        await check
+        assert len(registry.requests) == requests + 1
 
 
 @pytest.mark.usefixtures("moved")

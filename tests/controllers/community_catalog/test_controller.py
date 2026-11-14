@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from contextlib import asynccontextmanager
@@ -18,7 +17,7 @@ import music_assistant
 from music_assistant import providers as providers_package
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.community_catalog import CommunityCatalogController, dependencies
-from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK
+from music_assistant.controllers.community_catalog.constants import CONF_ENABLED
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
@@ -297,9 +296,10 @@ async def test_install_refused(
     registry.document = _index(providers)
     async with _server(tmp_path) as mass:
         await _switch(mass, enabled=True)
-        await mass.community_catalog.install_provider(DOMAIN)
         if domain == "switched_off":
             await _switch(mass, enabled=False)
+        else:
+            await mass.community_catalog.install_provider(DOMAIN)
         before = _snapshot(catalog)
 
         with pytest.raises(ActionUnavailable, match=message):
@@ -408,45 +408,26 @@ async def test_remove(tmp_path: Path, catalog: Path, registry: Registry, github:
             await mass.community_catalog.remove_provider(DOMAIN)
 
 
-async def test_switched_off_with_a_provider_installed(
+async def test_switch_stays_on_while_a_provider_is_installed(
     tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
 ) -> None:
-    """With the switch off, an installed provider keeps the index checked; only it is listed."""
+    """The switch only goes off once what the admin installed is removed."""
     await _install(tmp_path, registry, github)
-    assert isinstance(registry.document, dict)
-    registry.document["providers"]["other_one"] = _publish(github, "other_one")
-    async with _server(tmp_path) as mass:
-        await _switch(mass, enabled=False)
-    requests = len(registry.requests)
 
     async with _server(tmp_path) as mass:
-        assert len(registry.requests) == requests + 1
-        assert "community_catalog_index_check" in mass._tracked_timers
+        with pytest.raises(ActionUnavailable, match="Remove what you installed"):
+            await _switch(mass, enabled=False)
+
+        assert mass.community_catalog.config.get_value(CONF_ENABLED) is True
         _assert_loaded(mass, catalog, DOMAIN)
-        assert _states(await mass.community_catalog.get_providers()) == {
-            DOMAIN: CommunityProviderState.INSTALLED
-        }
-
-
-@pytest.mark.usefixtures("catalog")
-async def test_switch_leaves_a_running_check_to_finish(
-    tmp_path: Path, registry: Registry, github: GitHub
-) -> None:
-    """Turning the switch never cuts a check short: it may be stopping a provider."""
-    await _install(tmp_path, registry, github)
 
     async with _server(tmp_path) as mass:
-        registry.delay = 0.2
-        requests = len(registry.requests)
-        check = mass.create_task(mass.community_catalog._check_index(), task_id=_INDEX_CHECK)
-        await asyncio.sleep(0)
+        assert mass.community_catalog.config.get_value(CONF_ENABLED) is True
+        await mass.community_catalog.remove_provider(DOMAIN)
 
-        await mass.config.save_core_config("community_catalog", {"catalog_enabled": False})
-        await mass.config.save_core_config("community_catalog", {"catalog_enabled": True})
+        await _switch(mass, enabled=False)
 
-        assert mass.get_task(_INDEX_CHECK) is check
-        await check
-        assert len(registry.requests) == requests + 1
+        assert mass.community_catalog.config.get_value(CONF_ENABLED) is False
 
 
 async def test_dev_folder_and_installed_provider(

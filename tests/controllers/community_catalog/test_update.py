@@ -13,6 +13,7 @@ from music_assistant_models.enums import EventType, PlaybackState
 from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant import providers as providers_package
+from music_assistant.controllers.community_catalog import controller as controller_module
 from music_assistant.controllers.community_catalog import dependencies
 from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK, _UPDATE_RETRY
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
@@ -618,24 +619,30 @@ async def test_failed_switch_is_tried_again_by_the_next_check(
         _assert_runs(mass, DOMAIN, NEW)
 
 
-@pytest.mark.parametrize("turned_on", ["auto_update", "catalog_enabled"])
+@pytest.mark.parametrize("turned_on", ["auto_update", "community_catalog_enabled"])
 async def test_turning_on_auto_update_installs_the_updates(
-    tmp_path: Path, registry: Registry, github: GitHub, turned_on: str
+    tmp_path: Path,
+    registry: Registry,
+    github: GitHub,
+    monkeypatch: pytest.MonkeyPatch,
+    turned_on: str,
 ) -> None:
     """Turning on automatic updates, or the switch while they are on, installs the updates on offer."""
     entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
-    await _install(tmp_path, registry, {DOMAIN: entry})
+    if turned_on == "community_catalog_enabled":
+        # with the switch off, only what the server installed after a move is installed
+        await _move(tmp_path, registry, monkeypatch, {DOMAIN: entry})
+    else:
+        await _install(tmp_path, registry, {DOMAIN: entry})
 
     async with _server(tmp_path) as mass:
-        if turned_on == "catalog_enabled":
-            await mass.config.save_core_config(
-                "community_catalog", {"catalog_enabled": False, "auto_update": True}
-            )
+        if turned_on == "community_catalog_enabled":
+            await mass.config.save_core_config("community_catalog", {"auto_update": True})
         await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW)}, entry)
         _assert_runs(mass, DOMAIN, OLD)
 
         await mass.config.save_core_config(
-            "community_catalog", {"catalog_enabled": True, "auto_update": True}
+            "community_catalog", {"community_catalog_enabled": True, "auto_update": True}
         )
         task = mass.get_task(_UPDATE_RETRY if turned_on == "auto_update" else _INDEX_CHECK)
         assert task is not None
@@ -645,16 +652,15 @@ async def test_turning_on_auto_update_installs_the_updates(
 
 
 async def test_no_auto_update_while_switched_off(
-    tmp_path: Path, registry: Registry, github: GitHub
+    tmp_path: Path, registry: Registry, github: GitHub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Automatic updates saved as on do nothing while the catalog is switched off."""
+    """Automatic updates saved as on do nothing while the community catalog is switched off."""
     entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
-    await _install(tmp_path, registry, {DOMAIN: entry})
+    # with the switch off, only what the server installed after a move is installed
+    await _move(tmp_path, registry, monkeypatch, {DOMAIN: entry})
 
     async with _server(tmp_path) as mass:
-        await mass.config.save_core_config(
-            "community_catalog", {"catalog_enabled": False, "auto_update": True}
-        )
+        await mass.config.save_core_config("community_catalog", {"auto_update": True})
         await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW)}, entry)
         _assert_runs(mass, DOMAIN, OLD)
 
@@ -858,10 +864,31 @@ async def _install(
         await _switch(mass, enabled=True)
         if auto_update:
             await mass.config.save_core_config(
-                "community_catalog", {"catalog_enabled": True, "auto_update": True}
+                "community_catalog", {"community_catalog_enabled": True, "auto_update": True}
             )
         for domain in providers:
             await mass.community_catalog.install_provider(domain)
+
+
+async def _move(
+    tmp_path: Path,
+    registry: Registry,
+    monkeypatch: pytest.MonkeyPatch,
+    providers: dict[str, Any],
+) -> None:
+    """
+    Boot a server that installs providers by itself because they moved, the switch off; stop.
+
+    :param tmp_path: The folder of the server.
+    :param registry: The fixture registry.
+    :param monkeypatch: Makes the providers ones that moved to the community catalog.
+    :param providers: The entry of each provider in the index, by domain.
+    """
+    monkeypatch.setattr(controller_module, "MOVED_PROVIDER_DOMAINS", frozenset(providers))
+    registry.document = _index(providers)
+    _seed_instance(tmp_path, *providers)
+    async with _server(tmp_path):
+        pass
 
 
 async def _publish(
