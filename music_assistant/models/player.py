@@ -87,8 +87,10 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from music_assistant_models.audio_processing import ActiveSourceAudioDetails
     from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.media_items import AudioSource, MediaItemPalette
+    from music_assistant_models.player import PlayerOption, PlayerSoundMode
 
     from music_assistant import MusicAssistant
 
@@ -633,10 +635,252 @@ class Player:
             last_seen=self._last_seen,
         )
 
+    # The final values: every field of the state the player published last (PlayerState),
+    # in its order.
     @property
     def player_id(self) -> str:
         """Return the id of the player."""
         return self._player_id
+
+    @property
+    def provider(self) -> str:
+        """Return the id of the provider instance of the player, as published."""
+        return self._state.provider
+
+    @property
+    def type(self) -> PlayerType:
+        """Return the type of the player, as published."""
+        return self._state.type
+
+    @property
+    def name(self) -> str:
+        """Return the name of the player."""
+        return self._state.name
+
+    @property
+    def available(self) -> bool:
+        """Return if clients can use the player, also one switched off at its power control."""
+        return self._state.available
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return the device info of the player."""
+        return self._state.device_info
+
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the features the player supports."""
+        return self._state.supported_features
+
+    @property
+    def playback_state(self) -> PlaybackState:
+        """Return the playback state of the player."""
+        return self._state.playback_state
+
+    @property
+    def elapsed_time(self) -> float | None:
+        """Return the elapsed time of the current media, as of elapsed_time_last_updated."""
+        return self._state.elapsed_time
+
+    @property
+    def elapsed_time_last_updated(self) -> float | None:
+        """Return the unix (utc) timestamp at which elapsed_time was taken."""
+        return self._state.elapsed_time_last_updated
+
+    @property
+    def powered(self) -> bool | None:
+        """Return if the player is powered on, None without a power control."""
+        return self._state.powered
+
+    @property
+    def volume_level(self) -> int | None:
+        """Return the volume level of the player (0..100), None without a volume control."""
+        return self._state.volume_level
+
+    @property
+    def volume_muted(self) -> bool | None:
+        """Return if the player is muted, None without a mute control."""
+        return self._state.volume_muted
+
+    @property
+    def group_members(self) -> UniqueList[str]:
+        """Return the ids of the members of the group, or of the players synced to the player."""
+        return self._state.group_members
+
+    @property
+    def static_group_members(self) -> UniqueList[str]:
+        """Return the ids of the group members that can not be ungrouped."""
+        return self._state.static_group_members
+
+    @property
+    def can_group_with(self) -> set[str]:
+        """Return the ids of the players the player can group with."""
+        return self._state.can_group_with
+
+    @property
+    def synced_to(self) -> str | None:
+        """Return the id of the player the player is synced to, if any."""
+        return self._state.synced_to
+
+    @property
+    def active_sound_mode(self) -> str | None:
+        """Return the id of the active sound mode, if any."""
+        return self._state.active_sound_mode
+
+    @property
+    def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
+        """Return the sound modes the player offers."""
+        return self._state.sound_mode_list
+
+    @property
+    def options(self) -> UniqueList[PlayerOption]:
+        """Return the options the player offers."""
+        return self._state.options
+
+    @property
+    def active_source(self) -> str | None:
+        """Return the id of the active source: a source of the player or a Music Assistant queue."""
+        return self._state.active_source
+
+    @property
+    def source_list(self) -> UniqueList[PlayerSource]:
+        """Return the sources the player offers."""
+        return self._state.source_list
+
+    @property
+    def active_group(self) -> str | None:
+        """Return the id of the group player that holds the player, if any."""
+        return self._state.active_group
+
+    @property
+    def current_media(self) -> PlayerMedia | None:
+        """Return the media the player has loaded, if any."""
+        return self._state.current_media
+
+    @property
+    def enabled(self) -> bool:
+        """Return if the player is enabled."""
+        return self._state.enabled
+
+    @property
+    def hide_in_ui(self) -> bool:
+        """Return if the player is hidden in the UI."""
+        return self._state.hide_in_ui
+
+    @property
+    def private(self) -> bool:
+        """Return if the player is not offered to other clients as a playback or grouping target."""
+        return self._state.private
+
+    @property
+    def expose_to_ha(self) -> bool:
+        """Return if the player is exposed to Home Assistant."""
+        return self._state.expose_to_ha
+
+    @property
+    def icon(self) -> str:
+        """Return the icon of the player: an id of the shared Music Assistant icon set."""
+        return self._state.icon
+
+    @property
+    def group_volume(self) -> int | None:
+        """Return the level of the loudest powered member of the player's group, else its own."""
+        return self._state.group_volume
+
+    @property
+    def group_volume_muted(self) -> bool | None:
+        """Return if all powered members of the player's group are muted, else its own mute."""
+        return self._state.group_volume_muted
+
+    @property
+    def extra_attributes(self) -> dict[str, EXTRA_ATTRIBUTES_TYPES]:
+        """Return the extra attributes of the player, for the UI and other API clients."""
+        return self._state.extra_attributes
+
+    @property
+    def power_control(self) -> str:
+        """Return the control the power of the player goes through."""
+        return self._state.power_control
+
+    @property
+    def volume_control(self) -> str:
+        """Return the control the volume of the player goes through."""
+        return self._state.volume_control
+
+    @property
+    def mute_control(self) -> str:
+        """Return the control the mute of the player goes through."""
+        return self._state.mute_control
+
+    @property
+    def output_protocols(self) -> list[OutputProtocol]:
+        """Return all outputs of the player, each with whether it can be played to."""
+        return self._state.output_protocols
+
+    @property
+    def active_output_protocol(self) -> str | None:
+        """Return the id of the output that renders the audio: "native" or a protocol id."""
+        return self._state.active_output_protocol
+
+    @property
+    def needs_setup(self) -> bool:
+        """Return if the player has to be set up before it can be used."""
+        return self._state.needs_setup
+
+    @property
+    def setup_reason(self) -> str | None:
+        """Return a short slug that tells why the player needs setup."""
+        return self._state.setup_reason
+
+    @property
+    def has_setup_flow(self) -> bool:
+        """Return if an interactive setup flow can be started for the player."""
+        return self._state.has_setup_flow
+
+    @property
+    def sleep_timer_expires_at(self) -> float | None:
+        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
+        return self._state.sleep_timer_expires_at
+
+    @property
+    def sleep_timer_mode(self) -> SleepTimerMode | None:
+        """Return the point at which the active sleep timer stops playback."""
+        return self._state.sleep_timer_mode
+
+    @property
+    def active_source_audio(self) -> ActiveSourceAudioDetails | None:
+        """Return the audio details of the active external source, if known."""
+        return self._state.active_source_audio
+
+    @property
+    def legacy_ids(self) -> list[str]:
+        """Return the ids the player was known under before, which it keeps answering to."""
+        return self._state.legacy_ids
+
+    @property
+    def last_seen(self) -> float | None:
+        """Return the unix (utc) timestamp at which the player was last seen available."""
+        return self._state.last_seen
+
+    @property
+    def unavailable_since(self) -> float | None:
+        """Return the unix (utc) timestamp since when the player is unavailable, if it is."""
+        return self._state.unavailable_since
+
+    @property
+    def protocols(self) -> list[PlayerProtocolInfo]:
+        """Return all protocols that belong to the player, attached or not, as published."""
+        return self._state.protocols
+
+    @property
+    def corrected_elapsed_time(self) -> float | None:
+        """Return the elapsed time of the current media as of now."""
+        return self._state.corrected_elapsed_time
+
+    @property
+    def current_item_id(self) -> str | None:
+        """Return the id of the queue item the player has loaded, else the uri of its media."""
+        return self._state.current_item_id
 
     @property
     def config(self) -> PlayerConfig:
@@ -712,11 +956,6 @@ class Player:
         return self._roles.get(protocol_id)
 
     @property
-    def type(self) -> PlayerType:
-        """Return the type of the player, as published."""
-        return self._state.type
-
-    @property
     def reported_type(self) -> PlayerType:
         """Return the type the own protocol of the player reports now, else the stored type."""
         own = self._own_protocol
@@ -727,7 +966,7 @@ class Player:
     @property
     def provider_id(self) -> str:
         """
-        Return the provider (instance) id of the player.
+        Return the id of the provider instance the protocols of the player give it right now.
 
         That of its own protocol, else of its most preferred attached audio protocol,
         else the one it had when a protocol was last attached.
@@ -758,22 +997,17 @@ class Player:
         )
 
     @property
-    def enabled(self) -> bool:
-        """Return if the player is enabled."""
-        return self._state.enabled
-
-    @property
     def available_for_playback(self) -> bool:
         """
-        Return if the player can currently be used to play (or control) audio.
+        Return if the player can be played to right now: enabled, reachable and set up.
 
-        That takes a protocol that can render audio, is reachable and set up: a control
-        protocol alone does not count. Neither a device that still needs setup - an
-        unpaired AirPlay receiver, for example - nor a disabled player can accept a stream.
+        That takes a protocol that can render audio: a control protocol alone does not
+        count. Neither a device that still needs setup - an unpaired AirPlay receiver, for
+        example - nor a disabled player can accept a stream.
 
-        Use this, not state.available, for a device that must be reachable right now:
-        the state also reports a player that is switched off at its power control as
-        available (see offline_by_power_control).
+        Use this, not available, for a device that must be reachable right now: a player
+        that is switched off at its power control is available too (see
+        offline_by_power_control).
         """
         if not self._config.enabled:
             return False
@@ -817,47 +1051,6 @@ class Player:
         )
 
     @property
-    def power_control(self) -> str:
-        """Return the control the power of the player goes through."""
-        return self._state.power_control
-
-    @property
-    def volume_control(self) -> str:
-        """Return the control the volume of the player goes through."""
-        return self._state.volume_control
-
-    @property
-    def mute_control(self) -> str:
-        """Return the control the mute of the player goes through."""
-        return self._state.mute_control
-
-    @property
-    def group_volume(self) -> int | None:
-        """
-        Return the group volume level.
-
-        For group players or syncgroups, returns the maximum volume level of all
-        powered-on child players, or None if no children support volume control.
-
-        For non-group players, returns the player's own volume level.
-        """
-        return self._state.group_volume
-
-    @property
-    def group_volume_muted(self) -> bool | None:
-        """
-        Return the group mute state.
-
-        If this player is a group player or syncgroup, this will return True if all (powered on)
-        child players in the group are muted, False if at least one is not muted, or None if
-        none of the players within the group support mute control.
-
-        If the player is not a group player or syncgroup, this will return the mute state of the
-        player itself (if set), or None if not supported.
-        """
-        return self._state.group_volume_muted
-
-    @property
     def hidden_by_default(self) -> bool:
         """Return if the player is hidden in the UI unless the user chose otherwise."""
         return self._protocol_default("hidden_by_default", False)
@@ -897,11 +1090,6 @@ class Player:
 
     # Protocol-related properties and helpers
 
-    @property
-    def output_protocols(self) -> list[OutputProtocol]:
-        """Return all outputs of the player, each with whether it can be played to."""
-        return self._state.output_protocols
-
     @cached_property
     def playback_domains(self) -> set[str]:
         """
@@ -916,11 +1104,6 @@ class Player:
     def linked_output_protocols(self) -> list[LinkedOutputProtocol]:
         """Return the attached audio protocols as output options, most preferred first."""
         return self._linked_protocols
-
-    @property
-    def active_output_protocol(self) -> str | None:
-        """Return the id of the output that renders the audio: "native" or a protocol id."""
-        return self._state.active_output_protocol
 
     def set_active_output_protocol(self, protocol_id: str | None) -> None:
         """
@@ -1471,16 +1654,6 @@ class Player:
         self.update_state()
 
     @property
-    def sleep_timer_expires_at(self) -> float | None:
-        """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
-        return self._state.sleep_timer_expires_at
-
-    @property
-    def sleep_timer_mode(self) -> SleepTimerMode | None:
-        """Return the point at which the active sleep timer stops playback."""
-        return self._state.sleep_timer_mode
-
-    @property
     def power_on_in_progress(self) -> bool:
         """Return if a power on through the power control waits for the device to come online."""
         return self._power_on_in_progress
@@ -1537,10 +1710,7 @@ class Player:
 
     def __repr__(self) -> str:
         """Return a string representation of the Player."""
-        return (
-            f"<Player name={self.display_name} id={self.player_id} "
-            f"available={self.state.available}>"
-        )
+        return f"<Player name={self.display_name} id={self.player_id} available={self.available}>"
 
     def __eq__(self, other: object) -> bool:
         """Check equality of two Player objects."""

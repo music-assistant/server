@@ -231,7 +231,7 @@ class DiagnosticsController(CoreController):
         total = available = 0
         for player in self.mass.players.iter_players(return_unavailable=True):
             total += 1
-            available += int(player.state.available)
+            available += int(player.available)
             by_provider[player.provider_id.split("--", maxsplit=1)[0]] += 1
             by_type[player.type.value] += 1
         return {
