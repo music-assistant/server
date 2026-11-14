@@ -1574,6 +1574,19 @@ async def load_provider_module(manifest: ProviderManifest) -> ProviderModuleType
     return await _get_provider_module()
 
 
+def set_provider_tier(manifest: ProviderManifest, tier: ProviderTier) -> None:
+    """
+    Set who maintains a provider, which overrides what its manifest says about being built-in.
+
+    :param manifest: Manifest of the provider, changed in place.
+    :param tier: Who maintains the provider.
+    """
+    manifest.tier = tier
+    if tier == ProviderTier.COMMUNITY:
+        manifest.builtin = False
+        manifest.allow_disable = True
+
+
 def purge_provider_modules(domain: str) -> None:
     """
     Forget the imported code of a provider, so its next import reads the files again.
