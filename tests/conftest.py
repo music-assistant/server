@@ -15,11 +15,13 @@ from music_assistant_models import helpers as models_helpers
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
+from music_assistant.controllers.community_catalog import CommunityCatalogController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.controllers.translations import TranslationController
 from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.mass import MusicAssistant
 from tests.common import (
@@ -143,7 +145,9 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
 
 
 @asynccontextmanager
-async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+async def full_mass_context(
+    tmp_path: pathlib.Path, *, safe_mode: bool = False
+) -> AsyncGenerator[MusicAssistant]:
     """
     Boot a full server on the given temporary directory.
 
@@ -151,6 +155,7 @@ async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssis
     (or the cache) before the boot can prepare the directory itself and boot it here.
 
     :param tmp_path: Temporary directory for test data.
+    :param safe_mode: Boot the server in safe mode.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
@@ -159,7 +164,7 @@ async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssis
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
-    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
+    mass_instance = MusicAssistant(str(storage_path), str(cache_path), safe_mode)
 
     # Mock zeroconf to prevent real network I/O during tests
     mock_zc = _create_mock_zeroconf()
@@ -269,6 +274,8 @@ async def _minimal_mass_context(
     await mass_instance.config.setup()
     mass_instance.discovery = DiscoveryController(mass_instance)
     mass_instance.cache = CacheController(mass_instance)
+    mass_instance.translations = TranslationController(mass_instance)
+    mass_instance.community_catalog = CommunityCatalogController(mass_instance)
 
     try:
         yield mass_instance

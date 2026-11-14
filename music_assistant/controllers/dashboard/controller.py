@@ -24,6 +24,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_scope,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.build_info import release_channel
 from music_assistant.helpers.guest_access import get_or_create_guest_user
 from music_assistant.models.core_controller import CORE_DOCS_URL, CoreController
 
@@ -418,12 +419,7 @@ class DashboardController(CoreController):
 
     def _frontend_channel(self) -> str:
         """Derive the app.music-assistant.io frontend channel from the server version."""
-        version = self.mass.version
-        if version == "0.0.0" or ".dev" in version:
-            return "nightly"
-        if "b" in version or "rc" in version:
-            return "beta"
-        return "stable"
+        return release_channel(self.mass.version)
 
     def _signal_dashboards_updated(self) -> None:
         """Signal the current list of registered dashboard endpoints to subscribers."""

@@ -1,0 +1,165 @@
+"""Models of the community catalog: the index the registry publishes and the API results."""
+
+from __future__ import annotations
+
+from base64 import b64encode
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
+
+from mashumaro import DataClassDictMixin
+from music_assistant_models.config_entries import (
+    ProviderError,  # noqa: TC002 - mashumaro resolves field types at runtime
+)
+from music_assistant_models.provider import (
+    ProviderManifest,  # noqa: TC002 - mashumaro resolves field types at runtime
+)
+
+from music_assistant.controllers.community_catalog.constants import STATE_SCHEMA
+
+
+class IndexStatus(StrEnum):
+    """Whether the catalog offers a provider."""
+
+    LISTED = "listed"
+    # offered no longer; what is installed keeps loading
+    WITHDRAWN = "withdrawn"
+    # may not load at all
+    BLOCKED = "blocked"
+
+
+class CommunityProviderState(StrEnum):
+    """Where a community provider stands on this server."""
+
+    AVAILABLE = "available"
+    INSTALLED = "installed"
+    UPDATE_AVAILABLE = "update_available"
+    RESTART_REQUIRED = "restart_required"
+    BLOCKED = "blocked"
+    UNAVAILABLE = "unavailable"
+    WITHDRAWN = "withdrawn"
+
+
+@dataclass
+class IndexVersion(DataClassDictMixin):
+    """A released version of a provider in the index."""
+
+    commit: str
+    # the folder of the provider in its repository
+    folder: str
+    content_hash: str
+    requirements: list[str]
+    released: str
+
+
+@dataclass
+class IndexProvider(DataClassDictMixin):
+    """A provider in the index."""
+
+    status: IndexStatus
+    # owner/name of the repository on GitHub
+    repository: str
+    # the manifest of the latest version, parsed only where it is used
+    manifest: dict[str, Any]
+    # when the provider entered the catalog
+    added: str
+    reason: str | None = None
+    reason_url: str | None = None
+    maintainers: list[str] = field(default_factory=list)
+    icon_svg: str | None = None
+    latest: str | None = None
+    versions: dict[str, IndexVersion] = field(default_factory=dict)
+    # the reason, by version
+    blocked_versions: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def icon(self) -> str | None:
+        """Return the icon as a data URI, which a client can show as an image but not as markup."""
+        if not self.icon_svg:
+            return None
+        return f"data:image/svg+xml;base64,{b64encode(self.icon_svg.encode()).decode('ascii')}"
+
+    @property
+    def offered_version(self) -> str | None:
+        """Return the version the catalog offers to install, None when it offers none."""
+        if (
+            self.status != IndexStatus.LISTED
+            or self.latest not in self.versions
+            or self.latest in self.blocked_versions
+        ):
+            return None
+        return self.latest
+
+
+@dataclass
+class CatalogIndex(DataClassDictMixin):
+    """The index of the community catalog for one server line."""
+
+    schema: int
+    server_line: str
+    generated: str
+    providers: dict[str, IndexProvider] = field(default_factory=dict)
+
+
+@dataclass
+class InstalledProvider(DataClassDictMixin):
+    """The version of a community provider that is installed."""
+
+    version: str
+    # owner/name of the repository on GitHub
+    repository: str
+    commit: str
+    content_hash: str
+    # this version loaded on this server once
+    verified: bool = False
+    # the version that was live before, kept to go back to
+    previous_version: str | None = None
+    # staged, becomes live at the next start of the server
+    pending_version: str | None = None
+    # a version this server went back from, which it installs again only when the admin asks
+    failed_version: str | None = None
+    # what the app tells the admin about this provider until it is dismissed: "moved"
+    notice: str | None = None
+
+
+@dataclass
+class CatalogState(DataClassDictMixin):
+    """What the server keeps about the community catalog next to the kept copy of the index."""
+
+    schema: int = STATE_SCHEMA
+    index_etag: str | None = None
+    # by domain
+    installed: dict[str, InstalledProvider] = field(default_factory=dict)
+    # the moved providers the server installed by itself, which it never does again
+    moved: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CommunityProvider(DataClassDictMixin):
+    """A provider of the community catalog, as the app shows it."""
+
+    domain: str
+    # owner/name of the repository on GitHub
+    repository: str
+    maintainers: list[str]
+    # a data URI for an image element, like providers/icon returns
+    icon: str | None
+    # the manifest of the installed version, else the one of the latest version in the index
+    manifest: ProviderManifest
+    state: CommunityProviderState
+    installed_version: str | None = None
+    latest_version: str | None = None
+    # the version that becomes active at the next start of the server
+    pending_version: str | None = None
+    # a version this server went back from; installed again only when the admin asks for it
+    failed_version: str | None = None
+    # when the provider entered the catalog
+    added: str | None = None
+    # when latest_version was released
+    released: str | None = None
+    # what the catalog says about a provider it blocked or withdrew, and where it explains it
+    reason: str | None = None
+    reason_url: str | None = None
+    # why an installed provider does not run, as its settings entries show it
+    error: ProviderError | None = None
+    notice: str | None = None

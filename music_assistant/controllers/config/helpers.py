@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.config_entries import ProviderConfig, ProviderError
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ProviderStatus
 from music_assistant_models.errors import (
@@ -12,6 +13,7 @@ from music_assistant_models.errors import (
     AuthenticationRequired,
     InvalidDataError,
     LoginFailed,
+    ProviderUnavailableError,
     UnsupportedSystemError,
 )
 from music_assistant_models.errors import (
@@ -22,10 +24,7 @@ from music_assistant.constants import ENCRYPT_SUFFIX
 from music_assistant.helpers.security import contains_encrypted_value
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-        ConfigEntry,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigEntry
 
 
 def _with_translation_owner(
@@ -69,6 +68,25 @@ def _provider_status(conf: ProviderConfig, is_loaded: bool) -> ProviderStatus:
         # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
         return ProviderStatus.LOADED
     return ProviderStatus.LOADING
+
+
+def _unavailable_provider_config(
+    raw_conf: dict[str, Any], reason: ProviderError | None
+) -> ProviderConfig:
+    """
+    Return the config of a provider whose code is not available, with the reason why.
+
+    :param raw_conf: The stored config of the provider.
+    :param reason: Why the provider is not available, a generic reason when None.
+    """
+    conf = cast("ProviderConfig", ProviderConfig.parse([], raw_conf))
+    conf.status = ProviderStatus.UNAVAILABLE
+    conf.last_error = reason or ProviderError(
+        error_code=ProviderUnavailableError.error_code,
+        message="This provider is no longer available.",
+        translation_key="provider_no_longer_available",
+    )
+    return conf
 
 
 def _reject_encrypted_values(values: dict[str, Any]) -> None:
