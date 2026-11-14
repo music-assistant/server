@@ -763,21 +763,7 @@ async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
     await _stop(scenario, group_id)
 
 
-@pytest.mark.parametrize(
-    "dynamic",
-    [
-        pytest.param(
-            True,
-            id="dynamic",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="a member a dynamic sync group switched on joins it (commit 4)",
-            ),
-        ),
-        pytest.param(False, id="fixed"),
-    ],
-)
+@pytest.mark.parametrize("dynamic", [True, False], ids=["dynamic", "fixed"])
 async def test_a_sync_group_switches_a_member_on_and_starts_without_it(
     scenario: Scenario, dynamic: bool
 ) -> None:
@@ -792,7 +778,6 @@ async def test_a_sync_group_switches_a_member_on_and_starts_without_it(
     office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
     group_id = await _group(scenario, "sync_group", kitchen_id, office_id, den_id, dynamic=dynamic)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("Failed to stop queue")
 
     await scenario.play(group_id)
 
@@ -852,14 +837,7 @@ async def test_a_universal_group_switches_a_member_on_and_starts_without_it(
 @pytest.mark.parametrize(
     "group_type",
     [
-        pytest.param(
-            "sync_group",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="a member a sync group switched on joins it (commit 4)",
-            ),
-        ),
+        "sync_group",
         pytest.param(
             "universal_group",
             marks=pytest.mark.xfail(

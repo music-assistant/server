@@ -28,6 +28,7 @@ from music_assistant_models.errors import (
     ResourceBusyError,
 )
 from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
@@ -35,6 +36,7 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_GROUP_MEMBERS,
     CONF_MUTE_CONTROL,
+    CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
@@ -365,7 +367,16 @@ class TestProtocolAwareLeaderSelection:
         switched_off = _make_member(mass, "switched_off")
         # clients still see it as available (and off), the device itself is offline
         _set_reachable(switched_off, False)
+        plug = PlayerControl(
+            id="switch.plug", provider="hass", name="Plug", supports_power=True, power_state=False
+        )
+        mass.config.get_player_value.side_effect = lambda player_id, key, default=None: (
+            plug.id if (player_id, key) == ("switched_off", CONF_POWER_CONTROL) else default
+        )
+        mass.players.get_player_control.side_effect = {plug.id: plug}.get
+        switched_off._cache.clear()
         assert switched_off.available
+        assert switched_off.offline_by_power_control
         player_b = _make_member(mass, "player_b")
         sgp._attr_group_members = ["switched_off", "player_b"]
 
@@ -1208,6 +1219,7 @@ class TestSetMembersDoesNotRegisterIncompatible:
         sgp = _make_sync_group(mass)
         unpaired = _make_member(mass, "unpaired", "airplay")
         _protocol(unpaired, "airplay")._attr_needs_setup = True
+        unpaired.update_state(signal_event=False, force_update=True)
         sgp.sync_leader = None
         sgp._attr_group_members = []
 
@@ -4237,3 +4249,102 @@ class TestProtocolLookups:
 
         assert sgp.active_source == "spotify"
         assert sgp.source_list == native.source_list
+
+
+def _dynamic_group_with_a_member_away(
+    mass: MagicMock,
+) -> tuple[SyncGroupPlayer, Player, Player]:
+    """Return a playing dynamic group whose leader holds only itself; its other member is back."""
+    sgp, leader, display = _static_group_with_a_member_away(mass)
+    sgp._attr_static_group_members = []
+    sgp._cache["is_dynamic"] = True
+    return sgp, leader, display
+
+
+class TestMemberTheGroupPoweredOn:
+    """Test the late join of a member the group powered on at its power control."""
+
+    def test_a_member_that_returns_by_itself_is_not_rejoined_by_a_dynamic_group(self) -> None:
+        """A dynamic group only takes back a member it powered on itself."""
+        mass = _make_mock_mass()
+        sgp, leader, _display = _dynamic_group_with_a_member_away(mass)
+
+        sgp.on_group_member_updated(
+            leader, {"can_group_with": (frozenset(), frozenset({"display"}))}
+        )
+
+        mass.call_later.assert_not_called()
+
+    @pytest.mark.parametrize("dynamic", [True, False], ids=["dynamic", "fixed"])
+    async def test_a_member_the_group_powered_on_joins_the_leader(self, dynamic: bool) -> None:
+        """A member that is online after its group powered it on is added to the live leader."""
+        mass = _make_mock_mass()
+        sgp, leader, display = (
+            _dynamic_group_with_a_member_away(mass)
+            if dynamic
+            else _static_group_with_a_member_away(mass)
+        )
+
+        await sgp.on_member_powered_on(display)
+
+        mass.call_later.assert_called_once_with(
+            REFORM_DEBOUNCE_SECONDS,
+            sgp._rejoin_members,
+            task_id="sync_group_rejoin_syncgroup_test",
+        )
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["display"]
+        )
+        assert sgp._late_members == set()
+
+    async def test_a_join_that_found_the_group_busy_is_tried_again(self) -> None:
+        """The next report of the leader adds a member that could not be added yet."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _dynamic_group_with_a_member_away(mass)
+        await sgp.on_member_powered_on(display)
+        busy = _noop_context()
+        busy.__aenter__.return_value = False
+        mass.players.get_player_lock_if_free.return_value = busy
+        await sgp._rejoin_members()
+        mass.players._handle_set_members.assert_not_awaited()
+        mass.call_later.reset_mock()
+
+        sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+
+        mass.call_later.assert_called_once()
+
+    @pytest.mark.parametrize("without", ["leader", "member"])
+    async def test_a_member_joins_nothing_once_the_group_let_go_of_it(self, without: str) -> None:
+        """A group that is no longer formed, or no longer lists the member, takes nothing."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _dynamic_group_with_a_member_away(mass)
+        if without == "leader":
+            sgp.sync_leader = None
+        else:
+            sgp._attr_group_members = ["leader"]
+
+        await sgp.on_member_powered_on(display)
+
+        assert sgp._late_members == set()
+        mass.call_later.assert_not_called()
+
+    async def test_a_member_that_is_removed_no_longer_joins(self) -> None:
+        """A member the user takes out of the group before it joined stays out."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _dynamic_group_with_a_member_away(mass)
+        await sgp.on_member_powered_on(display)
+
+        await sgp.set_members(player_ids_to_remove=["display"])
+
+        assert sgp._late_members == set()
+
+    async def test_a_dissolved_group_forgets_the_members_it_powered_on(self) -> None:
+        """Once the group is dissolved, no member is taken to a leader any more."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _dynamic_group_with_a_member_away(mass)
+        await sgp.on_member_powered_on(display)
+
+        await sgp._dissolve_syncgroup()
+
+        assert sgp._late_members == set()
