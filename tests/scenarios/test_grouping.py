@@ -795,9 +795,6 @@ async def test_a_sync_group_switches_a_member_on_and_starts_without_it(
     await _stop(scenario, group_id)
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="a universal group switches a member on (commit 5)"
-)
 async def test_a_universal_group_switches_a_member_on_and_starts_without_it(
     scenario: Scenario,
 ) -> None:
@@ -834,20 +831,7 @@ async def test_a_universal_group_switches_a_member_on_and_starts_without_it(
     await _stop(scenario, group_id)
 
 
-@pytest.mark.parametrize(
-    "group_type",
-    [
-        "sync_group",
-        pytest.param(
-            "universal_group",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="a member a universal group switched on joins it (commit 5)",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
 async def test_a_group_of_switched_off_speakers_starts_on_the_first_that_comes_online(
     scenario: Scenario, group_type: str
 ) -> None:
@@ -862,7 +846,6 @@ async def test_a_group_of_switched_off_speakers_starts_on_the_first_that_comes_o
     group_id = await _group(scenario, group_type, kitchen_id, office_id)
     kitchen_plug = await _switch_off(scenario, kitchen)
     office_plug = await _switch_off(scenario, office)
-    scenario.expect_log("Failed to stop queue")
     await _load_music(scenario)
 
     play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
@@ -978,7 +961,6 @@ async def test_a_switched_off_speaker_added_to_a_leader_joins_once_it_is_online(
     kitchen_id = _player_id(scenario, kitchen)
     office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("Failed to stop queue")
 
     await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[den_id, office_id])
     await scenario.settle()
@@ -1008,7 +990,6 @@ async def test_a_woken_member_is_not_powered_off_as_idle_before_it_joins(
     kitchen_id, den_id = _player_id(scenario, kitchen), _player_id(scenario, den)
     await scenario.configure_player(den_id, idle_power_off=1)
     plug = await _switch_off(scenario, den)
-    scenario.expect_log("Failed to stop queue")
     await _load_music(scenario)
     await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[den_id])
     await scenario.settle()

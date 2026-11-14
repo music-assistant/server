@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlayerType, ProtocolRole
+from music_assistant_models.enums import PlaybackState, PlayerType, ProtocolRole
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player_control import PlayerControl
 
@@ -355,3 +355,26 @@ async def test_the_playback_an_announcement_restores_switches_no_member_on(
 
     assert setup.controller._member_joins == {}
     setup.speakers["den"].control.power_on.assert_not_awaited()  # type: ignore[union-attr]
+
+
+async def test_an_announcement_leaves_the_volume_of_a_switched_off_member_alone(
+    mock_mass: MagicMock,
+) -> None:
+    """The announcement volume is only set on the members that play the announcement."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    set_volume = AsyncMock()
+    controller._unmute_and_set_announcement_volume = set_volume  # type: ignore[method-assign]
+
+    await controller._prepare_for_announcement(
+        setup.group,
+        volume_level=None,
+        prev_state=PlaybackState.IDLE,
+        prev_synced_to=None,
+        prev_group=None,
+        prev_media_name=None,
+        prev_volumes={},
+        prev_muted=set(),
+    )
+
+    assert [call.args[0].player_id for call in set_volume.await_args_list] == ["kitchen"]

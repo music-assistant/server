@@ -122,7 +122,7 @@ class UniversalGroupPlayer(PlayerProtocol):
         # mute are advertised whether or not the group currently has a live session.
         for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.available_for_playback:
+            if member_player and member_player.available:
                 for feature in EXTRA_FEATURES_FROM_MEMBERS:
                     if feature in member_player.supported_features:
                         features.add(feature)
@@ -307,7 +307,7 @@ class UniversalGroupPlayer(PlayerProtocol):
             await self.stream.stop()
 
         # resolve the static output format the UGP serves to all members
-        output_format, fmt_str = resolve_ugp_output_format(
+        output_format, _ = resolve_ugp_output_format(
             cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
         )
         # internal PCM pivot for the multiplexer: F32 at the configured output rate
@@ -326,9 +326,6 @@ class UniversalGroupPlayer(PlayerProtocol):
             queue_id=media.source_id,
             session_id=get_media_session_id(media),
         )
-        base_url = f"{self.mass.streams.base_url}/ugp/{self.protocol_id}.{fmt_str}"
-        group_player_id = self._group_player.player_id
-
         # set the state optimistically
         self._attr_current_media = deepcopy(media)
         self._attr_elapsed_time = 0
@@ -342,16 +339,7 @@ class UniversalGroupPlayer(PlayerProtocol):
             for member in self.mass.players.iter_group_members(
                 self._group_player, only_powered=True
             ):
-                member_media = PlayerMedia(
-                    uri=f"{base_url}?player_id={member.player_id}",
-                    media_type=MediaType.FLOW_STREAM,
-                    title=self.display_name,
-                    source_id=group_player_id,
-                    queue_session_id=self.stream.session_id,
-                    custom_data={
-                        "ugp_player_id": group_player_id,
-                    },
-                )
+                member_media = self._member_media(member.player_id)
                 if self.mass.players.holds_player_lock(member.player_id):
                     # the command that plays the group holds this member (a play action on
                     # the member's own queue): a task of its own would wait for that lock
@@ -430,24 +418,8 @@ class UniversalGroupPlayer(PlayerProtocol):
             # session-lifecycle refactor (groups now have `_attr_powered=None`
             # unless the user assigned Fake control).
             if self.stream and not self.stream.done:
-                _, fmt_str = resolve_ugp_output_format(
-                    cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
-                )
-                base_url = f"{self.mass.streams.base_url}/ugp/{self.protocol_id}.{fmt_str}"
                 # Use internal handler to get protocol selection and avoid redirect
-                await self._play_media_on_member(
-                    player_id,
-                    PlayerMedia(
-                        uri=f"{base_url}?player_id={player_id}",
-                        media_type=MediaType.FLOW_STREAM,
-                        title=self.display_name,
-                        source_id=group_player_id,
-                        queue_session_id=self.stream.session_id,
-                        custom_data={
-                            "ugp_player_id": group_player_id,
-                        },
-                    ),
-                )
+                await self._play_media_on_member(player_id, self._member_media(player_id))
         # handle removals
         for player_id in player_ids_to_remove or []:
             if player_id not in self._attr_group_members:
@@ -470,6 +442,23 @@ class UniversalGroupPlayer(PlayerProtocol):
                 # if the child player is playing the group stream, stop it
                 # Use internal handler to get protocol selection and avoid redirect
                 await self.mass.players._handle_cmd_stop(player_id)
+        self.update_state()
+
+    async def on_member_powered_on(self, member: Player) -> None:
+        """
+        Take a configured member this group powered on into the session, while it has one.
+
+        :param member: The player of the member, whose device is online by now.
+        """
+        if not self.is_active_session and self._attr_powered is not True:
+            return
+        member_id = member.player_id
+        if member_id not in self._attr_group_members:
+            if member_id not in self._attr_static_group_members:
+                return
+            self._attr_group_members.append(member_id)
+        if self.stream and not self.stream.done:
+            await self._play_media_on_member(member_id, self._member_media(member_id))
         self.update_state()
 
     async def poll(self) -> None:
@@ -510,6 +499,29 @@ class UniversalGroupPlayer(PlayerProtocol):
         async with self.mass.players.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
             await self.mass.players._handle_play_media(player_id, media)
 
+    def _member_media(self, member_id: str) -> PlayerMedia:
+        """
+        Return the media a member plays to play the live stream of the group.
+
+        :param member_id: Id of the player of the member.
+        """
+        assert self.stream is not None  # for type checking
+        _, fmt_str = resolve_ugp_output_format(
+            cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
+        )
+        group_player_id = self._group_player.player_id
+        return PlayerMedia(
+            uri=(
+                f"{self.mass.streams.base_url}/ugp/{self.protocol_id}.{fmt_str}"
+                f"?player_id={member_id}"
+            ),
+            media_type=MediaType.FLOW_STREAM,
+            title=self.display_name,
+            source_id=group_player_id,
+            queue_session_id=self.stream.session_id,
+            custom_data={"ugp_player_id": group_player_id},
+        )
+
     async def _capture_members(self) -> None:
         """
         Resolve collisions and prepare the configured members for grouping.
@@ -520,12 +532,16 @@ class UniversalGroupPlayer(PlayerProtocol):
         leaves the group ready for playback. Idempotent: safe to call on an
         already-prepared group.
         """
-        # rebuild the effective member list from the configured static set
+        # rebuild the effective member list from the configured static set. A member that
+        # is switched off at its power control is taken in once its device is online
+        # (see on_member_powered_on)
         self._attr_group_members = []
         for static_group_member in self._attr_static_group_members:
             if (
-                member_player := self.mass.players.get_player(static_group_member)
-            ) and member_player.available_for_playback:
+                (member_player := self.mass.players.get_player(static_group_member))
+                and member_player.available
+                and not member_player.offline_by_power_control
+            ):
                 self._attr_group_members.append(static_group_member)
         # ensure each member is free of any prior group/sync allegiance and ready to play
         group_player = self._group_player
