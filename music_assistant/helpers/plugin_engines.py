@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature, ProviderType
+from music_assistant_models.errors import ProviderUnavailableError, RateLimited
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.helpers.throttle_retry import (
+    MAX_RETRY_AFTER,
+    RequestPriority,
+    ThrottlerManager,
+    current_priority,
+)
 from music_assistant.models.plugin import (
     AIEngine,
     ImageEngine,
@@ -18,7 +26,7 @@ from music_assistant.models.plugin import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import AsyncGenerator, Callable, Coroutine
 
     from music_assistant_models.config_entries import ConfigValueType
 
@@ -26,6 +34,90 @@ if TYPE_CHECKING:
     from music_assistant.models.provider import Provider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.plugin_engines")
+
+# how long an engine that could not be reached, or did not answer in time, turns requests away
+ENGINE_OUTAGE_COOLDOWN: Final = 15 * 60
+
+
+class EngineThrottlers:
+    """
+    The throttlers of a plugin's engines, which also hold an engine back after it failed.
+
+    An engine that could not be reached, or that rate limited us, turns background requests
+    away for a while, so background work fails fast rather than each pass paying a request and
+    a timeout of its own. A user action always asks the engine, within its rate limit only.
+    Each engine has its own throttler, so one failing engine does not hold back another.
+    """
+
+    def __init__(
+        self, rate_limit: int, period: float, outage_cooldown: float = ENGINE_OUTAGE_COOLDOWN
+    ) -> None:
+        """
+        Initialize the throttlers.
+
+        :param rate_limit: The number of requests an engine takes per period.
+        :param period: The length of the period, in seconds.
+        :param outage_cooldown: The seconds an engine that could not be reached is left alone.
+        """
+        self._rate_limit = rate_limit
+        self._period = period
+        self._outage_cooldown = outage_cooldown
+        self._throttlers: dict[str, ThrottlerManager] = {}
+
+    def cooldown_remaining(self, engine_id: str) -> float:
+        """
+        Return the seconds the engine still turns background work away, 0 when it takes it.
+
+        :param engine_id: The provider-scoped id of the engine.
+        """
+        throttler = self._throttlers.get(engine_id)
+        return throttler.cooldown_remaining if throttler else 0.0
+
+    def note_outage(self, engine_id: str) -> None:
+        """
+        Hold the engine back for a while after it did not answer in time.
+
+        :param engine_id: The provider-scoped id of the engine.
+        """
+        self._throttler(engine_id).set_cooldown(self._outage_cooldown)
+
+    @asynccontextmanager
+    async def request(self, engine_id: str) -> AsyncGenerator[None]:
+        """
+        Run one request to the engine, within its rate limit and, for background work, its cooldown.
+
+        :param engine_id: The provider-scoped id of the engine.
+        :raises RateLimited: While the engine turns background requests away for longer than
+            a caller is made to wait.
+        """
+        throttler = self._throttler(engine_id)
+        # a user waiting on an answer is better served by asking the engine than by being
+        # turned away for an outage that may already be over, so only background work sits
+        # the cooldown out, a failure of either still arms it
+        gate: AbstractAsyncContextManager[float] = (
+            throttler.acquire()
+            if current_priority() is RequestPriority.LOW
+            else throttler.throttler
+        )
+        async with gate:
+            try:
+                yield
+            except RateLimited as err:
+                # as long as the service asked for, when it said how long
+                wait = float(err.backoff_time) or self._outage_cooldown
+                throttler.set_cooldown(min(wait, MAX_RETRY_AFTER))
+                raise
+            except ProviderUnavailableError:
+                throttler.set_cooldown(self._outage_cooldown)
+                raise
+
+    def _throttler(self, engine_id: str) -> ThrottlerManager:
+        """Return the throttler of the engine, creating it when it is first used."""
+        if (throttler := self._throttlers.get(engine_id)) is None:
+            throttler = self._throttlers[engine_id] = ThrottlerManager(
+                self._rate_limit, self._period
+            )
+        return throttler
 
 
 async def get_ai_engines(mass: MusicAssistant) -> list[AIEngine]:

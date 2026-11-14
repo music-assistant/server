@@ -25,6 +25,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_VERIFY_SSL
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
@@ -691,6 +692,49 @@ async def test_ai_query_uses_the_requested_engine() -> None:
 
         service_data = hass.send_command.call_args.kwargs["service_data"]
         assert service_data["entity_id"] == "ai_task.second"
+
+
+async def test_ai_query_leaves_an_unreachable_entity_alone() -> None:
+    """Home Assistant being unreachable is an outage, and background work leaves it alone."""
+    states = [_state("ai_task.first", "First")]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(side_effect=NotConnected("gone"))
+        with pytest.raises(ProviderUnavailableError):
+            await provider.ai_query("What is this song?")
+        assert provider.engine_cooldown("ai_task.first") > 0
+        with request_priority(RequestPriority.LOW), pytest.raises(RateLimited):
+            await provider.ai_query("What is this song?")
+        hass.send_command.assert_awaited_once()
+
+        # a user asking once Home Assistant is back gets an answer, not the cooldown
+        hass.send_command = AsyncMock(return_value={"response": {"data": "A song"}})
+        assert await provider.ai_query("What is this song?") == "A song"
+
+
+async def test_ai_generate_image_leaves_an_entity_alone_after_a_failing_download() -> None:
+    """A failing image download holds the entity back, not the other AI Task entities."""
+    states = [
+        _image_state("ai_task.images", "Images", supported_features=4),
+        _state("ai_task.text", "Text"),
+    ]
+
+    async with _start_provider(states) as (provider, hass):
+        hass.send_command = AsyncMock(
+            return_value={"response": {"url": "/ai_task/image/x.png?authSig=secret"}}
+        )
+        failed = ClientResponseError(MagicMock(), (), status=503, message="Unavailable")
+        with (
+            patch.object(provider, "_fetch_image", AsyncMock(side_effect=failed)),
+            pytest.raises(ProviderUnavailableError),
+        ):
+            await provider.ai_generate_image("A sunset")
+
+        assert provider.engine_cooldown("ai_task.images") > 0
+        assert provider.engine_cooldown("ai_task.text") == 0
+        # a caller that times a request out holds that entity back as well
+        provider.note_engine_outage("ai_task.text")
+        assert provider.engine_cooldown("ai_task.text") > 0
 
 
 async def test_ai_query_not_advertised_without_entity() -> None:

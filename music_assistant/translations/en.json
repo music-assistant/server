@@ -2128,6 +2128,7 @@
   "provider.phishin.media.folder.user_playlists.name": "User Playlists",
   "provider.phishin.media.folder.venue.name": "{0} ({1} shows)",
   "provider.phishin.media.folder.year.name": "{0} ({1} shows)",
+  "provider.playlist_metadata.background_task.generate_ai_artwork": "Generate AI playlist artwork",
   "provider.playlist_metadata.config_categories.ai": "AI covers and descriptions",
   "provider.playlist_metadata.config_categories.ai_preview": "AI cover preview",
   "provider.playlist_metadata.config_entries.ai_custom_prompt.description": "The prompt sent to the image engine. You can use {name} or {title} (the playlist name), {context} (the seeds, era, artists and genres as sentences), {concept} (the visual concept), {artists}, {genres} and {era}.",

@@ -12,6 +12,7 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.plugin_engines import EngineThrottlers
 from music_assistant.models.plugin import AIEngine, ImageEngine, PluginProvider
 
 from .constants import (
@@ -20,6 +21,8 @@ from .constants import (
     CONF_BASE_URL,
     CONF_IMAGE_MODELS,
     CONF_MODELS,
+    ENGINE_RATE_LIMIT,
+    ENGINE_RATE_PERIOD,
     IMAGE_REQUEST_TIMEOUT,
     MODELS_REQUEST_TIMEOUT,
 )
@@ -52,6 +55,8 @@ class OpenAICompatibleProvider(PluginProvider):
     # image models that turned out to refuse being asked for an inline image, so later
     # requests ask them plainly
     _no_format_models: set[str]
+    # per model, also holding a model back for a while after it could not be reached
+    _engine_throttlers: EngineThrottlers
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -60,6 +65,7 @@ class OpenAICompatibleProvider(PluginProvider):
             raise SetupFailedError(msg)
         self._images_endpoint_models = set()
         self._no_format_models = set()
+        self._engine_throttlers = EngineThrottlers(ENGINE_RATE_LIMIT, ENGINE_RATE_PERIOD)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the (options) config entries to configure this provider instance."""
@@ -111,14 +117,15 @@ class OpenAICompatibleProvider(PluginProvider):
         if model is None:
             msg = "No model is selected for this provider"
             raise UnsupportedFeaturedException(msg)
-        return await chat_completion(
-            self.mass,
-            self._base_url,
-            self._api_key,
-            model=model,
-            prompt=query,
-            timeout=CHAT_REQUEST_TIMEOUT,
-        )
+        async with self._engine_throttlers.request(model):
+            return await chat_completion(
+                self.mass,
+                self._base_url,
+                self._api_key,
+                model=model,
+                prompt=query,
+                timeout=CHAT_REQUEST_TIMEOUT,
+            )
 
     async def ai_generate_image(self, prompt: str, engine_id: str | None = None) -> bytes:
         """Generate an image from a text prompt."""
@@ -126,19 +133,28 @@ class OpenAICompatibleProvider(PluginProvider):
         if model is None:
             msg = "No image model is selected for this provider"
             raise UnsupportedFeaturedException(msg)
-        image, used_images_endpoint = await image_generation(
-            self.mass,
-            self._base_url,
-            self._api_key,
-            model=model,
-            prompt=prompt,
-            timeout=IMAGE_REQUEST_TIMEOUT,
-            use_images_endpoint=model in self._images_endpoint_models,
-            no_format_models=self._no_format_models,
-        )
+        async with self._engine_throttlers.request(model):
+            image, used_images_endpoint = await image_generation(
+                self.mass,
+                self._base_url,
+                self._api_key,
+                model=model,
+                prompt=prompt,
+                timeout=IMAGE_REQUEST_TIMEOUT,
+                use_images_endpoint=model in self._images_endpoint_models,
+                no_format_models=self._no_format_models,
+            )
         if used_images_endpoint:
             self._images_endpoint_models.add(model)
         return image
+
+    def engine_cooldown(self, engine_id: str) -> float:
+        """Return the seconds a model turns requests away after it failed, 0 when it takes them."""
+        return self._engine_throttlers.cooldown_remaining(engine_id)
+
+    def note_engine_outage(self, engine_id: str) -> None:
+        """Hold a model back after a request to it timed out."""
+        self._engine_throttlers.note_outage(engine_id)
 
     @property
     def _base_url(self) -> str:

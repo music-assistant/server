@@ -10,7 +10,7 @@ import base64
 import contextlib
 import os
 import time
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
@@ -21,6 +21,7 @@ import pytest
 from music_assistant_models.enums import ImageType
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     RateLimited,
@@ -37,8 +38,9 @@ from music_assistant_models.unique_list import UniqueList
 from PIL import Image, ImageDraw
 
 from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.helpers.throttle_retry import RequestPriority
 from music_assistant.providers.playlist_metadata import PlaylistMetadataProvider
-from music_assistant.providers.playlist_metadata.ai import _fit_title, _format_template
+from music_assistant.providers.playlist_metadata.ai import AIArtwork, _fit_title, _format_template
 from music_assistant.providers.playlist_metadata.ai_constants import (
     CONF_ACTION_PREVIEW,
     CONF_ACTION_REGENERATE,
@@ -57,6 +59,7 @@ from music_assistant.providers.playlist_metadata.ai_constants import (
     CONF_TEXT_ENGINE,
     CONF_TITLE_OVERLAY,
     CONF_USE_PROMPT_ENGINE,
+    DEFAULT_CONCEPT,
     IMAGE_GRACE_SECONDS,
     MAX_OUTAGE_RETRIES,
     PLAYLISTS_ALL,
@@ -439,7 +442,7 @@ async def test_a_failed_generation_keeps_the_previous_cover(
 
 
 async def test_the_hourly_limit_postpones_generation(provider: PlaylistMetadataProvider) -> None:
-    """Covers over the limit are not generated now, the worker waits for a free slot."""
+    """Covers over the limit are not generated now, the playlist is queued again later."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
     await _metadata(provider, _smart_playlist(item_id="1"))
     second = _smart_playlist(item_id="2")
@@ -448,7 +451,8 @@ async def test_the_hourly_limit_postpones_generation(provider: PlaylistMetadataP
 
     assert _engine_calls(provider) == 1
     assert second.image is None
-    assert provider._ai.waiting
+    # queued again once the slot taken an hour before frees up
+    assert 3500 < _retries(provider)["2"] <= 3601
 
 
 async def test_the_hourly_limit_survives_a_reload(provider: PlaylistMetadataProvider) -> None:
@@ -456,12 +460,15 @@ async def test_the_hourly_limit_survives_a_reload(provider: PlaylistMetadataProv
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
     await _metadata(provider, _smart_playlist(item_id="1"))
 
+    # a reload builds the AI artwork afresh, as a changed setting does
+    provider._ai = AIArtwork(provider)
     await provider._ai.setup()
     second = _smart_playlist(item_id="2")
     await _metadata(provider, second)
 
     assert _engine_calls(provider) == 1
     assert second.image is None
+    assert "2" in _retries(provider)
 
 
 async def test_the_hourly_limit_forgets_generations_older_than_an_hour(
@@ -474,10 +481,31 @@ async def test_the_hourly_limit_forgets_generations_older_than_an_hour(
     ):
         await _metadata(provider, _smart_playlist(item_id="1"))
 
+    provider._ai = AIArtwork(provider)
     await provider._ai.setup()
     await _metadata(provider, _smart_playlist(item_id="2"))
 
     assert _engine_calls(provider) == 2
+
+
+async def test_a_postponed_playlist_is_generated_once_the_limit_allows(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A playlist the hourly limit held back is generated when it is queued again."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
+    await _metadata(provider, _smart_playlist(item_id="1"))
+    await _metadata(provider, second := _smart_playlist(item_id="2"))
+    assert second.image is None
+
+    # a higher limit frees a slot, like the hour passing does
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 2})
+    await _fire_retries(provider)
+
+    assert _engine_calls(provider) == 2
+    cover = _cover(second)
+    assert cover is not None
+    assert cover.path.startswith("ai_")
+    assert not _retries(provider)
 
 
 async def test_a_failing_engine_leaves_the_collage_in_place(
@@ -606,7 +634,7 @@ async def test_a_blocked_cover_does_not_hold_up_other_work(
 
     await _metadata(provider, second)
 
-    assert provider._ai.waiting
+    assert "2" in _retries(provider)
     assert second.image is None
     assert second.metadata.description == DESCRIPTION
 
@@ -738,17 +766,117 @@ async def test_refresh_passes_do_not_overlap(provider: PlaylistMetadataProvider)
     assert passes == 3
 
 
-async def test_unloading_stops_the_worker(provider: PlaylistMetadataProvider) -> None:
-    """A worker waiting for the hourly limit is cancelled and its queue dropped on unload."""
+async def test_unloading_drops_the_waiting_generations(provider: PlaylistMetadataProvider) -> None:
+    """A playlist waiting for the hourly limit is not queued again after an unload."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1})
     await _metadata(provider, _smart_playlist(item_id="1"))
     await _metadata(provider, _smart_playlist(item_id="2"))
-    assert provider._ai.waiting
+    assert "2" in _retries(provider)
 
     await provider.unload()
 
-    _mass(provider).cancel_task.assert_any_call(f"{INSTANCE_ID}_ai_worker")
-    assert not provider._ai._pending
+    assert not _retries(provider)
+
+
+async def test_unloading_cancels_a_running_generation(provider: PlaylistMetadataProvider) -> None:
+    """A generation still running when the provider unloads is cancelled."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def held_image(*_args: Any, **_kwargs: Any) -> bytes:
+        started.set()
+        await release.wait()
+        return _png()
+
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=held_image
+    )
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+    playlist = _smart_playlist(item_id="1")
+    _register(provider, playlist)
+    await provider.get_playlist_metadata(playlist)
+    async with asyncio.timeout(5):
+        await started.wait()
+
+    await provider.unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _tasks(provider)[f"{INSTANCE_ID}_ai_generate"]
+
+
+async def test_a_catch_up_runs_as_one_background_task(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """The playlists of a catch-up are generated by one task, one playlist at a time."""
+    release = asyncio.Event()
+
+    async def held_image(*_args: Any, **_kwargs: Any) -> bytes:
+        await release.wait()
+        return _png()
+
+    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+        side_effect=held_image
+    )
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+    first, second = _smart_playlist(item_id="1"), _smart_playlist(item_id="2")
+    _register(provider, first, second)
+
+    await provider.get_playlist_metadata(first)
+    await provider.get_playlist_metadata(second)
+
+    queue = _mass(provider).tasks.run_background_task
+    assert {call.kwargs["task_id"] for call in queue.call_args_list} == {
+        f"{INSTANCE_ID}_ai_generate"
+    }
+    assert len(_tasks(provider)) == 1
+
+    release.set()
+    await _settle(provider)
+    assert _engine_calls(provider) == 2
+
+
+async def test_a_pass_cancelled_while_pending_is_started_again(
+    provider: PlaylistMetadataProvider,
+) -> None:
+    """A pass an admin cancels before it ran does not keep the next one from starting."""
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+    first, second = _smart_playlist(item_id="1"), _smart_playlist(item_id="2")
+    _register(provider, first, second)
+    queue = _mass(provider).tasks.run_background_task
+    run_queued = queue.side_effect
+    # like the tasks controller: the pass waits in the queue, and is cancelled there
+    # without its handler ever running
+    queue.side_effect = None
+
+    await provider.get_playlist_metadata(first)
+    assert queue.call_count == 1
+    queue.side_effect = run_queued
+
+    await provider.get_playlist_metadata(second)
+    await _settle(provider)
+
+    assert queue.call_count == 2
+    assert _engine_calls(provider) == 2
+
+
+async def test_a_hanging_engine_is_left_alone(provider: PlaylistMetadataProvider) -> None:
+    """An engine that does not answer in time is held back, like one that is unreachable."""
+    hang = asyncio.Event()
+
+    async def hanging_image(*_args: Any, **_kwargs: Any) -> bytes:
+        await hang.wait()
+        return _png()
+
+    engine = provider.test_engine.provider  # type: ignore[attr-defined]
+    engine.ai_generate_image = AsyncMock(side_effect=hanging_image)
+    _set_config(provider, **{CONF_DESCRIPTIONS: False})
+    playlist = _smart_playlist(item_id="1")
+    _register(provider, playlist)
+
+    with patch("music_assistant.providers.playlist_metadata.ai.IMAGE_TIMEOUT_SECONDS", 0.01):
+        await _metadata(provider, playlist)
+
+    engine.note_engine_outage.assert_called_once_with("ai_task.images")
+    assert playlist.image is None
 
 
 async def test_preview_leaves_the_description_out_when_descriptions_are_off(
@@ -905,28 +1033,26 @@ async def test_rule_changes_that_do_not_shape_the_prompt_keep_the_cover(
 async def test_an_unreachable_engine_is_retried_far_longer(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """An outage leaves the engine alone for a while, and gives up only after many tries."""
-    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
+    """A playlist waits for an engine that turns requests away, and gives up only late."""
+    engine = provider.test_engine.provider  # type: ignore[attr-defined]
+    engine.ai_generate_image = AsyncMock(
         side_effect=ProviderUnavailableError("Home Assistant is not reachable")
     )
     _set_config(provider, **{CONF_DESCRIPTIONS: False})
     first, second = _smart_playlist(item_id="1"), _smart_playlist(item_id="2")
 
     await _metadata(provider, first)
+    # the engine turns requests away after the outage, so the next playlist waits for it
+    engine.engine_cooldown.return_value = 900.0
     await _metadata(provider, second)
 
-    # the second playlist waits for the engine instead of trying it as well
     assert _engine_calls(provider) == 1
-    assert provider._ai.waiting
+    assert _retries(provider)["2"] == 901
 
     # tried well past where a failed generation is given up on, until the outages run out
-    for _task in _tasks(provider).values():
-        _task.cancel()
-    await asyncio.gather(*_tasks(provider).values(), return_exceptions=True)
-    provider._ai._pending.clear()
+    engine.engine_cooldown.return_value = 0.0
     start = time.time()
     for day in range(1, 12):
-        provider._ai._paused_until.clear()
         with patch(
             "music_assistant.providers.playlist_metadata.ai.time.time",
             return_value=start + day * 25 * 3600,
@@ -953,68 +1079,47 @@ async def test_outages_and_failed_generations_are_counted_apart(
     assert failure["retry_at"] is not None
 
 
-async def test_blocked_work_does_not_wake_the_worker(provider: PlaylistMetadataProvider) -> None:
-    """Queueing a cover while covers wait for the limit leaves the worker waiting."""
-    _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
-    await _metadata(provider, _smart_playlist(item_id="1"))
-    await _metadata(provider, _smart_playlist(item_id="2"))
-    assert provider._ai.waiting
-
-    _register(provider, third := _smart_playlist(item_id="3"))
-    await provider.get_playlist_metadata(third)
-
-    assert not provider._ai._wakeup.is_set()
-    assert set(provider._ai._pending) == {"2", "3"}
-
-
-async def test_a_rate_limit_pauses_as_long_as_the_service_asks(
+async def test_a_cover_waits_as_long_as_the_engine_turns_requests_away(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """A Retry-After longer than the default pause is honoured."""
-    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RateLimited("slow down", backoff_time=3600)
-    )
+    """A rate limited engine is not asked, and the playlist is queued again once it allows."""
+    provider.test_engine.provider.engine_cooldown.return_value = 3600.0  # type: ignore[attr-defined]
     _set_config(provider, **{CONF_DESCRIPTIONS: False})
 
     await _metadata(provider, _smart_playlist())
 
-    assert provider._ai._paused_until["image"] - time.time() > 3500
+    assert _engine_calls(provider) == 0
+    assert _retries(provider)["234"] == 3601
 
 
-async def test_a_rate_limited_concept_pauses_the_text_engine(
+async def test_a_rate_limited_concept_falls_back_to_the_default_concept(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """A rate-limited concept leaves the text engine alone, and the next covers wait for it."""
+    """A cover goes ahead with the default concept when the text engine fails to write one."""
     _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
     provider.test_text_engine.provider.ai_query = AsyncMock(  # type: ignore[attr-defined]
         side_effect=RateLimited("slow down", backoff_time=3600)
     )
 
-    await _metadata(provider, _smart_playlist(item_id="1"))
-    await _metadata(provider, _smart_playlist(item_id="2"))
+    await _metadata(provider, _smart_playlist())
 
-    # the first cover went ahead with the default concept, the second waits for the engine
     assert _text_calls(provider) == 1
     assert _engine_calls(provider) == 1
-    assert provider._ai.waiting
-    assert provider._ai._paused_until["text"] - time.time() > 3500
+    assert DEFAULT_CONCEPT in _sent_prompt(provider)
 
 
-async def test_a_paused_text_engine_holds_covers_that_need_a_concept(
+async def test_a_resting_text_engine_holds_covers_that_need_a_concept(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """A text engine left alone after a failed description is not asked for a concept either."""
+    """A text engine that turns requests away is not asked for a concept, the cover waits."""
     _set_config(provider, **{CONF_USE_PROMPT_ENGINE: True, CONF_DESCRIPTIONS: False})
-    playlist = _smart_playlist()
-    await provider._ai._failed(
-        "description", playlist, "key", ProviderUnavailableError("Ollama is not reachable")
-    )
+    provider.test_text_engine.provider.engine_cooldown.return_value = 600.0  # type: ignore[attr-defined]
 
-    await _metadata(provider, playlist)
+    await _metadata(provider, _smart_playlist())
 
     assert _text_calls(provider) == 0
     assert _engine_calls(provider) == 0
-    assert provider._ai.waiting
+    assert _retries(provider)["234"] == 601
 
 
 async def test_a_preview_does_not_ask_a_paused_text_engine(
@@ -1030,7 +1135,7 @@ async def test_a_preview_does_not_ask_a_paused_text_engine(
             CONF_USE_PROMPT_ENGINE: True,
         },
     )
-    provider._ai._paused_until["text"] = time.time() + 600
+    provider.test_text_engine.provider.engine_cooldown.return_value = 600.0  # type: ignore[attr-defined]
 
     with _no_engine_pickers():
         await provider.handle_config_action(CONF_ACTION_PREVIEW)
@@ -1039,81 +1144,46 @@ async def test_a_preview_does_not_ask_a_paused_text_engine(
     assert _engine_calls(provider) == 1
 
 
-async def test_the_newest_generation_times_are_stored_last(
+async def test_a_refresh_leaves_a_waiting_playlist_to_its_retry(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """Stores of the generation times can not finish out of order."""
-    cache = _mass(provider).cache
-    store = cache.set
+    """A playlist waiting for the hourly limit gets no task of its own on every refresh."""
+    _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
+    await _metadata(provider, _smart_playlist(item_id="1"))
+    await _metadata(provider, second := _smart_playlist(item_id="2"))
+    queued = _mass(provider).tasks.run_background_task.call_count
 
-    async def slow_set(key: str, data: Any, **kwargs: Any) -> None:
-        # the first store is the slowest, so without the lock it would finish last
-        await asyncio.sleep(0.05 if len(data) == 1 else 0)
-        await store(key, data, **kwargs)
+    await _metadata(provider, second)
 
-    cache.set = slow_set
-    ai = provider._ai
-
-    await asyncio.gather(
-        ai._record(ai._generated_at, "generated_at"),
-        ai._record(ai._generated_at, "generated_at"),
-    )
-
-    stored = await cache.get("generated_at", provider=INSTANCE_ID)
-    assert len(stored) == 2
+    assert _mass(provider).tasks.run_background_task.call_count == queued
+    assert "2" in _retries(provider)
 
 
-async def test_new_work_wakes_a_waiting_worker(provider: PlaylistMetadataProvider) -> None:
+async def test_new_work_does_not_wait_for_the_limit_of_other_work(
+    provider: PlaylistMetadataProvider,
+) -> None:
     """Work that is not blocked does not wait out the hourly limit of other work."""
     _set_config(provider, **{CONF_MAX_PER_HOUR: 1, CONF_DESCRIPTIONS: False})
     await _metadata(provider, _smart_playlist(item_id="1"))
     await _metadata(provider, _smart_playlist(item_id="2"))
-    assert provider._ai.waiting
+    assert "2" in _retries(provider)
     _set_config(provider, **{CONF_DESCRIPTIONS: True})
     third = _smart_playlist(item_id="3")
 
     await _metadata(provider, third)
 
     assert third.metadata.description == DESCRIPTION
-    assert provider._ai.waiting
-
-
-async def test_a_worker_that_queues_work_as_it_starts_stays_the_only_one(
-    provider: PlaylistMetadataProvider,
-) -> None:
-    """An eagerly started worker queueing more work at once does not start a second worker."""
-    ai = provider._ai
-    second = _smart_playlist(item_id="2")
-    processed: list[str] = []
-
-    async def process(item_id: str, _kinds: set[str]) -> tuple[set[str], int]:
-        # runs in the worker's first, eager step, before its task is tracked
-        processed.append(item_id)
-        if item_id == "1":
-            ai._enqueue(second, "cover")
-        return set(), 0
-
-    with patch.object(ai, "_process", side_effect=process):
-        ai._enqueue(_smart_playlist(item_id="1"), "cover")
-        await _settle(provider)
-
-    worker_starts = [
-        call
-        for call in _mass(provider).create_task.call_args_list
-        if call.kwargs.get("task_id") == f"{INSTANCE_ID}_ai_worker"
-    ]
-    assert len(worker_starts) == 1
-    assert processed == ["1", "2"]
+    assert "2" in _retries(provider)
 
 
 async def test_nothing_is_queued_after_unloading(provider: PlaylistMetadataProvider) -> None:
-    """A metadata refresh still running on an unloaded provider starts no worker."""
+    """A metadata refresh still running on an unloaded provider queues no generation."""
     await provider.unload()
 
     await _metadata(provider, _smart_playlist())
 
     assert _engine_calls(provider) == 0
-    assert not provider._ai._pending
+    _mass(provider).tasks.run_background_task.assert_not_called()
 
 
 async def test_resolve_image_returns_a_stored_cover(provider: PlaylistMetadataProvider) -> None:
@@ -1680,10 +1750,10 @@ async def test_unloading_stops_a_running_preview(provider: PlaylistMetadataProvi
     assert _engine_calls(provider) == 2
 
 
-async def test_a_rate_limited_preview_style_pauses_the_image_engine(
+async def test_a_rate_limited_preview_style_holds_back_the_other_styles(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """A style that hits the rate limit pauses the engine, so the styles after it are not tried."""
+    """Once the engine turns requests away, the styles after the first are not tried."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(
         provider,
@@ -1693,32 +1763,37 @@ async def test_a_rate_limited_preview_style_pauses_the_image_engine(
             CONF_DESCRIPTIONS: False,
         },
     )
-    provider.test_engine.provider.ai_generate_image = AsyncMock(  # type: ignore[attr-defined]
-        side_effect=RateLimited("slow down", backoff_time=3600)
-    )
+    engine = provider.test_engine.provider  # type: ignore[attr-defined]
+
+    def rate_limited(*_args: Any, **_kwargs: Any) -> bytes:
+        # like an engine's own throttler, which turns requests away after a rate limit
+        engine.engine_cooldown.return_value = 3600.0
+        raise RateLimited("slow down", backoff_time=3600)
+
+    engine.ai_generate_image = AsyncMock(side_effect=rate_limited)
 
     with _no_engine_pickers(), pytest.raises(RateLimited):
         await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
-    # the first style found the engine rate limited, so the others were not tried
     assert _engine_calls(provider) == 1
-    assert provider._ai._paused_until["image"] - time.time() > 3500
-    assert provider._ai._blocked_for("cover") is not None
 
 
-async def test_a_preview_is_refused_while_the_image_engine_is_paused(
+async def test_a_preview_is_refused_while_the_image_engine_rests(
     provider: PlaylistMetadataProvider,
 ) -> None:
-    """A preview asks nothing of a paused image engine, and takes no slot of the limit."""
+    """A preview asks nothing of a resting image engine, and takes no slot of the limit."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
-    _set_config(provider, **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"]})
-    provider._ai._paused_until["image"] = time.time() + 600
+    _set_config(
+        provider,
+        **{CONF_PREVIEW_PLAYLIST: "234", CONF_PREVIEW_STYLE: ["bold"], CONF_MAX_PER_HOUR: 1},
+    )
+    provider.test_engine.provider.engine_cooldown.return_value = 600.0  # type: ignore[attr-defined]
 
     with _no_engine_pickers(), pytest.raises(ActionUnavailable, match="could not be reached"):
         await provider.handle_config_action(CONF_ACTION_PREVIEW)
 
     assert _engine_calls(provider) == 0
-    assert not provider._ai._generated_at
+    assert provider._ai._slots("cover").available(RequestPriority.NORMAL) == 1
 
 
 async def test_a_new_cover_waits_for_a_refresh_of_the_playlist_still_running(
@@ -1747,38 +1822,30 @@ async def test_a_new_cover_waits_for_a_refresh_of_the_playlist_still_running(
     assert playlist.image.provider == INSTANCE_ID
 
 
-@pytest.mark.parametrize(
-    ("held_key", "use_prompt_engine"),
-    [("described_at", False), ("generated_at", True)],
-    ids=["description", "concept"],
-)
 async def test_unloading_stops_a_preview_before_the_text_engine(
-    provider: PlaylistMetadataProvider, held_key: str, use_prompt_engine: bool
+    provider: PlaylistMetadataProvider,
 ) -> None:
-    """A preview that is storing its reservation when the provider unloads asks no text."""
+    """A preview still reading the playlist when the provider unloads asks no text."""
     _mass(provider).music.playlists.get_library_item = AsyncMock(return_value=_smart_playlist())
     _set_config(
         provider,
         **{
             CONF_PREVIEW_PLAYLIST: "234",
             CONF_PREVIEW_STYLE: ["bold"],
-            CONF_USE_PROMPT_ENGINE: use_prompt_engine,
+            CONF_USE_PROMPT_ENGINE: True,
         },
     )
-    cache = _mass(provider).cache
-    store = cache.set
+    ai = provider._ai
+    context = ai._playlist_context
     held = asyncio.Event()
     release = asyncio.Event()
 
-    async def held_set(key: str, *args: Any, **kwargs: Any) -> None:
-        if key == held_key:
-            held.set()
-            await release.wait()
-        await store(key, *args, **kwargs)
+    async def held_context(playlist: Playlist) -> Any:
+        held.set()
+        await release.wait()
+        return await context(playlist)
 
-    cache.set = held_set
-
-    with _no_engine_pickers():
+    with _no_engine_pickers(), patch.object(ai, "_playlist_context", held_context):
         preview = asyncio.create_task(provider.handle_config_action(CONF_ACTION_PREVIEW))
         async with asyncio.timeout(1):
             await held.wait()
@@ -1943,7 +2010,7 @@ async def test_scheduled_refresh_puts_back_a_cover_made_before_while_the_limit_i
         playlist.uri, force_refresh=True
     )
     assert _engine_calls(provider) == 1
-    assert not provider._ai._pending
+    assert not _retries(provider)
 
 
 async def test_scheduled_refresh_puts_back_a_stored_description_while_the_limit_is_full(
@@ -1967,7 +2034,7 @@ async def test_scheduled_refresh_puts_back_a_stored_description_while_the_limit_
         playlist.uri, force_refresh=True
     )
     assert _text_calls(provider) == 1
-    assert not provider._ai._pending
+    assert not _retries(provider)
 
 
 def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
@@ -2005,22 +2072,26 @@ def _make_provider(tmp_path: Path) -> PlaylistMetadataProvider:
     engine.id = "ai_task.images"
     engine.uid = ENGINE_UID
     engine.provider.ai_generate_image = AsyncMock(side_effect=lambda *_a, **_k: _png())
+    engine.provider.engine_cooldown = MagicMock(return_value=0.0)
+    engine.provider.note_engine_outage = MagicMock()
     provider.test_engine = engine  # type: ignore[attr-defined]
     text_engine = MagicMock()
     text_engine.id = "gemini-flash"
     text_engine.uid = TEXT_ENGINE_UID
     text_engine.provider.ai_query = AsyncMock(return_value=f' "{DESCRIPTION}"\n')
+    text_engine.provider.engine_cooldown = MagicMock(return_value=0.0)
+    text_engine.provider.note_engine_outage = MagicMock()
     provider.test_text_engine = text_engine  # type: ignore[attr-defined]
     return provider
 
 
 def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
     """
-    Give the mocked Music Assistant what the worker needs, behaving like the real thing.
+    Give the mocked Music Assistant what the generation needs, behaving like the real thing.
 
-    Tasks really run (started eagerly, like Music Assistant does), playlists are fetched from
-    a small library as fresh copies, and a metadata refresh runs the provider's on a fresh copy
-    and stores the result back in the library playlist.
+    Tasks and background tasks really run (started eagerly), timers are kept for the test to
+    fire, playlists are fetched from a small library as fresh copies, and a metadata refresh
+    runs the provider's on a fresh copy and stores the result back in the library playlist.
     """
     mass = _mass(provider)
     # the library the worker fetches playlists from, filled by _metadata and _register
@@ -2046,6 +2117,32 @@ def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
         return task
 
     mass.create_task = MagicMock(side_effect=create_task)
+
+    def run_background_task(
+        *, handler: Callable[[], Awaitable[Any]], task_id: str | None = None, **_kwargs: Any
+    ) -> Any:
+        # like the tasks controller: a task that is still queued or running is kept
+        return create_task(handler, task_id=task_id)
+
+    mass.tasks.run_background_task = MagicMock(side_effect=run_background_task)
+
+    def cancel_task(task_id: str) -> None:
+        if (task := tasks.get(task_id)) is None:
+            raise InvalidDataError(task_id)
+        task.cancel()
+
+    mass.tasks.cancel_task = MagicMock(side_effect=cancel_task)
+    timers: dict[str, tuple[float, Callable[..., Any], tuple[Any, ...]]] = {}
+    mass.test_timers = timers
+
+    def call_later(
+        delay: float, target: Callable[..., Any], *args: Any, task_id: str | None = None
+    ) -> None:
+        # like Music Assistant: a timer with the same id replaces the earlier one
+        timers[task_id or str(len(timers))] = (delay, target, args)
+
+    mass.call_later = MagicMock(side_effect=call_later)
+    mass.cancel_timer = MagicMock(side_effect=lambda task_id: timers.pop(task_id, None))
 
     async def update_metadata(item: Any, **_kwargs: Any) -> None:
         # like the metadata controller: the library item as it is now, the provider's metadata
@@ -2226,17 +2323,43 @@ def _register(provider: PlaylistMetadataProvider, *playlists: Playlist) -> None:
 
 
 async def _settle(provider: PlaylistMetadataProvider) -> None:
-    """Wait until the worker is done, or waits for the hourly limit."""
-    # the worker renders and writes the covers in threads, so this waits for real time
+    """Wait until the queued generations are done, or wait to be queued again."""
+    # the covers are rendered and written in threads, so this waits for real time
     for _ in range(1000):
-        tasks = [task for task in _tasks(provider).values() if not task.done()]
-        # a woken worker still reads as waiting until it runs again
-        woken = provider._ai._wakeup.is_set()
-        if not tasks or (provider._ai.waiting and not woken and len(tasks) == 1):
+        if all(task.done() for task in _tasks(provider).values()):
             return
         await asyncio.sleep(0.01)
-    msg = "the worker did not settle"
+    msg = "the generations did not settle"
     raise AssertionError(msg)
+
+
+def _retries(provider: PlaylistMetadataProvider) -> dict[str, float]:
+    """Return the playlists waiting to be queued again, with the seconds until they are."""
+    prefix = f"{INSTANCE_ID}_ai_retry_"
+    return {
+        task_id.removeprefix(prefix): delay
+        for task_id, (delay, _target, _args) in _timers(provider).items()
+        if task_id.startswith(prefix)
+    }
+
+
+async def _fire_retries(provider: PlaylistMetadataProvider) -> None:
+    """Queue the playlists waiting for that again, as if their wait has passed."""
+    prefix = f"{INSTANCE_ID}_ai_retry_"
+    for task_id in [task_id for task_id in _timers(provider) if task_id.startswith(prefix)]:
+        _delay, target, args = _timers(provider).pop(task_id)
+        target(*args)
+    await _settle(provider)
+
+
+def _timers(
+    provider: PlaylistMetadataProvider,
+) -> dict[str, tuple[float, Callable[..., Any], tuple[Any, ...]]]:
+    """Return the timers the provider started, by id."""
+    return cast(
+        "dict[str, tuple[float, Callable[..., Any], tuple[Any, ...]]]",
+        _mass(provider).test_timers,
+    )
 
 
 def _tasks(provider: PlaylistMetadataProvider) -> dict[str, asyncio.Task[Any]]:

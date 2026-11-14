@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.throttle_retry import RequestPriority, request_priority
 from music_assistant.providers.openai_compatible import (
     SUPPORTED_FEATURES,
     OpenAICompatibleProvider,
@@ -508,6 +509,7 @@ async def test_ai_query_uses_the_given_engine_id(
 ) -> None:
     """An explicit engine id is the model sent in the request, regardless of the selection."""
     _configure_models(provider, ["model-a", "model-b"])
+    await provider.handle_async_init()
     mass.http_session.request = MagicMock(
         return_value=_response_cm(response=_json_response(200, _CHAT_PAYLOAD))
     )
@@ -522,6 +524,7 @@ async def test_ai_query_falls_back_to_first_configured_model(
 ) -> None:
     """No engine id falls back to the first configured model, in sorted order."""
     _configure_models(provider, ["model-b", "model-a"])
+    await provider.handle_async_init()
     mass.http_session.request = MagicMock(
         return_value=_response_cm(response=_json_response(200, _CHAT_PAYLOAD))
     )
@@ -1024,6 +1027,28 @@ async def test_ai_generate_image_remembers_a_model_that_needs_the_images_endpoin
 
     assert generate.call_args_list[0].kwargs["use_images_endpoint"] is False
     assert generate.call_args_list[1].kwargs["use_images_endpoint"] is True
+
+
+async def test_ai_generate_image_leaves_an_unreachable_model_alone(
+    provider: OpenAICompatibleProvider,
+) -> None:
+    """A model that could not be reached turns background work away without sending it."""
+    await provider.handle_async_init()
+    with patch(
+        "music_assistant.providers.openai_compatible.image_generation",
+        AsyncMock(side_effect=ProviderUnavailableError("down")),
+    ) as generate:
+        with pytest.raises(ProviderUnavailableError):
+            await provider.ai_generate_image("A cat", engine_id="gpt-image-1")
+        assert provider.engine_cooldown("gpt-image-1") > 0
+        assert provider.engine_cooldown("other-model") == 0
+        with request_priority(RequestPriority.LOW), pytest.raises(RateLimited):
+            await provider.ai_generate_image("A dog", engine_id="gpt-image-1")
+
+    generate.assert_awaited_once()
+    # a caller that times a request out holds that model back as well
+    provider.note_engine_outage("other-model")
+    assert provider.engine_cooldown("other-model") > 0
 
 
 async def test_ai_generate_image_raises_without_image_models(
