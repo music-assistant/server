@@ -1,5 +1,6 @@
 """Test Tidal Media Manager."""
 
+import itertools
 import json
 import pathlib
 from typing import Any, cast
@@ -22,6 +23,8 @@ from music_assistant.providers.tidal.media import TidalMediaManager
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "v2"
 LEGACY_FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
+# Tidal rejects a search whose includes expand to more relationship paths than this
+MAX_SEARCH_INCLUDES = 10
 
 
 def _load_raw(name: str) -> dict[str, Any]:
@@ -105,6 +108,58 @@ async def test_search_single_type_passes_query_verbatim(
     provider_mock.api.get_jsonapi.assert_called_with(
         "searchResults", params={"filter[query]": "AC/DC"}, include=["artists.profileArt"]
     )
+
+
+@pytest.mark.parametrize(
+    ("media_types", "expected_include"),
+    [
+        ([MediaType.ALBUM], ["albums.coverArt", "albums.artists"]),
+        ([MediaType.PLAYLIST], ["playlists.coverArt", "playlists.owners"]),
+        (
+            [MediaType.ALBUM, MediaType.PLAYLIST],
+            ["albums.coverArt", "albums.artists", "playlists.coverArt", "playlists.owners"],
+        ),
+    ],
+)
+async def test_search_adds_optional_includes_when_room(
+    media_manager: TidalMediaManager,
+    provider_mock: Mock,
+    media_types: list[MediaType],
+    expected_include: list[str],
+) -> None:
+    """Test search enriches albums and playlists when the include cap leaves room."""
+    provider_mock.api.get_jsonapi.return_value = _load_doc("search.json")
+
+    await media_manager.search("x", media_types)
+
+    assert provider_mock.api.get_jsonapi.call_args.kwargs["include"] == expected_include
+
+
+@pytest.mark.parametrize(
+    "media_types",
+    [
+        list(combo)
+        for size in range(1, 5)
+        for combo in itertools.combinations(
+            [MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST], size
+        )
+    ],
+)
+async def test_search_includes_stay_under_cap(
+    media_manager: TidalMediaManager, provider_mock: Mock, media_types: list[MediaType]
+) -> None:
+    """Test no combination of media types exceeds the expanded paths Tidal allows."""
+    provider_mock.api.get_jsonapi.return_value = _load_doc("search.json")
+
+    await media_manager.search("x", media_types)
+
+    includes = provider_mock.api.get_jsonapi.call_args.kwargs["include"]
+    expanded = {
+        tuple(path.split(".")[: depth + 1])
+        for path in includes
+        for depth in range(len(path.split(".")))
+    }
+    assert len(expanded) <= MAX_SEARCH_INCLUDES
 
 
 async def test_search_no_types_short_circuits(
@@ -759,6 +814,40 @@ async def test_get_artist_albums_skips_resource_with_null_attributes(
 
     assert len(albums) == 8
     provider_mock.logger.warning.assert_called_once()
+
+
+async def test_get_artist_albums_stops_paging_at_limit(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a large discography stops paging once the album limit is reached."""
+    pages_served = 0
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        nonlocal pages_served
+        for page in range(50):
+            pages_served += 1
+            ids = [str(page * 20 + idx) for idx in range(20)]
+            yield JsonApiDocument(
+                {
+                    "data": [{"id": album_id, "type": "albums"} for album_id in ids],
+                    "included": [
+                        {
+                            "id": album_id,
+                            "type": "albums",
+                            "attributes": {"title": f"Album {album_id}", "albumType": "ALBUM"},
+                        }
+                        for album_id in ids
+                    ],
+                }
+            )
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    albums = await media_manager.get_artist_albums("4184211")
+
+    assert len(albums) == 100
+    assert albums[-1].item_id == "99"
+    assert pages_served == 5
 
 
 async def test_get_artist_toptracks_falls_back_to_sibling_variant(

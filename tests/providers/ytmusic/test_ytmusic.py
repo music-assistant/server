@@ -6,10 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import AlbumType, MediaType
-from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.errors import LoginFailed, RetriesExhausted, SetupFailedError
 from requests.exceptions import ReadTimeout
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
@@ -22,12 +23,17 @@ from music_assistant.providers.ytmusic import (
     CONF_STREAM_PROFILE,
     YoutubeMusicProvider,
 )
+from music_assistant.providers.ytmusic.helpers import rate_track
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
 def provider() -> YoutubeMusicProvider:
     """Return a YoutubeMusicProvider instance with mocked dependencies."""
     mass = AsyncMock()
+    # force a cache miss so the cached raw fetches always run
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    use_real_create_task(mass)
     mass.http_session = MagicMock()
     manifest = MagicMock()
     manifest.domain = "ytmusic"
@@ -161,6 +167,7 @@ async def test_init_distinguishes_expired_cookies_from_missing_premium(
         patch.object(provider, "_verify_po_token_url", AsyncMock(return_value=True)),
         patch.object(provider, "get_setup_value", side_effect=setup_values.get),
         patch.object(provider, "_update_setup_data") as update_setup_data,
+        patch("music_assistant.providers.ytmusic.get_visitor_id", AsyncMock(return_value="")),
         pytest.raises(LoginFailed) as exc_info,
     ):
         await provider.handle_async_init()
@@ -176,6 +183,50 @@ async def test_init_distinguishes_expired_cookies_from_missing_premium(
         update_setup_data.assert_called_once_with(
             CONF_COOKIE, "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; SIDCC=rotated"
         )
+
+
+async def test_init_fetches_one_visitor_id_for_all_calls(provider: YoutubeMusicProvider) -> None:
+    """The visitor id fetched at setup spares every later call a page fetch of its own."""
+    page = MagicMock(text='ytcfg.set({"VISITOR_DATA": "visitor123"});')
+    api_response = MagicMock(status_code=200, text="{}")
+    provider.mass.metadata = MagicMock(locale="en_US")
+    setup_values = {
+        CONF_COOKIE: "__Secure-3PAPISID=abc",
+        CONF_USERNAME: "",
+        CONF_PO_TOKEN_SERVER_URL: "",
+    }
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "_verify_po_token_url", AsyncMock(return_value=True)),
+        patch.object(provider, "_user_has_ytm_premium", AsyncMock(return_value=True)),
+        patch.object(provider, "get_setup_value", side_effect=setup_values.get),
+        patch.object(requests.Session, "get", return_value=page) as page_fetch,
+        patch.object(requests.Session, "post", return_value=api_response) as api_call,
+    ):
+        await provider.handle_async_init()
+        for video_id in ("video1", "video2", "video3"):
+            await rate_track(provider._headers, video_id, LikeStatus.LIKE)
+
+    page_fetch.assert_called_once()
+    sent = [request.kwargs["headers"]["X-Goog-Visitor-Id"] for request in api_call.call_args_list]
+    assert sent == ["visitor123"] * 3
+
+
+async def test_init_unreachable_youtube_is_a_setup_failure(provider: YoutubeMusicProvider) -> None:
+    """YouTube being unreachable at load is a setup failure the core retries, not a login one."""
+    setup_values = {
+        CONF_COOKIE: "__Secure-3PAPISID=abc",
+        CONF_USERNAME: "",
+        CONF_PO_TOKEN_SERVER_URL: "",
+    }
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "_verify_po_token_url", AsyncMock(return_value=True)),
+        patch.object(provider, "get_setup_value", side_effect=setup_values.get),
+        patch.object(requests.Session, "get", side_effect=requests.ConnectionError("no route")),
+        pytest.raises(SetupFailedError),
+    ):
+        await provider.handle_async_init()
 
 
 async def test_sync_library_unloads_on_invalid_session(provider: YoutubeMusicProvider) -> None:
@@ -589,9 +640,29 @@ async def test_get_artist_albums_gets_full_section_when_browse_pair_present(
 
     assert [a.item_id for a in albums] == ["MPREb_hydrated1", "MPREb_hydrated2"]
     mock_ytm.get_artist_albums.assert_called_once_with(
-        channelId="MPADUCtest", params="params-token", limit=None
+        channelId="MPADUCtest", params="params-token", limit=100
     )
     assert mock_ytmusic.call_args.kwargs["user"] == "test-brand-user"
+
+
+async def test_get_artist_albums_keeps_every_section(provider: YoutubeMusicProvider) -> None:
+    """Each release section is capped on its own, so singles stay listed next to albums."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {"results": [], "browseId": "MPADalbums", "params": "albums-token"},
+        "singles": {"results": [], "browseId": "MPADsingles", "params": "singles-token"},
+    }
+    mock_ytm.get_artist_albums.side_effect = lambda **kwargs: [
+        {"browseId": f"{kwargs['channelId']}-{idx}", "title": f"Release {idx}"} for idx in range(80)
+    ]
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert len(albums) == 160
+    assert albums[79].item_id == "MPADalbums-79"
+    assert albums[-1].item_id == "MPADsingles-79"
 
 
 async def test_get_artist_albums_skips_hydration_without_browse_pair(
@@ -1304,6 +1375,7 @@ async def test_get_resume_position_from_progress(
         YTMusicServerError("Server returned HTTP 500"),
         ReadTimeout("timed out"),
         KeyError("progress"),
+        RetriesExhausted("rate limited"),
     ],
 )
 async def test_get_resume_position_unavailable(
