@@ -57,6 +57,8 @@ class _Subscriptions:
 async def _attach_speaker(scenario: Scenario) -> SonosPlayer:
     """Attach a portable speaker that wakes on LAN, the way discovery sets it up."""
     provider: Any = await scenario.add_provider("sonos")
+    # the UPnP of all speakers, which the Sonos provider sets up
+    provider.upnp = MagicMock()
     discovery_info = cast(
         "DiscoveryInfo",
         {

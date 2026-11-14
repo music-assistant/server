@@ -43,7 +43,7 @@ def _actions(flags: dict[str, bool]) -> PlaybackActions:
 def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:
     """Create a SonosPlayer bound to the given MusicAssistant, with a mocked client."""
     player = SonosPlayer.__new__(SonosPlayer)
-    client = MagicMock()
+    client = MagicMock(player_ip="192.168.1.20")
     client.disconnect = AsyncMock()
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.player")
@@ -64,6 +64,11 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._flow_queue_id = None
     player._queue_session_id = None
     player._hand_over_tasks = set()
+    player.upnp = MagicMock(
+        follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
+    )
+    player._attr_options = []
+    player._provider = MagicMock()
     player.client = client
     player._provider = MagicMock(get_protocol=lambda pid: player.mass.players.get_protocol(pid))
     player._on_detach_callbacks = []
@@ -191,15 +196,44 @@ async def test_on_unload_disconnects_without_reconnecting(timer_mass: MusicAssis
     await _connect_player(player, client)
     listener = player._listen_task
     assert listener is not None
+    upnp: Any = player.upnp
+    upnp.unfollow.reset_mock()
 
     await player.on_detach()
 
     assert player.connected is False
     client.disconnect.assert_awaited_once()
+    upnp.unfollow.assert_awaited_once()
     # let the aborted listener run its cleanup
     with pytest.raises(asyncio.CancelledError):
         await listener
     assert timer_mass._tracked_timers == {}
+
+
+@pytest.mark.asyncio
+async def test_on_unload_of_an_offline_speaker_ends_no_subscription() -> None:
+    """Test an unload does not wait for an unsubscribe a disconnected speaker cannot answer."""
+    player, _ = _make_player()
+
+    await player.on_detach()
+
+    upnp: Any = player.upnp
+    upnp.unfollow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_at_a_new_address_moves_upnp_along(timer_mass: MusicAssistant) -> None:
+    """Test a speaker that reconnects at a new address gets its UPnP requests there."""
+    player, client = _bind_player(timer_mass)
+    old_upnp: Any = player.upnp
+    client.player_ip = "192.168.1.21"
+
+    await _connect_player(player, client)
+    await asyncio.sleep(0)
+
+    assert player.upnp.location == "http://192.168.1.21:1400/xml/device_description.xml"
+    old_upnp.unfollow.assert_awaited_once()
+    await player.on_detach()
 
 
 @pytest.mark.asyncio
@@ -220,6 +254,21 @@ async def test_on_unload_cancels_a_pending_reconnect(timer_mass: MusicAssistant)
 
     assert handle.cancelled()
     assert connect_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_on_detach_cancels_a_scheduled_options_read(timer_mass: MusicAssistant) -> None:
+    """Test an options read that is still waiting to fire does not run after the detach."""
+    player, _ = _bind_player(timer_mass)
+    player._schedule_options_read()
+    handle = timer_mass._tracked_timers[f"sonos_options_{player.protocol_id}"]
+
+    with patch.object(player, "_update_options", AsyncMock()) as update_options:
+        await player.on_detach()
+        await asyncio.sleep(0.05)
+
+    assert handle.cancelled()
+    update_options.assert_not_awaited()
 
 
 @pytest.mark.asyncio
