@@ -567,7 +567,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             if self._queue_data.get(queue.queue_id) is not queue_data:
                 # the queue was removed or re-registered
                 return False
-            if queue.state != PlaybackState.IDLE or queue_data.halted_by_command:
+            if queue.state != PlaybackState.IDLE:
                 return False
             if queue_data.started_session_id != session_id:
                 # a play started since, which has the queue also while its player does not

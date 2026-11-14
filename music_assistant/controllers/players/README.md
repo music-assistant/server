@@ -756,8 +756,8 @@ Group changes nobody issued as a command:
 - The queue controller's delayed check of the end of a queue takes the group's lock and the
   player's (`get_group_and_player_lock`) only to wait for the command that holds them, and lets
   go of them before it reads the queue. A free lock does not tell it what plays: it reads from
-  the queue whether a command halted it or started another stream session meanwhile. A wait that
-  ends in a busy error ends the check.
+  the queue whether it plays or another stream session started meanwhile. A wait that ends in a
+  busy error ends the check.
 
 A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its
 playback: the sync leader, or the group holding that leader when it is captured by one. That
