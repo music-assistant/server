@@ -1176,7 +1176,7 @@ class TestProtocolSwitchingDuringPlayback:
 
         # While the device sits idle its Chromecast interface owns the volume: the winner is
         # decided by the hardcoded per-domain control priority, not by the output priorities.
-        assert joiner.volume_control == "joiner_cast"
+        assert joiner._volume_control == "joiner_cast"
 
         observed_volume_controls: list[str] = []
 
@@ -1184,7 +1184,7 @@ class TestProtocolSwitchingDuringPlayback:
             player_ids_to_add: list[str] | None = None,  # noqa: ARG001
             player_ids_to_remove: list[str] | None = None,  # noqa: ARG001
         ) -> None:
-            observed_volume_controls.append(joiner.volume_control)
+            observed_volume_controls.append(joiner._volume_control)
 
         leader_airplay.set_members = record_set_members  # type: ignore[method-assign]
 

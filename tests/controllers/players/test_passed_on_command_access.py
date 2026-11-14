@@ -163,8 +163,7 @@ class _Setup:
                 )
         owner_protocol._attr_playback_state = PlaybackState.PAUSED
         owner_protocol._attr_active_source = OWNER[kind] if source == "queue" else "line_in"
-        owner.set_sleep_timer_mode(SleepTimerMode.DURATION)
-        owner.set_sleep_timer_expires_at(SLEEP_TIMER)
+        owner.set_sleep_timer(SleepTimerMode.DURATION, SLEEP_TIMER)
         self.mass.player_queues = self._queue_controller(OWNER[kind] if source == "queue" else None)
         players.get_player_audio_source = Mock(return_value=None)  # type: ignore[method-assign]
         players.wait_for_player_update = _no_wait  # type: ignore[method-assign]

@@ -194,7 +194,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
             return False
         if self._is_session_only_player(player_id) != protocol.session_only:
             return False
-        player_type = player.type if player else (stored or {}).get("player_type")
+        player_type = player.reported_type if player else (stored or {}).get("player_type")
         is_own = protocol.role in OWN_PROTOCOL_ROLES
         if player_type == PlayerType.GROUP and not (is_own and attached_only):
             # only its own protocol belongs to a group player

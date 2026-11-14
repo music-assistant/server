@@ -752,7 +752,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         # owned by a group that has no leader. Users who want their
         # 'group captured' state preserved across restarts would need
         # explicit session restoration which is out of scope here.
-        if player.type != PlayerType.GROUP:
+        if player.reported_type != PlayerType.GROUP:
             cached_value = await self.mass.cache.get(
                 key=player_id,
                 provider=self.domain,
@@ -838,7 +838,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if player is not None:
                 await self._release_player_that_is_removed(player)
             is_group = (
-                player.type if player else (stored or {}).get("player_type")
+                player.reported_type if player else (stored or {}).get("player_type")
             ) == PlayerType.GROUP
             provider_ids = {
                 str(record.get("provider"))
@@ -932,8 +932,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             return
         if stored.get("provider") != player.provider_id:
             self.mass.config.set(f"{conf_key}/provider", player.provider_id)
-        if stored.get("player_type") != player.type:
-            self.mass.config.set(f"{conf_key}/player_type", player.type)
+        if stored.get("player_type") != player.reported_type:
+            self.mass.config.set(f"{conf_key}/player_type", player.reported_type)
         player.store_protocol_defaults()
 
     async def _restore_players(self) -> None:

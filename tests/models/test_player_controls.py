@@ -124,7 +124,7 @@ class TestPowerControlExplicitConfig:
         # drops POWER from its feature set on upgrade but its stale config
         # still says NATIVE).
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
-        assert player.power_control == PLAYER_CONTROL_NATIVE
+        assert player._power_control == PLAYER_CONTROL_NATIVE
 
     def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config falls back to NONE when the player no longer advertises POWER."""
@@ -133,7 +133,7 @@ class TestPowerControlExplicitConfig:
         )
         # no POWER in features → the explicit NATIVE in config is invalid
         player = _create_player(mock_mass)
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_explicit_fake(self, mock_mass: MagicMock) -> None:
         """Power control returns fake when explicitly configured."""
@@ -141,7 +141,7 @@ class TestPowerControlExplicitConfig:
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
         )
         player = _create_player(mock_mass)
-        assert player.power_control == PLAYER_CONTROL_FAKE
+        assert player._power_control == PLAYER_CONTROL_FAKE
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Power control returns none when explicitly configured."""
@@ -149,7 +149,7 @@ class TestPowerControlExplicitConfig:
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_NONE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_explicit_protocol_id_ignored(self, mock_mass: MagicMock) -> None:
         """Protocol player IDs are not valid for power control; falls through to auto-select."""
@@ -160,7 +160,7 @@ class TestPowerControlExplicitConfig:
         mock_mass.players.get_player_control = MagicMock(return_value=None)
         player = _create_player(mock_mass)
         # protocols handle their own power at the protocol level
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_explicit_protocol_unavailable_falls_through(self, mock_mass: MagicMock) -> None:
         """When explicitly set to unavailable protocol, falls to auto-select."""
@@ -170,7 +170,7 @@ class TestPowerControlExplicitConfig:
         )
         mock_mass.players.get_player_control = MagicMock(return_value=None)
         player = _create_player(mock_mass)
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_explicit_player_control_id(self, mock_mass: MagicMock) -> None:
         """Power control returns player control ID when set and control exists."""
@@ -181,7 +181,7 @@ class TestPowerControlExplicitConfig:
         )
         mock_mass.players.get_player_control = MagicMock(return_value=control)
         player = _create_player(mock_mass)
-        assert player.power_control == "ext_control_1"
+        assert player._power_control == "ext_control_1"
 
 
 class TestPowerControlAutoSelect:
@@ -190,7 +190,7 @@ class TestPowerControlAutoSelect:
     def test_auto_prefers_native(self, mock_mass: MagicMock) -> None:
         """Auto-select returns native when player supports POWER feature."""
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
-        assert player.power_control == PLAYER_CONTROL_NATIVE
+        assert player._power_control == PLAYER_CONTROL_NATIVE
 
     def test_auto_does_not_use_protocol(self, mock_mass: MagicMock) -> None:
         """Auto-select does not use protocols for power; they handle it themselves."""
@@ -201,19 +201,19 @@ class TestPowerControlAutoSelect:
             [_make_protocol_link("proto_power")],
             active_protocol_id="proto_power",
         )
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_auto_returns_none_without_active_protocol(self, mock_mass: MagicMock) -> None:
         """Auto-select returns NONE when protocol exists but is not active."""
         _create_protocol(mock_mass, "proto_power", {PlayerFeature.POWER})
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("proto_power")])
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_auto_returns_none_when_nothing_available(self, mock_mass: MagicMock) -> None:
         """Auto-select returns NONE when no native and no protocols."""
         player = _create_player(mock_mass)
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_auto_with_config_set_to_auto(self, mock_mass: MagicMock) -> None:
         """Explicit 'auto' config value triggers the same auto-select."""
@@ -221,7 +221,7 @@ class TestPowerControlAutoSelect:
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: "auto"})
         )
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
-        assert player.power_control == PLAYER_CONTROL_NATIVE
+        assert player._power_control == PLAYER_CONTROL_NATIVE
 
 
 class TestOfflineByPowerControl:
@@ -318,7 +318,7 @@ class TestOfflineByPowerControl:
         player.set_initialized()
         player.update_state(signal_event=False)
 
-        assert player.power_control == PLAYER_CONTROL_NATIVE
+        assert player._power_control == PLAYER_CONTROL_NATIVE
         assert player.offline_by_power_control is False
         assert player.state.available is False
 
@@ -357,7 +357,7 @@ class TestVolumeControlExplicitConfig:
         # NATIVE control requires the player to actually advertise VOLUME_SET —
         # otherwise the getter drops the stale value and falls back to auto-select.
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
-        assert player.volume_control == PLAYER_CONTROL_NATIVE
+        assert player._volume_control == PLAYER_CONTROL_NATIVE
 
     def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config falls back to NONE when the player no longer advertises VOLUME_SET."""
@@ -365,7 +365,7 @@ class TestVolumeControlExplicitConfig:
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         player = _create_player(mock_mass)
-        assert player.volume_control == PLAYER_CONTROL_NONE
+        assert player._volume_control == PLAYER_CONTROL_NONE
         # the resolved control is what the final feature set is derived from, so the state has
         # to be recalculated to prove the invalid control does not put VOLUME_SET back
         player.set_initialized()
@@ -380,7 +380,7 @@ class TestVolumeControlExplicitConfig:
         )
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("proto_vol")])
-        assert player.volume_control == "proto_vol"
+        assert player._volume_control == "proto_vol"
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Volume control returns none even with native support."""
@@ -388,7 +388,7 @@ class TestVolumeControlExplicitConfig:
             side_effect=_make_config_side_effect({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NONE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
-        assert player.volume_control == PLAYER_CONTROL_NONE
+        assert player._volume_control == PLAYER_CONTROL_NONE
 
     def test_explicit_protocol_id(self, mock_mass: MagicMock) -> None:
         """Volume control returns protocol when set and available."""
@@ -398,7 +398,7 @@ class TestVolumeControlExplicitConfig:
         )
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("vol_player")])
-        assert player.volume_control == "vol_player"
+        assert player._volume_control == "vol_player"
 
 
 class TestVolumeControlAutoSelect:
@@ -407,19 +407,19 @@ class TestVolumeControlAutoSelect:
     def test_auto_prefers_native(self, mock_mass: MagicMock) -> None:
         """Auto-select returns native when player supports VOLUME_SET."""
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
-        assert player.volume_control == PLAYER_CONTROL_NATIVE
+        assert player._volume_control == PLAYER_CONTROL_NATIVE
 
     def test_auto_falls_back_to_protocol(self, mock_mass: MagicMock) -> None:
         """Auto-select returns protocol for volume."""
         _create_protocol(mock_mass, "proto_vol", {PlayerFeature.VOLUME_SET})
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("proto_vol")])
-        assert player.volume_control == "proto_vol"
+        assert player._volume_control == "proto_vol"
 
     def test_auto_returns_none_when_nothing_available(self, mock_mass: MagicMock) -> None:
         """Auto-select returns NONE when nothing supports volume."""
         player = _create_player(mock_mass)
-        assert player.volume_control == PLAYER_CONTROL_NONE
+        assert player._volume_control == PLAYER_CONTROL_NONE
 
 
 class TestMuteControlExplicitConfig:
@@ -433,7 +433,7 @@ class TestMuteControlExplicitConfig:
         # NATIVE control requires the player to actually advertise VOLUME_MUTE —
         # otherwise the getter drops the stale value and falls back to auto-select.
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
-        assert player.mute_control == PLAYER_CONTROL_NATIVE
+        assert player._mute_control == PLAYER_CONTROL_NATIVE
 
     def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config falls back to NONE when the player no longer advertises the feature."""
@@ -441,7 +441,7 @@ class TestMuteControlExplicitConfig:
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NATIVE})
         )
         player = _create_player(mock_mass)
-        assert player.mute_control == PLAYER_CONTROL_NONE
+        assert player._mute_control == PLAYER_CONTROL_NONE
         # the resolved control is what the final feature set is derived from, so the state has
         # to be recalculated to prove the invalid control does not put VOLUME_MUTE back
         player.set_initialized()
@@ -456,7 +456,7 @@ class TestMuteControlExplicitConfig:
         )
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("proto_mute")])
-        assert player.mute_control == "proto_mute"
+        assert player._mute_control == "proto_mute"
 
     def test_explicit_none(self, mock_mass: MagicMock) -> None:
         """Mute control returns none when explicitly configured."""
@@ -464,7 +464,7 @@ class TestMuteControlExplicitConfig:
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_NONE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
-        assert player.mute_control == PLAYER_CONTROL_NONE
+        assert player._mute_control == PLAYER_CONTROL_NONE
 
     def test_explicit_fake(self, mock_mass: MagicMock) -> None:
         """Mute control returns fake when explicitly configured and a volume control exists."""
@@ -472,7 +472,7 @@ class TestMuteControlExplicitConfig:
             side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
         )
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
-        assert player.mute_control == PLAYER_CONTROL_FAKE
+        assert player._mute_control == PLAYER_CONTROL_FAKE
 
     def test_explicit_fake_degrades_without_volume_control(self, mock_mass: MagicMock) -> None:
         """Fake mute drives the volume control, so it degrades to NONE without one."""
@@ -486,7 +486,7 @@ class TestMuteControlExplicitConfig:
         )
         # a native mute capability is irrelevant here: the user explicitly picked fake
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
-        assert player.mute_control == PLAYER_CONTROL_NONE
+        assert player._mute_control == PLAYER_CONTROL_NONE
         assert PlayerFeature.VOLUME_MUTE not in player.state.supported_features
 
 
@@ -496,19 +496,19 @@ class TestMuteControlAutoSelect:
     def test_auto_prefers_native(self, mock_mass: MagicMock) -> None:
         """Auto-select returns native when player supports VOLUME_MUTE."""
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
-        assert player.mute_control == PLAYER_CONTROL_NATIVE
+        assert player._mute_control == PLAYER_CONTROL_NATIVE
 
     def test_auto_falls_back_to_protocol(self, mock_mass: MagicMock) -> None:
         """Auto-select returns protocol for mute."""
         _create_protocol(mock_mass, "proto_mute", {PlayerFeature.VOLUME_MUTE})
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("proto_mute")])
-        assert player.mute_control == "proto_mute"
+        assert player._mute_control == "proto_mute"
 
     def test_auto_returns_none_when_nothing_available(self, mock_mass: MagicMock) -> None:
         """Auto-select returns NONE when nothing supports mute."""
         player = _create_player(mock_mass)
-        assert player.mute_control == PLAYER_CONTROL_NONE
+        assert player._mute_control == PLAYER_CONTROL_NONE
 
 
 class TestProtocolPlayerPreferActive:
@@ -527,7 +527,7 @@ class TestProtocolPlayerPreferActive:
             ],
             active_protocol_id="proto_b",
         )
-        assert player.volume_control == "proto_b"
+        assert player._volume_control == "proto_b"
 
     def test_falls_back_to_any_when_no_active(self, mock_mass: MagicMock) -> None:
         """When no active protocol, falls back to first available."""
@@ -541,7 +541,7 @@ class TestProtocolPlayerPreferActive:
                 _make_protocol_link("proto_b"),
             ],
         )
-        assert player.volume_control == "proto_a"
+        assert player._volume_control == "proto_a"
 
     def test_power_requires_active_protocol(self, mock_mass: MagicMock) -> None:
         """Power auto-select requires active protocol; returns NONE without one."""
@@ -552,7 +552,7 @@ class TestProtocolPlayerPreferActive:
             [_make_protocol_link("proto_a")],
         )
         # no active protocol set -> power returns NONE
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_power_ignores_active_protocol(self, mock_mass: MagicMock) -> None:
         """Power auto-select does not use protocols even when active."""
@@ -563,7 +563,7 @@ class TestProtocolPlayerPreferActive:
             [_make_protocol_link("proto_a")],
             active_protocol_id="proto_a",
         )
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_volume_skips_unavailable_protocol(self, mock_mass: MagicMock) -> None:
         """Volume auto-select skips unavailable protocols."""
@@ -577,7 +577,7 @@ class TestProtocolPlayerPreferActive:
                 _make_protocol_link("proto_b"),
             ],
         )
-        assert player.volume_control == "proto_b"
+        assert player._volume_control == "proto_b"
 
 
 class TestControlDomainPriority:
@@ -596,7 +596,7 @@ class TestControlDomainPriority:
                 _make_protocol_link("cast_child", protocol_domain="chromecast"),
             ],
         )
-        assert player.volume_control == "cast_child"
+        assert player._volume_control == "cast_child"
 
     def test_unknown_domain_sorts_last(self, mock_mass: MagicMock) -> None:
         """A domain outside the priority table loses from a known one."""
@@ -610,7 +610,7 @@ class TestControlDomainPriority:
                 _make_protocol_link("sendspin_child", protocol_domain="sendspin"),
             ],
         )
-        assert player.volume_control == "sendspin_child"
+        assert player._volume_control == "sendspin_child"
 
     def test_volume_and_mute_may_land_on_different_siblings(self, mock_mass: MagicMock) -> None:
         """
@@ -636,8 +636,8 @@ class TestControlDomainPriority:
             ],
         )
         # dlna outranks airplay for volume, but has no mute to offer
-        assert player.volume_control == "dlna_child"
-        assert player.mute_control == "airplay_child"
+        assert player._volume_control == "dlna_child"
+        assert player._mute_control == "airplay_child"
         # the output-scoped variants stay within the named signal path
         assert player.volume_control_for_output("dlna_child") == "dlna_child"
         assert player.mute_control_for_output("dlna_child") == PLAYER_CONTROL_NONE
@@ -658,7 +658,7 @@ class TestPreferredOutputProtocolAutoValue:
             [_make_protocol_link("proto_a")],
             active_protocol_id="proto_a",
         )
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_preferred_auto_falls_back_for_volume(self, mock_mass: MagicMock) -> None:
         """With preferred='auto', volume control falls back to any linked protocol."""
@@ -672,7 +672,7 @@ class TestPreferredOutputProtocolAutoValue:
             [_make_protocol_link("proto_a")],
         )
         # volume doesn't require active, so it falls back to linked protocol
-        assert player.volume_control == "proto_a"
+        assert player._volume_control == "proto_a"
 
     def test_preferred_auto_no_active_power_returns_none(self, mock_mass: MagicMock) -> None:
         """With preferred='auto' and no active protocol, power returns NONE."""
@@ -685,7 +685,7 @@ class TestPreferredOutputProtocolAutoValue:
             player,
             [_make_protocol_link("proto_a")],
         )
-        assert player.power_control == PLAYER_CONTROL_NONE
+        assert player._power_control == PLAYER_CONTROL_NONE
 
     def test_preferred_pointing_at_another_players_output_is_ignored(
         self, mock_mass: MagicMock
@@ -698,7 +698,7 @@ class TestPreferredOutputProtocolAutoValue:
         )
         player = _create_player(mock_mass)
         _link_protocols(player, [_make_protocol_link("proto_a")])
-        assert player.volume_control == "proto_a"
+        assert player._volume_control == "proto_a"
 
 
 class TestActiveOutputProtocolClearCancellation:
@@ -741,7 +741,7 @@ class TestControlForOutput:
         )
         # the ambient answer picks the first linked protocol, the output-scoped one
         # answers for the interface that is actually about to render
-        assert player.volume_control == "proto_a"
+        assert player._volume_control == "proto_a"
         assert player.volume_control_for_output("proto_b") == "proto_b"
 
     def test_ignores_active_protocol_pointing_elsewhere(self, mock_mass: MagicMock) -> None:
@@ -771,7 +771,7 @@ class TestControlForOutput:
                 _make_protocol_link("proto_b"),
             ],
         )
-        assert player.volume_control == "proto_a"
+        assert player._volume_control == "proto_a"
         assert player.volume_control_for_output("proto_b") == PLAYER_CONTROL_NONE
 
     def test_output_with_the_feature_owns_it_on_a_native_player_too(
@@ -800,7 +800,7 @@ class TestControlForOutput:
         _link_protocols(player, [_make_protocol_link("proto_a")])
         assert player.volume_control_for_output("proto_a") == "proto_a"
         # the device-wide resolver must agree, otherwise the two disagree on the same config
-        assert player.volume_control == "proto_a"
+        assert player._volume_control == "proto_a"
 
     def test_stale_native_mute_degrades_to_named_output(self, mock_mass: MagicMock) -> None:
         """The mute resolver applies the same stale-NATIVE rule as the volume one."""
@@ -839,7 +839,7 @@ class TestControlForOutput:
                 _make_protocol_link("proto_b"),
             ],
         )
-        assert player.mute_control == "proto_a"
+        assert player._mute_control == "proto_a"
         assert player.mute_control_for_output("proto_b") == "proto_b"
 
     def test_mute_returns_none_when_output_lacks_feature(self, mock_mass: MagicMock) -> None:
@@ -883,7 +883,7 @@ class TestControlForOutput:
                 _make_protocol_link("proto_b"),
             ],
         )
-        assert player.volume_control == "proto_a"
+        assert player._volume_control == "proto_a"
         assert player.volume_control_for_output("proto_b") == "proto_b"
 
     def test_fake_mute_degrades_without_volume_control_on_output(

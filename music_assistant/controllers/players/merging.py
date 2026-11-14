@@ -422,7 +422,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
                 return InvalidDataError(f"No player with id {player_id}")
             if player_id in self._removing:
                 return InvalidCommand(f"{name} is being removed")
-            player_type = player.type if player else stored.get("player_type")
+            player_type = player.reported_type if player else stored.get("player_type")
             if player_type == PlayerType.GROUP or ProtocolRole.VIRTUAL in self._roles_of(player_id):
                 return self._refused(
                     f"{name} is a group and can not be merged", "merge_group", name

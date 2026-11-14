@@ -76,7 +76,7 @@ def _setup_control_only_player(mass: MusicAssistant) -> Player:
 async def test_control_only_player_keeps_own_config_entries(mass_minimal: MusicAssistant) -> None:
     """A player with only non-native output protocols keeps its own config entries."""
     player = _setup_control_only_player(mass_minimal)
-    assert not any(protocol.is_native for protocol in player.output_protocols)
+    assert not any(protocol.is_native for protocol in player._output_protocols)
 
     entries = await mass_minimal.config.get_player_config_entries(PLAYER_ID)
     keys = [entry.key for entry in entries]

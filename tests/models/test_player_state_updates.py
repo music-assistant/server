@@ -724,7 +724,7 @@ class TestCacheInvalidationClasses:
         assert "_icon" in player._cache
         # nothing changed, so this only drops what every update calculates again
         player.update_state(signal_event=False)
-        assert set(player._cache) == {"_hide_in_ui", "_expose_to_ha", "enabled"}
+        assert set(player._cache) == {"_hide_in_ui", "_expose_to_ha"}
 
     def test_set_config_invalidates_all_cached_props(self, player: Player) -> None:
         """set_config invalidates every cached property, including config-derived ones."""

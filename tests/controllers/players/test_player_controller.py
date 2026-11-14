@@ -1071,8 +1071,7 @@ class TestSleepTimer:
     async def test_sleep_timer_expiry_stops_player(self, mock_mass: MagicMock) -> None:
         """An expired sleep timer clears its state and stops playback."""
         controller, player = self._player(mock_mass)
-        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
-        player.set_sleep_timer_expires_at(123.0)
+        player.set_sleep_timer(SleepTimerMode.DURATION, 123.0)
         controller.cmd_stop = AsyncMock()  # type: ignore[method-assign]
 
         await controller._handle_sleep_timer_expired("player_1")
@@ -1174,8 +1173,7 @@ class TestSleepTimer:
     ) -> None:
         """The queue's estimate replaces the expiry once it moved by more than report jitter."""
         controller, player = self._player(mock_mass)
-        player.set_sleep_timer_mode(SleepTimerMode.END_OF_CHAPTER)
-        player.set_sleep_timer_expires_at(expires_at)
+        player.set_sleep_timer(SleepTimerMode.END_OF_CHAPTER, expires_at)
 
         controller.update_sleep_timer("player_1", update_mode, update)
 
@@ -3450,6 +3448,44 @@ class TestOfflinePowerControl:
         cast("AsyncMock", control.power_off).assert_not_awaited()
         assert control.power_state is True
         assert not player.power_on_in_progress
+
+    @pytest.mark.parametrize("published", ["another control", "no control"])
+    async def test_power_on_inside_a_change_of_the_power_control_switches_the_new_control(
+        self, mock_mass: MagicMock, published: str
+    ) -> None:
+        """A power on that lands while a new power control is being applied switches that one."""
+        controller, player, protocol, control = self._setup(mock_mass)
+        get_player_value = mock_mass.config.get_player_value
+        stored_with_control = get_player_value.side_effect
+        other = PlayerControl(
+            id="switch.other_plug",
+            provider="hass",
+            name="Other plug",
+            supports_power=True,
+            power_on=AsyncMock(),
+        )
+        if published == "another control":
+            controller._controls[other.id] = other
+            get_player_value.side_effect = _player_config_stub({CONF_POWER_CONTROL: other.id})
+            _refresh(player)
+        else:
+            # published while its device could be reached, which then dropped off
+            get_player_value.side_effect = _player_config_stub()
+            protocol._attr_available = True
+            _refresh(player)
+            protocol._attr_available = False
+        # the new control is stored and the player has its config, it has not published yet
+        get_player_value.side_effect = stored_with_control
+        player.set_config(player.config)
+        assert player.power_control != control.id
+        assert player.offline_by_power_control
+
+        await controller._power_on_switched_off_player("player_1")
+
+        cast("AsyncMock", control.power_on).assert_awaited_once()
+        cast("AsyncMock", other.power_on).assert_not_awaited()
+        assert player.power_control == control.id
+        assert player._reachable
 
     async def test_a_user_without_access_can_not_switch_it_on(self, mock_mass: MagicMock) -> None:
         """Only a user with access to the player can switch it on."""

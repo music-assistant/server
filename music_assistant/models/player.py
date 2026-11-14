@@ -122,7 +122,7 @@ MASS_SOURCE_IDLE_MEMORY = 5
 # config-derived cached properties (propcache keys in Player._cache); these are
 # only invalidated by set_config, all other cached properties are invalidated on
 # every update_state call
-_CONFIG_CACHED_PROPS = frozenset({"_hide_in_ui", "_expose_to_ha", "enabled"})
+_CONFIG_CACHED_PROPS = frozenset({"_hide_in_ui", "_expose_to_ha"})
 
 # The roles a protocol can stand for the device itself in: one protocol of a player does
 # so, a protocol another one of these ranks above is a control protocol of the player, and
@@ -624,11 +624,11 @@ class Player:
         self._state = PlayerState(
             player_id=player_id,
             provider=self.provider_id,
-            type=self.type,
+            type=self.reported_type,
             name=self.display_name,
             available=False,
             device_info=self._device_info,
-            enabled=self.enabled,
+            enabled=self._config.enabled,
             unavailable_since=self._unavailable_since,
             last_seen=self._last_seen,
         )
@@ -713,7 +713,12 @@ class Player:
 
     @property
     def type(self) -> PlayerType:
-        """Return the type of the player."""
+        """Return the type of the player, as published."""
+        return self._state.type
+
+    @property
+    def reported_type(self) -> PlayerType:
+        """Return the type the own protocol of the player reports now, else the stored type."""
         own = self._own_protocol
         player_type = own.type if own is not None else self._config.player_type
         # a player is never a protocol, whatever one of its protocols reports
@@ -752,10 +757,10 @@ class Player:
             or self.player_id
         )
 
-    @cached_property
+    @property
     def enabled(self) -> bool:
         """Return if the player is enabled."""
-        return self._config.enabled
+        return self._state.enabled
 
     @property
     def available_for_playback(self) -> bool:
@@ -770,7 +775,7 @@ class Player:
         the state also reports a player that is switched off at its power control as
         available (see offline_by_power_control).
         """
-        if not self.enabled:
+        if not self._config.enabled:
             return False
         for protocol_id, protocol in self._protocols.items():
             if protocol.available_for_playback and self._roles[protocol_id] != ProtocolRole.CONTROL:
@@ -805,46 +810,26 @@ class Player:
         """Return the default player icon."""
         device_info = self._device_info
         return get_default_player_icon(
-            self.type,
+            self.reported_type,
             self._own_protocol_domain(),
             device_info.manufacturer,
             device_info.model,
         )
 
-    @cached_property
+    @property
     def power_control(self) -> str:
-        """Return the power control type."""
-        conf = self._stored_control_conf(CONF_POWER_CONTROL, PlayerFeature.POWER)
-        if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
-            # the control type is explicitly set in the config, use that
-            return str(conf)
-        if conf and (_control := self.mass.players.get_player_control(str(conf))):
-            # the control type is explicitly set to a player control,
-            return _control.id
-        # handle auto-select logic if not explicitly set in config
-        if self._own_supports(PlayerFeature.POWER):
-            # player supports native power control, always prefer that
-            return PLAYER_CONTROL_NATIVE
-        return PLAYER_CONTROL_NONE
+        """Return the control the power of the player goes through."""
+        return self._state.power_control
 
-    @cached_property
+    @property
     def volume_control(self) -> str:
-        """Return the volume control type."""
-        return self._resolve_control(PlayerFeature.VOLUME_SET, CONF_VOLUME_CONTROL)
+        """Return the control the volume of the player goes through."""
+        return self._state.volume_control
 
-    @cached_property
+    @property
     def mute_control(self) -> str:
-        """Return the mute control type."""
-        # this resolves independently from volume_control, so a device whose interfaces
-        # advertise volume and mute separately (DLNA derives both from its own
-        # RenderingControl actions) can end up with the two controls on different
-        # protocols.
-        control = self._resolve_control(PlayerFeature.VOLUME_MUTE, CONF_MUTE_CONTROL)
-        if control == PLAYER_CONTROL_FAKE and self.volume_control == PLAYER_CONTROL_NONE:
-            # fake mute is simulated by setting the volume to zero, so without a volume
-            # control to drive there is no way to mute this player at all
-            return PLAYER_CONTROL_NONE
-        return control
+        """Return the control the mute of the player goes through."""
+        return self._state.mute_control
 
     @property
     def group_volume(self) -> int | None:
@@ -912,96 +897,10 @@ class Player:
 
     # Protocol-related properties and helpers
 
-    @cached_property
+    @property
     def output_protocols(self) -> list[OutputProtocol]:
-        """
-        Return all output options for this player.
-
-        Includes:
-        - Native playback (if the native protocol of the player supports PLAY_MEDIA)
-        - The attached audio protocols
-        - The protocols that belong to the player but are not attached, such as one the
-          user switched off
-
-        Each entry has an available flag indicating current availability.
-        """
-        result: list[OutputProtocol] = []
-        listed_ids: set[str] = set()
-
-        # Add native playback option if applicable
-        if (own := self._own_protocol) is not None:
-            listed_ids.add(own.protocol_id)
-            if PlayerFeature.PLAY_MEDIA in own.supported_features:
-                result.append(
-                    OutputProtocol(
-                        output_protocol_id="native",
-                        name=own.provider.name,
-                        protocol_domain=own.provider.domain,
-                        priority=0,  # Native is always highest priority
-                        available=own.available_for_playback,
-                        is_native=True,
-                    )
-                )
-            elif (
-                own.provider.domain in PROTOCOL_PRIORITY
-                and PlayerFeature.SET_MEMBERS in own.supported_features
-            ):
-                # The own protocol is itself of a known protocol domain.
-                result.append(
-                    OutputProtocol(
-                        output_protocol_id=own.protocol_id,
-                        name=own.provider.name,
-                        protocol_domain=own.provider.domain,
-                        priority=PROTOCOL_PRIORITY[own.provider.domain],
-                        available=own.available_for_playback,
-                        is_native=True,
-                    )
-                )
-
-        # Add the attached audio protocols
-        for linked in self._linked_protocols:
-            listed_ids.add(linked.output_protocol_id)
-            protocol = self._protocols[linked.output_protocol_id]
-            result.append(
-                OutputProtocol(
-                    output_protocol_id=linked.output_protocol_id,
-                    name=protocol.provider.name,
-                    protocol_domain=linked.protocol_domain,
-                    priority=linked.priority,
-                    available=protocol.available_for_playback,
-                    derived_from=linked.derived_from,
-                )
-            )
-
-        # Add the protocols that are not attached
-        for protocol_id in self._protocol_ids - listed_ids:
-            if not (stored := self.mass.config.get_protocol_record(protocol_id)) or stored.get(
-                "role"
-            ) not in (ProtocolRole.NATIVE, ProtocolRole.AUDIO):
-                continue
-            provider_id = stored.get("provider") or ""
-            protocol_domain = provider_id.split("--")[0] if provider_id else "unknown"
-            is_native = stored.get("role") == ProtocolRole.NATIVE
-            # resolve the persisted derived-transport edge (if any) so derived
-            # outputs keep their base reference even while not attached
-            derived_from = (stored.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID)
-            if derived_from and own is not None and derived_from == own.protocol_id:
-                derived_from = "native"
-            result.append(
-                OutputProtocol(
-                    output_protocol_id="native" if is_native else protocol_id,
-                    name=protocol_domain.title(),
-                    protocol_domain=protocol_domain,
-                    priority=0 if is_native else PROTOCOL_PRIORITY.get(protocol_domain, 100),
-                    available=False,  # Protocols that are not attached are not available
-                    is_native=is_native,
-                    derived_from=None if is_native else derived_from,
-                )
-            )
-
-        # Sort by priority (lower = more preferred)
-        result.sort(key=lambda o: o.priority)
-        return result
+        """Return all outputs of the player, each with whether it can be played to."""
+        return self._state.output_protocols
 
     @cached_property
     def playback_domains(self) -> set[str]:
@@ -1011,7 +910,7 @@ class Player:
         Only outputs that are available at this moment are included, so a protocol
         whose device went offline is left out.
         """
-        return {output.protocol_domain for output in self.output_protocols if output.available}
+        return {output.protocol_domain for output in self._output_protocols if output.available}
 
     @property
     def linked_output_protocols(self) -> list[LinkedOutputProtocol]:
@@ -1020,8 +919,8 @@ class Player:
 
     @property
     def active_output_protocol(self) -> str | None:
-        """Return the currently active output protocol ID."""
-        return self._active_output_protocol
+        """Return the id of the output that renders the audio: "native" or a protocol id."""
+        return self._state.active_output_protocol
 
     def set_active_output_protocol(self, protocol_id: str | None) -> None:
         """
@@ -1103,7 +1002,7 @@ class Player:
 
         :param protocol_domain: The protocol domain to search for (e.g., "airplay", "sonos").
         """
-        for output_protocol in self.output_protocols:
+        for output_protocol in self._output_protocols:
             if output_protocol.protocol_domain == protocol_domain:
                 return output_protocol
         return None
@@ -1559,31 +1458,27 @@ class Player:
         self._active_mass_source = value
         self.update_state()
 
-    def set_sleep_timer_expires_at(self, value: float | None) -> None:
+    def set_sleep_timer(self, mode: SleepTimerMode | None, expires_at: float | None) -> None:
         """
-        Set the unix (utc) timestamp at which the active sleep timer stops playback.
+        Set the sleep timer of the player and publish it.
 
-        :param value: The expiry timestamp, or None to clear the sleep timer.
+        :param mode: The point at which the sleep timer stops playback, None to clear it.
+        :param expires_at: The unix (utc) timestamp at which it stops playback, None when
+            that is not known or the timer is cleared.
         """
-        self._sleep_timer_expires_at = value
+        self._sleep_timer_mode = mode
+        self._sleep_timer_expires_at = expires_at
+        self.update_state()
 
     @property
     def sleep_timer_expires_at(self) -> float | None:
         """Return the unix (utc) timestamp at which the active sleep timer stops playback."""
-        return self._sleep_timer_expires_at
-
-    def set_sleep_timer_mode(self, value: SleepTimerMode | None) -> None:
-        """
-        Set the point at which the active sleep timer stops playback.
-
-        :param value: The sleep timer mode, or None to clear the sleep timer.
-        """
-        self._sleep_timer_mode = value
+        return self._state.sleep_timer_expires_at
 
     @property
     def sleep_timer_mode(self) -> SleepTimerMode | None:
         """Return the point at which the active sleep timer stops playback."""
-        return self._sleep_timer_mode
+        return self._state.sleep_timer_mode
 
     @property
     def power_on_in_progress(self) -> bool:
@@ -1754,6 +1649,132 @@ class Player:
             return []
         return [legacy_id for legacy_id in legacy_ids if isinstance(legacy_id, str)]
 
+    @cached_property
+    def _power_control(self) -> str:
+        """Return the power control type."""
+        conf = self._stored_control_conf(CONF_POWER_CONTROL, PlayerFeature.POWER)
+        if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
+            # the control type is explicitly set in the config, use that
+            return str(conf)
+        if conf and (_control := self.mass.players.get_player_control(str(conf))):
+            # the control type is explicitly set to a player control,
+            return _control.id
+        # handle auto-select logic if not explicitly set in config
+        if self._own_supports(PlayerFeature.POWER):
+            # player supports native power control, always prefer that
+            return PLAYER_CONTROL_NATIVE
+        return PLAYER_CONTROL_NONE
+
+    @cached_property
+    def _volume_control(self) -> str:
+        """Return the volume control type."""
+        return self._resolve_control(PlayerFeature.VOLUME_SET, CONF_VOLUME_CONTROL)
+
+    @cached_property
+    def _mute_control(self) -> str:
+        """Return the mute control type."""
+        # this resolves independently from volume_control, so a device whose interfaces
+        # advertise volume and mute separately (DLNA derives both from its own
+        # RenderingControl actions) can end up with the two controls on different
+        # protocols.
+        control = self._resolve_control(PlayerFeature.VOLUME_MUTE, CONF_MUTE_CONTROL)
+        if control == PLAYER_CONTROL_FAKE and self._volume_control == PLAYER_CONTROL_NONE:
+            # fake mute is simulated by setting the volume to zero, so without a volume
+            # control to drive there is no way to mute this player at all
+            return PLAYER_CONTROL_NONE
+        return control
+
+    @cached_property
+    def _output_protocols(self) -> list[OutputProtocol]:
+        """
+        Return all output options for this player.
+
+        Includes:
+        - Native playback (if the native protocol of the player supports PLAY_MEDIA)
+        - The attached audio protocols
+        - The protocols that belong to the player but are not attached, such as one the
+          user switched off
+
+        Each entry has an available flag indicating current availability.
+        """
+        result: list[OutputProtocol] = []
+        listed_ids: set[str] = set()
+
+        # Add native playback option if applicable
+        if (own := self._own_protocol) is not None:
+            listed_ids.add(own.protocol_id)
+            if PlayerFeature.PLAY_MEDIA in own.supported_features:
+                result.append(
+                    OutputProtocol(
+                        output_protocol_id="native",
+                        name=own.provider.name,
+                        protocol_domain=own.provider.domain,
+                        priority=0,  # Native is always highest priority
+                        available=own.available_for_playback,
+                        is_native=True,
+                    )
+                )
+            elif (
+                own.provider.domain in PROTOCOL_PRIORITY
+                and PlayerFeature.SET_MEMBERS in own.supported_features
+            ):
+                # The own protocol is itself of a known protocol domain.
+                result.append(
+                    OutputProtocol(
+                        output_protocol_id=own.protocol_id,
+                        name=own.provider.name,
+                        protocol_domain=own.provider.domain,
+                        priority=PROTOCOL_PRIORITY[own.provider.domain],
+                        available=own.available_for_playback,
+                        is_native=True,
+                    )
+                )
+
+        # Add the attached audio protocols
+        for linked in self._linked_protocols:
+            listed_ids.add(linked.output_protocol_id)
+            protocol = self._protocols[linked.output_protocol_id]
+            result.append(
+                OutputProtocol(
+                    output_protocol_id=linked.output_protocol_id,
+                    name=protocol.provider.name,
+                    protocol_domain=linked.protocol_domain,
+                    priority=linked.priority,
+                    available=protocol.available_for_playback,
+                    derived_from=linked.derived_from,
+                )
+            )
+
+        # Add the protocols that are not attached
+        for protocol_id in self._protocol_ids - listed_ids:
+            if not (stored := self.mass.config.get_protocol_record(protocol_id)) or stored.get(
+                "role"
+            ) not in (ProtocolRole.NATIVE, ProtocolRole.AUDIO):
+                continue
+            provider_id = stored.get("provider") or ""
+            protocol_domain = provider_id.split("--")[0] if provider_id else "unknown"
+            is_native = stored.get("role") == ProtocolRole.NATIVE
+            # resolve the persisted derived-transport edge (if any) so derived
+            # outputs keep their base reference even while not attached
+            derived_from = (stored.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID)
+            if derived_from and own is not None and derived_from == own.protocol_id:
+                derived_from = "native"
+            result.append(
+                OutputProtocol(
+                    output_protocol_id="native" if is_native else protocol_id,
+                    name=protocol_domain.title(),
+                    protocol_domain=protocol_domain,
+                    priority=0 if is_native else PROTOCOL_PRIORITY.get(protocol_domain, 100),
+                    available=False,  # Protocols that are not attached are not available
+                    is_native=is_native,
+                    derived_from=None if is_native else derived_from,
+                )
+            )
+
+        # Sort by priority (lower = more preferred)
+        result.sort(key=lambda o: o.priority)
+        return result
+
     def _index_protocols(self) -> None:
         """Rebuild what is kept per role of the attached protocols."""
         self._own_protocol = next(
@@ -1908,9 +1929,9 @@ class Player:
 
         :param reachable: Whether a protocol that renders audio reaches the device.
         """
-        if reachable or self.type == PlayerType.GROUP:
+        if reachable or self.reported_type == PlayerType.GROUP:
             return False
-        control = self.mass.players.get_player_control(self.power_control)
+        control = self.mass.players.get_player_control(self._power_control)
         if control is None or not control.supports_power:
             return False
         return not control.power_state or self._power_on_in_progress
@@ -2218,10 +2239,10 @@ class Player:
         inputs = StateInputs(
             player_id=self.player_id,
             provider=self.provider_id,
-            player_type=self.type,
+            player_type=self.reported_type,
             now=time.time(),
             previous_state=self._state,
-            enabled=self.enabled,
+            enabled=self._config.enabled,
             name=self.display_name,
             device_name=self._followed_name(),
             default_name=self._config.default_name,
@@ -2231,9 +2252,9 @@ class Player:
             legacy_ids=self._legacy_ids,
             last_seen=self._last_seen,
             unavailable_since=self._unavailable_since,
-            power_control=self.power_control,
-            volume_control=self.volume_control,
-            mute_control=self.mute_control,
+            power_control=self._power_control,
+            volume_control=self._volume_control,
+            mute_control=self._mute_control,
             powered=self._power_control_state(),
             volume_level=self._volume_control_level(),
             volume_muted=self._mute_control_state(),
@@ -2253,7 +2274,7 @@ class Player:
             linked=linked,
             active_protocol=active_protocol,
             foreign_app=foreign_app,
-            output_protocols=self.output_protocols,
+            output_protocols=self._output_protocols,
             protocols=self._protocol_infos(),
             active_output_protocol=self._active_output_protocol,
             active_mass_source=self._active_mass_source,
@@ -2358,7 +2379,7 @@ class Player:
         for group_player in self.mass.players.iter_players(
             return_unavailable=False, return_disabled=False
         ):
-            if group_player.type != PlayerType.GROUP:
+            if group_player.reported_type != PlayerType.GROUP:
                 continue
             self._add_peer(peers, group_player.player_id, group_player)
             group_protocol = group_player.own_protocol
@@ -2430,7 +2451,7 @@ class Player:
             # positional, which is cheaper for the many players this runs for
             peer = peers[player_id] = PeerSnapshot(
                 player_id,
-                player.type,
+                player.reported_type,
                 player._reachable,
                 own.grouping_locked if own else False,
                 player.state,
@@ -2508,7 +2529,7 @@ class Player:
 
     def _power_control_state(self) -> bool | None:
         """Return the power state based on the playercontrol which may have been set-up."""
-        power_control = self.power_control
+        power_control = self._power_control
         if power_control == PLAYER_CONTROL_FAKE:
             return bool(self._extra_data.get(ATTR_FAKE_POWER, False))
         if power_control == PLAYER_CONTROL_NONE:
@@ -2522,7 +2543,7 @@ class Player:
 
     def _volume_control_level(self) -> int | None:
         """Return the volume level based on the playercontrol which may have been set-up."""
-        volume_control = self.volume_control
+        volume_control = self._volume_control
         level = self._reported_volume_level(volume_control)
         if self._applies_held_volume(PlayerFeature.VOLUME_SET, volume_control):
             return _quieter_level(self._held_volume[PlayerFeature.VOLUME_SET], level)
@@ -2549,7 +2570,7 @@ class Player:
 
     def _mute_control_state(self) -> bool | None:
         """Return the mute state based on any playercontrol which may have been set-up."""
-        mute_control = self.mute_control
+        mute_control = self._mute_control
         muted = self._reported_mute_state(mute_control)
         if self._applies_held_volume(PlayerFeature.VOLUME_MUTE, mute_control):
             return _quieter_mute(self._held_volume[PlayerFeature.VOLUME_MUTE], muted)

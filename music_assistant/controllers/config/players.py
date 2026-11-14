@@ -1065,7 +1065,7 @@ class PlayerConfigMixin:
             "provider": player.provider_id,
             "enabled": True,
             "default_name": player.state.name,
-            "player_type": player.type,
+            "player_type": player.reported_type,
             "values": {},
         }
 
@@ -1106,7 +1106,7 @@ class PlayerConfigMixin:
         self.create_player_record(
             player_id,
             provider=player.provider_id,
-            player_type=player.type,
+            player_type=player.reported_type,
             default_name=get_device_name(player.own_protocol, player.audio_protocols),
             values={CONF_SESSION_ONLY: True, CONF_CREATED_AT: time.time_ns()},
         )

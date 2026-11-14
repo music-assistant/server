@@ -1142,7 +1142,7 @@ async def test_derived_protocol_attaches_to_the_player_of_the_protocol_it_rides_
     player = scenario.mass.players.get_player(player_id)
     assert player is not None
     # the derived output carries its base output, the other output does not
-    outputs = {output.output_protocol_id: output for output in player.output_protocols}
+    outputs = {output.output_protocol_id: output for output in player._output_protocols}
     assert outputs["spb_1"].derived_from == "ap_1"
     assert outputs["ap_1"].derived_from is None
 
@@ -1165,7 +1165,7 @@ async def test_derived_protocol_riding_on_the_own_protocol_rides_on_the_native_o
     assert scenario.player_of(bridge) == player_id
     player = scenario.mass.players.get_player(player_id)
     assert player is not None
-    outputs = {output.output_protocol_id: output for output in player.output_protocols}
+    outputs = {output.output_protocol_id: output for output in player._output_protocols}
     assert outputs["spb_1"].derived_from == "native"
 
 

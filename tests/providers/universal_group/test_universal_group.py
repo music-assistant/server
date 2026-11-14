@@ -184,6 +184,8 @@ def _make_member(
         synced_to=synced_to,
         playback_state=playback_state,
         supported_features={PlayerFeature.PLAY_MEDIA},
+        power_control=player._power_control,
+        output_protocols=player._output_protocols,
     )
     return player
 
@@ -773,7 +775,7 @@ class TestSupportedFeaturesFromMembers:
 
         assert not ugp.is_active_session
         assert ugp.player is not None
-        assert ugp.player.mute_control == PLAYER_CONTROL_NATIVE
+        assert ugp.player._mute_control == PLAYER_CONTROL_NATIVE
 
     def test_mute_control_stays_none_without_capable_members(self) -> None:
         """No member can be muted → no mute control to hand to HA."""
@@ -784,7 +786,7 @@ class TestSupportedFeaturesFromMembers:
         ugp.update_state()
 
         assert ugp.player is not None
-        assert ugp.player.mute_control == PLAYER_CONTROL_NONE
+        assert ugp.player._mute_control == PLAYER_CONTROL_NONE
 
 
 class TestMemberStream:

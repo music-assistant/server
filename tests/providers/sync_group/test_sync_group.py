@@ -186,6 +186,8 @@ def _make_member(
         available=available,
         playback_state=playback_state,
         supported_features=set(MEMBER_FEATURES),
+        output_protocols=player._output_protocols,
+        active_output_protocol=player._active_output_protocol,
     )
     return player
 
