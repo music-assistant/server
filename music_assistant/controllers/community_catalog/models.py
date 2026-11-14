@@ -110,6 +110,14 @@ class InstalledProvider(DataClassDictMixin):
     repository: str
     commit: str
     content_hash: str
+    # this version loaded on this server once
+    verified: bool = False
+    # the version that was live before, kept to go back to
+    previous_version: str | None = None
+    # staged, becomes live at the next start of the server
+    pending_version: str | None = None
+    # a version this server went back from, which it does not install again
+    failed_version: str | None = None
 
 
 @dataclass

@@ -21,6 +21,8 @@ class Verdict(StrEnum):
     LOAD = "load"
     # the files differ from what was installed: install the same version again first
     REINSTALL = "reinstall"
+    # the installed version is not listed with its content: install the decision's version
+    SWITCH = "switch"
     CATALOG_UNREACHABLE = "catalog_unreachable"
     BLOCKED = "blocked"
     NOT_LISTED = "not_listed"
@@ -28,6 +30,9 @@ class Verdict(StrEnum):
     # decided while loading, never by evaluate
     REQUIREMENTS_CLASH = "requirements_clash"
     REINSTALL_FAILED = "reinstall_failed"
+    WENT_BACK = "went_back"
+    RESTART_TO_GO_BACK = "restart_to_go_back"
+    RESTART_TO_UPDATE = "restart_to_update"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +44,8 @@ class Decision:
     detail: str | None = None
     # where the catalog explains a block
     url: str | None = None
+    # the version to switch to, or the update on offer for a provider that loads
+    version: str | None = None
 
 
 def evaluate(
@@ -50,7 +57,9 @@ def evaluate(
     own_line: bool,
 ) -> Decision:
     """
-    Return whether an installed community provider may load.
+    Return whether an installed community provider may load, or switches to another version.
+
+    A provider that may load also learns of an update on offer.
 
     :param installed: What was installed.
     :param folder_hash: The content hash of the live folder, None when there is none.
@@ -76,9 +85,19 @@ def evaluate(
         return Decision(Verdict.CATALOG_UNREACHABLE)
     if entry is None:
         return Decision(Verdict.NOT_LISTED)
+    latest = entry.latest
+    offered = (
+        entry.status == IndexStatus.LISTED
+        and latest in entry.versions
+        and latest != installed.failed_version
+    )
     release = entry.versions.get(installed.version)
     if release is None or release.content_hash != installed.content_hash:
+        if offered:
+            return Decision(Verdict.SWITCH, version=latest)
         return Decision(Verdict.NOT_FOR_THIS_VERSION)
     if folder_hash != installed.content_hash:
         return Decision(Verdict.REINSTALL)
+    if offered and latest != installed.version:
+        return Decision(Verdict.LOAD, version=latest)
     return Decision(Verdict.LOAD)

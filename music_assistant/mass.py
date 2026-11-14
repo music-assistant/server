@@ -58,6 +58,7 @@ from music_assistant.constants import (
     MASS_VERSION,
     MIN_SCHEMA_VERSION,
     PROVIDER_LOAD_CONCURRENCY,
+    UNHANDLED_PROVIDER_ERROR_CODE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import CacheController
@@ -175,7 +176,7 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
             translation_args=list(exc.translation_args),
             translation_owner=exc.translation_owner,
         )
-    return ProviderError(error_code=999, message=message)
+    return ProviderError(error_code=UNHANDLED_PROVIDER_ERROR_CODE, message=message)
 
 
 def _provider_error_traceback(exc: BaseException) -> BaseException | None:

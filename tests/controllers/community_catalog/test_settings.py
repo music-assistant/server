@@ -40,6 +40,21 @@ async def test_switch_is_hidden_and_off(mass: MusicAssistant) -> None:
     assert DOMAIN not in [manifest.domain for manifest in mass.get_provider_manifests()]
 
 
+async def test_auto_update_is_hidden_and_off(mass: MusicAssistant) -> None:
+    """Automatic updates are a hidden entry that starts off and depends on the switch."""
+    entries = await mass.config.get_core_config_entries(DOMAIN)
+    auto_update = next(entry for entry in entries if entry.key == "auto_update")
+
+    assert auto_update.type == ConfigEntryType.BOOLEAN
+    assert auto_update.hidden is True
+    assert auto_update.default_value is False
+    assert auto_update.depends_on == "catalog_enabled"
+    assert (await mass.config.get_core_config(DOMAIN)).get_value("auto_update") is False
+    assert mass.translations.get_translation(
+        f"core.{DOMAIN}.config_entries.auto_update.description"
+    )
+
+
 async def test_nothing_happens_while_switched_off(tmp_path: Path, registry: Registry) -> None:
     """With the switch off there is no request, no timer, no folder and an empty list."""
     async with full_mass_context(tmp_path) as mass:

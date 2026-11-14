@@ -375,6 +375,9 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDER_LOAD_CONCURRENCY = 8
+# the error code recorded for a provider load that failed with an error that is not a
+# MusicAssistantError, which is a bug rather than a handled condition
+UNHANDLED_PROVIDER_ERROR_CODE: Final = 999
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
 # The music sources that read the user's own files. Background audio analysis is deliberately
 # limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is

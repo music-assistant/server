@@ -7,6 +7,10 @@
     "catalog_enabled": {
       "label": "Community catalog",
       "description": "The community catalog holds music sources, player support, metadata sources and plugins that people in the community build and maintain. The Music Assistant team checks each of them against the rules of the catalog, but does not test or support them. They run as part of your server, so you install them at your own risk. For help with one, go to its maintainer."
+    },
+    "auto_update": {
+      "label": "Update automatically",
+      "description": "Installs new versions of what you added from the community catalog by itself. An update waits until nothing is playing."
     }
   }
 }

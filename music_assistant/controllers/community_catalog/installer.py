@@ -111,6 +111,19 @@ class Installer:
             msg = f"Could not activate {domain}: {err}"
             raise InstallError(msg) from err
 
+    async def restore(self, domain: str) -> None:
+        """
+        Make the previous version of a provider live again, and delete the live one.
+
+        :param domain: The domain of the provider.
+        :raises InstallError: There is no previous version, or the folders cannot be renamed.
+        """
+        try:
+            await asyncio.to_thread(self._restore, domain)
+        except OSError as err:
+            msg = f"Could not restore the previous version of {domain}: {err}"
+            raise InstallError(msg) from err
+
     async def discard(self, domain: str) -> None:
         """
         Remove the staged version of a provider.
@@ -145,6 +158,15 @@ class Installer:
         :raises InstallError: The domain is not a provider domain.
         """
         return self._folders(domain)[0]
+
+    def staged_folder(self, domain: str) -> Path:
+        """
+        Return the folder of the staged version of a provider, which need not exist.
+
+        :param domain: The domain of the provider.
+        :raises InstallError: The domain is not a provider domain.
+        """
+        return self._folders(domain)[2]
 
     async def _stage(
         self, domain: str, version: str, repository: str, release: IndexVersion
@@ -214,6 +236,15 @@ class Installer:
         if live.exists():
             live.rename(previous)
         staged.rename(live)
+
+    def _restore(self, domain: str) -> None:
+        """Delete the live version of a provider and rename the previous one to it (blocking)."""
+        live, previous, _ = self._folders(domain)
+        if not previous.is_dir():
+            msg = f"{domain} has no previous version"
+            raise InstallError(msg)
+        _delete(live)
+        previous.rename(live)
 
     def _remove(self, domain: str) -> None:
         """Delete every version of a provider (blocking)."""

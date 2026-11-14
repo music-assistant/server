@@ -92,6 +92,10 @@ async def test_install(tmp_path: Path, catalog: Path, registry: Registry, github
                 "repository": f"someone/{DOMAIN}",
                 "commit": f"{DOMAIN}-{VERSION}",
                 "content_hash": _hash(_provider_files(DOMAIN, [REQUIREMENT])),
+                "verified": True,
+                "previous_version": None,
+                "pending_version": None,
+                "failed_version": None,
             }
         }
         manifest = mass.get_provider_manifest(DOMAIN)
