@@ -168,6 +168,32 @@ async def test_regroup_supersedes_pending_resume() -> None:
     assert resumed == ["leader"]
 
 
+async def test_set_members_removes_several_members_at_once() -> None:
+    """All members passed in one removal call leave the group and are stopped."""
+    player, _mass = _player_with_mocked_mass()
+    player._player_id = "leader"
+    player._attr_group_members = ["leader", "member_1", "member_2", "member_3"]
+    player.client = MagicMock(player_id="leader")
+    members = {
+        member_id: MagicMock(player_id=member_id, state=SlimPlayerState.PLAYING, stop=AsyncMock())
+        for member_id in ("member_1", "member_2", "member_3")
+    }
+    player._provider = MagicMock()
+    player._provider.slimproto.get_player.side_effect = members.get
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(SqueezelitePlayer, "state", new_callable=PropertyMock),
+        patch.object(player, "update_state"),
+    ):
+        await player.set_members(player_ids_to_remove=["member_1", "member_2"])
+
+    assert player.group_members == ["leader", "member_3"]
+    members["member_1"].stop.assert_awaited_once()
+    members["member_2"].stop.assert_awaited_once()
+    members["member_3"].stop.assert_not_called()
+
+
 async def test_play_media_resets_elapsed_anchor() -> None:
     """A new stream does not carry the previous stream's position."""
     player, mass = _player_with_mocked_mass()
