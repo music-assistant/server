@@ -1085,8 +1085,8 @@ class MetadataEnrichmentMixin:
             return identified.artist.id, identified.by_name
         # last resort for library items without identifiers: the artist's top tracks
         tried = {track.uri for track in ref_tracks}
-        # only a music provider ranks its own catalog without a search per track, so the
-        # listing is narrowed to them and never falls back to a metadata provider
+        # a metadata provider's ranking is matched against the library tracks below, so this
+        # listing is narrowed to the music providers and never falls back to a metadata provider
         if ranking := self._ranking_music_providers(artist):
             top_tracks = _identifying_first(
                 [
