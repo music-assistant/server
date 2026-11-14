@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers import audio as audio_helper
@@ -73,6 +74,21 @@ def test_build_concat_filelist_escapes_multiple_apostrophes() -> None:
     """Every apostrophe in a path is escaped, not just the first."""
     result = build_concat_filelist(["/x/it's a, b's & c's.mp3"])
     assert result == "file '/x/it'\\''s a, b'\\''s & c'\\''s.mp3'\n"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/music/a.mp3\nb.mp3",
+        "/music/a.mp3\rb.mp3",
+        "http://example.com/a.mp3\x00",
+        "/music/a\x7f.mp3",
+    ],
+)
+def test_build_concat_filelist_rejects_control_characters(path: str) -> None:
+    """A path containing a control character is refused rather than written."""
+    with pytest.raises(InvalidDataError):
+        build_concat_filelist(["/music/ok.mp3", path])
 
 
 def test_build_concat_filelist_skips_tls_verify_on_request() -> None:
