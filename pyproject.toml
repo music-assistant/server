@@ -43,7 +43,7 @@ dependencies = [
   "librosa==1.0.0",
   "numpy==2.3.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
   "torch==2.13.0",
-  "torchaudio==2.11.0",
+  "torchaudio==2.11.1+cpu",
   "gql[all]==4.0.0",
   # TEMPORARY test-drive pin — replace with PyPI release before merge (see webrtc_aiolibdatachannel_plan.md Phase C)
   "aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive",

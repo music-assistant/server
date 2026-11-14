@@ -96,8 +96,8 @@ soxr==1.1.0
 srptools==1.0.1
 torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
-torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
-torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
+torchaudio==2.11.1+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
+torchaudio==2.11.1+cpu; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
 transformers==5.14.1
 usearch==2.26.6
