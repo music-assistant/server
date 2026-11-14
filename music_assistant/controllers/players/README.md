@@ -109,7 +109,7 @@ device right now. Four of those questions have a final value next to them:
 
 | Final value | What is true right now |
 |---|---|
-| `available`: clients can use the player; also true while it is switched off at its power control | `available_for_playback`: it can be played to right now (enabled, reachable and set up) |
+| `available`: clients can use the player; also true while it is switched off at its power control | `available_for_playback`: it can be played to right now (enabled, reachable and set up); for the controller's own use |
 | `type`: the type it published | `reported_type`: the type its own protocol reports now, else the stored one; the attach, merge and removal code reads it, before a change is published, and it is the type that is stored |
 | `protocols`: all protocols that belong to it, attached or not (`PlayerProtocolInfo`) | `attached_protocols`: the protocol objects that are attached, by id |
 | `provider`: the provider instance id it published | `provider_id`: the instance id its attached protocols give it now, else the stored one |
@@ -151,8 +151,9 @@ A player is available while it is enabled and one of its protocols that can rend
 its device (a control protocol alone does not count, nor a protocol that rides on another one
 while that one can not play), or while it is switched off at its external power control; not
 while it only has a protocol that still needs setup. It is available for
-playback while such a protocol is reachable and set up; that is what internal code checks before
-it sends anything to the device.
+playback while such a protocol is reachable and set up; that is what the controller checks
+before it sends anything to the device. Everyone else reads `available`, see
+[Power](#power).
 
 ## Core Components
 
@@ -581,10 +582,62 @@ the device; stop and pause call off a power on under way and otherwise do nothin
 ungroup do nothing; power, play/pause and announcements handle it themselves; every other command
 is refused.
 
+Such a player is the one case of a player that is available and can not play yet, and it stays
+that while a power on still waits for its device, when it already shows as powered on. Code
+outside the controller reads the published `available` of another player to decide whether that
+player may take part, as a client does, and `offline_by_power_control` next to it where it has to
+know that the device is there now. It never switches the player on through its protocol or its
+control: the controller does that.
+
+A command that starts a group player waits for the members that are switched off at their power
+control: a play, a resume, a play of an item or of media on its queue, a play or a power on of
+the group player, a selection of a source that plays, a next, a previous or a seek on a group
+player that does not play, a play on a member that goes to its group, and a queue transfer that
+plays on it. Before it takes any lock it powers those members on and waits until their devices are
+online, all at once and each for at most 90 seconds (`_power_on_members`). Then it runs as it
+does for a group whose members are on, so the group starts once, on all of them. `cmd_set_members`
+does the same for the players it adds to a leader or a group. The user who sends the command
+needs access to the group player (or the leader), not to each member.
+
+A group player does not play, for a next, a previous or a seek, when its queue does not read as
+playing at the moment the command arrives (`PlayerQueue.state`). A next and a previous still
+return at once: the move to the other item, which they put off for a second, waits for the
+members. Further presses meanwhile join that wait, so the group starts once, with the last item,
+and a wait that is called off ends that move without an error.
+
+A member that does not come online in time, or whose control fails to switch it on, is left out
+with one warning that names the member and the group, and the group starts on the others (a sync
+group that forms without a member also logs that, as it does for any member it can not reach).
+When no member can play, the command fails as it does for any group without a member that can
+play.
+
+A stop, a pause or a power off of the group calls that wait off (`_cancel_member_power_ons`), also
+that of a member whose playback the group owns, and a power off of a group that still reads as off
+while it waits. The command that waits fails as unavailable and starts nothing, also
+not on the members that are on. The power controls stay on, and a device that comes online
+afterwards stays idle (a sync group with a fixed member list that is formed takes a returning
+member back, as it does without this). Stopping the leader or group that a player is added to ends
+the addition the same way, and removing that player from it ends the wait for that player alone. A
+new start right after that waits again for a member whose device still boots: its control is on,
+switched on less than those 90 seconds ago, and it is waited for until they are over, without
+switching its control once more.
+
+Only such a command switches a member on; nothing does because a state changed. A play on a group
+player that plays already is ignored, as on any player, and switches nothing on. Neither does a
+next, a previous or a seek on a group player that plays, nor a selection of a queue as its source,
+which starts nothing. Every other command that starts the group waits for its members also while
+the group plays, and what it plays goes on meanwhile. What a command runs under the lock of the
+group leaves the members as they are, and so does playback that the server continues by itself
+(`without_member_power_on`): the next items of a queue that played out and a restart of what plays
+for a changed setting. An announcement to a group switches no member on either, also not when it
+resumes the group afterwards: it plays on the members that are on. An announcement to one
+switched-off player powers that player on.
+
 A player whose power is turned off outside of Music Assistant while it plays its own queue has that
 queue stopped shortly after; a group member leaves its group instead. A player with an idle power
 off time is powered off once it was available, powered on and stopped for that long. An
-announcement that plays, or a power on that still waits for the device, holds that off.
+announcement that plays, a power on that still waits for the device, or a start that powered the
+player on and still waits for another one, holds that off.
 
 ### Sleep Timer, Announcements and Audio Sources
 
@@ -692,6 +745,11 @@ concurrent command on that group. Nested acquisitions within one task are re-ent
 the group up front costs nothing further down the call chain. The re-entrancy is per task: when a
 group command fans out to its members in tasks of their own (a group announcement), those tasks
 take the member's lock only.
+
+A command that waits for a device holds no lock meanwhile: a power on of a player that is
+switched off at its power control, and that of the members of a group that is started or of the
+players that are added, run before the command takes its first lock. A command that already
+holds the group does not wait for a member.
 
 A command holds the lock of the player it works on, and of no player it only passes through:
 - A command that works on the player under its group uses `get_group_and_player_lock`. It takes

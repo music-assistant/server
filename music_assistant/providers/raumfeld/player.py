@@ -1755,8 +1755,10 @@ class RaumfeldPlayer(PlayerProtocol):
                             queue.queue_id, int(queue.corrected_elapsed_time)
                         )
                     else:
-                        # a live stream (radio) has no position to seek to, so it starts again live
-                        await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
+                        # a live stream (radio) has no position to seek to, so it starts again
+                        # live; a restart is no command that starts a Sync Group it renders
+                        with self.mass.players.without_member_power_on():
+                            await self.mass.player_queues.resume(queue.queue_id, fade_in=False)
                 except MusicAssistantError as err:
                     self.logger.debug(
                         "Failed to restart %s at a format its group plays: %r", self.room, err

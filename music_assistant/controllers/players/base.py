@@ -37,8 +37,8 @@ from music_assistant.models.player import Player, PlayerState
 if TYPE_CHECKING:
     import asyncio
     import weakref
-    from collections.abc import Callable, Iterator
-    from contextlib import AbstractAsyncContextManager
+    from collections.abc import Callable, Iterable, Iterator
+    from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
     from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.enums import PlayerFeature, ProtocolRole, SourceControl
@@ -81,6 +81,7 @@ class _PlayerControllerBase(CoreController):
     _register_lock: asyncio.Lock
     _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
     _source_sessions: dict[str, AudioSourceSession]
+    _member_power_ons: dict[asyncio.Future[list[bool]], tuple[str, frozenset[str]]]
     _state_update_subscribers: list[Callable[[Player, dict[str, tuple[Any, Any]]], None]]
 
     def iter_players(
@@ -647,6 +648,9 @@ class _PlayerControllerBase(CoreController):
             player_id: str,
             purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
         ) -> AbstractAsyncContextManager[None]: ...
+        def holds_player_lock(
+            self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        ) -> bool: ...
         def get_group_and_player_lock(
             self, player_id: str
         ) -> AbstractAsyncContextManager[None]: ...
@@ -798,8 +802,13 @@ class _PlayerControllerBase(CoreController):
         async def _power_on_for_playback(
             self, player: Player, skip_auto_play: bool = False
         ) -> None: ...
+        def without_member_power_on(self) -> AbstractContextManager[None]: ...
         async def _power_on_switched_off_player(self, player_id: str) -> Player: ...
+        async def _power_on_members(
+            self, owner: Player, member_ids: Iterable[str] | None = None
+        ) -> set[str]: ...
         def _cancel_power_on(self, player: Player) -> None: ...
+        def _cancel_member_power_ons(self, *players: Player) -> None: ...
         # volume
         def _enforce_volume_limits(self, player: Player) -> bool: ...
         def _invalidate_group_volume_snapshot(self, player_id: str) -> None: ...

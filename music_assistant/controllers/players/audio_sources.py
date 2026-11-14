@@ -24,6 +24,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
     ProviderFeature,
     RepeatMode,
     SourceControl,
@@ -349,7 +350,7 @@ class AudioSourceMixin(_PlayerControllerBase):
             self.trigger_player_update(player_id)
 
     @api_command("players/cmd/select_source", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
+    @handle_player_command(switched_off=SwitchedOffAction.RUN)
     async def select_source(self, player_id: str, source: str | None) -> None:
         """
         Handle SELECT SOURCE command on given player.
@@ -361,6 +362,15 @@ class AudioSourceMixin(_PlayerControllerBase):
             source = player_id  # default to MA queue source
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
+        # no lock while a device comes online: a switched-off player is powered on first,
+        # and so are the switched-off members of a group player for a source that plays.
+        # A queue that is selected only becomes the source: that starts nothing
+        if player.offline_by_power_control:
+            player = await self._power_on_switched_off_player(player_id)
+        elif player.type == PlayerType.GROUP and not self.mass.player_queues.get(
+            self.resolve_player_id(source)
+        ):
+            await self._power_on_members(player)
         # taking the player out of its group acts on the group, so the group's lock is
         # taken before the player's own and both are held until the source is selected
         async with self.get_group_and_player_lock(player_id):

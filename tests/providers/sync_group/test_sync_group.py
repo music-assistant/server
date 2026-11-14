@@ -28,6 +28,7 @@ from music_assistant_models.errors import (
     ResourceBusyError,
 )
 from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.unique_list import UniqueList
 
@@ -35,6 +36,7 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_GROUP_MEMBERS,
     CONF_MUTE_CONTROL,
+    CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_VOLUME_CONTROL,
 )
@@ -365,7 +367,16 @@ class TestProtocolAwareLeaderSelection:
         switched_off = _make_member(mass, "switched_off")
         # clients still see it as available (and off), the device itself is offline
         _set_reachable(switched_off, False)
+        plug = PlayerControl(
+            id="switch.plug", provider="hass", name="Plug", supports_power=True, power_state=False
+        )
+        mass.config.get_player_value.side_effect = lambda player_id, key, default=None: (
+            plug.id if (player_id, key) == ("switched_off", CONF_POWER_CONTROL) else default
+        )
+        mass.players.get_player_control.side_effect = {plug.id: plug}.get
+        switched_off._cache.clear()
         assert switched_off.available
+        assert switched_off.offline_by_power_control
         player_b = _make_member(mass, "player_b")
         sgp._attr_group_members = ["switched_off", "player_b"]
 
@@ -1208,6 +1219,7 @@ class TestSetMembersDoesNotRegisterIncompatible:
         sgp = _make_sync_group(mass)
         unpaired = _make_member(mass, "unpaired", "airplay")
         _protocol(unpaired, "airplay")._attr_needs_setup = True
+        unpaired.update_state(signal_event=False, force_update=True)
         sgp.sync_leader = None
         sgp._attr_group_members = []
 

@@ -12,6 +12,7 @@ import functools
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, overload
 
+from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MusicAssistantError,
@@ -60,6 +61,7 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
     accept_unavailable: bool = False,
     to_playback_owner: bool = False,
+    ignored_while_playing: bool = False,
 ) -> Callable[
     [Callable[Concatenate[PlayerControllerT, P], Awaitable[R]]],
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]],
@@ -73,6 +75,7 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
     switched_off: SwitchedOffAction = SwitchedOffAction.REFUSE,
     accept_unavailable: bool = False,
     to_playback_owner: bool = False,
+    ignored_while_playing: bool = False,
 ) -> (
     Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]
     | Callable[
@@ -95,11 +98,18 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
         external power control (see SwitchedOffAction): refused by default, ignored when
         the command has nothing to act on (volume), ignored after calling off a power on
         under way (stop, pause), powered on first (before any lock is taken) for commands
-        that start playback, or run as is for commands that handle it themselves.
+        that start playback, or run as is for commands that handle it themselves. A command
+        that powers such a player on also waits for the switched-off members of the group
+        player it starts (the player itself, or the owner of its playback), and one that
+        calls a power on off ends the wait of the player and of the owner of its playback
+        for their members.
     :param accept_unavailable: Run the command for an unavailable player too, for a
         command that handles such a player itself (power).
     :param to_playback_owner: The command acts on the owner of the player's playback (its
         sync leader or group player), so the user needs access to that owner as well.
+    :param ignored_while_playing: The command does nothing on a player that plays already
+        (play), so it does not wait for the switched-off members of a group player that
+        plays.
     """  # noqa: D401
 
     def decorator(
@@ -146,6 +156,8 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
             if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
                 msg = f"Player {player.name} is switched off"
                 raise PlayerUnavailableError(msg)
+            if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
+                self._cancel_member_power_ons(player, self._resolve_playback_owner(player))
             if is_switched_off and switched_off in (
                 SwitchedOffAction.IGNORE,
                 SwitchedOffAction.CANCEL_POWER_ON,
@@ -160,8 +172,17 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
                 return
 
             try:
+                target = self._resolve_playback_owner(player) if to_playback_owner else player
                 if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
                     await self._power_on_switched_off_player(player.player_id)
+                elif (
+                    switched_off == SwitchedOffAction.POWER_ON
+                    and target.type == PlayerType.GROUP
+                    and not (
+                        ignored_while_playing and target.playback_state == PlaybackState.PLAYING
+                    )
+                ):
+                    await self._power_on_members(target)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)

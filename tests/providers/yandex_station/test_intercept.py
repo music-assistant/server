@@ -1130,7 +1130,7 @@ async def test_target_that_can_not_be_played_to_is_rejected() -> None:
     """A target that can not be played to right now must not silence the Station."""
     player = _make_intercept_player()
     unavailable = MagicMock()
-    unavailable.available_for_playback = False
+    unavailable.available = False
     player.mass.players.get_player = MagicMock(return_value=unavailable)
     state, player_state, _ = _state()
 
@@ -1144,7 +1144,10 @@ async def test_target_that_still_needs_setup_is_rejected() -> None:
     """A target whose device answers but still has to be set up must not silence the Station."""
     player = _make_intercept_player()
     target, protocol = attach_mock(MockProvider("airplay", mass=mock_player_mass()), "ap_target")
+    target.update_state(signal_event=False, force_update=True)
+    assert target.available
     protocol._attr_needs_setup = True
+    target.update_state(signal_event=False, force_update=True)
     player.mass.players.get_player = MagicMock(return_value=target)
     state, player_state, _ = _state()
 

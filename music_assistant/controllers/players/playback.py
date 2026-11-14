@@ -83,7 +83,9 @@ class PlaybackMixin(_PlayerControllerBase):
             await self._handle_cmd_stop(player.player_id)
 
     @api_command("players/cmd/play", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(switched_off=SwitchedOffAction.POWER_ON, to_playback_owner=True)
+    @handle_player_command(
+        switched_off=SwitchedOffAction.POWER_ON, to_playback_owner=True, ignored_while_playing=True
+    )
     async def cmd_play(self, player_id: str) -> None:
         """
         Send PLAY (unpause) command to given player.
@@ -335,10 +337,7 @@ class PlaybackMixin(_PlayerControllerBase):
         # across the release and the play (see get_group_and_player_lock). Without it the
         # command is redirected to the owner and holds the owner's lock alone. A queue
         # action calling in holds these locks already.
-        override = bool(
-            self.mass.config.get_player_value(player_id, CONF_PLAY_MEDIA_OVERRIDES_GROUP, True)
-        )
-        if override:
+        if self._play_media_overrides_group(player_id):
             async with self.get_group_and_player_lock(player_id):
                 target_player = self.get_player(player_id, True)
                 if target_player is not None and (
@@ -347,6 +346,13 @@ class PlaybackMixin(_PlayerControllerBase):
                     await self._release_player_for_play_media(target_player)
                 await self._handle_play_media(player_id, media)
             return
+        player = self.get_player(player_id, True)
+        assert player is not None  # for type checking
+        owner = self._resolve_playback_owner(player)
+        if owner is not player and owner.type == PlayerType.GROUP:
+            # the group the media goes to is started: its switched-off members are powered
+            # on before its lock is taken
+            await self._power_on_members(owner)
         async with self._playback_owner_locks(player_id, hold_player=False):
             player = self._get_player_with_redirect(player_id)
             await self._handle_play_media(player.player_id, media)
@@ -506,6 +512,29 @@ class PlaybackMixin(_PlayerControllerBase):
                     return
         # if we reach here, we could not resolve the currently playing item
         raise PlayerCommandFailed("No current item to add to favorites")
+
+    def _play_media_overrides_group(self, player_id: str) -> bool:
+        """
+        Return whether media played on a player takes it out of its group, as it is set to.
+
+        :param player_id: The player the media is played on.
+        """
+        return bool(
+            self.mass.config.get_player_value(player_id, CONF_PLAY_MEDIA_OVERRIDES_GROUP, True)
+        )
+
+    def _resolve_play_media_target(self, player: Player) -> Player:
+        """
+        Return the player that media played on the given player plays on.
+
+        That is the player itself, which is taken out of its group for it, while its
+        play_media_overrides_group setting is on. Otherwise it is the owner of its playback.
+
+        :param player: The player the media is played on.
+        """
+        if self._play_media_overrides_group(player.player_id):
+            return player
+        return self._resolve_playback_owner(player)
 
     async def _release_player_for_play_media(self, player: Player) -> None:
         """
