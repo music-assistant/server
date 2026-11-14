@@ -57,7 +57,7 @@ def convert_airplay_volume(value: float) -> int:
     return max(0, min(100, round(portion)))
 
 
-def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
+def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911, C901
     """Return Manufacturer and Model name from mdns info."""
     manufacturer = info.decoded_properties.get("manufacturer")
     model = info.decoded_properties.get("model")
@@ -89,6 +89,8 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
         return ("Apple", "Apple TV 4K Gen2")
     if model == "AppleTV14,1":
         return ("Apple", "Apple TV 4K Gen3")
+    if model.startswith("HomeAccessory"):
+        return ("Apple", "HomeView")
     if model == "UPL-AMP":
         return ("Ubiquiti Inc.", "UPL-AMP")
     if "AirPort" in model:
@@ -155,13 +157,13 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     """
     Check if a device is a (standalone) Apple device with native AirPlay support.
 
-    Apple devices (HomePod, Apple TV) have native AirPlay support
+    Apple devices (HomePod, HomeView, Apple TV) have native AirPlay support
     and a control plane of their own, so their AirPlay protocol is the native one.
     We don't include MacBooks etc. here as they are not standalone devices
     and may also be used for other protocols.
     """
     return manufacturer.lower().startswith("apple") and (
-        "homepod" in model.lower() or "apple tv" in model.lower()
+        any(name in model.lower() for name in ("homepod", "homeview", "apple tv"))
     )
 
 
