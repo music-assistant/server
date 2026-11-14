@@ -261,6 +261,9 @@ class Provider:
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),
+            "supported_artist_types": [
+                x.value for x in getattr(self, "supported_artist_types", ())
+            ],
             "lookup_key": self.instance_id,  # include for backwards compatibility
         }
 

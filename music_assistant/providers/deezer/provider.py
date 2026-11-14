@@ -14,18 +14,27 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, NoReturn
 
-from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
+from deezer_python_gql import GraphQLClientAuthError, GraphQLClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .constants import CONF_QUALITY, CONF_SYNC_QUEUE, DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .constants import (
+    API_RATE_LIMIT,
+    API_RATE_PERIOD,
+    CONF_QUALITY,
+    CONF_SYNC_QUEUE,
+    DECRYPT_KEY_ERROR,
+    DECRYPT_KEY_LENGTH,
+)
+from .gql_client import ThrottledGQLClient
 from .gw_client import (
     DeezerGWAuthError,
     DeezerGWError,
@@ -101,7 +110,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     Delegates to specialized manager classes for clean separation of concerns.
     """
 
-    gql_client: DeezerGQLClient
+    gql_client: ThrottledGQLClient
     gw_client: GWClient
     rest_client: DeezerRESTClient
     media_manager: DeezerMediaManager
@@ -148,10 +157,14 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         # a Family profile has no ARL of its own, it is reached through the admin's ARL
         family_profile = str(self.get_setup_value(CONF_FAMILY_PROFILE) or "")
         quality = str(self.config.get_value(CONF_QUALITY))
+        throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
         try:
-            self.gql_client = DeezerGQLClient(
-                arl=arl_token, session=self.mass.http_session, account_id=family_profile
+            self.gql_client = ThrottledGQLClient(
+                arl=arl_token,
+                session=self.mass.http_session,
+                throttler=throttler,
+                account_id=family_profile,
             )
             logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
@@ -160,7 +173,11 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
                 raise GraphQLClientError(msg)  # noqa: TRY301 - converted to LoginFailed below
             self.user_id = me.id
             self.gw_client = GWClient(
-                self.mass.http_session, arl_token, family_profile, max_format=quality
+                self.mass.http_session,
+                arl_token,
+                family_profile,
+                max_format=quality,
+                throttler=throttler,
             )
             await self.gw_client.setup()
         except DeezerGWNoSubscriptionError as err:
