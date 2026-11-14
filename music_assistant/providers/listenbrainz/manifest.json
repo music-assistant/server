@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "listenbrainz",
+  "stage": "experimental",
+  "name": "ListenBrainz",
+  "description": "Expose ListenBrainz playlists in Music Assistant.",
+  "codeowners": ["@Tommatheussen"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "playlist-music"
+}
