@@ -57,7 +57,7 @@ def convert_airplay_volume(value: float) -> int:
     return max(0, min(100, round(portion)))
 
 
-def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911, C901
+def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
     """Return Manufacturer and Model name from mdns info."""
     manufacturer = info.decoded_properties.get("manufacturer")
     model = info.decoded_properties.get("model")
