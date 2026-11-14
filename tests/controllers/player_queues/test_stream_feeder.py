@@ -47,11 +47,10 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
         await release_wait.wait()
         yield
 
-    player_state = SimpleNamespace(
+    player = SimpleNamespace(
         playback_state=PlaybackState.IDLE,
         active_source="q1",
     )
-    player = SimpleNamespace(state=player_state)
 
     mass = MagicMock()
     mass.players = MagicMock()
@@ -91,7 +90,7 @@ async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer
     assert wait_entered.is_set()
     mass.players.enqueue_next_media.assert_not_awaited()
 
-    player_state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
     release_wait.set()
     await enqueue_task
 
@@ -122,9 +121,7 @@ def _handover_controller() -> tuple[
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.logger = MagicMock()
     players = bare_player_controller()
-    player = SimpleNamespace(
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
-    )
+    player = SimpleNamespace(playback_state=PlaybackState.PLAYING, active_source="q1")
     mass = MagicMock()
     mass.players.wait_for_player_update = MagicMock(side_effect=_already_playing)
     mass.players.get_player = MagicMock(return_value=player)

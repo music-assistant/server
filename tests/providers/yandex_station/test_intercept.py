@@ -1274,7 +1274,7 @@ async def test_target_dropdown_lists_all_players_except_self() -> None:
 
     full = MagicMock()
     full.player_id = "full"
-    full.display_name = "Full"
+    full.name = "Full"
     full.type = PlayerType.PLAYER
     full.supported_features = {
         PlayerFeature.PLAY_MEDIA,
@@ -1284,26 +1284,26 @@ async def test_target_dropdown_lists_all_players_except_self() -> None:
     }
     play_media_only = MagicMock()
     play_media_only.player_id = "minimal"
-    play_media_only.display_name = "Minimal"
+    play_media_only.name = "Minimal"
     play_media_only.type = PlayerType.PLAYER
     play_media_only.supported_features = {PlayerFeature.PLAY_MEDIA}
     no_play_media = MagicMock()
     no_play_media.player_id = "no_play_media"
-    no_play_media.display_name = "No Play Media"
+    no_play_media.name = "No Play Media"
     no_play_media.type = PlayerType.PLAYER
     no_play_media.supported_features = {PlayerFeature.PAUSE, PlayerFeature.VOLUME_SET}
     group_player = MagicMock()
     group_player.player_id = "group"
-    group_player.display_name = "Group"
+    group_player.name = "Group"
     group_player.type = PlayerType.GROUP
     group_player.supported_features = set()
     self_player = cast("MagicMock", player.player)
-    self_player.display_name = "Self"
+    self_player.name = "Self"
     self_player.type = PlayerType.PLAYER
     self_player.supported_features = {PlayerFeature.PLAY_MEDIA}
     display_player = MagicMock()
     display_player.player_id = "display"
-    display_player.display_name = "Display"
+    display_player.name = "Display"
     display_player.type = PlayerType.DISPLAY
     display_player.supported_features = set()
     player.mass.players.all_players = MagicMock(

@@ -842,7 +842,7 @@ def _line_sense_combo(api: _FakeApi, player: SendspinBasePlayer) -> mock.MagicMo
     # attached to the player "client-1"
     player._player = cast("Any", SimpleNamespace(player_id="client-1"))
     mass.players.all_players.return_value = [
-        SimpleNamespace(player_id=pid, display_name=pid, type=PlayerType.PLAYER)
+        SimpleNamespace(player_id=pid, name=pid, type=PlayerType.PLAYER)
         for pid in ("client-1", "kitchen")
     ]
     return mass

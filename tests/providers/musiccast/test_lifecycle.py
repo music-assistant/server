@@ -105,7 +105,7 @@ async def test_each_zone_finds_its_own_player_after_a_restart(scenario: Scenario
 
     assert _player(main).player_id == main_player
     assert _player(zone2).player_id == zone2_player
-    assert _player(zone2).display_name == "Patio amp"
+    assert _player(zone2).name == "Patio amp"
 
 
 async def test_a_new_zone_does_not_take_the_record_of_the_main_zone_after_a_restart(

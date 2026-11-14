@@ -94,17 +94,17 @@ class PlaybackMixin(_PlayerControllerBase):
             player = self._get_player_with_redirect(player_id)
             # the player can have joined a group while waiting for the lock
             self.check_player_access(self._resolve_playback_owner(player).player_id)
-            if player.state.playback_state == PlaybackState.PLAYING:
+            if player.playback_state == PlaybackState.PLAYING:
                 self.logger.info(
                     "Ignore PLAY request to player %s: player is already playing",
-                    player.state.name,
+                    player.name,
                 )
                 return
             # a player that is not paused resumes its queue, and so does one paused on a
             # stream its queue has since ended; any other paused player is unpaused
-            source = player.state.active_source
+            source = player.active_source
             if (active_queue := self.mass.player_queues.get(source or player_id)) and (
-                player.state.playback_state != PlaybackState.PAUSED
+                player.playback_state != PlaybackState.PAUSED
                 or self.mass.player_queues.has_lost_paused_stream(active_queue.queue_id)
             ):
                 await self.mass.player_queues.resume(active_queue.queue_id)
@@ -137,7 +137,7 @@ class PlaybackMixin(_PlayerControllerBase):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        if player.state.playback_state == PlaybackState.PLAYING:
+        if player.playback_state == PlaybackState.PLAYING:
             await self.cmd_pause(player.player_id)
         else:
             await self.cmd_play(player.player_id)
@@ -179,17 +179,15 @@ class PlaybackMixin(_PlayerControllerBase):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
         # handle command on player/source directly
-        active_source = next(
-            (x for x in player.state.source_list if x.id == player.state.active_source), None
-        )
+        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
         if active_source and not active_source.can_seek:
             msg = (
                 f"The active source ({active_source.name}) on player "
-                f"{player.display_name} does not support seeking"
+                f"{player.name} does not support seeking"
             )
             raise PlayerCommandFailed(msg)
-        if PlayerFeature.SEEK not in player.state.supported_features:
-            msg = f"Player {player.display_name} does not support seeking"
+        if PlayerFeature.SEEK not in player.supported_features:
+            msg = f"Player {player.name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
         await self._get_transport_protocol(player).seek(position)
@@ -219,16 +217,14 @@ class PlaybackMixin(_PlayerControllerBase):
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_shuffle(active_queue.queue_id, shuffle_enabled)
             return
-        if active_source := next(
-            (x for x in player.state.source_list if x.id == active_source_id), None
-        ):
+        if active_source := next((x for x in player.source_list if x.id == active_source_id), None):
             # the source belongs to the player itself (its own Spotify Connect, a device input)
             if not active_source.can_shuffle:
                 msg = "This action is (currently) unavailable for this source."
                 raise PlayerCommandFailed(msg)
             await self._get_transport_protocol(player).set_shuffle(shuffle_enabled)
             return
-        msg = f"There is nothing playing on {player.state.name} to shuffle."
+        msg = f"There is nothing playing on {player.name} to shuffle."
         raise PlayerCommandFailed(msg)
 
     @api_command("players/cmd/repeat", required_scope=Scope.PLAYERS_CONTROL)
@@ -259,16 +255,14 @@ class PlaybackMixin(_PlayerControllerBase):
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.set_repeat(active_queue.queue_id, repeat_mode)
             return
-        if active_source := next(
-            (x for x in player.state.source_list if x.id == active_source_id), None
-        ):
+        if active_source := next((x for x in player.source_list if x.id == active_source_id), None):
             # the source belongs to the player itself (its own Spotify Connect, a device input)
             if not active_source.can_repeat:
                 msg = "This action is (currently) unavailable for this source."
                 raise PlayerCommandFailed(msg)
             await self._get_transport_protocol(player).set_repeat(repeat_mode)
             return
-        msg = f"There is nothing playing on {player.state.name} to repeat."
+        msg = f"There is nothing playing on {player.name} to repeat."
         raise PlayerCommandFailed(msg)
 
     @api_command("players/cmd/next", required_scope=Scope.PLAYERS_CONTROL)
@@ -276,25 +270,23 @@ class PlaybackMixin(_PlayerControllerBase):
     async def cmd_next_track(self, player_id: str) -> None:
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
-        active_source_id = player.state.active_source or player.player_id
+        active_source_id = player.active_source or player.player_id
         if await self._forward_to_external_source(player, SourceControl.NEXT):
             return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.next(active_queue.queue_id)
             return
-        if PlayerFeature.NEXT_PREVIOUS in player.state.supported_features:
+        if PlayerFeature.NEXT_PREVIOUS in player.supported_features:
             # player has some other source active and native next/previous support
-            active_source = next(
-                (x for x in player.state.source_list if x.id == active_source_id), None
-            )
+            active_source = next((x for x in player.source_list if x.id == active_source_id), None)
             if active_source and active_source.can_next_previous:
                 await self._get_transport_protocol(player).next_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
         # Player does not support next/previous feature
-        msg = f"Player {player.state.name} does not support skipping to the next track."
+        msg = f"Player {player.name} does not support skipping to the next track."
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/previous", required_scope=Scope.PLAYERS_CONTROL)
@@ -302,25 +294,23 @@ class PlaybackMixin(_PlayerControllerBase):
     async def cmd_previous_track(self, player_id: str) -> None:
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
-        active_source_id = player.state.active_source or player.player_id
+        active_source_id = player.active_source or player.player_id
         if await self._forward_to_external_source(player, SourceControl.PREVIOUS):
             return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.previous(active_queue.queue_id)
             return
-        if PlayerFeature.NEXT_PREVIOUS in player.state.supported_features:
+        if PlayerFeature.NEXT_PREVIOUS in player.supported_features:
             # player has some other source active and native next/previous support
-            active_source = next(
-                (x for x in player.state.source_list if x.id == active_source_id), None
-            )
+            active_source = next((x for x in player.source_list if x.id == active_source_id), None)
             if active_source and active_source.can_next_previous:
                 await self._get_transport_protocol(player).previous_track()
                 return
             msg = "This action is (currently) unavailable for this source."
             raise PlayerCommandFailed(msg)
         # Player does not support next/previous feature
-        msg = f"Player {player.state.name} does not support skipping to the previous track."
+        msg = f"Player {player.name} does not support skipping to the previous track."
         raise UnsupportedFeaturedException(msg)
 
     @handle_player_command(switched_off=SwitchedOffAction.POWER_ON)
@@ -348,7 +338,7 @@ class PlaybackMixin(_PlayerControllerBase):
             async with self.get_group_and_player_lock(player_id):
                 target_player = self.get_player(player_id, True)
                 if target_player is not None and (
-                    target_player.state.synced_to or target_player.state.active_group
+                    target_player.synced_to or target_player.active_group
                 ):
                     await self._release_player_for_play_media(target_player)
                 await self._handle_play_media(player_id, media)
@@ -372,7 +362,7 @@ class PlaybackMixin(_PlayerControllerBase):
         protocol = player.own_protocol
         if protocol is None or PlayerFeature.SELECT_SOUND_MODE not in protocol.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support sound mode selection"
+                f"Player {player.name} does not support sound mode selection"
             )
 
         prev_sound_mode = protocol.active_sound_mode
@@ -382,7 +372,7 @@ class PlaybackMixin(_PlayerControllerBase):
         # basic check if sound mode is valid for player
         if not any(x for x in protocol.sound_mode_list if x.id == sound_mode):
             raise PlayerCommandFailed(
-                f"{sound_mode} is an invalid sound_mode for player {player.display_name}"
+                f"{sound_mode} is an invalid sound_mode for player {player.name}"
             )
 
         # forward to player
@@ -405,9 +395,7 @@ class PlaybackMixin(_PlayerControllerBase):
 
         protocol = player.own_protocol
         if protocol is None or PlayerFeature.OPTIONS not in protocol.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support set_option"
-            )
+            raise UnsupportedFeaturedException(f"Player {player.name} does not support set_option")
 
         prev_player_option = next((x for x in protocol.options if x.key == option_key), None)
         if not prev_player_option:
@@ -417,7 +405,7 @@ class PlaybackMixin(_PlayerControllerBase):
 
         if prev_player_option.read_only:
             raise UnsupportedFeaturedException(
-                f"Player {player.display_name} option {option_key} is read-only"
+                f"Player {player.name} option {option_key} is read-only"
             )
 
         # forward to player
@@ -493,10 +481,10 @@ class PlaybackMixin(_PlayerControllerBase):
             return
 
         # guard for player with no active source
-        if not player.state.active_source:
+        if not player.active_source:
             raise PlayerCommandFailed("Player has no active source")
         # handle other source active using the current_media with uri
-        if current_media := player.state.current_media:
+        if current_media := player.current_media:
             # prefer the uri of the current media item
             if current_media.uri:
                 with suppress(MusicAssistantError):
@@ -530,11 +518,11 @@ class PlaybackMixin(_PlayerControllerBase):
         # clear before returning. Providers (Sonos in particular) reject a
         # play_media on a player whose synced_to/active_group is still set
         # locally even though the release command has been acknowledged.
-        if player.state.synced_to:
+        if player.synced_to:
             self.logger.debug(
                 "Unsyncing %s from %s to honor explicit play_media target",
-                player.state.name,
-                player.state.synced_to,
+                player.name,
+                player.synced_to,
             )
             async with self.wait_for_player_update(
                 player.player_id,
@@ -544,20 +532,20 @@ class PlaybackMixin(_PlayerControllerBase):
             ):
                 await self.cmd_ungroup(player.player_id)
             return
-        if not player.state.active_group:
+        if not player.active_group:
             return
-        group = self.get_player(player.state.active_group)
+        group = self.get_player(player.active_group)
         if group is None:
             return
         is_dynamic_member = (
-            PlayerFeature.SET_MEMBERS in group.state.supported_features
-            and player.player_id not in group.state.static_group_members
+            PlayerFeature.SET_MEMBERS in group.supported_features
+            and player.player_id not in group.static_group_members
         )
         if is_dynamic_member:
             self.logger.debug(
                 "Removing %s from dynamic group %s to honor explicit play_media target",
-                player.state.name,
-                group.state.name,
+                player.name,
+                group.name,
             )
             async with self.wait_for_player_update(
                 player.player_id,
@@ -576,18 +564,18 @@ class PlaybackMixin(_PlayerControllerBase):
             attribute_value=None,
             timeout=RELEASE_FOR_PLAY_MEDIA_TIMEOUT,
         ):
-            if group.state.power_control != PLAYER_CONTROL_NONE and group.state.powered:
+            if group.power_control != PLAYER_CONTROL_NONE and group.powered:
                 self.logger.debug(
                     "Powering off %s to honor explicit play_media target on %s",
-                    group.state.name,
-                    player.state.name,
+                    group.name,
+                    player.name,
                 )
                 await self._handle_cmd_power(group.player_id, False)
             else:
                 self.logger.debug(
                     "Stopping %s to honor explicit play_media target on %s",
-                    group.state.name,
-                    player.state.name,
+                    group.name,
+                    player.name,
                 )
                 await self._handle_cmd_stop(group.player_id)
 
@@ -622,8 +610,8 @@ class PlaybackMixin(_PlayerControllerBase):
         Skips permission checks and locking (internal use only).
         """
         player = self._get_player_with_redirect(player_id)
-        source = source or player.state.active_source
-        media = media or player.state.current_media
+        source = source or player.active_source
+        media = media or player.current_media
         await self._power_on_for_playback(player)
         # Redirect to queue controller if it is active
         if active_queue := self.mass.player_queues.get(source or player_id):
@@ -631,12 +619,12 @@ class PlaybackMixin(_PlayerControllerBase):
             return
         # try to handle command on player directly
         # TODO: check if player has an active source with native resume support
-        active_source = next((x for x in player.state.source_list if x.id == source), None)
+        active_source = next((x for x in player.source_list if x.id == source), None)
         if (
-            player.state.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
+            player.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
             and active_source
             and active_source.can_play_pause
-            and PlayerFeature.PAUSE in player.state.supported_features
+            and PlayerFeature.PAUSE in player.supported_features
         ):
             # player has some other source active and native resume support
             await self._get_transport_protocol(player).play()
@@ -681,7 +669,7 @@ class PlaybackMixin(_PlayerControllerBase):
         # regrouped first, as it would otherwise keep that grouped protocol selected.
         target_player: PlayerProtocol | None = None
         output_protocol: OutputProtocol | None = None
-        is_fresh_start = player.state.playback_state not in (
+        is_fresh_start = player.playback_state not in (
             PlaybackState.PLAYING,
             PlaybackState.PAUSED,
         )
@@ -712,7 +700,7 @@ class PlaybackMixin(_PlayerControllerBase):
             assert output_protocol is not None
             self.logger.debug(
                 "Starting playback on %s via protocol %s (target=%s), group_members=%s",
-                player.state.name,
+                player.name,
                 output_protocol.name,
                 target_player.protocol_id,
                 target_player.group_members,
@@ -723,8 +711,8 @@ class PlaybackMixin(_PlayerControllerBase):
             # (they delegate to a sync leader / member which manages its own protocol)
             self.logger.debug(
                 "Starting playback on %s via native, group_members=%s",
-                player.state.name,
-                player.state.group_members,
+                player.name,
+                player.group_members,
             )
             await self._activate_output_protocol(player, "native")
 
@@ -761,9 +749,7 @@ class PlaybackMixin(_PlayerControllerBase):
 
         own = player.own_protocol
         if own is None or PlayerFeature.ENQUEUE not in own.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support enqueueing"
-            )
+            raise UnsupportedFeaturedException(f"Player {player.name} does not support enqueueing")
         await own.enqueue_next_media(media)
 
     async def _handle_cmd_stop(self, player_id: str) -> None:
@@ -778,7 +764,7 @@ class PlaybackMixin(_PlayerControllerBase):
         protocol_player = player.foreign_protocol
         if player.active_output_protocol and player.active_output_protocol != "native":
             protocol_player = player.attached_protocols.get(player.active_output_protocol)
-        if player.state.playback_state == PlaybackState.IDLE:
+        if player.playback_state == PlaybackState.IDLE:
             # The player already reports idle but an output protocol is still marked
             # active: the protocol may never have received a stop at all
             # (e.g. the source stream ended on its own before this stop command
@@ -822,9 +808,9 @@ class PlaybackMixin(_PlayerControllerBase):
         :param player_id: player_id of the player to handle the command.
         """
         player = self._get_reachable_player(player_id)
-        if player.state.playback_state == PlaybackState.PLAYING:
+        if player.playback_state == PlaybackState.PLAYING:
             self.logger.info(
-                "Ignore PLAY request to player %s: player is already playing", player.state.name
+                "Ignore PLAY request to player %s: player is already playing", player.name
             )
             return
         # If an AudioSource is the active queue item, proxy play to the plugin
@@ -834,15 +820,15 @@ class PlaybackMixin(_PlayerControllerBase):
                 await plugin_prov.on_source_control(audio_source.item_id, SourceControl.PLAY)
                 return
         # handle unpause (=play if player is paused)
-        if player.state.playback_state == PlaybackState.PAUSED:
+        if player.playback_state == PlaybackState.PAUSED:
             active_source = next(
-                (x for x in player.state.source_list if x.id == player.state.active_source), None
+                (x for x in player.source_list if x.id == player.active_source), None
             )
             # raise if active source does not support play/pause
             if active_source and not active_source.can_play_pause:
                 msg = (
                     f"The active source ({active_source.name}) on player "
-                    f"{player.state.name} does not support play/pause"
+                    f"{player.name} does not support play/pause"
                 )
                 raise PlayerCommandFailed(msg)
             # Delegate to the active audio protocol if one is active
@@ -866,10 +852,8 @@ class PlaybackMixin(_PlayerControllerBase):
 
         # player is not paused: try to resume the player
         # Note: We handle resume inline here without calling _handle_cmd_resume
-        active_source = next(
-            (x for x in player.state.source_list if x.id == player.state.active_source), None
-        )
-        media = player.state.current_media
+        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
+        media = player.current_media
         await self._power_on_for_playback(player)
         if active_source and not active_source.passive:
             await self._handle_select_source(player_id, active_source.id)
@@ -890,7 +874,7 @@ class PlaybackMixin(_PlayerControllerBase):
         :param player_id: player_id of the player to handle the command.
         """
         player = self._get_reachable_player(player_id)
-        if player.state.playback_state == PlaybackState.IDLE:
+        if player.playback_state == PlaybackState.IDLE:
             return
         # If an AudioSource is the active queue item, proxy pause to the plugin
         if active := self._get_active_audio_source(player):
@@ -899,14 +883,12 @@ class PlaybackMixin(_PlayerControllerBase):
                 await plugin_prov.on_source_control(audio_source.item_id, SourceControl.PAUSE)
                 return
         # handle command on player/source directly
-        active_source = next(
-            (x for x in player.state.source_list if x.id == player.state.active_source), None
-        )
+        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
         if active_source and not active_source.can_play_pause:
             # raise if active source does not support play/pause
             msg = (
                 f"The active source ({active_source.name}) on player "
-                f"{player.state.name} does not support play/pause"
+                f"{player.name} does not support play/pause"
             )
             raise PlayerCommandFailed(msg)
         # Delegate to the active audio protocol if one is active
@@ -931,6 +913,6 @@ class PlaybackMixin(_PlayerControllerBase):
         # player's own queue so it releases its audio and the music source right away
         self.logger.debug(
             "Player/protocol %s does not support pause, using STOP instead",
-            player.state.name,
+            player.name,
         )
         await self._stop_player_or_its_queue(player)

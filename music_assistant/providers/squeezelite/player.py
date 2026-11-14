@@ -397,7 +397,7 @@ class SqueezelitePlayer(PlayerProtocol):
         if (
             (players_added or player_ids_to_remove)
             and self.player is not None
-            and self.player.state.current_media
+            and self.player.current_media
             and self._attr_playback_state == PlaybackState.PLAYING
         ):
             # restart stream session if it was already playing
@@ -575,9 +575,7 @@ class SqueezelitePlayer(PlayerProtocol):
         self._attr_elapsed_time = self.client.elapsed_seconds
         self._attr_elapsed_time_last_updated = time.time()
         # only involve the state machine when the reported position diverged (e.g. buffering/seek)
-        published_position = (
-            self.player.state.corrected_elapsed_time if self.player is not None else None
-        )
+        published_position = self.player.corrected_elapsed_time if self.player is not None else None
         if (
             published_position is None
             or abs(published_position - self.client.elapsed_seconds) > POSITION_JUMP_THRESHOLD

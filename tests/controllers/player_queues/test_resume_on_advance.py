@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -183,7 +182,8 @@ async def test_flow_repeat_preserves_previous_playback_offset(repeat_mode: Repea
     previous_entry = PlayLogEntry(item.queue_item_id, seconds_streamed=61, seek_position=59)
     queue_data.flow_mode_stream_log = [previous_entry]
     player = MagicMock()
-    player.state = SimpleNamespace(corrected_elapsed_time=10, playback_state=PlaybackState.PLAYING)
+    player.corrected_elapsed_time = 10
+    player.playback_state = PlaybackState.PLAYING
     get_stream_details.return_value.seek_position = 0
 
     await controller.load_next_queue_item(QUEUE_ID, item.queue_item_id)
@@ -191,7 +191,7 @@ async def test_flow_repeat_preserves_previous_playback_offset(repeat_mode: Repea
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
     assert controller._get_flow_queue_stream_index(queue_data.queue, player) == (0, 69)
-    player.state.corrected_elapsed_time = 66
+    player.corrected_elapsed_time = 66
     assert controller._get_flow_queue_stream_index(queue_data.queue, player) == (0, 5)
 
 

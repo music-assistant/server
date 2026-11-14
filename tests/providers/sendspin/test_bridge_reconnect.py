@@ -322,7 +322,7 @@ async def test_a_bridged_device_keeps_its_player_whichever_connects_first(
     assert carrier.player is not None
     assert bridge.player is carrier.player
     assert carrier.player.player_id == player_id
-    assert carrier.player.display_name == "Kitchen"
+    assert carrier.player.name == "Kitchen"
     assert carrier.player.get_role(BRIDGE_ID) == ProtocolRole.AUDIO
     assert bridge.session_only is False
     for protocol_id, record in records.items():

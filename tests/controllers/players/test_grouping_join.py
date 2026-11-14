@@ -319,7 +319,7 @@ async def test_a_playing_switch_stops_the_old_protocol_resumes_and_regroups() ->
     devices.logger.log.assert_any_call(
         20,
         "Handing the output of %s over to the %s protocol%s",
-        "State l",
+        "Player l",
         "sendspin",
         " and resuming playback",
     )

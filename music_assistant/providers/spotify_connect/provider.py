@@ -683,7 +683,7 @@ class SpotifyConnectProvider(PluginProvider):
                     # not available (yet): never start a daemon for it; an already
                     # running one is deliberately kept (see _on_player_event)
                     continue
-                publish_name = resolve_publish_name(template, player.display_name)
+                publish_name = resolve_publish_name(template, player.name)
                 daemon = self._daemons.get(player_id)
                 if daemon is not None and daemon.publish_name == publish_name:
                     continue
@@ -760,8 +760,8 @@ class SpotifyConnectProvider(PluginProvider):
             publish_name=publish_name,
             stream_metadata=StreamMetadata(title=f"Spotify Connect | {publish_name}"),
         )
-        daemon.backend = self._create_backend(daemon, player.display_name)
-        daemon.audio_source = self._build_audio_source(daemon, player.display_name)
+        daemon.backend = self._create_backend(daemon, player.name)
+        daemon.audio_source = self._build_audio_source(daemon, player.name)
         self._daemons[player_id] = daemon
         try:
             await daemon.backend.start()
@@ -1287,11 +1287,11 @@ class SpotifyConnectProvider(PluginProvider):
         player = self.mass.players.get_player(player_id)
         if player is None:
             return
-        volume_level = player.state.volume_level
+        volume_level = player.volume_level
         if volume_level is None:
             # a group has no level of its own, and the group volume is the level its
             # own volume commands interpolate the members from
-            volume_level = player.state.group_volume
+            volume_level = player.group_volume
         if volume_level is None:
             return
         # clamp: the logical volume can be out of range until volume limit

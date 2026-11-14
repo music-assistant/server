@@ -30,7 +30,7 @@ def attach_tv(protocol: MSXPlayer) -> None:
     :param protocol: The protocol object of the TV.
     """
     player = Mock(spec=Player, player_id=f"pl_{protocol.protocol_id}", extra_data={})
-    player.display_name = protocol.name or protocol.protocol_id
+    player.name = protocol.name or protocol.protocol_id
     protocol.set_player(player)
 
 

@@ -392,9 +392,7 @@ class PlexConnectProvider(PluginProvider):
     def _plextv_client(self) -> PlexTvClient:
         """Return a plex.tv client presenting this instance's player identity."""
         player = self.mass.players.get_player(self._player_id)
-        player_name = self.custom_player_name or (
-            player.display_name if player else "Music Assistant"
-        )
+        player_name = self.custom_player_name or (player.name if player else "Music Assistant")
         identity = PlexTvIdentity(
             client_id=compute_client_id(self.plex_provider_id, self.mass_player_id),
             name=player_name,
@@ -514,7 +512,7 @@ class PlexConnectProvider(PluginProvider):
             self._allocated_port = await self._resolve_port()
 
         # Use custom name if provided, otherwise use player's display name
-        player_name = self.custom_player_name or player.display_name
+        player_name = self.custom_player_name or player.name
 
         # Create remote control instance
         self._instance_player_id = player.player_id

@@ -88,7 +88,7 @@ class UniversalGroupPlayer(PlayerProtocol):
         """
         super().__init__(provider, protocol_id)
         self.stream: UGPStream | None = None
-        # the default name, not the custom one: display_name already prefers the
+        # the default name, not the custom one: the player's name already prefers the
         # custom name, while update_state persists this one as the default name
         self._attr_name = self.config.default_name or f"Universal Group {protocol_id}"
         self._attr_available = True
@@ -124,7 +124,7 @@ class UniversalGroupPlayer(PlayerProtocol):
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.available_for_playback:
                 for feature in EXTRA_FEATURES_FROM_MEMBERS:
-                    if feature in member_player.state.supported_features:
+                    if feature in member_player.supported_features:
                         features.add(feature)
         return features
 
@@ -205,7 +205,7 @@ class UniversalGroupPlayer(PlayerProtocol):
                 default_value=[],
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
-                    ConfigValueOption(x.player_id, title=x.display_name)
+                    ConfigValueOption(x.player_id, title=x.name)
                     for x in self.mass.players.all_players(True, False)
                     if x.type not in (PlayerType.GROUP, PlayerType.UNKNOWN, PlayerType.SOURCE)
                 ],
@@ -281,7 +281,7 @@ class UniversalGroupPlayer(PlayerProtocol):
             for member in self.mass.players.iter_group_members(
                 self._group_player, only_powered=True, active_only=True
             ):
-                if member.state.powered and member.power_control != PLAYER_CONTROL_NONE:
+                if member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     with suppress(PlayerUnavailableError):
                         async with self.mass.players.get_group_and_player_lock(member.player_id):
                             # once the member no longer reports this group, its power off does
@@ -421,7 +421,7 @@ class UniversalGroupPlayer(PlayerProtocol):
                 )
             child_player = self.mass.players.get_player(player_id, True)
             assert child_player  # for type checking
-            if child_player.state.synced_to:
+            if child_player.synced_to:
                 # This is player is part of a syncgroup - ungroup it first
                 await self.mass.players._detach_member(child_player)
             self._attr_group_members.append(player_id)
@@ -463,7 +463,7 @@ class UniversalGroupPlayer(PlayerProtocol):
             self._attr_group_members.remove(player_id)
             child_player = self.mass.players.get_player(player_id, True)
             assert child_player is not None  # for type checking
-            if child_player.state.playback_state in (
+            if child_player.playback_state in (
                 PlaybackState.PLAYING,
                 PlaybackState.PAUSED,
             ):
@@ -533,20 +533,17 @@ class UniversalGroupPlayer(PlayerProtocol):
             group_player, only_powered=False, active_only=False
         ):
             if (
-                member.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                and member.state.active_source != self.active_source
+                member.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                and member.active_source != self.active_source
             ):
                 # Use internal handler to get protocol selection and avoid redirect
                 await self.mass.players._handle_cmd_stop(member.player_id)
-            if (
-                member.state.active_group is not None
-                and member.state.active_group != group_player.player_id
-            ):
+            if member.active_group is not None and member.active_group != group_player.player_id:
                 # collision: child is currently captured by a different group
-                if other_group := self.mass.players.get_player(member.state.active_group):
+                if other_group := self.mass.players.get_player(member.active_group):
                     if (
-                        PlayerFeature.SET_MEMBERS in other_group.state.supported_features
-                        and member.player_id not in other_group.state.static_group_members
+                        PlayerFeature.SET_MEMBERS in other_group.supported_features
+                        and member.player_id not in other_group.static_group_members
                     ):
                         async with self.mass.players.wait_for_player_update(
                             member.player_id, timeout=5
@@ -559,7 +556,7 @@ class UniversalGroupPlayer(PlayerProtocol):
                     # the controller so a FAKE-power group also gets its extra_data
                     # updated; calling other_group.power() directly would only set
                     # _attr_powered and leave the cached fake state out of sync.
-                    elif other_group.state.power_control != PLAYER_CONTROL_NONE:
+                    elif other_group.power_control != PLAYER_CONTROL_NONE:
                         async with self.mass.players.wait_for_player_update(
                             member.player_id, timeout=5
                         ):
@@ -569,10 +566,10 @@ class UniversalGroupPlayer(PlayerProtocol):
                             member.player_id, timeout=5
                         ):
                             await self.mass.players._handle_cmd_stop(other_group.player_id)
-            if member.state.synced_to:
+            if member.synced_to:
                 # member is part of a syncgroup — release it first
                 await self.mass.players._detach_member(member)
-            if not member.state.powered and member.power_control != PLAYER_CONTROL_NONE:
+            if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                 with suppress(PlayerUnavailableError):
                     await self.mass.players.cmd_power(member.player_id, True)
 
@@ -587,17 +584,17 @@ class UniversalGroupPlayer(PlayerProtocol):
             else ()
         )
         for child_player in members:
-            self._attr_playback_state = child_player.state.playback_state
+            self._attr_playback_state = child_player.playback_state
             # a position is only meaningful together with the timestamp it was taken at,
             # so the pair is adopted as a whole or not at all. Position 0 is a valid
             # position: members that anchor the group stream once report a fixed 0 and
             # let the timestamp carry both the progression and their own buffer delay.
             if (
-                child_player.state.elapsed_time is not None
-                and child_player.state.elapsed_time_last_updated is not None
+                child_player.elapsed_time is not None
+                and child_player.elapsed_time_last_updated is not None
             ):
-                self._attr_elapsed_time = child_player.state.elapsed_time
-                self._attr_elapsed_time_last_updated = child_player.state.elapsed_time_last_updated
+                self._attr_elapsed_time = child_player.elapsed_time
+                self._attr_elapsed_time_last_updated = child_player.elapsed_time_last_updated
             break
         else:
             self._attr_playback_state = PlaybackState.IDLE

@@ -116,14 +116,14 @@ class PlayerMergingMixin(_PlayerControllerBase):
         player_id = player.player_id
         if (
             self._resolve_playback_owner(player) is not player
-            or player.state.active_source != player_id
-            or player.state.playback_state == PlaybackState.IDLE
+            or player.active_source != player_id
+            or player.playback_state == PlaybackState.IDLE
         ):
             return
         try:
             await self.mass.player_queues.stop(player_id)
         except Exception:
-            self.logger.exception("Error stopping %s before it is merged", player.display_name)
+            self.logger.exception("Error stopping %s before it is merged", player.name)
 
     async def _merge_players(self, keep_id: str, absorb_id: str) -> None:
         """
@@ -158,7 +158,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         # of the kept one, so the group keeps its member
         playing_through = (
             absorbed.resolve_output_protocol()
-            if absorbed is not None and absorbed.state.playback_state != PlaybackState.IDLE
+            if absorbed is not None and absorbed.playback_state != PlaybackState.IDLE
             else None
         )
         # the providers of the protocols that are not attached look for their devices again
@@ -514,7 +514,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         :param player_id: Id of the player.
         """
         if player := self._players.get(player_id):
-            return player.display_name
+            return player.name
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if isinstance(stored, dict):
             return str(stored.get("name") or stored.get("default_name") or player_id)

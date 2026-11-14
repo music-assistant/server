@@ -536,8 +536,7 @@ def _player_view(players: _PlayerControllerBase, player: Player) -> PlayerView:
     own = player.own_protocol
     return PlayerView(
         player_id=player.player_id,
-        name=player.display_name,
-        state_name=state.name,
+        name=player.name,
         type=player.type,
         listed=state.available and state.enabled,
         iterated=state.available and state.enabled and player.initialized.is_set(),

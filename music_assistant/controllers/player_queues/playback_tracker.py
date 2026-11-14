@@ -117,7 +117,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
-                elapsed_time = player.state.corrected_elapsed_time or 0
+                elapsed_time = player.corrected_elapsed_time or 0
                 current_index = self.index_by_id(queue_id, item_id)
             else:
                 # this may happen if the player is still transitioning between tracks
@@ -168,16 +168,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         queue = queue_data.queue
 
         # basic properties
-        queue.display_name = player.state.name
-        queue.available = player.state.available
+        queue.display_name = player.name
+        queue.available = player.available
         queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         queue.items = len(self._queue_data[queue_id].items)
 
         queue.state = (
-            player.state.playback_state or PlaybackState.IDLE
-            if queue.active
-            else PlaybackState.IDLE
+            player.playback_state or PlaybackState.IDLE if queue.active else PlaybackState.IDLE
         )
         # update current item/index from player report
         if not self._update_current_index_from_player(queue, player):
@@ -337,7 +335,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
     def _get_output_player_ids(self, player: Player) -> set[str]:
         """Return destination player IDs represented in the processing chain."""
         output_player_ids = {player.player_id}
-        for member_id in player.state.group_members:
+        for member_id in player.group_members:
             member = self.mass.players.get_player_or_protocol_player(member_id)
             output_player_ids.add(member.player_id if member else member_id)
         return output_player_ids
@@ -353,7 +351,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         playback_speed when we hit the active entry.
         """
         queue_data = self._queue_data[queue.queue_id]
-        elapsed_time_queue_total = player.state.corrected_elapsed_time or 0
+        elapsed_time_queue_total = player.corrected_elapsed_time or 0
         if queue.current_index is None and not queue_data.flow_mode_stream_log:
             return queue.current_index, queue.elapsed_time
 
@@ -421,7 +419,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 stream_pos_in_item = elapsed_time_queue_total - played_time
                 track_time = track_sec_skipped + stream_pos_in_item * entry_speed
                 break
-        if player.state.playback_state != PlaybackState.PLAYING:
+        if player.playback_state != PlaybackState.PLAYING:
             # if the player is not playing, we can't be sure that the elapsed time is correct
             # so we just return the queue index and the elapsed time
             return queue.current_index, queue.elapsed_time

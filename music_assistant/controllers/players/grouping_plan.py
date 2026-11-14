@@ -112,8 +112,7 @@ class PlayerView:
     A player, as far as grouping depends on it.
 
     :param player_id: Id of the player.
-    :param name: Its display name.
-    :param state_name: Its name in its state (messages use both).
+    :param name: Its name.
     :param type: Its type.
     :param listed: Whether its state says available and enabled.
     :param iterated: Whether ``iter_players(return_unavailable=False)`` yields it.
@@ -138,7 +137,6 @@ class PlayerView:
 
     player_id: str
     name: str
-    state_name: str
     type: PlayerType
     listed: bool = True
     iterated: bool = True
@@ -850,7 +848,7 @@ class GroupRules:
                 level=logging.INFO,
                 message="Handing the output of %s over to the %s protocol%s",
                 args=(
-                    leader.state_name,
+                    leader.name,
                     protocol.domain if protocol else "",
                     " and resuming playback" if was_playing else "",
                 ),
@@ -934,7 +932,7 @@ class GroupRules:
         self._note(
             logging.INFO,
             "Calling set_members on native player %s with add=%s, remove=%s",
-            leader.state_name,
+            leader.name,
             native_add,
             native_remove,
         )
@@ -1063,8 +1061,8 @@ class GroupRules:
             "Cannot group %s with %s: no compatible grouping method found "
             "(tried: child preferred protocol, parent active protocol, "
             "native grouping, common protocols)",
-            child.state_name,
-            parent.state_name,
+            child.name,
+            parent.name,
         )
         return protocol, domain
 
@@ -1179,12 +1177,12 @@ class GroupRules:
         stranded_names = ", ".join(unable)
         return Refuse(
             error=PlayerCommandFailed,
-            message=f"Cannot add {added_names} to {parent.state_name}: "
+            message=f"Cannot add {added_names} to {parent.name}: "
             f"{stranded_names} cannot play over {protocol.provider_name}",
             translation_key="member_cannot_follow_protocol",
             translation_args=(
                 added_names,
-                parent.state_name,
+                parent.name,
                 stranded_names,
                 protocol.provider_name,
             ),
@@ -1284,10 +1282,10 @@ class GroupRules:
                     logging.WARNING,
                     "Cannot group %s with %s: the group plays through the %s protocol, "
                     "which %s does not support",
-                    member.state_name,
-                    parent.state_name,
+                    member.name,
+                    parent.name,
                     domain,
-                    member.state_name,
+                    member.name,
                 )
                 continue
             translated.append(self._member_protocol_id(member, output))
@@ -1716,7 +1714,7 @@ class _Planner(GroupRules):
         self._note(
             logging.INFO,
             "Regrouping %s off the %s protocol, which none of its members need anymore",
-            player.state_name,
+            player.name,
             protocol.domain,
         )
         # Removed on the protocol itself: the player's active output protocol may
@@ -1833,7 +1831,7 @@ class _Planner(GroupRules):
         if not child or not child.available_for_playback:
             self._note(logging.WARNING, "Player %s is not available", child_id)
             return False
-        # state.can_group_with already handles all expansion and translation
+        # can_group_with already handles all expansion and translation
         if child_id not in target.can_group_with:
             self._note(
                 logging.WARNING, "Player %s can not be grouped with %s", child.name, target.name
@@ -1911,14 +1909,14 @@ class _Planner(GroupRules):
                 logging.WARNING,
                 "Player %s is still serving its own group, leaving it out of %s",
                 child.name,
-                target.state_name,
+                target.name,
             )
             return False
         self._note(
             logging.INFO,
             "Player %s leads a group of its own, dissolving it before it joins %s",
             child.name,
-            target.state_name,
+            target.name,
         )
         # Removing the members rather than the leader keeps this out of the leadership
         # transfer path. Joining on top of a group it still leads is the silent-member
@@ -1929,7 +1927,7 @@ class _Planner(GroupRules):
                 remove=tuple(members),
                 failure=Failure.LEAVE_OUT,
                 message="Could not dissolve the group of %s, leaving it out of %s",
-                args=(child.name, target.state_name),
+                args=(child.name, target.name),
             )
         )
         self.left_out_progress = replace(

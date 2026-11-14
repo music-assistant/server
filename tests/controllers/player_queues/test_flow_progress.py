@@ -45,12 +45,7 @@ def _flow_progress(
         if isinstance(id_or_index, int)
         else next((item for item in items if item.queue_item_id == id_or_index), None)
     )
-    player = SimpleNamespace(
-        state=SimpleNamespace(
-            corrected_elapsed_time=elapsed,
-            playback_state=PlaybackState.PLAYING,
-        )
-    )
+    player = SimpleNamespace(corrected_elapsed_time=elapsed, playback_state=PlaybackState.PLAYING)
 
     return PlaybackTrackerMixin._get_flow_queue_stream_index(
         cast("Any", tracker), cast("Any", queue), cast("Any", player)

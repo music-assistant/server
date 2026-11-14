@@ -48,7 +48,7 @@ class SyncGroupProvider(PlayerProvider):
                 continue
             if not can_group_with:
                 # first member, add all its compatible players to the can_group_with set
-                can_group_with = set(member.state.can_group_with)
+                can_group_with = set(member.can_group_with)
             elif member_id not in can_group_with:
                 # member is not compatible with the current group, skip it
                 continue

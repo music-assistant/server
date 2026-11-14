@@ -48,8 +48,8 @@ def _backdate_pause(player: Player, seconds: float) -> None:
 
 def test_a_source_that_just_paused_stays_resumable(player: Player, mock_mass: MagicMock) -> None:
     """Test a real pause is still handed to the source, so pausing and resuming works."""
-    assert player.state.playback_state is PlaybackState.PAUSED
-    assert player.state.active_source == EXTERNAL_SOURCE
+    assert player.playback_state is PlaybackState.PAUSED
+    assert player.active_source == EXTERNAL_SOURCE
     # the device reports nothing when the session goes stale, so we come back to it ourselves
     armed_checks = [
         call
@@ -66,9 +66,9 @@ def test_a_source_paused_within_the_grace_period_stays_resumable(player: Player)
 
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.PAUSED
-    assert player.state.active_source == EXTERNAL_SOURCE
-    assert player.state.current_media is not None
+    assert player.playback_state is PlaybackState.PAUSED
+    assert player.active_source == EXTERNAL_SOURCE
+    assert player.current_media is not None
 
 
 def test_a_source_paused_for_too_long_is_reported_as_idle(
@@ -79,10 +79,10 @@ def test_a_source_paused_for_too_long_is_reported_as_idle(
 
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.IDLE
+    assert player.playback_state is PlaybackState.IDLE
     assert protocol._attr_current_media is None
     # the player's own queue is reachable again, which is what makes the play button work
-    assert player.state.active_source == player.player_id
+    assert player.active_source == player.player_id
 
 
 def test_an_ended_source_is_not_picked_back_up_from_what_the_device_reports(
@@ -92,15 +92,15 @@ def test_an_ended_source_is_not_picked_back_up_from_what_the_device_reports(
     """Test the next update does not resurrect the source the device still reports as paused."""
     player.mark_external_source_ended()
     player.update_state()
-    assert player.state.playback_state is PlaybackState.IDLE
+    assert player.playback_state is PlaybackState.IDLE
 
     # the device keeps reporting the very same paused source on every update that follows
     protocol._attr_playback_state = PlaybackState.PAUSED
     protocol._attr_active_source = EXTERNAL_SOURCE
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.IDLE
-    assert player.state.active_source == player.player_id
+    assert player.playback_state is PlaybackState.IDLE
+    assert player.active_source == player.player_id
 
 
 def test_a_source_that_starts_playing_again_is_given_a_fresh_start(
@@ -116,8 +116,8 @@ def test_a_source_that_starts_playing_again_is_given_a_fresh_start(
     protocol._attr_playback_state = PlaybackState.PAUSED
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.PAUSED
-    assert player.state.active_source == EXTERNAL_SOURCE
+    assert player.playback_state is PlaybackState.PAUSED
+    assert player.active_source == EXTERNAL_SOURCE
 
 
 def test_another_source_is_not_tarred_with_the_same_brush(
@@ -131,8 +131,8 @@ def test_another_source_is_not_tarred_with_the_same_brush(
     protocol._attr_active_source = "tidal"
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.PAUSED
-    assert player.state.active_source == "tidal"
+    assert player.playback_state is PlaybackState.PAUSED
+    assert player.active_source == "tidal"
 
 
 def test_resuming_the_source_gives_a_later_pause_the_full_grace_period(
@@ -147,8 +147,8 @@ def test_resuming_the_source_gives_a_later_pause_the_full_grace_period(
     protocol._attr_playback_state = PlaybackState.PAUSED
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.PAUSED
-    assert player.state.active_source == EXTERNAL_SOURCE
+    assert player.playback_state is PlaybackState.PAUSED
+    assert player.active_source == EXTERNAL_SOURCE
 
 
 def test_our_own_paused_playback_is_never_expired(player: Player, protocol: MockProtocol) -> None:
@@ -158,7 +158,7 @@ def test_our_own_paused_playback_is_never_expired(player: Player, protocol: Mock
 
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.PAUSED
+    assert player.playback_state is PlaybackState.PAUSED
 
 
 def test_a_paused_queue_source_is_never_expired(player: Player, mock_mass: MagicMock) -> None:
@@ -168,7 +168,7 @@ def test_a_paused_queue_source_is_never_expired(player: Player, mock_mass: Magic
 
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.PAUSED
+    assert player.playback_state is PlaybackState.PAUSED
 
 
 def test_a_source_rendered_by_an_output_protocol_is_never_expired(
@@ -197,8 +197,8 @@ def test_a_player_that_does_not_opt_in_keeps_its_paused_source(
 
     player.update_state()
 
-    assert player.state.playback_state is PlaybackState.PAUSED
-    assert player.state.active_source == EXTERNAL_SOURCE
+    assert player.playback_state is PlaybackState.PAUSED
+    assert player.active_source == EXTERNAL_SOURCE
 
 
 def test_detaching_leaves_no_pending_check_behind(player: Player, mock_mass: MagicMock) -> None:

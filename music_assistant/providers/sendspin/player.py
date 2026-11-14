@@ -646,10 +646,10 @@ class SendspinBasePlayer(PlayerProtocol):
             # It is offered even while unavailable, as it is during the device's own setup.
             *([ConfigValueOption(own_target, translation_key="this_device")] if own_target else []),
             *(
-                ConfigValueOption(player.player_id, title=player.display_name)
+                ConfigValueOption(player.player_id, title=player.name)
                 for player in sorted(
                     self.mass.players.all_players(False, False),
-                    key=lambda player: player.display_name.lower(),
+                    key=lambda player: player.name.lower(),
                 )
                 # Only players that render audio, so lights, displays and other
                 # capture-only clients are not offered as somewhere to play a line-in.
@@ -2395,12 +2395,12 @@ class SendspinPlayer(SendspinBasePlayer):
     @property
     def _player_media(self) -> PlayerMedia | None:
         """Return the media the player this protocol is attached to shows, if any."""
-        return self.player.state.current_media if self.player is not None else None
+        return self.player.current_media if self.player is not None else None
 
     @property
     def _player_playing(self) -> bool:
         """Return whether the player this protocol is attached to is playing."""
-        return self.player is not None and self.player.state.playback_state == PlaybackState.PLAYING
+        return self.player is not None and self.player.playback_state == PlaybackState.PLAYING
 
     def _media_identity(self) -> tuple[object, ...] | None:
         """Return the current media values that trigger on_player_media_updated when changed."""
@@ -3120,7 +3120,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             )
             if player.type == PlayerType.GROUP
             and self.player is not None
-            and self.player.player_id in player.state.static_group_members
+            and self.player.player_id in player.static_group_members
         ]
 
     async def _play_static_group(self) -> None:

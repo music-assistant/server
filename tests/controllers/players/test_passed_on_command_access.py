@@ -198,10 +198,7 @@ class _Setup:
                 for pid, p in self.players._players.items()
             },
             self.mass.call_later.call_count,
-            {
-                pid: p.state.synced_to or p.state.active_group
-                for pid, p in self.players._players.items()
-            },
+            {pid: p.synced_to or p.active_group for pid, p in self.players._players.items()},
         )
 
     def _recorder(self, player: Player, protocol: MockProtocol, method: str) -> Any:

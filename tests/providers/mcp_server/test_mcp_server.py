@@ -10,7 +10,7 @@ import pytest
 from aiohttp import StreamReader, web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, UserRole
-from music_assistant_models.enums import PlaybackState, PlayerType, QueueOption, RepeatMode
+from music_assistant_models.enums import PlaybackState, QueueOption, RepeatMode
 from music_assistant_models.media_items import Playlist, SearchResults, Track
 
 from music_assistant.constants import HASSIO_SUPERVISOR_IP, INGRESS_SERVER_PORT
@@ -26,6 +26,7 @@ from music_assistant.providers.mcp_server import CONF_HOME_ASSISTANT_SECRET
 from music_assistant.providers.mcp_server.auth import META_HA_USER_ID
 from music_assistant.providers.mcp_server.registry import TOOLS
 from music_assistant.providers.mcp_server.transport import MCPTransport
+from tests.common import mock_player
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -699,19 +700,14 @@ def _track(item_id: str, name: str) -> Track:
 
 def _fake_player(player_id: str, name: str) -> MagicMock:
     """Return a stand-in for a player with the state the tools read."""
-    player = MagicMock()
-    player.player_id = player_id
-    player.state.player_id = player_id
-    player.state.name = name
-    player.state.hide_in_ui = False
-    player.state.playback_state = PlaybackState.PLAYING
-    player.state.available = True
-    player.state.powered = True
-    player.state.volume_level = 30
-    player.state.volume_muted = False
-    player.state.type = PlayerType.PLAYER
-    player.state.group_members = []
-    player.state.current_media = None
+    player = mock_player(
+        player_id,
+        name=name,
+        playback_state=PlaybackState.PLAYING,
+        powered=True,
+        volume_level=30,
+        volume_muted=False,
+    )
     # no client protocol, so no caller counts as connected on it
     player.attached_protocols = {}
     return player

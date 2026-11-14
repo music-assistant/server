@@ -326,13 +326,11 @@ def test_a_track_change_asks_for_the_next_batch() -> None:
                     source_id=QUEUE_ID, queue_item_id=queue_item_id, uri=None
                 )
             ),
-            state=SimpleNamespace(
-                name="Q1",
-                available=True,
-                playback_state=PlaybackState.PLAYING,
-                corrected_elapsed_time=10,
-                group_members=[],
-            ),
+            name="Q1",
+            available=True,
+            playback_state=PlaybackState.PLAYING,
+            corrected_elapsed_time=10,
+            group_members=[],
         )
         ctrl._update_queue_from_player(player)
 

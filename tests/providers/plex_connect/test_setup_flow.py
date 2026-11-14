@@ -40,7 +40,7 @@ def _player(
     """Build a stand-in for a Music Assistant player."""
     player = mock.Mock()
     player.player_id = player_id
-    player.display_name = display_name
+    player.name = display_name
     player.type = player_type
     player.session_only = session_only
     return player

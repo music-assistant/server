@@ -452,8 +452,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return (
             queue_data.session_id is None
             and player is not None
-            and player.state.playback_state == PlaybackState.PAUSED
-            and player.state.active_source == queue_id
+            and player.playback_state == PlaybackState.PAUSED
+            and player.active_source == queue_id
         )
 
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
@@ -1079,19 +1079,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         async def _watch_pause(player: Player) -> None:
             count = 0
             # wait for pause
-            while count < 5 and player.state.playback_state == PlaybackState.PLAYING:
+            while count < 5 and player.playback_state == PlaybackState.PLAYING:
                 count += 1
                 await asyncio.sleep(1)
             # wait for unpause
-            if player.state.playback_state != PlaybackState.PAUSED:
+            if player.playback_state != PlaybackState.PAUSED:
                 return
             count = 0
             pause_timeout = self._get_pause_timeout()
-            while count < pause_timeout and player.state.playback_state == PlaybackState.PAUSED:
+            while count < pause_timeout and player.playback_state == PlaybackState.PAUSED:
                 count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
-            if player.state.playback_state == PlaybackState.PAUSED:
+            if player.playback_state == PlaybackState.PAUSED:
                 await self.stop(queue_id)
 
         # we auto stop a player from paused when its paused for the configured pause timeout
@@ -1263,14 +1263,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
         if not queue.current_item:
-            raise InvalidCommand(f"Queue {queue_player.state.name} has no item(s) loaded.")
+            raise InvalidCommand(f"Queue {queue_player.name} has no item(s) loaded.")
         if not queue.current_item.duration:
             raise InvalidCommand("Can not seek items without duration.")
         position = max(0, int(position))
         if position > queue.current_item.duration:
             raise InvalidCommand("Can not seek outside of duration range.")
         if queue.current_index is None:
-            raise InvalidCommand(f"Queue {queue_player.state.name} has no current index.")
+            raise InvalidCommand(f"Queue {queue_player.name} has no current index.")
         # Publish the seek target before rebuilding the stream to prevent progress snapback.
         queue.elapsed_time = position
         queue.elapsed_time_last_updated = time.time()
@@ -1327,7 +1327,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
             if (
                 fade_in is None
-                and queue_player.state.playback_state == PlaybackState.IDLE
+                and queue_player.playback_state == PlaybackState.IDLE
                 and (time.time() - queue.elapsed_time_last_updated) > 60
             ):
                 # enable fade in effect if the player is idle for a while
@@ -1386,7 +1386,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             plays_on_target
             and target_player is not None
             and target_player.offline_by_power_control
-            and target_player.state.type in PLAYBACK_TARGET_TYPES
+            and target_player.type in PLAYBACK_TARGET_TYPES
         ):
             await self.mass.players._power_on_switched_off_player(target_queue_id)
         # both queues change here, and a play action on either runs under its player's lock:
@@ -1404,20 +1404,18 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 raise PlayerUnavailableError(f"Player {target_queue_id} is not available")
             # refuse targets that can never render audio (display/visualizer/lighting clients)
             # before anything is mutated, so a bad target does not destroy the source queue
-            if target_player.state.type not in PLAYBACK_TARGET_TYPES:
-                raise PlayerCommandFailed(
-                    f"Player {target_player.display_name} is not capable of playback"
-                )
+            if target_player.type not in PLAYBACK_TARGET_TYPES:
+                raise PlayerCommandFailed(f"Player {target_player.name} is not capable of playback")
             if auto_play and target_player.offline_by_power_control:
                 # switched off again, or the source started to play while the locks were awaited
-                msg = f"Player {target_player.display_name} is switched off"
+                msg = f"Player {target_player.name} is switched off"
                 raise PlayerUnavailableError(msg)
-            if target_player.state.active_group or target_player.state.synced_to:
+            if target_player.active_group or target_player.synced_to:
                 # edge case: the user wants to move playback from the group as a whole, to a
                 # single player in the group or it is grouped and the command targeted at the
                 # single player. We need to dissolve the group/sync first, and wait for the state
                 # to actually propagate before we hand the queue over to the target player.
-                group_id = target_player.state.active_group or target_player.state.synced_to
+                group_id = target_player.active_group or target_player.synced_to
                 assert group_id is not None  # checked in if condition above
                 # For an ad-hoc sync group (target is a sync member of a regular leader),
                 # ungroup the target itself so only it is freed - ungrouping the leader would
@@ -1426,14 +1424,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # members are handled correctly.
                 ungroup_target = (
                     target_queue_id
-                    if target_player.state.synced_to and not target_player.state.active_group
+                    if target_player.synced_to and not target_player.active_group
                     else group_id
                 )
                 async with self.mass.players.wait_for_player_update(
                     target_queue_id,
-                    attribute_name=(
-                        "active_group" if target_player.state.active_group else "synced_to"
-                    ),
+                    attribute_name=("active_group" if target_player.active_group else "synced_to"),
                     attribute_value=None,
                     timeout=5,
                 ):
@@ -1549,7 +1545,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         except Exception as err:
             self.logger.warning(
                 "Failed to restore the queue(items) for %s - %s",
-                player.state.name,
+                player.name,
                 str(err),
             )
             # Reset to clean state on failure
@@ -1559,8 +1555,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue=PlayerQueue(
                     queue_id=queue_id,
                     active=False,
-                    display_name=player.state.name,
-                    available=player.state.available,
+                    display_name=player.name,
+                    available=player.available,
                     items=0,
                 )
             )
@@ -1592,7 +1588,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # do nothing while the announcement is in progress
             return
         # determine if this queue is currently active for this player
-        queue.active = player.state.active_source in (queue.queue_id, None)
+        queue.active = player.active_source in (queue.queue_id, None)
         if not queue.active and self._queue_data[queue_id].prev_state is None:
             queue.state = PlaybackState.IDLE
             # return early if the queue is not active and we have no previous state
@@ -1611,12 +1607,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # queue.active still holds the source from the last update. Requiring it and the
         # live source both skips the position jump of joining or leaving a group.
-        if not queue.active or player.state.active_source not in (queue_id, None):
+        if not queue.active or player.active_source not in (queue_id, None):
             return
         # a stopped player's position is unreliable, keep the last played position
-        if player.state.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        if player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             return
-        player_elapsed = player.state.corrected_elapsed_time
+        player_elapsed = player.corrected_elapsed_time
         if player_elapsed is None:
             return
         now = time.time()
@@ -2412,8 +2408,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(owner.player_id)
         self.logger.info(
             "Player %s is synced or grouped, its play request goes to the queue of %s",
-            player.display_name,
-            owner.display_name,
+            player.name,
+            owner.name,
         )
         return owner.player_id, option
 
@@ -2570,7 +2566,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 timeout=PLAYBACK_START_TIMEOUT,
             ):
                 if (output_protocol := queue_player.resolve_output_protocol()) is None:
-                    msg = f"Player {queue_player.display_name} is not available"
+                    msg = f"Player {queue_player.name} is not available"
                     raise PlayerUnavailableError(msg)
                 await output_protocol.play()
             return

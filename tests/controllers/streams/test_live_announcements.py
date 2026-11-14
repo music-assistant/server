@@ -589,7 +589,7 @@ def _player() -> MagicMock:
     """Return the player the tests announce on."""
     player = MagicMock()
     player.player_id = PLAYER_ID
-    player.display_name = "Kitchen"
+    player.name = "Kitchen"
     player.available_for_playback = True
     player.offline_by_power_control = False
     # a shared speaker: none of its protocols is the private client player of a user

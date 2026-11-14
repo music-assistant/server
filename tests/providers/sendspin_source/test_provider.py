@@ -128,9 +128,9 @@ async def test_audio_sources_follow_role_activation() -> None:
 async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> None:
     """The source is named after its player, and a rename reaches Browse and now-playing."""
     provider = await make_provider([fake_client])
-    get_players(provider).players["client-1"].display_name = "Living Room"
+    get_players(provider).players["client-1"].name = "Living Room"
     assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Living Room)"]
-    get_players(provider).players["client-1"].display_name = "Den"
+    get_players(provider).players["client-1"].name = "Den"
     assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Den)"]
     details = await provider.get_stream_details("client-1", MediaType.AUDIO_SOURCE)
     assert details.stream_metadata is not None
@@ -140,7 +140,7 @@ async def test_source_name_follows_a_player_rename(fake_client: _FakeClient) -> 
 async def test_source_name_uses_the_player_of_the_client(fake_client: _FakeClient) -> None:
     """The source is named after the player the client's protocol is attached to."""
     provider = await make_provider([fake_client])
-    attach_client(provider, "client-1", "pl0123456789ab", display_name="Kitchen")
+    attach_client(provider, "client-1", "pl0123456789ab", name="Kitchen")
     assert [s.name for s in await provider.get_audio_sources()] == ["Sendspin Source (Kitchen)"]
 
 
@@ -936,7 +936,7 @@ async def test_autostart_skips_an_unavailable_target(fake_client: _FakeClient) -
     """A configured target that is registered but unavailable is not played to."""
     provider = await make_provider([fake_client])
     get_config(provider).values[("client-1", CONF_SOURCE_AUTOSTART_TARGET)] = "client-1"
-    get_players(provider).players["client-1"].state.available = False
+    get_players(provider).players["client-1"].available = False
     fake_client.emit(_signal(SignalState.ABSENT))
     fake_client.emit(_signal(SignalState.PRESENT))
     await _settle()

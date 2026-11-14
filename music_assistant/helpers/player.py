@@ -102,7 +102,7 @@ def get_available_player(mass: MusicAssistant, player_id: str) -> Player | None:
     :param player_id: Id of the player to look up.
     """
     player = mass.players.get_player(player_id)
-    if player is None or not player.state.available:
+    if player is None or not player.available:
         return None
     return player
 

@@ -21,7 +21,7 @@ def _mass() -> MusicAssistant:
     """Return a server with a player of a device and two browser players."""
     players = [
         SimpleNamespace(
-            player_id=player_id, display_name=name, type=PlayerType.PLAYER, session_only=session
+            player_id=player_id, name=name, type=PlayerType.PLAYER, session_only=session
         )
         for player_id, name, session in (
             ("pl_a", "Player A", False),

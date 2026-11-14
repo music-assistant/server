@@ -107,7 +107,7 @@ def _bound_plugin(mock_mass: MagicMock, source: AudioSource, player_id: str = PL
 def _live_source(player: Player, uri: str = SOURCE_URI) -> PlayerSource | None:
     """Return the external source entry from the source list the player publishes."""
     player.refresh_state(signal_event=False)
-    return next((x for x in player.state.source_list if x.id == uri), None)
+    return next((x for x in player.source_list if x.id == uri), None)
 
 
 def _playing(mock_mass: MagicMock, source: AudioSource, **state: object) -> None:

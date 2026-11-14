@@ -102,8 +102,8 @@ def _reconcile_provider(
             return None
         player = MagicMock()
         player.player_id = player_id
-        player.display_name = registered[player_id]
-        player.state.available = player_id not in (unavailable or set())
+        player.name = registered[player_id]
+        player.available = player_id not in (unavailable or set())
         return player
 
     mass.players.get_player.side_effect = get_player
@@ -519,7 +519,7 @@ async def test_receiver_config_starts_at_the_volume_of_the_player(tmp_path: Path
     prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
     prov.mass = MagicMock()
     player = MagicMock(spec=Player)
-    player.state.volume_level = 40
+    player.volume_level = 40
     prov.mass.players.get_player.return_value = player
     prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
     daemon = MagicMock(
@@ -549,7 +549,8 @@ def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
     prov._ports = {"p1": 7000}
     prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
     prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
-    player = MagicMock(player_id="p1", display_name="Player A")
+    player = MagicMock(player_id="p1")
+    player.name = "Player A"
 
     AirPlayReceiverProvider._start_receiver(prov, "p1", player, "Player A | Music Assistant")
 

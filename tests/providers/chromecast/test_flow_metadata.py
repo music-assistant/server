@@ -32,7 +32,7 @@ def _fake_flow_player() -> Any:
     # the player the Cast is attached to, first seen after the player split
     fake._player = MagicMock(
         player_id="pl0123456789ab",
-        state=MagicMock(current_media=PlayerMedia(uri=FLOW_URL, title="Track 2")),
+        current_media=PlayerMedia(uri=FLOW_URL, title="Track 2"),
     )
     return fake
 

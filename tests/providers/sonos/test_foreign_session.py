@@ -269,8 +269,8 @@ async def test_a_shutdown_leaves_a_session_we_did_not_start_playing(
     # a stop without a session of ours makes one, which ends the session that plays
     _session_api(player).create_session.assert_not_awaited()
     _session_api(player).leave_session.assert_not_awaited()
-    assert _player(player).state.active_source == SOURCE_MUSIC_ASSISTANT
-    assert _player(player).state.playback_state == PlaybackState.PLAYING
+    assert _player(player).active_source == SOURCE_MUSIC_ASSISTANT
+    assert _player(player).playback_state == PlaybackState.PLAYING
     assert queue.active is False
     assert queue.state == PlaybackState.IDLE
 
@@ -292,7 +292,7 @@ async def test_a_shutdown_still_stops_our_own_queue(flow_mode: bool) -> None:
     queue = _update(mass, player)
     await mass.player_queues.close()
 
-    assert _player(player).state.active_source == SPEAKER_PLAYER
+    assert _player(player).active_source == SPEAKER_PLAYER
     assert queue.active is True
     _session_api(player).leave_session.assert_awaited_once_with(OUR_SESSION)
     _session_api(player).create_session.assert_not_awaited()
@@ -434,7 +434,7 @@ async def test_a_session_that_took_ours_over_is_not_our_queue() -> None:
     _report(group, _cloud_queue_container())
     queue = _update(mass, player)
 
-    assert _player(player).state.active_source == SOURCE_MUSIC_ASSISTANT
+    assert _player(player).active_source == SOURCE_MUSIC_ASSISTANT
     assert queue.active is False
     assert queue.state == PlaybackState.IDLE
 
@@ -481,7 +481,7 @@ def test_our_queue_over_airplay_is_still_our_queue() -> None:
     queue = _update(mass, player)
 
     assert player._attr_active_source == SOURCE_AIRPLAY
-    assert _player(player).state.active_source == SPEAKER_PLAYER
+    assert _player(player).active_source == SPEAKER_PLAYER
     assert queue.active is True
     assert queue.state == PlaybackState.PLAYING
 
@@ -525,8 +525,8 @@ async def test_play_after_we_stopped_our_queue_resumes_it(
 
     await mass.players.cmd_play(SPEAKER_PLAYER)
 
-    assert _player(player).state.playback_state == PlaybackState.IDLE
-    assert _player(player).state.active_source == SPEAKER_PLAYER
+    assert _player(player).playback_state == PlaybackState.IDLE
+    assert _player(player).active_source == SPEAKER_PLAYER
     assert queue.active is True
     # the pause, next, previous and seek commands go to the same queue
     assert mass.players.get_active_queue(_player(player)) is queue
@@ -587,7 +587,7 @@ async def test_a_session_started_after_we_stopped_ours_is_not_ours() -> None:
     queue = _update(mass, player)
     await mass.player_queues.close()
 
-    assert _player(player).state.active_source == SOURCE_MUSIC_ASSISTANT
+    assert _player(player).active_source == SOURCE_MUSIC_ASSISTANT
     assert queue.active is False
     assert queue.state == PlaybackState.IDLE
     # the leave of our own stop is all that went to the speaker

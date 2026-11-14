@@ -199,7 +199,7 @@ async def test_metadata_upload_shows_the_media_of_its_player(
     player._last_stream_url = "http://ma/flow/1.mp3"
     player._attr_current_media = PlayerMedia(uri="x", title="Reported")
     attached = MagicMock()
-    attached.state.current_media = PlayerMedia(uri="y", title="Shown", artist="Artist A")
+    attached.current_media = PlayerMedia(uri="y", title="Shown", artist="Artist A")
     player._player = attached
 
     player.on_player_media_updated()

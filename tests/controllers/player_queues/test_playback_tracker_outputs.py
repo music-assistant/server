@@ -17,7 +17,7 @@ def test_output_player_ids_name_the_player_of_a_protocol() -> None:
     attach_mock(MockProvider("test", mass=mass), "protocol-1", player_id="player-1")
     tracker = cast("Any", SimpleNamespace(mass=mass))
     player = MagicMock(player_id="queue-1")
-    player.state.group_members = ["queue-1", "protocol-1", "player-1", "missing-player"]
+    player.group_members = ["queue-1", "protocol-1", "player-1", "missing-player"]
 
     result = PlaybackTrackerMixin._get_output_player_ids(
         tracker,
@@ -34,7 +34,7 @@ def test_output_player_ids_name_a_player_also_when_a_protocol_of_another_has_its
     attach_mock(MockProvider("wiim", mass=mass), "wiim_living")
     tracker = cast("Any", SimpleNamespace(mass=mass))
     player = MagicMock(player_id="group-1")
-    player.state.group_members = ["wiim_living"]
+    player.group_members = ["wiim_living"]
 
     result = PlaybackTrackerMixin._get_output_player_ids(tracker, cast("Player", player))
 

@@ -53,9 +53,7 @@ def _player(queues: Any, player_id: str = "p1") -> Any:
     :param queues: The queue-controller stand-in, whose players controller gets the player.
     :param player_id: The id of the player.
     """
-    player = SimpleNamespace(
-        player_id=player_id, state=SimpleNamespace(name="Player A", available=True)
-    )
+    player = SimpleNamespace(player_id=player_id, name="Player A", available=True)
     queues.mass.players.get_player = MagicMock(
         side_effect=lambda queried_id: player if queried_id == player_id else None
     )

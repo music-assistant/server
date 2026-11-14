@@ -146,9 +146,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             # last protocol goes and takes its config with it
             self.keep_player(player.player_id)
         if player := await self._unbind(protocol):
-            self.logger.info(
-                "Protocol %s detached from player %s", protocol_id, player.display_name
-            )
+            self.logger.info("Protocol %s detached from player %s", protocol_id, player.name)
             await self._settle_player(player)
         if not protocol.provider.unloading:
             # its provider may keep the object, which a removal of the player has to reach
@@ -227,7 +225,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         waits: list[float] = []
         for player in list(self._players.values()):
             if (
-                player.state.available
+                player.available
                 or not player.initialized.is_set()
                 or any(protocol.available for protocol in player.attached_protocols.values())
             ):
@@ -464,7 +462,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             protocol_id,
             role.value,
             player_id,
-            player.display_name,
+            player.name,
         )
         self._schedule_held_protocols()
         self._schedule_duplicate_merge(player_id)
@@ -649,7 +647,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}") is None
         ):
             await self._drop_player(player.player_id, player)
-            self.logger.info("Player removed: %s", player.display_name)
+            self.logger.info("Player removed: %s", player.name)
             return
         player.set_config(await self.mass.config.get_player_object_config(player))
         player.update_state()
@@ -771,9 +769,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         player.set_initialized()
         self.logger.info(
             "Player (type %s) added: %s/%s",
-            player.state.type.value,
+            player.type.value,
             player_id,
-            player.state.name,
+            player.name,
         )
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player_id, data=player)
         await self.mass.player_queues.on_player_register(player)
@@ -872,7 +870,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             )
         finally:
             self._removing.discard(player_id)
-        self.logger.info("Player removed: %s", player.display_name if player else player_id)
+        self.logger.info("Player removed: %s", player.name if player else player_id)
         for protocol in protocols:
             if protocol.protocol_id in self._protocols or protocol.protocol_id in self._unattached:
                 # its device was found again meanwhile, so its provider still needs it
@@ -974,7 +972,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             self.mass.signal_event(
                 EventType.PLAYER_UPDATED, object_id=player.player_id, data=player
             )
-        self.logger.info("Player disabled: %s", player.display_name)
+        self.logger.info("Player disabled: %s", player.name)
         self._schedule_update_all_players()
 
     async def _stop_player_that_goes(self, player: Player) -> None:
@@ -983,12 +981,12 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
         :param player: The player that goes.
         """
-        if not player.state.available:
+        if not player.available:
             return
         # edge case: ensure that the player is powered off if the player gets disabled
-        if player.state.power_control != PLAYER_CONTROL_NONE:
+        if player.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, False)
-        elif player.state.playback_state != PlaybackState.IDLE:
+        elif player.playback_state != PlaybackState.IDLE:
             await self.cmd_stop(player.player_id)
 
     async def _release_player_that_is_removed(self, player: Player) -> None:
@@ -1002,10 +1000,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         """
         try:
             if self._resolve_playback_owner(player) is player:
-                if (
-                    player.available_for_playback
-                    and player.state.playback_state != PlaybackState.IDLE
-                ):
+                if player.available_for_playback and player.playback_state != PlaybackState.IDLE:
                     await self._handle_cmd_stop(player.player_id)
                 return
             # check for group memberships that need to be updated: a static group refuses
@@ -1019,9 +1014,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
                     player,
                 )
         except Exception:
-            self.logger.exception(
-                "Error ending the playback of %s before its removal", player.display_name
-            )
+            self.logger.exception("Error ending the playback of %s before its removal", player.name)
 
     async def _enable_player(self, player_id: str) -> None:
         """

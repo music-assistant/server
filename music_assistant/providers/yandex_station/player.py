@@ -329,7 +329,7 @@ class YandexStationPlayer(PlayerProtocol):
         # track, so those are excluded by type.
         target_options = sorted(
             (
-                ConfigValueOption(p.player_id, p.display_name)
+                ConfigValueOption(p.player_id, p.name)
                 for p in self.mass.players.all_players(return_unavailable=True)
                 if p is not self.player and p.type in PLAYBACK_TARGET_TYPES
             ),

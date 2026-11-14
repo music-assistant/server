@@ -53,7 +53,7 @@ def to_brief_player(player: Player, active_queue: Any = None) -> PlayerBrief:
 
     return PlayerBrief(
         player_id=state.player_id,
-        name=player.display_name,
+        name=player.name,
         state=state_value,
         volume_level=state.volume_level,
         powered=state.powered is not False,

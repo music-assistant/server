@@ -479,7 +479,7 @@ class BoseSoundTouchPlayer(PlayerProtocol):
         self.logger.info("Preset %s pressed on %s, playing %s", preset_id, self.name, media_id)
         if (player := self.player) is None:
             return
-        queue_id = player.state.synced_to or player.player_id
+        queue_id = player.synced_to or player.player_id
         try:
             await self.mass.player_queues.play_media(queue_id=queue_id, media=media_id)
         except MediaNotFoundError:

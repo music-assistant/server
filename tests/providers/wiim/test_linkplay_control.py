@@ -119,7 +119,7 @@ async def test_the_device_is_one_player_led_by_its_control_protocol(scenario: Sc
     assert player.get_role(linkplay.protocol_id) == ProtocolRole.CONTROL
     assert player.own_protocol is linkplay
     # volume comes from the renderer, LinkPlay reports none of its own
-    assert player.state.volume_level == 30
+    assert player.volume_level == 30
     assert [visible.provider for visible in scenario.visible_players()] == ["wiim"]
 
 
@@ -208,9 +208,9 @@ async def test_dlna_keeps_the_device_usable_while_the_linkplay_api_is_down(
     player = _player(linkplay)
     assert linkplay.available is False
     assert PlayerFeature.SET_MEMBERS not in linkplay.supported_features
-    assert player.state.available is True
+    assert player.available is True
     assert player.available_for_playback is True
-    assert PlayerFeature.SET_MEMBERS in player.state.supported_features
+    assert PlayerFeature.SET_MEMBERS in player.supported_features
 
 
 async def test_a_follower_of_an_unknown_leader_withdraws_all_grouping(
@@ -221,14 +221,14 @@ async def test_a_follower_of_an_unknown_leader_withdraws_all_grouping(
     linkplay, renderer = await _linkplay_device(scenario, wiim, dlna)
     renderer._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
     player = _player(linkplay)
-    assert PlayerFeature.SET_MEMBERS in player.state.supported_features
+    assert PlayerFeature.SET_MEMBERS in player.supported_features
 
     _coordinator(wiim).set_self_role(linkplay.protocol_id, True)
     await _coordinator(wiim).reconcile()
     await scenario.idle()
 
     assert linkplay.grouping_locked is True
-    assert PlayerFeature.SET_MEMBERS not in player.state.supported_features
+    assert PlayerFeature.SET_MEMBERS not in player.supported_features
 
 
 async def test_transport_commands_reach_an_app_playing_on_the_renderer(
@@ -248,15 +248,13 @@ async def test_transport_commands_reach_an_app_playing_on_the_renderer(
         playback_state=PlaybackState.PLAYING,
     )
     player = _player(linkplay)
-    assert player.state.active_source == "spotify"
-    assert [info.protocol_id for info in player.state.protocols if info.active] == [
-        renderer.protocol_id
-    ]
-    assert PlayerFeature.NEXT_PREVIOUS in player.state.supported_features
+    assert player.active_source == "spotify"
+    assert [info.protocol_id for info in player.protocols if info.active] == [renderer.protocol_id]
+    assert PlayerFeature.NEXT_PREVIOUS in player.supported_features
 
     await scenario.mass.players.cmd_pause(player.player_id)
     await scenario.idle()
-    assert player.state.playback_state == PlaybackState.PAUSED
+    assert player.playback_state == PlaybackState.PAUSED
     await scenario.mass.players.cmd_play(player.player_id)
     await scenario.mass.players.cmd_next_track(player.player_id)
     await scenario.idle()

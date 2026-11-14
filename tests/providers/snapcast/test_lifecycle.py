@@ -62,7 +62,7 @@ async def test_a_new_client_does_not_take_over_an_offline_sibling(scenario: Scen
     amp_two = await _connect(scenario, AMP_TWO, "Pi amp 2")
 
     assert _player(amp_two).player_id != player_one
-    assert _player(amp_two).display_name == "Pi amp 2"
+    assert _player(amp_two).name == "Pi amp 2"
 
     amp_one = await _connect(scenario, AMP_ONE, "Pi amp 1")
 
@@ -85,4 +85,4 @@ async def test_each_client_finds_its_own_player_after_a_restart(scenario: Scenar
 
     assert _player(amp_one).player_id == player_one
     assert _player(amp_two).player_id == player_two
-    assert _player(amp_one).display_name == "Amp one"
+    assert _player(amp_one).name == "Amp one"

@@ -182,10 +182,8 @@ class PlayerController(
         """Return diagnostics info for this controller to include in diagnostics reports."""
         players = list(self._players.values())
         return {
-            "players_synced": sum(player.state.synced_to is not None for player in players),
-            "players_with_active_group": sum(
-                player.state.active_group is not None for player in players
-            ),
+            "players_synced": sum(player.synced_to is not None for player in players),
+            "players_with_active_group": sum(player.active_group is not None for player in players),
             "announcements_in_progress": sum(
                 bool(player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)) for player in players
             ),
@@ -193,8 +191,8 @@ class PlayerController(
             # how the players are made up, without anything that names them
             "player_protocols": [
                 {
-                    "type": player.state.type.value,
-                    "available": player.state.available,
+                    "type": player.type.value,
+                    "available": player.available,
                     "protocols": [
                         {
                             "domain": protocol.domain,
@@ -202,7 +200,7 @@ class PlayerController(
                             "available": protocol.available,
                             "active": protocol.active,
                         }
-                        for protocol in player.state.protocols
+                        for protocol in player.protocols
                     ],
                 }
                 for player in players

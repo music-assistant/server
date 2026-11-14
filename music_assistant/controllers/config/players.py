@@ -198,7 +198,7 @@ class PlayerConfigMixin:
             # (unless disabled, otherwise there is no way to re-enable them)
             # note that we only check for missing players in the player controller,
             # and we do allow players that are temporary unavailable
-            # (player.state.available = false) because this can also mean that the
+            # (player.available = false) because this can also mean that the
             # player needs additional configuration such as airplay devices that need pairing.
             player = self.mass.players.get_player(player_id, False)
             if not include_unavailable and player is None and raw_conf.get("enabled", True):
@@ -211,9 +211,9 @@ class PlayerConfigMixin:
             else:
                 summary_conf = deepcopy(raw_conf)
                 summary_conf["default_name"] = (
-                    player.state.name if player else summary_conf.get("default_name")
+                    player.name if player else summary_conf.get("default_name")
                 )
-                summary_conf["available"] = player.state.available if player else False
+                summary_conf["available"] = player.available if player else False
                 result.append(cast("PlayerConfig", PlayerConfig.parse([], summary_conf)))
         return result
 
@@ -244,7 +244,7 @@ class PlayerConfigMixin:
             ]:
                 del stored_values[key]
         if player:
-            raw_conf["default_name"] = player.state.name
+            raw_conf["default_name"] = player.name
             raw_conf["provider"] = player.provider_id
             config_entries = await self.get_player_config_entries(
                 player_id,
@@ -1064,7 +1064,7 @@ class PlayerConfigMixin:
             "player_id": player_id,
             "provider": player.provider_id,
             "enabled": True,
-            "default_name": player.state.name,
+            "default_name": player.name,
             "player_type": player.reported_type,
             "values": {},
         }
@@ -1310,7 +1310,7 @@ class PlayerConfigMixin:
 
         icon_entry = deepcopy(
             CONF_ENTRY_PLAYER_ICON_GROUP
-            if player.state.type == PlayerType.GROUP
+            if player.type == PlayerType.GROUP
             else CONF_ENTRY_PLAYER_ICON
         )
         icon_entry.default_value = player.default_icon
@@ -1349,7 +1349,7 @@ class PlayerConfigMixin:
             ),
         ]
         # group-player config entries
-        if player.state.type == PlayerType.GROUP:
+        if player.type == PlayerType.GROUP:
             entries += [
                 icon_entry,
             ]
@@ -1369,7 +1369,7 @@ class PlayerConfigMixin:
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
         """Create config entries for player controls."""
-        is_group = player.state.type == PlayerType.GROUP
+        is_group = player.type == PlayerType.GROUP
         all_controls = self.mass.players.player_controls()
         power_controls = [x for x in all_controls if x.supports_power]
         volume_controls = [x for x in all_controls if x.supports_volume]
@@ -1836,7 +1836,7 @@ class PlayerConfigMixin:
         :param player: The player to create the plugin toggle entries for.
         """
         # only players a plugin can offer as playback target get the toggles
-        if player.state.type not in PLAYBACK_TARGET_TYPES:
+        if player.type not in PLAYBACK_TARGET_TYPES:
             return []
         entries: list[ConfigEntry] = []
         plugin_providers = (

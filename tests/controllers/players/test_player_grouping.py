@@ -120,8 +120,8 @@ class TestCanGroupWithBasics:
         _refresh(player_a, player_b)
 
         # Both players should be able to group with each other
-        assert player_b.player_id in player_a.state.can_group_with
-        assert player_a.player_id in player_b.state.can_group_with
+        assert player_b.player_id in player_a.can_group_with
+        assert player_a.player_id in player_b.can_group_with
 
     def test_unavailable_players_excluded(self, controller: PlayerController) -> None:
         """Test that unavailable players are excluded from can_group_with."""
@@ -138,8 +138,8 @@ class TestCanGroupWithBasics:
         _refresh(player_b, player_a)
 
         # Unavailable player should be excluded
-        assert not player_b.state.available
-        assert player_b.player_id not in player_a.state.can_group_with
+        assert not player_b.available
+        assert player_b.player_id not in player_a.can_group_with
 
     def test_playing_players_with_different_source_excluded(
         self, controller: PlayerController
@@ -167,7 +167,7 @@ class TestCanGroupWithBasics:
         _refresh(player_a, player_b)
 
         # Player with different active source is now ALLOWED (behavior changed)
-        assert player_b.player_id in player_a.state.can_group_with
+        assert player_b.player_id in player_a.can_group_with
 
 
 class TestSyncedPlayers:
@@ -191,8 +191,8 @@ class TestSyncedPlayers:
         _refresh(leader, member)
 
         # Member is synced, so can_group_with should be empty
-        assert member.state.synced_to == leader.player_id
-        assert member.state.can_group_with == set()
+        assert member.synced_to == leader.player_id
+        assert member.can_group_with == set()
 
     def test_group_members_included_in_leader_can_group_with(
         self, controller: PlayerController
@@ -217,8 +217,8 @@ class TestSyncedPlayers:
         _refresh(leader, member_a, member_b)
 
         # Leader should be able to see its own members (for ungrouping)
-        assert member_a.player_id in leader.state.can_group_with
-        assert member_b.player_id in leader.state.can_group_with
+        assert member_a.player_id in leader.can_group_with
+        assert member_b.player_id in leader.can_group_with
 
 
 class TestSyncLeaderBehavior:
@@ -245,7 +245,7 @@ class TestSyncLeaderBehavior:
         _refresh(leader, member, other)
 
         # Leader should NOT appear in other's can_group_with (has group members)
-        assert leader.player_id not in other.state.can_group_with
+        assert leader.player_id not in other.can_group_with
 
     def test_solo_raw_group_members_does_not_exclude_a_playing_candidate(
         self, controller: PlayerController
@@ -272,8 +272,8 @@ class TestSyncLeaderBehavior:
         _refresh(solo_candidate, real_leader, member, other)
 
         # Solo player is still offered, a real (multi-member) leader stays excluded
-        assert solo_candidate.player_id in other.state.can_group_with
-        assert real_leader.player_id not in other.state.can_group_with
+        assert solo_candidate.player_id in other.can_group_with
+        assert real_leader.player_id not in other.can_group_with
 
 
 class TestCircularDependency:
@@ -296,8 +296,8 @@ class TestCircularDependency:
         _refresh(leader, member)
 
         # This should not cause infinite recursion
-        assert member.state.synced_to == leader.player_id
-        assert leader.state.synced_to is None
+        assert member.synced_to == leader.player_id
+        assert leader.synced_to is None
 
 
 class TestCacheInvalidation:
@@ -319,20 +319,20 @@ class TestCacheInvalidation:
         _refresh(player_a, player_b)
 
         # Get can_group_with to populate cache
-        initial = player_a.state.can_group_with
+        initial = player_a.can_group_with
         assert player_b.player_id in initial
 
         # Modify underlying data
         protocol_a._attr_can_group_with = set()
 
         # Cache should still have old value
-        assert player_a.state.can_group_with == initial
+        assert player_a.can_group_with == initial
 
         # Clear cache via update_state
         player_a.update_state(signal_event=False)
 
         # Cache should be cleared, new value should be returned
-        assert player_a.state.can_group_with == set()
+        assert player_a.can_group_with == set()
 
 
 class TestProviderInstanceIdExpansion:
@@ -356,7 +356,7 @@ class TestProviderInstanceIdExpansion:
         _refresh(player_a, player_b, player_c)
 
         # Provider instance ID should expand to include all players from that provider
-        can_group = player_a.state.can_group_with
+        can_group = player_a.can_group_with
         assert player_b.player_id in can_group
         assert player_c.player_id in can_group
 
@@ -378,13 +378,13 @@ class TestProviderInstanceIdExpansion:
 
         _refresh(leader, public_player, unknown_player)
 
-        assert public_player.player_id in leader.state.can_group_with
-        assert unknown_player.player_id not in leader.state.can_group_with
+        assert public_player.player_id in leader.can_group_with
+        assert unknown_player.player_id not in leader.can_group_with
 
         leader_protocol._attr_can_group_with = {"unknown"}
         leader.update_state(signal_event=False, force_update=True)
 
-        assert leader.state.can_group_with == set()
+        assert leader.can_group_with == set()
 
 
 class TestFinalActiveGroupNewModel:
@@ -442,13 +442,13 @@ class TestFinalActiveGroupNewModel:
         # configured member, but no active session: is_active_session base default is False
         _group, member = self._group_of(controller, powered=None)
 
-        assert member.state.active_group is None
+        assert member.active_group is None
 
     def test_powered_true_group_captures_members(self, controller: PlayerController) -> None:
         """Group with _attr_powered=True (fake pin) captures members regardless of session."""
         group, member = self._group_of(controller, powered=True)
 
-        assert member.state.active_group == group.player_id
+        assert member.active_group == group.player_id
 
     def test_powered_false_group_does_not_capture_members(
         self, controller: PlayerController
@@ -456,7 +456,7 @@ class TestFinalActiveGroupNewModel:
         """Group with _attr_powered=False (explicit off) does not capture, even with a session."""
         _group, member = self._group_of(controller, powered=False)
 
-        assert member.state.active_group is None
+        assert member.active_group is None
 
     def test_session_active_group_captures_members(self, controller: PlayerController) -> None:
         """Group with powered=None but is_active_session=True captures members."""
@@ -469,7 +469,7 @@ class TestFinalActiveGroupNewModel:
 
         group, member = self._group_of(controller, powered=None, protocol_class=_SessionedGroup)
 
-        assert member.state.active_group == group.player_id
+        assert member.active_group == group.player_id
 
 
 class _LockingGroup(MockProtocol):
@@ -622,7 +622,7 @@ class TestGroupAndMemberLockOrder:
 
         _refresh(*controller._players.values())
 
-        assert member.state.active_group == "g1"
+        assert member.active_group == "g1"
         return controller, group_protocol, member, joiner
 
     @staticmethod
@@ -638,8 +638,8 @@ class TestGroupAndMemberLockOrder:
         leader_protocol._attr_supported_features = {PlayerFeature.SET_MEMBERS}
         leader_protocol._attr_group_members = [leader_protocol.protocol_id, "extra_device"]
         _refresh(*controller._players.values())
-        assert extra.state.synced_to == leader.player_id
-        assert leader.state.active_group == "g1"
+        assert extra.synced_to == leader.player_id
+        assert leader.active_group == "g1"
         return extra
 
     def _setup_announcement(
@@ -765,7 +765,7 @@ class TestGroupAndMemberLockOrder:
         mock_mass.player_queues.get = MagicMock(return_value=None)
         _refresh(leader, follower)
 
-        assert follower.state.synced_to == leader.player_id
+        assert follower.synced_to == leader.player_id
 
         # the release runs from under the locks the power off holds, so a timeout
         # here would mean it waited on one of them
@@ -845,7 +845,7 @@ class TestGroupAndMemberLockOrder:
             ("g1", None, ["member"], True),
             ("g1", ["member"], None, True),
         ]
-        assert member.state.active_group == "g1"
+        assert member.active_group == "g1"
 
     async def test_a_play_action_and_a_join_do_not_lock_each_other_out(
         self, mock_mass: MagicMock
@@ -947,7 +947,7 @@ class TestGroupAndMemberLockOrder:
             async with asyncio.timeout(5):
                 await announcing.wait()
             # the member plays the clip on its own, so the command passes its first check
-            assert member.state.active_group != "g1"
+            assert member.active_group != "g1"
             task = asyncio.create_task(commands[command]())
             for _ in range(20):
                 await asyncio.sleep(0)
@@ -960,7 +960,7 @@ class TestGroupAndMemberLockOrder:
                 ):
                     await task
 
-        assert member.state.active_group == "g1"
+        assert member.active_group == "g1"
         device_calls["g1_group", "play_media"].assert_not_awaited()
         device_calls["g1_group", "play"].assert_not_awaited()
         plugin.on_source_control.assert_not_awaited()

@@ -442,7 +442,7 @@ class AirPlayReceiverProvider(PluginProvider):
                     # not available (yet): never start a daemon for it; an already
                     # running one is deliberately kept (see _on_player_event)
                     continue
-                airplay_name = resolve_publish_name(template, player.display_name)
+                airplay_name = resolve_publish_name(template, player.name)
                 daemon = self._daemons.get(player_id)
                 if daemon is not None and daemon.airplay_name == airplay_name:
                     continue
@@ -520,7 +520,7 @@ class AirPlayReceiverProvider(PluginProvider):
             # the player id is stable across renames, so the source uri survives them
             item_id=player_id,
             provider=self.instance_id,
-            name=f"{self.name} ({player.display_name})",
+            name=f"{self.name} ({player.name})",
             provider_mappings={
                 ProviderMapping(
                     item_id=player_id,
@@ -779,8 +779,8 @@ class AirPlayReceiverProvider(PluginProvider):
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
         player_volume = 100  # Default to 100%
         if _player := self.mass.players.get_player(daemon.player_id):
-            if _player.state.volume_level is not None:
-                player_volume = _player.state.volume_level
+            if _player.volume_level is not None:
+                player_volume = _player.volume_level
         # Map 0-100 to -30.0...0.0
         airplay_volume = (player_volume / 100.0) * 30.0 - 30.0
         config_content = config_content.replace("{DEFAULT_VOLUME}", f"{airplay_volume:.1f}")

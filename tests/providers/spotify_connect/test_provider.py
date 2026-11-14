@@ -160,8 +160,8 @@ def _volume_sync_provider(
     daemon.backend = backend
     provider._daemons = {_PLAYER_ID: daemon}
     player = MagicMock()
-    player.state.volume_level = volume_level
-    player.state.group_volume = volume_level if group_volume is None else group_volume
+    player.volume_level = volume_level
+    player.group_volume = volume_level if group_volume is None else group_volume
     provider.mass.players.get_player.return_value = player
     return provider, daemon, set_volume
 
@@ -627,7 +627,7 @@ async def test_soloist_data_dir_matches_the_migration_target(tmp_path: Path) -> 
     provider._daemons = {}
     player = MagicMock()
     player.player_id = "player one!"
-    player.display_name = "Player One"
+    player.name = "Player One"
 
     with patch.object(SoloistBackend, "start", new=AsyncMock()):
         await provider._start_daemon("player one!", player, "Player One | Music Assistant")
@@ -686,8 +686,8 @@ def _reconcile_provider(
             return None
         player = MagicMock()
         player.player_id = player_id
-        player.display_name = registered[player_id]
-        player.state.available = player_id not in (unavailable or set())
+        player.name = registered[player_id]
+        player.available = player_id not in (unavailable or set())
         return player
 
     mass.players.get_player.side_effect = get_player
