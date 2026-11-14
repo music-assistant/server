@@ -24,6 +24,7 @@ from music_assistant.constants import (
     create_output_codec_config_entry,
 )
 from music_assistant.helpers.datetime import from_iso_string
+from music_assistant.helpers.player import served_duration
 from music_assistant.models.player import (
     AnnouncementFeature,
     DeviceInfo,
@@ -276,7 +277,7 @@ class HomeAssistantPlayer(Player):
             "albumName": media.album,
             "images": [{"url": media.image_url}] if media.image_url else None,
             "imageUrl": media.image_url,
-            "duration": media.stream_duration or media.duration,
+            "duration": served_duration(media, url),
         }
         if self.extra_data.get("hass_domain") == "dlna_dmr":
             # the HA DLNA integration reads the album art from this key, not the cast keys

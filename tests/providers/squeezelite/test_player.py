@@ -212,6 +212,44 @@ async def test_play_url_mime_type_is_explicit_for_sync_members(
     assert slimplayer.play_url.call_args.kwargs["mime_type"] == expected
 
 
+@pytest.mark.parametrize(
+    ("url", "is_group_playback", "duration"),
+    [
+        ("http://127.0.0.1:8097/single/s1/queue_1/q2/p1.flac", False, 4),
+        ("http://127.0.0.1:8097/flow/s1/queue_1/q2/p1.flac", False, 198),
+        (
+            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=flac&child_player_id=y",
+            True,
+            198,
+        ),
+    ],
+    ids=["single_item", "flow", "sync_group"],
+)
+async def test_only_a_single_item_stream_gets_the_seconds_left_after_a_seek(
+    url: str, is_group_playback: bool, duration: int
+) -> None:
+    """A flow stream, also the one a sync group plays, carries on into the next track."""
+    player, mass = _player_with_mocked_mass()
+    player._extra_data = {}
+    mass.player_queues.get.return_value = None
+    slimplayer = MagicMock()
+    slimplayer.play_url = AsyncMock()
+    slimplayer.pause = AsyncMock()
+    media = PlayerMedia(
+        uri="fake://x",
+        media_type=MediaType.TRACK,
+        source_id="queue_1",
+        duration=198,
+        stream_duration=4,
+    )
+
+    await player._handle_play_url_for_slimplayer(
+        slimplayer, url=url, media=media, is_group_playback=is_group_playback
+    )
+
+    assert slimplayer.play_url.call_args.kwargs["metadata"]["duration"] == duration
+
+
 async def test_grouped_play_media_passes_per_member_mime_type() -> None:
     """Grouped play_media gives each sync member its own codec's mime type, not a derived one."""
     player, mass = _player_with_mocked_mass()

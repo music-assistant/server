@@ -13,6 +13,7 @@ from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.helpers.audio import get_mime_type
+from music_assistant.helpers.player import served_duration
 
 if TYPE_CHECKING:
     from music_assistant.models.player import PlayerMedia
@@ -210,12 +211,9 @@ def create_didl_metadata(media: PlayerMedia, url: str | None = None) -> str:
     # - Streaming transfer mode (bit 24)
     # - Background transfer mode supported (bit 22)
     # - DLNA v1.5 (bit 20)
-    # the res duration describes the audio we hand over, which is shorter than
-    # the media item when playback starts at a seek position. A flow stream carries on
-    # past that point into the next track, so a player told the shorter duration drops
-    # the stream at its end (or requests it again): give a flow the whole track
-    served = media.stream_duration if "/flow/" not in uri else None
-    stream_duration = int(served or media.duration or 0)
+    # a player told a shorter duration than a flow stream holds drops the stream at
+    # its end (or requests it again)
+    stream_duration = int(served_duration(media, uri) or 0)
     duration_str = str(stream_duration // 3600).zfill(2) + ":"
     duration_str += str((stream_duration % 3600) // 60).zfill(2) + ":"
     duration_str += str(stream_duration % 60).zfill(2)

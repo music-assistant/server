@@ -1,6 +1,13 @@
 """Helpers for player behavior."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from music_assistant_models.enums import PlayerType
+
+if TYPE_CHECKING:
+    from music_assistant_models.player import PlayerMedia
 
 _DEFAULT_ICONS_BY_PROVIDER = {
     "airplay": "airplay",
@@ -75,3 +82,18 @@ def get_default_player_icon(
     if provider_icon := _DEFAULT_ICONS_BY_PROVIDER.get(provider_domain):
         return provider_icon
     return "speaker"
+
+
+def served_duration(media: PlayerMedia, stream_url: str) -> int | None:
+    """
+    Return the length in seconds to tell a player for the given stream, if known.
+
+    After a seek, a stream of one item holds only the part that is left, but a flow stream
+    carries on past it into the next track, so a flow gets the whole track's duration.
+
+    :param media: The media the stream plays.
+    :param stream_url: The URL the player gets the stream from.
+    """
+    if "/flow/" in stream_url:
+        return media.duration
+    return media.stream_duration or media.duration
