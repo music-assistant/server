@@ -1584,6 +1584,18 @@ idle: a minute later Den is powered off, as any idle player is.
   - `test_group_power_on.py::test_a_member_that_waited_for_its_group_is_not_powered_off_as_idle`
   - `test_group_power_on.py::test_a_member_its_group_never_started_is_powered_off_as_idle`
 
+### GROUP-33 · A group that is played again waits again for a member that still boots
+
+The user plays Downstairs, which switches Den's plug on and waits, and stops it. The plug stays
+on, so Den's device still boots, and Den shows as unavailable. The user plays Downstairs again
+before the device is back: nothing starts yet, Den shows as available and powered on again, and
+Downstairs starts on all three once Den's device is back. The plug is not switched a second
+time.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_group_power_on.py::test_a_new_start_after_a_stop_waits_again_for_a_member_that_still_boots`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

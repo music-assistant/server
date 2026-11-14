@@ -608,7 +608,10 @@ or a pause of a member whose playback the group owns, and a power off of a group
 as off while it waits. The command that waits fails as unavailable and starts nothing, also not
 on the members that are on. The power controls stay on, and a device that comes online afterwards
 stays idle. Stopping the leader or group that a player is added to ends the addition the same
-way, and removing that player from it ends the wait for that player alone.
+way, and removing that player from it ends the wait for that player alone. A new start right
+after that waits again for a member whose device still boots: its control is on, switched on
+less than those 90 seconds ago, and it is waited for until they are over, without switching its
+control once more.
 
 Only such a command switches a member on. Nothing does because a state changed, and no member
 joins later by this rule. What a command runs under the lock of the group leaves the members as

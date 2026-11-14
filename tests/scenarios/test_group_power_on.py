@@ -845,3 +845,38 @@ async def test_a_member_its_group_never_started_is_powered_off_as_idle(
 
     assert plug.commands == [True, False]
     assert _state(scenario, player_ids[2]).powered is False
+
+
+@pytest.mark.parametrize("group", GROUPS)
+async def test_a_new_start_after_a_stop_waits_again_for_a_member_that_still_boots(
+    scenario: Scenario, group: str
+) -> None:
+    """
+    A group that is stopped while it waits, and played again, waits again for the same device.
+
+    The stop leaves Den's plug on, so its device still boots and Den shows as unavailable. The
+    new play does not start without Den: Den shows as available and powered on again, and
+    the group starts on all members once its device is back. The plug is not switched again.
+    """
+    group_id, speakers, player_ids = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
+    den, den_id = speakers[2], player_ids[2]
+    plug = await _switch_off(scenario, den)
+    play = await _play(scenario, group_id)
+    await _stop(scenario, group_id)
+    with pytest.raises(PlayerUnavailableError, match="was called off"):
+        await play
+    assert _state(scenario, den_id).available is False
+
+    play = await _play(scenario, group_id)
+
+    assert not play.done(), play.exception()
+    assert (_state(scenario, den_id).available, _state(scenario, den_id).powered) == (True, True)
+    await scenario.advance(10)
+    assert [_starts(speaker) for speaker in speakers] == [0, 0, 0]
+    await _come_back(scenario, den)
+    await play
+    await scenario.idle()
+
+    assert plug.commands == [True]
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    await _stop(scenario, group_id)
