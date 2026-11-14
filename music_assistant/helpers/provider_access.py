@@ -17,8 +17,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import ProviderSharing, ProviderType
-from music_assistant_models.media_items import MediaItem
+from music_assistant_models.enums import MediaType, ProviderSharing, ProviderType
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.media_items import ItemMapping, MediaItem, Podcast, PodcastEpisode
 
 from music_assistant.constants import CONF_PROVIDERS, MASS_LOGGER_NAME
 
@@ -33,6 +34,12 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.provider_access")
 
 # a record we can not read hides its source instead of exposing it
 _UNREADABLE_ACCESS = ProviderAccess(sharing=ProviderSharing.PRIVATE)
+
+# the media types a member who may not get explicit content is kept from by their own flag;
+# a podcast episode goes by its own flag and by its podcast's
+EXPLICIT_FLAGGED_MEDIA_TYPES = frozenset(
+    {MediaType.TRACK, MediaType.ALBUM, MediaType.PODCAST, MediaType.AUDIOBOOK}
+)
 
 
 def access_allows(access: ProviderAccess | None, user: User | None) -> bool:
@@ -381,6 +388,103 @@ class _MusicSource(NamedTuple):
     access: ProviderAccess | None
 
 
+def restricts_explicit(user: User | None) -> bool:
+    """
+    Return whether the given user is kept from explicit content.
+
+    :param user: The user; None for anonymous requests and playback, which are not restricted.
+    """
+    return user is not None and not user.allow_explicit
+
+
+def explicit_allowed_by_flag(item: object, user: User | None) -> bool:
+    """
+    Return whether the user may see and play the item, judged by the flags it carries.
+
+    The part of :func:`explicit_allowed` that needs no look up: a library reference, or the
+    podcast an episode only maps, counts as allowed here.
+
+    :param item: A media item, item mapping or browse folder.
+    :param user: The user the item is for, None for no restriction.
+    """
+    if not restricts_explicit(user) or isinstance(item, ItemMapping):
+        return True
+    if getattr(item, "media_type", None) in EXPLICIT_FLAGGED_MEDIA_TYPES:
+        return not _flagged_explicit(item)
+    if isinstance(item, PodcastEpisode):
+        if _flagged_explicit(item):
+            return False
+        return not (isinstance(item.podcast, Podcast) and _flagged_explicit(item.podcast))
+    return True
+
+
+async def explicit_allowed(
+    mass: MusicAssistant,
+    item: object,
+    user: User | None,
+    podcasts: dict[tuple[str, str], bool] | None = None,
+) -> bool:
+    """
+    Return whether the user may see and play the item, as far as explicit content goes.
+
+    Tracks, albums, podcasts and audiobooks go by their own flag, a podcast episode by its own
+    flag and by its podcast's. An item without a flag, or one that can not be resolved, counts
+    as allowed.
+
+    :param mass: The MusicAssistant instance.
+    :param item: A media item, item mapping or browse folder.
+    :param user: The user the item is for, None for no restriction.
+    :param podcasts: Whether each podcast (by provider and item id) is explicit, as already
+        looked up for an earlier item, so a listing looks each podcast up once.
+    """
+    if not restricts_explicit(user):
+        return True
+    if isinstance(item, ItemMapping):
+        if item.provider != "library" or item.media_type not in EXPLICIT_FLAGGED_MEDIA_TYPES:
+            # a reference without metadata that is not a library item can not be judged
+            return True
+        try:
+            item = await mass.music.get_controller(item.media_type).get_library_item(item.item_id)
+        except MusicAssistantError:
+            return True
+    if isinstance(item, PodcastEpisode) and isinstance(item.podcast, ItemMapping):
+        if _flagged_explicit(item):
+            return False
+        return not await _podcast_explicit(mass, item, podcasts if podcasts is not None else {})
+    return explicit_allowed_by_flag(item, user)
+
+
+async def ensure_explicit_allowed(mass: MusicAssistant, item: Any, user: User | None) -> None:
+    """
+    Raise when the user may not play the item for it being explicit.
+
+    :param mass: The MusicAssistant instance.
+    :param item: The already-resolved item about to be enqueued.
+    :param user: The user the playback is for; None for anonymous playback.
+    :raises MediaNotFoundError: The item is explicit content the user may not play.
+    """
+    if await explicit_allowed(mass, item, user):
+        return
+    msg = f"{item.name} is explicit content, which this user may not play"
+    raise MediaNotFoundError(msg, translation_key="media_explicit_not_allowed")
+
+
+async def without_disallowed_explicit[T](
+    mass: MusicAssistant, items: Iterable[T], user: User | None
+) -> list[T]:
+    """
+    Return the items, leaving out the explicit ones the user may not see and play.
+
+    :param mass: The MusicAssistant instance.
+    :param items: The items to narrow.
+    :param user: The user to narrow the items for, None for no narrowing at all.
+    """
+    if not restricts_explicit(user):
+        return list(items)
+    podcasts: dict[tuple[str, str], bool] = {}
+    return [item for item in items if await explicit_allowed(mass, item, user, podcasts)]
+
+
 def _visible_sources(sources: list[_MusicSource], user: User | None) -> list[str] | None:
     """Return the music sources allowed for the user, or None if that is all of them."""
     allowed: list[str] = []
@@ -490,3 +594,26 @@ def _parse_access(instance_id: str, raw_conf: dict[str, Any]) -> ProviderAccess 
     except (ValueError, TypeError) as err:
         LOGGER.debug("Ignoring malformed access record of %s: %s", instance_id, err)
         return _UNREADABLE_ACCESS
+
+
+def _flagged_explicit(item: object) -> bool:
+    """Return whether the item carries the explicit flag of its music source."""
+    metadata = getattr(item, "metadata", None)
+    return metadata is not None and metadata.explicit is True
+
+
+async def _podcast_explicit(
+    mass: MusicAssistant, episode: PodcastEpisode, podcasts: dict[tuple[str, str], bool]
+) -> bool:
+    """Return whether the podcast an episode maps to is marked explicit, looking it up."""
+    podcast = episode.podcast
+    key = (podcast.provider, podcast.item_id)
+    if key not in podcasts:
+        try:
+            full_podcast = await mass.music.podcasts.get(podcast.item_id, podcast.provider)
+        except MusicAssistantError:
+            # a podcast that can not be looked up does not keep its episodes from the user
+            podcasts[key] = False
+        else:
+            podcasts[key] = _flagged_explicit(full_podcast)
+    return podcasts[key]

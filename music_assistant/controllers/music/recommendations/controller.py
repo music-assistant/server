@@ -17,7 +17,7 @@ from music_assistant.controllers.music.constants import (
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
-from music_assistant.helpers.provider_access import visible_items
+from music_assistant.helpers.provider_access import visible_items, without_disallowed_explicit
 from music_assistant.providers.recommendations import LibraryRecommendationsProvider
 
 if TYPE_CHECKING:
@@ -66,7 +66,15 @@ class RecommendationsController:
             ),
         ]
         # interleave: one folder per source per pass, preserving each source's ordering
-        return [item for sublist in zip_longest(*rows_per_source) for item in sublist if item]
+        rows = [item for sublist in zip_longest(*rows_per_source) for item in sublist if item]
+        # a row may carry its items already
+        user = get_current_user()
+        for row in rows:
+            if row.items:
+                row.items = UniqueList(
+                    await without_disallowed_explicit(self.mass, row.items, user)
+                )
+        return rows
 
     async def get_recommendation_items(
         self, provider: str, item_id: str, providers: list[str] | None = None
@@ -94,12 +102,16 @@ class RecommendationsController:
         try:
             async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
                 if isinstance(prov, LibraryRecommendationsProvider):
-                    return await prov.get_recommendation_items(item_id, providers=providers)
-                # external provider rows don't support provider filtering: their SPI
-                # signature is unchanged, so `providers` is silently ignored here
-                items = await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
-            # a plugin or metadata row can list items on any music source
-            return UniqueList(visible_items(self.mass, items, get_current_user()))
+                    items = await prov.get_recommendation_items(item_id, providers=providers)
+                else:
+                    # external provider rows don't support provider filtering: their SPI
+                    # signature is unchanged, so `providers` is silently ignored here
+                    row = await cast("RecommendationsMixin", prov).get_recommendation_items(item_id)
+                    # a plugin or metadata row can list items on any music source
+                    items = UniqueList(visible_items(self.mass, row, get_current_user()))
+            return UniqueList(
+                await without_disallowed_explicit(self.mass, items, get_current_user())
+            )
         except TimeoutError:
             self.logger.warning(
                 "Timeout while fetching recommendation items for %s/%s; skipping",

@@ -348,7 +348,10 @@ class TracksController(MediaControllerBase[Track]):
             return []
         extra_query_params: dict[str, Any] = {}
         # Apply explicit content filter
-        extra_query_parts = self._library_filter_parts(explicit)
+        extra_query_parts = [
+            *self.listing_filter(extra_query_params),
+            *self._library_filter_parts(explicit),
+        ]
         extra_join_parts: list[str] = []
 
         artist_join_added = False

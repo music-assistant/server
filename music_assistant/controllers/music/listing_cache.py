@@ -23,6 +23,7 @@ from music_assistant.controllers.music.constants import (
 from music_assistant.controllers.music.favorites import with_user_favorites
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import parse_value
+from music_assistant.helpers.provider_access import without_disallowed_explicit
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ListingType
@@ -67,7 +68,7 @@ async def cached_listing[ItemT: MediaItem](
     Return a container's listing, assembled once and served from the cache for a while.
 
     A cached listing carries no user's favorite state: the calling user's is stamped on
-    it. A refresh request (``cache.handle_refresh``) assembles the listing anew and
+    it, and the explicit items the calling user may not see and play are left out. A refresh request (``cache.handle_refresh``) assembles the listing anew and
     replaces the cached one; an assembly overtaken by an invalidation of the container is
     served but not kept.
 
@@ -90,7 +91,7 @@ async def cached_listing[ItemT: MediaItem](
         if (fill := _fills.get(entry)) is None:
             assembled = await _assemble(mass, entry, uri, key, assemble, expiration)
             # the request that assembles the listing sees the state a cached one would carry
-            return cast("list[ItemT]", await _with_favorites(mass, assembled))
+            return await _allowed(mass, cast("list[ItemT]", await _with_favorites(mass, assembled)))
         # a concurrent request is assembling the listing: what it keeps is read on the next
         # round, what it does not keep (or when it goes away) is assembled here, as the
         # calling user, and its failure is this request's failure too
@@ -102,7 +103,7 @@ async def cached_listing[ItemT: MediaItem](
             continue
         if error is not None:
             raise error
-    return cast("list[ItemT]", items)
+    return await _allowed(mass, cast("list[ItemT]", items))
 
 
 async def invalidate_listings(mass: MusicAssistant, item: MediaItem | ItemMapping) -> None:
@@ -134,6 +135,12 @@ async def _read(mass: MusicAssistant, uri: str, key: str, item_type: Any) -> lis
     # rebuilt off the event loop, a listing can hold thousands of items
     items = await asyncio.to_thread(_rebuild, cached, item_type)
     return await _with_favorites(mass, items)
+
+
+async def _allowed[ItemT](mass: MusicAssistant, items: list[ItemT]) -> list[ItemT]:
+    """Return the items of a listing the calling user may see and play."""
+    # the cache is shared by all users, so this runs after the cache read
+    return await without_disallowed_explicit(mass, items, get_current_user())
 
 
 async def _with_favorites(mass: MusicAssistant, items: list[Any]) -> list[Any]:

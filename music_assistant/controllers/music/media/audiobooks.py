@@ -266,7 +266,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         if reachable_via is not None and not reachable_via:
             return []
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts: list[str] = []
+        extra_query_parts: list[str] = self.listing_filter(extra_query_params)
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -288,7 +288,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         if search and len(result) < 25 and not offset:
             # append author items to result
             extra_query_parts = [
-                "WHERE audiobooks.authors LIKE :search or audiobooks.narrators LIKE :search",
+                # bracketed, as the other conditions are joined to it with AND
+                "WHERE (audiobooks.authors LIKE :search OR audiobooks.narrators LIKE :search)",
+                *self.listing_filter(extra_query_params),
             ]
             extra_query_params["search"] = f"%{search}%"
             return result + await self.get_library_items_by_query(
