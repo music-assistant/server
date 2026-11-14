@@ -1641,7 +1641,8 @@ it played and is as slow to start.
 ### PAUSE-10 · A queue that played out is taken for ended
 
 The Kitchen speaker plays the last track of its queue out, as one flow stream or track by
-track. The queue is taken for ended 5 s later, also when a stop arrives in those 5 s. A queue
+track. The queue is taken for ended 5 s later, also when a stop arrives in those 5 s, or a pause
+or a stop in the moment the speaker went idle and its queue still reads as playing. A queue
 that was started from a dynamic playlist plays the track that playlist hands back instead. A
 sleep timer that stops the speaker at the end of the last track ends the queue at once.
 
@@ -1649,6 +1650,7 @@ sleep timer that stops the speaker at the end of the last track ends the queue a
   later.
 - Proven by:
   - `test_stopped_queue.py::test_a_queue_that_played_out_is_taken_for_ended`
+  - `test_stopped_queue.py::test_a_halt_as_the_speaker_just_played_out_still_lets_its_queue_end`
   - `test_stopped_queue.py::test_a_queue_that_played_out_is_refilled_from_its_dynamic_source`
   - `test_stopped_queue.py::test_a_queue_stopped_by_its_sleep_timer_at_the_end_is_taken_for_ended`
 

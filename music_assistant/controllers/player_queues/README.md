@@ -200,9 +200,10 @@ A queue whose player goes idle on its last item, with that item played (or, in f
 streamed) to its end, is taken for ended 5 seconds later, unless it plays again by then: it is
 refilled from its dynamic source when it has one, and marked as ended otherwise. A pause or a
 stop is never that end. A queue whose playback a command halted (`halted_by_command`: set by a
-pause and by the common stop handler) keeps its place until it plays again, also when the
-command left its player idle (a player without a pause of its own is stopped, and a paused player
-is stopped once the pause timeout passes). Only the stop of a sleep timer that waited for the
+pause and by the common stop handler, while its player still plays or is paused: a player that
+is idle already has played out) keeps its place until it plays again, also when the command
+left its player idle (a player without a pause of its own is stopped, and a paused player is
+stopped once the pause timeout passes). Only the stop of a sleep timer that waited for the
 end of an item or a chapter ends the queue, at that point; a timer that runs out mid-track stops
 the queue like any other stop. The flag is cleared when the queue is seen playing, when its
 paused player is told to play on or when a play action starts a stream session, taken back by a

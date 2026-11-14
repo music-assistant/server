@@ -1056,13 +1056,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if not (queue := self.get(queue_id)):
             return
         queue_active = queue.active
-        pauses_playback = queue.active and queue.state == PlaybackState.PLAYING
-        if pauses_playback:
+        plays = queue.active and queue.state == PlaybackState.PLAYING
+        if plays:
             queue.resume_pos = int(queue.corrected_elapsed_time)
+        player = self.mass.players.get_player(queue_id)
+        # the queue follows its player with a delay: a player that is idle already has played
+        # out, which leaves no playback to halt
+        pauses_playback = plays and not (player and player.playback_state == PlaybackState.IDLE)
+        if pauses_playback:
             self._queue_data[queue_id].halted_by_command = True
-        if (
-            player := self.mass.players.get_player(queue_id)
-        ) is not None and player.offline_by_power_control:
+        if player is not None and player.offline_by_power_control:
             # a player switched off at its power control has nothing to pause
             self.mass.players._cancel_power_on(player)
             return
@@ -2463,10 +2466,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue.resume_pos = int(queue.corrected_elapsed_time)
             if (
                 queue.state != PlaybackState.IDLE
+                and not (queue_player and queue_player.playback_state == PlaybackState.IDLE)
                 and queue_data.items
                 and not queue_data.halted_by_command
             ):
-                # an idle queue has no playback to halt, and a cleared one no place to keep
+                # an idle queue has no playback to halt, nor has one whose player went idle
+                # before the queue followed it, and a cleared one has no place to keep
                 halts_playback = queue_data.halted_by_command = True
         try:
             # a player switched off at its power control has nothing left to stop, while its

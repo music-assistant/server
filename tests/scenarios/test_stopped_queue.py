@@ -581,6 +581,31 @@ async def test_a_queue_that_played_out_is_taken_for_ended(
     )
 
 
+@pytest.mark.parametrize("halt", ["pause", "stop"])
+@pytest.mark.parametrize("can_pause", [False, True], ids=["stops to pause", "has a pause"])
+async def test_a_halt_as_the_speaker_just_played_out_still_lets_its_queue_end(
+    scenario: Scenario, can_pause: bool, halt: str
+) -> None:
+    """
+    A pause or a stop of a queue whose speaker has just played it out halts nothing.
+
+    :param can_pause: Whether the speaker has a pause of its own.
+    :param halt: The command that comes as the speaker went idle.
+    """
+    speaker, player_id = await _speaker(scenario, can_pause=can_pause)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(TRACK_SECONDS)
+    await scenario.report(speaker, playback_state=PlaybackState.IDLE, current_media=None)
+    # the queue follows its speaker with a short delay, so it still reads as playing
+    assert _position(scenario, player_id).state == PlaybackState.PLAYING
+
+    players = scenario.mass.players
+    await (players.cmd_pause(player_id) if halt == "pause" else players.cmd_stop(player_id))
+    await scenario.advance(SETTLE_SECONDS + 1)
+
+    assert _position(scenario, player_id).ended
+
+
 async def test_a_queue_stopped_and_started_at_once_still_ends_when_it_played_out(
     scenario: Scenario, monkeypatch: pytest.MonkeyPatch
 ) -> None:
