@@ -917,5 +917,7 @@
   "common.media.recommendations.recommended_tracks.name": "Rekommenderade spår",
   "common.media.recommendations.tracks.name": "Spår",
   "common.media.recommendations.trending_podcasts.name": "Populära poddsändningar",
-  "common.media.recommendations.trending_stations.name": "Populärt"
+  "common.media.recommendations.trending_stations.name": "Populärt",
+  "common.media.genre.ambient.description": "Ambientmusik är en musikgenre som betonar klang och atmosfär framför traditionell musikalisk struktur eller rytm. Den låter ofta fridfull och saknar tydlig komposition, takt och/eller strukturerad melodi. Ambientmusik använder lager av ljudtexturer som passar både passivt och aktivt lyssnande och uppmuntrar till lugn eller eftertanke. Genren framkallar en atmosfärisk, visuell eller lågmäld känsla. Naturliga ljudlandskap kan ingå, och vissa verk använder utdragna eller upprepade toner, som i drönarmusik. Med inslag som förknippas med new age kan instrument som piano, stråkar och flöjt efterliknas med en synthesizer.",
+  "common.media.genre.ambient.name": "Ambient"
 }
