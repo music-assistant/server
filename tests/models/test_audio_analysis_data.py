@@ -1,4 +1,4 @@
-"""AudioAnalysisData: typed array fields, the legacy extra_data lift and the energy score."""
+"""AudioAnalysisData: typed array fields, the legacy extra_data lift and the energy level."""
 
 from __future__ import annotations
 
@@ -130,38 +130,31 @@ def test_lift_keeps_unknown_band_rms_entries() -> None:
 
 
 @pytest.mark.parametrize(
-    ("brightness", "arousal", "loudness", "score", "level"),
+    ("brightness", "arousal", "loudness", "level"),
     [
-        (0.1404, 0.2405, -11.4158, 0.0, 4),
-        (0.2, 0.6, -8.0, 1.0796, 9),
-        (0.07, 0.1, -18.0, -1.4136, 1),
-        (0.3, 0.95, -5.0, 2.5302, 10),
-        (0.0, 0.0, -40.0, -2.7237, 1),
-        (1.0, 1.0, 0.0, 3.0, 10),
+        (0.1404, 0.2405, -11.4158, 5.5),
+        (0.2, 0.6, -8.0, 7.1193),
+        (0.07, 0.1, -18.0, 3.3796),
+        (0.3, 0.95, -5.0, 9.2953),
+        (0.0, 0.0, -40.0, 1.4145),
+        (1.0, 1.0, 0.0, 10.0),
     ],
 )
-def test_energy_score_and_level(
-    brightness: float, arousal: float, loudness: float, score: float, level: int
-) -> None:
-    """energy_score and energy_level match the reference values."""
+def test_energy_level(brightness: float, arousal: float, loudness: float, level: float) -> None:
+    """energy_level matches the reference values."""
     data = AudioAnalysisData(brightness=brightness, arousal=arousal, loudness_integrated=loudness)
-    assert data.energy_score == pytest.approx(score, abs=1e-3)
-    assert data.energy_level == level
+    assert data.energy_level == pytest.approx(level, abs=1e-3)
 
 
 @pytest.mark.parametrize("missing", ["brightness", "arousal", "loudness_integrated"])
-def test_energy_score_needs_all_inputs(missing: str) -> None:
-    """Without brightness, arousal or loudness_integrated there is no score or level."""
+def test_energy_level_needs_all_inputs(missing: str) -> None:
+    """Without brightness, arousal or loudness_integrated there is no level."""
     values: dict[str, Any] = {"brightness": 0.2, "arousal": 0.6, "loudness_integrated": -8.0}
     values[missing] = None
-    data = AudioAnalysisData(**values)
-    assert data.energy_score is None
-    assert data.energy_level is None
+    assert AudioAnalysisData(**values).energy_level is None
 
 
-def test_energy_score_is_not_serialised() -> None:
-    """energy_score and energy_level are derived, not stored."""
+def test_energy_level_is_not_serialised() -> None:
+    """energy_level is derived, not stored."""
     data = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0)
-    serialised = data.to_dict()
-    assert "energy_score" not in serialised
-    assert "energy_level" not in serialised
+    assert "energy_level" not in data.to_dict()
