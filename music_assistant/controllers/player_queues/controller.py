@@ -438,10 +438,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def has_lost_paused_stream(self, queue_id: str) -> bool:
         """
-        Return whether the queue's player is paused on a stream the queue has since ended.
+        Return whether the queue's player is paused on a stream the queue has since left.
 
-        Such a player can only continue with the audio it buffered, so playing it has to
-        start the queue again rather than unpause the player.
+        The queue ended that stream, or a step (next, previous) that has not played its item
+        yet moved the queue on from it. Such a player can only continue with the audio it
+        buffered, so playing it has to start the queue again rather than unpause the player.
 
         :param queue_id: The queue to check, or a legacy id of its player.
         """
@@ -451,7 +452,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         player = self.mass.players.get_player(queue_id)
         # a stop that could not reach the player still ends the queue's session
         return (
-            queue_data.session_id is None
+            (queue_data.session_id is None or queue_data.transitioning)
             and player is not None
             and player.playback_state == PlaybackState.PAUSED
             and player.active_source == queue_id
@@ -807,6 +808,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
             and (player := self.mass.players.get_player(queue_id)) is not None
         ):
+            # media that starts to play takes the place of a step (next, previous) that has
+            # not played yet
+            self._drop_pending_step(queue_id)
             # powered on before the play action takes its locks, and so are the switched-off
             # members of a group; media that is only enqueued leaves the player switched off
             if player.offline_by_power_control:
@@ -1321,6 +1325,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # use current position as resume position
             resume_pos = queue.corrected_elapsed_time
             fade_in = False
+        elif self._queue_data[queue_id].transitioning:
+            # a step (next, previous) that has not played yet put the queue on this item,
+            # which starts as that step would have started it
+            resume_pos = 0
         else:
             resume_pos = queue.resume_pos or self._last_played_position(queue)
 
@@ -1395,6 +1403,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if plays_on_target is None:
             source = self.get(source_queue_id)
             plays_on_target = source is not None and source.state == PlaybackState.PLAYING
+        # the target gets the items of the source, which take the place of a step (next,
+        # previous) on it that has not played yet
+        self._drop_pending_step(target_queue_id)
         target_player = self.mass.players.get_player(target_queue_id)
         if plays_on_target and target_player is not None:
             if target_player.type == PlayerType.GROUP:
@@ -2574,6 +2585,27 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
         self._set_transitioning(queue_id, False)
 
+    def _drop_pending_step(self, queue_id: str) -> None:
+        """
+        Drop a step within a queue (next, previous) that has not played its item yet.
+
+        What starts playback on the queue takes the place of such a step: its debounce and
+        its move to the item are cancelled. A wait of that move for the switched-off members
+        of a group player goes on. A user who may not use the player of the queue drops
+        nothing.
+
+        :param queue_id: The queue the step was asked for.
+        """
+        task_id = f"queue_play_index_{queue_id}"
+        if (task := self.mass.get_task(task_id)) is not None and task is asyncio.current_task():
+            # the move of the step itself, which plays its item through a play action
+            return
+        if get_current_user() and not self._has_player_permission(queue_id):
+            # the action that asks for it is refused
+            return
+        self.mass.cancel_timer(task_id)
+        self.mass.cancel_task(task_id)
+
     @handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
     async def _handle_play(self, queue_id: str) -> None:
         """Handle play without acquiring the queue lock."""
@@ -2959,6 +2991,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.logger.debug("Not moving queue %s to another item: %s", queue_id, err)
                 self._set_transitioning(queue_id, False)
                 return
+            if (queue := self.get(queue_id)) is not None and queue.current_index != index:
+                # a further step moved the queue on in the last moment of the wait: its own
+                # move plays its item
+                return
         with self.mass.players.without_member_power_on():
             await self.play_index(queue_id, index)
 
@@ -2970,7 +3006,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         fade_in: bool,
     ) -> None:
         # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        self._drop_pending_step(queue_id)
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._set_transitioning(queue_id, True)
         try:

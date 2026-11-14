@@ -68,7 +68,7 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
 ]: ...
 
 
-def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
+def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](  # noqa: PLR0915
     func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]] | None = None,
     *,
     lock: PlayerLockPurpose | None = None,
@@ -182,6 +182,11 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
                         ignored_while_playing and target.playback_state == PlaybackState.PLAYING
                     )
                 ):
+                    # the start takes the place of a step (next, previous) within the queue
+                    # the group plays that has not played yet
+                    self.mass.player_queues._drop_pending_step(
+                        target.active_source or target.player_id
+                    )
                     await self._power_on_members(target)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):

@@ -80,6 +80,8 @@ class _PlayActionHost(Protocol):
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None: ...
 
+    def _drop_pending_step(self, queue_id: str) -> None: ...
+
 
 @overload
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
@@ -150,6 +152,10 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                     kwargs["queue_id"] = queue_id
                 else:
                     args = (queue_id, *args[1:])  # type: ignore[assignment]
+            if switched_off == SwitchedOffAction.POWER_ON or starts_unless_playing:
+                # the action takes the place of a step (next, previous) that has not played
+                # yet, from the moment it arrives
+                self._drop_pending_step(queue_id)
             if (
                 player := self.mass.players.get_player(queue_id)
             ) is not None and player.offline_by_power_control:

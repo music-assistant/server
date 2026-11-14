@@ -177,18 +177,12 @@ class PlayerLocksMixin(_PlayerControllerBase):
         :raises ResourceBusyError: When a lock is still held by another command at its
             timeout, or the player kept changing its group while the command waited.
         """
-        task = asyncio.current_task()
         for _attempt in range(PLAYER_LOCK_OWNER_ATTEMPTS):
-            owner_id = self._playback_owner_id(player_id)
-            held = self._task_held_locks.get(task, set()) if task else set()
-            if (
-                owner_id != player_id
-                and f"{PlayerLockPurpose.PLAYBACK.value}_{player_id}" in held
-                and f"{PlayerLockPurpose.PLAYBACK.value}_{owner_id}" not in held
-            ):
+            if self._holds_player_without_owner(player_id):
                 # the task holds the player already, so it can not let go of it to wait for
                 # the owner the player got since
                 break
+            owner_id = self._playback_owner_id(player_id)
             async with contextlib.AsyncExitStack() as stack:
                 await stack.enter_async_context(
                     self.get_player_lock(owner_id, PlayerLockPurpose.PLAYBACK)
@@ -212,6 +206,17 @@ class PlayerLocksMixin(_PlayerControllerBase):
             translation_owner=self.translation_owner,
             translation_args=[name],
         )
+
+    def _holds_player_without_owner(self, player_id: str) -> bool:
+        """
+        Return whether the running task holds a player's playback lock and not its owner's.
+
+        The player got that owner after the task took its lock (it joined a group). A playback
+        command on the player from such a task fails as busy (see _playback_owner_locks).
+
+        :param player_id: The player the command is addressed to.
+        """
+        return self.holds_player_lock(player_id) and not self.holds_playback_owner_lock(player_id)
 
     async def _enter_playback_locks(
         self, stack: contextlib.AsyncExitStack, player_ids: tuple[str, ...]

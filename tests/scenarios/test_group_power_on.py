@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
+    ResourceBusyError,
 )
 from music_assistant_models.media_items import AudioSource
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
@@ -57,6 +58,8 @@ from .test_stopped_queue import _DynamicSource, _other_track
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
 
+    from music_assistant_models.queue_item import QueueItem
+
     from .harness import FakePowerControl, FakeProtocol, Scenario
 
 # the groups a scenario runs for: the type of group player, and whether its members can change
@@ -70,6 +73,8 @@ GROUPS = {
 MEDIA = PlayerMedia(uri="http://ma.local/stream/line_in.flac", source_id="line_in")
 # a live source of a plugin
 SOURCE_URI = "spotify_connect--den://audio_source/main"
+# a track that the queues of these scenarios do not hold
+ANOTHER_TRACK_URI = "test://track/3_3_3"
 
 
 async def _downstairs(
@@ -1344,6 +1349,375 @@ async def test_a_selection_of_a_source_that_plays_waits_for_the_members_of_a_gro
     await scenario.idle()
 
 
+async def _halted_with_three_tracks(
+    scenario: Scenario, group: str, halted: str
+) -> tuple[str, list[FakeProtocol], list[str], FakePowerControl]:
+    """
+    Let the group Downstairs hold three tracks and be paused or stopped, with Den switched off.
+
+    It played the first track on Kitchen and Office for some seconds: the plug of Den refused
+    to switch on when it started, and works again by now.
+
+    :param group: Which kind of group, a key of GROUPS.
+    :param halted: ``"paused"`` or ``"stopped"``.
+    :return: The id of the group, the speakers, the ids of their players and the plug of Den.
+    """
+    group_id, speakers, player_ids, plug = await _playing_without_den(scenario, group)
+    await scenario.mass.player_queues.play_media(group_id, THIRD_TRACK_URI, option=QueueOption.ADD)
+    # the first track gets a position to resume from
+    await scenario.advance(7)
+    await _halt(scenario, group_id, halted)
+    for speaker in speakers:
+        speaker.commands.clear()
+    return group_id, speakers, player_ids, plug
+
+
+def _streams(group: str, speakers: list[FakeProtocol]) -> bool:
+    """
+    Return whether a group started once on its speakers since their commands were cleared.
+
+    A sync group sends one stream to its leader, a universal group one to each member.
+
+    :param group: Which kind of group, a key of GROUPS.
+    :param speakers: The speakers of the group.
+    """
+    starts = [_starts(speaker) for speaker in speakers]
+    if GROUPS[group][0] == "sync_group":
+        return sorted(starts) == [0, 0, 1]
+    return starts == [1] * len(speakers)
+
+
+# what takes the place of a next to the second track of a queue that still waits: the track
+# the group then plays, and the position it plays from (None: where another queue was)
+TAKES_OVER = {
+    "queue resume": (OTHER_TRACK_URI, 0),
+    "queue play": (OTHER_TRACK_URI, 0),
+    "resume": (OTHER_TRACK_URI, 0),
+    "play": (OTHER_TRACK_URI, 0),
+    "other media": (ANOTHER_TRACK_URI, 0),
+    "another item": (THIRD_TRACK_URI, 0),
+    "seek": (OTHER_TRACK_URI, 20),
+    "transfer": (TEST_TRACK_URI, None),
+}
+
+
+def _take_over(
+    scenario: Scenario, group_id: str, bedroom_id: str, start: str
+) -> Coroutine[Any, Any, None]:
+    """
+    Return a command that starts a group, a key of TAKES_OVER.
+
+    :param group_id: The id of the group.
+    :param bedroom_id: The id of the player whose queue a transfer moves to the group.
+    :param start: The command.
+    """
+    players, queues = scenario.mass.players, scenario.mass.player_queues
+    starts = {
+        "queue resume": lambda: queues.resume(group_id),
+        "queue play": lambda: queues.play(group_id),
+        "resume": lambda: players.cmd_resume(group_id),
+        "play": lambda: players.cmd_play(group_id),
+        "other media": lambda: queues.play_media(group_id, ANOTHER_TRACK_URI),
+        "another item": lambda: queues.play_index(group_id, 2),
+        "seek": lambda: queues.seek(group_id, 20),
+        "transfer": lambda: queues.transfer_queue(bedroom_id, group_id),
+    }
+    return starts[start]()
+
+
+# how long after a next a start arrives: while the next still holds its item back for a second,
+# or while it waits for the members, where the start or the next would be the first to see
+# that they are back (each looks every half second from the moment it began to wait)
+ARRIVES = {"in its debounce": 0.5, "in its wait": 2, "in its wait, out of step": 2.2}
+
+
+@pytest.mark.parametrize(
+    ("group", "halted"),
+    [
+        ("fixed sync group", "paused"),
+        ("fixed sync group", "stopped"),
+        ("universal group", "stopped"),
+    ],
+)
+@pytest.mark.parametrize("arrives", ARRIVES)
+@pytest.mark.parametrize("start", TAKES_OVER)
+async def test_a_start_during_the_wait_of_a_next_takes_its_place(
+    scenario: Scenario, group: str, halted: str, arrives: str, start: str
+) -> None:
+    """
+    A start that arrives while a next waits for the members of a group takes its place.
+
+    The group holds three tracks, played the first on Kitchen and Office, without Den, and is
+    paused or stopped. A next moves its queue to the second track, switches Den's plug on and
+    waits. Then the user resumes or plays the group or its queue, plays other media or the
+    third track on it, seeks, or transfers the queue of Bedroom to it: that start waits for
+    Den as well, and the next is gone. Once Den's device is back every speaker gets one
+    stream, of what the start asked for: the second track for a resume and a play, from its
+    beginning, and for a seek, from that position; else the media, the track or the queue.
+    The plug is switched once, and the queue stays on what plays.
+
+    :param halted: Whether the group is paused or stopped.
+    :param arrives: When the start arrives, a key of ARRIVES.
+    :param start: The command that starts the group, a key of TAKES_OVER.
+    """
+    group_id, speakers, player_ids, plug = await _halted_with_three_tracks(scenario, group, halted)
+    bedroom_id = ""
+    if start == "transfer":
+        bedroom_id = await _bedroom(scenario)
+        await scenario.play(bedroom_id)
+    step = await scenario.command(scenario.mass.player_queues.next(group_id))
+    await scenario.advance(ARRIVES[arrives])
+    await step
+
+    sent = await scenario.command(_take_over(scenario, group_id, bedroom_id, start))
+    await scenario.advance(3)
+
+    assert not sent.done(), sent.exception()
+    assert plug.commands == [True]
+    assert [_starts(speaker) for speaker in speakers] == [0, 0, 0]
+    await _come_back(scenario, speakers[2])
+    await sent
+    # what a next that was still there would play on top of it has started by now
+    await scenario.advance(5)
+    await scenario.idle()
+
+    assert _streams(group, speakers)
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    queue = scenario.queue(group_id)
+    assert queue is not None
+    assert queue.current_item is not None
+    assert queue.current_item.streamdetails is not None
+    uri, position = TAKES_OVER[start]
+    assert queue.current_item.uri == uri
+    if position is not None:
+        assert queue.current_item.streamdetails.seek_position == position
+    assert plug.commands == [True]
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("start", ["queue resume", "another item", "seek"])
+async def test_a_user_without_access_to_a_group_leaves_a_next_that_waits_in_place(
+    scenario: Scenario, start: str
+) -> None:
+    """
+    A user who may not use a group does not take the place of a next that waits on it.
+
+    The sync group, which has a fixed member list, holds three tracks and is stopped, and a
+    next to its second track waits for Den. A user who may use Kitchen only resumes the queue
+    of the group, plays its third track or seeks: each is refused. Once Den's device is back
+    the second track plays, on all three.
+
+    :param start: The command the user sends, a key of TAKES_OVER.
+    """
+    group = "fixed sync group"
+    group_id, speakers, player_ids, plug = await _halted_with_three_tracks(
+        scenario, group, "stopped"
+    )
+    step = await scenario.command(scenario.mass.player_queues.next(group_id))
+    await scenario.advance(2)
+    await step
+
+    with as_user([player_ids[0]]):
+        sent = await scenario.command(_take_over(scenario, group_id, "", start))
+    await scenario.advance(1)
+
+    assert sent.done()
+    assert isinstance(sent.exception(), InsufficientPermissions)
+    await _come_back(scenario, speakers[2])
+    await scenario.advance(5)
+    await scenario.idle()
+    assert _streams(group, speakers)
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    queue = scenario.queue(group_id)
+    assert queue is not None
+    assert queue.current_item is not None
+    assert queue.current_item.uri == OTHER_TRACK_URI
+    assert plug.commands == [True]
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group", ["fixed sync group", "universal group"])
+@pytest.mark.parametrize(
+    "media", ["a live source on its queue", "a live source on the player", "media of a player"]
+)
+async def test_media_that_is_not_of_the_queue_takes_the_place_of_a_next_that_waits(
+    scenario: Scenario, group: str, media: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Media that is not of the queue and starts a group takes the place of a next that waits.
+
+    The group holds three tracks and is stopped, and a next waits for Den. A live source of a
+    plugin is played on the queue of the group or selected on the group player, or media is
+    played on the group player itself: that start waits for Den as well, and the next is
+    gone. Once Den's device is back every speaker gets one stream, and the queue of the group
+    plays nothing on top of it.
+
+    :param media: What is played on the group.
+    """
+    group_id, speakers, player_ids, plug = await _halted_with_three_tracks(
+        scenario, group, "stopped"
+    )
+    players, queues = scenario.mass.players, scenario.mass.player_queues
+    source = _live_source(scenario, monkeypatch)
+    step = await scenario.command(queues.next(group_id))
+    await scenario.advance(2)
+    await step
+
+    starts = {
+        "a live source on its queue": lambda: queues.play_media(group_id, source),
+        "a live source on the player": lambda: players.select_source(group_id, source),
+        "media of a player": lambda: players.play_media(group_id, MEDIA),
+    }
+    sent = await scenario.command(starts[media]())
+    await scenario.advance(3)
+
+    assert not sent.done(), sent.exception()
+    assert plug.commands == [True]
+    assert [_starts(speaker) for speaker in speakers] == [0, 0, 0]
+    await _come_back(scenario, speakers[2])
+    await sent
+    await scenario.advance(5)
+    await scenario.idle()
+
+    assert _streams(group, speakers)
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    if media != "media of a player":
+        assert _state(scenario, group_id).active_source == source
+    assert plug.commands == [True]
+    stop = await scenario.command(players.cmd_stop(group_id))
+    # no fake speaker fetches the stream of a live source, so the server lets go of it as
+    # never streamed
+    await scenario.advance(AUDIO_SOURCE_CLAIM_TIMEOUT)
+    await stop
+    await scenario.idle()
+
+
+@pytest.mark.parametrize("play", ["queue play", "play"])
+async def test_a_play_right_after_a_next_on_a_paused_speaker_starts_the_next_track(
+    scenario: Scenario, play: str
+) -> None:
+    """
+    A play in the second after a next on a paused speaker starts the next track, once.
+
+    Bedroom, which is in no group, holds two tracks and is paused on the first. A next moves
+    its queue to the second track and holds that back for a second, for a further press. A
+    play of the queue or of the speaker within that second takes the place of the next: the
+    second track starts from its beginning, once, and the speaker is not unpaused on the
+    first.
+
+    :param play: Whether the queue or the speaker is played.
+    """
+    _, speakers = await _speakers(scenario, "Bedroom")
+    bedroom = speakers[0]
+    bedroom_id = _player_id(scenario, bedroom)
+    players, queues = scenario.mass.players, scenario.mass.player_queues
+    # the speakers of a scenario take no next track, which the queue logs when it hands one over
+    scenario.expect_log("does not support enqueueing")
+    await scenario.play(bedroom_id)
+    await queues.play_media(bedroom_id, OTHER_TRACK_URI, option=QueueOption.ADD)
+    await scenario.advance(7)
+    await _halt(scenario, bedroom_id, "paused")
+    bedroom.commands.clear()
+
+    await queues.next(bedroom_id)
+    await scenario.advance(0.5)
+    await (queues.play(bedroom_id) if play == "queue play" else players.cmd_play(bedroom_id))
+    # what a next that was still there would play on top of it has started by now
+    await scenario.advance(5)
+    await scenario.idle()
+
+    assert [command[0] for command in bedroom.commands] == ["play_media"]
+    assert _state(scenario, bedroom_id).playback_state == PlaybackState.PLAYING
+    queue = scenario.queue(bedroom_id)
+    assert queue is not None
+    assert queue.current_item is not None
+    assert queue.current_item.streamdetails is not None
+    assert queue.current_item.uri == OTHER_TRACK_URI
+    assert queue.current_item.streamdetails.seek_position == 0
+    await _stop(scenario, bedroom_id)
+
+
+@pytest.mark.parametrize("group", ["fixed sync group", "universal group"])
+@pytest.mark.parametrize("start", ["another item", "seek"])
+async def test_a_next_during_the_wait_of_a_start_plays_nothing_on_top_of_it(
+    scenario: Scenario, group: str, start: str
+) -> None:
+    """
+    A next that still waits when a start of its queue plays, plays nothing on top of it.
+
+    The group holds three tracks and is stopped, and Den is switched off. A play of its third
+    track, or a seek, switches Den's plug on and waits. A next meanwhile moves the queue to
+    the second track and waits as well. The start is the first to see that Den's device is
+    back: the third track plays, or the second one from the position of the seek, on all
+    three. Every speaker gets one stream, and the next plays nothing on top of it.
+
+    :param start: The command that waits, a key of TAKES_OVER.
+    """
+    group_id, speakers, player_ids, plug = await _halted_with_three_tracks(
+        scenario, group, "stopped"
+    )
+    sent = await scenario.command(_take_over(scenario, group_id, "", start))
+    await scenario.advance(2)
+    assert not sent.done(), sent.exception()
+    assert plug.commands == [True]
+
+    step = await scenario.command(scenario.mass.player_queues.next(group_id))
+    await scenario.advance(2)
+    await step
+    await _come_back(scenario, speakers[2])
+    await sent
+    await scenario.advance(5)
+    await scenario.idle()
+
+    assert _streams(group, speakers)
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    queue = scenario.queue(group_id)
+    assert queue is not None
+    assert queue.current_item is not None
+    assert queue.current_item.streamdetails is not None
+    uri, position = TAKES_OVER[start]
+    assert queue.current_item.uri == uri
+    assert queue.current_item.streamdetails.seek_position == position
+    assert plug.commands == [True]
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group", ["fixed sync group", "universal group"])
+async def test_a_second_next_in_the_last_moment_of_the_wait_starts_a_group_once(
+    scenario: Scenario, group: str
+) -> None:
+    """
+    A second next in the last moment of the wait of the first leaves one start, of the last item.
+
+    The group holds three tracks and is stopped, and a next to its second track waits for
+    Den. Den's device is back on the network, and before the server has seen that, the user
+    presses next once more. The group starts once, with the third track, on all three.
+    """
+    group_id, speakers, player_ids, plug = await _halted_with_three_tracks(
+        scenario, group, "stopped"
+    )
+    queues = scenario.mass.player_queues
+    first = await scenario.command(queues.next(group_id))
+    await scenario.advance(3)
+    await first
+    assert plug.commands == [True]
+
+    # a power on looks for the device every 0.5 s
+    await scenario.register(speakers[2])
+    await queues.next(group_id)
+    await scenario.advance(5)
+    await scenario.idle()
+
+    assert _streams(group, speakers)
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    queue = scenario.queue(group_id)
+    assert queue is not None
+    assert queue.current_item is not None
+    assert queue.current_item.uri == THIRD_TRACK_URI
+    assert plug.commands == [True]
+    await _stop(scenario, group_id)
+
+
 MEMBER_PLAYS = ["queue resume", "queue play index", "play media"]
 
 
@@ -1455,6 +1829,57 @@ async def test_a_play_on_a_member_that_leaves_its_group_switches_no_member_on(
     assert (office.active_group, office.synced_to) == (None, None)
     assert _state(scenario, player_ids[2]).powered is False
     await _stop(scenario, office_id)
+    await _stop(scenario, group_id)
+
+
+async def test_a_play_on_a_speaker_that_a_group_took_meanwhile_switches_no_member_on(
+    scenario: Scenario,
+) -> None:
+    """
+    A play on a speaker that a group took during that play fails as busy and wakes nobody.
+
+    Downstairs, a universal group of Kitchen and Den, plays on Kitchen: Den is switched off.
+    Office sends what is played on it to its group. Its own queue is started, and the music
+    takes a while to load. Meanwhile Office is added to Downstairs, so the play now goes to
+    Downstairs, whose lock it can not wait for while it holds Office: it fails as busy at
+    once. Den's plug stays off, and Office is added to the group and plays along.
+    """
+    _, speakers = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id, office_id, den_id = (_player_id(scenario, speaker) for speaker in speakers)
+    group_id = await _group(scenario, "universal_group", kitchen_id, den_id)
+    players, queues = scenario.mass.players, scenario.mass.player_queues
+    await scenario.configure_player(office_id, play_media_overrides_group=False)
+    await _load_music(scenario)
+    await queues.play_media(office_id, TEST_TRACK_URI, option=QueueOption.ADD)
+    plug = await _play_without_den(scenario, "universal group", group_id, speakers[2])
+    loads, loaded = asyncio.Event(), asyncio.Event()
+    load_item = queues._load_item
+
+    async def _slow_load(item: QueueItem, *args: Any, **kwargs: Any) -> None:
+        """Load an item of the queue of Office only once the music is there."""
+        if item.queue_id == office_id:
+            loads.set()
+            await loaded.wait()
+        await load_item(item, *args, **kwargs)
+
+    with patch.object(queues, "_load_item", _slow_load):
+        play = await scenario.command(queues.play_index(office_id, 0))
+        assert loads.is_set()
+        addition = await scenario.command(
+            players.cmd_set_members(group_id, player_ids_to_add=[office_id])
+        )
+        await scenario.advance(2)
+        assert _state(scenario, office_id).active_group == group_id
+        loaded.set()
+        await scenario.advance(1)
+
+    assert play.done()
+    assert isinstance(play.exception(), ResourceBusyError)
+    assert plug.commands == []
+    await addition
+    await scenario.idle()
+    assert _plays_along(scenario, group_id, office_id)
+    assert _state(scenario, den_id).powered is False
     await _stop(scenario, group_id)
 
 

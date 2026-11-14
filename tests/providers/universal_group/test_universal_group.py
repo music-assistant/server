@@ -903,6 +903,9 @@ class _MemberQueue:
     def on_player_update(self, player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
         """Ignore the player updates."""
 
+    def _drop_pending_step(self, queue_id: str) -> None:
+        """Hold no step to drop."""
+
 
 async def _transfer_to_the_group(players: PlayerController, member_id: str) -> None:
     """Start the group the way a transfer of a member's queue to it does, under both locks."""

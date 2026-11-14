@@ -349,9 +349,14 @@ class PlaybackMixin(_PlayerControllerBase):
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
         owner = self._resolve_playback_owner(player)
-        if owner is not player and owner.type == PlayerType.GROUP:
+        if (
+            owner is not player
+            and owner.type == PlayerType.GROUP
+            and not self._holds_player_without_owner(player_id)
+        ):
             # the group the media goes to is started: its switched-off members are powered
-            # on before its lock is taken
+            # on before its lock is taken. A command that is refused that lock as busy
+            # switches nobody on
             await self._power_on_members(owner)
         async with self._playback_owner_locks(player_id, hold_player=False):
             player = self._get_player_with_redirect(player_id)

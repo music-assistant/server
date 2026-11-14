@@ -362,14 +362,17 @@ class AudioSourceMixin(_PlayerControllerBase):
             source = player_id  # default to MA queue source
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
+        is_queue = self.mass.player_queues.get(self.resolve_player_id(source)) is not None
+        if not is_queue:
+            # a source that plays takes the place of a step (next, previous) that has not
+            # played yet within the queue the player plays
+            self.mass.player_queues._drop_pending_step(player.active_source or player_id)
         # no lock while a device comes online: a switched-off player is powered on first,
         # and so are the switched-off members of a group player for a source that plays.
         # A queue that is selected only becomes the source: that starts nothing
         if player.offline_by_power_control:
             player = await self._power_on_switched_off_player(player_id)
-        elif player.type == PlayerType.GROUP and not self.mass.player_queues.get(
-            self.resolve_player_id(source)
-        ):
+        elif player.type == PlayerType.GROUP and not is_queue:
             await self._power_on_members(player)
         # taking the player out of its group acts on the group, so the group's lock is
         # taken before the player's own and both are held until the source is selected

@@ -1730,6 +1730,63 @@ command waits, and the source plays on all three once Den's device is back.
   - `test_group_power_on.py::test_a_selection_of_a_queue_switches_no_member_on`
   - `test_group_power_on.py::test_a_selection_of_a_source_that_plays_waits_for_the_members_of_a_group`
 
+### GROUP-43 · A start during the wait of a next takes the place of that next
+
+Downstairs holds three tracks, played the first on Kitchen and Office, without Den, and is paused
+or stopped. The user presses next: the queue moves to the second track, Den's plug is switched on
+and nothing plays yet. Before Den's device is back, the user resumes or plays Downstairs, plays
+other media or the third track on it, seeks, or transfers the queue of Bedroom to it. That start
+waits for Den as well, and the next is gone. Once Den's device is back every speaker gets one
+stream: of the second track for a resume and a play, from its beginning, and for a seek, from the
+position asked for; of the media, the third track or the queue of Bedroom otherwise. Nothing is
+played on top of it afterwards, and Den's plug is switched once. The same holds for a live source
+that is played on the queue of Downstairs or selected on Downstairs, and for media that is played
+on Downstairs itself. A
+user who may not use Downstairs is refused and leaves the next in place: it plays the second
+track once Den's device is back.
+
+A speaker that is in no group waits for nobody, but a next still holds its track back for a
+second. Bedroom is paused on the first of two tracks and the user presses next and, within that
+second, play: the second track starts from its beginning, once, and Bedroom is not unpaused on
+the first.
+
+- End-to-end: **possible with** a power control the lab can switch and can make refuse, for the
+  live source a plugin that has one, and for the refusal a user limited to one player. The play
+  within a second of a next needs no more than a player with a pause of its own.
+- Proven by:
+  - `test_group_power_on.py::test_a_start_during_the_wait_of_a_next_takes_its_place`
+  - `test_group_power_on.py::test_media_that_is_not_of_the_queue_takes_the_place_of_a_next_that_waits`
+  - `test_group_power_on.py::test_a_user_without_access_to_a_group_leaves_a_next_that_waits_in_place`
+  - `test_group_power_on.py::test_a_play_right_after_a_next_on_a_paused_speaker_starts_the_next_track`
+
+### GROUP-44 · A next that waits never plays an item the queue has left
+
+Downstairs holds three tracks and is stopped, and Den's plug is switched off. The user plays the
+third track or seeks, which switches the plug on and waits, and presses next meanwhile, which
+waits as well. The play or the seek is the first to see that Den's device is back: the third
+track plays, or the second one from the position of the seek, with one stream for every speaker,
+and the next, which still waits at that moment, plays nothing on top of it. Or the user presses
+next, which waits for Den, and presses next once more in the last moment before the server sees
+that Den's device is back: Downstairs starts once, with the third track, and not with the second
+one first.
+
+- End-to-end: **possible with** a power control the lab can switch and can make refuse.
+- Proven by:
+  - `test_group_power_on.py::test_a_next_during_the_wait_of_a_start_plays_nothing_on_top_of_it`
+  - `test_group_power_on.py::test_a_second_next_in_the_last_moment_of_the_wait_starts_a_group_once`
+
+### GROUP-45 · A play on a speaker that a group took meanwhile switches no member on
+
+Downstairs, a universal group of Kitchen and Den, plays on Kitchen while Den's plug is off. Office
+is set to send what is played on it to its group. The user plays the queue of Office, and its
+music takes a while to load. Meanwhile Office is added to Downstairs, so the play now goes to
+Downstairs. It can not wait for the lock of Downstairs while it holds Office, so it fails with a
+busy error at once: Den's plug stays off, and Office is added to Downstairs and plays along.
+
+- End-to-end: **no**: it needs a group that takes a player within the moment in which that
+  player loads its music.
+- Proven by: `test_group_power_on.py::test_a_play_on_a_speaker_that_a_group_took_meanwhile_switches_no_member_on`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

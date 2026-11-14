@@ -603,7 +603,10 @@ A group player does not play, for a next, a previous or a seek, when its queue d
 playing at the moment the command arrives (`PlayerQueue.state`). A next and a previous still
 return at once: the move to the other item, which they put off for a second, waits for the
 members. Further presses meanwhile join that wait, so the group starts once, with the last item,
-and a wait that is called off ends that move without an error.
+and a wait that is called off ends that move without an error. A start that arrives before that
+move has played takes its place (`_drop_pending_step`): the move is dropped while its wait goes
+on, the start waits for the same members, and a resume or a play then starts the item the queue
+was moved to, from its beginning.
 
 A member that does not come online in time, or whose control fails to switch it on, is left out
 with one warning that names the member and the group, and the group starts on the others (a sync
@@ -785,7 +788,8 @@ owner:
 - When the player joined or left a group meanwhile, it releases them and takes them again in the
   new order, a few times at most; then it fails as busy.
 - A command that already holds the player and finds it in a group whose lock it does not hold fails
-  at once.
+  at once. A play media with the override off fails that way before it switches a member of that
+  group on.
 - The transfer never waits for one player while it holds another that it took itself: it waits
   for the locks of one of them (and its owner) only, and takes those of the other when they are
   free. When one is busy, it lets go of all it took, waits for that one first and tries again, a

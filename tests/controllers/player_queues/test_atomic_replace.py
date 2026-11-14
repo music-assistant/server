@@ -206,7 +206,7 @@ async def test_replace_cancels_the_prewarm_of_the_track_it_swaps_out(dynamic: bo
 
     await ctrl.play_media("q1", _playlist("pl1", dynamic=dynamic), QueueOption.REPLACE)
 
-    assert order[0] == "prepare_next_audio_buffer_q1"
+    assert order.index("prepare_next_audio_buffer_q1") < order.index("release")
     assert order.count("release") == len(replaced)
 
 
