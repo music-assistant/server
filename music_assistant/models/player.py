@@ -8,8 +8,12 @@ and report through them what the device says about itself.
 
 The state a player publishes is derived from what its protocols report, its config,
 (sync)group memberships and other factors. It is calculated and snapshotted in the
-PlayerState dataclass, which is also what is sent over the API. It can be retrieved by
-using the 'state' property.
+PlayerState dataclass, which is also what is sent over the API. A player gives each value
+of that state under the name of its field (player.volume_level, player.available, ...), as
+it was published last; its 'state' property is the snapshot as a whole. What the state is
+derived from is private to the player, or has a name of its own where other code has to
+know what is true of the device right now (attached_protocols, available_for_playback,
+reported_type, ...).
 """
 
 from __future__ import annotations
@@ -149,8 +153,8 @@ class LinkedOutputProtocol:
 
     Records the attachment itself (which protocol, on which domain, how preferred)
     and nothing about its current state: whether the protocol can actually be reached
-    right now is answered by Player.output_protocols / Player.playback_domains, which
-    resolve it from the live protocol on every read.
+    right now is answered by Player.get_linked_protocol() and Player.playback_domains,
+    which ask the protocol itself.
 
     :param output_protocol_id: id of the attached audio protocol.
     :param protocol_domain: Domain of the protocol, e.g. "airplay" or "dlna".
@@ -889,7 +893,7 @@ class Player:
 
     @property
     def state(self) -> PlayerState:
-        """Return the current (and FINAL) PlayerState of the player."""
+        """Return the state the player published last: the snapshot for the API and the events."""
         return self._state
 
     @property
