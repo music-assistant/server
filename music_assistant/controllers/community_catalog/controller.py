@@ -1217,6 +1217,11 @@ class CommunityCatalogController(CoreController):
                 "Not listing community provider %s: invalid manifest: %s", domain, err
             )
             return None
+        if manifest.domain != domain:
+            self.logger.warning(
+                "Not listing community provider %s: its manifest is of %s", domain, manifest.domain
+            )
+            return None
         set_provider_tier(manifest, ProviderTier.COMMUNITY)
         return CommunityProvider(
             domain=domain,

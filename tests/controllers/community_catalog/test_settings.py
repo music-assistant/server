@@ -99,8 +99,9 @@ async def test_switching_on(
     assert provider.manifest.builtin is False
     assert provider.manifest.allow_disable is True
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
+    assert len(warnings) == 2
     assert "broken_one" in warnings[0]
+    assert "misnamed_one" in warnings[1]
 
 
 async def test_switching_off(tmp_path: Path, mass: MusicAssistant, registry: Registry) -> None:
