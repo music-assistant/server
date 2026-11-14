@@ -22,6 +22,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.streams.audio_analysis import (
+    LOUDNESS_ANALYSIS_DOMAIN,
     PROVIDER_LOUDNESS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
     SONIC_ANALYSIS_DOMAIN,
@@ -637,8 +638,16 @@ async def test_tracks_audio_metadata_energy_level_matches_single_track_lookup(
 ) -> None:
     """The energy level takes loudness only from a loudness provider, in both lookups."""
     await _setup_metadata_fixture(ctrl)
+    domains = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
+    ctrl.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[_aa_provider(domain) for domain in domains]
+    )
     sonic = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-12.0)
     await ctrl.set_audio_analysis("e1", "fs--a", SONIC_ANALYSIS_DOMAIN, sonic)
+    # the provider-supplied loudness wins over the measured one
+    await ctrl.set_audio_analysis(
+        "e1", "fs--a", LOUDNESS_ANALYSIS_DOMAIN, AudioAnalysisData(loudness_integrated=-20.0)
+    )
     await ctrl.set_audio_analysis(
         "e1", "fs--a", PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)
     )

@@ -2006,7 +2006,7 @@ async def test_get_track_audio_metadata_energy_level_needs_loudness_provider(
     loudness_row: bool, level: int | None
 ) -> None:
     """The energy level uses a loudness provider's value, never Sonic Analysis' own loudness."""
-    rows = [
+    rows: list[Mapping[str, Any]] = [
         _aa_row(
             SONIC_ANALYSIS_DOMAIN,
             1,
