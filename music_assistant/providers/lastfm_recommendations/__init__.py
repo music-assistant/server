@@ -334,14 +334,16 @@ def _match_library_tracks(
             break
         track = by_mbid.get(entry["mbid"])
         if track is None or track.item_id in listed:
+            unlisted = [candidate for candidate in tracks if candidate.item_id not in listed]
+            # an exact title before a similar one: "Revolution" is not "Revolution 1"
             named = [
                 candidate
-                for candidate in tracks
-                if candidate.item_id not in listed
-                and (
-                    compare_strings(candidate.name, entry["name"], True)
-                    or compare_strings(candidate.name, entry["name"], False)
-                )
+                for candidate in unlisted
+                if compare_strings(candidate.name, entry["name"], True)
+            ] or [
+                candidate
+                for candidate in unlisted
+                if compare_strings(candidate.name, entry["name"], False)
             ]
             if not named:
                 continue

@@ -291,6 +291,29 @@ async def test_artist_toptracks_rank_library_tracks_with_one_lastfm_request(
     assert [track.item_id for track in tracks] == ["2", "4", "5", "3"]
 
 
+async def test_artist_toptracks_prefer_the_exact_title_over_a_similar_one(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """A ranked title lists the library track of that name, not one that merely resembles it."""
+    _use_dict_cache(mass_mock)
+    provider.api.get_artist_top_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"name": "Revolution 1", "mbid": ""}, {"name": "Let It Be", "mbid": ""}]
+    )
+    mass_mock.music.artists.get_library_artist_tracks = AsyncMock(
+        return_value=[
+            _library_track("1", "Revolution"),
+            _library_track("2", "Revolution 1"),
+            # without the exact title in the library, a similar one still matches
+            _library_track("3", "Let It Bee"),
+        ]
+    )
+    artist = Artist(item_id="1", provider="library", name="The Beatles", provider_mappings=set())
+
+    tracks = await provider.get_artist_toptracks(artist)
+
+    assert [track.item_id for track in tracks] == ["2", "3"]
+
+
 async def test_artist_toptracks_reuse_cached_ranking_with_current_library(
     provider: LastFMRecommendationsProvider, mass_mock: Mock
 ) -> None:
