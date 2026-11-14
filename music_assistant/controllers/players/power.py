@@ -290,8 +290,10 @@ class PowerMixin(_PlayerControllerBase):
         player_state = player.state
 
         # a power on that still waits for the device is waited for (power on) or called off
-        # (power off) below, whatever its control reports by now
-        if player_state.powered == powered and not player.power_on_in_progress:
+        # (power off), whatever its control reports by now. So is that of the members the
+        # player took along: a group that still waits for its first member is off itself
+        called_off = not powered and self._cancel_power_on(player)
+        if player_state.powered == powered and not (player.power_on_in_progress or called_off):
             self.logger.debug(
                 "Ignoring power %s command for player %s: already in state %s",
                 "ON" if powered else "OFF",
@@ -305,8 +307,6 @@ class PowerMixin(_PlayerControllerBase):
             # device that powers itself off when stopped reports it before the power
             # command below even reaches it
             player.set_power_off_issued_at(time.monotonic())
-            # calls off a power on that still waits for the device
-            self._cancel_power_on(player)
 
         # ungroup player at power off
         player_was_sync_child = bool(player.synced_to or player.active_group)
@@ -579,7 +579,9 @@ class PowerMixin(_PlayerControllerBase):
                         owner.name if owner else join.owner_id,
                     )
                     return
-                join.online.set_result(True)
+                # a play that waits for its first member does not start once the power on
+                # was called off, also when the device is online by then
+                join.online.set_result(self._member_joins.get(member_id) is join)
                 await self._join_owner(member, join)
         finally:
             if self._member_joins.get(member_id) is join:
@@ -611,7 +613,7 @@ class PowerMixin(_PlayerControllerBase):
         except MusicAssistantError as err:
             self.logger.warning("Player %s could not join %s: %s", member.name, owner.name, err)
 
-    def _cancel_power_on(self, player: Player) -> None:
+    def _cancel_power_on(self, player: Player) -> bool:
         """
         Call off a power on that still waits for a device to come online.
 
@@ -620,8 +622,10 @@ class PowerMixin(_PlayerControllerBase):
         controls are left as they are.
 
         :param player: The player whose power on, and that of its members, to call off.
+        :return: Whether a power on of the player itself was under way.
         """
-        if player.power_on_in_progress:
+        called_off = player.power_on_in_progress
+        if called_off:
             player.set_power_on_in_progress(False)
             self.logger.debug("Called off the power on of player %s", player.name)
         for member_id, join in list(self._member_joins.items()):
@@ -630,3 +634,4 @@ class PowerMixin(_PlayerControllerBase):
             del self._member_joins[member_id]
             if member := self.get_player(member_id):
                 self._cancel_power_on(member)
+        return called_off

@@ -378,3 +378,22 @@ async def test_an_announcement_leaves_the_volume_of_a_switched_off_member_alone(
     )
 
     assert [call.args[0].player_id for call in set_volume.await_args_list] == ["kitchen"]
+
+
+async def test_a_group_that_waits_for_its_first_member_fails_once_the_power_on_is_called_off(
+    mock_mass: MagicMock,
+) -> None:
+    """A wait for the first member ends as unavailable, also when a device is back by then."""
+    setup = _setup(
+        mock_mass, "kitchen", "den", switched_off=("kitchen", "den"), stays_away=("kitchen", "den")
+    )
+    waiting = asyncio.create_task(setup.controller._power_on_group_members(setup.group))
+    await asyncio.sleep(0.75)
+
+    # the device of Den is back in the moment the power on is called off
+    setup.speakers["den"].protocol._attr_available = True
+    setup.controller._cancel_power_on(setup.group)
+
+    with pytest.raises(PlayerUnavailableError, match="None of the members of Downstairs"):
+        await waiting
+    setup.joined.assert_not_awaited()

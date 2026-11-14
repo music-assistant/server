@@ -1526,6 +1526,27 @@ joins Kitchen once the play is done.
 - End-to-end: **no**: it needs a device that takes that long over a command.
 - Proven by: `test_grouping.py::test_a_woken_member_is_not_powered_off_as_idle_before_it_joins`
 
+### GROUP-31 · A power off of a group that waits for its members ends the wait
+
+Downstairs, a sync group or a universal group with a power control of its own, has Kitchen and
+Office as members, and both plugs are switched off. The user plays Downstairs, which switches
+both plugs on and waits. The user powers Downstairs off, which is still off itself: the play
+fails as unavailable. When Office's device is back after that, Downstairs stays idle and Office
+gets no command.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_group_power_on.py::test_a_power_off_of_a_group_that_waits_for_its_members_ends_the_wait`
+
+### GROUP-32 · A group that is powered on waits for the first member that is back
+
+Downstairs is as in GROUP-31, with both plugs switched off. The user powers Downstairs on: both
+plugs are switched on, and Downstairs is on once the device of Office is back.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_group_power_on.py::test_a_group_that_is_powered_on_waits_for_the_first_member_that_is_back`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
