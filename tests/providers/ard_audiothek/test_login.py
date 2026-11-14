@@ -1,6 +1,7 @@
 """Test the ARD Audiothek account login."""
 
 import json
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -9,6 +10,7 @@ import jwt
 import pytest
 from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 
+from music_assistant.providers.ard_audiothek import auth
 from music_assistant.providers.ard_audiothek.auth import (
     PlayHistoryEntry,
     add_subscription,
@@ -20,6 +22,14 @@ from music_assistant.providers.ard_audiothek.auth import (
     request_device_code,
     set_play_history_entry,
 )
+
+
+@pytest.fixture(autouse=True)
+def throttler(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Replace the shared throttler, so no test waits for it or for a cooldown of another."""
+    fake = Mock(acquire=Mock(side_effect=lambda: nullcontext()))
+    monkeypatch.setattr(auth, "THROTTLER", fake)
+    return fake
 
 
 def _id_token(**claims: Any) -> str:
@@ -122,7 +132,9 @@ async def test_refresh_tokens_error_raises_login_failed() -> None:
 @pytest.mark.parametrize(
     ("status", "text"), [(503, '{"error": {"message": "UNAVAILABLE"}}'), (502, "<html>")]
 )
-async def test_refresh_tokens_server_error_is_temporary(status: int, text: str) -> None:
+async def test_refresh_tokens_server_error_is_temporary(
+    throttler: Mock, status: int, text: str
+) -> None:
     """A server error while refreshing is temporary and does not reject the account."""
     response = _response(status=status, text=text, headers={"Retry-After": "120"})
     session = Mock(post=Mock(return_value=response))
@@ -131,6 +143,7 @@ async def test_refresh_tokens_server_error_is_temporary(status: int, text: str) 
         await refresh_tokens(session, "old")
 
     assert err.value.backoff_time == 120
+    throttler.set_cooldown.assert_called_once_with(120)
 
 
 async def test_poll_device_token_backs_off_on_server_errors() -> None:
@@ -153,12 +166,30 @@ async def test_poll_device_token_backs_off_on_server_errors() -> None:
     assert [call.args[0] for call in sleep.await_args_list] == [5, 30, 20]
 
 
-async def test_firestore_server_error_is_temporary() -> None:
-    """A Firestore server error is temporary and not reported as a rejected login."""
-    session = Mock(get=Mock(return_value=_response(status=503, text="<html>")))
+async def test_firestore_server_error_is_temporary(throttler: Mock) -> None:
+    """A Firestore server error is temporary and holds back requests as long as asked."""
+    response = _response(status=429, text="<html>", headers={"Retry-After": "90"})
+    session = Mock(request=Mock(return_value=response))
 
-    with pytest.raises(ResourceTemporarilyUnavailable):
+    with pytest.raises(ResourceTemporarilyUnavailable) as err:
         await get_subscribed_podcast_ids(session, "token", "uid")
+
+    assert err.value.backoff_time == 90
+    throttler.set_cooldown.assert_called_once_with(90)
+
+
+async def test_requests_are_throttled(throttler: Mock) -> None:
+    """The token refresh and the Firestore requests go through the shared throttler."""
+    id_token = _id_token(user_id="uid", exp=2000)
+    session = Mock(
+        post=Mock(return_value=_response(payload={"id_token": id_token})),
+        request=Mock(return_value=_response(payload={})),
+    )
+
+    await refresh_tokens(session, "old")
+    assert throttler.acquire.call_count == 1
+    await remove_subscription(session, "token", "uid", "urn:ard:show:2af809299201a921")
+    assert throttler.acquire.call_count == 2
 
 
 async def test_get_subscribed_podcast_ids_follows_pages() -> None:
@@ -168,17 +199,19 @@ async def test_get_subscribed_podcast_ids_follows_pages() -> None:
         {"documents": [{"name": f"{base}/111"}, {"name": f"{base}/222"}], "nextPageToken": "n"},
         {"documents": [{"name": f"{base}/333"}]},
     ]
-    session = Mock(get=Mock(side_effect=[_response(payload=page) for page in pages]))
+    session = Mock(request=Mock(side_effect=[_response(payload=page) for page in pages]))
 
     assert await get_subscribed_podcast_ids(session, "token", "uid") == ["111", "222", "333"]
-    assert session.get.call_args_list[0].args[0].endswith("/audiothek/uid/lists/groupings/items")
-    assert session.get.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer token"
-    assert session.get.call_args_list[1].kwargs["params"]["pageToken"] == "n"
+    assert (
+        session.request.call_args_list[0].args[1].endswith("/audiothek/uid/lists/groupings/items")
+    )
+    assert session.request.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer token"
+    assert session.request.call_args_list[1].kwargs["params"]["pageToken"] == "n"
 
 
 async def test_get_subscribed_podcast_ids_without_subscriptions() -> None:
     """Return no ids for an account without subscriptions (Firestore omits the documents)."""
-    session = Mock(get=Mock(return_value=_response(payload={})))
+    session = Mock(request=Mock(return_value=_response(payload={})))
 
     assert await get_subscribed_podcast_ids(session, "token", "uid") == []
 
@@ -186,7 +219,7 @@ async def test_get_subscribed_podcast_ids_without_subscriptions() -> None:
 async def test_get_subscribed_podcast_ids_rejected_token_raises_login_failed() -> None:
     """Raise LoginFailed when Firestore rejects the account token."""
     payload = {"error": {"code": 401, "message": "unauthenticated"}}
-    session = Mock(get=Mock(return_value=_response(status=401, payload=payload)))
+    session = Mock(request=Mock(return_value=_response(status=401, payload=payload)))
 
     with pytest.raises(LoginFailed):
         await get_subscribed_podcast_ids(session, "token", "uid")
@@ -215,26 +248,26 @@ async def test_get_play_history() -> None:
             {"name": f"{base}/333", "fields": {}},
         ]
     }
-    session = Mock(get=Mock(return_value=_response(payload=page)))
+    session = Mock(request=Mock(return_value=_response(payload=page)))
 
     assert await get_play_history(session, "token", "uid") == {
         "111": PlayHistoryEntry(False, 95.0, datetime(2026, 11, 13, 20, 5, 39, 123456, UTC)),
         "222": PlayHistoryEntry(True, 1799.5, None),
         "333": PlayHistoryEntry(False, 0.0, None),
     }
-    assert session.get.call_args.args[0].endswith("/audiothek/uid/lists/playhistory/items")
+    assert session.request.call_args.args[1].endswith("/audiothek/uid/lists/playhistory/items")
 
 
 async def test_set_play_history_entry() -> None:
     """Replace the episode's play history document the way the ARD Sounds apps write it."""
-    session = Mock(patch=Mock(return_value=_response(payload={"name": "doc"})))
+    session = Mock(request=Mock(return_value=_response(payload={"name": "doc"})))
 
     await set_play_history_entry(session, "token", "uid", "111", 95, completed=True)
 
-    url = session.patch.call_args.args[0]
-    fields = session.patch.call_args.kwargs["json"]["fields"]
+    url = session.request.call_args.args[1]
+    fields = session.request.call_args.kwargs["json"]["fields"]
     assert url.endswith("/audiothek/uid/lists/playhistory/items/111")
-    assert session.patch.call_args.kwargs["headers"]["Authorization"] == "Bearer token"
+    assert session.request.call_args.kwargs["headers"]["Authorization"] == "Bearer token"
     assert fields["id"] == {"stringValue": "111"}
     assert fields["type"] == {"stringValue": "aod"}
     assert fields["playtime"] == {"integerValue": "95"}
@@ -245,7 +278,7 @@ async def test_set_play_history_entry() -> None:
 async def test_set_play_history_entry_error_raises() -> None:
     """Raise when Firestore refuses to store the play history."""
     payload = {"error": {"code": 400, "message": "INVALID_ARGUMENT"}}
-    session = Mock(patch=Mock(return_value=_response(status=400, payload=payload)))
+    session = Mock(request=Mock(return_value=_response(status=400, payload=payload)))
 
     with pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
         await set_play_history_entry(session, "token", "uid", "111", 95, completed=False)
@@ -253,12 +286,12 @@ async def test_set_play_history_entry_error_raises() -> None:
 
 async def test_add_subscription() -> None:
     """Subscribe by writing the podcast into the account's list the way ARD Sounds does."""
-    session = Mock(patch=Mock(return_value=_response(payload={"name": "doc"})))
+    session = Mock(request=Mock(return_value=_response(payload={"name": "doc"})))
 
     await add_subscription(session, "token", "uid", "urn:ard:show:2af809299201a921")
 
-    url = session.patch.call_args.args[0]
-    fields = session.patch.call_args.kwargs["json"]["fields"]
+    url = session.request.call_args.args[1]
+    fields = session.request.call_args.kwargs["json"]["fields"]
     assert url.endswith("/audiothek/uid/lists/groupings/items/urn:ard:show:2af809299201a921")
     assert fields["id"] == {"stringValue": "urn:ard:show:2af809299201a921"}
     assert fields["type"] == {"stringValue": "grouping"}
@@ -267,19 +300,19 @@ async def test_add_subscription() -> None:
 
 async def test_remove_subscription() -> None:
     """Unsubscribe by deleting the podcast from the account's list."""
-    session = Mock(delete=Mock(return_value=_response(payload={})))
+    session = Mock(request=Mock(return_value=_response(payload={})))
 
     await remove_subscription(session, "token", "uid", "urn:ard:show:2af809299201a921")
 
-    url = session.delete.call_args.args[0]
+    url = session.request.call_args.args[1]
     assert url.endswith("/audiothek/uid/lists/groupings/items/urn:ard:show:2af809299201a921")
-    assert session.delete.call_args.kwargs["headers"]["Authorization"] == "Bearer token"
+    assert session.request.call_args.kwargs["headers"]["Authorization"] == "Bearer token"
 
 
 async def test_remove_subscription_rejected_token_raises_login_failed() -> None:
     """Raise LoginFailed when Firestore rejects the account token."""
     payload = {"error": {"code": 403, "message": "PERMISSION_DENIED"}}
-    session = Mock(delete=Mock(return_value=_response(status=403, payload=payload)))
+    session = Mock(request=Mock(return_value=_response(status=403, payload=payload)))
 
     with pytest.raises(LoginFailed):
         await remove_subscription(session, "token", "uid", "urn:ard:show:2af809299201a921")

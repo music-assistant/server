@@ -22,7 +22,7 @@ import jwt
 from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 
 from music_assistant.helpers.datetime import from_iso_string, utc
-from music_assistant.helpers.throttle_retry import ThrottlerManager
+from music_assistant.helpers.throttle_retry import ThrottlerManager, parse_retry_after
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -43,7 +43,8 @@ MAX_POLL_INTERVAL = 60
 BACKOFF_SECONDS = 60
 HEADERS = {"User-Agent": "Music Assistant"}
 
-# shared by all instances, as they all talk to the same Google APIs
+# shared by all instances, as they all talk to the same Google APIs; a 429 or 5xx reply
+# holds every caller back for as long as the server asks
 THROTTLER = ThrottlerManager(rate_limit=5, period=1)
 
 
@@ -104,7 +105,7 @@ async def poll_device_token(session: ClientSession, device: dict[str, Any]) -> A
         async with session.get(str(device["token_uri"]), headers=HEADERS) as response:
             status = response.status
             text = await response.text()
-            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+            retry_after = parse_retry_after(response.headers.get("Retry-After"))
         wait = interval
         if status == 429 or status >= 500:
             # a transient server error must not abort a login the user may be confirming,
@@ -138,7 +139,7 @@ async def refresh_tokens(session: ClientSession, refresh_token: str) -> ArdToken
     ):
         status = response.status
         text = await response.text()
-        retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+        retry_after = response.headers.get("Retry-After")
     data = _json_or_none(text)
     if isinstance(data, dict) and data.get("id_token"):
         return _tokens_from(str(data["id_token"]), str(data.get("refresh_token") or refresh_token))
@@ -146,10 +147,7 @@ async def refresh_tokens(session: ClientSession, refresh_token: str) -> ArdToken
     # only a client error means the token itself was rejected, anything else may pass
     if 400 <= status < 500 and status != 429:
         raise LoginFailed(f"Refreshing the ARD login failed: {message}")
-    raise ResourceTemporarilyUnavailable(
-        f"Refreshing the ARD login failed: {message}",
-        backoff_time=retry_after or BACKOFF_SECONDS,
-    )
+    raise _temporary_error(f"Refreshing the ARD login failed: {message}", retry_after)
 
 
 async def get_subscribed_podcast_ids(
@@ -212,13 +210,9 @@ async def add_subscription(
             "updatedOn": {"timestampValue": _firestore_now()},
         }
     }
-    async with (
-        THROTTLER.acquire(),
-        session.patch(url, headers=_auth_headers(id_token), json=body) as response,
-    ):
-        data = _json_or_none(await response.text())
-        status = response.status
-    _raise_for_firestore_error(status, data, "Subscribing to the ARD podcast")
+    await _firestore_request(
+        session, "PATCH", url, id_token, "Subscribing to the ARD podcast", json=body
+    )
 
 
 async def remove_subscription(
@@ -233,13 +227,7 @@ async def remove_subscription(
     :param podcast_id: The id of the podcast to unsubscribe from.
     """
     url = f"{FIRESTORE_DOCUMENTS_URL}/audiothek/{user_id}/lists/groupings/items/{podcast_id}"
-    async with (
-        THROTTLER.acquire(),
-        session.delete(url, headers=_auth_headers(id_token)) as response,
-    ):
-        data = _json_or_none(await response.text())
-        status = response.status
-    _raise_for_firestore_error(status, data, "Unsubscribing from the ARD podcast")
+    await _firestore_request(session, "DELETE", url, id_token, "Unsubscribing from the ARD podcast")
 
 
 async def set_play_history_entry(
@@ -271,13 +259,9 @@ async def set_play_history_entry(
             "updatedOn": {"timestampValue": _firestore_now()},
         }
     }
-    async with (
-        THROTTLER.acquire(),
-        session.patch(url, headers=_auth_headers(id_token), json=body) as response,
-    ):
-        data = _json_or_none(await response.text())
-        status = response.status
-    _raise_for_firestore_error(status, data, "Storing the ARD play history")
+    await _firestore_request(
+        session, "PATCH", url, id_token, "Storing the ARD play history", json=body
+    )
 
 
 async def remove_play_history_entry(
@@ -292,13 +276,9 @@ async def remove_play_history_entry(
     :param episode_id: The id of the episode to remove.
     """
     url = f"{FIRESTORE_DOCUMENTS_URL}/audiothek/{user_id}/lists/playhistory/items/{episode_id}"
-    async with (
-        THROTTLER.acquire(),
-        session.delete(url, headers=_auth_headers(id_token)) as response,
-    ):
-        data = _json_or_none(await response.text())
-        status = response.status
-    _raise_for_firestore_error(status, data, "Removing the episode from the ARD play history")
+    await _firestore_request(
+        session, "DELETE", url, id_token, "Removing the episode from the ARD play history"
+    )
 
 
 async def _list_documents(
@@ -309,19 +289,36 @@ async def _list_documents(
     page_token = ""
     while True:
         params = {"pageSize": "300", **({"pageToken": page_token} if page_token else {})}
-        async with (
-            THROTTLER.acquire(),
-            session.get(url, headers=_auth_headers(id_token), params=params) as response,
-        ):
-            data = _json_or_none(await response.text())
-            status = response.status
-        _raise_for_firestore_error(status, data, "Fetching the ARD account data")
+        data = await _firestore_request(
+            session, "GET", url, id_token, "Fetching the ARD account data", params=params
+        )
         for doc in data.get("documents", []):
             if doc.get("name"):
                 yield doc["name"].rsplit("/", 1)[-1], doc.get("fields", {})
         page_token = data.get("nextPageToken") or ""
         if not page_token:
             return
+
+
+async def _firestore_request(
+    session: ClientSession, method: str, url: str, id_token: str, action: str, **kwargs: Any
+) -> dict[str, Any]:
+    """Send a throttled request to Firestore as the signed in account, returning the reply."""
+    async with (
+        THROTTLER.acquire(),
+        session.request(method, url, headers=_auth_headers(id_token), **kwargs) as response,
+    ):
+        data = _json_or_none(await response.text())
+        status = response.status
+        retry_after = response.headers.get("Retry-After")
+    if status in (401, 403):
+        raise LoginFailed(f"ARD rejected the account token (HTTP {status})")
+    if not isinstance(data, dict) or "error" in data:
+        msg = f"{action} failed: {_error_message(data) or f'HTTP {status}'}"
+        if status == 429 or status >= 500:
+            raise _temporary_error(msg, retry_after)
+        raise RuntimeError(msg)
+    return data
 
 
 def _firestore_now() -> str:
@@ -344,17 +341,6 @@ def _auth_headers(id_token: str) -> dict[str, str]:
     return {**HEADERS, "Authorization": f"Bearer {id_token}"}
 
 
-def _raise_for_firestore_error(status: int, data: Any, action: str) -> None:
-    """Raise when a Firestore request failed, LoginFailed when the token was rejected."""
-    if status in (401, 403):
-        raise LoginFailed(f"ARD rejected the account token (HTTP {status})")
-    if not isinstance(data, dict) or "error" in data:
-        msg = f"{action} failed: {_error_message(data) or f'HTTP {status}'}"
-        if status == 429 or status >= 500:
-            raise ResourceTemporarilyUnavailable(msg, backoff_time=BACKOFF_SECONDS)
-        raise RuntimeError(msg)
-
-
 def _error_message(data: Any) -> str:
     """Return the message of a Google API error reply, empty when there is none."""
     if not isinstance(data, dict) or not isinstance(data.get("error"), dict):
@@ -370,11 +356,11 @@ def _json_or_none(text: str) -> Any:
         return None
 
 
-def _retry_after_seconds(value: str | None) -> int:
-    """Return the seconds a Retry-After header asks to wait, 0 when absent or unusable."""
-    if not value or not value.strip().isdigit():
-        return 0
-    return min(int(value), MAX_POLL_INTERVAL * 10)
+def _temporary_error(message: str, retry_after: str | None) -> ResourceTemporarilyUnavailable:
+    """Hold back further requests as long as the server asked, returning the error to raise."""
+    wait = parse_retry_after(retry_after) or BACKOFF_SECONDS
+    THROTTLER.set_cooldown(wait)
+    return ResourceTemporarilyUnavailable(message, backoff_time=wait)
 
 
 def _tokens_from(id_token: str, refresh_token: str) -> ArdTokens:
