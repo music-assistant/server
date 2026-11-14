@@ -688,5 +688,21 @@
   "provider.webdav.config_entries.username.label": "Användarnamn",
   "provider.yandex_music.config_entries.delete_wave_preset.action_label": "Radera",
   "provider.ytmusic.config_entries.username.label": "Användarnamn",
-  "core.metadata.config_entries.language.label": "Föredraget språk"
+  "core.metadata.config_entries.language.label": "Föredraget språk",
+  "core.player_queues.config_entries.default_enqueue_select_album.label": "Vad som väljs när du spelar upp ett album (i biblioteket).",
+  "core.player_queues.config_entries.default_enqueue_select_album.options.all_tracks": "Alla spår på albumet hos leverantören (streamingtjänsten)",
+  "core.player_queues.config_entries.default_enqueue_select_album.options.library_tracks": "Endast spår i biblioteket",
+  "core.player_queues.config_entries.default_enqueue_select_artist.label": "Vad som väljs när du spelar upp en artist (i biblioteket).",
+  "core.player_queues.config_entries.default_enqueue_select_artist.options.library_album_tracks": "Alla spår på artistens album i ditt bibliotek",
+  "core.player_queues.config_entries.default_enqueue_select_artist.options.library_tracks": "Endast artistens spår i biblioteket",
+  "core.player_queues.config_entries.default_enqueue_select_artist.options.prefer_library": "Föredra biblioteket, använd annars bästa låtar",
+  "core.player_queues.config_entries.default_enqueue_select_artist.options.top_tracks": "Endast artistens bästa låtar",
+  "core.player_queues.config_entries.default_play_action_album_track.description": "Välj om albumet fortsätter efter det spår du valt eller om endast det spåret spelas upp.",
+  "core.player_queues.config_entries.default_play_action_album_track.label": "Vad som händer när du spelar upp ett spår från ett album.",
+  "core.player_queues.config_entries.default_play_action_album_track.options.play_from_here": "Spela upp från det här spåret och framåt",
+  "core.player_queues.config_entries.default_play_action_album_track.options.play_track": "Spela endast upp det här spåret",
+  "core.player_queues.config_entries.default_play_action_playlist_track.description": "Välj om spellistan fortsätter efter det spår du valt eller om endast det spåret spelas upp.",
+  "core.player_queues.config_entries.default_play_action_playlist_track.label": "Vad som händer när du spelar upp ett spår från en spellista.",
+  "core.player_queues.config_entries.default_play_action_playlist_track.options.play_from_here": "Spela upp från det här spåret och framåt",
+  "core.player_queues.config_entries.default_play_action_playlist_track.options.play_track": "Spela endast upp det här spåret"
 }
