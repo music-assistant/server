@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -347,13 +347,22 @@ class CacheController(CoreController):
         category_filter: int | None = None,
         provider_filter: str | None = None,
         include_persistent: bool = False,
+        keep_category_keys: tuple[int, Iterable[str]] | None = None,
     ) -> None:
-        """Clear all/partial items from cache."""
+        """
+        Clear all/partial items from cache.
+
+        :param keep_category_keys: A category and the keys within it to keep.
+        """
         assert self.database is not None
         self.logger.info("Clearing database...")
         query_parts: list[str] = []
         if category_filter is not None:
             query_parts.append(f"category = {category_filter}")
+        if keep_category_keys is not None:
+            keep_category, keep_keys = keep_category_keys
+            keys = ", ".join("'" + key.replace("'", "''") + "'" for key in keep_keys)
+            query_parts.append(f"NOT (category = {keep_category} AND key IN ({keys}))")
         if provider_filter is not None:
             query_parts.append(f"provider LIKE '%{provider_filter}%'")
         if key_filter is not None:

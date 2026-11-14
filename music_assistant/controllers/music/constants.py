@@ -13,6 +13,8 @@ RESUME_POSITION_TOLERANCE_SECONDS: Final[int] = 2
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_KEEP_REMASTERS_APART: Final[str] = "keep_remasters_apart"
+# setup_data key: the account a provider instance filled its cache with
+CONF_CACHE_ACCOUNT_ID: Final[str] = "cache_account_id"
 
 DB_SCHEMA_VERSION: Final[int] = 74
 # headroom kept free on top of what moving the audio analysis out of library.db writes

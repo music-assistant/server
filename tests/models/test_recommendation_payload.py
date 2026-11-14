@@ -13,7 +13,7 @@ from music_assistant_models.media_items import ItemMapping, MediaItemImage, Reco
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.models.recommendation_payload import (
-    _PAYLOAD_CACHE_KEY,
+    RECOMMENDATION_PAYLOAD_CACHE_KEY,
     RecommendationPayloadMixin,
 )
 from tests.common import collect_loop_errors
@@ -72,8 +72,8 @@ class _PayloadProvider(RecommendationPayloadMixin, _UnloadableBase):
 
     def seed_cache(self, payload: list[RecommendationFolder], checksum: str | None = None) -> None:
         """Pre-fill the persistent cache store, as a previous run's store task would."""
-        self._cache_store[_PAYLOAD_CACHE_KEY] = _payload_dicts(payload)
-        self._cache_checksums[_PAYLOAD_CACHE_KEY] = checksum
+        self._cache_store[RECOMMENDATION_PAYLOAD_CACHE_KEY] = _payload_dicts(payload)
+        self._cache_checksums[RECOMMENDATION_PAYLOAD_CACHE_KEY] = checksum
 
     async def _cache_get(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
         if key not in self._cache_store:
@@ -206,7 +206,7 @@ async def test_rows_and_items_share_one_payload_fetch() -> None:
     assert items_charts is payload[1].items
     # the fetch also stored the payload persistently, under the legacy cache key
     await _drain_background(provider)
-    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
+    assert provider._cache_store[RECOMMENDATION_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
 
 
 @pytest.mark.asyncio
@@ -234,7 +234,7 @@ async def test_cold_start_rows_then_items_before_store_lands_fetches_once() -> N
 
     store_gate.set()
     await _drain_background(provider)
-    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
+    assert provider._cache_store[RECOMMENDATION_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
 
 
 @pytest.mark.asyncio
@@ -334,7 +334,7 @@ async def test_stale_persistent_entry_served_with_single_background_refresh() ->
 
     # the refreshed payload replaced both the in-memory payload and the cache entry
     assert await provider._recommendation_payload() == fresh
-    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(fresh)
+    assert provider._cache_store[RECOMMENDATION_PAYLOAD_CACHE_KEY] == _payload_dicts(fresh)
     assert fetch.await_count == 1
 
 
@@ -375,7 +375,7 @@ async def test_persisted_payload_of_other_version_is_refetched(
     assert fetch.await_count == int(fetched)
     expected = fresh if fetched else stale
     assert [row.item_id for row in rows] == [folder.item_id for folder in expected]
-    assert provider._cache_checksums[_PAYLOAD_CACHE_KEY] == "2"
+    assert provider._cache_checksums[RECOMMENDATION_PAYLOAD_CACHE_KEY] == "2"
 
 
 @pytest.mark.asyncio
@@ -396,8 +396,8 @@ async def test_refresh_fetches_fresh_and_stores() -> None:
     assert fetch.await_count == 2
     await _drain_background(provider)
     # the refresh stored under the same (legacy) key, replacing the stale entry
-    assert set(provider._cache_store) == {_PAYLOAD_CACHE_KEY}
-    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(fresh)
+    assert set(provider._cache_store) == {RECOMMENDATION_PAYLOAD_CACHE_KEY}
+    assert provider._cache_store[RECOMMENDATION_PAYLOAD_CACHE_KEY] == _payload_dicts(fresh)
     # subsequent payload calls serve the refreshed payload from memory, no new fetch
     assert await provider._recommendation_payload() == fresh
     assert fetch.await_count == 2
@@ -518,7 +518,7 @@ async def test_sole_cancelled_waiter_fetch_still_warms_memory_and_cache() -> Non
     # the fetch completed anyway: memory and cache are warm, no second fetch
     assert await provider._recommendation_payload() == payload
     fetch.assert_awaited_once()
-    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
+    assert provider._cache_store[RECOMMENDATION_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
 
 
 @pytest.mark.asyncio
