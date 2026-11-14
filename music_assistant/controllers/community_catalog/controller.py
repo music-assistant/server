@@ -22,7 +22,6 @@ from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import (
     CONF_PROVIDERS,
-    PROVIDER_LOAD_CONCURRENCY,
     UNHANDLED_PROVIDER_ERROR_CODE,
 )
 from music_assistant.controllers.community_catalog.constants import (
@@ -43,6 +42,7 @@ from music_assistant.controllers.community_catalog.installer import (
     InstallError,
     content_hash,
 )
+from music_assistant.controllers.community_catalog.loader import ProviderLoader
 from music_assistant.controllers.community_catalog.models import (
     CommunityProvider,
     CommunityProviderState,
@@ -52,12 +52,7 @@ from music_assistant.controllers.community_catalog.models import (
 )
 from music_assistant.controllers.community_catalog.store import CatalogStore
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.util import (
-    TaskManager,
-    load_provider_module,
-    purge_provider_modules,
-    set_provider_tier,
-)
+from music_assistant.helpers.util import load_provider_module, set_provider_tier
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -144,6 +139,9 @@ class CommunityCatalogController(CoreController):
         # by installed domain: whether it loads, and the content hash of its live folder
         self._decisions: dict[str, Decision] = {}
         self._folder_hashes: dict[str, str | None] = {}
+        self._loader = ProviderLoader(
+            mass, self.logger, self._store, self._dependencies, self._decisions
+        )
         # by moved domain that waits: why the last try to install it failed
         self._move_errors: dict[str, str] = {}
 
@@ -201,12 +199,12 @@ class CommunityCatalogController(CoreController):
             await self._activate_pending()
             providers = await self._gate_installed()
             await self._update_at_start(providers)
-            providers |= await self._dev_providers()
-            domains, requirements_installed = await self._load_providers(providers)
+            providers |= await self._loader.dev_providers()
+            domains, requirements_installed = await self._loader.load_providers(providers)
             if domains or self._needs_index():
                 # clients fetched the manifests before these were registered
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
-            await self._load_instances(domains)
+            await self._loader.load_instances(domains)
             for domain in domains:
                 await self._judge(domain, requirements_installed=requirements_installed)
 
@@ -311,7 +309,7 @@ class CommunityCatalogController(CoreController):
             if not self._needs_index():
                 self._stop_checks()
             try:
-                await self._stop(domain)
+                await self._loader.stop(domain)
                 await self._installer.remove(domain)
             finally:
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
@@ -579,9 +577,9 @@ class CommunityCatalogController(CoreController):
         :param domain: The domain of the provider.
         """
         self._dependencies.activate()
-        await self._register(self._installer.live_folder(domain))
+        await self._loader.register(self._installer.live_folder(domain))
         self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
-        await self._load_instances({domain})
+        await self._loader.load_instances({domain})
         await self._judge(domain)
 
     async def _activate_staged(self, manifest: ProviderManifest) -> None:
@@ -622,21 +620,8 @@ class CommunityCatalogController(CoreController):
                     domain,
                     _REASONS[decision.verdict].format(decision.detail or ""),
                 )
-                await self._stop(domain)
+                await self._loader.stop(domain)
             self._decisions[domain] = decision
-
-    async def _stop(self, domain: str) -> None:
-        """
-        Stop a community provider: no instance of it runs and it can no longer be loaded.
-
-        :param domain: The domain of the provider.
-        """
-        # unregistered first, so a retry that is due cannot load it again
-        await self.mass.unregister_provider_manifest(domain)
-        for provider in self.mass.providers:
-            if provider.domain == domain:
-                await self.mass.unload_provider(provider.instance_id)
-        purge_provider_modules(domain)
 
     async def _activate_pending(self) -> None:
         """Make each pending version live whose staged folder is still what the index lists."""
@@ -765,17 +750,17 @@ class CommunityCatalogController(CoreController):
             if domain in (name, manifest.depends_on)
         }
         for name in {domain, *restart}:
-            await self._stop(name)
+            await self._loader.stop(name)
         try:
             await self._activate_version(domain, entry, version)
             restart[domain] = self._installer.live_folder(domain)
         finally:
             self._dependencies.activate()
             for folder in restart.values():
-                await self._register(folder)
+                await self._loader.register(folder)
             self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
             if domain in restart:
-                await self._load_instances({domain})
+                await self._loader.load_instances({domain})
         await self._judge(domain)
 
     async def _stage_version(
@@ -925,7 +910,7 @@ class CommunityCatalogController(CoreController):
             if manifest.depends_on == domain
         ]
         for name in (domain, *(folder.name for folder in dependents)):
-            await self._stop(name)
+            await self._loader.stop(name)
         folder = self._installer.live_folder(domain)
         try:
             await self._installer.restore(domain)
@@ -938,7 +923,7 @@ class CommunityCatalogController(CoreController):
             )
         self._decisions[domain] = decision
         if decision.verdict == Verdict.LOAD:
-            await self._register(folder)
+            await self._loader.register(folder)
         else:
             self.logger.warning(
                 "Not loading community provider %s: %s",
@@ -946,10 +931,10 @@ class CommunityCatalogController(CoreController):
                 _REASONS[decision.verdict].format(decision.detail or ""),
             )
         for dependent in dependents:
-            await self._register(dependent)
+            await self._loader.register(dependent)
         self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
         if decision.verdict == Verdict.LOAD:
-            await self._load_instances({domain})
+            await self._loader.load_instances({domain})
 
     async def _record_previous(
         self, domain: str, failed: str, requirements: dict[str, list[str]], *, mark_failed: bool
@@ -1242,112 +1227,6 @@ class CommunityCatalogController(CoreController):
         if self.mass.safe_mode:
             msg = "The community catalog is not available in safe mode"
             raise ActionUnavailable(msg)
-
-    async def _dev_providers(self) -> dict[str, ProviderManifest]:
-        """Return the manifests of the providers of the dev folder that may load, by provider folder."""
-        if (location := self.mass.dev_providers_path) is None:
-            return {}
-        if not self.mass.dev_mode:
-            self.logger.warning(
-                "Not loading the providers in %s: the server does not run in dev mode", location
-            )
-            return {}
-        return await self._read_dev_providers(location)
-
-    async def _read_dev_providers(self, location: str) -> dict[str, ProviderManifest]:
-        """
-        Return the manifests of the providers in a local folder that may load, by provider folder.
-
-        :param location: The folder that holds the provider folders.
-        """
-        taken = {manifest.domain for manifest in self.mass.get_provider_manifests()}
-        taken.update(self._store.state.installed)
-        providers: dict[str, ProviderManifest] = {}
-        for name in sorted(await asyncio.to_thread(os.listdir, location)):
-            provider_path = os.path.join(location, name)
-            manifest_path = os.path.join(provider_path, "manifest.json")
-            if name.startswith(".") or not await asyncio.to_thread(os.path.isfile, manifest_path):
-                continue
-            try:
-                manifest = await ProviderManifest.parse(manifest_path)
-            except Exception as err:
-                reason = f"its manifest is invalid: {err}"
-            else:
-                # registering refuses these too, but only after the requirements are installed
-                if manifest.domain != name:
-                    reason = f"the folder is not named after its domain {manifest.domain}"
-                elif manifest.domain in taken:
-                    reason = f"the server already has a provider named {manifest.domain}"
-                else:
-                    providers[provider_path] = manifest
-                    continue
-            self.logger.warning("Not loading the provider in %s: %s", provider_path, reason)
-        return providers
-
-    async def _load_providers(
-        self, providers: dict[str, ProviderManifest]
-    ) -> tuple[set[str], bool]:
-        """
-        Install the requirements of community providers, then register them.
-
-        A provider whose requirements clash is left out. Returns the domains that were
-        registered, and whether their requirements were installed.
-
-        :param providers: The manifest of each provider, by provider folder.
-        """
-        if not providers:
-            return set(), True
-        accepted = {manifest.domain: manifest.requirements for manifest in providers.values()}
-        synced = True
-        while True:
-            try:
-                await self._dependencies.sync(await self._dependencies.resolve(accepted))
-            except DependencyConflict as err:
-                self.logger.warning("Not loading community provider %s: %s", err.domain, err)
-                if err.domain in self._decisions:
-                    self._decisions[err.domain] = Decision(Verdict.REQUIREMENTS_CLASH)
-                del accepted[err.domain]
-                continue
-            except DependenciesUnavailable as err:
-                # a provider that misses a requirement fails to import, which its instance shows
-                self.logger.warning("Could not install the community requirements: %s", err)
-                synced = False
-            break
-        self._dependencies.activate()
-        for provider_path, manifest in providers.items():
-            if manifest.domain in accepted:
-                await self._register(provider_path)
-        return set(accepted), synced
-
-    async def _register(self, provider_path: str | Path) -> None:
-        """
-        Register a community provider, so its settings entries can load.
-
-        :param provider_path: The folder of the provider.
-        """
-        self.mass.add_provider_location(os.path.dirname(provider_path))
-        manifest = await self.mass.register_provider_manifest(
-            str(provider_path), ProviderTier.COMMUNITY
-        )
-        installed = self._store.state.installed.get(manifest.domain)
-        if installed is not None and not manifest.support_url:
-            # help with a community provider is asked of its maintainer
-            manifest.support_url = f"https://github.com/{installed.repository}"
-
-    async def _load_instances(self, domains: set[str]) -> None:
-        """
-        Load the enabled settings entries of community providers.
-
-        :param domains: The domains of the providers.
-        """
-        if not domains:
-            return
-        async with TaskManager(self.mass, PROVIDER_LOAD_CONCURRENCY) as tg:
-            for conf in await self.mass.config.get_provider_configs():
-                if conf.enabled and conf.domain in domains:
-                    await tg.create_task_with_limit(
-                        self.mass.load_provider(conf.instance_id, allow_retry=True)
-                    )
 
 
 def _folder_hash(folder: Path) -> str | None:

@@ -750,7 +750,7 @@ async def test_going_back_reloads_a_dependent(
         broken = _files(DOMAIN, NEW, setup='raise TypeError("broken")')
         await _publish(mass, registry, github, {NEW: broken}, entry)
         catalog = mass.community_catalog
-        with patch.object(catalog, "_stop", wraps=catalog._stop) as stop:
+        with patch.object(catalog._loader, "stop", wraps=catalog._loader.stop) as stop:
             await catalog.update_providers(DOMAIN)
 
         # once for the update, once for going back
