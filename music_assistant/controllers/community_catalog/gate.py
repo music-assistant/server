@@ -40,6 +40,9 @@ class Verdict(StrEnum):
     # not installed: a moved provider that waits to be installed from the catalog
     MOVED = "moved"
     MOVE_FAILED = "move_failed"
+    # not decided: the start of the community catalog is not done, or does not run at all
+    STARTING = "starting"
+    SAFE_MODE = "safe_mode"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +101,13 @@ _REASONS: Final[dict[Verdict, str]] = {
     Verdict.MOVE_FAILED: (
         "This moved to the community catalog, but Music Assistant could not install it from "
         "there ({0}). It tries again at every start and whenever it checks the catalog."
+    ),
+    Verdict.STARTING: (
+        "Music Assistant is still starting what comes from the community catalog. "
+        "This runs in a moment."
+    ),
+    Verdict.SAFE_MODE: (
+        "Nothing from the community catalog runs while Music Assistant is in safe mode."
     ),
 }
 

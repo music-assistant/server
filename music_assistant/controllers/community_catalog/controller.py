@@ -105,6 +105,8 @@ class CommunityCatalogController(CoreController):
             self._decisions,
             self._folder_hashes,
         )
+        # whether the start decided what loads and registered it
+        self._started = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -126,6 +128,10 @@ class CommunityCatalogController(CoreController):
                 depends_on=CONF_ENABLED,
             ),
         )
+
+    async def setup(self, config: CoreConfig) -> None:
+        """Read what is installed; the settings entries of it tell why it does not run yet."""
+        await self._store.load()
 
     async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -151,7 +157,6 @@ class CommunityCatalogController(CoreController):
         Runs once, after the server's own providers are loaded; never in safe mode.
         """
         async with self._lock:
-            await self._store.load()
             if self._needs_index():
                 await self._index_client.fetch()
                 self._schedule_check()
@@ -162,6 +167,7 @@ class CommunityCatalogController(CoreController):
             await self._versions.update_at_start(providers, auto_update=self._auto_update())
             providers |= await self._loader.dev_providers()
             domains, requirements_installed = await self._loader.load_providers(providers)
+            self._started = True
             if domains or self._needs_index():
                 # clients fetched the manifests before these were registered
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
@@ -176,7 +182,10 @@ class CommunityCatalogController(CoreController):
         :param domain: The domain of the provider.
         """
         decision = self._decisions.get(domain)
-        if decision is None and domain in self._waiting_moves():
+        if not self._started and domain in self._store.state.installed:
+            # what the start decides is only final, and registered, once it is done
+            decision = Decision(Verdict.SAFE_MODE if self.mass.safe_mode else Verdict.STARTING)
+        elif decision is None and domain in self._waiting_moves():
             error = self._move_errors.get(domain)
             decision = Decision(Verdict.MOVE_FAILED, error) if error else Decision(Verdict.MOVED)
         if decision is None or decision.verdict == Verdict.LOAD:

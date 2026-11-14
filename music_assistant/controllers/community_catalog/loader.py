@@ -122,6 +122,12 @@ class ProviderLoader:
 
         :param domain: The domain of the provider.
         """
+        if not any(
+            manifest.domain == domain and manifest.tier == ProviderTier.COMMUNITY
+            for manifest in self.mass.get_provider_manifests()
+        ):
+            # nothing of it runs; a provider of the server itself by this name is left alone
+            return
         # unregistered first, so a retry that is due cannot load it again
         await self.mass.unregister_provider_manifest(domain)
         for provider in self.mass.providers:
