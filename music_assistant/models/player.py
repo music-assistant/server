@@ -444,6 +444,7 @@ class Player(ABC):
     _attr_current_palette_url: str | None = None
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
+    _attr_paused_position_reliable: bool = False
     _attr_hidden_by_default: bool = False
     _attr_private: bool = False
     _attr_expose_to_ha_by_default: bool = True
@@ -600,6 +601,17 @@ class Player(ABC):
         This should return the interval in seconds.
         """
         return self._attr_poll_interval
+
+    @property
+    def paused_position_reliable(self) -> bool:
+        """
+        Return if the paused player's elapsed time is the device's own report of its position.
+
+        A paused player's position is not trusted by default, as many players reset or
+        freeze it. Set this only while the elapsed time comes from the device itself,
+        so the queue (also in flow mode) follows it while paused.
+        """
+        return self._attr_paused_position_reliable
 
     @property
     def hidden_by_default(self) -> bool:

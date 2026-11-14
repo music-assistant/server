@@ -1537,6 +1537,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = player.player_id
         if (queue := self.get(queue_id)) is None:
             return
+        if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            # an announcement's position is not the music's; keep the music's resume state
+            return
         # queue.active still holds the source from the last update. Requiring it and the
         # live source both skips the position jump of joining or leaving a group.
         if not queue.active or player.state.active_source not in (queue_id, None):
@@ -1555,7 +1558,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.flow_mode:
             # _get_flow_queue_stream_index returns media-time in the current item
             # using each playlog entry's recorded speed.
-            _, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+            current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
+            if current_index != queue.current_index:
+                # the jump crossed a track boundary: the elapsed time is in that track
+                queue.current_index = current_index
+                queue.current_item = current_item = self.get_item(queue_id, current_index)
+                queue.next_item = (
+                    self.get_next_item(queue_id, current_index)
+                    if current_item and current_index is not None
+                    else None
+                )
+                speed = get_current_playback_speed(queue)
         else:
             elapsed_time = player_elapsed * speed
             if queue.current_item and queue.current_item.streamdetails:
@@ -1564,6 +1577,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
         queue.playback_speed = speed
+        # In flow mode the position was mapped to its item above; a normal player can
+        # report the next track's position before the queue moved to that track.
+        position_in_current_item = queue.current_item is not None and (
+            queue.flow_mode
+            or self._parse_player_current_item_id(queue_id, player)
+            == queue.current_item.queue_item_id
+        )
+        if position_in_current_item and self._position_is_reliable(player):
+            # The corrected position is where the item really is, also when it is behind
+            # positions saved from the clock estimate; resuming from those would skip
+            # unheard audio. An unreliable paused position changes nothing here.
+            prev_state = self._queue_data[queue_id].prev_state
+            if (
+                prev_state
+                and queue.current_item
+                and prev_state["current_item_id"] == queue.current_item.queue_item_id
+            ):
+                prev_state["last_playing_elapsed_time"] = int(elapsed_time)
+            if queue.resume_pos:
+                queue.resume_pos = int(elapsed_time)
         self.mass.signal_event(
             EventType.QUEUE_TIME_UPDATED,
             object_id=queue_id,
