@@ -267,7 +267,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         return resp
 
     def _release_from_sync_leader(self, player_id: str) -> None:
-        """Drop a player whose connection ended from the group of its sync leader."""
+        """Drop a player that left the stream of its sync group from the group of its leader."""
         # a reconnect registers a fresh player, so the leader must let go of the old
         # one or it keeps listing a member that is no longer part of its stream
         if (
@@ -275,11 +275,14 @@ class SqueezelitePlayerProvider(PlayerProvider):
             and (leader_id := player.synced_to)
             and (leader := self.mass.players.get_player(leader_id))
         ):
-            cast("SqueezelitePlayer", leader).remove_disconnected_member(player_id)
+            cast("SqueezelitePlayer", leader).release_member(player_id)
 
     async def _handle_cli_command(self, command: SlimCLICommand) -> None:
         """
         Handle play, pause and stop sent by a client, acting on its whole group like LMS does.
+
+        A stop from a protocol-only device stops only that device, which then leaves its group
+        unless that group belongs to a sync group player.
 
         :param command: The CLI command as received from the client.
         :raises NotImplementedError: For any other command, an unknown player and a stop
@@ -299,6 +302,16 @@ class SqueezelitePlayerProvider(PlayerProvider):
             # over, so that stop must only stop the device itself and not its group
             case ("stop", _) | ("mode", "stop") if player.type != PlayerType.PROTOCOL:
                 player_cmd = self.mass.players.cmd_stop
+            case ("stop", _) | ("mode", "stop"):
+                leader = (
+                    self.mass.players.get_player(player.synced_to) if player.synced_to else None
+                )
+                # it most likely switched to another source, and a member that stays in the
+                # group would be pulled back by the group's next track or resume; a sync
+                # group player would add it back right away, so its members stay
+                if leader and not leader.state.active_group:
+                    self._release_from_sync_leader(player.player_id)
+                raise NotImplementedError
             case _:
                 raise NotImplementedError
         try:

@@ -435,11 +435,13 @@ class SqueezelitePlayer(Player):
                 # the next resume (LMS takes the stream-idle / _syncStart path, not _Resume)
                 self._restream_needed = True
 
-    def remove_disconnected_member(self, player_id: str) -> None:
+    def release_member(self, player_id: str) -> None:
         """
-        Remove a group member whose slimproto connection dropped.
+        Remove a group member that left the group stream on its own, e.g. it disconnected.
 
-        :param player_id: The player id of the disconnected member.
+        The other members keep playing without a restart of the stream.
+
+        :param player_id: The player id of the member that left.
         """
         if player_id not in self._attr_group_members:
             return

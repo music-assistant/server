@@ -201,6 +201,37 @@ async def test_cli_stop_of_a_protocol_device_only_stops_that_device(raw: list[st
 
 
 @pytest.mark.parametrize(
+    ("active_group", "expected_members"),
+    [
+        (None, ["leader", "other"]),
+        # a sync group player would add the member back right away
+        ("syncgroup_1", ["leader", "member", "other"]),
+    ],
+)
+async def test_cli_stop_of_a_synced_protocol_device_leaves_its_group(
+    active_group: str | None, expected_members: list[str]
+) -> None:
+    """A synced protocol-only device that stops leaves its group, unless a sync group holds it."""
+    provider, leader, update_state = _synced_member()
+    leader._attr_group_members.append("other")
+    leader._state = MagicMock(active_group=active_group)
+    provider.mass.players.get_player("member").type = PlayerType.PROTOCOL
+    for cmd in PLAYER_COMMANDS:
+        setattr(provider.mass.players, cmd, AsyncMock())
+
+    # the device sends its stop twice
+    for _ in range(2):
+        with pytest.raises(NotImplementedError):
+            await SqueezelitePlayerProvider._handle_cli_command(
+                provider, _cli_command("member", ["stop"])
+            )
+
+    assert _awaited_player_commands(provider) == []
+    assert leader.group_members == expected_members
+    assert update_state.call_count == (0 if active_group else 1)
+
+
+@pytest.mark.parametrize(
     ("player_id", "raw"),
     [
         ("p1", ["power", "1"]),
