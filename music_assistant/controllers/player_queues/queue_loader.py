@@ -740,9 +740,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
-        # save the user requesting the playback (clear it for anonymous playback)
+        # the user requesting the playback; None for anonymous playback
         playback_user = get_current_user()
-        queue_data.userid = playback_user.user_id if playback_user else None
+        playback_userid = playback_user.user_id if playback_user else None
         if playback_user:
             self.logger.info(
                 "User %s requested playback.", playback_user.display_name or playback_user.username
@@ -880,7 +880,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         self.mass.create_task(
                             self.mass.music.mark_item_played(
                                 media_item,
-                                userid=queue_data.userid,
+                                userid=playback_userid,
                                 queue_id=queue_id,
                                 user_initiated=True,
                             )
@@ -914,7 +914,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         resolved_items = await self._media_resolver._resolve_media_items(
                             media_item,
                             start_item_uri,
-                            userid=queue_data.userid,
+                            userid=playback_userid,
                             queue_id=queue_id,
                             sort_by=sort_by,
                             start_from_beginning=start_from_beginning,
@@ -931,6 +931,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 except (MusicAssistantError, ZeroDivisionError) as err:
                     self.logger.warning("Skipping %s: %s", item, err)
 
+        # the request resolved in time, so the queue plays for this user from here on
+        queue_data.userid = playback_userid
         if reset_enqueued:
             self._reset_enqueued_media_items(queue_data)
         # Use FIFO list to keep track of the last 10 played items
