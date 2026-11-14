@@ -87,6 +87,30 @@ def _entry(
         ),
         pytest.param(
             HASH,
+            _entry(
+                versions={VERSION: HASH, NEWER: "bbbb"},
+                latest=NEWER,
+                blocked_versions={VERSION: "Leaks the password"},
+            ),
+            True,
+            True,
+            Decision(Verdict.BLOCKED, "Leaks the password", URL, NEWER),
+            id="blocked version, latest on offer",
+        ),
+        pytest.param(
+            HASH,
+            _entry(
+                versions={VERSION: HASH, NEWER: "bbbb"},
+                latest=NEWER,
+                blocked_versions={VERSION: "Leaks the password"},
+            ),
+            True,
+            False,
+            Decision(Verdict.BLOCKED, "Leaks the password", URL),
+            id="blocked version in a copy of another line",
+        ),
+        pytest.param(
+            HASH,
             _entry(IndexStatus.BLOCKED),
             True,
             False,
@@ -214,6 +238,15 @@ def test_evaluate(
             _entry(versions={VERSION: HASH, NEWER: "bbbb"}, latest=NEWER),
             Decision(Verdict.LOAD),
             id="latest failed",
+        ),
+        pytest.param(
+            _entry(
+                versions={VERSION: HASH, NEWER: "bbbb"},
+                latest=NEWER,
+                blocked_versions={VERSION: "Leaks the password"},
+            ),
+            Decision(Verdict.BLOCKED, "Leaks the password", URL),
+            id="blocked version, latest failed",
         ),
         pytest.param(
             _entry(versions={VERSION: HASH, NEWER: "bbbb", "3.0.0": "cccc"}, latest="3.0.0"),

@@ -116,7 +116,7 @@ class InstalledProvider(DataClassDictMixin):
     previous_version: str | None = None
     # staged, becomes live at the next start of the server
     pending_version: str | None = None
-    # a version this server went back from, which it does not install again
+    # a version this server went back from, which it installs again only when the admin asks
     failed_version: str | None = None
 
 
@@ -147,6 +147,8 @@ class CommunityProvider(DataClassDictMixin):
     latest_version: str | None = None
     # the version that becomes active at the next start of the server
     pending_version: str | None = None
+    # a version this server went back from; installed again only when the admin asks for it
+    failed_version: str | None = None
     # when the provider entered the catalog
     added: str | None = None
     # when latest_version was released

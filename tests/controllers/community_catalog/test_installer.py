@@ -342,6 +342,22 @@ async def test_activate_keeps_the_version_before(tmp_path: Path, installer: Inst
     assert _staged(tmp_path) == []
 
 
+async def test_activate_again_keeps_the_previous_version(
+    tmp_path: Path, installer: Installer
+) -> None:
+    """Activating the live version again replaces the live folder and keeps the previous one."""
+    root = tmp_path / "community_providers"
+    _write(root / DOMAIN, {"v2.py": b"changed"})
+    _write(root / ".previous" / DOMAIN, {"v1.py": b""})
+    _write(root / ".staging" / DOMAIN, {"v2.py": b""})
+
+    await installer.activate(DOMAIN, reinstall=True)
+
+    assert _read(root / DOMAIN) == {"v2.py": b""}
+    assert _read(root / ".previous" / DOMAIN) == {"v1.py": b""}
+    assert _staged(tmp_path) == []
+
+
 async def test_activate_without_a_staged_version(tmp_path: Path, installer: Installer) -> None:
     """Without a staged version activate refuses and the live version stays."""
     root = tmp_path / "community_providers"

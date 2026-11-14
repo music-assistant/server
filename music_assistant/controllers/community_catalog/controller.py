@@ -156,15 +156,19 @@ class CommunityCatalogController(CoreController):
     async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
         await super().update_config(config, changed_keys)
-        if f"values/{CONF_ENABLED}" not in changed_keys or self.mass.safe_mode:
+        if self.mass.safe_mode:
             return
-        # what the list offers depends on the switch
-        self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
-        if self.config.get_value(CONF_ENABLED):
-            # a check that already runs is left to finish: it may be stopping a provider
-            self.mass.create_task(self._check_index(), task_id=_INDEX_CHECK)
-        elif not self._needs_index():
-            self._stop_checks()
+        if f"values/{CONF_ENABLED}" in changed_keys:
+            # what the list offers depends on the switch
+            self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
+            if self.config.get_value(CONF_ENABLED):
+                # a check that already runs is left to finish: it may be stopping a provider;
+                # the check installs the updates on offer after it
+                self.mass.create_task(self._check_index(), task_id=_INDEX_CHECK)
+            elif not self._needs_index():
+                self._stop_checks()
+        elif f"values/{CONF_AUTO_UPDATE}" in changed_keys and self._auto_update():
+            self.mass.create_task(self._apply_updates(), task_id=_UPDATE_RETRY)
 
     async def start(self) -> None:
         """
@@ -181,13 +185,13 @@ class CommunityCatalogController(CoreController):
             providers = await self._gate_installed()
             await self._update_at_start(providers)
             providers |= await self._dev_providers()
-            domains = await self._load_providers(providers)
+            domains, requirements_installed = await self._load_providers(providers)
             if domains or self._needs_index():
                 # clients fetched the manifests before these were registered
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
             await self._load_instances(domains)
             for domain in domains:
-                await self._judge(domain)
+                await self._judge(domain, requirements_installed=requirements_installed)
 
     def unavailable_reason(self, domain: str) -> ProviderError | None:
         """
@@ -330,7 +334,9 @@ class CommunityCatalogController(CoreController):
 
         An update that changes a Python package in use is finished by the next start of the
         server; until then the old version keeps running and the list says a restart is needed.
-        Returns the providers as `community_catalog/providers` does.
+        A version this server went back from (`failed_version` in the list) is only installed
+        again when asked for by domain. Returns the providers as `community_catalog/providers`
+        does.
 
         :param domain: The domain of the provider, None for every provider with an update on
             offer; one that cannot be updated is then skipped.
@@ -342,7 +348,7 @@ class CommunityCatalogController(CoreController):
         """
         self._raise_in_safe_mode()
         async with self._lock:
-            targets = self._targets(include_updates=True)
+            targets = self._targets(include_updates=True, retry_failed=domain is not None)
             if domain is not None:
                 if domain not in self._store.state.installed:
                     msg = f"{domain} is not installed from the community catalog"
@@ -382,12 +388,11 @@ class CommunityCatalogController(CoreController):
             self._schedule_check()
 
     async def _fetch_and_apply(self) -> bool:
-        """Fetch the index, apply it when it changed and return whether it did."""
+        """Fetch and apply the index, carry out what is to change, and return whether it changed."""
         async with self._lock:
             if changed := await self._index_client.fetch():
                 await self._apply_index()
-        if changed:
-            await self._apply_updates()
+        await self._apply_updates()
         return changed
 
     def _schedule_check(self) -> None:
@@ -466,7 +471,7 @@ class CommunityCatalogController(CoreController):
         self.logger.info("Installing community provider %s again: its files changed", domain)
         try:
             await self._installer.stage(domain, entry, installed.version)
-            await self._installer.activate(domain)
+            await self._installer.activate(domain, reinstall=True)
         except InstallError as err:
             return Decision(Verdict.REINSTALL_FAILED, str(err)), folder_hash
         return self._evaluate(domain, installed, installed.content_hash), installed.content_hash
@@ -547,9 +552,7 @@ class CommunityCatalogController(CoreController):
                     version,
                     domain,
                 )
-                with suppress(InstallError):
-                    await self._installer.discard(domain)
-                await self._save_installed(domain, replace(installed, pending_version=None))
+                await self._discard_staged(domain)
                 continue
             try:
                 await self._activate_version(domain, entry, version)
@@ -644,8 +647,7 @@ class CommunityCatalogController(CoreController):
         try:
             await self._dependencies.sync(staged[1])
         except Exception:
-            with suppress(InstallError):
-                await self._installer.discard(domain)
+            await self._discard_staged(domain)
             raise
         # what ran before runs again, also when the new version could not be made live; the
         # server loads the dependents again once the provider loaded
@@ -680,7 +682,7 @@ class CommunityCatalogController(CoreController):
 
         Returns its manifest and the resolved requirements of all, or None when they change a
         package that is imported: the version is then kept as the pending version. On failure
-        nothing stays staged; the live version is never touched.
+        nothing stays staged, so no version is pending; the live version is never touched.
 
         :param domain: The domain of the provider.
         :param entry: The provider in the index of this server's line.
@@ -692,9 +694,10 @@ class CommunityCatalogController(CoreController):
             another community provider.
         :raises DependenciesUnavailable: The requirements could not be resolved.
         """
-        manifest = await self._installer.stage(domain, entry, version)
         others = {name: reqs for name, reqs in requirements.items() if name != domain}
         try:
+            # staging replaces a pending version
+            manifest = await self._installer.stage(domain, entry, version)
             # the last one is refused on a clash
             resolved = await self._dependencies.resolve({**others, domain: manifest.requirements})
             if await self._dependencies.touches_imported(resolved.pins):
@@ -702,8 +705,7 @@ class CommunityCatalogController(CoreController):
                 await self._save_installed(domain, replace(installed, pending_version=version))
                 return None
         except Exception:
-            with suppress(InstallError):
-                await self._installer.discard(domain)
+            await self._discard_staged(domain)
             raise
         return manifest, resolved
 
@@ -731,6 +733,10 @@ class CommunityCatalogController(CoreController):
                 verified=False,
                 previous_version=installed.version,
                 pending_version=None,
+                # set again when it fails again
+                failed_version=None
+                if version == installed.failed_version
+                else installed.failed_version,
             ),
         )
         self._folder_hashes[domain] = release.content_hash
@@ -739,7 +745,7 @@ class CommunityCatalogController(CoreController):
             "Updated community provider %s from %s to %s", domain, installed.version, version
         )
 
-    async def _judge(self, domain: str) -> None:
+    async def _judge(self, domain: str, *, requirements_installed: bool = True) -> None:
         """
         Judge the load of an installed version that has not loaded on this server before.
 
@@ -748,6 +754,8 @@ class CommunityCatalogController(CoreController):
         and a previous version is kept, the server goes back to that version.
 
         :param domain: The domain of the provider, loaded just before.
+        :param requirements_installed: Whether its requirements were installed; when not, a
+            version that failed is gone back from but not marked as failed.
         """
         installed = self._store.state.installed.get(domain)
         decision = self._decisions.get(domain)
@@ -780,17 +788,18 @@ class CommunityCatalogController(CoreController):
         if verified:
             await self._save_installed(domain, replace(installed, verified=True))
         elif failed and installed.previous_version is not None:
-            await self._go_back(domain)
+            await self._go_back(domain, mark_failed=requirements_installed)
 
-    async def _go_back(self, domain: str) -> None:
+    async def _go_back(self, domain: str, *, mark_failed: bool) -> None:
         """
         Put back the previous version of an installed provider whose live version failed to load.
 
-        The failed version is never installed again. The previous version loads when the index
-        lets it and its requirements can be put back; otherwise the provider stays stopped with
-        the reason.
+        A version marked as failed is only installed again when the admin asks for it. The
+        previous version loads when the index lets it and its requirements can be put back;
+        otherwise the provider stays stopped with the reason.
 
         :param domain: The domain of the provider, which keeps a previous version.
+        :param mark_failed: Whether to mark the live version as failed.
         """
         installed = self._store.state.installed[domain]
         failed, previous = installed.version, installed.previous_version
@@ -816,7 +825,9 @@ class CommunityCatalogController(CoreController):
             self.logger.warning("Could not go back: %s", err)
             decision = Decision(Verdict.WENT_BACK, failed)
         else:
-            decision = await self._record_previous(domain, failed, requirements)
+            decision = await self._record_previous(
+                domain, failed, requirements, mark_failed=mark_failed
+            )
         self._decisions[domain] = decision
         if decision.verdict == Verdict.LOAD:
             await self._register(folder)
@@ -833,7 +844,7 @@ class CommunityCatalogController(CoreController):
             await self._load_instances({domain})
 
     async def _record_previous(
-        self, domain: str, failed: str, requirements: dict[str, list[str]]
+        self, domain: str, failed: str, requirements: dict[str, list[str]], *, mark_failed: bool
     ) -> Decision:
         """
         Record the restored previous version of a provider and put its requirements back.
@@ -844,6 +855,7 @@ class CommunityCatalogController(CoreController):
         :param failed: The version that failed to load.
         :param requirements: The requirements of the other community providers that load, by
             domain.
+        :param mark_failed: Whether to mark the failed version as failed.
         """
         installed = self._store.state.installed[domain]
         assert installed.previous_version is not None
@@ -860,7 +872,7 @@ class CommunityCatalogController(CoreController):
             verified=True,
             previous_version=None,
             pending_version=None,
-            failed_version=failed,
+            failed_version=failed if mark_failed else installed.failed_version,
         )
         await self._save_installed(domain, restored)
         self._folder_hashes[domain] = folder_hash
@@ -897,7 +909,20 @@ class CommunityCatalogController(CoreController):
             replace(state, installed={**state.installed, domain: installed})
         )
 
-    def _targets(self, *, include_updates: bool) -> dict[str, str]:
+    async def _discard_staged(self, domain: str) -> None:
+        """
+        Remove the staged version of an installed provider, which is then no longer pending.
+
+        :param domain: The domain of the provider.
+        :raises OSError: The state cannot be written.
+        """
+        with suppress(InstallError):
+            await self._installer.discard(domain)
+        installed = self._store.state.installed[domain]
+        if installed.pending_version is not None:
+            await self._save_installed(domain, replace(installed, pending_version=None))
+
+    def _targets(self, *, include_updates: bool, retry_failed: bool = False) -> dict[str, str]:
         """
         Return the version each installed provider is to change to, by domain.
 
@@ -905,6 +930,7 @@ class CommunityCatalogController(CoreController):
 
         :param include_updates: Whether to include the updates on offer, besides the switches
             from a version that is no longer listed.
+        :param retry_failed: Whether to include a version this server went back from.
         """
         builtin = {
             manifest.domain
@@ -913,7 +939,8 @@ class CommunityCatalogController(CoreController):
         }
         targets: dict[str, str] = {}
         for domain, installed in self._store.state.installed.items():
-            decision = self._evaluate(domain, installed, self._folder_hashes.get(domain))
+            judged = replace(installed, failed_version=None) if retry_failed else installed
+            decision = self._evaluate(domain, judged, self._folder_hashes.get(domain))
             if (
                 decision.version is None
                 or decision.version == installed.pending_version
@@ -1036,6 +1063,7 @@ class CommunityCatalogController(CoreController):
             installed_version=installed.version,
             latest_version=latest,
             pending_version=installed.pending_version,
+            failed_version=installed.failed_version,
             added=entry.added if entry is not None else None,
             released=release.released if release is not None else None,
             reason=reason,
@@ -1145,18 +1173,21 @@ class CommunityCatalogController(CoreController):
             self.logger.warning("Not loading the provider in %s: %s", provider_path, reason)
         return providers
 
-    async def _load_providers(self, providers: dict[str, ProviderManifest]) -> set[str]:
+    async def _load_providers(
+        self, providers: dict[str, ProviderManifest]
+    ) -> tuple[set[str], bool]:
         """
         Install the requirements of community providers, then register them.
 
-        A provider whose requirements cannot be installed is left out. Returns the domains
-        that were registered.
+        A provider whose requirements clash is left out. Returns the domains that were
+        registered, and whether their requirements were installed.
 
         :param providers: The manifest of each provider, by provider folder.
         """
         if not providers:
-            return set()
+            return set(), True
         accepted = {manifest.domain: manifest.requirements for manifest in providers.values()}
+        synced = True
         while True:
             try:
                 await self._dependencies.sync(await self._dependencies.resolve(accepted))
@@ -1169,12 +1200,13 @@ class CommunityCatalogController(CoreController):
             except DependenciesUnavailable as err:
                 # a provider that misses a requirement fails to import, which its instance shows
                 self.logger.warning("Could not install the community requirements: %s", err)
+                synced = False
             break
         self._dependencies.activate()
         for provider_path, manifest in providers.items():
             if manifest.domain in accepted:
                 await self._register(provider_path)
-        return set(accepted)
+        return set(accepted), synced
 
     async def _register(self, provider_path: str | Path) -> None:
         """

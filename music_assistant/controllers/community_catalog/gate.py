@@ -44,7 +44,8 @@ class Decision:
     detail: str | None = None
     # where the catalog explains a block
     url: str | None = None
-    # the version to switch to, or the update on offer for a provider that loads
+    # the version to switch to, also from a blocked version, or the update on offer for a
+    # provider that loads
     version: str | None = None
 
 
@@ -69,6 +70,10 @@ def evaluate(
     """
     if not has_index:
         return Decision(Verdict.CATALOG_UNREACHABLE)
+    offered = entry.offered_version if entry is not None and own_line else None
+    if offered == installed.failed_version:
+        # a version the server went back from is not tried again
+        offered = None
     if entry is not None and (
         entry.status == IndexStatus.BLOCKED or installed.version in entry.blocked_versions
     ):
@@ -77,7 +82,8 @@ def evaluate(
             if entry.status == IndexStatus.BLOCKED
             else entry.blocked_versions[installed.version]
         )
-        return Decision(Verdict.BLOCKED, reason, entry.reason_url)
+        # a blocked version switches to the version the catalog offers instead
+        return Decision(Verdict.BLOCKED, reason, entry.reason_url, offered)
     if not own_line:
         # the versions of another line cannot be installed again here
         if folder_hash == installed.content_hash:
@@ -85,10 +91,6 @@ def evaluate(
         return Decision(Verdict.CATALOG_UNREACHABLE)
     if entry is None:
         return Decision(Verdict.NOT_LISTED)
-    offered = entry.offered_version
-    if offered == installed.failed_version:
-        # a version the server went back from is not tried again
-        offered = None
     release = entry.versions.get(installed.version)
     if release is None or release.content_hash != installed.content_hash:
         if offered:

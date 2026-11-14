@@ -98,15 +98,17 @@ class Installer:
                 await asyncio.to_thread(_discard, staged)
             raise
 
-    async def activate(self, domain: str) -> None:
+    async def activate(self, domain: str, *, reinstall: bool = False) -> None:
         """
         Make the staged version of a provider live, and keep the live one as the previous version.
 
         :param domain: The domain of the provider, staged before.
+        :param reinstall: Whether the staged version is the live version again: the live one is
+            then replaced and the previous version stays.
         :raises InstallError: There is no staged version, or the folders cannot be renamed.
         """
         try:
-            await asyncio.to_thread(self._activate, domain)
+            await asyncio.to_thread(self._activate, domain, reinstall)
         except OSError as err:
             msg = f"Could not activate {domain}: {err}"
             raise InstallError(msg) from err
@@ -225,16 +227,19 @@ class Installer:
                 async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
                     await file.write(chunk)
 
-    def _activate(self, domain: str) -> None:
-        """Rename the staged version to the live one and the live one to the previous (blocking)."""
+    def _activate(self, domain: str, reinstall: bool) -> None:
+        """Rename the staged version to live, and live to previous unless reinstalled (blocking)."""
         live, previous, staged = self._folders(domain)
         if not staged.is_dir():
             msg = f"{domain} has no staged version"
             raise InstallError(msg)
-        _delete(previous)
-        previous.parent.mkdir(exist_ok=True)
-        if live.exists():
-            live.rename(previous)
+        if reinstall:
+            _delete(live)
+        else:
+            _delete(previous)
+            previous.parent.mkdir(exist_ok=True)
+            if live.exists():
+                live.rename(previous)
         staged.rename(live)
 
     def _restore(self, domain: str) -> None:

@@ -12,6 +12,7 @@ from music_assistant_models.enums import EventType, PlaybackState
 from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant import providers as providers_package
+from music_assistant.controllers.community_catalog import dependencies
 from music_assistant.controllers.community_catalog.controller import (
     _INDEX_CHECK,
     _REASONS,
@@ -19,9 +20,11 @@ from music_assistant.controllers.community_catalog.controller import (
 )
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
 from music_assistant.controllers.community_catalog.gate import Verdict
+from music_assistant.controllers.community_catalog.installer import InstallError
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from tests.controllers.community_catalog.conftest import ADDED, RELEASED, build_archive
 from tests.controllers.community_catalog.test_controller import (  # noqa: F401 - a fixture
+    DEV_REQUIREMENT,
     REQUIREMENT,
     _assert_not_loaded,
     _index,
@@ -188,7 +191,7 @@ async def test_update_refused_on_a_clash(
 
 
 async def test_failed_update_goes_back(tmp_path: Path, registry: Registry, github: GitHub) -> None:
-    """A new version that fails with a bug goes back; it is not offered again, a newer one is."""
+    """A new version that fails with a bug goes back; it is not updated to again, a newer one is."""
     entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
     await _install(tmp_path, registry, {DOMAIN: entry})
     folder = _catalog(tmp_path)
@@ -205,8 +208,9 @@ async def test_failed_update_goes_back(tmp_path: Path, registry: Registry, githu
         assert _installed(folder)["previous_version"] is None
         assert not (folder / ".previous" / DOMAIN).exists()
         assert _states(providers)[DOMAIN] == CommunityProviderState.INSTALLED
-        with pytest.raises(ActionUnavailable, match="no update"):
-            await mass.community_catalog.update_providers(DOMAIN)
+        assert _provider(providers).failed_version == NEW
+        await mass.community_catalog.update_providers()
+        _assert_runs(mass, DOMAIN, OLD)
 
         await _publish(mass, registry, github, {NEWER: _files(DOMAIN, NEWER)}, entry, '"three"')
         assert _states(await mass.community_catalog.get_providers())[DOMAIN] == (
@@ -443,6 +447,356 @@ async def test_update_refused(tmp_path: Path, registry: Registry, github: GitHub
     async with _server(tmp_path, safe_mode=True) as mass:
         with pytest.raises(ActionUnavailable, match="safe mode"):
             await mass.community_catalog.update_providers()
+
+
+async def test_failed_version_at_start_without_requirements(
+    tmp_path: Path, registry: Registry, github: GitHub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A version that fails at a start without its requirements goes back, and is offered again."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    folder = _catalog(tmp_path)
+
+    async with _server(tmp_path) as mass:
+        new_files = _files(
+            DOMAIN, NEW, [f"{REQUIREMENT}==2.0", DEV_REQUIREMENT], imports="import dev_requirement"
+        )
+        await _publish(mass, registry, github, {NEW: new_files}, entry)
+        await mass.community_catalog.update_providers(DOMAIN)
+        assert _installed(folder)["pending_version"] == NEW
+    # the package index cannot be reached
+    monkeypatch.setattr(
+        dependencies, "_UV_INDEX_ARGS", ["--no-index", "--find-links", str(tmp_path / "missing")]
+    )
+
+    async with _server(tmp_path) as mass:
+        _assert_runs(mass, DOMAIN, OLD)
+        installed = _installed(folder)
+        assert (installed["version"], installed["verified"]) == (OLD, True)
+        assert installed["failed_version"] is None
+        provider = _provider(await mass.community_catalog.get_providers())
+        assert provider.state == CommunityProviderState.UPDATE_AVAILABLE
+        assert provider.latest_version == NEW
+
+
+async def test_update_by_name_installs_a_failed_version(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A version marked as failed is installed only when asked for by name, which drops the mark."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    folder = _catalog(tmp_path)
+    _add_version(github, entry, NEW, _files(DOMAIN, NEW))
+    registry.document = _index({DOMAIN: entry})
+    registry.etag = '"two"'
+    state = _state(folder)
+    state["installed"][DOMAIN]["failed_version"] = NEW
+    (folder / "state.json").write_text(json.dumps(state))
+
+    async with _server(tmp_path) as mass:
+        provider = _provider(await mass.community_catalog.get_providers())
+        assert (provider.state, provider.failed_version) == (CommunityProviderState.INSTALLED, NEW)
+        await mass.community_catalog.update_providers()
+        _assert_runs(mass, DOMAIN, OLD)
+
+        providers = await mass.community_catalog.update_providers(DOMAIN)
+
+        _assert_runs(mass, DOMAIN, NEW)
+        assert _provider(providers).failed_version is None
+        assert _installed(folder)["failed_version"] is None
+
+
+async def test_reinstall_keeps_the_previous_version(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """Installing a changed folder of a version that is not verified again keeps the version before."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    folder = _catalog(tmp_path)
+    failing = _files(
+        DOMAIN,
+        NEW,
+        imports="from music_assistant_models.errors import LoginFailed",
+        setup='raise LoginFailed("wrong password")',
+    )
+
+    async with _server(tmp_path) as mass:
+        await _publish(mass, registry, github, {NEW: failing}, entry)
+        await mass.community_catalog.update_providers(DOMAIN)
+        assert _installed(folder)["verified"] is False
+    (folder / DOMAIN / "extra.py").write_text("")
+
+    async with _server(tmp_path) as mass:
+        assert not (folder / DOMAIN / "extra.py").exists()
+        assert _code_version(folder / DOMAIN) == NEW
+        assert _code_version(folder / ".previous" / DOMAIN) == OLD
+        assert _installed(folder)["previous_version"] == OLD
+
+
+async def test_failed_stage_drops_the_pending_version(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A pending version that staging a newer one gave up is no longer pending."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    folder = _catalog(tmp_path)
+
+    async with _server(tmp_path) as mass:
+        new_files = _files(DOMAIN, NEW, [f"{REQUIREMENT}==2.0"])
+        await _publish(mass, registry, github, {NEW: new_files}, entry)
+        await mass.community_catalog.update_providers(DOMAIN)
+        await _publish(mass, registry, github, {NEWER: _files(DOMAIN, NEWER)}, entry, '"three"')
+        github.status = 503
+
+        with pytest.raises(InstallError, match="503"):
+            await mass.community_catalog.update_providers(DOMAIN)
+
+        assert _installed(folder)["pending_version"] is None
+        assert not (folder / ".staging" / DOMAIN).exists()
+        provider = _provider(await mass.community_catalog.get_providers())
+        assert (provider.state, provider.pending_version) == (
+            CommunityProviderState.UPDATE_AVAILABLE,
+            None,
+        )
+        _assert_runs(mass, DOMAIN, OLD)
+
+
+async def test_failed_switch_is_tried_again_by_the_next_check(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A switch that failed at start is done by the next check, also when the index did not change."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    registry.document = _index({DOMAIN: _entry(github, DOMAIN, {NEW: _files(DOMAIN, NEW)})})
+    registry.etag = '"two"'
+    github.status = 503
+
+    async with _server(tmp_path) as mass:
+        reason = _REASONS[Verdict.NOT_FOR_THIS_VERSION]
+        await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
+        github.status = 200
+
+        await mass.create_task(mass.community_catalog._check_index(), task_id=_INDEX_CHECK)
+
+        assert registry.requests[-1][1] == '"two"'
+        _assert_runs(mass, DOMAIN, NEW)
+
+
+@pytest.mark.parametrize("turned_on", ["auto_update", "catalog_enabled"])
+async def test_turning_on_auto_update_installs_the_updates(
+    tmp_path: Path, registry: Registry, github: GitHub, turned_on: str
+) -> None:
+    """Turning on automatic updates, or the switch while they are on, installs the updates on offer."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+
+    async with _server(tmp_path) as mass:
+        if turned_on == "catalog_enabled":
+            await mass.config.save_core_config(
+                "community_catalog", {"catalog_enabled": False, "auto_update": True}
+            )
+        await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW)}, entry)
+        _assert_runs(mass, DOMAIN, OLD)
+
+        await mass.config.save_core_config(
+            "community_catalog", {"catalog_enabled": True, "auto_update": True}
+        )
+        task = mass.get_task(_UPDATE_RETRY if turned_on == "auto_update" else _INDEX_CHECK)
+        assert task is not None
+        await task
+
+        _assert_runs(mass, DOMAIN, NEW)
+
+
+async def test_no_auto_update_while_switched_off(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """Automatic updates saved as on do nothing while the catalog is switched off."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+
+    async with _server(tmp_path) as mass:
+        await mass.config.save_core_config(
+            "community_catalog", {"catalog_enabled": False, "auto_update": True}
+        )
+        await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW)}, entry)
+        _assert_runs(mass, DOMAIN, OLD)
+
+    async with _server(tmp_path) as mass:
+        _assert_runs(mass, DOMAIN, OLD)
+        assert _states(await mass.community_catalog.get_providers())[DOMAIN] == (
+            CommunityProviderState.UPDATE_AVAILABLE
+        )
+
+
+async def test_live_switch(tmp_path: Path, registry: Registry, github: GitHub) -> None:
+    """A version that leaves the index while it runs is switched to the latest one."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    folder = _catalog(tmp_path)
+
+    async with _server(tmp_path) as mass:
+        replacement = _entry(github, DOMAIN, {NEW: _files(DOMAIN, NEW)})
+
+        await _publish(mass, registry, github, {}, replacement)
+
+        _assert_runs(mass, DOMAIN, NEW)
+        assert (_installed(folder)["version"], _installed(folder)["previous_version"]) == (NEW, OLD)
+
+
+async def test_blocked_version_switches_to_the_latest(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A running version that is blocked is stopped and switched to the version on offer."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+
+    async with _server(tmp_path) as mass:
+        entry["blocked_versions"] = {OLD: "Leaks the password"}
+
+        await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW)}, entry)
+
+        _assert_runs(mass, DOMAIN, NEW)
+
+
+@pytest.mark.parametrize("how", ["pending", "auto_update"])
+async def test_going_back_at_start(
+    tmp_path: Path, registry: Registry, github: GitHub, how: str
+) -> None:
+    """A version made live at start that fails with a bug goes back before the start is done."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    await _install(tmp_path, registry, {DOMAIN: entry}, auto_update=how == "auto_update")
+    folder = _catalog(tmp_path)
+    if how == "pending":
+        # no longer needing a package that is imported waits for a restart
+        broken = _files(DOMAIN, NEW, setup='raise TypeError("broken")')
+        async with _server(tmp_path) as mass:
+            await _publish(mass, registry, github, {NEW: broken}, entry)
+            await mass.community_catalog.update_providers(DOMAIN)
+            assert _installed(folder)["pending_version"] == NEW
+    else:
+        broken = _files(DOMAIN, NEW, [f"{REQUIREMENT}==1.0"], setup='raise TypeError("broken")')
+        _add_version(github, entry, NEW, broken)
+        registry.document = _index({DOMAIN: entry})
+        registry.etag = '"two"'
+
+    async with _server(tmp_path) as mass:
+        _assert_runs(mass, DOMAIN, OLD)
+        assert sys.modules[f"{providers_package.__name__}.{DOMAIN}"].REQUIREMENT_VERSION == "1.0"
+        installed = _installed(folder)
+        assert (installed["version"], installed["failed_version"]) == (OLD, NEW)
+        assert installed["pending_version"] is None
+
+
+async def test_going_back_waits_for_a_restart(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """Going back to requirements that change a package in use stops the provider until a restart."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    folder = _catalog(tmp_path)
+
+    async with _server(tmp_path) as mass:
+        broken = _files(DOMAIN, NEW, [f"{REQUIREMENT}==2.0"], setup='raise TypeError("broken")')
+        await _publish(mass, registry, github, {NEW: broken}, entry)
+        await mass.community_catalog.update_providers(DOMAIN)
+
+    async with _server(tmp_path) as mass:
+        reason = _REASONS[Verdict.RESTART_TO_GO_BACK].format(NEW)
+        await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
+        assert _code_version(folder / DOMAIN) == OLD
+
+    async with _server(tmp_path) as mass:
+        _assert_runs(mass, DOMAIN, OLD)
+        assert sys.modules[f"{providers_package.__name__}.{DOMAIN}"].REQUIREMENT_VERSION == "1.0"
+
+
+async def test_switch_of_a_stopped_provider_waits_for_a_restart(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A switch of a provider that does not run, which changes a package in use, waits for a restart."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    other = _entry(github, OTHER, {OLD: _files(OTHER, OLD, [REQUIREMENT])})
+    await _install(tmp_path, registry, {DOMAIN: entry, OTHER: other})
+    new_files = _files(DOMAIN, NEW, [f"{REQUIREMENT}==2.0"])
+    registry.document = _index({DOMAIN: _entry(github, DOMAIN, {NEW: new_files}), OTHER: other})
+    registry.etag = '"two"'
+    github.status = 503
+
+    async with _server(tmp_path) as mass:
+        github.status = 200
+
+        await mass.community_catalog.refresh()
+
+        reason = _REASONS[Verdict.RESTART_TO_UPDATE].format(NEW)
+        await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
+        assert _installed(_catalog(tmp_path))["pending_version"] == NEW
+        _assert_runs(mass, OTHER, OLD)
+
+    async with _server(tmp_path) as mass:
+        _assert_runs(mass, DOMAIN, NEW)
+
+
+async def test_going_back_reloads_a_dependent(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A provider that depends on one that goes back is stopped and loaded again with it."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    dependent = _entry(github, OTHER, {OLD: _files(OTHER, OLD, depends_on=DOMAIN)})
+    await _install(tmp_path, registry, {DOMAIN: entry, OTHER: dependent})
+
+    async with _server(tmp_path) as mass:
+        broken = _files(DOMAIN, NEW, setup='raise TypeError("broken")')
+        await _publish(mass, registry, github, {NEW: broken}, entry)
+        catalog = mass.community_catalog
+        with patch.object(catalog, "_stop", wraps=catalog._stop) as stop:
+            await catalog.update_providers(DOMAIN)
+
+        # once for the update, once for going back
+        assert [c.args[0] for c in stop.call_args_list].count(OTHER) == 2
+        _assert_runs(mass, DOMAIN, OLD)
+        _assert_runs(mass, OTHER, OLD)
+
+
+async def test_going_back_without_the_previous_folder(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """When the previous version cannot be put back, the failed version does not run."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+
+    async with _server(tmp_path) as mass:
+        broken = _files(DOMAIN, NEW, setup='raise TypeError("broken")')
+        await _publish(mass, registry, github, {NEW: broken}, entry)
+        installer = mass.community_catalog._installer
+        with patch.object(installer, "restore", side_effect=InstallError("no previous version")):
+            await mass.community_catalog.update_providers(DOMAIN)
+
+        reason = _REASONS[Verdict.WENT_BACK].format(NEW)
+        await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
+
+
+@pytest.mark.parametrize("kept", ["pending", "previous"])
+async def test_remove_with_another_version(
+    tmp_path: Path, registry: Registry, github: GitHub, kept: str
+) -> None:
+    """Removing a provider that keeps a pending or previous version leaves nothing of it behind."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD, [f"{REQUIREMENT}==1.0"])})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    folder = _catalog(tmp_path)
+    requirement = f"{REQUIREMENT}==2.0" if kept == "pending" else f"{REQUIREMENT}==1.0"
+
+    async with _server(tmp_path) as mass:
+        await _publish(mass, registry, github, {NEW: _files(DOMAIN, NEW, [requirement])}, entry)
+        await mass.community_catalog.update_providers(DOMAIN)
+        staging = ".staging" if kept == "pending" else ".previous"
+        assert (folder / staging / DOMAIN).is_dir()
+
+        await mass.community_catalog.remove_provider(DOMAIN)
+
+        for location in (folder, folder / ".staging", folder / ".previous"):
+            assert not (location / DOMAIN).exists()
+        assert DOMAIN not in _state(folder)["installed"]
 
 
 async def _install(
