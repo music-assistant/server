@@ -587,7 +587,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         prev_media_name = prev_media.title or prev_media.uri if prev_media else None
         # An announcement is transient: a player that is still busy with an earlier
         # announcement holds no user content, so there is nothing to restore for it.
-        # The raw media attribute is read here (instead of state.current_media, which
+        # The raw media attribute is read here (instead of player.current_media, which
         # reports the active queue item) since it tells what the device is playing.
         device_media = (
             output_protocol.current_media

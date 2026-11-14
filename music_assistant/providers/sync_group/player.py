@@ -299,7 +299,7 @@ class SyncGroupPlayer(PlayerProtocol):
     def group_members(self) -> list[str]:
         """Return the live or configured members of this sync group."""
         if sync_leader := self.sync_leader:
-            # Use state.group_members here so protocol-specific ids get correctly
+            # Use the leader's final group_members here so protocol-specific ids get correctly
             # translated. An active leader with no live children is still the sole
             # member; configured members must not be presented as live in that state.
             return sync_leader.group_members or [sync_leader.player_id]
@@ -1218,7 +1218,7 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         if session is None:
             return
-        # the provider's own group_members, not state.group_members: the latter is
+        # the provider's own group_members, not the player's: the latter is
         # set-derived and loses the member order. Not live_session_members either:
         # that answers who is in the session, not in which order, and a provider may
         # derive it without preserving any.
@@ -1265,14 +1265,14 @@ class SyncGroupPlayer(PlayerProtocol):
 
     def _update_attributes(self) -> None:
         """Update dynamic attributes."""
-        # NOTE on what reads from `.state.*` vs the leader's raw attributes below:
+        # NOTE on what reads the leader's final values vs its raw attributes below:
         # the current media and active source of a player that has
         # an ``active_group`` route through the active_group's state — so reading
-        # ``sync_leader.state.current_media`` from inside the group would loop
-        # back through our own state derivation (group → leader.state →
+        # ``sync_leader.current_media`` from inside the group would loop
+        # back through our own state derivation (group → leader's state →
         # active_group=group → group). For those two we MUST use the leader's
         # raw attributes. ``playback_state`` / ``elapsed_time`` do not route via
-        # active_group and are safe to read from ``.state.*``.
+        # active_group and are safe to read from the leader's final values.
         if (sync_leader := self.sync_leader) is None:
             # no sync leader, reset playback-related attributes to default values
             self._attr_playback_state = PlaybackState.IDLE
@@ -1287,7 +1287,7 @@ class SyncGroupPlayer(PlayerProtocol):
         self._attr_playback_state = new_state
         self._attr_elapsed_time = sync_leader.elapsed_time
         self._attr_elapsed_time_last_updated = sync_leader.elapsed_time_last_updated
-        # Don't use state.current_media here: active_group routes it back to this group.
+        # Don't use the leader's current_media here: active_group routes it back to this group.
         # Read raw media from the active session instead; the native leader may only
         # report its input (e.g. AirPlay), without the queue identity needed for updates.
         session = self._active_session_protocol()

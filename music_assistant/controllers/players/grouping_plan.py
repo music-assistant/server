@@ -1833,7 +1833,7 @@ class _Planner(GroupRules):
         if not child or not child.available_for_playback:
             self._note(logging.WARNING, "Player %s is not available", child_id)
             return False
-        # state.can_group_with already handles all expansion and translation
+        # can_group_with already handles all expansion and translation
         if child_id not in target.can_group_with:
             self._note(
                 logging.WARNING, "Player %s can not be grouped with %s", child.name, target.name

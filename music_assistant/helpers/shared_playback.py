@@ -185,7 +185,7 @@ class SharedPlaybackSession:
             return False
         if PlayerFeature.SET_MEMBERS not in host_player.supported_features:
             return False
-        # state.can_group_with handles all protocol expansion and translation,
+        # can_group_with handles all protocol expansion and translation,
         # for both a real venue player and a (virtual) Sendspin host player
         return (
             web_player_id in host_player.can_group_with

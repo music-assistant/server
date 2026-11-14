@@ -1221,7 +1221,7 @@ class TestCmdUngroupNewBranches:
         group_protocol._attr_group_members = ["member"]
         group_protocol._attr_supported_features = {PlayerFeature.POWER}
 
-        # populate state.type / state.power_control / state.group_members
+        # populate type / power_control / group_members
         _refresh(group)
 
         called: dict[str, bool | str] = {}

@@ -566,7 +566,7 @@ class TestAudioSourceElapsedTimeOverride:
     """
     Verify PlayerState.elapsed_time prefers what the live source reports.
 
-    The override is load-bearing — player.state.corrected_elapsed_time is
+    The override is load-bearing — player.corrected_elapsed_time is
     consumed by the queue controller's resume logic and several player
     providers; without it those flows would run against the byte-consumed
     clock and lose upstream seeks / pause-resume on a live source.

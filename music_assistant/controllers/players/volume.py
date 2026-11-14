@@ -369,7 +369,7 @@ class VolumeMixin(_PlayerControllerBase):
         min_volume, max_volume = self._get_volume_limits(player_id)
         if min_volume == 0 and max_volume == 100:
             return False
-        # state.volume_level is the resolved logical volume, available for all
+        # player.volume_level is the resolved logical volume, available for all
         # volume control types; a device volume outside the configured range
         # surfaces here as a value outside 0-100 (scaling does not clamp)
         logical_volume = player.volume_level
