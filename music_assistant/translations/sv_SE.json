@@ -835,5 +835,11 @@
   "common.media.folder.romantic.name": "Romantiskt",
   "common.media.folder.sad.name": "Sorgset",
   "common.media.folder.sound_effects.name": "Ljudeffekter",
-  "common.media.folder.spring.name": "Vår"
+  "common.media.folder.spring.name": "Vår",
+  "common.media.folder.summer.name": "Sommar",
+  "common.media.folder.tracks.name": "Spår",
+  "common.media.folder.winter.name": "Vinter",
+  "common.media.folder.workout.name": "Träning",
+  "common.media.genre.afrobeats.description": "Afrobeats, som inte ska förväxlas med afrobeat eller afroswing, är ett samlingsbegrepp för populärmusik från Västafrika och diasporan. Genren utvecklades först i Nigeria, Ghana och Storbritannien under 2000- och 2010-talen. Afrobeats är mindre en stil i sig än en beteckning för sammansmältningen av ljud som strömmar ut från Nigeria och Ghana. Genrer som hiplife, jùjúmusik, highlife, azontomusik och naijabeats samlades bland annat under samlingsnamnet ”Afrobeats”.",
+  "common.media.genre.afrobeats.name": "Afrobeats (västafrikansk urban popmusik)"
 }
