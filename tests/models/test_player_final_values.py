@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
@@ -55,15 +56,18 @@ def test_a_player_gives_the_fields_of_its_state(player: Player) -> None:
 
 def test_a_player_gives_what_its_state_calculates(player: Player) -> None:
     """Each value the state calculates from its fields is that value on the player."""
+    # a state whose calculated values differ from the fields they are calculated from:
+    # it plays, so its position moves on with the clock, and its media has no queue item
     player._state = make_player_state(
         player.player_id,
-        playback_state=PlaybackState.PAUSED,
+        playback_state=PlaybackState.PLAYING,
         elapsed_time=12.5,
         elapsed_time_last_updated=1.0,
-        current_media=PlayerMedia(uri="http://stream", queue_item_id="item_1"),
+        current_media=PlayerMedia(uri="http://stream"),
     )
 
-    for name in STATE_PROPERTIES:
-        value = getattr(player, name)
-        assert value is not None, name
-        assert value == getattr(player.state, name), name
+    with patch("time.time", return_value=11.0):
+        for name in STATE_PROPERTIES:
+            value = getattr(player, name)
+            assert value is not None, name
+            assert value == getattr(player.state, name), name
