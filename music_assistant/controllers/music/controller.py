@@ -1981,7 +1981,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(  # noqa: PLR0913, PLR0915
+    async def mark_item_played(  # noqa: PLR0913
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
@@ -2079,41 +2079,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # the column default of 1.0 for a brand new row.
             if playback_speed is not None:
                 params["playback_speed"] = playback_speed
-            playlog_written = False
-            for user_id in user_ids:
-                params["userid"] = user_id
-                params["timestamp"] = timestamp
-                if (provider_instance_id or progress_timestamp is not None) and (
-                    row := await self.database.get_row(
-                        DB_TABLE_MEDIA_PROGRESS,
-                        {key: params[key] for key in PLAYLOG_CONFLICT_KEYS},
-                    )
-                ):
-                    if (
-                        provider_instance_id
-                        and bool(row["fully_played"]) == fully_played
-                        and row["seconds_played"] == seconds_played
-                    ):
-                        # provider syncs repeat unchanged progress, which must not stamp it as
-                        # just played: the timestamp orders the in progress items
-                        params["timestamp"] = row["timestamp"]
-                    elif progress_timestamp is not None and row["timestamp"] > timestamp:
-                        # the stored progress is newer than the one reported
-                        continue
-                recorded_play = await self._record_completed_play(
-                    params, user_is_resolved=user is not None
-                )
-                await self._upsert_playlog(params)
-                play_history_written = recorded_play or play_history_written
-                playlog_written = True
-            await self.database.commit()
-            if playlog_written:
-                self._signal_playlog_updated(
-                    reference,
-                    fully_played=fully_played,
-                    seconds_played=seconds_played or 0,
-                    userid=user.user_id if user else None,
-                )
+            play_history_written = await self._store_progress(
+                reference,
+                params,
+                user_ids,
+                user,
+                provider_report=bool(provider_instance_id),
+                timestamp_reported=progress_timestamp is not None,
+            )
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -2233,11 +2206,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for user_id in user_ids:
             params["userid"] = user_id
             if (
-                progress_timestamp is not None
-                and (row := await self.database.get_row(DB_TABLE_MEDIA_PROGRESS, params))
-                and row["timestamp"] > reset_timestamp
+                await self._timestamp_to_store(
+                    params,
+                    reset_timestamp,
+                    provider_report=False,
+                    timestamp_reported=progress_timestamp is not None,
+                )
+                is None
             ):
-                # the stored progress is newer than the reset the provider reports
                 continue
             await self.database.delete(DB_TABLE_MEDIA_PROGRESS, params)
             playlog_reset = True
@@ -4082,6 +4058,75 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
             entry,
         )
+
+    async def _store_progress(
+        self,
+        reference: MediaItemType | ItemMapping,
+        entry: dict[str, Any],
+        user_ids: list[str],
+        user: User | None,
+        *,
+        provider_report: bool,
+        timestamp_reported: bool,
+    ) -> bool:
+        """Store a reported progress for each user; return whether a completed play was recorded."""
+        timestamp = entry["timestamp"]
+        play_history_written = False
+        playlog_written = False
+        for user_id in user_ids:
+            entry["userid"] = user_id
+            stored_timestamp = await self._timestamp_to_store(
+                entry,
+                timestamp,
+                provider_report=provider_report,
+                timestamp_reported=timestamp_reported,
+            )
+            if stored_timestamp is None:
+                continue
+            entry["timestamp"] = stored_timestamp
+            recorded_play = await self._record_completed_play(
+                entry, user_is_resolved=user is not None
+            )
+            await self._upsert_playlog(entry)
+            play_history_written = recorded_play or play_history_written
+            playlog_written = True
+        await self.database.commit()
+        if playlog_written:
+            self._signal_playlog_updated(
+                reference,
+                fully_played=entry["fully_played"],
+                seconds_played=entry["seconds_played"] or 0,
+                userid=user.user_id if user else None,
+            )
+        return play_history_written
+
+    async def _timestamp_to_store(
+        self,
+        entry: dict[str, Any],
+        timestamp: float,
+        *,
+        provider_report: bool,
+        timestamp_reported: bool,
+    ) -> float | None:
+        """Return the timestamp to store a reported progress with, None if the stored is newer."""
+        if not (provider_report or timestamp_reported) or not (
+            row := await self.database.get_row(
+                DB_TABLE_MEDIA_PROGRESS, {key: entry[key] for key in PLAYLOG_CONFLICT_KEYS}
+            )
+        ):
+            return timestamp
+        if (
+            provider_report
+            and bool(row["fully_played"]) == entry["fully_played"]
+            and row["seconds_played"] == entry["seconds_played"]
+        ):
+            # provider syncs repeat unchanged progress, which must not stamp it as just
+            # played: the timestamp orders the in progress items
+            return cast("float", row["timestamp"])
+        if timestamp_reported and row["timestamp"] > timestamp:
+            # the stored progress is newer than the one reported
+            return None
+        return timestamp
 
     async def _record_completed_play(
         self, progress: dict[str, Any], *, user_is_resolved: bool
