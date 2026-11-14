@@ -680,7 +680,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             self.logger.debug("Cache hit for programme segments for %s", vpid)
             return [Segment.from_dict(item) for item in cached]
         self.logger.debug("No cache for programme segments for %s", vpid)
-        segments = await self.client.content.get_show_segments(vpid, fetch_missing_images=True)
+        segments = await self.client.content.get_show_segments(vpid)
         # The track list can be published after the programme, so an empty one isn't cached
         if segments:
             await self.mass.cache.set(
