@@ -1,0 +1,21 @@
+{
+  "config_entries": {
+    "refresh_catalog": {
+      "label": "Refresh machine catalog",
+      "description": "Re-download the list of noise machines from mynoise.net. Normally refreshed automatically every 30 days.",
+      "action_label": "Refresh"
+    },
+    "patron_email": {
+      "label": "Patron email",
+      "description": "Email address associated with your myNoise donation. Fill in to unlock the patron-only Magic machines. Leave empty to use the free catalog only."
+    },
+    "master_gain_db": {
+      "label": "Master gain (dB)",
+      "description": "Extra gain applied to the final mix of every machine. Use this if machines play too loud/quiet (start with -6)."
+    },
+    "use_variant_b": {
+      "label": "Use alternate sample takes",
+      "description": "myNoise ships two takes of every layer; the website picks one at random. Enable to always use the B-variant."
+    }
+  }
+}

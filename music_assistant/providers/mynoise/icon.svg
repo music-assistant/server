@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="logos" viewBox="0 0 250 250" width="250" height="250"><defs>
+    <style>
+      .cls-1 {
+        fill: #fff;
+      }
+
+      .cls-2 {
+        fill: #ff5532;
+      }
+    </style>
+  </defs><circle class="cls-2" cx="125" cy="125" r="125"></circle><rect class="cls-1" x="55" y="112" width="20" height="80" rx="10" ry="10"></rect><rect class="cls-1" x="95" y="77" width="20" height="115" rx="10" ry="10"></rect><rect class="cls-1" x="135" y="40" width="20" height="152" rx="10" ry="10"></rect><rect class="cls-1" x="175" y="94" width="20" height="98" rx="10" ry="10"></rect></svg>

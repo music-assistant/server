@@ -1,0 +1,16 @@
+{
+  "type": "music",
+  "domain": "mynoise",
+  "stage": "experimental",
+  "name": "myNoise",
+  "tier": "community",
+  "description": "Stream myNoise.net noise machines as endless looping soundscapes.",
+  "codeowners": [
+    "@eyecreate"
+  ],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/mynoise",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "mdi-waves"
+}
