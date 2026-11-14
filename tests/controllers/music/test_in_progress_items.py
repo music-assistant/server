@@ -58,6 +58,7 @@ async def _add_provider_mapping(
     media_type: MediaType = MediaType.AUDIOBOOK,
     *,
     available: bool = True,
+    in_library: bool = True,
 ) -> None:
     """Insert a provider mapping row for a library item."""
     await mass.music.database.insert(
@@ -69,9 +70,23 @@ async def _add_provider_mapping(
             "provider_instance": provider_instance,
             "provider_item_id": f"{provider_instance}-{item_id}",
             "available": available,
-            "in_library": True,
+            "in_library": in_library,
         },
     )
+
+
+@pytest.mark.parametrize("in_library", [True, False])
+async def test_in_progress_items_shows_library_audiobook_only_while_in_library(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, in_library: bool
+) -> None:
+    """A library audiobook whose row only holds a dislike is not in progress."""
+    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["local_1"])
+    await _add_provider_mapping(mass, item_id=1, provider_instance="local_1", in_library=in_library)
+    await _add_in_progress_row(mass, "1", provider="library")
+
+    result = await mass.music.in_progress_items(limit=10)
+
+    assert ({item.item_id for item in result} == {"1"}) is in_library
 
 
 async def test_in_progress_items_omitted_providers_unchanged(
@@ -161,24 +176,31 @@ async def test_in_progress_items_combines_explicit_and_user_music_sources(
 
 
 @pytest.mark.parametrize(
-    ("podcast_item_id", "days_ago", "shown"),
+    ("podcast_item_id", "podcast_in_library", "days_ago", "shown"),
     [
-        ("podcastfeed_1-1", 30, True),
-        ("podcast-elsewhere", 30, False),
-        ("podcast-elsewhere", 1, True),
+        ("podcastfeed_1-1", True, 30, True),
+        # a library row that only holds a dislike
+        ("podcastfeed_1-1", False, 30, False),
+        ("podcast-elsewhere", True, 30, False),
+        ("podcast-elsewhere", True, 1, True),
     ],
 )
 async def test_in_progress_items_keeps_older_episodes_of_library_podcasts(
     mass: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,
     podcast_item_id: str,
+    podcast_in_library: bool,
     days_ago: int,
     shown: bool,
 ) -> None:
     """An episode older than a week only shows while its podcast is in the library."""
     monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["podcastfeed_1"])
     await _add_provider_mapping(
-        mass, item_id=1, provider_instance="podcastfeed_1", media_type=MediaType.PODCAST
+        mass,
+        item_id=1,
+        provider_instance="podcastfeed_1",
+        media_type=MediaType.PODCAST,
+        in_library=podcast_in_library,
     )
     await _add_in_progress_row(
         mass,
