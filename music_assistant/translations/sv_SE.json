@@ -919,5 +919,9 @@
   "common.media.recommendations.trending_podcasts.name": "Populära poddsändningar",
   "common.media.recommendations.trending_stations.name": "Populärt",
   "common.media.genre.ambient.description": "Ambientmusik är en musikgenre som betonar klang och atmosfär framför traditionell musikalisk struktur eller rytm. Den låter ofta fridfull och saknar tydlig komposition, takt och/eller strukturerad melodi. Ambientmusik använder lager av ljudtexturer som passar både passivt och aktivt lyssnande och uppmuntrar till lugn eller eftertanke. Genren framkallar en atmosfärisk, visuell eller lågmäld känsla. Naturliga ljudlandskap kan ingå, och vissa verk använder utdragna eller upprepade toner, som i drönarmusik. Med inslag som förknippas med new age kan instrument som piano, stråkar och flöjt efterliknas med en synthesizer.",
-  "common.media.genre.ambient.name": "Ambient"
+  "common.media.genre.ambient.name": "Ambient",
+  "common.media.genre.anime_and_video_game_music.description": "Videospelmusik (VGM) är musiken som ackompanjerar videospel. De första videospelens musik begränsades till ljud från tidiga ljudkretsar, såsom programmerbara ljudgeneratorer (PSG) eller kretsar för FM-syntes. Dessa begränsningar ledde till musikstilen chiptune, som kom att prägla de tidiga videospelen.",
+  "common.media.genre.anime_and_video_game_music.name": "Anime och videospelmusik",
+  "common.media.genre.asian_music.description": "Asiatisk musik omfattar många musikstilar, varierade kulturella och religiösa traditioner och former med ursprung på den asiatiska kontinenten.",
+  "common.media.genre.asian_music.name": "Asiatisk musik"
 }
