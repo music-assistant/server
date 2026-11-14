@@ -1,12 +1,13 @@
 """Tests for the Genius lyrics metadata provider."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import RetriesExhausted
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import Timeout
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.genius_lyrics import SUPPORTED_FEATURES, GeniusProvider
 from tests.common import use_real_create_task
 
@@ -24,6 +25,9 @@ def provider() -> GeniusProvider:
     config.get_value.return_value = "GLOBAL"
     prov = GeniusProvider(mass, manifest, config, SUPPORTED_FEATURES)
     prov._genius = MagicMock()
+    # the shared throttler paces lookups a second apart and backs off on a failure;
+    # a test gets one of its own that does neither
+    prov.throttler = ThrottlerManager(rate_limit=100, period=1, initial_backoff=0)
     return prov
 
 
@@ -38,14 +42,55 @@ def provider() -> GeniusProvider:
 async def test_fetch_lyrics_raises_temporary_error(
     provider: GeniusProvider, error: Exception
 ) -> None:
-    """A transient Genius failure surfaces as ResourceTemporarilyUnavailable and is not cached."""
+    """A transient Genius failure is retried, raised and not cached, without a rate limit."""
     provider._genius.search_song.side_effect = error
     cache_set = AsyncMock()
     provider.mass.cache.set = cache_set  # type: ignore[method-assign]
 
-    with pytest.raises(ResourceTemporarilyUnavailable):
+    with pytest.raises(RetriesExhausted):
         await provider.fetch_lyrics("Artist", "Song")
     cache_set.assert_not_called()
+    assert not provider.rate_limited
+
+
+async def test_fetch_lyrics_takes_a_slot_of_the_shared_throttler(provider: GeniusProvider) -> None:
+    """Every lookup passes the throttler holding Genius to one request per second."""
+    assert GeniusProvider.throttler.throttler.rate_limit == 1
+    assert GeniusProvider.throttler.throttler.period == 1
+    provider._genius.search_song.return_value = None
+
+    with patch.object(provider.throttler, "acquire", wraps=provider.throttler.acquire) as acquire:
+        await provider.fetch_lyrics("Artist", "Song")
+
+    acquire.assert_called_once()
+
+
+async def test_fetch_lyrics_rate_limit_arms_the_cooldown(provider: GeniusProvider) -> None:
+    """A 429 from Genius holds back every further lookup and reports the provider rate limited."""
+    provider.throttler = ThrottlerManager(
+        rate_limit=100, period=1, retry_attempts=1, initial_backoff=60
+    )
+    provider._genius.search_song.side_effect = AssertionError(
+        "Unexpected response status code: 429. Expected 200 or 204."
+    )
+    cache_set = AsyncMock()
+    provider.mass.cache.set = cache_set  # type: ignore[method-assign]
+
+    with pytest.raises(RetriesExhausted):
+        await provider.fetch_lyrics("Artist", "Song")
+
+    cache_set.assert_not_called()
+    assert provider.throttler.cooldown_remaining > 0
+    assert provider.rate_limited
+
+
+async def test_rate_limited_follows_the_throttler_cooldown(provider: GeniusProvider) -> None:
+    """The provider reports a rate limit exactly while its throttler holds requests back."""
+    assert not provider.rate_limited
+
+    provider.throttler.set_cooldown(60)
+
+    assert provider.rate_limited
 
 
 async def test_fetch_lyrics_keeps_other_assertion_errors(provider: GeniusProvider) -> None:
