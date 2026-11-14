@@ -269,7 +269,7 @@ async def test_create_remote_session(mass: MusicAssistant) -> None:
     assert session.mode == SharedPlaybackMode.REMOTE
     player = mass.players.get_player(session.player_id)
     assert player is not None
-    assert player.hide_in_ui is True
+    assert player._hide_in_ui is True
     assert mass.player_queues.get(session.queue_id) is not None
     # listen-in is only possible for real, groupable sendspin players
     guest_player_id = await sendspin.create_virtual_player(

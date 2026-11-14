@@ -3826,7 +3826,7 @@ def _player_of(*protocols: Any) -> Player:
         "Player",
         SimpleNamespace(
             player_id="pl0123456789ab",
-            protocols={protocol.protocol_id: protocol for protocol in protocols},
+            attached_protocols={protocol.protocol_id: protocol for protocol in protocols},
         ),
     )
 

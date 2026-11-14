@@ -117,7 +117,6 @@ class PlayerView:
     :param type: Its type.
     :param listed: Whether its state says available and enabled.
     :param iterated: Whether ``iter_players(return_unavailable=False)`` yields it.
-    :param available: Whether an audio-capable protocol reaches its device.
     :param available_for_playback: Whether it can play now.
     :param powered: Its power state.
     :param power_control: The control its power goes through.
@@ -143,7 +142,6 @@ class PlayerView:
     type: PlayerType
     listed: bool = True
     iterated: bool = True
-    available: bool = True
     available_for_playback: bool = True
     powered: bool | None = None
     power_control: str = PLAYER_CONTROL_NONE
@@ -1697,7 +1695,7 @@ class _Planner(GroupRules):
         member_ids: list[str] = []
         for protocol_member_id in protocol_member_ids:
             member = self.snapshot.player_of(protocol_member_id)
-            if not member or not member.available:
+            if not member or not member.available_for_playback:
                 return
             member_ids.append(member.player_id)
         protocol_members, native_members, _, protocol_domain = self._translate_adds(

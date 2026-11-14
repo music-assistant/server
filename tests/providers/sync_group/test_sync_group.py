@@ -171,7 +171,7 @@ def _make_member(
         )
         protocol._attr_available = domain not in offline
     assert player is not None
-    for attached in player.protocols.values():
+    for attached in player.attached_protocols.values():
         attached._attr_supported_features = set(MEMBER_FEATURES)
         if not available:
             attached._attr_available = False
@@ -186,13 +186,15 @@ def _make_member(
         available=available,
         playback_state=playback_state,
         supported_features=set(MEMBER_FEATURES),
+        output_protocols=player._output_protocols,
+        active_output_protocol=player._active_output_protocol,
     )
     return player
 
 
 def _protocol(player: Player, domain: str) -> _SessionProtocol:
     """Return the protocol of a member of the given domain."""
-    protocol = player.protocols[f"{domain}_{player.player_id}"]
+    protocol = player.attached_protocols[f"{domain}_{player.player_id}"]
     assert isinstance(protocol, _SessionProtocol)
     return protocol
 
@@ -205,14 +207,14 @@ def _member_changes(protocol: PlayerProtocol) -> AsyncMock:
 
 def _set_reachable(player: Player, reachable: bool) -> None:
     """Let every protocol of a member report whether its device can be reached."""
-    for protocol in player.protocols.values():
+    for protocol in player.attached_protocols.values():
         protocol._attr_available = reachable
 
 
 def _forget(mass: MagicMock, player_id: str) -> None:
     """Take a player out of the registry, as if it was removed."""
     player = mass.players._players.pop(player_id)
-    for protocol_id in player.protocols:
+    for protocol_id in player.attached_protocols:
         mass.players._protocols.pop(protocol_id, None)
 
 
@@ -849,7 +851,7 @@ class TestDynamicLeaderSwitch:
         session = _protocol(old_leader, "airplay")
         session._attr_group_members = ["airplay_old_leader", "airplay_kitchen", "airplay_bathroom"]
         for player in (old_leader, kitchen, bathroom):
-            for protocol in player.protocols.values():
+            for protocol in player.attached_protocols.values():
                 protocol.set_members = AsyncMock()  # type: ignore[method-assign]
         sgp.sync_leader = old_leader
         sgp._attr_group_members = ["old_leader", "kitchen", "bathroom"]
@@ -1199,6 +1201,19 @@ class TestSetMembersDoesNotRegisterIncompatible:
         assert "member" in sgp._attr_group_members
         # but _handle_set_members on the leader is not called (no leader yet)
         mass.players._handle_set_members.assert_not_awaited()
+
+    async def test_member_that_still_needs_setup_is_not_added(self) -> None:
+        """A device that answers but still has to be set up can not take a stream: it stays out."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        unpaired = _make_member(mass, "unpaired", "airplay")
+        _protocol(unpaired, "airplay")._attr_needs_setup = True
+        sgp.sync_leader = None
+        sgp._attr_group_members = []
+
+        await sgp.set_members(player_ids_to_add=["unpaired"])
+
+        assert sgp._attr_group_members == []
 
     async def test_the_player_of_the_group_is_not_added_to_itself(self) -> None:
         """The group's own player id is no member, its protocol id is no player at all."""
@@ -1555,7 +1570,9 @@ def _group_on_sendspin_with_an_airplay_member_back(
         protocol.play_media = AsyncMock(side_effect=_play_media)  # type: ignore[method-assign]
         protocol.stop = AsyncMock(side_effect=_stop)  # type: ignore[method-assign]
 
-    protocols = [protocol for player in (a, b, c) for protocol in player.protocols.values()]
+    protocols = [
+        protocol for player in (a, b, c) for protocol in player.attached_protocols.values()
+    ]
     for protocol in protocols:
         assert isinstance(protocol, MockProtocol)
         _reports(protocol)
@@ -1638,7 +1655,7 @@ class TestRejoinThatMovesTheGroupToAnotherProtocol:
         assert _protocol(a, "sendspin").group_members == ["sendspin_A", "sendspin_B"]
         assert _protocol(a, "airplay").group_members == []
         for player in (a, b, c):
-            for protocol in player.protocols.values():
+            for protocol in player.attached_protocols.values():
                 cast("AsyncMock", protocol.stop).assert_not_awaited()
         assert group._attr_group_members == ["A", "B"]
 
@@ -2160,7 +2177,7 @@ class TestPowerlessLifecycle:
             sendspin_provider, "spb_child", "Child protocol", role=ProtocolRole.AUDIO, player=child
         )
         for player in (parent, child):
-            for member_protocol in player.protocols.values():
+            for member_protocol in player.attached_protocols.values():
                 member_protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         protocol_any: Any = protocol
         protocol_any._content_takeover_pending = False

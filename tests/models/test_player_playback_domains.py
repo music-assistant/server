@@ -169,7 +169,7 @@ class TestGetLinkedProtocol:
         _detach(mock_mass, player, "ap_1", "airplay")
 
         assert player.get_linked_protocol("ap_1") is None
-        listed = next(o for o in player.output_protocols if o.output_protocol_id == "ap_1")
+        listed = next(o for o in player._output_protocols if o.output_protocol_id == "ap_1")
         assert listed.name == "Airplay"
         assert listed.available is False
 

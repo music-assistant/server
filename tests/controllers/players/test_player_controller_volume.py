@@ -88,7 +88,7 @@ def _refresh(*players: Player, force: bool = True) -> None:
     """Recalculate the state of the given players, in order, without publishing it."""
     for player in players:
         player._cache.clear()
-        for protocol in player.protocols.values():
+        for protocol in player.attached_protocols.values():
             protocol._cache.clear()
         player.update_state(signal_event=False, force_update=force)
 
@@ -1392,7 +1392,7 @@ class TestMuteControlGuard:
             volume_control=PLAYER_CONTROL_NONE,
             controls={"ext_mute": control},
         )
-        assert player.mute_control == "ext_mute"
+        assert player._mute_control == "ext_mute"
 
         await controller.cmd_volume_mute("player_1", True)
         mute_set.assert_awaited_once_with(True)
@@ -1457,7 +1457,7 @@ class TestMuteControlGuard:
         )
         # the resolved control is cached on the player, so removing it here leaves
         # the player pointing at a control that no longer exists
-        assert player.mute_control == "ext_mute"
+        assert player._mute_control == "ext_mute"
         controller._controls = {}
 
         with pytest.raises(UnsupportedFeaturedException):
@@ -1579,7 +1579,7 @@ class TestGroupPlayerMuteRedirect:
         controller, group, member = self._setup(mock_mass)
         _own(group)._attr_supported_features = {PlayerFeature.VOLUME_SET}
         _refresh(group, force=False)
-        assert group.mute_control == PLAYER_CONTROL_NONE
+        assert group._mute_control == PLAYER_CONTROL_NONE
         member_mute = AsyncMock()
         _own(member).volume_mute = member_mute  # type: ignore[method-assign]
 

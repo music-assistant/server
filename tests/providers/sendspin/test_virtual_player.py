@@ -57,7 +57,7 @@ async def test_create_virtual_player(mass: MusicAssistant) -> None:
     assert player is not None
     assert protocol is not None
     assert protocol.player is player
-    assert player.type == PlayerType.PLAYER
+    assert player.reported_type == PlayerType.PLAYER
     assert player.session_only is True
     assert protocol.hidden_by_default is True
     assert protocol.private is True

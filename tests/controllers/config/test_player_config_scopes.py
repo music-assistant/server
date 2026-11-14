@@ -286,7 +286,7 @@ async def test_saving_a_group_keeps_its_power_control_with_the_player(
     assert mass.config.get_player_value(PLAYER_ID, CONF_POWER_CONTROL) == PLAYER_CONTROL_FAKE
     assert mass.config.get_protocol_value(PROTOCOL_ID, CONF_POWER_CONTROL) is None
     player._cache.clear()
-    assert player.power_control == PLAYER_CONTROL_FAKE
+    assert player._power_control == PLAYER_CONTROL_FAKE
 
 
 async def test_saving_a_player_without_own_protocol_keeps_the_unprefixed_values_itself(

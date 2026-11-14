@@ -53,7 +53,7 @@ def _player(player_id: str, *, private: bool) -> Player:
     return cast(
         "Player",
         SimpleNamespace(
-            player_id=player_id, protocols={protocol_id: SimpleNamespace(private=private)}
+            player_id=player_id, attached_protocols={protocol_id: SimpleNamespace(private=private)}
         ),
     )
 

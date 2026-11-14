@@ -112,7 +112,7 @@ class TestUpdateStateChangeDetection:
         assert "sound_mode_list" not in protocol._cache
         assert "options" not in protocol._cache
         # nor the config the state takes its legacy ids from
-        assert "legacy_ids" not in player._cache
+        assert "_legacy_ids" not in player._cache
 
     def test_position_tick_does_not_rebuild(self, player: Player, protocol: MockProtocol) -> None:
         """A regular playback tick keeps the anchor and builds nothing."""
@@ -719,19 +719,16 @@ class TestMediaUpdatedCallback:
 class TestCacheInvalidationClasses:
     """Config-derived cached properties survive state updates, all others refresh."""
 
-    def test_config_cached_props_survive_state_updates(
-        self, player: Player, protocol: MockProtocol
-    ) -> None:
+    def test_config_cached_props_survive_state_updates(self, player: Player) -> None:
         """Config-derived cached properties are not recomputed on state updates."""
-        assert "icon" in player._cache
-        marker = player._cache["icon"]
-        protocol._attr_volume_level = 60
+        assert "_icon" in player._cache
+        # nothing changed, so this only drops what every update calculates again
         player.update_state(signal_event=False)
-        assert player._cache.get("icon") is marker
+        assert set(player._cache) == {"_hide_in_ui", "_expose_to_ha"}
 
     def test_set_config_invalidates_all_cached_props(self, player: Player) -> None:
         """set_config invalidates every cached property, including config-derived ones."""
-        assert "icon" in player._cache
+        assert "_icon" in player._cache
         player.set_config(player.config)
         assert len(player._cache) == 0
 

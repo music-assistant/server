@@ -117,7 +117,7 @@ def _refresh(*players: Player) -> None:
     """Recalculate the state of the given players, in order, without publishing it."""
     for player in players:
         player._cache.clear()
-        for protocol in player.protocols.values():
+        for protocol in player.attached_protocols.values():
             protocol._cache.clear()
         player.update_state(signal_event=False, force_update=True)
 

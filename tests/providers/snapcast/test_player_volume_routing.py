@@ -114,8 +114,8 @@ class TestSnapCastVolumeFeatureExposure:
         player = _player(snapcast_player)
         player.set_active_output_protocol(sendspin_player.protocol_id)
 
-        assert player.volume_control == sendspin_player.protocol_id
-        assert player.mute_control == sendspin_player.protocol_id
+        assert player._volume_control == sendspin_player.protocol_id
+        assert player._mute_control == sendspin_player.protocol_id
 
     def test_volume_control_reverts_to_native_when_protocol_cleared(
         self, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol
@@ -123,12 +123,12 @@ class TestSnapCastVolumeFeatureExposure:
         """Once Sendspin stops being active, native volume/mute control returns."""
         player = _player(snapcast_player)
         player.set_active_output_protocol(sendspin_player.protocol_id)
-        assert player.volume_control == sendspin_player.protocol_id
+        assert player._volume_control == sendspin_player.protocol_id
 
         player.set_active_output_protocol(None)
 
-        assert player.volume_control == PLAYER_CONTROL_NATIVE
-        assert player.mute_control == PLAYER_CONTROL_NATIVE
+        assert player._volume_control == PLAYER_CONTROL_NATIVE
+        assert player._mute_control == PLAYER_CONTROL_NATIVE
         assert PlayerFeature.VOLUME_SET in snapcast_player.supported_features
         assert PlayerFeature.VOLUME_MUTE in snapcast_player.supported_features
 
@@ -146,8 +146,8 @@ class TestSnapCastVolumeFeatureExposure:
         )
         player.set_active_output_protocol(sendspin_player.protocol_id)
 
-        assert player.volume_control == sendspin_player.protocol_id
-        assert player.mute_control == sendspin_player.protocol_id
+        assert player._volume_control == sendspin_player.protocol_id
+        assert player._mute_control == sendspin_player.protocol_id
 
     def test_volume_control_for_output_is_that_output_before_it_is_marked_active(
         self, snapcast_player: SnapCastPlayer, sendspin_player: MockProtocol

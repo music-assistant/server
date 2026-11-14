@@ -29,12 +29,20 @@ from music_assistant.controllers.streams.live_announcements import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.audio import create_streaming_wave_header
-from tests.common import use_real_create_task
+from tests.common import (
+    MockProtocol,
+    MockProvider,
+    attach_mock,
+    mock_player_mass,
+    use_real_create_task,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from aiohttp import ClientWebSocketResponse
+
+    from music_assistant.models.player import Player
 
 PLAYER_ID = "player1"
 BASE_URL = "http://ma.local:8097"
@@ -494,11 +502,42 @@ async def test_an_unavailable_player_is_rejected(harness: Harness) -> None:
     The command for such a player is silently dropped downstream, which would leave
     the client believing its announcement played.
     """
-    harness.player.available = False
+    harness.player.available_for_playback = False
 
     ws = await _start_speaking(harness.client)
 
     assert await _close_code(ws) == REJECTED
+    harness.mass.players.play_announcement.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_player_that_still_needs_setup_is_rejected(harness: Harness) -> None:
+    """A player whose device answers but still has to be set up can not take the clip."""
+    player, protocol = _device_player()
+    protocol._attr_needs_setup = True
+    harness.mass.players.get_player.side_effect = lambda _player_id: player
+
+    ws = await _start_speaking(harness.client)
+
+    assert await _close_code(ws) == REJECTED
+    harness.mass.players.play_announcement.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_player_that_needs_setup_once_the_clip_is_spoken_is_reported(
+    harness: Harness,
+) -> None:
+    """A player that lost its setup while the clip was spoken is reported, not announced on."""
+    player, protocol = _device_player()
+    harness.mass.players.get_player.side_effect = lambda _player_id: player
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+
+    protocol._attr_needs_setup = True
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+
+    assert await _reply(ws) == "error"
     harness.mass.players.play_announcement.assert_not_called()
 
 
@@ -551,11 +590,17 @@ def _player() -> MagicMock:
     player = MagicMock()
     player.player_id = PLAYER_ID
     player.display_name = "Kitchen"
-    player.available = True
+    player.available_for_playback = True
     player.offline_by_power_control = False
     # a shared speaker: none of its protocols is the private client player of a user
-    player.protocols = {}
+    player.attached_protocols = {}
     return player
+
+
+def _device_player() -> tuple[Player, MockProtocol]:
+    """Return a real player with the protocol of a device that is reachable and set up."""
+    provider = MockProvider("airplay", mass=mock_player_mass())
+    return attach_mock(provider, "ap_kitchen", "Kitchen", player_id=PLAYER_ID)
 
 
 def _announce_through_player_commands(harness: Harness) -> list[tuple[str, User | None]]:

@@ -153,7 +153,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         self._merge_player_config(keep_id, absorb_id, protocol_ids)
         await self.mass.config.async_save()
         absorbed = self._players.get(absorb_id)
-        moving = list(absorbed.protocols.values()) if absorbed is not None else []
+        moving = list(absorbed.attached_protocols.values()) if absorbed is not None else []
         # the output that plays for the absorbed player, e.g. in a group, stays the active output
         # of the kept one, so the group keeps its member
         playing_through = (
@@ -205,7 +205,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
             keeper.update_state()
             if (
                 playing_through is not None
-                and keeper.protocols.get(playing_through.protocol_id) is playing_through
+                and keeper.attached_protocols.get(playing_through.protocol_id) is playing_through
                 and keeper.active_output_protocol is None
             ):
                 keeper.set_active_output_protocol(playing_through.protocol_id)
@@ -422,7 +422,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
                 return InvalidDataError(f"No player with id {player_id}")
             if player_id in self._removing:
                 return InvalidCommand(f"{name} is being removed")
-            player_type = player.type if player else stored.get("player_type")
+            player_type = player.reported_type if player else stored.get("player_type")
             if player_type == PlayerType.GROUP or ProtocolRole.VIRTUAL in self._roles_of(player_id):
                 return self._refused(
                     f"{name} is a group and can not be merged", "merge_group", name

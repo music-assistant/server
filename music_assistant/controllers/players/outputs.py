@@ -105,7 +105,7 @@ class OutputsMixin(_PlayerControllerBase):
             return
 
         # Get the active protocol
-        protocol_player = player.protocols.get(player.active_output_protocol)
+        protocol_player = player.attached_protocols.get(player.active_output_protocol)
         if not protocol_player:
             return
 
@@ -306,7 +306,7 @@ class OutputsMixin(_PlayerControllerBase):
         if (
             player.active_output_protocol
             and player.active_output_protocol != "native"
-            and (protocol := player.protocols.get(player.active_output_protocol))
+            and (protocol := player.attached_protocols.get(player.active_output_protocol))
             and required_feature in protocol.supported_features
         ):
             return protocol

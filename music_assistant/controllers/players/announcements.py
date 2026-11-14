@@ -929,7 +929,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # the volume lives on the device the announcing output talks to
             return True
         # a bridge protocol riding on the announcing output forwards its volume to it
-        if control_protocol := player.protocols.get(volume_control):
+        if control_protocol := player.attached_protocols.get(volume_control):
             return control_protocol.underlying_protocol_id == announce_player.protocol_id
         return False
 

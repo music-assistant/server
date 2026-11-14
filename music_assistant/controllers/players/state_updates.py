@@ -449,7 +449,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
         # Propagate group or sync-leader updates to child players.
         if player.state.group_members:
             for child_player in self.iter_group_members(player, exclude_self=True):
-                for protocol in list(child_player.protocols.values()):
+                for protocol in list(child_player.attached_protocols.values()):
                     if player.type == PlayerType.GROUP:
                         protocol.on_group_updated(player, changed_values)
                     else:
@@ -475,7 +475,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
 
         :param player: The player whose grouping or availability changed.
         """
-        for protocol in player.protocols.values():
+        for protocol in player.attached_protocols.values():
             for related in self.iter_protocols(protocol.provider.instance_id):
                 if related.player is not None and related.player is not player:
                     self.trigger_player_update(

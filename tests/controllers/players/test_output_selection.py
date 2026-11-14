@@ -156,7 +156,7 @@ class TestSelectBestOutputProtocol:
         player.refresh_state(signal_event=False)
         airplay_output = next(
             output
-            for output in player.output_protocols
+            for output in player._output_protocols
             if output.output_protocol_id == "airplay_AABBCCDDEEFF"
         )
         assert airplay_output.available is False

@@ -75,9 +75,7 @@ class SleepTimerMixin(_PlayerControllerBase):
             msg = "Sleep timer duration is too large to schedule"
             raise InvalidDataError(msg) from None
         self.mass.player_queues.drop_sleep_timer_target(player.player_id)
-        player.set_sleep_timer_mode(SleepTimerMode.DURATION)
-        player.set_sleep_timer_expires_at(expires_at)
-        player.update_state()
+        player.set_sleep_timer(SleepTimerMode.DURATION, expires_at)
         self._signal_sleep_timer_updated(player, expires_at)
         self.mass.call_later(
             seconds,
@@ -122,9 +120,7 @@ class SleepTimerMixin(_PlayerControllerBase):
             )
         ):
             return
-        player.set_sleep_timer_mode(mode)
-        player.set_sleep_timer_expires_at(expires_at)
-        player.update_state()
+        player.set_sleep_timer(mode, expires_at)
         self._signal_sleep_timer_updated(player, expires_at)
 
     def reset_sleep_timer(self, player: Player) -> None:
@@ -135,9 +131,7 @@ class SleepTimerMixin(_PlayerControllerBase):
         """
         if player.sleep_timer_mode is None:
             return
-        player.set_sleep_timer_expires_at(None)
-        player.set_sleep_timer_mode(None)
-        player.update_state()
+        player.set_sleep_timer(None, None)
         self._signal_sleep_timer_updated(player, None)
 
     def _clear_sleep_timer(self, player: Player) -> None:

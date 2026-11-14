@@ -350,7 +350,7 @@ class LiveAnnouncementManager:
             # has been spoken since; an unavailable player drops the command downstream
             # without a word, which would be reported back as a clip that played
             player = self.mass.players.get_player(player_id)
-            if player is None or not player.available:
+            if player is None or not player.available_for_playback:
                 raise PlayerCommandFailed(f"Player {player_id} is no longer available.")
             # a player that plays announcements natively hands off to its provider, which
             # has no deadline of its own - one that never returns would otherwise keep
@@ -424,7 +424,7 @@ class LiveAnnouncementManager:
         player = self.mass.players.get_player(player_id) if isinstance(player_id, str) else None
         # an unavailable player silently drops the command downstream, which would
         # otherwise be reported to the client as an announcement that played
-        if not isinstance(player_id, str) or player is None or not player.available:
+        if not isinstance(player_id, str) or player is None or not player.available_for_playback:
             await self._reject(request, ws, f"Unknown or unavailable player: {player_id}")
             return None
         sample_rate = message.get("sample_rate")

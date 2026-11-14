@@ -188,8 +188,9 @@ TIP: We have created a template/stub provider in `music_assistant/providers/_dem
 A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and registers it with `mass.players.register()`. The server builds the `Player` that users see from the protocols of a device, and attaches the protocol to it: the protocol finds it as `self.player`. The contract between the two:
 
 * A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
-* It reads `self.player.state` only for what the device has to display or follow: the current media and its position.
-* The grouping as users see it (`group_members`, `synced_to`, `active_group`) comes from `self.player.state`; what a protocol reports about grouping names the protocol ids of its own provider.
+* It reads the final values of its player (`self.player.<field>`: what the player published last, the same values as in `self.player.state`) only for what the device has to display or follow: the current media and its position.
+* The grouping as users see it comes from the player too (`self.player.group_members`, `self.player.synced_to`, `self.player.active_group`); what a protocol reports about grouping names the protocol ids of its own provider.
+* A property of a protocol is read while the server derives the state of its player, when `self.player.<field>` is still the previous value. Such a property never reads a final value of its own player: it asks what is true right now (`self.player.attached_protocols`, `self.player.resolve_output_protocol()`).
 * Data that only lives while the server runs (`extra_data`, the stop and external source markers) stays on `self.player`.
 * `self.player` is already `None` when `on_detach()` runs: a protocol releases what it holds itself.
 * The same object can be attached again after a detach, when the server moves it to another player or changes its role: whatever `on_detach()` ends, `on_attach()` starts again.

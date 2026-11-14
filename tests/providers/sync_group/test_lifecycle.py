@@ -91,6 +91,16 @@ async def test_a_new_group_gets_a_player_of_its_own(scenario: Scenario) -> None:
     assert group.state.static_group_members == members
 
 
+async def test_a_new_group_leaves_out_a_member_that_still_needs_setup(scenario: Scenario) -> None:
+    """A device that answers but still has to be set up is no member of a new group."""
+    members = await _members(scenario)
+    await scenario.report(scenario.protocol("member_b"), needs_setup=True)
+
+    group = await _create_group(scenario, members, dynamic=False)
+
+    assert group.state.static_group_members == members[:1]
+
+
 async def test_a_new_group_advertises_power_with_the_fake_power_control(
     scenario: Scenario,
 ) -> None:

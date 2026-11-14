@@ -203,7 +203,7 @@ class TestCastBridgePolicy:
     def test_irrelevant_state_update_does_not_schedule_evaluation(self) -> None:
         """Test playback state updates do not re-evaluate bridge policy."""
         manager, mass, cast_protocol = _make_cast_environment()
-        player = SimpleNamespace(protocols={CAST_ID: cast_protocol})
+        player = SimpleNamespace(attached_protocols={CAST_ID: cast_protocol})
 
         manager._on_player_state_updated(player, {"volume_level": (20, 30)})  # type: ignore[arg-type]
 
@@ -225,7 +225,9 @@ class TestCastBridgePolicy:
         """Test a policy-relevant change of a player re-evaluates the bridge of its Cast protocol."""
         manager, mass, cast_protocol = _make_cast_environment()
         other_protocol = MagicMock(protocol_id="ap_other", provider=MagicMock())
-        player = SimpleNamespace(protocols={CAST_ID: cast_protocol, "ap_other": other_protocol})
+        player = SimpleNamespace(
+            attached_protocols={CAST_ID: cast_protocol, "ap_other": other_protocol}
+        )
 
         manager._on_player_state_updated(player, changed)  # type: ignore[arg-type]
 

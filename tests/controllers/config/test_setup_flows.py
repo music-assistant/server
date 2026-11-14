@@ -1849,7 +1849,7 @@ async def test_has_setup_flow_serialized_for_an_audio_protocol(
 
     player.update_state(force_update=True)
 
-    assert player.has_setup_flow is True
+    assert player._has_setup_flow is True
     assert player.to_dict()["has_setup_flow"] is True
     assert _state_fingerprint(player.state)["has_setup_flow"] is True
 

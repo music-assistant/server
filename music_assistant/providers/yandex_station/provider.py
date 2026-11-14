@@ -374,7 +374,7 @@ class YandexStationProvider(PlayerProvider):
         station = next(
             (
                 protocol
-                for protocol in (player.protocols.values() if player else ())
+                for protocol in (player.attached_protocols.values() if player else ())
                 if isinstance(protocol, YandexStationPlayer)
             ),
             None,

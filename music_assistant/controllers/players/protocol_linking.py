@@ -194,7 +194,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
             return False
         if self._is_session_only_player(player_id) != protocol.session_only:
             return False
-        player_type = player.type if player else (stored or {}).get("player_type")
+        player_type = player.reported_type if player else (stored or {}).get("player_type")
         is_own = protocol.role in OWN_PROTOCOL_ROLES
         if player_type == PlayerType.GROUP and not (is_own and attached_only):
             # only its own protocol belongs to a group player
@@ -266,7 +266,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
 
         :param player: The player.
         """
-        for protocol in list(player.protocols.values()):
+        for protocol in list(player.attached_protocols.values()):
             if self._attach_role(protocol, player.player_id) != player.get_role(
                 protocol.protocol_id
             ):
@@ -360,7 +360,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
         # this domain slot. The provider should remove stale protocols explicitly.
         return any(
             other.provider.domain == domain and other is not protocol
-            for other in player.protocols.values()
+            for other in player.attached_protocols.values()
         )
 
     def _get_protocol_ids(self, player_id: str) -> set[str]:

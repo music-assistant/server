@@ -45,7 +45,7 @@ def _player(player_id: str, *, private: bool) -> SimpleNamespace:
     """
     protocol_id = player_id if private else _device_id(player_id)
     return SimpleNamespace(
-        player_id=player_id, protocols={protocol_id: SimpleNamespace(private=private)}
+        player_id=player_id, attached_protocols={protocol_id: SimpleNamespace(private=private)}
     )
 
 

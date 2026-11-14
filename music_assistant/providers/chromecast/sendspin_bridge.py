@@ -1141,7 +1141,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         """Re-evaluate the bridges of a player's Cast protocols after a relevant state change."""
         if not changed_values.keys() & _BRIDGE_POLICY_STATE_FIELDS:
             return
-        for protocol in list(updated_player.protocols.values()):
+        for protocol in list(updated_player.attached_protocols.values()):
             if protocol.provider is not self.provider:
                 continue
             protocol_id = protocol.protocol_id

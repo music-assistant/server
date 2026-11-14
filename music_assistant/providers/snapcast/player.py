@@ -142,10 +142,12 @@ class SnapCastPlayer(PlayerProtocol):
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
+        player = self.player
+        # asked of the attached protocols: the state of the player is derived from this
         if (
-            self.player is not None
-            and self.player.active_output_protocol
-            and self.player.active_output_protocol != "native"
+            player is not None
+            and (output := player.resolve_output_protocol()) is not None
+            and output is not player.own_protocol
         ):
             # native volume only affects the snapclient's own stream, not whatever
             # protocol is actually driving the output right now (support#6468)

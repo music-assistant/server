@@ -413,6 +413,9 @@ class PowerMixin(_PlayerControllerBase):
         if current_user and not has_player_access(current_user, player.player_id, player):
             msg = f"{current_user.username} does not have access to player {player.display_name}"
             raise InsufficientPermissions(msg)
+        # publish first: what the player published last may name another control while a
+        # change of this setting is still being applied
+        player.refresh_state()
         control_id = player.power_control
         player_control = self._controls[control_id]
         # a power on that is already under way is only waited for: switching the control
@@ -433,7 +436,7 @@ class PowerMixin(_PlayerControllerBase):
                     while True:
                         # a protocol that is still attaching may not be played to yet
                         if player.available_for_playback and self._attaching.keys().isdisjoint(
-                            player.protocols
+                            player.attached_protocols
                         ):
                             # a device can come online before its control reports on, while
                             # what follows (e.g. an announcement) reads the power state

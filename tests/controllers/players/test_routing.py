@@ -780,7 +780,7 @@ async def test_control_protocol_alone_makes_a_player_neither_available_nor_playa
     def _availability() -> tuple[bool, bool, bool]:
         state = scenario.player(player_id)
         assert state is not None
-        return state.available, player.available, player.available_for_playback
+        return state.available, player._reachable, player.available_for_playback
 
     assert _availability() == (True, True, True)
 

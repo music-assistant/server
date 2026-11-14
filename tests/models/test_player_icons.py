@@ -65,7 +65,7 @@ def test_default_player_icon(
     protocol._attr_device_info = DeviceInfo(manufacturer=manufacturer, model=model)
     player._cache.clear()
 
-    assert player.icon == expected
+    assert player._icon == expected
 
 
 def test_default_player_icon_tolerates_missing_device_metadata() -> None:
@@ -82,7 +82,7 @@ def test_explicit_player_icon_overrides_default() -> None:
     protocol._attr_device_info = DeviceInfo(manufacturer="Apple", model="Apple TV 4K")
     player._cache.clear()
 
-    assert player.icon == "living-room"
+    assert player._icon == "living-room"
 
 
 def test_automatic_player_icon_refreshes_with_device_info() -> None:
@@ -90,12 +90,12 @@ def test_automatic_player_icon_refreshes_with_device_info() -> None:
     provider = MockProvider("test", mass=mock_player_mass())
     player, protocol = attach_mock(provider, "late_metadata", "Late metadata")
 
-    assert player.icon == "speaker"
+    assert player._icon == "speaker"
 
     protocol._attr_device_info = DeviceInfo(manufacturer="Sonos", model="Era 100")
     player.update_state(signal_event=False)
 
-    assert player.icon == "sonos"
+    assert player._icon == "sonos"
 
 
 async def test_unset_icon_config_uses_player_default(mass_minimal: MusicAssistant) -> None:

@@ -138,7 +138,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         if (
             (player := protocol.player) is not None
             and player.session_only
-            and player.protocols.keys() == {protocol_id}
+            and player.attached_protocols.keys() == {protocol_id}
             and (queue := self.mass.player_queues.get(player.player_id)) is not None
             and queue.items
         ):
@@ -182,7 +182,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         self._replace_protocol_references(player_id, protocol_id, None)
         if player := self._players.get(player_id):
             player.remove_protocol(protocol_id, forget=True)
-        if self.mass.config.get_protocol_ids_of_player(player_id) or (player and player.protocols):
+        if self.mass.config.get_protocol_ids_of_player(player_id) or (
+            player and player.attached_protocols
+        ):
             if player:
                 player.refresh_state()
                 self._store_player_base(player)
@@ -227,7 +229,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if (
                 player.state.available
                 or not player.initialized.is_set()
-                or any(protocol.available for protocol in player.protocols.values())
+                or any(protocol.available for protocol in player.attached_protocols.values())
             ):
                 continue
             provider_ids = {
@@ -621,7 +623,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             return
         derived = [
             protocol
-            for protocol in player.protocols.values()
+            for protocol in player.attached_protocols.values()
             if protocol.underlying_protocol_id
             and self._has_other_protocol_of_domain(protocol, player_id, include_away=True)
         ]
@@ -643,7 +645,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             return
         if (
             player.session_only
-            and not player.protocols
+            and not player.attached_protocols
             and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}") is None
         ):
             await self._drop_player(player.player_id, player)
@@ -685,7 +687,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             handle.cancel()
         self._last_polls.pop(protocol_id, None)
         player = protocol.player
-        if player is not None and player.protocols.get(protocol_id) is protocol:
+        if player is not None and player.attached_protocols.get(protocol_id) is protocol:
             was_playback_path = player.resolve_output_protocol() is protocol
             player.remove_protocol(protocol_id)
             self._schedule_held_protocols()
@@ -750,7 +752,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         # owned by a group that has no leader. Users who want their
         # 'group captured' state preserved across restarts would need
         # explicit session restoration which is out of scope here.
-        if player.type != PlayerType.GROUP:
+        if player.reported_type != PlayerType.GROUP:
             cached_value = await self.mass.cache.get(
                 key=player_id,
                 provider=self.domain,
@@ -828,7 +830,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         protocol_ids = set(self.mass.config.get_protocol_ids_of_player(player_id))
         if player is not None:
-            protocol_ids.update(player.protocols)
+            protocol_ids.update(player.attached_protocols)
         if player is None and stored is None and not protocol_ids:
             return
         self._removing.add(player_id)
@@ -836,7 +838,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             if player is not None:
                 await self._release_player_that_is_removed(player)
             is_group = (
-                player.type if player else (stored or {}).get("player_type")
+                player.reported_type if player else (stored or {}).get("player_type")
             ) == PlayerType.GROUP
             provider_ids = {
                 str(record.get("provider"))
@@ -930,8 +932,8 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             return
         if stored.get("provider") != player.provider_id:
             self.mass.config.set(f"{conf_key}/provider", player.provider_id)
-        if stored.get("player_type") != player.type:
-            self.mass.config.set(f"{conf_key}/player_type", player.type)
+        if stored.get("player_type") != player.reported_type:
+            self.mass.config.set(f"{conf_key}/player_type", player.reported_type)
         player.store_protocol_defaults()
 
     async def _restore_players(self) -> None:
@@ -958,7 +960,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         :param player: The player to disable.
         """
         await self._stop_player_that_goes(player)
-        for protocol in list(player.protocols.values()):
+        for protocol in list(player.attached_protocols.values()):
             self._attaching.pop(protocol.protocol_id, None)
             await self._unbind(protocol)
             # its provider keeps the object, which a removal of the player still has to reach

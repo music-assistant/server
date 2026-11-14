@@ -55,11 +55,13 @@ queue. [Lifecycle](#lifecycle) says when it goes.
 │              │  - its own config       │                            │
 │              │  - control resolution   │                            │
 │              │  - output selection     │                            │
+│              │  - its final values     │   player.<field>           │
 │              └───────────┬─────────────┘                            │
 │                          │ update_state()                           │
 │                          ▼                                          │
 │              ┌─────────────────────────┐                            │
-│              │       PlayerState       │   what the API sends       │
+│              │       PlayerState       │   player.state: the        │
+│              │                         │   snapshot the API sends   │
 │              └─────────────────────────┘                            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -69,7 +71,7 @@ Four models, each with one owner:
 | Model | Owner | Is |
 |---|---|---|
 | `PlayerProtocol` | a player provider, which subclasses it | the provider's handle on one device over one protocol |
-| `Player` | the controller; never subclassed | the player users, clients and the queue see |
+| `Player` | the controller; never subclassed | the player users, clients and the queue see; it gives the final value of every field of its state |
 | `PlayerState` | derived by the player | the published snapshot of a player, what the API sends |
 | `PlayerConfig` | the config controller | what is stored about a player or a protocol |
 
@@ -99,6 +101,19 @@ stored record or when a device is new. It holds:
   on or power off under way, the palette, `extra_data`;
 - the resolution of its power, volume and mute control and of the output that renders.
 
+A player gives the final value of every field of its state under the name of that field:
+`player.volume_level`, `player.group_members`, `player.available` are what it published last, the
+values of `player.state`. That is what code reads to know how the player is. What those values are
+derived from is private to the player, except where other code has to ask what is true of the
+device right now. Four of those questions have a final value next to them:
+
+| Final value | What is true right now |
+|---|---|
+| `available`: clients can use the player; also true while it is switched off at its power control | `available_for_playback`: it can be played to right now (enabled, reachable and set up) |
+| `type`: the type it published | `reported_type`: the type its own protocol reports now, else the stored one; the attach, merge and removal code reads it, before a change is published, and it is the type that is stored |
+| `protocols`: all protocols that belong to it, attached or not (`PlayerProtocolInfo`) | `attached_protocols`: the protocol objects that are attached, by id |
+| `provider`: the provider instance id it published | `provider_id`: the instance id its attached protocols give it now, else the stored one |
+
 What a player reports for its device comes from its `device_protocol`: its own protocol, else its
 most preferred audio protocol. Its device info also carries the identifiers its other protocols
 add. While no protocol is attached, its device info and provider are what was stored, and it has
@@ -116,7 +131,10 @@ preserving the selected queue through transient device stops during playback tra
 
 ### PlayerState (API model)
 
-The `PlayerState` is a dataclass representing the final state of the player. It:
+The `PlayerState` is a dataclass representing the final state of the player, and `player.state` is
+the one the player published last. Code that wants a single value reads it off the player
+(`player.<field>`); `player.state` is for the snapshot as a whole: to send it, to keep it for a
+comparison, to hand it on. It:
 - Includes any user customizations (custom name, hidden status, etc.)
 - Applies transformations (e.g., fake power/volume controls)
 - Is the object exposed to the outside world via the API
@@ -460,6 +478,13 @@ A change the player derives from elsewhere (group topology, the active queue, a 
 comes with `mark_state_dirty()`; the controller does that on all its notification paths
 (`trigger_player_update`, which also debounces, and the fan-out below).
 
+`player.<field>` is the value that was last published. It changes only inside
+`player.update_state()`. Code that changed something a field is derived from and needs the new
+value at once calls `player.update_state()` first (`refresh_state()` when the change is not one of
+the player's own inputs). Code that has to know what is true of the device at this moment asks the
+member that says so: `available_for_playback`, `offline_by_power_control`, `attached_protocols`,
+`reported_type`, `resolve_output_protocol()`.
+
 A change of the position anchor alone is published only when the position jumped. For a change
 that is published, the controller ([state_updates.py](state_updates.py)):
 1. schedules the update of the queue of the player;
@@ -778,8 +803,13 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
   - Prevents false matches between unrelated devices
   - The controller will attempt ARP lookup to resolve real MACs automatically
 - `IP_ADDRESS` is only used as a last resort after strong identifiers were checked first
-- Read your own reported values through your own properties; read `self.player.state` only for what
-  the device must display or follow (current media, position, the grouping of the player)
+- Read your own reported values through your own properties; read the final values of the player
+  (`self.player.<field>`) only for what the device must display or follow (current media, position,
+  the grouping of the player)
+- A property of a protocol is read while the state of its player is derived, so it reports from the
+  protocol itself and from what is true of the player right now (`attached_protocols`,
+  `resolve_output_protocol()`), never from a final value of its own player: during that update
+  `self.player.<field>` is still the previous value
 
 ## Scenarios
 

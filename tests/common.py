@@ -718,8 +718,10 @@ def attach_mock(
     This only wires the objects together. It applies none of the attach rules of the
     players controller (one protocol per domain, one that stands for the device, the
     identifier vetoes), stores no config, calls no hook of the protocol and publishes
-    nothing. A test of a sequence the controller may refuse, or of what an attach
-    stores or announces, attaches to a real controller instead.
+    nothing: the final values of the player (``player.<field>``) stay those it was
+    created with until the test calls ``update_state()``. A test of a sequence the
+    controller may refuse, or of what an attach stores or announces, attaches to a real
+    controller instead.
 
     :param provider: The (mock) provider the protocol belongs to.
     :param protocol_id: ID of the protocol object.

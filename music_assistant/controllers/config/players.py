@@ -86,7 +86,7 @@ from music_assistant.controllers.config.helpers import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
-from music_assistant.models.player import OWN_PROTOCOL_ROLES
+from music_assistant.models.player import OWN_PROTOCOL_ROLES, get_device_name
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
@@ -357,7 +357,7 @@ class PlayerConfigMixin:
             raise KeyError(msg)
         if CONF_PROTOCOL_KEY_SPLITTER in action:
             protocol_id, action = action.split(CONF_PROTOCOL_KEY_SPLITTER, 1)
-            target = player.protocols.get(protocol_id)
+            target = player.attached_protocols.get(protocol_id)
         else:
             protocol_id = player_id
             target = player.own_protocol
@@ -1065,7 +1065,7 @@ class PlayerConfigMixin:
             "provider": player.provider_id,
             "enabled": True,
             "default_name": player.state.name,
-            "player_type": player.type,
+            "player_type": player.reported_type,
             "values": {},
         }
 
@@ -1106,12 +1106,12 @@ class PlayerConfigMixin:
         self.create_player_record(
             player_id,
             provider=player.provider_id,
-            player_type=player.type,
-            default_name=player.name,
+            player_type=player.reported_type,
+            default_name=get_device_name(player.own_protocol, player.audio_protocols),
             values={CONF_SESSION_ONLY: True, CONF_CREATED_AT: time.time_ns()},
         )
         previous: dict[str, dict[str, Any] | None] = {}
-        for protocol in player.protocols.values():
+        for protocol in player.attached_protocols.values():
             previous[protocol.protocol_id] = deepcopy(
                 self.get_protocol_record(protocol.protocol_id)
             )
@@ -1129,7 +1129,7 @@ class PlayerConfigMixin:
                     "setup_data": in_memory.get("setup_data") or {},
                 },
             )
-        player.protocol_ids.update(player.protocols)
+        player.protocol_ids.update(player.attached_protocols)
         player.store_protocol_defaults()
         return previous
 
@@ -1677,7 +1677,7 @@ class PlayerConfigMixin:
                     entry.category_translation_params = category_translation_params
                     all_entries.append(entry)
 
-            elif protocol_player := player.protocols.get(protocol.output_protocol_id):
+            elif protocol_player := player.attached_protocols.get(protocol.output_protocol_id):
                 # we grab the config entries from the protocol
                 # and then prefix them to avoid key collisions
                 protocol_entries = await self._get_protocol_config_entries(protocol_player)
@@ -1801,7 +1801,7 @@ class PlayerConfigMixin:
             return "needs_setup" if own is not None and own.needs_setup else "unavailable"
         if not self.get_protocol_value(protocol.output_protocol_id, CONF_ENABLED, True):
             return "turned_off"
-        protocol_player = player.protocols.get(protocol.output_protocol_id)
+        protocol_player = player.attached_protocols.get(protocol.output_protocol_id)
         if protocol_player is not None and protocol_player.needs_setup:
             return "needs_setup"
         return "unavailable"
