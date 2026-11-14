@@ -588,6 +588,11 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_nicovideo_drop_mail_login(data):
         changed = True
 
+    # Drop the stored value of the removed MilkDrop visualizer color tint setting.
+    # TODO: remove after 2.13 release
+    if _migrate_milkdrop_drop_color_tint(data):
+        changed = True
+
     # Move Raumfeld players still on the former "full" ICY default to "basic".
     # TODO: remove after 2.13 release
     if _migrate_raumfeld_icy_basic(data):
@@ -1464,6 +1469,28 @@ def _migrate_nicovideo_drop_mail_login(data: dict[str, Any]) -> bool:
     if not dropped:
         return False
     LOGGER.info("Removed %d unused nicovideo mail login value(s)", dropped)
+    return True
+
+
+def _migrate_milkdrop_drop_color_tint(data: dict[str, Any]) -> bool:
+    """Remove the stored color tint value from every milkdrop_visualizer provider instance."""
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    dropped = 0
+    for provider_cfg in all_provider_configs.values():
+        if (
+            not isinstance(provider_cfg, dict)
+            or provider_cfg.get("domain") != "milkdrop_visualizer"
+        ):
+            continue
+        stored = provider_cfg.get("values")
+        if isinstance(stored, dict) and "color_tint" in stored:
+            del stored["color_tint"]
+            dropped += 1
+    if not dropped:
+        return False
+    LOGGER.info("Removed %d unused milkdrop color tint value(s)", dropped)
     return True
 
 

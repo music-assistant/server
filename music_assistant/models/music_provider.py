@@ -390,8 +390,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         Return all supported artist types by this provider.
 
-        Note, that this property currently is only used, to verify support of artists with
-        ArtistType.AUTHOR or ArtistType.NARRATOR.
+        Sent to clients with the provider; with ArtistType.AUTHOR or ArtistType.NARRATOR the
+        provider's audiobooks must list those as Artist objects instead of strings.
         """
         return {ArtistType.SINGER}
 
