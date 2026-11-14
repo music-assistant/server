@@ -7,13 +7,20 @@ from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 import pytest
+from auntie_sounds.models import (
+    LiveStation,
+    Network,
+    Podcast,
+    Schedule,
+    ScheduleItem,
+    Synopses,
+    Titles,
+)
 from music_assistant_models.enums import MediaType, QueueOption, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ItemMapping
 from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
-from sounds import Podcast
-from sounds.models import LiveStation, Network, Schedule, ScheduleItem
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import (
@@ -101,7 +108,7 @@ def _schedule_item(start: datetime, end: datetime, container: bool = True) -> Sc
         id="p0p6m2kp",
         urn="urn:bbc:radio:episode:m0031hzl",
         type="broadcast_summary",
-        titles={"primary": "Radio 1 Breakfast", "secondary": "Guest host"},
+        titles=Titles(primary="Radio 1 Breakfast", secondary="Guest host"),
         network=Network(id="bbc_radio_one", key="radio1", short_title="Radio 1"),
         container=(
             Podcast(
@@ -110,8 +117,8 @@ def _schedule_item(start: datetime, end: datetime, container: bool = True) -> Sc
                 title="Radio 1 Breakfast",
                 description=None,
                 image_url=None,
-                synopses={},
-                titles={},
+                synopses=Synopses(),
+                titles=Titles(),
                 urn="urn:bbc:radio:brand:b0080x5m",
             )
             if container
@@ -286,9 +293,8 @@ class TestLiveProgrammeStreamDetails:
         """Test an on-air programme gets a seekable stream the provider serves itself."""
         now = int(datetime.now(tz=UTC).timestamp())
         programme_id = LiveProgrammeId("bbc_radio_one", "m0031hzl", now - 3600, now + 3600)
-        provider.client.streaming = AsyncMock()
-        provider.client.stations.get_station.return_value = LiveStation(
-            id="bbc_radio_one", titles={"primary": "Another programme"}, stream="master.m3u8"
+        provider.client.stations.get_station.return_value = LiveStation(  # type: ignore[attr-defined]
+            id="bbc_radio_one", titles=Titles(primary="Another programme"), stream="master.m3u8"
         )
         monkeypatch.setattr(
             provider.mass.streams.audio,
@@ -307,7 +313,7 @@ class TestLiveProgrammeStreamDetails:
         assert details.stream_metadata is None
         # the details (and so the buffer seeks are checked against) last the whole programme
         assert details.expiration >= 3600
-        provider.client.streaming.get_by_pid.assert_not_called()
+        provider.client.content.get_by_pid.assert_not_called()  # type: ignore[attr-defined]
 
     async def test_ended_programme_prefers_the_on_demand_version(
         self, provider: BBCSoundsProvider, monkeypatch: pytest.MonkeyPatch
@@ -328,7 +334,6 @@ class TestLiveProgrammeStreamDetails:
         self, provider: BBCSoundsProvider
     ) -> None:
         """Test the BBC play status API is not called with a live programme id."""
-        provider.client.streaming = AsyncMock()
         await provider.on_played(
             MediaType.PODCAST_EPISODE,
             "live_programme~bbc_radio_one~m0031hzl~1~2",
@@ -337,7 +342,7 @@ class TestLiveProgrammeStreamDetails:
             media_item=Mock(),
             is_playing=True,
         )
-        provider.client.streaming.update_play_status.assert_not_called()
+        provider.client.playback.update_episode_play_status.assert_not_called()  # type: ignore[attr-defined]
 
 
 class TestLiveProgrammeLookup:
@@ -358,22 +363,24 @@ class TestLiveProgrammeLookup:
     ) -> None:
         """Test a live programme id is looked up in the schedule of the day it started."""
         now = datetime.now(tz=UTC)
-        item = _schedule_item(now - timedelta(hours=2), now + timedelta(hours=1))
-        provider.client.schedules.get_schedule.return_value = Schedule(
+        start = now - timedelta(hours=2)
+        end = now + timedelta(hours=1)
+        item = _schedule_item(start, end)
+        provider.client.schedules.get_schedule.return_value = Schedule(  # type: ignore[attr-defined]
             id="schedule", sub_items=[item]
         )
         programme_id = LiveProgrammeId(
             "bbc_radio_one",
             "m0031hzl",
-            int(item.start.timestamp()),
-            int(item.end.timestamp()),
+            int(start.timestamp()),
+            int(end.timestamp()),
         )
 
         episode = await provider.get_podcast_episode(programme_id.item_id)
 
         assert episode.item_id == programme_id.item_id
-        broadcast_date = item.start.astimezone(ZoneInfo("Europe/London")).date().isoformat()
-        provider.client.schedules.get_schedule.assert_awaited_once_with(
+        broadcast_date = start.astimezone(ZoneInfo("Europe/London")).date().isoformat()
+        provider.client.schedules.get_schedule.assert_awaited_once_with(  # type: ignore[attr-defined]
             station_id="bbc_radio_one", date=broadcast_date
         )
 

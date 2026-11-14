@@ -9,10 +9,10 @@ import pytest
 
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import Constants
 
 if TYPE_CHECKING:
-    from sounds.models import Menu
+    from auntie_sounds.models import Menu
 
 
 class TestMenuLoading:
@@ -40,7 +40,7 @@ class TestMenuLoading:
     ) -> None:
         """Test that when a menu has expired, it is refreshed from the API."""
         provider.menu = uk_menu
-        provider.menu_last_fetched = utc_timestamp() - _Constants.SHORT_EXPIRATION - 1
+        provider.menu_last_fetched = utc_timestamp() - Constants.SHORT_EXPIRATION - 1
         provider._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
 
         await provider._get_menu()
@@ -48,7 +48,7 @@ class TestMenuLoading:
         provider._refresh_menu_from_api.assert_awaited_once()
 
     @pytest.mark.parametrize(
-        "last_fetched", [1788517216, 1788517216 - _Constants.SHORT_EXPIRATION + 1]
+        "last_fetched", [1788517216, 1788517216 - Constants.SHORT_EXPIRATION + 1]
     )
     @patch.object(BBCSoundsProvider, "_menu_is_stale", new_callable=PropertyMock)
     async def test_valid_menu_is_not_refreshed(
@@ -68,4 +68,4 @@ class TestMenuLoading:
         result = await provider._get_menu()
 
         provider._refresh_menu_from_api.assert_not_called()
-        assert result == uk_menu.sub_items
+        assert result == uk_menu.sub_items  # type: ignore[comparison-overlap]

@@ -22,13 +22,34 @@ def incorrect_provider_domain() -> str:
 
 @pytest.fixture(
     params=[
-        "stations",
-        "stations/bbc_radio_one",
-        "stations/bbc_radio_one/2020-01-01",
+        "schedules/bbc_radio_one",
+        "schedules/bbc_radio_one/2020-01-01",
     ]
 )
-def station_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
-    """Return a parameterised set of valid station browse paths."""
+def schedule_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
+    """Return a parameterised set of valid paths for a schedule menu or one of its dates."""
+    return f"{provider_domain}{request.param}"
+
+
+@pytest.fixture(
+    params=[
+        "catch_up/bbc_radio_one",
+        "catch_up/bbc_radio_one/2020-01-01",
+    ]
+)
+def catch_up_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
+    """Return a parameterised set of valid paths for a catch-up menu or one of its dates."""
+    return f"{provider_domain}{request.param}"
+
+
+@pytest.fixture(
+    params=[
+        "catch_up",
+        "schedules",
+    ]
+)
+def station_menu_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
+    """Return the catch-up and schedule station lists, which come from the menu."""
     return f"{provider_domain}{request.param}"
 
 
@@ -93,18 +114,26 @@ class TestBrowse:
         self, provider: BBCSoundsProvider, provider_domain: str
     ) -> None:
         """Test valid listen live paths are dispatched into the right browse branch."""
-        browse_string = f"{provider_domain}listen_live"
+        browse_string = f"{provider_domain}live"
         provider._browse_live = AsyncMock()  # type: ignore[method-assign]
         await provider.browse(browse_string)
         provider._browse_live.assert_awaited_once()
 
-    async def test_valid_station_strings(
-        self, provider: BBCSoundsProvider, station_paths: str
+    async def test_valid_schedule_strings(
+        self, provider: BBCSoundsProvider, schedule_paths: str
     ) -> None:
         """Test valid station paths are dispatched into the right browse branch."""
-        provider._browse_stations = AsyncMock()  # type: ignore[method-assign]
-        await provider.browse(station_paths)
-        provider._browse_stations.assert_awaited_once()
+        provider._browse_schedules = AsyncMock()  # type: ignore[method-assign]
+        await provider.browse(schedule_paths)
+        provider._browse_schedules.assert_awaited_once()
+
+    async def test_valid_catch_up_strings(
+        self, provider: BBCSoundsProvider, catch_up_paths: str
+    ) -> None:
+        """Test valid catch-up paths are dispatched into the right browse branch."""
+        provider._browse_catch_up = AsyncMock()  # type: ignore[method-assign]
+        await provider.browse(catch_up_paths)
+        provider._browse_catch_up.assert_awaited_once()
 
     async def test_valid_category_strings(
         self, provider: BBCSoundsProvider, category_paths: str
