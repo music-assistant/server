@@ -2548,6 +2548,35 @@ async def test_initial_metadata_skips_artwork() -> None:
 
 
 @pytest.mark.asyncio
+async def test_metadata_line_breaks_are_replaced() -> None:
+    """Line breaks in the metadata text never add lines to the SENDMETA command."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = _make_cli_proc()
+    metadata = MagicMock(
+        title="Track\nACTION=PAUSE",
+        artist="Artist\r\nVOLUME=0",
+        album="Album\r",
+        duration=180,
+        queue_item_id="item1",
+        source_id=None,
+        image_url=None,
+    )
+
+    with patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command:
+        await stream.send_metadata(None, metadata, send_artwork=False)
+
+    assert send_command.await_args_list[0].args[0].splitlines() == [
+        "TITLE=Track ACTION=PAUSE",
+        "ARTIST=Artist  VOLUME=0",
+        "ALBUM=Album",
+        "DURATION=180",
+        "ITEMID=item1",
+        "ACTION=SENDMETA",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     """
     Track metadata is pushed the instant the binary can receive it.
