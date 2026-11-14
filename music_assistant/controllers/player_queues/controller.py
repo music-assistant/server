@@ -2452,12 +2452,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if not (queue_data := self._queue_data.get(queue_id)):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         session_id = queue_data.session_id
+        halts_playback = False
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
-            if queue.state != PlaybackState.IDLE and queue_data.items:
+            if (
+                queue.state != PlaybackState.IDLE
+                and queue_data.items
+                and not queue_data.halted_by_command
+            ):
                 # an idle queue has no playback to halt, and a cleared one no place to keep
-                queue_data.halted_by_command = True
+                halts_playback = queue_data.halted_by_command = True
         try:
             # a player switched off at its power control has nothing left to stop, while its
             # session below still needs the teardown
@@ -2470,6 +2475,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # public cmd_stop redirects to queue.stop when a queue is active,
                 # which would loop back here indefinitely.
                 await self.mass.players._handle_cmd_stop(queue_id)
+        except Exception:
+            if halts_playback:
+                # the stop did not go through, so the queue plays on
+                queue_data.halted_by_command = False
+            raise
         finally:
             # a device that could not be reached still gets its session torn down: an
             # open session keeps the item buffers producing, which holds a provider's

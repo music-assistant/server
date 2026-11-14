@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from music_assistant_models.enums import EventType, PlaybackState, QueueOption, SleepTimerMode
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Playlist
 
 from music_assistant.controllers.player_queues.constants import PLAYBACK_START_TIMEOUT
@@ -514,6 +515,30 @@ async def test_a_queue_that_plays_on_after_a_pause_still_ends_when_it_played_out
     await scenario.mass.players.cmd_play(player_id)
     await scenario.advance(1)
     assert speaker.commands[-1] == ("play",)
+    assert _position(scenario, player_id).state == PlaybackState.PLAYING
+
+    await _play_out(scenario, speaker, player_id, TRACK_SECONDS - PLAYED_SECONDS)
+    await scenario.advance(SETTLE_SECONDS - 0.5)
+    assert not _position(scenario, player_id).ended
+    await scenario.advance(1)
+    assert _position(scenario, player_id).ended
+
+
+async def test_a_queue_whose_stop_failed_still_ends_when_it_played_out(
+    scenario: Scenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop the speaker refuses leaves the queue playing, and it is taken for ended as any."""
+    speaker, player_id = await _speaker(scenario, can_pause=False)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+
+    async def _refuse() -> None:
+        raise PlayerCommandFailed("The speaker refused to stop")
+
+    monkeypatch.setattr(speaker, "stop", _refuse)
+    with pytest.raises(PlayerCommandFailed, match="refused to stop"):
+        await scenario.mass.players.cmd_stop(player_id)
+    await scenario.settle()
     assert _position(scenario, player_id).state == PlaybackState.PLAYING
 
     await _play_out(scenario, speaker, player_id, TRACK_SECONDS - PLAYED_SECONDS)

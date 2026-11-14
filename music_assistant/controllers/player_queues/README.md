@@ -204,7 +204,8 @@ pause and by the common stop handler) keeps its place until it plays again, also
 command left its player idle (a player without a pause of its own is stopped, and a paused player
 is stopped once the pause timeout passes). Only the stop of a sleep timer ends the queue, at the
 point that timer waited for. The flag is cleared when the queue is seen playing or a play action
-starts a stream session, and reset when the queue is cleared or marked as ended.
+starts a stream session, taken back by a pause or a stop that fails, and reset when the queue is
+cleared or marked as ended.
 
 That check runs in a task of its own, holds no lock, and belongs to the playback that went idle:
 it remembers the queue's stream session. After every wait (each of its five rounds, the fetch of
