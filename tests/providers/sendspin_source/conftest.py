@@ -151,10 +151,10 @@ class _FakePlayer:
         player_id: str,
         state: PlaybackState = PlaybackState.IDLE,
         *,
-        display_name: str | None = None,
+        name: str | None = None,
     ) -> None:
         self.player_id = player_id
-        self.display_name = display_name or player_id
+        self.name = name or player_id
         self.queue = _FakeQueue(player_id, state)
         self.available = True
 

@@ -35,7 +35,7 @@ def test_to_brief_player_reads_the_published_state() -> None:
         group_volume=30,
         group_volume_muted=False,
     )
-    player = cast("Player", SimpleNamespace(display_name="Kitchen", state=state))
+    player = cast("Player", SimpleNamespace(name="Kitchen", state=state))
 
     brief = to_brief_player(player)
 
@@ -67,7 +67,7 @@ def test_to_brief_player_synthesizes_blocker_state(
 ) -> None:
     """Availability/setup/group blockers remain visible to resource clients."""
     player = cast(
-        "Player", SimpleNamespace(display_name="P1", state=make_player_state("pl_p1", **overrides))
+        "Player", SimpleNamespace(name="P1", state=make_player_state("pl_p1", **overrides))
     )
     assert to_brief_player(player).state == expected
 
@@ -77,7 +77,7 @@ def test_to_brief_player_surfaces_external_audio_source() -> None:
     player = cast(
         "Player",
         SimpleNamespace(
-            display_name="P1", state=make_player_state("pl_p1", playback_state=PlaybackState.IDLE)
+            name="P1", state=make_player_state("pl_p1", playback_state=PlaybackState.IDLE)
         ),
     )
     queue = SimpleNamespace(

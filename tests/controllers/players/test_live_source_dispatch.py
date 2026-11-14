@@ -74,7 +74,7 @@ def _controller(source: AudioSource | None) -> tuple[Any, MagicMock]:
         )
     player = MagicMock()
     player.player_id = PLAYER_ID
-    player.display_name = "Player 1"
+    player.name = "Player 1"
     player.available = True
     player.offline_by_power_control = False
     player.synced_to = None
@@ -184,7 +184,7 @@ async def test_a_group_member_is_playing_its_groups_source() -> None:
     )
     member = MagicMock()
     member.player_id = "member_1"
-    member.display_name = "Member"
+    member.name = "Member"
     member.synced_to = None
     member.active_group = "group_1"
     group = MagicMock()

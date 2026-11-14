@@ -124,7 +124,6 @@ class _World:
         view = PlayerView(
             player_id=player_id,
             name=f"Player {player_id}",
-            state_name=f"State {player_id}",
             type=values.pop("type", PlayerType.PLAYER),
             features=values.pop("features", frozenset({PlayerFeature.SET_MEMBERS})),
             playback_owner=values.pop("playback_owner", player_id),
@@ -520,7 +519,7 @@ def test_a_member_whose_group_rides_its_own_stream_dissolves_it_first() -> None:
         remove=("c",),
         failure=_fail("leave_out"),
         message="Could not dissolve the group of %s, leaving it out of %s",
-        args=("Player b", "State a"),
+        args=("Player b", "Player a"),
     )
     assert plan.progress == GroupProgress(next_add=0, stage=MemberStage.DISSOLVED)
     assert plan.progress_left_out == GroupProgress(next_add=1)
@@ -532,7 +531,7 @@ def test_a_member_still_serving_its_own_group_is_left_out() -> None:
     _airplay_leaders(world, state=PLAYING)
     plan = _plan(world, ChangeKind.MEMBERS, "a", ("b",))
     assert _notes(plan, logging.WARNING) == [
-        "Player Player b is still serving its own group, leaving it out of State a"
+        "Player Player b is still serving its own group, leaving it out of Player a"
     ]
     assert _calls(plan) == []
     assert plan.join == Join(target_id="a")
@@ -886,7 +885,7 @@ def test_a_switch_that_would_silence_a_member_is_refused() -> None:
     assert refusal.error is PlayerCommandFailed
     assert refusal.translation_key == "member_cannot_follow_protocol"
     assert refusal.message == (
-        "Cannot add Player y to State l: Player x cannot play over Sendspin provider"
+        "Cannot add Player y to Player l: Player x cannot play over Sendspin provider"
     )
     # idle, nobody is silenced: the join goes on
     world.players["l"] = replace(leader, playback_state=PlaybackState.IDLE)
@@ -1095,7 +1094,7 @@ def test_a_group_left_on_a_protocol_regroups_natively_at_a_fresh_start() -> None
     _left_on_bridge(world)
     plan = _plan(world, ChangeKind.REGROUP_FOR_START, "a")
     assert _notes(plan) == [
-        "Regrouping State a off the airplay protocol, which none of its members need anymore"
+        "Regrouping Player a off the airplay protocol, which none of its members need anymore"
     ]
     assert plan.regroup == Regroup(
         leader_id="a", protocol_id="airplay_a", removed=("airplay_b",), member_ids=("b",)

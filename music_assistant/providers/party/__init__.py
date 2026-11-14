@@ -192,10 +192,10 @@ class PartyPlugin(PluginProvider):
                 options=[
                     ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
                     *[
-                        ConfigValueOption(player.player_id, title=player.display_name)
+                        ConfigValueOption(player.player_id, title=player.name)
                         for player in sorted(
                             self.mass.players.all_players(False, False),
-                            key=lambda p: p.display_name.lower(),
+                            key=lambda p: p.name.lower(),
                         )
                         if player.type in PLAYBACK_TARGET_TYPES
                     ],

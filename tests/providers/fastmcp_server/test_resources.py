@@ -129,7 +129,7 @@ async def test_player_resource_does_not_hide_queue_controller_failures(
 ) -> None:
     """An unexpected queue-controller failure surfaces instead of a plausible snapshot."""
     mock_mass.players.get_player.return_value = SimpleNamespace(
-        player_id="p1", display_name="P1", name="P1", state=None
+        player_id="p1", name="P1", state=None
     )
     mock_mass.player_queues.get_active_queue.side_effect = RuntimeError("queue controller bug")
 
@@ -151,7 +151,7 @@ async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> Non
     would be caught here.
     """
     player = SimpleNamespace(
-        display_name="Lenco", state=make_player_state("pl_follower", active_group="pl_group")
+        name="Lenco", state=make_player_state("pl_follower", active_group="pl_group")
     )
     mock_mass.players.get_player.return_value = player
 
@@ -167,9 +167,7 @@ async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> Non
 
 async def test_player_resource_reports_needs_setup_state(mock_mass: MagicMock) -> None:
     """An unconfigured player fetched by URI carries ``state="needs_setup"``."""
-    player = SimpleNamespace(
-        display_name="Unboxed", state=make_player_state("pl_raw", needs_setup=True)
-    )
+    player = SimpleNamespace(name="Unboxed", state=make_player_state("pl_raw", needs_setup=True))
     mock_mass.players.get_player.return_value = player
 
     mcp: FastMCP = FastMCP(name="t")
@@ -195,7 +193,7 @@ async def test_player_resource_reflects_external_source_playback(
     ``current_item`` identically to what ``players_get_player`` returns.
     """
     player = SimpleNamespace(
-        display_name="Ynison Player", state=make_player_state("pl_ext1", volume_level=80)
+        name="Ynison Player", state=make_player_state("pl_ext1", volume_level=80)
     )
     mock_mass.players.get_player.return_value = player
 

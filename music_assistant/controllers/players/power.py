@@ -202,7 +202,7 @@ class PowerMixin(_PlayerControllerBase):
                 # starts the count over, so a power off that fails is retried a full idle
                 # time later
                 player.extra_data.pop(ATTR_IDLE_SINCE)
-                self.logger.info("Powering off idle player %s", player.display_name)
+                self.logger.info("Powering off idle player %s", player.name)
                 await self._handle_cmd_power(player_id, False)
         except ResourceBusyError:
             self.logger.debug("Player %s is busy, its idle power off is tried again", player_id)
@@ -411,7 +411,7 @@ class PowerMixin(_PlayerControllerBase):
             return player
         current_user = get_current_user()
         if current_user and not has_player_access(current_user, player.player_id, player):
-            msg = f"{current_user.username} does not have access to player {player.display_name}"
+            msg = f"{current_user.username} does not have access to player {player.name}"
             raise InsufficientPermissions(msg)
         # publish first: what the player published last may name another control while a
         # change of this setting is still being applied
@@ -427,7 +427,7 @@ class PowerMixin(_PlayerControllerBase):
             if owns_power_on:
                 assert player_control.power_on is not None  # for type checking
                 await player_control.power_on()
-            self.logger.debug("Waiting for player %s to come online", player.display_name)
+            self.logger.debug("Waiting for player %s to come online", player.name)
             # a control reports its new state a moment after it was switched, so only an
             # off that follows its on means it was switched off again
             control_reported_on = False
@@ -447,17 +447,17 @@ class PowerMixin(_PlayerControllerBase):
                             self._players.get(player_id) is not player
                         ):
                             # a power off called it off, or the power on waited for has ended
-                            msg = f"Player {player.display_name} is switched off"
+                            msg = f"Player {player.name} is switched off"
                             raise PlayerUnavailableError(msg)
                         if (control := self._controls.get(control_id)) is not None:
                             if control.power_state:
                                 control_reported_on = True
                             elif control_reported_on:
-                                msg = f"Player {player.display_name} is switched off"
+                                msg = f"Player {player.name} is switched off"
                                 raise PlayerUnavailableError(msg)
                         await asyncio.sleep(0.5)
             except TimeoutError:
-                msg = f"Player {player.display_name} did not come online after powering it on"
+                msg = f"Player {player.name} did not come online after powering it on"
                 raise PlayerUnavailableError(msg) from None
         finally:
             if owns_power_on:
@@ -475,4 +475,4 @@ class PowerMixin(_PlayerControllerBase):
         """
         if player.power_on_in_progress:
             player.set_power_on_in_progress(False)
-            self.logger.debug("Called off the power on of player %s", player.display_name)
+            self.logger.debug("Called off the power on of player %s", player.name)

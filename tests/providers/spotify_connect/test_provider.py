@@ -627,7 +627,7 @@ async def test_soloist_data_dir_matches_the_migration_target(tmp_path: Path) -> 
     provider._daemons = {}
     player = MagicMock()
     player.player_id = "player one!"
-    player.display_name = "Player One"
+    player.name = "Player One"
 
     with patch.object(SoloistBackend, "start", new=AsyncMock()):
         await provider._start_daemon("player one!", player, "Player One | Music Assistant")
@@ -686,7 +686,7 @@ def _reconcile_provider(
             return None
         player = MagicMock()
         player.player_id = player_id
-        player.display_name = registered[player_id]
+        player.name = registered[player_id]
         player.available = player_id not in (unavailable or set())
         return player
 

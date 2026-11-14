@@ -239,7 +239,7 @@ class TestProviderInit:
             }
         )
         player = MagicMock()
-        player.display_name = "Living room"
+        player.name = "Living room"
         mass.players.get_player.return_value = player
 
         provider = YandexYnisonProvider(
@@ -295,7 +295,7 @@ class TestProviderInit:
         """The Ynison device name must be derived from the current player name."""
         provider = _make_provider("living-room")
         player = MagicMock()
-        player.display_name = "Kitchen"
+        player.name = "Kitchen"
         provider.mass.players.get_player.return_value = player
 
         assert provider._display_name == "Kitchen"
@@ -314,14 +314,14 @@ class TestProviderInit:
         """A rename must refresh the snapshotted Ynison identity without reload loops."""
         provider = _make_provider("living-room")
         player = MagicMock()
-        player.display_name = "Kitchen"
+        player.name = "Kitchen"
         provider.mass.players.get_player.return_value = player
         provider._advertised_name = "Kitchen"
 
         await provider._on_connected_player_event(MagicMock())
         provider.mass.call_later.assert_not_called()
 
-        player.display_name = "Dining room"
+        player.name = "Dining room"
         await provider._on_connected_player_event(MagicMock())
 
         provider.mass.call_later.assert_called_once_with(
@@ -792,7 +792,7 @@ class TestYnisonStateHandling:
         # Setup a target player
         player = MagicMock()
         player.player_id = "player1"
-        player.display_name = "Player 1"
+        player.name = "Player 1"
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
 
@@ -3241,7 +3241,7 @@ class TestEchoSuppression:
     def _player(self, provider: YandexYnisonProvider) -> MagicMock:
         player = MagicMock()
         player.player_id = "player1"
-        player.display_name = "Player 1"
+        player.name = "Player 1"
         player.playback_state = PlaybackState.PLAYING
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
@@ -3667,7 +3667,7 @@ class TestActivatePlayback:
 
         player = MagicMock()
         player.player_id = "player1"
-        player.display_name = "Player 1"
+        player.name = "Player 1"
         player.playback_state = PlaybackState.IDLE
         provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
         provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
@@ -5040,7 +5040,7 @@ def _merged_provider() -> YandexYnisonProvider:
     )
     merged_into = MagicMock()
     merged_into.player_id = "player2"
-    merged_into.display_name = "Kitchen"
+    merged_into.name = "Kitchen"
     merged_into.available = True
     mass.players.get_player = MagicMock(
         side_effect=lambda player_id: merged_into if player_id == "player2" else None

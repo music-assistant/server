@@ -374,7 +374,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
         )
         self.logger.info(
             "Transferring leadership of %s to %s (%s remaining member(s))",
-            leader.display_name,
+            leader.name,
             new_leader_id,
             len(remaining_members),
         )

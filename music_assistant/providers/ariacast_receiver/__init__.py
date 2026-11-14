@@ -1007,7 +1007,7 @@ class AriaCastReceiver(PluginProvider):
     def _ariacast_name(self) -> str:
         """Return the advertised receiver name: the connected player's display name."""
         if player := self.mass.players.get_player_or_protocol_player(self._default_player_id):
-            return player.display_name
+            return player.name
         return DEFAULT_ARIACAST_NAME
 
     def _get_target_player_id(self) -> str | None:

@@ -151,7 +151,7 @@ class ConfigChangesMixin(_PlayerControllerBase):
             ):
                 self.logger.debug(
                     "Not restarting %s after DSP change: it is not playing queue %s",
-                    player.display_name,
+                    player.name,
                     active_queue.queue_id,
                 )
                 return
@@ -164,7 +164,7 @@ class ConfigChangesMixin(_PlayerControllerBase):
             # to rebuild; stopping and starting it would only interrupt it
             self.logger.debug(
                 "Not restarting %s after DSP change: it is playing external source %s",
-                player.display_name,
+                player.name,
                 player.active_source,
             )
             return

@@ -183,11 +183,11 @@ class PlaybackMixin(_PlayerControllerBase):
         if active_source and not active_source.can_seek:
             msg = (
                 f"The active source ({active_source.name}) on player "
-                f"{player.display_name} does not support seeking"
+                f"{player.name} does not support seeking"
             )
             raise PlayerCommandFailed(msg)
         if PlayerFeature.SEEK not in player.supported_features:
-            msg = f"Player {player.display_name} does not support seeking"
+            msg = f"Player {player.name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
         # handle command on player directly
         await self._get_transport_protocol(player).seek(position)
@@ -362,7 +362,7 @@ class PlaybackMixin(_PlayerControllerBase):
         protocol = player.own_protocol
         if protocol is None or PlayerFeature.SELECT_SOUND_MODE not in protocol.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support sound mode selection"
+                f"Player {player.name} does not support sound mode selection"
             )
 
         prev_sound_mode = protocol.active_sound_mode
@@ -372,7 +372,7 @@ class PlaybackMixin(_PlayerControllerBase):
         # basic check if sound mode is valid for player
         if not any(x for x in protocol.sound_mode_list if x.id == sound_mode):
             raise PlayerCommandFailed(
-                f"{sound_mode} is an invalid sound_mode for player {player.display_name}"
+                f"{sound_mode} is an invalid sound_mode for player {player.name}"
             )
 
         # forward to player
@@ -395,9 +395,7 @@ class PlaybackMixin(_PlayerControllerBase):
 
         protocol = player.own_protocol
         if protocol is None or PlayerFeature.OPTIONS not in protocol.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support set_option"
-            )
+            raise UnsupportedFeaturedException(f"Player {player.name} does not support set_option")
 
         prev_player_option = next((x for x in protocol.options if x.key == option_key), None)
         if not prev_player_option:
@@ -407,7 +405,7 @@ class PlaybackMixin(_PlayerControllerBase):
 
         if prev_player_option.read_only:
             raise UnsupportedFeaturedException(
-                f"Player {player.display_name} option {option_key} is read-only"
+                f"Player {player.name} option {option_key} is read-only"
             )
 
         # forward to player

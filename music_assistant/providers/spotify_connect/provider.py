@@ -683,7 +683,7 @@ class SpotifyConnectProvider(PluginProvider):
                     # not available (yet): never start a daemon for it; an already
                     # running one is deliberately kept (see _on_player_event)
                     continue
-                publish_name = resolve_publish_name(template, player.display_name)
+                publish_name = resolve_publish_name(template, player.name)
                 daemon = self._daemons.get(player_id)
                 if daemon is not None and daemon.publish_name == publish_name:
                     continue
@@ -760,8 +760,8 @@ class SpotifyConnectProvider(PluginProvider):
             publish_name=publish_name,
             stream_metadata=StreamMetadata(title=f"Spotify Connect | {publish_name}"),
         )
-        daemon.backend = self._create_backend(daemon, player.display_name)
-        daemon.audio_source = self._build_audio_source(daemon, player.display_name)
+        daemon.backend = self._create_backend(daemon, player.name)
+        daemon.audio_source = self._build_audio_source(daemon, player.name)
         self._daemons[player_id] = daemon
         try:
             await daemon.backend.start()

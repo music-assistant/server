@@ -104,7 +104,7 @@ async def test_a_new_group_gets_a_player_of_its_own(scenario: Scenario) -> None:
 
     assert group.player_id.startswith(PLAYER_ID_PREFIX)
     assert group.type == PlayerType.GROUP
-    assert group.display_name == "Group Z"
+    assert group.name == "Group Z"
     protocol = _group_protocol(scenario, group.player_id)
     assert protocol.protocol_id != group.player_id
     assert scenario.mass.config.get_protocol_value(protocol.protocol_id, CONF_GROUP_MEMBERS) == (
@@ -245,7 +245,7 @@ async def test_discovery_attaches_a_group_that_is_stored_without_a_player(
     assert protocol is not None
     assert protocol.player is not None
     assert protocol.player.player_id.startswith(PLAYER_ID_PREFIX)
-    assert protocol.player.display_name == "Group Y"
+    assert protocol.player.name == "Group Y"
     assert protocol.player.static_group_members == members
 
 
@@ -256,7 +256,7 @@ def _member_media(scenario: Scenario, group: Player, member_id: str) -> PlayerMe
     return PlayerMedia(
         uri=f"{base_url}?player_id={member_id}",
         media_type=MediaType.FLOW_STREAM,
-        title=group.display_name,
+        title=group.name,
         source_id=group.player_id,
         queue_session_id="session_a",
         custom_data={"ugp_player_id": group.player_id},

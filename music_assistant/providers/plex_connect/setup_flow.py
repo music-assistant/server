@@ -103,10 +103,10 @@ def _player_options(mass: MusicAssistant, selected: ConfigValueType) -> list[Con
     :param selected: The id of the player selected now.
     """
     return [
-        ConfigValueOption(player.player_id, title=player.display_name)
+        ConfigValueOption(player.player_id, title=player.name)
         for player in sorted(
             mass.players.all_players(False, False),
-            key=lambda player: player.display_name.lower(),
+            key=lambda player: player.name.lower(),
         )
         if player.type in PLAYBACK_TARGET_TYPES
         and (not player.session_only or player.player_id == selected)

@@ -822,7 +822,7 @@ class SendspinSourceProvider(PluginProvider):
     def _device_name(self, client_id: str) -> str:
         """Return the name of the player the user sees for this client."""
         if (player := self._client_player(client_id)) is not None:
-            return player.display_name
+            return player.name
         # Fall back to the device's own name while it has no registered player.
         client = self._get_client(client_id)
         info = client.info_or_none if client else None

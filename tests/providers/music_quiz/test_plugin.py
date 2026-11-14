@@ -146,7 +146,7 @@ def _make_venue_player(  # noqa: PLR0913
     )
     player = SimpleNamespace(
         player_id=player_id,
-        display_name=name,
+        name=name,
         attached_protocols={f"client_{player_id}": SimpleNamespace(private=private)},
         provider=SimpleNamespace(domain=provider_domain),
         available=available,

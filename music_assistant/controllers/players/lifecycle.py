@@ -146,9 +146,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             # last protocol goes and takes its config with it
             self.keep_player(player.player_id)
         if player := await self._unbind(protocol):
-            self.logger.info(
-                "Protocol %s detached from player %s", protocol_id, player.display_name
-            )
+            self.logger.info("Protocol %s detached from player %s", protocol_id, player.name)
             await self._settle_player(player)
         if not protocol.provider.unloading:
             # its provider may keep the object, which a removal of the player has to reach
@@ -464,7 +462,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             protocol_id,
             role.value,
             player_id,
-            player.display_name,
+            player.name,
         )
         self._schedule_held_protocols()
         self._schedule_duplicate_merge(player_id)
@@ -649,7 +647,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             and self.mass.config.get(f"{CONF_PLAYERS}/{player.player_id}") is None
         ):
             await self._drop_player(player.player_id, player)
-            self.logger.info("Player removed: %s", player.display_name)
+            self.logger.info("Player removed: %s", player.name)
             return
         player.set_config(await self.mass.config.get_player_object_config(player))
         player.update_state()
@@ -872,7 +870,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             )
         finally:
             self._removing.discard(player_id)
-        self.logger.info("Player removed: %s", player.display_name if player else player_id)
+        self.logger.info("Player removed: %s", player.name if player else player_id)
         for protocol in protocols:
             if protocol.protocol_id in self._protocols or protocol.protocol_id in self._unattached:
                 # its device was found again meanwhile, so its provider still needs it
@@ -974,7 +972,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             self.mass.signal_event(
                 EventType.PLAYER_UPDATED, object_id=player.player_id, data=player
             )
-        self.logger.info("Player disabled: %s", player.display_name)
+        self.logger.info("Player disabled: %s", player.name)
         self._schedule_update_all_players()
 
     async def _stop_player_that_goes(self, player: Player) -> None:
@@ -1016,9 +1014,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
                     player,
                 )
         except Exception:
-            self.logger.exception(
-                "Error ending the playback of %s before its removal", player.display_name
-            )
+            self.logger.exception("Error ending the playback of %s before its removal", player.name)
 
     async def _enable_player(self, player_id: str) -> None:
         """

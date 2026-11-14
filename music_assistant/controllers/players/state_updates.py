@@ -164,7 +164,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
                 "Player state updated for %s: changed fields: %s",
-                player.display_name,
+                player.name,
                 ", ".join(changed_values.keys()),
             )
 

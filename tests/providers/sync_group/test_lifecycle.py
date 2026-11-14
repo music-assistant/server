@@ -81,7 +81,7 @@ async def test_a_new_group_gets_a_player_of_its_own(scenario: Scenario) -> None:
 
     assert group.player_id.startswith(PLAYER_ID_PREFIX)
     assert group.type == PlayerType.GROUP
-    assert group.display_name == "Group Z"
+    assert group.name == "Group Z"
     protocol = _group_protocol(scenario, group.player_id)
     assert protocol.protocol_id != group.player_id
     config = scenario.mass.config
@@ -201,7 +201,7 @@ async def test_discovery_attaches_a_group_that_is_stored_without_a_player(
     assert protocol is not None
     assert protocol.player is not None
     assert protocol.player.player_id.startswith(PLAYER_ID_PREFIX)
-    assert protocol.player.display_name == "Group Y"
+    assert protocol.player.name == "Group Y"
     assert protocol.player.static_group_members == members
 
 

@@ -88,7 +88,7 @@ class UniversalGroupPlayer(PlayerProtocol):
         """
         super().__init__(provider, protocol_id)
         self.stream: UGPStream | None = None
-        # the default name, not the custom one: display_name already prefers the
+        # the default name, not the custom one: the player's name already prefers the
         # custom name, while update_state persists this one as the default name
         self._attr_name = self.config.default_name or f"Universal Group {protocol_id}"
         self._attr_available = True
@@ -205,7 +205,7 @@ class UniversalGroupPlayer(PlayerProtocol):
                 default_value=[],
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
-                    ConfigValueOption(x.player_id, title=x.display_name)
+                    ConfigValueOption(x.player_id, title=x.name)
                     for x in self.mass.players.all_players(True, False)
                     if x.type not in (PlayerType.GROUP, PlayerType.UNKNOWN, PlayerType.SOURCE)
                 ],

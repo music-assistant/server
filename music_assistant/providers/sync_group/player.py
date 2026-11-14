@@ -75,7 +75,7 @@ class SyncGroupPlayer(PlayerProtocol):
         :param protocol_id: Id of the protocol of the group, whose config is stored.
         """
         super().__init__(provider, protocol_id)
-        # the default name, not the custom one: display_name already prefers the
+        # the default name, not the custom one: the player's name already prefers the
         # custom name, while update_state persists this one as the default name
         self._attr_name = self.config.default_name or f"SyncGroup {protocol_id}"
         self._attr_available = True
@@ -317,7 +317,7 @@ class SyncGroupPlayer(PlayerProtocol):
         }
         possible_players = sorted(
             [
-                ConfigValueOption(x.player_id, title=x.display_name)
+                ConfigValueOption(x.player_id, title=x.name)
                 for x in self.mass.players.all_players(True, False)
                 if x.type != PlayerType.GROUP
                 and (
@@ -646,7 +646,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 # the member or it would sit in _attr_group_members, reported as part
                 # of the group, without ever actually being synced.
                 self.logger.debug(
-                    f"Cannot add {member.display_name} to group {self.display_name} since it's "
+                    f"Cannot add {member.name} to group {self.display_name} since it's "
                     f"not compatible with the (current) sync leader"
                 )
                 continue
@@ -720,8 +720,8 @@ class SyncGroupPlayer(PlayerProtocol):
                         "Sync leader of group %s changed from %s to %s while waiting for its "
                         "lock; leaving the member change to the (re-)form",
                         self.display_name,
-                        leader.display_name,
-                        current_leader.display_name if current_leader else None,
+                        leader.name,
+                        current_leader.name if current_leader else None,
                     )
                     if (
                         current_leader is None
@@ -872,7 +872,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 "Forming syncgroup %s, _attr_group_members=%s, sync_leader=%s",
                 self.display_name,
                 self._attr_group_members,
-                leader.display_name,
+                leader.name,
             )
             self.sync_leader = leader
 
@@ -889,7 +889,7 @@ class SyncGroupPlayer(PlayerProtocol):
             if leader.synced_to is not None:
                 self.logger.debug(
                     "Waiting for new leader %s to report synced_to=None before forming",
-                    leader.display_name,
+                    leader.name,
                 )
                 if not await self._wait_member_unsynced(leader.player_id):
                     # Leader is genuinely stuck — bail out before issuing play_media
@@ -900,7 +900,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     self.logger.error(
                         "Aborting syncgroup form for %s: leader %s is stuck synced",
                         self.display_name,
-                        leader.display_name,
+                        leader.name,
                     )
                     self.sync_leader = None
                     return None
@@ -925,7 +925,7 @@ class SyncGroupPlayer(PlayerProtocol):
                         "Removing %s from group %s: it can not be grouped with %s",
                         member_id,
                         self.display_name,
-                        leader.display_name,
+                        leader.name,
                     )
                     self._attr_group_members.remove(member_id)
             already_synced = set(leader.group_members)
@@ -1048,7 +1048,7 @@ class SyncGroupPlayer(PlayerProtocol):
                             if group_leader.available_for_playback
                             else logging.DEBUG,
                             "Could not ungroup the members of %s while dissolving group %s: %s",
-                            group_leader.display_name,
+                            group_leader.name,
                             self.display_name,
                             err,
                         )
@@ -1124,7 +1124,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 continue
             self.logger.debug(
                 "Auto-selected %s as sync leader for group %s (%s)",
-                matches[0].display_name,
+                matches[0].name,
                 self.display_name,
                 reason,
             )
@@ -1257,8 +1257,8 @@ class SyncGroupPlayer(PlayerProtocol):
                 self.logger.warning(
                     "Syncgroup %s tracks %s as leader but %s holds the group members",
                     self.display_name,
-                    sync_leader.display_name,
-                    member.display_name,
+                    sync_leader.name,
+                    member.name,
                 )
                 return member
         return sync_leader
@@ -1340,7 +1340,7 @@ class SyncGroupPlayer(PlayerProtocol):
             self.logger.info(
                 "Dissolving syncgroup %s (leader %s) and re-forming with a new leader",
                 self.display_name,
-                leader_to_stop.display_name,
+                leader_to_stop.name,
             )
             await self._stop_departing_leader(leader_to_stop)
         await self._dissolve_syncgroup()
@@ -1369,7 +1369,7 @@ class SyncGroupPlayer(PlayerProtocol):
             self.logger.log(
                 logging.WARNING if leader.available_for_playback else logging.DEBUG,
                 "Could not stop departing leader %s of group %s: %s",
-                leader.display_name,
+                leader.name,
                 self.display_name,
                 err,
             )
@@ -1410,7 +1410,7 @@ class SyncGroupPlayer(PlayerProtocol):
         self.logger.warning(
             "Player %s still reports synced_to=%s after %ss; "
             "releasing it from its stale parent and re-waiting",
-            member.display_name,
+            member.name,
             member.synced_to,
             timeout,
         )
@@ -1434,15 +1434,13 @@ class SyncGroupPlayer(PlayerProtocol):
         except asyncio.CancelledError:
             raise
         except Exception as err:
-            self.logger.debug(
-                "stale-parent removal recovery for %s raised: %s", member.display_name, err
-            )
+            self.logger.debug("stale-parent removal recovery for %s raised: %s", member.name, err)
         member = self.mass.players.get_player(member_id)
         if member is None or member.synced_to is None:
             return True
         self.logger.error(
             "Player %s is stuck synced_to=%s; aborting dissolve+reform path",
-            member.display_name,
+            member.name,
             member.synced_to,
         )
         return False
@@ -1466,7 +1464,7 @@ class SyncGroupPlayer(PlayerProtocol):
 
         self.logger.info(
             "Dynamic leader switch: removing %s from group %s, remaining members keep playing",
-            old_leader.display_name,
+            old_leader.name,
             self.display_name,
         )
 
@@ -1509,7 +1507,7 @@ class SyncGroupPlayer(PlayerProtocol):
             self.logger.info(
                 "No remaining members for group %s after removing %s, stopping",
                 self.display_name,
-                old_leader.display_name,
+                old_leader.name,
             )
             await self._stop_departing_leader(old_leader)
             await self._dissolve_syncgroup()
@@ -1521,7 +1519,7 @@ class SyncGroupPlayer(PlayerProtocol):
         if new_leader.player_id not in live_member_ids:
             self.logger.info(
                 "New leader %s is not in the live session; dissolving and re-forming syncgroup %s",
-                new_leader.display_name,
+                new_leader.name,
                 self.display_name,
             )
             # Restore sync_leader so _dissolve_and_reform -> _dissolve_syncgroup
@@ -1543,7 +1541,7 @@ class SyncGroupPlayer(PlayerProtocol):
         ]
         self.logger.info(
             "Dynamic leader switch complete: %s is now leader of group %s",
-            new_leader.display_name,
+            new_leader.name,
             self.display_name,
         )
 

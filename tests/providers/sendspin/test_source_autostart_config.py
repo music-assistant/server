@@ -57,7 +57,7 @@ def _player(
         SimpleNamespace(
             players=SimpleNamespace(
                 all_players=lambda return_unavailable=True, *_args: [
-                    SimpleNamespace(player_id=pid, display_name=pid, type=player_type)
+                    SimpleNamespace(player_id=pid, name=pid, type=player_type)
                     for pid, player_type in [
                         *((pid, PlayerType.PLAYER) for pid in known_players),
                         *(

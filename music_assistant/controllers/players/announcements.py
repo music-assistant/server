@@ -712,7 +712,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 self.logger.debug(
                     "Announcement to player %s - ungrouping from group player %s...",
                     player.name,
-                    prev_group.display_name,
+                    prev_group.name,
                 )
                 await self.cmd_set_members(
                     prev_group.player_id, player_ids_to_remove=[player.player_id]
@@ -723,7 +723,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 self.logger.debug(
                     "Announcement to player %s - turning off group player %s...",
                     player.name,
-                    prev_group.display_name,
+                    prev_group.name,
                 )
                 await self._handle_cmd_power(prev_group.player_id, False)
         elif prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
@@ -834,7 +834,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                     self.logger.debug(
                         "Announcement to player %s - grouping back to group player %s...",
                         player.name,
-                        prev_group.display_name,
+                        prev_group.name,
                     )
                     await self.cmd_set_members(
                         prev_group.player_id, player_ids_to_add=[player.player_id]
@@ -845,7 +845,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                     self.logger.debug(
                         "Announcement to player %s - restarting playback on group player %s...",
                         player.name,
-                        prev_group.display_name,
+                        prev_group.name,
                     )
                     await self.cmd_play(prev_group.player_id)
             elif restore_playback:

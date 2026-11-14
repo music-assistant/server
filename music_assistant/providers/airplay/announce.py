@@ -508,7 +508,7 @@ async def _apply_announcement_volume(
     for target, result in zip(targets, results, strict=True):
         if isinstance(result, BaseException):
             target.logger.warning(
-                "Could not set the announcement volume on %s: %r", target.display_name, result
+                "Could not set the announcement volume on %s: %r", target.name, result
             )
 
 

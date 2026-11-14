@@ -676,7 +676,7 @@ class AudioSourceMixin(_PlayerControllerBase):
         if not supported:
             msg = (
                 f"The active source ({audio_source.name}) on player "
-                f"{player.display_name} does not support this action"
+                f"{player.name} does not support this action"
             )
             raise PlayerCommandFailed(msg)
         try:
@@ -686,7 +686,7 @@ class AudioSourceMixin(_PlayerControllerBase):
             # implementation; a caller deserves a refusal rather than a server error
             msg = (
                 f"The active source ({audio_source.name}) on player "
-                f"{player.display_name} can not be controlled"
+                f"{player.name} can not be controlled"
             )
             raise PlayerCommandFailed(msg) from err
         return True

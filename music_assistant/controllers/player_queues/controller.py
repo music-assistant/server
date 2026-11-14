@@ -1396,12 +1396,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # refuse targets that can never render audio (display/visualizer/lighting clients)
             # before anything is mutated, so a bad target does not destroy the source queue
             if target_player.type not in PLAYBACK_TARGET_TYPES:
-                raise PlayerCommandFailed(
-                    f"Player {target_player.display_name} is not capable of playback"
-                )
+                raise PlayerCommandFailed(f"Player {target_player.name} is not capable of playback")
             if auto_play and target_player.offline_by_power_control:
                 # switched off again, or the source started to play while the locks were awaited
-                msg = f"Player {target_player.display_name} is switched off"
+                msg = f"Player {target_player.name} is switched off"
                 raise PlayerUnavailableError(msg)
             if target_player.active_group or target_player.synced_to:
                 # edge case: the user wants to move playback from the group as a whole, to a
@@ -2401,8 +2399,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._check_player_permission(owner.player_id)
         self.logger.info(
             "Player %s is synced or grouped, its play request goes to the queue of %s",
-            player.display_name,
-            owner.display_name,
+            player.name,
+            owner.name,
         )
         return owner.player_id, option
 
@@ -2546,7 +2544,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 timeout=PLAYBACK_START_TIMEOUT,
             ):
                 if (output_protocol := queue_player.resolve_output_protocol()) is None:
-                    msg = f"Player {queue_player.display_name} is not available"
+                    msg = f"Player {queue_player.name} is not available"
                     raise PlayerUnavailableError(msg)
                 await output_protocol.play()
             return

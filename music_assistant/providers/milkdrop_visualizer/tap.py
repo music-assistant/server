@@ -292,7 +292,7 @@ class TapManager:
             tap = Tap(player.player_id)
             self._taps[player.player_id] = tap
             tap.task = self.mass.create_task(self._run(tap))
-            self.logger.info("Waveform tap following %s", player.display_name)
+            self.logger.info("Waveform tap following %s", player.name)
             return tap
 
     def schedule_release(self, player_id: str) -> None:

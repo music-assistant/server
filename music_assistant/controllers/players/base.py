@@ -408,7 +408,7 @@ class _PlayerControllerBase(CoreController):
             return
         player = self.get_player(player_id)
         if not has_player_access(current_user, player_id, player):
-            name = player.display_name if player else player_id
+            name = player.name if player else player_id
             msg = f"{current_user.username} does not have access to player {name}"
             raise InsufficientPermissions(msg)
 
@@ -559,7 +559,7 @@ class _PlayerControllerBase(CoreController):
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
         if player.offline_by_power_control:
-            msg = f"Player {player.display_name} is switched off"
+            msg = f"Player {player.name} is switched off"
             raise PlayerUnavailableError(msg)
         return player
 
@@ -572,8 +572,8 @@ class _PlayerControllerBase(CoreController):
             self.logger.info(
                 "Player %s is synced or grouped and can not accept playback related "
                 "commands itself, redirected the command to %s.",
-                player.display_name,
-                target.display_name,
+                player.name,
+                target.name,
             )
         return target
 

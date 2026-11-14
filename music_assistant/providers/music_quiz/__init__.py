@@ -470,7 +470,7 @@ class MusicQuizPlugin(PluginProvider):
             initial_round_task = await self._prepare_initial_round(quiz_strategy)
             selected_player = self._validate_playback_config(game_config)
             if selected_player is not None:
-                game_config.venue_player_name = selected_player.display_name
+                game_config.venue_player_name = selected_player.name
             remembered_venue_player_id = (
                 game_config.venue_player_id
                 if game_config.playback_mode == SharedPlaybackMode.VENUE
@@ -1879,8 +1879,7 @@ class MusicQuizPlugin(PluginProvider):
             player for player in targets if not player.hide_in_ui or is_own_client_player(player)
         ]
         venue_players: list[MusicQuizVenuePlayerOption] = [
-            {"player_id": player.player_id, "name": player.display_name}
-            for player in offered_players
+            {"player_id": player.player_id, "name": player.name} for player in offered_players
         ]
         offered_player_ids = {player["player_id"] for player in venue_players}
         stored_venue_player_id = (
@@ -1993,7 +1992,7 @@ class MusicQuizPlugin(PluginProvider):
         ]
         return sorted(
             targets,
-            key=lambda player: (player.display_name.casefold(), player.player_id),
+            key=lambda player: (player.name.casefold(), player.player_id),
         )
 
     def _is_venue_playback_target_id(self, player_id: str) -> bool:

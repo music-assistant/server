@@ -88,13 +88,13 @@ async def test_two_instances_on_one_host_stay_two_players(scenario: Scenario) ->
     player_two = _player(amp_two).player_id
     assert player_two != player_one
     assert player_two.startswith(PLAYER_ID_PREFIX)
-    assert _player(amp_two).display_name == "Pi amp 2"
+    assert _player(amp_two).name == "Pi amp 2"
     assert scenario.mass.config.get_protocol_record(AMP_ONE)["player_id"] == player_one  # type: ignore[index]
 
     amp_one = await _connect(scenario, _client(AMP_ONE, "Pi amp 1"))
 
     assert _player(amp_one).player_id == player_one
-    assert _player(amp_one).display_name == "Amp one"
+    assert _player(amp_one).name == "Amp one"
     assert [player.name for player in scenario.visible_players()] == ["Amp one", "Pi amp 2"]
 
 
@@ -113,7 +113,7 @@ async def test_each_instance_finds_its_own_player_after_a_restart(scenario: Scen
 
     assert _player(amp_one).player_id == player_one
     assert _player(amp_two).player_id == player_two
-    assert _player(amp_one).display_name == "Amp one"
+    assert _player(amp_one).name == "Amp one"
 
 
 async def test_a_disconnected_client_leaves_its_player_unavailable(scenario: Scenario) -> None:

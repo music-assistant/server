@@ -137,7 +137,7 @@ async def test_device_that_comes_back_under_its_key_id_keeps_its_player_and_sett
     player = await _register(scenario, by_key)
 
     assert player.player_id == player_id
-    assert player.display_name == "Kitchen Speaker"
+    assert player.name == "Kitchen Speaker"
     assert scenario.mass.config.get_protocol_value(KEY_CLIENT_ID, CONF_SENDSPIN_STATIC_DELAY) == 80
     assert scenario.mass.config.get_protocol_record(MAC_CLIENT_ID) is None
     assert scenario.mass.config.get_protocol_ids_of_player(player_id) == [KEY_CLIENT_ID]
@@ -211,7 +211,7 @@ async def test_two_clients_on_one_host_stay_two_players(scenario: Scenario) -> N
     assert scenario.mass.config.get_protocol_ids_of_player(first_id) == ["sendspin-cli-1111"]
     first_player = scenario.mass.players.get_player(first_id)
     assert first_player is not None
-    assert first_player.display_name == "Kitchen"
+    assert first_player.name == "Kitchen"
 
 
 async def test_a_client_of_a_device_with_another_native_is_an_output_of_its_player(

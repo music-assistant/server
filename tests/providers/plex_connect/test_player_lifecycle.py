@@ -192,7 +192,7 @@ async def test_instance_plays_on_the_player_the_stored_one_was_merged_into() -> 
     """The remote control instance gets the id of the player, not the stored legacy id."""
     merged_into = _make_player(available=True)
     merged_into.player_id = "player2"
-    merged_into.display_name = "Kitchen"
+    merged_into.name = "Kitchen"
     provider = _make_provider({"player2": merged_into}, legacy_ids={PLAYER_ID: "player2"})
     del provider._setup_player_instance
     provider._plex_provider = MagicMock()

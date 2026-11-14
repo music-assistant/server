@@ -703,7 +703,7 @@ class VolumeMixin(_PlayerControllerBase):
                 self.logger.warning(
                     "Could not give %s the volume of %s: %s",
                     protocol.protocol_id,
-                    player.display_name,
+                    player.name,
                     err,
                 )
         if (
@@ -717,6 +717,6 @@ class VolumeMixin(_PlayerControllerBase):
                 self.logger.warning(
                     "Could not give %s the mute of %s: %s",
                     protocol.protocol_id,
-                    player.display_name,
+                    player.name,
                     err,
                 )

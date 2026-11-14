@@ -273,7 +273,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
                 self.logger.info(
                     "Protocol %s of player %s attaches again in another role",
                     protocol.protocol_id,
-                    player.display_name,
+                    player.name,
                 )
                 await self._run_attach(protocol)
 

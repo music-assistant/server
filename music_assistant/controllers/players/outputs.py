@@ -66,7 +66,7 @@ class OutputsMixin(_PlayerControllerBase):
         """
         if protocol := player.foreign_protocol or player.own_protocol:
             return protocol
-        msg = f"Player {player.display_name} has no protocol that can take this command"
+        msg = f"Player {player.name} has no protocol that can take this command"
         raise PlayerUnavailableError(msg)
 
     async def _clear_active_output_protocol_when_idle(self, player: Player) -> None:
@@ -128,7 +128,7 @@ class OutputsMixin(_PlayerControllerBase):
             "External source '%s' took over on %s while playing via protocol %s - "
             "clearing active output protocol and ungrouping",
             new_source,
-            player.display_name,
+            player.name,
             protocol_player.provider.domain,
         )
 

@@ -123,7 +123,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         try:
             await self.mass.player_queues.stop(player_id)
         except Exception:
-            self.logger.exception("Error stopping %s before it is merged", player.display_name)
+            self.logger.exception("Error stopping %s before it is merged", player.name)
 
     async def _merge_players(self, keep_id: str, absorb_id: str) -> None:
         """
@@ -514,7 +514,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         :param player_id: Id of the player.
         """
         if player := self._players.get(player_id):
-            return player.display_name
+            return player.name
         stored = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
         if isinstance(stored, dict):
             return str(stored.get("name") or stored.get("default_name") or player_id)

@@ -646,10 +646,10 @@ class SendspinBasePlayer(PlayerProtocol):
             # It is offered even while unavailable, as it is during the device's own setup.
             *([ConfigValueOption(own_target, translation_key="this_device")] if own_target else []),
             *(
-                ConfigValueOption(player.player_id, title=player.display_name)
+                ConfigValueOption(player.player_id, title=player.name)
                 for player in sorted(
                     self.mass.players.all_players(False, False),
-                    key=lambda player: player.display_name.lower(),
+                    key=lambda player: player.name.lower(),
                 )
                 # Only players that render audio, so lights, displays and other
                 # capture-only clients are not offered as somewhere to play a line-in.

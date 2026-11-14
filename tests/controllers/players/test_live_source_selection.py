@@ -62,7 +62,7 @@ def _controller(resolved: Any = None) -> tuple[Any, MagicMock, MagicMock]:
         mass.music.get_item_by_uri = AsyncMock(return_value=resolved)
     player = MagicMock()
     player.player_id = PLAYER_ID
-    player.display_name = "Player 1"
+    player.name = "Player 1"
     player.available_for_playback = True
     player.offline_by_power_control = False
     player.active_source = None

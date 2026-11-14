@@ -41,7 +41,7 @@ def _player(
     """Build a solo (or synced) player that resolves to its own queue."""
     player = MagicMock()
     player.player_id = player_id
-    player.display_name = player_id
+    player.name = player_id
     player.extra_data = {}
     player.type = PlayerType.PLAYER
     player.playback_state = playback_state
