@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from contextlib import asynccontextmanager
@@ -17,7 +18,7 @@ import music_assistant
 from music_assistant import providers as providers_package
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.community_catalog import CommunityCatalogController, dependencies
-from music_assistant.controllers.community_catalog.controller import _REASONS
+from music_assistant.controllers.community_catalog.controller import _INDEX_CHECK, _REASONS
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
 from music_assistant.controllers.community_catalog.gate import Verdict
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
@@ -139,7 +140,8 @@ async def test_changed_folder_is_installed_again(
         assert (catalog / DOMAIN / "extra.py").exists()
         reason = _REASONS[Verdict.REINSTALL_FAILED].split(" (")[0]
         await _assert_not_loaded(mass, DOMAIN, CommunityProviderState.UNAVAILABLE, reason)
-        assert "503" in str(_provider(await mass.community_catalog.get_providers()).reason)
+        provider = _provider(await mass.community_catalog.get_providers())
+        assert "503" in provider.error.message
 
 
 async def test_folder_not_in_the_state(
@@ -368,6 +370,27 @@ async def test_switched_off_with_a_provider_installed(
         }
 
 
+@pytest.mark.usefixtures("catalog")
+async def test_switch_leaves_a_running_check_to_finish(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """Turning the switch never cuts a check short: it may be stopping a provider."""
+    await _install(tmp_path, registry, github)
+
+    async with _server(tmp_path) as mass:
+        registry.delay = 0.2
+        requests = len(registry.requests)
+        check = mass.create_task(mass.community_catalog._check_index(), task_id=_INDEX_CHECK)
+        await asyncio.sleep(0)
+
+        await mass.config.save_core_config("community_catalog", {"catalog_enabled": False})
+        await mass.config.save_core_config("community_catalog", {"catalog_enabled": True})
+
+        assert mass.get_task(_INDEX_CHECK) is check
+        await check
+        assert len(registry.requests) == requests + 1
+
+
 async def test_dev_folder_and_installed_provider(
     tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
 ) -> None:
@@ -574,7 +597,8 @@ async def _assert_not_loaded(
     assert f"{providers_package.__name__}.{domain}" not in sys.modules
     provider = _provider(await mass.community_catalog.get_providers())
     assert provider.state == state
-    assert reason in str(provider.reason)
+    assert provider.error is not None
+    assert reason in provider.error.message
     conf = _settings_entry(await mass.config.get_provider_configs(include_unavailable=True), domain)
     assert conf.status == ProviderStatus.UNAVAILABLE
     assert conf.last_error is not None
@@ -588,7 +612,9 @@ async def _assert_blocked(mass: MusicAssistant, catalog: Path) -> None:
     await _assert_not_loaded(
         mass, DOMAIN, CommunityProviderState.BLOCKED, "Sends the library elsewhere"
     )
-    assert _provider(await mass.community_catalog.get_providers()).reason_url == WHY
+    provider = _provider(await mass.community_catalog.get_providers())
+    assert provider.reason == "Sends the library elsewhere"
+    assert provider.reason_url == WHY
     assert (catalog / DOMAIN / "__init__.py").exists()
     assert DOMAIN in _state(catalog)["installed"]
 

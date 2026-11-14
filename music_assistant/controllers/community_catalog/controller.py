@@ -126,13 +126,13 @@ class CommunityCatalogController(CoreController):
         await super().update_config(config, changed_keys)
         if f"values/{CONF_ENABLED}" not in changed_keys or self.mass.safe_mode:
             return
-        if self._needs_index():
-            self.mass.create_task(
-                self._check_index(signal=True), task_id=_INDEX_CHECK, abort_existing=True
-            )
-            return
-        self._stop_checks()
+        # what the list offers depends on the switch
         self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
+        if self.config.get_value(CONF_ENABLED):
+            # a check that already runs is left to finish: it may be stopping a provider
+            self.mass.create_task(self._check_index(), task_id=_INDEX_CHECK)
+        elif not self._needs_index():
+            self._stop_checks()
 
     async def start(self) -> None:
         """
@@ -298,14 +298,10 @@ class CommunityCatalogController(CoreController):
             return None
         return index
 
-    async def _check_index(self, signal: bool = False) -> None:
-        """
-        Fetch the index and apply it, then schedule the next daily check.
-
-        :param signal: Signal the list as changed also when the index did not change.
-        """
+    async def _check_index(self) -> None:
+        """Fetch the index and apply it, then schedule the next daily check."""
         try:
-            if await self._fetch_and_apply() or signal:
+            if await self._fetch_and_apply():
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
         finally:
             self._schedule_check()
@@ -428,7 +424,8 @@ class CommunityCatalogController(CoreController):
             if decision.verdict in (Verdict.LOAD, Verdict.REINSTALL):
                 # one that does not load keeps its reason until the next start
                 continue
-            if self._decisions[domain].verdict == Verdict.LOAD:
+            current = self._decisions.get(domain)
+            if current is not None and current.verdict == Verdict.LOAD:
                 self.logger.warning(
                     "Stopping community provider %s: %s",
                     domain,
@@ -502,7 +499,6 @@ class CommunityCatalogController(CoreController):
             )
         elif decision is not None and decision.verdict != Verdict.LOAD:
             state = CommunityProviderState.UNAVAILABLE
-            reason = _REASONS[decision.verdict].format(decision.detail or "")
         elif entry is not None and entry.status == IndexStatus.WITHDRAWN:
             state, reason, reason_url = (
                 CommunityProviderState.WITHDRAWN,
@@ -522,6 +518,7 @@ class CommunityCatalogController(CoreController):
             released=release.released if release is not None else None,
             reason=reason,
             reason_url=reason_url,
+            error=self.unavailable_reason(domain),
         )
 
     async def _installed_manifest(
@@ -687,5 +684,5 @@ def _folder_hash(folder: Path) -> str | None:
     """Return the content hash of a provider folder, None when it cannot be read (blocking)."""
     try:
         return content_hash(folder) if folder.is_dir() else None
-    except OSError:
+    except OSError, ValueError:
         return None

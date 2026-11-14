@@ -8,6 +8,9 @@ from enum import StrEnum
 from typing import Any
 
 from mashumaro import DataClassDictMixin
+from music_assistant_models.config_entries import (
+    ProviderError,  # noqa: TC002 - mashumaro resolves field types at runtime
+)
 from music_assistant_models.provider import (
     ProviderManifest,  # noqa: TC002 - mashumaro resolves field types at runtime
 )
@@ -129,6 +132,9 @@ class CommunityProvider(DataClassDictMixin):
     added: str | None = None
     # when latest_version was released
     released: str | None = None
+    # what the catalog says about a provider it blocked or withdrew, and where it explains it
     reason: str | None = None
     reason_url: str | None = None
+    # why an installed provider does not run, as its settings entries show it
+    error: ProviderError | None = None
     notice: str | None = None

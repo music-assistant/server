@@ -62,7 +62,8 @@ async def test_switching_on(
         await _switch(mass, enabled=True)
 
     assert registry.requests == [("nightly", None)]
-    assert _events(signal_event) == 1
+    # once for the switch, once for the index that came in
+    assert _events(signal_event) == 2
     delay = mass._tracked_timers[_INDEX_CHECK].when() - mass.loop.time()
     assert 24 * 3600 - 60 < delay <= 25 * 3600
 
