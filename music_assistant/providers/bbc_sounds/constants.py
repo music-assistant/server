@@ -11,9 +11,7 @@ class Constants:
     DEFAULT_IMAGE_SIZE = 1280
     TRACK_DURATION_THRESHOLD: int = 300  # 5 minutes
     NOW_PLAYING_REFRESH_TIME: int = 10
-    CONF_SHOW_LOCAL: str = "show_local"
     CONF_INTRO: str = "intro"
-    CONF_STREAM_FORMAT: str = "stream_format"
     DEFAULT_EXPIRATION = 60 * 60 * 24 * 30  # 30 days
     SHORT_EXPIRATION = 60 * 60 * 3  # 3 hours
     DYNAMIC_EXPIRATION = 60  # 1 minute
