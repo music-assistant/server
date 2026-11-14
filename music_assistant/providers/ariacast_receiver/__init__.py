@@ -17,6 +17,7 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
+    PlayerType,
     ProviderFeature,
     SourceControl,
     StreamType,
@@ -149,7 +150,7 @@ class AriaCastReceiver(PluginProvider):
                 )
             },
             can_play_pause=True,
-            can_seek=False,
+            can_seek=True,
             can_next_previous=True,
             exclusive=True,
             allow_external_trigger=True,
@@ -343,6 +344,8 @@ class AriaCastReceiver(PluginProvider):
             await self._forward_action("next")
         elif action == SourceControl.PREVIOUS:
             await self._forward_action("previous")
+        elif action == SourceControl.SEEK and isinstance(value, (int, float)):
+            await self._cmd_seek(int(value * 1000))
 
     async def resolve_image(self, path: str) -> bytes:
         """Return image bytes for the given path."""
@@ -497,10 +500,12 @@ class AriaCastReceiver(PluginProvider):
             if self._in_use_by_player:
                 await self._forward_action(command, exclude=ws)
         elif command == "seek":
-            # The live AriaCast source has no seekable timeline on the MA side
-            # (audio_source.can_seek is False); accept and ack per spec, no-op.
+            # Relayed to the other control clients like next/previous, so the
+            # streaming sender seeks within its own player.
             position = payload.get("position_ms", payload.get("value"))
             reply["position_ms"] = position
+            if self._in_use_by_player and isinstance(position, int):
+                await self._forward_action("seek", exclude=ws, position_ms=position)
         else:
             self.logger.debug("Unknown /control %s: %r", key, command)
             reply["success"] = False
@@ -510,7 +515,7 @@ class AriaCastReceiver(PluginProvider):
 
     def _get_current_volume(self) -> int | None:
         """Return the current volume (0-100) of the active MA player, if known."""
-        player_id = self._active_player_id or self._get_target_player_id()
+        player_id = self._get_target_player_id()
         if not player_id:
             return None
         player = self.mass.players.get_player(player_id)
@@ -522,7 +527,7 @@ class AriaCastReceiver(PluginProvider):
         self, ws: web.WebSocketResponse, command: str, payload: dict[str, Any]
     ) -> None:
         """Handle a volume/volume_set command per control.md."""
-        player_id = self._active_player_id or self._get_target_player_id()
+        player_id = self._get_target_player_id()
         if not player_id:
             with suppress(Exception):
                 await ws.send_json({"command": "volume", "level": -1, "success": False})
@@ -759,7 +764,7 @@ class AriaCastReceiver(PluginProvider):
         self._is_playing = is_playing
 
         if is_playing and not self._in_use_by_player:
-            target = self._active_player_id or self._get_target_player_id()
+            target = self._get_target_player_id()
             if target:
                 # remember the resolved target so a later session reuses it
                 # without re-resolving _get_target_player_id()
@@ -849,8 +854,11 @@ class AriaCastReceiver(PluginProvider):
         # get_stream_details passes on an immediate resume.
         self._is_playing = True
         await self._forward_action("play")
-        if not self._in_use_by_player and self._active_player_id:
-            target = self._active_player_id
+        if (
+            not self._in_use_by_player
+            and self._active_player_id
+            and (target := self._get_target_player_id())
+        ):
             self._in_use_by_player = target
             self.mass.create_task(self._safe_play_media(target))
 
@@ -867,16 +875,31 @@ class AriaCastReceiver(PluginProvider):
         await self._forward_action("pause")
         await self._broadcast_meta()
 
+    async def _cmd_seek(self, position_ms: int) -> None:
+        """
+        Ask the sender to seek, as the live stream has no timeline on the MA side.
+
+        :param position_ms: The target position in milliseconds.
+        """
+        self.logger.info("SEEK %d ms", position_ms)
+        await self._forward_action("seek", position_ms=position_ms)
+        # Show the new position right away; the sender's next metadata update
+        # confirms or corrects it
+        self._stream_meta.elapsed_time = position_ms // 1000
+        self._stream_meta.elapsed_time_last_updated = time.time()
+        await self._broadcast_meta()
+
     async def _forward_action(
-        self, action: str, exclude: web.WebSocketResponse | None = None
+        self, action: str, exclude: web.WebSocketResponse | None = None, **fields: Any
     ) -> None:
         """
         Send an action to all connected /control WebSocket senders.
 
         :param action: The action to broadcast.
         :param exclude: Optional sender to skip (the originator of a relayed command).
+        :param fields: Extra message fields, e.g. ``position_ms`` for a seek.
         """
-        msg = {"action": action}
+        msg = {"action": action, **fields}
         dead: set[web.WebSocketResponse] = set()
         for ws in list(self._control_senders):
             if ws is exclude:
@@ -987,19 +1010,35 @@ class AriaCastReceiver(PluginProvider):
         return DEFAULT_ARIACAST_NAME
 
     def _get_target_player_id(self) -> str | None:
+        """Return the player to play AriaCast audio on, preferring the stored one."""
         if self._active_player_id:
-            if self.mass.players.get_player(self._active_player_id):
-                return self._active_player_id
+            if target := self._resolve_queue_player(self._active_player_id):
+                self._active_player_id = target
+                return target
             self.logger.debug("Stored player %s no longer available", self._active_player_id)
             self._active_player_id = None
 
-        if self.mass.players.get_player(self._default_player_id):
-            self.logger.debug("Using configured player: %s", self._default_player_id)
-            return self._default_player_id
+        if target := self._resolve_queue_player(self._default_player_id):
+            self.logger.debug("Using configured player: %s", target)
+            return target
         self.logger.warning(
             "Configured player '%s' is currently not available", self._default_player_id
         )
         return None
+
+    def _resolve_queue_player(self, player_id: str) -> str | None:
+        """
+        Return the player that owns the queue for the given player, or None if unavailable.
+
+        :param player_id: The configured or remembered player id.
+        """
+        if not player_id or not (player := self.mass.players.get_player(player_id)):
+            return None
+        if player.type == PlayerType.PROTOCOL and player.protocol_parent_id:
+            if self.mass.players.get_player(player.protocol_parent_id):
+                return player.protocol_parent_id
+            return None
+        return player_id
 
 
 # ---------------------------------------------------------------------------

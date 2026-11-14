@@ -32,6 +32,7 @@ from music_assistant_models.player import PlayerMedia
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_IDLE_SINCE,
     CONF_ANNOUNCE_TTS_ENGINE,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -55,7 +56,7 @@ from music_assistant.helpers.tts import (
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.player import AnnouncementFeature, Player
 
-from .constants import PlayerLockPurpose
+from .constants import PlayerLockPurpose, SwitchedOffAction
 from .helpers import AnnounceData, handle_player_command
 
 if TYPE_CHECKING:
@@ -157,6 +158,8 @@ class AnnouncementsMixin:
             self, player_id: str, powered: bool, skip_auto_play: bool = False
         ) -> None: ...
 
+        async def _power_on_switched_off_player(self, player_id: str) -> Player: ...
+
         async def _handle_cmd_resume(
             self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
         ) -> None: ...
@@ -176,7 +179,7 @@ class AnnouncementsMixin:
     # becomes once mixed in; the attributes it needs are declared in the block above.
     # mypy reports that on the outermost decorator, hence the ignore below.
     @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)  # type: ignore[type-var]
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.RUN)
     async def play_announcement(
         self,
         player_id: str,
@@ -222,6 +225,10 @@ class AnnouncementsMixin:
             and not validate_announcement_chime_url(pre_announce_url)
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
+        # a player switched off at its power control is powered on for the announcement (and
+        # then stays on), before the lock is taken: waiting for it to come online takes far
+        # longer than other commands wait for the lock
+        player = await self._power_on_switched_off_player(player.player_id)
         # A member's announcement detaches it from its (sync)group and joins it back
         # afterwards, which takes the group's lock - so that one is taken before the
         # member's own (see get_group_and_player_lock). A spoken message is rendered under
@@ -438,6 +445,9 @@ class AnnouncementsMixin:
             # Cleared after restore finishes.
             # Resume during announce still needs the parked position while this is set.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+            # the idle power off counts from here, also after a native announcement that
+            # leaves the playback state as it was
+            player.extra_data.pop(ATTR_IDLE_SINCE, None)
             await self.mass.streams.announcement_renderer.unregister(player.player_id, render)
 
     async def _run_member_announcement(

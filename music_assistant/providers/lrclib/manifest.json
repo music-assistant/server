@@ -5,7 +5,6 @@
   "name": "LRCLIB",
   "description": "Primary lyrics provider, delivering synced and unsynced lyrics from the LrcLib database.",
   "codeowners": ["@music-assistant"],
-  "tier": "core",
   "requirements": [],
   "documentation": "https://music-assistant.io/metadata/lyrics/",
   "multi_instance": false,

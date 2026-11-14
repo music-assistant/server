@@ -489,6 +489,60 @@ async def test_ingress_does_not_link_a_username_match_unconfirmed_by_home_assist
     assert len(await auth_manager.list_users()) == user_count
 
 
+@pytest.mark.parametrize("username", [HOMEASSISTANT_SYSTEM_USER, "admin"])
+async def test_forged_ingress_headers_from_the_docker_gateway_sign_in_nobody(
+    auth_manager: AuthenticationManager, username: str
+) -> None:
+    """
+    Ingress headers forged by a request from the host gateway neither sign in nor link a user.
+
+    Home Assistant would confirm the claimed username here, so only the peer check stands
+    between the forged headers and the account.
+
+    :param username: The existing username the forged headers claim.
+    """
+    mass = auth_manager.mass
+    await auth_manager.get_homeassistant_system_user_token()
+    await auth_manager.create_user(username="admin", role=UserRole.ADMIN)
+    user_count = len(await auth_manager.list_users())
+    hass_provider = _ready_hass_provider(
+        mass, "ha_forged", admin=True, details=(username, None, None)
+    )
+    headers = {"X-Remote-User-ID": "ha_forged", "X-Remote-User-Name": username}
+
+    with patch.object(mass, "get_provider", return_value=hass_provider):
+        user = await get_authenticated_user(_socket_request(mass, headers, INGRESS_IP))
+
+    assert user is None
+    assert await _get_ha_link(auth_manager, "ha_forged") is None
+    assert len(await auth_manager.list_users()) == user_count
+    hass_provider.get_user_details.assert_not_called()
+
+
+@pytest.mark.parametrize("username", [HOMEASSISTANT_SYSTEM_USER, "admin"])
+async def test_unconfirmed_ha_user_from_the_supervisor_can_not_claim_an_existing_account(
+    auth_manager: AuthenticationManager, username: str
+) -> None:
+    """
+    An HA user id Home Assistant can not confirm does not take over an existing account.
+
+    :param username: The existing username the ingress headers claim.
+    """
+    mass = auth_manager.mass
+    await auth_manager.get_homeassistant_system_user_token()
+    await auth_manager.create_user(username="admin", role=UserRole.ADMIN)
+    user_count = len(await auth_manager.list_users())
+    hass_provider = _ready_hass_provider(mass, "ha_forged", admin=True)
+    headers = {"X-Remote-User-ID": "ha_forged", "X-Remote-User-Name": username}
+
+    with patch.object(mass, "get_provider", return_value=hass_provider):
+        user = await get_authenticated_user(_socket_request(mass, headers, HASSIO_SUPERVISOR_IP))
+
+    assert user is None
+    assert await _get_ha_link(auth_manager, "ha_forged") is None
+    assert len(await auth_manager.list_users()) == user_count
+
+
 async def test_ingress_links_the_username_home_assistant_confirms(
     auth_manager: AuthenticationManager,
 ) -> None:

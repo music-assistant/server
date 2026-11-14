@@ -7,7 +7,6 @@
   "codeowners": [
     "@Tommatheussen"
   ],
-  "tier": "community",
   "requirements": [
     "pyheos==1.0.6"
   ],

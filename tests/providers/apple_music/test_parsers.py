@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
@@ -430,8 +430,8 @@ def test_parse_station_returns_dynamic_radio() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_radio_returns_stations_without_live_ones() -> None:
-    """A radio search asks for stations and leaves out live broadcast stations."""
+async def test_search_radio_returns_stations_with_live_ones() -> None:
+    """A radio search asks for stations and includes live broadcast stations."""
     provider = _create_provider_mock()
     provider.api_client.get_data = AsyncMock(
         return_value={
@@ -453,7 +453,11 @@ async def test_search_radio_returns_stations_without_live_ones() -> None:
     result = await AppleMusicMediaManager(provider).search("chill", [MediaType.RADIO])
 
     assert provider.api_client.get_data.call_args.kwargs["types"] == "stations"
-    assert [(type(radio), radio.item_id) for radio in result.radio] == [(Radio, "ra.1")]
+    assert [(type(radio), radio.item_id) for radio in result.radio] == [
+        (Radio, "ra.1"),
+        (Radio, "ra.2"),
+    ]
+    assert [cast("Radio", radio).is_dynamic for radio in result.radio] == [True, False]
 
 
 def _create_playlist_tracks_manager(

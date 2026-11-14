@@ -346,7 +346,7 @@ async def test_a_fade_landing_from_another_session_while_waiting_is_discarded() 
     """A request that waits for its fade does not take one a previous session mixed."""
     audio = StreamsAudio(MagicMock())
     queue = cast("Any", SimpleNamespace(queue_id="queue-1", display_name="Queue"))
-    item = cast("Any", SimpleNamespace(queue_item_id="item-2", name="Track"))
+    item = cast("Any", SimpleNamespace(queue_item_id="item-2", name="Track", streamdetails=None))
     handoff = asyncio.Event()
     audio._crossfade_pending["queue-1"] = ("item-2", handoff)
 

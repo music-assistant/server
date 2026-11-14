@@ -39,7 +39,7 @@ def _controller(queue_item: QueueItem) -> MagicMock:
     )
     player = MagicMock()
     player.stop_called = False
-    player.get_config_value.return_value = "default"
+    player.get_config_value.return_value = False
 
     ctrl = MagicMock()
     ctrl._open_item_streams = {}

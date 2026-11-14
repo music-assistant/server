@@ -5,11 +5,10 @@
   "name": "Squeezelite",
   "description": "Stream music to Squeezelite and some legacy Squeezebox players on your local network using the slimproto protocol.",
   "codeowners": ["@music-assistant"],
-  "tier": "core",
   "credits": [
     "[aioslimproto](https://github.com/music-assistant/aioslimproto)"
   ],
-  "requirements": ["aioslimproto==3.3.0"],
+  "requirements": ["aioslimproto==3.4.0"],
   "documentation": "https://music-assistant.io/player-support/squeezelite/",
   "multi_instance": false,
   "builtin": false

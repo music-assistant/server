@@ -283,6 +283,7 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
                 session_id="session-1",
                 next_item_id_preparing=None,
                 last_served_item_id=None,
+                sleep_timer_target=None,
             ),
         )
     }
@@ -341,6 +342,23 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
         "task_name": "prepare_next_audio_buffer_queue-1",
         "abort_existing": True,
     }
+
+
+async def test_prepare_next_waits_for_capacity_as_long_as_the_caller_allows() -> None:
+    """A caller that knows when the next item is due can let the preparation wait longer."""
+    controller, next_item, mass = _controller_with_next_item()
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current", capacity_wait_timeout=30.0)
+    await mass.create_task.call_args.args[0]
+
+    mass.streams.audio.get_audio_buffer.assert_awaited_once_with(
+        next_item,
+        reason="prepare_next",
+        capacity_wait_timeout=30.0,
+        allow_provider_match=False,
+        stop_paused_queues=False,
+    )
 
 
 @pytest.mark.parametrize(

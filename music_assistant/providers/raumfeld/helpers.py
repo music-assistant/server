@@ -153,7 +153,7 @@ def external_source(section: str | None) -> tuple[str, str]:
 
 def parse_last_change(last_change_xml: str | None) -> dict[str, str]:
     """
-    Parse an AVTransport ``LastChange`` event into ``{state variable: value}``.
+    Parse a renderer's ``LastChange`` event into ``{state variable: value}``.
 
     Malformed or empty XML yields an empty dict (never raises).
 
@@ -216,9 +216,6 @@ async def discover_hosts() -> list[str]:
 async def host_is_valid(session: aiohttp.ClientSession, host: str, port: int) -> bool:
     """
     Return whether a Raumfeld host answers ``getHostInfo`` at the given address.
-
-    Replaces hassfeld's ``async_host_is_valid``, which opens a session of its own and
-    gives the host 3 seconds.
 
     :param session: The HTTP session to use.
     :param host: Address of the Raumfeld host.

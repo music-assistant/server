@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+from music_assistant_models.enums import SourceControl
+
 from music_assistant.providers.ariacast_receiver import AUDIO_SOURCE_ID, AriaCastReceiver
 
 
@@ -154,3 +156,64 @@ async def test_a_sender_stopping_while_not_in_use_releases_nothing() -> None:
     await _playback(receiver, False)
 
     receiver.mass.players.deselect_source.assert_not_called()
+
+
+async def test_inbound_seek_relays_the_position_to_the_other_senders() -> None:
+    """A control client's seek is relayed with its position and acked."""
+    receiver = _receiver()
+    ws = AsyncMock()
+
+    await _handle(receiver, ws, {"action": "seek", "position_ms": 42000})
+
+    receiver._forward_action.assert_awaited_once_with("seek", exclude=ws, position_ms=42000)
+    ws.send_json.assert_awaited_once()
+    assert ws.send_json.await_args.args[0]["position_ms"] == 42000
+
+
+async def test_inbound_seek_is_ignored_while_the_source_is_not_in_use() -> None:
+    """A seek does nothing while no MA player is playing the source."""
+    receiver = _receiver(in_use_by_queue=None)
+
+    await _handle(receiver, AsyncMock(), {"action": "seek", "position_ms": 42000})
+
+    receiver._forward_action.assert_not_awaited()
+
+
+async def test_forward_action_includes_extra_fields() -> None:
+    """Extra fields, such as a seek position, are part of the broadcast message."""
+    ws = AsyncMock()
+    receiver = SimpleNamespace(_control_senders={ws})
+
+    await AriaCastReceiver._forward_action(
+        cast("AriaCastReceiver", receiver), "seek", position_ms=42000
+    )
+
+    ws.send_json.assert_awaited_once_with({"action": "seek", "position_ms": 42000})
+
+
+async def test_source_control_seek_converts_seconds_to_milliseconds() -> None:
+    """MA passes the seek position in seconds; the sender gets milliseconds."""
+    receiver = SimpleNamespace(_cmd_seek=AsyncMock())
+
+    await AriaCastReceiver.on_source_control(
+        cast("AriaCastReceiver", receiver), AUDIO_SOURCE_ID, SourceControl.SEEK, 42
+    )
+
+    receiver._cmd_seek.assert_awaited_once_with(42000)
+
+
+async def test_cmd_seek_forwards_and_shows_the_new_position() -> None:
+    """A seek is sent to the senders and the elapsed time moves at once."""
+    receiver = SimpleNamespace(
+        _forward_action=AsyncMock(),
+        _broadcast_meta=AsyncMock(),
+        _stream_meta=SimpleNamespace(elapsed_time=10, elapsed_time_last_updated=0.0),
+        logger=MagicMock(),
+    )
+
+    await AriaCastReceiver._cmd_seek(cast("AriaCastReceiver", receiver), 42500)
+
+    receiver._forward_action.assert_awaited_once_with("seek", position_ms=42500)
+    assert receiver._stream_meta.elapsed_time == 42
+    assert receiver._stream_meta.elapsed_time_last_updated > 0
+    receiver._broadcast_meta.assert_awaited_once()

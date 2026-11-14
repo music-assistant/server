@@ -18,7 +18,6 @@ from music_assistant_models.media_items import MediaItemImage
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     MASS_LOGO_ONLINE,
@@ -176,13 +175,10 @@ class HomeAssistantPlayer(Player):
             supported_formats.sort(key=lambda x: x["purpose"])
             codec = supported_formats[0]["format"] if supported_formats else None
 
-            config_entries = [
-                *base_entries,
-                # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
-                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-            ]
+            config_entries = [*base_entries]
 
             if codec is not None:
+                # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
                 config_entries.append(create_output_codec_config_entry(True, codec))
 
             config_entries.append(CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN)
@@ -469,7 +465,10 @@ class HomeAssistantPlayer(Player):
         # entities that were seen echoing it can be judged by it - for the others the
         # play command we issued is what tells the two sources apart. Without either
         # signal the source stays as it was.
-        media_content_id = self._hass_attributes.get("media_content_id", "")
+        media_content_id = self._hass_attributes.get("media_content_id")
+        if not isinstance(media_content_id, str):
+            # some integrations (e.g. Kodi) report a library id here, which is never our URL
+            media_content_id = ""
         if media_content_id.startswith(self.mass.streams.base_url):
             self._reports_stream_url = True
             is_ma_playback = True

@@ -19,14 +19,21 @@ Flag it in review, and never write it yourself, when a change would:
 - decode protected audio outside what the user's own account is entitled to, or keep the
   decoded result rather than only playing it
 - call a service's API without throttling, or re-fetch what the cache already holds
+- walk a service's catalogue for one user action or background job: requests per album, track
+  or page of an artist's discography or a service listing, so the count grows with the
+  catalogue. Never build what a service has no endpoint for that way (an artist's tracks from
+  all of its albums), and cap catalogue listings (an artist's albums stop at 100 releases).
+  Paging through the user's own library, through the throttler, is fine
+- bypass a throttler, or keep sending requests while a service has asked us to wait
 - write decoded audio from a streaming provider to disk
 - bypass a subscription tier, regional availability, or a service's stated concurrent-stream
   limit (see `max_concurrent_streams` in `music_assistant/models/music_provider.py`)
 - add downloading, exporting, or archiving of provider audio, however it is framed
 
 Some guards in the codebase exist only for this reason and read as removable if you do not know
-that — the readrate pacing on the stream endpoints, and the filesystem-only restriction on
-background audio analysis. Leave them in place. `DEVELOPMENT.md` carries the same rules for
+that — the readrate pacing on the stream endpoints, the filesystem-only restriction on
+background audio analysis, and the artist tracks listing that stays empty for a provider without
+an artist tracks endpoint. Leave them in place. `DEVELOPMENT.md` carries the same rules for
 provider authors.
 
 ## Development Commands
@@ -37,7 +44,7 @@ provider authors.
 - `pytest tests/specific_test.py` - Run a specific test file
 - `pre-commit run --all-files` - Run all pre-commit hooks
 - `python -m music_assistant --log-level debug` - Run server locally (localhost:8095)
-- Requires ffmpeg v7.0+ and Python 3.14+ (see `.python-version` for the pinned runtime)
+- Requires ffmpeg v8.0+ and Python 3.14+ (see `.python-version` for the pinned runtime)
 
 Always run `pre-commit run --all-files` after a code change to ensure the new code adheres to the project standards.
 

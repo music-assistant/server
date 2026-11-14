@@ -137,7 +137,7 @@ class AirPlayStream:
         self.prevent_playback: bool = False
         self._cli_proc: AsyncProcess | None = None
         self.commands_pipe = AsyncNamedPipeWriter(
-            f"/tmp/{self.player.protocol.value}-{self.player.player_id}-"  # noqa: S108
+            f"{self.mass.runtime_path}/{self.player.protocol.value}-{self.player.player_id}-"
             f"{self.active_remote_id}-{self._stream_id}-cmd",
         )
         self._stopped = False

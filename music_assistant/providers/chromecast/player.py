@@ -23,7 +23,6 @@ from music_assistant_models.player import PlayerSource
 from pychromecast import IDLE_APP_ID
 from pychromecast.controllers.media import (
     MEDIA_PLAYER_ERROR_CODES,
-    MEDIA_PLAYER_STATE_BUFFERING,
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
@@ -38,6 +37,7 @@ from .constants import (
     APP_LAUNCH_TIMEOUT,
     APP_MEDIA_RECEIVER,
     APP_QUIT_DELAY,
+    APP_TRACK_CHANGE_TIME,
     CAST_PLAYER_CONFIG_ENTRIES,
     CONF_DEFER_IDLE_VOLUME,
     CONF_ENTRY_DEFER_IDLE_VOLUME,
@@ -52,7 +52,6 @@ from .helpers import (
     CastStatusListener,
     ChromecastInfo,
     disconnect_cast,
-    http_profile_entry,
     is_google_device,
 )
 from .receiver_commands import MassCastCommandController
@@ -70,6 +69,8 @@ class ChromecastPlayer(Player):
     """Chromecast Player."""
 
     active_cast_group: str | None = None
+    # when the track change of another party's app is taken as the end of its playback
+    _app_track_change_ends: float | None = None
     # a quit that is already on the wire cannot be recalled, so a receiver that
     # still reports our app is no longer proof that the session is usable
     app_quit_sent: bool = False
@@ -106,6 +107,7 @@ class ChromecastPlayer(Player):
         self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
         self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
+        self._app_track_change_task_id: str = f"cast_app_track_change_{player_id}"
         self._media_error_reported = False
         # a volume set while idle, kept back until playback starts (see volume_set)
         self._pending_volume: int | None = None
@@ -166,13 +168,11 @@ class ChromecastPlayer(Player):
         if self.type == PlayerType.GROUP:
             return [
                 *CAST_PLAYER_CONFIG_ENTRIES,
-                http_profile_entry(self.cast_info),
                 CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
             ]
 
         return [
             *CAST_PLAYER_CONFIG_ENTRIES,
-            http_profile_entry(self.cast_info),
             CONF_ENTRY_SAMPLE_RATES_CAST,
             CONF_ENTRY_DEFER_IDLE_VOLUME,
         ]
@@ -422,40 +422,6 @@ class ChromecastPlayer(Player):
                     media_controller.send_message, data=queuedata, inc_session_id=True
                 )
 
-            if len(getattr(media_controller.status, "items", [])) < 2 and (
-                cmd_next_url := self.mass.streams.get_command_url(self.player_id, "next")
-            ):
-                # In flow mode, all queue tracks are sent to the player as continuous stream.
-                # add a special 'command' item to the queue
-                # this allows for on-player next buttons/commands to still work
-                msg = {
-                    "type": "QUEUE_INSERT",
-                    "mediaSessionId": media_controller.status.media_session_id,
-                    "items": [
-                        {
-                            "media": {
-                                "contentId": cmd_next_url,
-                                "customData": {
-                                    "uri": cmd_next_url,
-                                    "queue_item_id": cmd_next_url,
-                                },
-                                # must match the silence file the command url actually
-                                # serves: strict (vendor) cast stacks error out on a
-                                # contentType mismatch where Google's receiver is lenient
-                                "contentType": "audio/mpeg",
-                                "streamType": STREAM_TYPE_LIVE,
-                                "metadata": {},
-                            },
-                            "autoplay": True,
-                            "startTime": 0,
-                            "preloadTime": 0,
-                        }
-                    ],
-                }
-                await asyncio.to_thread(
-                    media_controller.send_message, data=msg, inc_session_id=True
-                )
-
         self.mass.create_task(
             update_flow_metadata(), task_name=f"cast_flow_metadata_{self.player_id}"
         )
@@ -569,12 +535,7 @@ class ChromecastPlayer(Player):
         if self.cc.app_id not in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             return  # another app took over the device
         status = self.cc.media_controller.status
-        # a device that ran dry at the end of the flow stream keeps reporting buffering,
-        # which counts as playing. no audio is coming for it, so it is not really in use.
-        ran_dry = (
-            status.player_state == MEDIA_PLAYER_STATE_BUFFERING and self._flow_stream_underrun()
-        )
-        if (status.player_is_playing or status.player_is_paused) and not ran_dry:
+        if status.player_is_playing or status.player_is_paused:
             # something is loaded again, e.g. the keepalive media of a dashboard
             return
         await self._quit_app()
@@ -677,21 +638,51 @@ class ChromecastPlayer(Player):
 
         self._report_media_error(status, group_player)
 
-        # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
-        # LIVE flow stream at EOF never goes idle. Treat that case as idle so the queue
-        # can resume/restart.
-        flow_underrun = (
-            status.player_state == MEDIA_PLAYER_STATE_BUFFERING and self._flow_stream_underrun()
-        )
-        is_playing = status.player_is_playing and not flow_underrun
-        is_idle = status.player_is_idle or flow_underrun
+        if group_player is None and self._in_app_track_change(status):
+            return
 
-        self._update_playback_state(status, is_playing)
-        self._update_elapsed_time(status, is_playing)
+        self._update_playback_state(status, status.player_is_playing)
+        self._update_elapsed_time(status, status.player_is_playing)
         self._update_active_source(status, group_player)
-        self._update_current_media(status, is_idle)
+        self._update_current_media(status, status.player_is_idle)
         self._update_multichannel_group_members()
         self.update_state()
+
+    def _in_app_track_change(self, status: MediaStatus) -> bool:
+        """
+        Return whether a status only shows another party's app moving to another track.
+
+        :param status: Media status as reported by the receiver.
+        """
+        if (
+            status.player_is_playing
+            or status.player_is_paused
+            or status.idle_reason == "ERROR"
+            # a stop that quit the app is no track change
+            or self.app_quit_sent
+            or self._attr_playback_state == PlaybackState.IDLE
+            # an app that just took over from Music Assistant's own playback has no track
+            or self._attr_active_source is None
+            or self.cc.app_id in (None, IDLE_APP_ID, SENDSPIN_CAST_APP_ID)
+            or self._is_own_session(status)
+        ):
+            self._app_track_change_ends = None
+            self.mass.cancel_timer(self._app_track_change_task_id)
+            return False
+        now = time.time()
+        if self._app_track_change_ends is None:
+            self._app_track_change_ends = now + APP_TRACK_CHANGE_TIME
+            self.mass.call_later(
+                APP_TRACK_CHANGE_TIME,
+                self._end_app_track_change,
+                task_id=self._app_track_change_task_id,
+            )
+        return now < self._app_track_change_ends
+
+    def _end_app_track_change(self) -> None:
+        """Apply what the receiver reports once an app did not get to its next track."""
+        self._app_track_change_ends = 0.0
+        self._handle_media_status(self.cc.media_controller.status)
 
     def _reset_to_idle(self) -> None:
         """Drop all playback state and publish the player as idle."""
@@ -722,7 +713,7 @@ class ChromecastPlayer(Player):
         # player itself reports the error
         if group_player is not None:
             return
-        if self._media_error_reported or self._flow_stream_underrun():
+        if self._media_error_reported:
             return
         self._media_error_reported = True
         self.logger.warning(
@@ -955,14 +946,6 @@ class ChromecastPlayer(Player):
             "metadata": metadata,
             "duration": media.stream_duration or media.duration,
         }
-
-    def _flow_stream_underrun(self) -> bool:
-        """Return whether the active queue's flow stream has been fully consumed."""
-        # Resolve the queue-owning player: a Cast group child mirrors the group's
-        # status, and a Cast exposed as a protocol player is wrapped by a universal
-        # player that owns the queue. Only a native/standalone Cast owns its own queue.
-        queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
-        return self.mass.player_queues.flow_stream_finished(queue_id)
 
     def _handle_receiver_command(self, command: str) -> None:
         """

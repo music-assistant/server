@@ -160,6 +160,10 @@ class DiscoveryController(CoreController):
         self._upnp_locks.pop(instance_id, None)
         self._schedule_periodic_upnp_discovery()
 
+    async def refresh_mdns_browser(self) -> None:
+        """Make the mDNS browser follow the service types of the registered manifests."""
+        await self._setup_mdns_browser()
+
     async def announce_mcp_server(self, path: str) -> None:
         """
         Offer the MCP server to Home Assistant, now and on every daily re-announce.
@@ -536,7 +540,8 @@ class DiscoveryController(CoreController):
         discovery_payload = {
             "service": "mcp",
             "config": {
-                "url": f"http://{os.environ['HOSTNAME']}:{INGRESS_SERVER_PORT}{self._mcp_path}"
+                "url": f"http://{os.environ['HOSTNAME']}:{INGRESS_SERVER_PORT}{self._mcp_path}",
+                "token": await self.mass.webserver.auth.get_homeassistant_system_user_token(),
             },
         }
         try:

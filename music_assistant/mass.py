@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import random
+import shutil
 import threading
 import time
 from base64 import b64encode
@@ -27,11 +28,14 @@ from music_assistant_models.enums import (
     EventType,
     ProviderFeature,
     ProviderIconVariant,
+    ProviderTier,
     ProviderType,
 )
 from music_assistant_models.errors import (
+    AlreadyRegisteredError,
     AuthenticationFailed,
     AuthenticationRequired,
+    InvalidDataError,
     InvalidToken,
     LoginFailed,
     MusicAssistantError,
@@ -42,6 +46,7 @@ from music_assistant_models.event import MassEvent
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant import providers as providers_package
 from music_assistant.constants import (
     API_SCHEMA_VERSION,
     CONF_DEFAULT_PROVIDERS_SETUP,
@@ -85,6 +90,7 @@ from music_assistant.helpers.build_info import get_official_build_info
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.helpers.runtime_dir import prepare_runtime_dir
 from music_assistant.helpers.util import (
     TaskManager,
     is_hass_supervisor,
@@ -222,6 +228,8 @@ class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
     loop: asyncio.AbstractEventLoop
+    # private dir for the FIFOs and sockets the server and its providers create
+    runtime_path: str
     config: ConfigController
     webserver: WebserverController
     cache: CacheController
@@ -396,14 +404,29 @@ class MusicAssistant:
         LOGGER.info("Stop called, cleaning up...")
         # set state to stopping to signal we're shutting down
         self._set_state(CoreState.STOPPING)
-        # cancel all running tasks
+        # the queues are closed first: unloading a player provider removes the queues of its
+        # players (and their pending state to persist), while stopping their playback still
+        # needs the providers' running tasks and the pending player updates
+        if (player_queues := getattr(self, "player_queues", None)) is not None:
+            try:
+                await player_queues.close()
+            except Exception:
+                LOGGER.exception("Error while closing the player_queues controller")
+        # cancel all running tasks and pending timers
         for task in list(self._tracked_tasks.values()):
             task.cancel()
+        self._cancel_tracked_timers()
         # cleanup all providers
-        await asyncio.gather(
-            *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
+        prov_ids = list(self._providers)
+        results = await asyncio.gather(
+            *[self.unload_provider(prov_id) for prov_id in prov_ids],
             return_exceptions=True,
         )
+        for prov_id, result in zip(prov_ids, results, strict=True):
+            if isinstance(result, Exception):
+                LOGGER.error(
+                    "Error while unloading provider %s: %s", prov_id, result, exc_info=result
+                )
         # stop core controllers, cache and config last because the others rely on them.
         # a failed startup may not have created (or fully set up) every controller, so
         # each one is closed independently: leaving a database open here would keep its
@@ -415,7 +438,6 @@ class MusicAssistant:
             "tasks",
             "metadata",
             "music",
-            "player_queues",
             "players",
             "translations",
             "diagnostics",
@@ -435,6 +457,10 @@ class MusicAssistant:
             await self._http_session.close()
         if self._http_session_no_ssl and not self._http_session_no_ssl.closed:
             await self._http_session_no_ssl.close()
+        # the teardown above can schedule new timers (e.g. when stopping playback)
+        self._cancel_tracked_timers()
+        if (runtime_path := getattr(self, "runtime_path", None)) is not None:
+            await asyncio.to_thread(shutil.rmtree, runtime_path, ignore_errors=True)
         self._set_state(CoreState.STOPPED)
 
     @property
@@ -975,6 +1001,55 @@ class MusicAssistant:
 
         return unregister
 
+    def add_provider_location(self, path: str) -> None:
+        """
+        Add a folder to load providers from, next to the server's own providers folder.
+
+        A provider in it is imported as ``music_assistant.providers.<folder name>``.
+        A provider shipped with the server always wins over a folder of the same name.
+
+        :param path: Absolute path of the folder that holds the provider folders.
+        """
+        # appended, so the server's own providers folder is always searched first
+        if path not in providers_package.__path__:
+            providers_package.__path__.append(path)
+
+    async def register_provider_manifest(
+        self, provider_path: str, tier: ProviderTier
+    ) -> ProviderManifest:
+        """
+        Register the manifest of a provider, which makes the provider available for loading.
+
+        :param provider_path: Folder of the provider, holding its manifest.json.
+        :param tier: Who maintains the provider, which follows from where it loads.
+        :raises InvalidDataError: A community provider's folder is not named after its domain.
+        :raises AlreadyRegisteredError: A community provider's domain is already registered.
+        """
+        manifest = await self._load_provider_manifest(provider_path, tier)
+        if manifest.mdns_discovery:
+            await self.discovery.refresh_mdns_browser()
+        return manifest
+
+    async def unregister_provider_manifest(self, domain: str) -> None:
+        """
+        Remove the manifest of a community provider, after which it can no longer be loaded.
+
+        Does nothing for a domain that is not a registered community provider.
+
+        :param domain: Domain of the provider.
+        """
+        manifest = self._provider_manifests.get(domain)
+        if not manifest or manifest.tier != ProviderTier.COMMUNITY:
+            return
+        del self._provider_manifests[domain]
+        self._provider_icons.pop(domain, None)
+        # a load that is still waiting for its retry has nothing left to load
+        for instance_id, raw_conf in self.config.get(CONF_PROVIDERS, {}).items():
+            if raw_conf["domain"] == domain:
+                self.cancel_timer(f"load_provider_{instance_id}")
+        if manifest.mdns_discovery:
+            await self.discovery.refresh_mdns_browser()
+
     async def load_provider_config(
         self,
         prov_conf: ProviderConfig,
@@ -1469,7 +1544,7 @@ class MusicAssistant:
         # try to setup the module
         # (unbounded: this may still have to install the provider's requirements)
         async with _provider_load_step(domain, "import its module"):
-            prov_mod = await load_provider_module(domain, prov_manifest.requirements)
+            prov_mod = await load_provider_module(prov_manifest)
         async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
             if auto_setup and "auto_setup" in inspect.signature(prov_mod.setup).parameters:
                 # Only a provider that may refuse an automatic setup declares the flag.
@@ -1533,6 +1608,11 @@ class MusicAssistant:
                 )
             raise
 
+        # an unload during the hooks above found no post-load task to cancel and already
+        # tore the instance down, so it must not be announced or have loaded_in_mass run
+        if provider.unloading:
+            return
+
         # if we reach this point, the provider loaded successfully
         LOGGER.info(
             "Loaded %s provider %s",
@@ -1590,26 +1670,7 @@ class MusicAssistant:
                 if file_str != "manifest.json":
                     continue
                 try:
-                    provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
-                    # detect provider icon image variants (svg preferred over png)
-                    icons = await detect_provider_icons(provider_path)
-                    if icons:
-                        self._provider_icons[provider_manifest.domain] = icons
-                        provider_manifest.icon_images = list(icons)
-                    # detect a setup_flow.py module by its mere presence: importing it
-                    # here would trigger installing the provider's requirements
-                    provider_manifest.has_setup_flow = await isfile(
-                        os.path.join(provider_path, "setup_flow.py")
-                    )
-                    # override Home Assistant provider if we're running as add-on
-                    if provider_manifest.domain == "hass" and self.running_as_hass_addon:
-                        provider_manifest.builtin = True
-                        provider_manifest.allow_disable = False
-
-                    self._provider_manifests[provider_manifest.domain] = provider_manifest
-                    LOGGER.log(
-                        VERBOSE_LOG_LEVEL, "Loaded manifest for provider %s", provider_manifest.name
-                    )
+                    await self._load_provider_manifest(provider_path, ProviderTier.CORE)
                 except Exception as exc:
                     LOGGER.exception(
                         "Error while loading manifest for provider %s",
@@ -1630,6 +1691,50 @@ class MusicAssistant:
                     continue
                 tg.create_task(load_provider_manifest(dir_str, dir_path))
         self.logger.debug("Loaded %s provider manifests", len(self._provider_manifests))
+
+    async def _load_provider_manifest(
+        self, provider_path: str, tier: ProviderTier
+    ) -> ProviderManifest:
+        """
+        Parse the manifest in a provider folder and add it to the known manifests.
+
+        :param provider_path: Folder of the provider, holding its manifest.json.
+        :param tier: Who maintains the provider, which follows from where it loads.
+        """
+        provider_manifest: ProviderManifest = await ProviderManifest.parse(
+            os.path.join(provider_path, "manifest.json")
+        )
+        # the tier follows from where a provider loads, not from its manifest file
+        provider_manifest.tier = tier
+        if tier == ProviderTier.COMMUNITY:
+            domain = provider_manifest.domain
+            # the folder name is the module name, and a provider is imported by its domain
+            if Path(provider_path).name != domain:
+                msg = f"Provider folder {provider_path} is not named after its domain {domain}"
+                raise InvalidDataError(msg)
+            if domain in self._provider_manifests:
+                msg = f"Provider domain {domain} is already registered"
+                raise AlreadyRegisteredError(msg)
+            provider_manifest.builtin = False
+            provider_manifest.allow_disable = True
+        # detect provider icon image variants (svg preferred over png)
+        icons = await detect_provider_icons(provider_path)
+        if icons:
+            self._provider_icons[provider_manifest.domain] = icons
+            provider_manifest.icon_images = list(icons)
+        # detect a setup_flow.py module by its mere presence: importing it
+        # here would trigger installing the provider's requirements
+        provider_manifest.has_setup_flow = await isfile(
+            os.path.join(provider_path, "setup_flow.py")
+        )
+        # override Home Assistant provider if we're running as add-on
+        if provider_manifest.domain == "hass" and self.running_as_hass_addon:
+            provider_manifest.builtin = True
+            provider_manifest.allow_disable = False
+
+        self._provider_manifests[provider_manifest.domain] = provider_manifest
+        LOGGER.log(VERBOSE_LOG_LEVEL, "Loaded manifest for provider %s", provider_manifest.name)
+        return provider_manifest
 
     async def _update_available_providers_cache(self) -> None:
         """Update the global cache variable of loaded/available providers."""
@@ -1661,6 +1766,13 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
+        self.runtime_path = await asyncio.to_thread(prepare_runtime_dir, self.cache_path)
+
+    def _cancel_tracked_timers(self) -> None:
+        """Cancel all pending timers scheduled with call_later."""
+        for timer in self._tracked_timers.values():
+            timer.cancel()
+        self._tracked_timers.clear()
 
     def _set_state(self, new_state: CoreState) -> None:
         """Set new state and signal state change."""

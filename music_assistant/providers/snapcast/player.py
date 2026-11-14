@@ -6,13 +6,11 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
@@ -23,8 +21,6 @@ from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
-
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto, SnapstreamProto
 
@@ -421,13 +417,6 @@ class SnapCastPlayer(Player):
             if prev_stream:
                 prev_stream.unpin(self.player_id)
                 self.snap_provider.update_stream_usage()
-
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Player config."""
-        return [
-            # we don't use the http server for streaming
-            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-        ]
 
     def _handle_player_update(self, snap_client: SnapclientProto) -> None:
         """Forward snap_client updates."""

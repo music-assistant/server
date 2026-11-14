@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     get_episode_positions,
     get_stream_url_and_guid_from_episode,
@@ -64,6 +65,11 @@ def apply_action(mass_episode: PodcastEpisode, action: EpisodeAction) -> None:
     elif isinstance(action, EpisodeActionDelete):
         for mapping in mass_episode.provider_mappings:
             mapping.available = False
+    # a deleted download says nothing about progress, so it gets no timestamp
+    if isinstance(action, EpisodeActionNew | EpisodeActionPlay) and (
+        seconds := action_time(action)
+    ):
+        mass_episode.resume_position_timestamp = from_utc_timestamp(seconds)
 
 
 def iter_episodes(

@@ -17,3 +17,22 @@ class PlayerLockPurpose(StrEnum):
     PLAYBACK = "playback"
     VOLUME = "volume"
     GROUP_VOLUME = "group_volume"
+
+
+class SwitchedOffAction(StrEnum):
+    """What a player command does with a player that is switched off at its power control."""
+
+    REFUSE = "refuse"
+    """Raise PlayerUnavailableError, as the player can not take the command."""
+
+    IGNORE = "ignore"
+    """Return without doing anything, as the command has nothing to act on."""
+
+    CANCEL_POWER_ON = "cancel_power_on"
+    """Call off a power on that is under way, otherwise return without doing anything."""
+
+    POWER_ON = "power_on"
+    """Power the player on (and wait for it to come online) before running the command."""
+
+    RUN = "run"
+    """Run the command as is, for commands that handle the switched off player themselves."""

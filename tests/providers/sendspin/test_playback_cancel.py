@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import MediaType
 
+from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 
 
@@ -92,3 +94,57 @@ async def test_setup_failure_ends_the_new_stream(monkeypatch: pytest.MonkeyPatch
     push_stream.stop.assert_called_once_with()
     assert session._push_stream is None
     assert session._playback_running is False
+
+
+def _line_in_session(monkeypatch: pytest.MonkeyPatch) -> tuple[SendspinPlaybackSession, MagicMock]:
+    """Create a session whose server opens a line-in when asked."""
+    session = object.__new__(SendspinPlaybackSession)
+    session.player = MagicMock()
+    session._state_lock = asyncio.Lock()
+    session._pipeline_config_cache = {}
+    session._push_stream = None
+    session._history = deque()
+    session._produced_audio_us = 0
+    session._timeline_start_us = None
+    source_stream = MagicMock()
+    source_stream.aclose = AsyncMock()
+    session.player.mass.streams.open_audio_source_stream = AsyncMock(return_value=source_stream)
+    monkeypatch.setattr(
+        session, "_select_session_pcm_formats", MagicMock(side_effect=RuntimeError("stop here"))
+    )
+    return session, source_stream
+
+
+def _line_in() -> PlayerMedia:
+    return PlayerMedia(uri="x://audio_source/main", media_type=MediaType.AUDIO_SOURCE)
+
+
+async def test_a_line_in_session_follows_the_source_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A line-in has no queue item, so its opened stream details set the session format."""
+    session, source_stream = _line_in_session(monkeypatch)
+    followed: list[object] = []
+
+    async def follow(_player_ids: object) -> None:
+        followed.append(session._start_streamdetails)
+
+    monkeypatch.setattr(session, "_follow_session_sample_rate", follow)
+
+    with pytest.raises(RuntimeError):
+        await session._run_playback(_line_in())
+
+    assert followed == [source_stream.streamdetails]
+
+
+async def test_a_line_in_cancelled_during_setup_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new selection cancelling setup releases the line-in that was opened for it."""
+    session, source_stream = _line_in_session(monkeypatch)
+    monkeypatch.setattr(
+        session, "_follow_session_sample_rate", AsyncMock(side_effect=asyncio.CancelledError)
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await session._run_playback(_line_in())
+
+    source_stream.aclose.assert_awaited_once_with()

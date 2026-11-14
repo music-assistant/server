@@ -558,7 +558,12 @@ def _tracker() -> Any:
     """Build a playback tracker stand-in for a single non-flow queue."""
     tracker = MagicMock()
     # the item the player stopped on ("i1" in the stop states) had its audio served
-    tracker._queue_data = {"q1": SimpleNamespace(flow_mode_stream_log=[], served_item_ids={"i1"})}
+    tracker._queue_data = {
+        "q1": SimpleNamespace(
+            flow_mode_stream_log=[], served_item_ids={"i1"}, sleep_timer_stopped_target=None
+        )
+    }
+    tracker.mass.players.get_player.return_value.offline_by_power_control = False
     return tracker
 
 
@@ -742,6 +747,7 @@ async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
     tracker.mass.music.favorites.disliked_track_keys = AsyncMock(
         return_value=(set(), {(MediaType.TRACK, "spotify--1", "disliked")})
     )
+    tracker.mass.music.favorites.in_disliked_genres = AsyncMock(return_value=set())
 
     loaded = await _refill_from_dynamic_source(
         tracker, _dynamic_playlist(), [_prov_track("disliked"), _prov_track("allowed")]

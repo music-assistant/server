@@ -21,6 +21,7 @@ concurrency:
 jobs:
   find:
     name: Find merged PRs with 'backport-to-stable' label
+    if: github.repository == 'music-assistant/server'
     runs-on: ubuntu-latest
     outputs:
       prs: ${{ steps.prs.outputs.result }}

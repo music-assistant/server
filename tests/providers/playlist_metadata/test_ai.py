@@ -922,6 +922,7 @@ async def test_an_unreachable_engine_is_retried_far_longer(
     # tried well past where a failed generation is given up on, until the outages run out
     for _task in _tasks(provider).values():
         _task.cancel()
+    await asyncio.gather(*_tasks(provider).values(), return_exceptions=True)
     provider._ai._pending.clear()
     start = time.time()
     for day in range(1, 12):
@@ -2040,7 +2041,7 @@ def _add_worker_fakes(provider: PlaylistMetadataProvider) -> None:
         if task_id and (existing := tasks.get(task_id)) and not existing.done():
             coro.close()
             return existing
-        task = asyncio.Task(coro, eager_start=True)
+        task = asyncio.Task(coro, loop=asyncio.get_running_loop(), eager_start=True)
         tasks[task_id or str(id(task))] = task
         return task
 
@@ -2229,7 +2230,9 @@ async def _settle(provider: PlaylistMetadataProvider) -> None:
     # the worker renders and writes the covers in threads, so this waits for real time
     for _ in range(1000):
         tasks = [task for task in _tasks(provider).values() if not task.done()]
-        if not tasks or (provider._ai.waiting and len(tasks) == 1):
+        # a woken worker still reads as waiting until it runs again
+        woken = provider._ai._wakeup.is_set()
+        if not tasks or (provider._ai.waiting and not woken and len(tasks) == 1):
             return
         await asyncio.sleep(0.01)
     msg = "the worker did not settle"

@@ -903,12 +903,13 @@ def test_a_service_we_did_not_map_is_replaced_when_another_source_takes_over() -
 def test_a_service_we_did_not_map_leaves_the_templates_untouched() -> None:
     """Test the templates shared between players keep their defaults."""
     player, _ = _speaker_reporting_paused_qobuz()
+    templates = set(PLAYER_SOURCE_MAP)
 
     player.on_player_event(None)
 
     assert PLAYER_SOURCE_MAP[SOURCE_LINE_IN].shuffle_enabled is None
     assert PLAYER_SOURCE_MAP[SOURCE_SPOTIFY].can_shuffle is False
-    assert len(PLAYER_SOURCE_MAP) == 5
+    assert set(PLAYER_SOURCE_MAP) == templates
 
 
 def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports() -> None:
@@ -1189,6 +1190,7 @@ async def test_set_members_returns_once_the_sonos_group_reports_the_new_member(
 ) -> None:
     """Test set_members waits for the Sonos group event before returning."""
     player, client = _bind_player(timer_mass)
+    timer_mass.players = MagicMock(get_player=MagicMock(return_value=None))
     client.player.group_members = [player.player_id]
 
     def _apply_new_member(**_kwargs: Any) -> None:
@@ -1210,6 +1212,7 @@ async def test_set_members_gives_up_when_the_sonos_group_never_reports_the_membe
 ) -> None:
     """Test set_members returns without raising if the group never reports the new member."""
     player, client = _bind_player(timer_mass)
+    timer_mass.players = MagicMock(get_player=MagicMock(return_value=None))
     client.player.group_members = [player.player_id]
     client.player.group.modify_group_members = AsyncMock()
 

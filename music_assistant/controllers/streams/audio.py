@@ -44,6 +44,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    PlayerType,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -57,9 +58,11 @@ from music_assistant_models.errors import (
     ProviderPermissionDenied,
     ProviderUnavailableError,
     QueueEmpty,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import Album, AudioFormat, Track
+from music_assistant_models.media_items import Album, AudioFormat, Playlist, Track
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
@@ -109,6 +112,7 @@ from music_assistant.controllers.streams.constants import (
     ICY_PLACEHOLDER_IMAGE_URLS,
     MIN_VOICE_OVER_DURATION,
     NO_TRACK_MATCH_EXPIRATION,
+    NORMALIZATION_LIMITER_CEILING_DB,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
@@ -220,6 +224,11 @@ PREFETCH_HANDOVER_TIMEOUT = 5.0
 # paced tail). The speaker holds its early request open for this long; it still has
 # the current track buffered meanwhile.
 CROSSFADE_HANDOFF_WAIT = 30.0
+
+# The same wait for an incoming item with a realtime source. A speaker gives up on a
+# request that sends no audio for about 10 s (seen on Sonos) and drops the item, which
+# aborts that source: its single stream slot then has to start over for the next item.
+REALTIME_CROSSFADE_HANDOFF_WAIT = 5.0
 
 # Size of the tail slices played out while a fade waits for the incoming track's
 # audio. The fade is sized on what is left of the tail once that audio shows up,
@@ -1806,6 +1815,16 @@ class StreamsAudio:
             gain_correct = round(gain_correct, 2)
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
+        # a positive gain can push peaks past full scale; a player's DSP chain owns its limiting
+        if (
+            gain_correct is not None
+            and gain_correct > 0
+            and not self._is_dsp_active_for_queue(streamdetails.queue_id)
+        ):
+            filter_params.append(
+                f"alimiter=limit={NORMALIZATION_LIMITER_CEILING_DB}dB"
+                ":level=false:asc=true:latency=true"
+            )
 
         # handle playback speed
         if playback_speed != 1.0:
@@ -3418,6 +3437,28 @@ class StreamsAudio:
         if pending := self._crossfade_pending.pop(queue_id, None):
             pending[1].set()
 
+    def get_stream_providers(
+        self, mapping: ProviderMapping, allowed: list[str] | None
+    ) -> list[Provider]:
+        """
+        Return the loaded providers that can stream the item a provider mapping points to.
+
+        :param mapping: The provider mapping of the item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._get_mapping_providers(mapping, allowed)
+
+    def has_alternative_match_providers(
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
+    ) -> bool:
+        """
+        Return whether a streaming provider the item has no mapping on could stream a match.
+
+        :param media_item: The item whose own mappings define the providers it is known on.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._has_alternative_match_providers(media_item, allowed)
+
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
@@ -3945,10 +3986,18 @@ class StreamsAudio:
                         prefer_album_loudness=prefer_album_loudness,
                         excluded_provider_instances=busy_instances,
                     )
-                except (AudioError, MediaNotFoundError) as err:
+                except (
+                    AudioError,
+                    MediaNotFoundError,
+                    ResourceTemporarilyUnavailable,
+                    RetriesExhausted,
+                ) as err:
                     if last_capacity_error is None:
                         raise
                     if final_pass:
+                        if isinstance(err, (ResourceTemporarilyUnavailable, RetriesExhausted)):
+                            # no source resolved while a provider asks us to back off
+                            raise
                         # capacity was the root cause, surface the typed (actionable) error
                         raise last_capacity_error from err
                     # no usable alternative mapping: restore the capacity-blocked details
@@ -4248,12 +4297,12 @@ class StreamsAudio:
         )
 
     def _has_alternative_match_providers(
-        self, media_item: Track, allowed: list[str] | None
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
     ) -> bool:
         """
         Return whether any configured streaming provider could carry an unmapped match.
 
-        :param media_item: Track whose existing mappings define the known provider domains.
+        :param media_item: Item whose existing mappings define the known provider domains.
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
@@ -4473,9 +4522,12 @@ class StreamsAudio:
         :param candidates: Candidates in mapping and compatible-instance order.
         :param media_item: The media item the candidates belong to.
         :return: The first resolved stream details, or None when every candidate failed.
+        :raises RateLimited: When no candidate resolved and a provider is rate limited.
+        :raises RetriesExhausted: When no candidate resolved and a provider gave up retrying.
         :raises AudioError: The last (actionable) audio error when no candidate resolved.
         """
         last_audio_error: AudioError | None = None
+        temporary_error: RateLimited | RetriesExhausted | None = None
         for mapping, provider in candidates:
             # any provider that streams its own items can own the mapping
             try:
@@ -4495,8 +4547,14 @@ class StreamsAudio:
                     self.mass.create_task(
                         self.mass.music.mark_provider_mapping_unavailable(media_item, mapping)
                     )
+            except (RateLimited, RetriesExhausted) as err:
+                # the provider asked us to back off, the item may well play once it clears
+                temporary_error = err
+                self.logger.warning("%s", err)
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
+        if temporary_error is not None:
+            raise temporary_error
         if last_audio_error is not None:
             raise last_audio_error
         return None
@@ -4930,15 +4988,17 @@ class StreamsAudio:
         if pending is None or pending[0] != queue_item.queue_item_id:
             return None
         handoff = pending[1]
+        realtime = queue_item.streamdetails is not None and queue_item.streamdetails.is_realtime
+        max_wait = REALTIME_CROSSFADE_HANDOFF_WAIT if realtime else CROSSFADE_HANDOFF_WAIT
         self.logger.debug(
             "Waiting up to %.1fs for the fade into %s being mixed for queue %s",
-            CROSSFADE_HANDOFF_WAIT,
+            max_wait,
             queue_item.name,
             queue.display_name,
         )
         waited_from = asyncio.get_event_loop().time()
         with suppress(TimeoutError):
-            await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
+            await asyncio.wait_for(handoff.wait(), max_wait)
         # claimed (popped) only when it is this item's own boundary; a stale entry
         # for another item stays for its own request
         handover = await self._claim_crossfade_handover(queue, queue_item, session_id)
@@ -5537,6 +5597,30 @@ class StreamsAudio:
             assert child_player is not None
             dsp_player_id = child_player.player_id
         return dsp_player_id
+
+    def _is_dsp_active_for_queue(self, queue_id: str | None) -> bool:
+        """
+        Return whether DSP runs on the queue's player and on every member of its group.
+
+        :param queue_id: The queue to check; an unknown queue or player counts as no DSP.
+        """
+        if not queue_id or not (player := self.mass.players.get_player(queue_id)):
+            return False
+        output_players = [
+            member
+            for member_id in player.state.group_members
+            if (member := self.mass.players.get_player(member_id))
+        ]
+        # a group player that hands DSP to its members has no DSP config of its own
+        if not (
+            player.state.type == PlayerType.GROUP
+            and PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
+        ):
+            output_players.append(player)
+        return bool(output_players) and all(
+            self._resolve_player_dsp_config(output_player).enabled
+            for output_player in output_players
+        )
 
     def _get_output_channels(self, player: Player | None, player_id: str) -> str:
         """

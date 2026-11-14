@@ -372,15 +372,9 @@ class LibraryRecommendationsProvider(PluginProvider):
             ):
                 continue
             seen_podcasts.add(podcast_id)
-            # MA's own play history wins, the state the provider reported at the last
-            # refresh covers progress made outside MA
+            # the state the provider reported at the last refresh, against MA's own play history
             episode = copy(stored)
-            episode.fully_played = None
-            episode.resume_position_ms = None
             await self.mass.music.podcasts.restore_resume_position(episode, episode.provider)
-            if episode.fully_played is None and not episode.resume_position_ms:
-                episode.fully_played = stored.fully_played
-                episode.resume_position_ms = stored.resume_position_ms
             result.append(episode)
         return result
 

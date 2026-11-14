@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import weakref
+from dataclasses import dataclass, field
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
+from urllib.parse import urlencode
 
+import aiohttp
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     AlbumType,
@@ -60,25 +65,31 @@ from music_assistant.controllers.music.listing_cache import Listing
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.collections import has_available_item
 from music_assistant.helpers.compare import (
+    ARTIST_EXTERNAL_ID_TYPES,
     compare_album,
     compare_album_name,
     compare_artist,
+    compare_external_ids,
     compare_strings,
     compare_track,
 )
 from music_assistant.helpers.database import UNSET
+from music_assistant.helpers.external_ids import normalize_external_ids
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.logging import log_once
 from music_assistant.helpers.provider_access import visible_items
+from music_assistant.helpers.uri import canonical_mapping_url
 from music_assistant.models.music_provider import (
     PROVIDER_FETCH_ERRORS,
     MusicProvider,
     provider_fetch_log_level,
 )
+from music_assistant.providers.musicbrainz.constants import MUSICBRAINZ_WEB_URL
 
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Container, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Container, Hashable, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
@@ -97,8 +108,20 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Initialize class."""
         super().__init__(mass)
         self._db_add_lock = asyncio.Lock()
+        self._logged_hints: set[Hashable] = set()
+        # MusicBrainz artist ids looked up by streaming URL while matching an artist being added,
+        # per artist object: kept off the item until it is inserted, so a candidate accepted
+        # later in the scan never gets one, and dropped with the object, so the next add asks
+        # again (through the MusicBrainz cache)
+        self._match_lookups: dict[int, _ArtistLookups] = {}
         # register (extra) api handlers
         api_base = self.api_base
+        self.mass.register_api_command(
+            f"music/{api_base}/letter_index",
+            self.letter_index,
+            required_scope=Scope.LIBRARY_READ,
+            allow_impersonation=True,
+        )
         self.mass.register_api_command(
             f"music/{api_base}/artist_albums",
             self.albums,
@@ -252,11 +275,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         if reachable_via is not None and not reachable_via:
             return []
         extra_query_params: dict[str, Any] = {}
-        extra_query_parts: list[str] = []
-        if artist_type:
-            extra_query_parts = [f"artist_type = '{artist_type}'"]
-        if album_artists_only and artist_type in (None, ArtistType.SINGER):
-            extra_query_parts.append(self._album_artist_clause(extra_query_params))
+        extra_query_parts = self._library_filter_parts(
+            extra_query_params, album_artists_only, artist_type
+        )
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -273,6 +294,53 @@ class ArtistsController(MediaControllerBase[Artist]):
             summary=summary,
             reachable_via=reachable_via,
             random_seed=random_seed,
+        )
+
+    async def letter_index(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        provider: str | list[str] | None = None,
+        genre: int | list[int] | None = None,
+        played_only: bool = False,
+        album_artists_only: bool = False,
+        artist_type: ArtistType | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        reachable_via: list[str] | None = None,
+    ) -> list[dict[str, str | int]]:
+        """
+        Return where each starting letter begins in the in-database (album) artists listing.
+
+        Each entry holds a letter ("A" to "Z", or "#" for anything else) and the offset of
+        its first artist in ``library_items`` for the same arguments, in listing order.
+        Empty when sorted on anything but name or sort name, or when searching.
+
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
+        :param search: Filter by search query.
+        :param provider: Filter by provider instance ID (single string or list).
+        :param genre: Filter by genre id(s).
+        :param played_only: Filter to only played artists.
+        :param album_artists_only: Only include artists credited on an album in the library.
+        :param artist_type: The artist's type
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction, the field's default when omitted.
+        :param reachable_via: Restrict results to items with a provider mapping reachable
+            through one of these provider instance ids, see `library_items`.
+        """
+        query_params: dict[str, Any] = {}
+        return await self._library_letter_index(
+            self._library_filter_parts(query_params, album_artists_only, artist_type),
+            query_params,
+            favorite=favorite,
+            search=search,
+            provider=provider,
+            genre=genre,
+            played_only=played_only,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+            reachable_via=reachable_via,
         )
 
     async def tracks(
@@ -1328,45 +1396,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         Return all tracks for an artist on given provider.
 
-        Without an artist tracks listing of its own, the provider's tracks of the artist's
-        albums are listed: a failing album leaves the listing incomplete, and is only raised
-        when it leaves nothing to play.
+        Empty when the provider has no artist tracks listing of its own.
         """
         provider = self.mass.music.get_visible_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider) or not provider.available:
             return Listing([])  # guard against an unavailable or hidden provider
-        if provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
-            return Listing(await provider.get_artist_tracks(item_id))
-        # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
-        result: list[Track] = []
-        unique_ids: set[str] = set()
-        provider_error: Exception | None = None
-        for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
-            try:
-                album_tracks = await self.mass.music.albums.tracks(
-                    album.item_id, album.provider, limit=None
-                )
-            except PROVIDER_FETCH_ERRORS as err:
-                # one failing album must not drop the artist's other tracks on this provider
-                provider_error = err
-                self.logger.log(
-                    provider_fetch_log_level(err),
-                    "Unable to fetch tracks for album %s from provider %s: %s",
-                    album.name,
-                    provider_instance_id_or_domain,
-                    err,
-                )
-                continue
-            for track in album_tracks:
-                unique_id = f"{track.name}.{track.version}"
-                if unique_id in unique_ids:
-                    continue
-                unique_ids.add(unique_id)
-                result.append(track)
-        if provider_error is not None and not any(track.available for track in result):
-            # nothing could be played at all, so surface the reason instead of an empty list
-            raise provider_error
-        return Listing(result, complete=provider_error is None)
+        # no fallback to the tracks of the artist's albums: that costs a request per release,
+        # which our usage policy rules out
+        if not provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
+            return Listing([])
+        return Listing(await provider.get_artist_tracks(item_id))
 
     async def get_library_artist_tracks(
         self,
@@ -1573,10 +1612,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
-                if not self.mass.music.get_visible_provider(provider_mapping.provider_instance):
+                mapped_provider = self.mass.music.get_visible_provider(
+                    provider_mapping.provider_instance
+                )
+                if not mapped_provider or not mapped_provider.supports_feature(
+                    ProviderFeature.ARTIST_TOPTRACKS
+                ):
                     continue
                 with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
-                    ref_tracks += await self.mass.music.artists.tracks(
+                    ref_tracks += await self.mass.music.artists.top_tracks(
                         provider_mapping.item_id, provider_mapping.provider_instance
                     )
         for ref_track in ref_tracks:
@@ -1718,6 +1762,31 @@ class ArtistsController(MediaControllerBase[Artist]):
                 }
             )
         return Artist.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
+
+    async def get_or_add_library_artist_id(self, artist: Artist | ItemMapping) -> int:
+        """
+        Return the library ID of the given artist, adding it to the library when needed.
+
+        An artist already in the library, found by its provider id or matched by its ids or
+        name, only gains the provider mappings and the types of external ids it lacks, and is
+        never overwritten.
+
+        :param artist: The artist as credited on an album or track.
+        """
+        if artist.provider == "library":
+            return int(artist.item_id)
+        if db_artist := await self.get_library_item_by_prov_id(artist.item_id, artist.provider):
+            await self._add_new_artist_ids(db_artist, artist)
+            return int(db_artist.item_id)
+        # Convert ItemMapping to Artist if needed
+        artist_to_add = (
+            self.artist_from_item_mapping(artist) if isinstance(artist, ItemMapping) else artist
+        )
+        if library_id := await self._get_library_item_by_match(artist_to_add):
+            await self._add_new_artist_ids(await self.get_library_item(library_id), artist_to_add)
+            return library_id
+        db_artist = await self.add_item_to_library(artist_to_add)
+        return int(db_artist.item_id)
 
     async def _get_visible_library_item(self, item_id: str | int) -> Artist:
         """Return the library artist, not found when none of its sources is the caller's."""
@@ -1873,6 +1942,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self, item: Artist | ItemMapping, overwrite_existing: bool = False
     ) -> int:
         """Add a new item record to the database."""
+        lookups = self._match_lookups.get(id(item))
         # If item is an ItemMapping, convert it
         if isinstance(item, ItemMapping):
             item = self.artist_from_item_mapping(item)
@@ -1881,6 +1951,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             item.mbid = VARIOUS_ARTISTS_MBID
         if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
+        if not item.mbid and lookups and lookups.item_mbid:
+            item.mbid = lookups.item_mbid
         # no existing item matched: insert item
         db_id = await self.mass.music.database.insert(
             self.db_table,
@@ -1958,6 +2030,48 @@ class ArtistsController(MediaControllerBase[Artist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
+    async def _confirm_library_candidate(self, db_item: Artist, item: Artist | ItemMapping) -> bool:
+        """
+        Return True if a library artist is the same artist as the one being added.
+
+        A library artist that already holds another artist id of the same streaming provider
+        is rejected when MusicBrainz links the two ids to different artists.
+        """
+        if not await super()._confirm_library_candidate(db_item, item):
+            return False
+        if any(
+            compare_external_ids(db_item.external_ids, item.external_ids, ext_id)
+            for ext_id in ARTIST_EXTERNAL_ID_TYPES
+        ):
+            return True
+        found = self._match_lookups.get(id(item))
+        if not item.mbid and found and found.item_mbid and db_item.mbid:
+            # an id found while rejecting an earlier candidate still identifies the artist
+            return _same_mbid(db_item.mbid, found.item_mbid)
+        if not (conflict := self._same_provider_other_ids(db_item, item)):
+            return True
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            return True
+        mapping, library_mappings = conflict
+        lookups = self._lookups_of(item)
+        if not (
+            item_mbid := item.mbid
+            or lookups.item_mbid
+            or await self._mbid_by_mapping(musicbrainz, lookups, mapping, item.name, db_item.mbid)
+        ):
+            return True
+        if not item.mbid:
+            lookups.item_mbid = item_mbid
+        library_mbids = {db_item.mbid} if db_item.mbid else set()
+        if not library_mbids:
+            for library_mapping in library_mappings:
+                if mbid := await self._mbid_by_mapping(
+                    musicbrainz, lookups, library_mapping, db_item.name, item_mbid
+                ):
+                    library_mbids.add(mbid)
+        return not library_mbids or any(_same_mbid(mbid, item_mbid) for mbid in library_mbids)
+
     async def _validate_library_item_merge(self, target: Artist, source: Artist) -> None:
         """Validate that two artists have the same role."""
         await super()._validate_library_item_merge(target, source)
@@ -1967,6 +2081,143 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "artists must have the same role."
             )
             raise InvalidDataError(msg)
+
+    def _same_provider_other_ids(
+        self, db_item: Artist, item: Artist | ItemMapping
+    ) -> tuple[ProviderMapping, list[ProviderMapping]] | None:
+        """
+        Return a streaming provider mapping of an artist and the library artist's other ids there.
+
+        :param db_item: The library artist the item matched on name.
+        :param item: The artist being added to the library.
+        """
+        if isinstance(item, ItemMapping):
+            provider = self.mass.get_provider(
+                item.provider, return_unavailable=True, provider_type=MusicProvider
+            )
+            if provider is None:
+                return None
+            mappings = [
+                ProviderMapping(
+                    item_id=item.item_id,
+                    provider_domain=provider.domain,
+                    provider_instance=item.provider,
+                )
+            ]
+        else:
+            mappings = list(item.provider_mappings)
+        for mapping in mappings:
+            # some providers fall back to the artist name as id, which tells no artists apart
+            if mapping.item_id == item.name:
+                continue
+            provider = self.mass.get_provider(
+                mapping.provider_instance, return_unavailable=True, provider_type=MusicProvider
+            )
+            if provider is None or not provider.is_streaming_provider:
+                continue
+            library_mappings = [
+                x
+                for x in db_item.provider_mappings
+                if x.provider_domain == mapping.provider_domain
+                and x.item_id not in (mapping.item_id, db_item.name)
+            ]
+            if library_mappings:
+                return mapping, library_mappings
+        return None
+
+    async def _mbid_by_mapping(
+        self,
+        musicbrainz: MusicbrainzProvider,
+        lookups: _ArtistLookups,
+        mapping: ProviderMapping,
+        name: str,
+        other_mbid: str | None,
+    ) -> str | None:
+        """
+        Return the MusicBrainz artist id linked to a streaming provider artist, if known.
+
+        :param musicbrainz: The MusicBrainz provider to look the artist up with.
+        :param lookups: The lookups made so far while adding the same artist.
+        :param mapping: The streaming provider mapping of the artist.
+        :param name: The artist's name, for the hint logged when MusicBrainz lacks the link.
+        :param other_mbid: The MusicBrainz id of the same-name artist it must be told apart
+            from, if known.
+        """
+        if (url := canonical_mapping_url(mapping, MediaType.ARTIST)) is None:
+            return None
+        if url in lookups.mbids:
+            return lookups.mbids[url]
+        if musicbrainz.rate_limited:
+            return None
+        try:
+            mbids = await musicbrainz.get_mbids_by_url(url, MediaType.ARTIST)
+        except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+            self.logger.debug("Error looking up %s on MusicBrainz: %s", url, err)
+            return None
+        # a URL linked to several artists identifies none of them
+        mbid = mbids[0] if len(mbids) == 1 else None
+        lookups.mbids[url] = mbid
+        if not mbids:
+            self._log_missing_musicbrainz_link(mapping, url, name, other_mbid)
+        elif len(mbids) > 1:
+            self._log_ambiguous_musicbrainz_link(mapping, url, name, mbids)
+        return mbid
+
+    def _lookups_of(self, item: Artist | ItemMapping) -> _ArtistLookups:
+        """Return the MusicBrainz lookups made while adding this artist object."""
+        key = id(item)
+        if (lookups := self._match_lookups.get(key)) is None:
+            lookups = self._match_lookups[key] = _ArtistLookups()
+            weakref.finalize(item, self._match_lookups.pop, key, None)
+        return lookups
+
+    def _log_missing_musicbrainz_link(
+        self, mapping: ProviderMapping, url: str, name: str, other_mbid: str | None
+    ) -> None:
+        """Log, once per run, how to add a streaming artist link MusicBrainz is missing."""
+        provider_name = self._provider_display_name(mapping.provider_domain)
+        search_url = f"{MUSICBRAINZ_WEB_URL}/search?{urlencode({'type': 'artist', 'query': name})}"
+        msg = (
+            'Artist "%s" is not on MusicBrainz through %s, so it cannot be told apart from the '
+            'other "%s" on %s; add %s to their MusicBrainz page: %s'
+        )
+        args: list[Any] = [name, url, name, provider_name, url, search_url]
+        if other_mbid:
+            msg += ' (the other "%s" is %s/artist/%s)'
+            args += [name, MUSICBRAINZ_WEB_URL, other_mbid]
+        log_once(
+            self.logger,
+            self._logged_hints,
+            ("artist-url", mapping.provider_domain, mapping.item_id),
+            logging.INFO,
+            msg,
+            *args,
+        )
+
+    def _log_ambiguous_musicbrainz_link(
+        self, mapping: ProviderMapping, url: str, name: str, mbids: Sequence[str]
+    ) -> None:
+        """Log, once per run, how to fix a streaming artist link MusicBrainz has on several artists."""
+        log_once(
+            self.logger,
+            self._logged_hints,
+            ("artist-url", mapping.provider_domain, mapping.item_id),
+            logging.INFO,
+            'Artist "%s" cannot be told apart from the other "%s" on %s, because %s is linked to '
+            "more than one MusicBrainz artist; remove it from the one it does not belong to: %s",
+            name,
+            name,
+            self._provider_display_name(mapping.provider_domain),
+            url,
+            ", ".join(f"{MUSICBRAINZ_WEB_URL}/artist/{mbid}" for mbid in mbids),
+        )
+
+    def _provider_display_name(self, domain: str) -> str:
+        """Return the name of a provider as shown to users."""
+        try:
+            return self.mass.get_provider_manifest(domain).name
+        except KeyError:
+            return domain
 
     async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
         # recursively also remove artist albums
@@ -2097,6 +2348,21 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"albums.item_id NOT IN ({own_albums})",
         ], query_params
 
+    def _library_filter_parts(
+        self,
+        query_params: dict[str, Any],
+        album_artists_only: bool,
+        artist_type: ArtistType | None,
+    ) -> list[str]:
+        """Return the WHERE conditions of the artist-specific library listing filters."""
+        query_parts: list[str] = []
+        if artist_type:
+            query_params["artist_type"] = artist_type.value
+            query_parts.append("artist_type = :artist_type")
+        if album_artists_only and artist_type in (None, ArtistType.SINGER):
+            query_parts.append(self._album_artist_clause(query_params))
+        return query_parts
+
     def _album_artist_clause(self, query_params: dict[str, Any]) -> str:
         """Return the condition that keeps artists credited on an album in the user's library."""
         # an album only stored because one of its tracks is in the library does not count,
@@ -2116,6 +2382,22 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON {' AND '.join(mapping_conditions)} "
             f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id)"
         )
+
+    async def _add_new_artist_ids(self, db_artist: Artist, artist: Artist | ItemMapping) -> None:
+        """Add the provider mappings and external id types a library artist lacks."""
+        stored_types = {id_type for id_type, _ in db_artist.external_ids}
+        new_ids = {
+            (id_type, value)
+            for id_type, value in normalize_external_ids(artist.external_ids)
+            if id_type not in stored_types
+        }
+        new_mappings = set(getattr(artist, "provider_mappings", ())) - db_artist.provider_mappings
+        if not new_ids and not new_mappings:
+            return
+        # the stored artist itself is the update, so nothing but the new ids changes
+        db_artist.external_ids.update(new_ids)
+        db_artist.provider_mappings.update(new_mappings)
+        await self.update_item_in_library(db_artist.item_id, db_artist)
 
 
 _SHORT_FORM_TYPES = {AlbumType.SINGLE, AlbumType.EP}
@@ -2210,3 +2492,24 @@ def _album_from_release_group(
             )
         )
     return album
+
+
+@dataclass
+class _ArtistLookups:
+    """The MusicBrainz lookups made while adding one artist to the library."""
+
+    # MusicBrainz artist id per streaming URL looked up, None for a URL MusicBrainz lacks
+    mbids: dict[str, str | None] = field(default_factory=dict)
+    # the id found for the artist being added, which only becomes its own once inserted
+    item_mbid: str | None = None
+
+
+def _same_mbid(mbid: str, other_mbid: str) -> bool:
+    """Return True if two MusicBrainz artist ids are the same."""
+    return bool(
+        compare_external_ids(
+            {(ExternalID.MB_ARTIST, mbid)},
+            {(ExternalID.MB_ARTIST, other_mbid)},
+            ExternalID.MB_ARTIST,
+        )
+    )

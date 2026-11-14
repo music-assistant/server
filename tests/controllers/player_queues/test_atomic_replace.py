@@ -69,7 +69,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
-    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    ctrl.mass.players.get_player = Mock(
+        return_value=Mock(extra_data={}, offline_by_power_control=False)
+    )
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
@@ -255,11 +257,10 @@ async def test_replace_starting_at_a_chosen_track_never_advertises_a_partial_que
 
 async def test_replacing_a_dynamic_queue_hides_the_rebuild_from_clients() -> None:
     """
-    The pool is fetched over the network with the queue already emptied, so updates are held off.
+    Player updates are held off while the pool is fetched over the network.
 
-    Player updates would otherwise reconcile against the half-built queue and publish it as empty
-    with nothing playing - the very state this is meant to remove, and on the dynamic path the
-    fetch is the slowest part of the whole operation.
+    A track change picked up during the fetch, the slowest part of the whole operation, would
+    otherwise start a refill of the tail the rebuild is about to replace.
     """
     ctrl = _controller(is_dynamic=True, shuffle_enabled=True)
     _load_playing_queue(ctrl)

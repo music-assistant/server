@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -82,12 +83,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
 OUTPUT_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_S16LE,
-    sample_rate=OUTPUT_SAMPLE_RATE,
-    bit_depth=OUTPUT_BIT_DEPTH,
-    channels=OUTPUT_CHANNELS,
-)
-BRIDGE_OUTPUT_FORMAT = SendspinAudioFormat(
+    content_type=ContentType.from_bit_depth(OUTPUT_BIT_DEPTH),
     sample_rate=OUTPUT_SAMPLE_RATE,
     bit_depth=OUTPUT_BIT_DEPTH,
     channels=OUTPUT_CHANNELS,
@@ -110,6 +106,9 @@ class _SourceSession:
     # Selection time counts toward the source timeout before PCM arrives.
     last_pcm_monotonic: float = field(default_factory=time.monotonic)
     pcm_received: asyncio.Event = field(default_factory=asyncio.Event)
+    start_event: SourceStreamStartedEvent | None = None
+    # The format Music Assistant plays this session in, which every bridge converts to.
+    output_format: AudioFormat | None = None
 
 
 @dataclass
@@ -216,15 +215,23 @@ class SendspinSourceProvider(PluginProvider):
 
         Side-effect-free: streaming is requested from the client in
         on_source_selected, which the streams controller fires before this
-        method on the actual stream request (never on queue preload).
+        method on the actual stream request (never on queue preload). Waits
+        for the selected source's first audio to declare its own format.
         """
         client = self._get_client(item_id)
         if client is None or not await self._is_selectable(client):
             raise MediaNotFoundError(f"Unknown or unavailable Sendspin source: {item_id}")
+        audio_format = OUTPUT_FORMAT
+        if (session := self._get_session(item_id)) is not None:
+            # A source that never starts fails in get_audio_stream with a translated error.
+            with suppress(TimeoutError):
+                async with asyncio.timeout(COLD_START_TIMEOUT_S):
+                    await session.pcm_received.wait()
+            audio_format = session.output_format or OUTPUT_FORMAT
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=OUTPUT_FORMAT,
+            audio_format=audio_format,
             media_type=media_type,
             stream_type=StreamType.CUSTOM,
             stream_metadata=StreamMetadata(title=self._source_name(item_id)),
@@ -343,7 +350,7 @@ class SendspinSourceProvider(PluginProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
         """
-        Yield fixed-format PCM pulled from the source's clock bridge.
+        Yield PCM in the format of ``streamdetails`` pulled from the source's clock bridge.
 
         The pull cadence of this loop is the master clock: the bridge converts
         the client's drifting capture stream to it and pads silence on underrun,
@@ -355,11 +362,19 @@ class SendspinSourceProvider(PluginProvider):
         if session is None:
             raise AudioError(f"Sendspin source is not selected: {streamdetails.item_id}")
         generation = session.generation
+        play_format = streamdetails.audio_format
+        # The player keeps its stream details across pauses, and a source that answered
+        # late got the fallback format, so a running bridge may convert to another format.
+        if session.output_format != play_format:
+            session.output_format = play_format
+            if session.start_event is not None:
+                await self._attach_stream(session, session.start_event)
         await self._await_first_audio(session)
         if self._get_session(session.client_id) is not session or session.generation != generation:
             return
-        frames_per_chunk = OUTPUT_SAMPLE_RATE * CHUNK_DURATION_MS // 1000
-        period = CHUNK_DURATION_MS / 1000
+        frames_per_chunk = play_format.sample_rate * CHUNK_DURATION_MS // 1000
+        # Pace by the frames read, which round down at rates like 44.1 kHz.
+        period = frames_per_chunk / play_format.sample_rate
         loop = self.mass.loop
         next_deadline = loop.time()
         while True:
@@ -700,16 +715,30 @@ class SendspinSourceProvider(PluginProvider):
             cast("int | None", self.config.get_value(CONF_TARGET_LATENCY))
             or DEFAULT_TARGET_LATENCY_MS
         )
-        session.bridge = self._create_bridge(event.audio_format, target_latency)
+        session.start_event = event
+        if session.output_format is None:
+            session.output_format = AudioFormat(
+                content_type=ContentType.from_bit_depth(event.audio_format.bit_depth),
+                sample_rate=event.audio_format.sample_rate,
+                bit_depth=event.audio_format.bit_depth,
+                channels=event.audio_format.channels,
+            )
+        session.bridge = self._create_bridge(
+            event.audio_format, session.output_format, target_latency
+        )
         session.last_pcm_monotonic = time.monotonic()
         session.ingest_task = self.mass.create_task(self._ingest(session, event.handle))
 
     def _create_bridge(
-        self, input_format: SendspinAudioFormat, target_latency_ms: int
+        self, input_format: SendspinAudioFormat, output_format: AudioFormat, target_latency_ms: int
     ) -> SourceBridge:
         return AsrcSourceBridge(
             input_format=input_format,
-            output_format=BRIDGE_OUTPUT_FORMAT,
+            output_format=SendspinAudioFormat(
+                sample_rate=output_format.sample_rate,
+                bit_depth=output_format.bit_depth,
+                channels=output_format.channels,
+            ),
             target_latency_ms=target_latency_ms,
         )
 

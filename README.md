@@ -32,7 +32,7 @@ The only officially supported ways to run the Music Assistant server are:
 - **Home Assistant app** (recommended) — see https://music-assistant.io/installation/
 - **Docker container** — `ghcr.io/music-assistant/server`
 
-Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (7.0+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
+Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (8.0+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
 
 Third-party packages (e.g. Linux distributions) are not supported, and issues reported from them may be closed. The bundled credentials for the services Music Assistant integrates with are only licensed for our official builds (see [NOTICE](NOTICE)), so such builds must supply their own (see `music_assistant/helpers/app_vars.py`).
 
@@ -41,7 +41,7 @@ Third-party packages (e.g. Linux distributions) are not supported, and issues re
 
 ### Running from source (development)
 
-For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 7.0+** are required.
+For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 8.0+** are required.
 
 - `scripts/setup.sh` — create the virtualenv and install dependencies and pre-commit hooks
 - `python -m music_assistant --log-level debug` — run the server locally (listens on http://localhost:8095)

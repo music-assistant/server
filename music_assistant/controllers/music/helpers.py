@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
-from typing import TYPE_CHECKING, Any, Final
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from music_assistant_models.enums import ExternalID, ImageType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     Artist,
+    Audiobook,
     ItemMapping,
     MediaItemMetadata,
     MediaItemType,
+    PodcastEpisode,
     ProviderMapping,
     SearchResults,
     Track,
@@ -20,21 +23,77 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.metadata import LifeSpan
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.external_ids import is_valid_isrc
 from music_assistant.helpers.uri import canonical_provider_url, discogs_id_from_url, parse_uri
+from music_assistant.helpers.util import parse_optional_bool
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from collections.abc import Set as AbstractSet
 
     from music_assistant_models.enums import MediaType
 
+    from music_assistant.controllers.music.media.base import AudiobookSyncDetails
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
 
 # the trigram tokenizer of the FTS5 search index cannot match
 # search terms shorter than 3 characters
 MIN_FTS_TERM_LENGTH: Final[int] = 3
+
+
+class ResumePoint(NamedTuple):
+    """Played state and resume position of an audiobook or episode, and when it was set."""
+
+    fully_played: bool
+    position_ms: int
+    timestamp: datetime | None
+
+    @classmethod
+    def from_item(
+        cls, item: Audiobook | PodcastEpisode | AudiobookSyncDetails
+    ) -> ResumePoint | None:
+        """Return the resume point set on an item, None when it has none."""
+        if item.fully_played is None and item.resume_position_ms is None:
+            return None
+        return cls(
+            bool(item.fully_played), item.resume_position_ms or 0, item.resume_position_timestamp
+        )
+
+    @classmethod
+    def from_playlog_row(cls, row: Mapping[str, Any]) -> ResumePoint:
+        """Return the resume point a media progress row holds."""
+        return cls(
+            parse_optional_bool(row["fully_played"]) or False,
+            int((row["seconds_played"] or 0) * 1000),
+            from_utc_timestamp(row["timestamp"]),
+        )
+
+
+def select_resume_point(
+    provider_point: ResumePoint | None, playlog_point: ResumePoint | None
+) -> ResumePoint | None:
+    """
+    Return the resume point to use out of the provider's and the one Music Assistant recorded.
+
+    The newer one wins when both carry a timestamp, otherwise the furthest, finished first.
+
+    :param provider_point: The resume point the provider reports.
+    :param playlog_point: The resume point Music Assistant recorded for the user.
+    """
+    if provider_point is None or playlog_point is None:
+        return provider_point or playlog_point
+    if (
+        provider_point.timestamp is not None
+        and playlog_point.timestamp is not None
+        and provider_point.timestamp != playlog_point.timestamp
+    ):
+        if provider_point.timestamp > playlog_point.timestamp:
+            return provider_point
+        return playlog_point
+    # on a tie, Music Assistant's own record wins: nothing new to apply, so no redundant write
+    return max(playlog_point, provider_point, key=lambda x: (x.fully_played, x.position_ms))
 
 
 def search_name_match_clause(

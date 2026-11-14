@@ -188,7 +188,7 @@ def build_dimension_weights(weights: dict[str, float]) -> np.ndarray:
     Expand per-group weights into a per-dimension weight vector.
 
     Callers in a hot loop (e.g. MMR re-ranking) can build this once and reuse it
-    across many compute_weighted_distance_vec calls instead of rebuilding it per call.
+    across many distance calls instead of rebuilding it per call.
 
     :param weights: Per-group weight overrides keyed by FEATURE_GROUPS name. Groups
         absent from the dict default to weight 1.0.
@@ -233,13 +233,36 @@ def compute_weighted_distance_vec(
     total_weighted_dims = float(dim_weights.sum())
     if total_weighted_dims == 0.0:
         return 0.0
-    # np.asarray is a no-op when the caller already holds a float64 array (the
-    # MMR hot path), avoiding the list round-trip the previous version forced.
     a = np.asarray(sig_a, dtype=np.float64)
     b = np.asarray(sig_b, dtype=np.float64)
     diff = a - b
     weighted_sq_sum = float(np.dot(dim_weights, diff * diff))
     return math.sqrt(weighted_sq_sum / total_weighted_dims)
+
+
+def compute_weighted_distances(
+    vectors: np.ndarray,
+    target: np.ndarray,
+    dim_weights: np.ndarray,
+) -> np.ndarray:
+    """
+    Compute the weighted Euclidean distance from every row of vectors to target.
+
+    Row-wise variant of compute_weighted_distance_vec; identical rows always get
+    identical distances.
+
+    :param vectors: Float64 array of shape (n, VECTOR_DIMENSIONS).
+    :param target: Float64 feature vector to measure against.
+    :param dim_weights: Per-dimension weights as built by build_dimension_weights.
+    :returns: Float64 array of n distances.
+    """
+    total_weighted_dims = float(dim_weights.sum())
+    if total_weighted_dims == 0.0:
+        return np.zeros(len(vectors), dtype=np.float64)
+    diff = vectors - target
+    # sum(axis=1) instead of a matrix product: BLAS may sum rows in different orders
+    distances: np.ndarray = np.sqrt((diff * diff * dim_weights).sum(axis=1) / total_weighted_dims)
+    return distances
 
 
 def build_debug_breakdown(

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Generator
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, PlaybackState, PlayerType
@@ -306,6 +307,13 @@ async def test_transfer_queue_carries_pinned_toggle_overrides() -> None:
     assert target_data.queue.autoplay_enabled is False
 
 
+@pytest.fixture
+def frozen_clock() -> Generator[None]:
+    """Stop the wall clock, so a playing source stays at the position the test gave it."""
+    with patch("time.time", return_value=1_000.0):
+        yield
+
+
 def _playing_transfer(
     target_state: PlaybackState,
     media_item: Track | Radio,
@@ -387,6 +395,7 @@ async def test_transfer_queue_resumes_a_replacement_for_a_missing_item_from_the_
         (PlaybackState.IDLE, True),
     ],
 )
+@pytest.mark.usefixtures("frozen_clock")
 async def test_transfer_queue_starts_the_item_at_the_source_position(
     target_state: PlaybackState, target_ended: bool
 ) -> None:
@@ -432,6 +441,7 @@ async def test_transfer_queue_starts_radio_from_the_start() -> None:
 
 
 @pytest.mark.parametrize("current_item", ["missing", "none"])
+@pytest.mark.usefixtures("frozen_clock")
 async def test_transfer_queue_resumes_without_a_current_item_in_the_queue(
     current_item: str,
 ) -> None:

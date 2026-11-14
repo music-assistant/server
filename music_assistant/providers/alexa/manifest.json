@@ -5,7 +5,6 @@
   "name": "Alexa",
   "description": "Stream to Amazon Alexa (Echo) devices.",
   "codeowners": ["@alams154"],
-  "tier": "community",
   "credits": ["[alexapy](https://gitlab.com/keatontaylor/alexapy)"],
   "requirements": ["alexapy==1.30.0"],
   "documentation": "https://www.music-assistant.io/player-support/alexa/"

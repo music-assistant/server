@@ -23,4 +23,6 @@ async def metadata_controller(mass_minimal: MusicAssistant) -> MetaDataControlle
     """Construct a MetaDataController with the minimal MA fixture."""
     controller = MetaDataController(mass_minimal)
     mass_minimal.metadata = controller
+    # the server assigns the active config at startup
+    controller.config = await mass_minimal.config.get_core_config("metadata")
     return controller

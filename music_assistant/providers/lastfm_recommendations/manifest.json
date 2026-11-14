@@ -6,7 +6,6 @@
   "codeowners": [
     "@OzGav"
   ],
-  "tier": "community",
   "stage": "stable",
   "documentation": "https://music-assistant.io/metadata-providers/lastfm-recommendations/"
 }

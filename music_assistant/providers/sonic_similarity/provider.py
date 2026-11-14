@@ -807,9 +807,12 @@ class SonicSimilarityPlugin(PluginProvider):
             corpus_means=self.corpus_means,
             corpus_stds=self.corpus_stds,
             orig_normalized=orig_normalized,
+            search_index=self._search_index,
+            label_map=self._label_map,
+            signature_cache=self._signature_cache,
         )
 
-        raw_results = self._run_ann_search(ctx)
+        raw_results = await asyncio.to_thread(self._run_ann_search, ctx)
         raw_results = await self._post_process_candidates(ctx, raw_results)
         final_items = self._diversify_and_limit(ctx, raw_results)
         debug_breakdown_map = self._build_debug_breakdowns(ctx, final_items)
@@ -856,7 +859,7 @@ class SonicSimilarityPlugin(PluginProvider):
             seeds: list[list[float]],
             seen: set[str],
         ) -> list[tuple[str, str, list[float], float]]:
-            # `_label_map[lbl]` already returns (item_id, provider); cache the
+            # `ctx.label_map[lbl]` already returns (item_id, provider); cache the
             # provider per cand_id so the raw_tuples build below stays O(1) per
             # candidate.
             id_to_prov: dict[str, str] = {}
@@ -864,12 +867,12 @@ class SonicSimilarityPlugin(PluginProvider):
                 all_neighborhoods: list[list[tuple[str, float]]] = []
                 for seed_vec in seeds:
                     normalized = normalize_features(seed_vec, ctx.corpus_means, ctx.corpus_stds)
-                    raw = self._query_index(normalized, ctx.params.candidates)
+                    raw = self._query_index(ctx.search_index, normalized, ctx.params.candidates)
                     neighborhood: list[tuple[str, float]] = []
                     for lbl, cos_dist in raw:
-                        if lbl not in self._label_map:
+                        if lbl not in ctx.label_map:
                             continue
-                        cand_id, cand_provider = self._label_map[lbl]
+                        cand_id, cand_provider = ctx.label_map[lbl]
                         id_to_prov[cand_id] = cand_provider
                         if cand_id not in seen:
                             neighborhood.append((cand_id, cos_dist))
@@ -878,12 +881,12 @@ class SonicSimilarityPlugin(PluginProvider):
             else:
                 centroid = combine_seeds_centroid(seeds, ctx.params.seed_weights)
                 normalized = normalize_features(centroid, ctx.corpus_means, ctx.corpus_stds)
-                raw = self._query_index(normalized, ctx.params.candidates)
+                raw = self._query_index(ctx.search_index, normalized, ctx.params.candidates)
                 candidate_ids = []
                 for lbl, cos_dist in raw:
-                    if lbl not in self._label_map:
+                    if lbl not in ctx.label_map:
                         continue
-                    cand_id, cand_provider = self._label_map[lbl]
+                    cand_id, cand_provider = ctx.label_map[lbl]
                     id_to_prov[cand_id] = cand_provider
                     if cand_id not in seen:
                         candidate_ids.append((cand_id, cos_dist))
@@ -910,7 +913,7 @@ class SonicSimilarityPlugin(PluginProvider):
 
             results: list[tuple[str, str, list[float], float]] = []
             for cand in filtered:
-                cand_features = self._signature_cache.get((cand.item_id, cand.provider))
+                cand_features = ctx.signature_cache.get((cand.item_id, cand.provider))
                 if cand_features is None:
                     continue
                 cand_normalized = normalize_features(
@@ -993,7 +996,7 @@ class SonicSimilarityPlugin(PluginProvider):
             return {}
         breakdown: dict[str, dict[str, Any]] = {}
         for cid, prov, displayed_dist, _gen in final_items:
-            cand_features = self._signature_cache.get((cid, prov))
+            cand_features = ctx.signature_cache.get((cid, prov))
             if cand_features is None:
                 continue
             cand_normalized = normalize_features(cand_features, ctx.corpus_means, ctx.corpus_stds)
@@ -1233,17 +1236,21 @@ class SonicSimilarityPlugin(PluginProvider):
 
         return Index(ndim=VECTOR_DIMENSIONS, metric=MetricKind.Cos, dtype=ScalarKind.F32)
 
-    def _query_index(self, normalized_features: list[float], k: int) -> list[tuple[int, float]]:
+    @staticmethod
+    def _query_index(
+        index: Any, normalized_features: list[float], k: int
+    ) -> list[tuple[int, float]]:
         """
         Search the index for the k nearest neighbors.
 
+        :param index: The usearch index to query; None or empty returns no results.
         :param normalized_features: Z-score normalized query vector.
         :param k: Number of neighbors to return.
         """
-        if self._search_index is None or len(self._search_index) == 0:
+        if index is None or len(index) == 0:
             return []
         vec = np.array(normalized_features, dtype=np.float32)
-        results = self._search_index.search(vec, k)
+        results = index.search(vec, k)
         return [
             (int(lbl), float(dist))
             for lbl, dist in zip(results.keys, results.distances, strict=False)
@@ -1388,8 +1395,8 @@ class SonicSimilarityPlugin(PluginProvider):
         self.corpus_means = new_corpus_means
         self.corpus_stds = new_corpus_stds
 
-        # Drop the old viewer's reference; CPython refcounting closes the mmap
-        # synchronously, releasing the previous on-disk file for unlink below.
+        # Drop the old viewer's reference; CPython refcounting closes the mmap once no
+        # in-flight search still holds it. Unlinking a mapped file is fine on POSIX.
         del old_search_index
 
         # Best-effort cleanup of the previous versioned files (off the event loop).

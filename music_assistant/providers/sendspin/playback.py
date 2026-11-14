@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.streams.controller import AudioSourceStream
     from music_assistant.helpers.dsp import ComplexFilter
 
     from .player import SendspinPlayer
@@ -719,12 +720,23 @@ class SendspinPlaybackSession:
         # push the timeline into a forward rebase.
         await import_module_in_thread("av")
         push_stream: PushStream | None = None
+        source_stream: AudioSourceStream | None = None
+        setup_done = False
         try:
+            # A line-in has no queue item, so it is opened first to learn its format.
+            if media.media_type == MediaType.AUDIO_SOURCE:
+                source_stream = await self.player.mass.streams.open_audio_source_stream(
+                    media, self.player.player_id
+                )
             # let automatic Sendspin formats follow the first item's sample rate, then
             # refresh the session PCM format from the leader's preferred output before
             # building any pipelines; member ffmpeg pipelines and pre-computed filter
             # params depend on this rate so the cache must also be cleared
-            self._start_streamdetails = self._get_start_streamdetails(media)
+            self._start_streamdetails = (
+                source_stream.streamdetails
+                if source_stream is not None
+                else self._get_start_streamdetails(media)
+            )
             await self._follow_session_sample_rate(
                 [client.client_id for client in self.player.api.group.clients]
             )
@@ -746,6 +758,7 @@ class SendspinPlaybackSession:
                 self._produced_audio_us = 0
                 self._timeline_start_us = None
                 self._mapping_dirty = True
+            setup_done = True
         except Exception:
             # A track change stops the previous stream without stream/end, so a failed
             # setup has to end this one. Cancellation propagates untouched, since there
@@ -755,6 +768,9 @@ class SendspinPlaybackSession:
                     push_stream.stop()
             await self._reset_session_state()
             raise
+        finally:
+            if not setup_done and source_stream is not None:
+                await source_stream.aclose()
         # Bounded queue between producer (stream reader) and consumer (committer).
         pending_chunks: asyncio.Queue[_PendingChunk | None] = asyncio.Queue(
             maxsize=_PRODUCER_BACKLOG_SIZE
@@ -767,8 +783,12 @@ class SendspinPlaybackSession:
 
         async def _produce_pending_chunks() -> None:
             nonlocal pending_duration_us
-            audio_source = self.player.mass.streams.get_stream(
-                media, self._pcm_format, self.player.player_id
+            audio_source = (
+                source_stream.stream(self._pcm_format)
+                if source_stream is not None
+                else self.player.mass.streams.get_stream(
+                    media, self._pcm_format, self.player.player_id
+                )
             )
             completed = False
             try:

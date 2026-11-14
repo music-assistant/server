@@ -94,7 +94,7 @@ class AppleMusicRecommendationManager:
 
     @use_cache(3600 * 24, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_station(self, station_id: str) -> Radio:
-        """Fetch name and artwork for a radio station and return it as a dynamic Radio."""
+        """Fetch name and artwork for a radio station and return it as a Radio."""
         try:
             station_response = await self.api.get_data(
                 f"catalog/{self.provider._storefront}/stations/{station_id}"
@@ -130,7 +130,7 @@ class AppleMusicRecommendationManager:
                 if not station_id or station_id in seen:
                     continue
                 if item.get("attributes", {}).get("isLive", False):
-                    # Live broadcast stations require Widevine DRM; skip them.
+                    # the live stations have their own listing in browse
                     continue
                 seen.add(station_id)
                 entries.append((title, item))

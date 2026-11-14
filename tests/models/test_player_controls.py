@@ -20,9 +20,11 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
+    ATTR_POWER_ON_IN_PROGRESS,
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
@@ -234,6 +236,116 @@ class TestPowerControlAutoSelect:
         )
         player = _create_player(mock_mass, features={PlayerFeature.POWER})
         assert player.power_control == PLAYER_CONTROL_NATIVE
+
+
+class TestOfflineByPowerControl:
+    """A player switched off at its external power control is reported as available and off."""
+
+    def _offline_player(
+        self,
+        mock_mass: MagicMock,
+        power_state: bool,
+        player_type: PlayerType = PlayerType.PLAYER,
+    ) -> MockPlayer:
+        """Create an unreachable player whose power control is an external control."""
+        control = PlayerControl(
+            id="switch.smart_plug",
+            provider="hass",
+            name="Smart plug",
+            supports_power=True,
+            power_state=power_state,
+        )
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_POWER_CONTROL: control.id})
+        )
+        mock_mass.players.get_player_control = MagicMock(
+            side_effect=lambda control_id: control if control_id == control.id else None
+        )
+        player = _create_player(mock_mass)
+        player._attr_type = player_type
+        player._attr_available = False
+        player._cache.clear()
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        return player
+
+    def test_control_off_reports_available_and_off(self, mock_mass: MagicMock) -> None:
+        """An unreachable device whose control is off is available, so it can be powered on."""
+        player = self._offline_player(mock_mass, power_state=False)
+
+        assert player.offline_by_power_control is True
+        assert player.state.available is True
+        assert player.state.powered is False
+
+    def test_control_on_reports_unavailable(self, mock_mass: MagicMock) -> None:
+        """An unreachable device whose control is on is a real fault: unavailable."""
+        player = self._offline_player(mock_mass, power_state=True)
+
+        assert player.offline_by_power_control is False
+        assert player.state.available is False
+
+    def test_power_on_in_progress_keeps_it_available(self, mock_mass: MagicMock) -> None:
+        """While Music Assistant powers it on, the booting device stays available."""
+        player = self._offline_player(mock_mass, power_state=True)
+        player.extra_data[ATTR_POWER_ON_IN_PROGRESS] = True
+        player.refresh_state(signal_event=False)
+
+        assert player.offline_by_power_control is True
+        assert player.state.available is True
+        assert player.state.powered is True
+
+    def test_reachable_device_is_not_offline(self, mock_mass: MagicMock) -> None:
+        """A device that is online is never offline by its power control."""
+        player = self._offline_player(mock_mass, power_state=False)
+        player._attr_available = True
+        player.update_state(signal_event=False)
+
+        assert player.offline_by_power_control is False
+        assert player.state.available is True
+
+    @pytest.mark.parametrize("player_type", [PlayerType.GROUP, PlayerType.PROTOCOL])
+    def test_group_and_protocol_players_are_left_out(
+        self, mock_mass: MagicMock, player_type: PlayerType
+    ) -> None:
+        """Group and protocol players keep reporting their own availability."""
+        player = self._offline_player(mock_mass, power_state=False, player_type=player_type)
+
+        assert player.offline_by_power_control is False
+        assert player.state.available is False
+
+    def test_native_power_control_reports_unavailable(self, mock_mass: MagicMock) -> None:
+        """Without an external power control an unreachable device stays unavailable."""
+        player = _create_player(mock_mass, features={PlayerFeature.POWER})
+        player._attr_available = False
+        player.set_initialized()
+        player.update_state(signal_event=False)
+
+        assert player.power_control == PLAYER_CONTROL_NATIVE
+        assert player.offline_by_power_control is False
+        assert player.state.available is False
+
+    def test_device_cut_off_mid_song_reports_idle(self, mock_mass: MagicMock) -> None:
+        """A device that lost power while playing plays nothing, whatever it last reported."""
+        player = self._offline_player(mock_mass, power_state=False)
+        player._attr_playback_state = PlaybackState.PLAYING
+        player.update_state(signal_event=False)
+
+        assert player.state.playback_state == PlaybackState.IDLE
+
+        # once it is back, it reports its own state again
+        player._attr_available = True
+        player.update_state(signal_event=False)
+        state_when_back = player.state
+        assert state_when_back.playback_state == PlaybackState.PLAYING
+
+    def test_disabled_player_is_not_available_for_playback(self, mock_mass: MagicMock) -> None:
+        """A disabled player can not be played to, even when its provider keeps it listed."""
+        player = _create_player(mock_mass)
+        player._config.enabled = False
+        player._cache.clear()
+
+        assert player.available is True
+        assert player.available_for_playback is False
 
 
 class TestVolumeControlExplicitConfig:

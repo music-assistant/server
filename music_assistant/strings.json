@@ -60,6 +60,10 @@
       "label": "Automatically play (resume on power on)",
       "description": "When this player is turned ON, automatically start playing (if there are items in the queue)."
     },
+    "idle_power_off": {
+      "label": "Power off when idle (minutes)",
+      "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use."
+    },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
@@ -98,20 +102,6 @@
         "48000": "Resamples everything to a fixed 48 kHz (or the closest rate the player supports). A good compromise of quality and bandwidth.",
         "96000": "Resamples everything to a fixed 96 kHz (or the closest rate the player supports).",
         "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
-      }
-    },
-    "http_profile": {
-      "label": "HTTP Profile used for sending audio",
-      "description": "This is considered to be a very advanced setting, only adjust this if needed, for example if your player stops playing halfway streams or if you experience other playback related issues. In most cases the default setting is fine.",
-      "options": {
-        "chunked": "Profile 1 - chunked",
-        "no_content_length": "Profile 2 - no content length",
-        "forced_content_length": "Profile 3 - forced content length"
-      },
-      "option_descriptions": {
-        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
-        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
-        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
       }
     },
     "icon": {
@@ -245,6 +235,10 @@
     "preview_note": {
       "label": "Please note that this feature/provider is still in early stages. \n\nFunctionality may still be limited and/or bugs may occur!"
     },
+    "requires_fixed_content_length": {
+      "label": "Requires a fixed content length",
+      "description": "Only enable this if the player stops or loops during playback. Most players play fine without it."
+    },
     "sample_rates": {
       "label": "Sample rates supported by this player",
       "description": "The sample rates (and bit depths) supported by this player.\nContent with unsupported sample rates will be automatically resampled.",
@@ -324,6 +318,7 @@
     },
     "power_control": {
       "label": "Power Control",
+      "description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
       "options": {
         "native": "Native power control",
         "none": "None",
@@ -1238,9 +1233,11 @@
     "role_in_use": "This role is still assigned to one or more users. Give them another role first.",
     "role_scope_not_allowed": "A custom role can not be granted this permission.",
     "playlist_not_owned": "Only the owner of this playlist may change it.",
+    "playlist_changed": "The playlist changed in the meantime. Please try again.",
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
     "playlist_owner_must_be_member": "Only a member can own a playlist",
     "source_available_to_everyone": "{0} is always available to everyone",
+    "provider_can_not_be_disabled": "{0} cannot be disabled",
     "source_sharing_owner_only": "Only the owner of a music source may share it",
     "source_owner_change_admin_only": "Only an administrator can change who owns a music source",
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",

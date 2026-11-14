@@ -34,7 +34,12 @@ from music_assistant_models.enums import (
     MediaType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayLogEntry
@@ -1273,6 +1278,31 @@ async def test_flow_stream_handler_continues_a_repeat_request_at_the_current_ite
     controller.mass.player_queues.get_item.assert_called_once_with("queue-1", expected_item_id)
 
 
+@pytest.mark.parametrize(
+    ("error", "available"),
+    [
+        (RetriesExhausted("Not retrying, asked to wait 3600 seconds"), True),
+        (MediaNotFoundError("gone"), False),
+    ],
+    ids=["provider_backs_off", "item_not_found"],
+)
+@pytest.mark.asyncio
+async def test_item_stream_handler_keeps_an_item_whose_provider_backs_off(
+    monkeypatch: pytest.MonkeyPatch, error: MusicAssistantError, available: bool
+) -> None:
+    """A provider asking to back off fails the request but leaves the item available."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails = None
+    queue_item.available = True
+    controller.audio.get_stream_details = AsyncMock(side_effect=error)
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_item_stream(request)
+
+    assert queue_item.available is available
+
+
 @pytest.mark.asyncio
 async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
     monkeypatch: pytest.MonkeyPatch,
@@ -1285,6 +1315,28 @@ async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
         await controller.serve_queue_flow_stream(request)
 
     controller.mass.player_queues.flow_stream_finished.assert_called_once_with("queue-1")
+    controller.audio.select_flow_pcm_format.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flow_stream_handler_ends_a_range_continuation_of_a_finished_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A player resuming a finished flow stream with a Range request is told the stream ends there.
+
+    Cast receivers reconnect with a Range request when the stream closes short of its
+    declared length; a 404 makes them drop their buffer, a 416 lets them play it out.
+    """
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.flow_stream_finished.return_value = True
+    request.headers = {"Range": "bytes=2401175-"}
+    request.http_range = slice(2401175, None)
+
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as exc_info:
+        await controller.serve_queue_flow_stream(request)
+
+    assert exc_info.value.headers["Content-Range"] == "bytes */2401175"
     controller.audio.select_flow_pcm_format.assert_not_awaited()
 
 
@@ -2173,7 +2225,7 @@ def _native_stream_handler_context(
     player.state.group_members = group_members
     player.state.supported_features = set()
     player.state.name = "Player"
-    player.get_config_value.return_value = "default"
+    player.get_config_value.return_value = False
     mass.players.get_player.return_value = player
 
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)

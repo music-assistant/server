@@ -20,16 +20,6 @@ def _track_obj(track_id: int, title: str = "Some Track") -> dict[str, Any]:
     }
 
 
-def _details_for(*track_ids: int) -> Any:
-    """Return a get_track_details stub answering with a track per requested id."""
-
-    async def _get_track_details(track_id: int) -> list[dict[str, Any]]:
-        assert track_id in track_ids
-        return [_track_obj(track_id)]
-
-    return _get_track_details
-
-
 def test_extract_collection_prefers_collection_key(provider: SoundcloudMusicProvider) -> None:
     """The collection key is used when present."""
     assert provider._extract_collection({"collection": [{"id": 1}]}) == [{"id": 1}]
@@ -64,21 +54,24 @@ async def test_get_artist(provider: SoundcloudMusicProvider) -> None:
 
 async def test_artist_toptracks_from_collection(provider: SoundcloudMusicProvider) -> None:
     """Top tracks are parsed from the user's tracks response."""
-    provider._soundcloud.get_tracks_from_user.return_value = {"collection": [{"id": 1}, {"id": 2}]}
-    provider._soundcloud.get_track_details = _details_for(1, 2)
+    provider._soundcloud.get_tracks_from_user.return_value = {
+        "collection": [_track_obj(1), _track_obj(2)]
+    }
 
     get_artist_toptracks: Any = SoundcloudMusicProvider.get_artist_toptracks.__wrapped__  # type: ignore[attr-defined]
     tracks = await get_artist_toptracks(provider, "5")
 
     provider._soundcloud.get_tracks_from_user.assert_awaited_once_with("5", 100)
+    # the collection holds full track objects, so nothing is fetched per track
+    provider._soundcloud.get_track_details.assert_not_awaited()
+    provider._soundcloud.get_user_details.assert_not_awaited()
     assert [track.item_id for track in tracks] == ["1", "2"]
 
 
 async def test_artist_toptracks_falls_back_to_popular(provider: SoundcloudMusicProvider) -> None:
     """When the user has no tracks listed, popular tracks are requested instead."""
     provider._soundcloud.get_tracks_from_user.return_value = {"collection": []}
-    provider._soundcloud.get_popular_tracks_user.return_value = {"items": [{"id": 3}]}
-    provider._soundcloud.get_track_details = _details_for(3)
+    provider._soundcloud.get_popular_tracks_user.return_value = {"items": [_track_obj(3)]}
 
     get_artist_toptracks: Any = SoundcloudMusicProvider.get_artist_toptracks.__wrapped__  # type: ignore[attr-defined]
     tracks = await get_artist_toptracks(provider, "5")
@@ -102,14 +95,9 @@ async def test_artist_toptracks_survives_popular_request_failure(
 
 async def test_artist_toptracks_skips_unparsable_track(provider: SoundcloudMusicProvider) -> None:
     """An unparsable track does not abort the whole listing."""
-    provider._soundcloud.get_tracks_from_user.return_value = {"collection": [{"id": 1}, {"id": 2}]}
-
-    async def _get_track_details(track_id: int) -> list[dict[str, Any]]:
-        if track_id == 1:
-            return [{"id": 1}]  # missing title/duration
-        return [_track_obj(track_id)]
-
-    provider._soundcloud.get_track_details = _get_track_details
+    provider._soundcloud.get_tracks_from_user.return_value = {
+        "collection": [{"id": 1, "title": "No duration"}, _track_obj(2)]
+    }
 
     get_artist_toptracks: Any = SoundcloudMusicProvider.get_artist_toptracks.__wrapped__  # type: ignore[attr-defined]
     tracks = await get_artist_toptracks(provider, "5")
@@ -119,26 +107,21 @@ async def test_artist_toptracks_skips_unparsable_track(provider: SoundcloudMusic
 
 async def test_similar_tracks(provider: SoundcloudMusicProvider) -> None:
     """Similar tracks are parsed from the recommended response."""
-    provider._soundcloud.get_recommended.return_value = {"collection": [{"id": 7}]}
-    provider._soundcloud.get_track_details = _details_for(7)
+    provider._soundcloud.get_recommended.return_value = {"collection": [_track_obj(7)]}
 
     get_similar_tracks: Any = SoundcloudMusicProvider.get_similar_tracks.__wrapped__  # type: ignore[attr-defined]
     tracks = await get_similar_tracks(provider, "1", 25)
 
     provider._soundcloud.get_recommended.assert_awaited_once_with("1", 25)
+    provider._soundcloud.get_track_details.assert_not_awaited()
     assert [track.item_id for track in tracks] == ["7"]
 
 
 async def test_similar_tracks_skips_unparsable_track(provider: SoundcloudMusicProvider) -> None:
     """An unparsable recommendation does not abort the whole listing."""
-    provider._soundcloud.get_recommended.return_value = {"collection": [{"id": 7}, {"id": 8}]}
-
-    async def _get_track_details(track_id: int) -> list[dict[str, Any]]:
-        if track_id == 7:
-            return [{"id": 7}]  # missing title/duration
-        return [_track_obj(track_id)]
-
-    provider._soundcloud.get_track_details = _get_track_details
+    provider._soundcloud.get_recommended.return_value = {
+        "collection": [{"id": 7, "title": "No duration"}, _track_obj(8)]
+    }
 
     get_similar_tracks: Any = SoundcloudMusicProvider.get_similar_tracks.__wrapped__  # type: ignore[attr-defined]
     tracks = await get_similar_tracks(provider, "1", 25)

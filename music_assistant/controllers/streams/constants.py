@@ -27,6 +27,9 @@ OUTCOME_ONLY_NORMALIZATION_MODES: Final = (
     VolumeNormalizationMode.UNKNOWN,
 )
 
+# Ceiling of the limiter that catches peaks a positive normalization gain pushes past full scale.
+NORMALIZATION_LIMITER_CEILING_DB: Final = -2.0
+
 
 class BufferMode(StrEnum):
     """Buffer mode determines buffer behavior."""
@@ -90,29 +93,35 @@ ICY_PLACEHOLDER_IMAGE_URLS: Final[frozenset[str]] = frozenset(
 class PacingProfile(StrEnum):
     """Pace at which a stream's output is handed to a player."""
 
-    # a track handed over on its own. The opening chunk is what a gapless player holds
-    # before it starts, and the head start rides out a hiccup later in the track
-    DEFAULT = "default"
-    # the flow stream, and sources that hand their audio over just-in-time. Those are
-    # radio and a Spotify music provider track on its Soloist backend, not Spotify
-    # Connect, which is an AUDIO_SOURCE and takes LOW_LATENCY. Such a source delivers
-    # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
-    # A pace close to playback speed leaves most of that on the server. The burst is
-    # the least a player holds at a session start, before a slow source earned it a lead.
-    # A player that fetches each track only once the previous download completes (Sonos)
-    # holds at a boundary just that burst plus what the pace banked over the track it played,
-    # and grouped speakers need a few seconds there at the first boundaries after a start.
-    NEAR_REALTIME = "near_realtime"
+    # every stream but the two below: the flow stream, universal group streams and single
+    # tracks, including sources that hand their audio over just-in-time (radio and a Spotify
+    # music provider track on its Soloist backend; Spotify Connect is an AUDIO_SOURCE and
+    # takes LOW_LATENCY). A pace at playback speed leaves what such a source banks ahead on
+    # the server for its end-of-track crossfade, and keeps a player that never stops reading
+    # (the flow stream) from running ever further ahead, which some receivers do not survive.
+    # The burst is the cushion a player holds: at a session start, at a track boundary for a
+    # player that fetches each track only once the previous download completes (Sonos), and
+    # after a stall, which the catch-up refills. It is sized for receivers that need a deep
+    # one: a Samsung Music Frame restarts its Cast service on 6 s.
+    REALTIME = "realtime"
+    # a single track for a player that must hold a whole opening chunk before it plays
+    # gapless, see Player.needs_gapless_burst
+    GAPLESS_BURST = "gapless_burst"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay
     LOW_LATENCY = "low_latency"
 
 
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
-    PacingProfile.DEFAULT: ("1.1", "60"),
-    PacingProfile.NEAR_REALTIME: ("1.02", "3"),
-    PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
+    PacingProfile.REALTIME: ("1.0", "10"),
+    PacingProfile.GAPLESS_BURST: ("1.1", "60"),
+    PacingProfile.LOW_LATENCY: ("1.0", "1"),
 }
+
+# Pace at which output that fell behind its schedule (a stall of the server or of the player's
+# reads) makes up the lag; it never runs past the burst plus the pace. ffmpeg's own
+# 1.05x the pace takes over a minute to refill a few seconds, so stalls in a row run a player dry.
+_CATCHUP: Final[str] = "2"
 
 
 # A realtime source that allows a single stream (Spotify's soloist backend) delivers audio
@@ -127,18 +136,23 @@ REALTIME_COLD_START_BANK: Final[int] = 5
 REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
 
 
-def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[str]:
+def output_pacing_args(profile: PacingProfile = PacingProfile.REALTIME) -> list[str]:
     """Return the ffmpeg pacing arguments for a stream handed to a player."""
     readrate, burst = _PACING[profile]
-    return ["-readrate", readrate, "-readrate_initial_burst", burst]
+    return ["-readrate", readrate, "-readrate_initial_burst", burst, "-readrate_catchup", _CATCHUP]
 
 
-# Time to keep the flow stream response open after the last audio byte of a queue.
-# Players buffer a few seconds ahead of what they actually render; some of them drop
-# that buffer the moment the connection is closed, cutting off the end of the queue.
-# Holding the (idle) connection open gives them time to play it out first. Kept below
-# the webserver shutdown timeout so a lead-out never stalls a restart of the server.
-FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
+# Longest time to keep the flow stream response open after the last audio byte of a queue.
+# Players buffer ahead of what they actually render; some of them drop that buffer the
+# moment the connection is closed, cutting off the end of the queue. Holding the (idle)
+# connection open until they played it out avoids that. The flow stream is paced slightly
+# faster than playback, so that buffer grows with the length of the session (about 2% of it).
+FLOW_STREAM_MAX_LEAD_OUT_SECONDS: Final[int] = 300
+
+# Write size for ICY-framed flow streams. Writes are sized independently of the
+# metadata interval, so the player buffer grows with the encoder's output instead
+# of in interval-sized steps (1.5s of FLAC per step at a 256000 byte interval).
+ICY_WRITE_SIZE: Final[int] = 16384
 
 
 # Configuration keys
@@ -191,6 +205,10 @@ VOICE_OVER_RAMP: Final[float] = 0.4
 
 # Maximum wait for a provider source-stream slot before a speculative attempt gives up.
 STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
+
+# Seconds an AudioBuffer may go unread before it releases its audio. The queue's pause timeout
+# is capped below this, as a paused player could not continue on a released buffer.
+BUFFER_INACTIVITY_TIMEOUT: Final[int] = 300
 
 # Total capacity budget when an actual playback start retries/reselects provider mappings.
 STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0

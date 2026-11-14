@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import ssl
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from aiohttp import ClientConnectorCertificateError, ClientConnectorSSLError
 from libopensonic.errors import DataNotFoundError
 from libopensonic.media import PodcastChannel
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
-from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
+from music_assistant.providers.opensubsonic.sonic_provider import CONF_BASE_URL, OpenSonicProvider
 
 
 def _make_task_capturer() -> tuple[list[asyncio.Future[Any]], Mock]:
@@ -356,17 +358,18 @@ async def test_get_resume_position_returns_matching_bookmark(
     bookmark.entry.id = "ep-1"
     bookmark.position = 90000
     bookmark.created = "2026-07-25T10:00:00"
+    bookmark.changed = "2026-07-26T12:30:00"
 
     provider.conn = Mock()
     provider.conn.get_bookmarks = AsyncMock(return_value=[bookmark])
 
-    fully_played, position, created = await provider.get_resume_position(
+    fully_played, position, last_played = await provider.get_resume_position(
         f"pd-1{EP_CHAN_SEP}ep-1", MediaType.PODCAST_EPISODE
     )
 
     assert not fully_played
     assert position == 90000
-    assert isinstance(created, datetime)
+    assert last_played == datetime.fromisoformat(bookmark.changed)
 
 
 @pytest.mark.asyncio
@@ -544,3 +547,103 @@ async def test_podcast_episodes_positioned_by_publish_date(provider: OpenSonicPr
     # the fixture lists newest-first, so the positions run the other way
     positions = {ep.item_id.split(EP_CHAN_SEP)[1]: ep.position for ep in episodes}
     assert positions == {"pe-4805": 5, "pe-1857": 4, "pe-1858": 3, "pe-1859": 2, "pe-1860": 1}
+
+
+async def test_legacy_auth_follows_setup_data(
+    provider: OpenSonicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The legacy auth choice made in the setup flow reaches the connection."""
+    setup_data = {
+        "base_url": "https://sonic.local",
+        "username": "user",
+        "password": "secret",
+        "enable_legacy_auth": True,
+    }
+    monkeypatch.setattr(
+        provider, "get_setup_value", lambda key, default=None: setup_data.get(key, default)
+    )
+    connection = Mock()
+    connection.return_value.ping = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.SonicConnection", connection
+    )
+
+    with pytest.raises(LoginFailed):
+        await provider.handle_async_init()
+
+    assert connection.call_args.kwargs["legacy_auth"] is True
+
+
+@pytest.mark.parametrize(
+    ("error", "translation_key"),
+    [
+        (
+            ClientConnectorSSLError(
+                Mock(), ssl.SSLError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number")
+            ),
+            "secure_connection_failed",
+        ),
+        (
+            ClientConnectorCertificateError(
+                Mock(), ssl.SSLCertVerificationError("self-signed certificate")
+            ),
+            "certificate_not_trusted",
+        ),
+    ],
+)
+async def test_tls_failures_raise_translated_login_failed(
+    provider: OpenSonicProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    translation_key: str,
+) -> None:
+    """A failed TLS connection surfaces as a translated LoginFailed naming the server."""
+    setup_data = {CONF_BASE_URL: "https://sonic.local", "api_key": "key"}
+    monkeypatch.setattr(
+        provider, "get_setup_value", lambda key, default=None: setup_data.get(key, default)
+    )
+    connection = Mock()
+    connection.return_value.ping = AsyncMock(side_effect=error)
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.SonicConnection", connection
+    )
+
+    with pytest.raises(LoginFailed) as exc_info:
+        await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == translation_key
+    assert exc_info.value.translation_args == ["https://sonic.local"]
+    assert exc_info.value.__cause__ is error
+
+
+@pytest.mark.parametrize(
+    ("base_url", "port", "expected_port"),
+    [
+        ("http://sonic.local", None, 80),
+        ("https://sonic.local", None, 443),
+        ("sonic.local", None, 443),
+        ("http://sonic.local", 4533, 4533),
+    ],
+)
+async def test_port_defaults_to_the_url_scheme(
+    provider: OpenSonicProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+    port: int | None,
+    expected_port: int,
+) -> None:
+    """Without a configured port the connection uses the default port of the url scheme."""
+    setup_data = {CONF_BASE_URL: base_url, "api_key": "key", "port": port}
+    monkeypatch.setattr(
+        provider, "get_setup_value", lambda key, default=None: setup_data.get(key, default)
+    )
+    connection = Mock()
+    connection.return_value.ping = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.SonicConnection", connection
+    )
+
+    with pytest.raises(LoginFailed):
+        await provider.handle_async_init()
+
+    assert connection.call_args.kwargs["port"] == expected_port

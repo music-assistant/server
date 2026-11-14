@@ -28,8 +28,8 @@ from music_assistant_models.errors import (
 from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     create_output_codec_config_entry,
 )
@@ -309,7 +309,7 @@ class YandexStationPlayer(Player):
         Return player-specific config entries.
 
         Default to WAV for prompt queue and live-source playback, with the
-        forced_content_length HTTP profile required by the Station.
+        fixed content length required by the Station.
         """
         # List players that can receive a redirected track.  We dispatch
         # the handoff via ``mass.player_queues.play_media(queue_id=...)``
@@ -337,7 +337,7 @@ class YandexStationPlayer(Player):
         return [
             create_output_codec_config_entry(default_value="wav"),
             CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+            CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED,
             CONF_ENTRY_VOICE_CONTROL,
             ConfigEntry(
                 key=CONF_INTERCEPT_ENABLED,

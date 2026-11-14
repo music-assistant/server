@@ -13,6 +13,7 @@ from aioslimproto.models import SlimEvent
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 
@@ -100,3 +101,24 @@ def test_reconnected_member_leaves_its_sync_leader() -> None:
         SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
 
     assert leader.group_members == []
+
+
+def test_the_display_name_is_the_one_set_in_music_assistant() -> None:
+    """The name for a client comes from Music Assistant's player, and is None for an unknown one."""
+    provider = MagicMock()
+    provider.mass.players.get_player.side_effect = {"p1": MagicMock(display_name="Kitchen")}.get
+
+    assert SqueezelitePlayerProvider._lookup_display_name(provider, "p1") == "Kitchen"
+    assert SqueezelitePlayerProvider._lookup_display_name(provider, "other") is None
+
+
+async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None:
+    """Loading the provider hands the lookup to the CLI, which reports it to the clients."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.slimproto = MagicMock(start=AsyncMock())
+    provider.mass = MagicMock()
+
+    with patch.object(PlayerProvider, "loaded_in_mass", new=AsyncMock()):
+        await provider.loaded_in_mass()
+
+    assert provider.slimproto.cli.display_name_lookup == provider._lookup_display_name

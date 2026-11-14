@@ -9,23 +9,34 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     create_sample_rates_config_entry,
 )
 
 # Errors expected when the host is (temporarily) unreachable or a zone/room cannot be
-# resolved by hassfeld; used to narrow the try/except around host communication. KeyError is
-# one of them: hassfeld looks rooms and zones up in its model of the host, which raises it
-# for a room or zone the host just dropped (a regrouping, a speaker going to deep standby).
+# resolved; used to narrow the try/except around host communication. KeyError is one of
+# them: a command for a room or zone the host just dropped (a regrouping, a speaker going to
+# deep standby) raises it.
 HOST_ERRORS = (aiohttp.ClientError, OSError, TimeoutError, KeyError)
 
 # Default port of the Raumfeld host webservice (the device running the "RaumfeldHost"
 # service). Config keys reuse MA's CONF_IP_ADDRESS / CONF_PORT.
 DEFAULT_PORT = 47365
 
-# How long (seconds) to wait for hassfeld to complete its initial discovery
-# of rooms/zones before giving up on a single connection attempt.
+# How long (seconds) to wait for the first reading of the host's rooms, zones and devices
+# before giving up on a single connection attempt.
 INITIAL_UPDATE_TIMEOUT = 30
+
+# How long (seconds) the host is asked to hold a request for its rooms, zones or devices
+# until something changes, and how long a request is held before it is made again. The host
+# does not keep to the wait it is asked for (measured: it held one for over seven minutes),
+# so a request that runs out is simply made again.
+LONG_POLL_WAIT = 300
+LONG_POLL_TIMEOUT = 330
+
+# Failed reads of the rooms, zones or devices in a row before the host counts as lost, and
+# the pause (seconds) before the next try. A lost host is reconnected from scratch.
+LONG_POLL_FAILURES = 3
+LONG_POLL_RETRY_DELAY = 5
 
 # How long (seconds) unload waits for its cancelled tasks to finish.
 UNLOAD_TIMEOUT = 5
@@ -33,6 +44,16 @@ UNLOAD_TIMEOUT = 5
 # How long (seconds) to wait for a renderer's device description, which is read once per
 # room to get the hardware serial the player_id is derived from.
 DEVICE_INFO_TIMEOUT = 10
+
+# How long (seconds) a UPnP request to a speaker or the host may take.
+UPNP_TIMEOUT = 15
+
+# How long (seconds) a subscription to a renderer's events is asked for; it is renewed
+# halfway. The renderers grant 300 (measured).
+EVENT_SUBSCRIPTION_TIMEOUT = 300
+
+# How long (seconds) a command to the host's web service (grouping, standby) may take.
+HOST_COMMAND_TIMEOUT = 15
 
 # How long (seconds) to wait for a renderer to answer a state query. Polls run one after the
 # other for all players, so a renderer that stops answering must not hold them up for long.
@@ -42,8 +63,8 @@ RENDERER_QUERY_TIMEOUT = 5
 # unreachable, and health-checks the host while connected.
 RECONNECT_INTERVAL = 30
 
-# How long (seconds) the host gets to answer a health check. hassfeld's own check allows
-# 3 s, which a host on a slow Wi-Fi link misses now and then.
+# How long (seconds) the host gets to answer a health check. A host on a slow Wi-Fi link
+# misses 3 s now and then.
 HOST_CHECK_TIMEOUT = 10
 
 # Failed health checks in a row before the host counts as lost. Losing it marks every room
@@ -56,7 +77,7 @@ HOST_CHECK_FAILURES = 3
 HOST_SEARCH_INTERVAL = 120
 
 # How often (seconds) the zones the host reports are compared with the groups Music Assistant
-# shows. The comparison reads hassfeld's in-memory model, so it costs no request.
+# shows. The comparison reads the model of the host kept in memory, so it costs no request.
 ZONE_WATCH_INTERVAL = 2
 
 # How long (seconds) after Music Assistant changed a group itself the host's zones are left
@@ -88,6 +109,12 @@ LIBRARY_REFRESH_INTERVAL = 60
 # button gets a new object id, so this only bounds how long a renamed item keeps its old title.
 BUTTON_ITEM_CACHE_TTL = 300
 CACHE_CATEGORY_BUTTON_ITEMS = 1
+# The player id a room got, kept per room UDN. A room of several speakers takes its id from one
+# speaker's serial, and the host lists a room's speakers in no fixed order; without it the room
+# would take another speaker's id - and so another player config - when a speaker joins it or
+# is away for a while.
+CACHE_CATEGORY_ROOM_ID = 3
+ROOM_ID_CACHE_TTL = 10 * 365 * 24 * 3600
 SOURCE_LINE_IN = "line_in"
 
 # A room joining a group that plays hooks into the running stream a little behind the others
@@ -110,11 +137,10 @@ PLAYER_CONFIG_ENTRIES = [
     # groups too. Switched off, each item plays as its own stream: a gap between tracks, but
     # the Raumfeld app then shows each track's own elapsed time and duration.
     ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),
-    # Chunked, hidden. The host's stream relay reconnects and replays the stream from the
-    # start whenever the response carries a finite Content-Length (measured, and
-    # forced_content_length reproduces it); a chunked response carries none, so the host
-    # relays the flow as one continuous connection.
-    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+    # No fixed content length entry. The host's stream relay reconnects and replays the
+    # stream from the start whenever the response carries a finite Content-Length
+    # (measured); a chunked response carries none, so the host relays the flow as one
+    # continuous connection.
     # ICY on by default. The stream never changes - it is one flow for the whole queue - so
     # the ICY StreamTitle, which the host parses out of the relayed stream, is how the
     # Raumfeld app follows the title of each track. "basic" rather than "full": the cover

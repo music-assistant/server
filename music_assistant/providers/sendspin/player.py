@@ -23,6 +23,7 @@ from aiosendspin.models.types import (
     PairMethod,
     PlaybackStateType,
     PlayerCommand,
+    has_role_family,
     role_family,
 )
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
@@ -311,6 +312,17 @@ def _pairing_abort_reason(error: Exception | None) -> str:
     return _PAIRING_ABORT_REASONS.get(key, "pairing_failed")
 
 
+def _group_leader_id(clients: Iterable[SendspinClient]) -> str | None:
+    """Return the id of the client that leads these group clients."""
+    clients = list(clients)
+    # a display or visualizer can follow the group but only an audio player leads it
+    leader = next(
+        (c for c in clients if has_role_family("player", c.negotiated_role_ids)),
+        clients[0] if clients else None,
+    )
+    return leader.client_id if leader else None
+
+
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.management import ManagementResultData, PairingMethodConfig
@@ -403,9 +415,7 @@ class SendspinBasePlayer(Player):
                         self._on_group_stopped()
                 self.update_state()
             case GroupMemberAddedEvent(client_id=client_id):
-                is_group_leader = (
-                    bool(group.clients) and group.clients[0].client_id == self.player_id
-                )
+                is_group_leader = _group_leader_id(group.clients) == self.player_id
                 if is_group_leader and (
                     not self._attr_group_members or self._attr_group_members[0] != self.player_id
                 ):
@@ -870,9 +880,9 @@ class SendspinBasePlayer(Player):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        group_client_ids = [client.client_id for client in group.clients]
-        is_leader = bool(group_client_ids) and group_client_ids[0] == self.player_id
-        desired_group_members = group_client_ids if is_leader else []
+        followers = [c.client_id for c in group.clients if c.client_id != self.player_id]
+        is_leader = _group_leader_id(group.clients) == self.player_id
+        desired_group_members = [self.player_id, *followers] if is_leader else []
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
             self.update_state()
@@ -1814,18 +1824,18 @@ class SendspinPlayer(SendspinBasePlayer):
                 and self.playback_session.playback_task is not None
                 and not self.playback_session.playback_task.done()
             ):
-                remaining = [c for c in self.api.group.clients if c.client_id != self.player_id]
-                if remaining:
-                    new_owner_id = remaining[0].client_id
-                    new_owner = self.mass.players.get_player(new_owner_id)
-                    if isinstance(new_owner, SendspinPlayer):
-                        self.logger.info(
-                            "Transferring playback session to %s for dynamic leader switch",
-                            new_owner.display_name,
-                        )
-                        await self.playback_session.transfer_to(new_owner)
-                        new_owner.playback_session = self.playback_session
-                        self.playback_session = SendspinPlaybackSession(self)
+                new_owner_id = _group_leader_id(
+                    c for c in self.api.group.clients if c.client_id != self.player_id
+                )
+                new_owner = new_owner_id and self.mass.players.get_player(new_owner_id)
+                if isinstance(new_owner, SendspinPlayer):
+                    self.logger.info(
+                        "Transferring playback session to %s for dynamic leader switch",
+                        new_owner.display_name,
+                    )
+                    await self.playback_session.transfer_to(new_owner)
+                    new_owner.playback_session = self.playback_session
+                    self.playback_session = SendspinPlaybackSession(self)
 
             await self.api.group.remove_client(member_player.api)
             # An explicit removal ends playback for that member; a bridge among
@@ -2222,10 +2232,10 @@ class SendspinPlayer(SendspinBasePlayer):
         # Ignore stale events from a group we no longer belong to.
         if group is not self.api.group:
             return
-        group_client_ids = [client.client_id for client in group.clients]
-        is_leader = bool(group_client_ids) and group_client_ids[0] == self.player_id
-        desired_group_members = group_client_ids if is_leader else []
-        desired_session_members = group_client_ids[1:] if is_leader else []
+        followers = [c.client_id for c in group.clients if c.client_id != self.player_id]
+        is_leader = _group_leader_id(group.clients) == self.player_id
+        desired_group_members = [self.player_id, *followers] if is_leader else []
+        desired_session_members = followers if is_leader else []
         if self._attr_group_members != desired_group_members:
             self._attr_group_members = desired_group_members
             self.update_state()
@@ -2914,8 +2924,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             isinstance(event, ControllerPlayEvent)
             and group is self.api.group
             and self.synced_to is None
-            and group.clients
-            and group.clients[0].client_id == self.player_id
+            and _group_leader_id(group.clients) == self.player_id
         ):
             self.mass.create_task(self._play_static_group())
 
@@ -2958,8 +2967,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
         # must not replace the audio leader's controls, even before membership sync.
         if (
             group is self.api.group
-            and group.clients
-            and group.clients[0].client_id == self.player_id
+            and _group_leader_id(group.clients) == self.player_id
             and (controller_role := self._controller_role) is not None
         ):
             controller_role.set_supported_commands(
@@ -2997,10 +3005,10 @@ class SendspinSourcePlayer(SendspinBasePlayer):
     A capture-only Sendspin player for clients that just feed audio in.
 
     Renders nothing and is never a playback or grouping target. It is listed as an
-    audio input so the device stays discoverable and its pairing, enabling and
-    line-in autostart settings are easy to reach. The sendspin_source plugin
-    exposes the audio itself.
+    audio input so its pairing, enabling and line-in autostart settings are easy to
+    reach. The sendspin_source plugin exposes the audio itself.
     """
 
     _attr_type = PlayerType.SOURCE
+    _attr_hidden_by_default = True
     _attr_expose_to_ha_by_default = False

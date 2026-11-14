@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from music_assistant_models.config_entries import PlayerConfig
 
-from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC
+from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_REQUIRES_FIXED_CONTENT_LENGTH
 from music_assistant.providers.yandex_station.player import YandexStationPlayer
 
 if TYPE_CHECKING:
@@ -36,7 +36,8 @@ async def test_new_station_uses_wav_for_queue_and_live_sources() -> None:
 
     assert config.get_value("output_codec") == "wav"
     assert config.get_value("prefer_wav_for_live_sources") is True
-    assert config.get_value("http_profile") == "forced_content_length"
+    assert config.get_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH) is True
+    assert config.values[CONF_REQUIRES_FIXED_CONTENT_LENGTH].hidden
     assert CONF_ENTRY_OUTPUT_CODEC.default_value == "flac"
 
 

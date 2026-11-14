@@ -83,3 +83,21 @@ async def test_the_other_copies_are_asked_in_a_fixed_order() -> None:
 
     pinned.get_resume_position.assert_awaited_once()
     assert resume == (False, 1_000)
+
+
+async def test_newer_own_progress_wins_over_a_further_copy() -> None:
+    """Progress recorded after the copy's, here a rewind, wins although it is lower."""
+    music = _music(_account("spotify--a", 2_000))
+    music._database = MagicMock(
+        get_row=AsyncMock(
+            return_value={
+                "fully_played": False,
+                "seconds_played": 1,
+                "timestamp": datetime(2026, 11, 1, tzinfo=UTC).timestamp(),
+            }
+        )
+    )
+
+    resume = await music.get_resume_position(_book("spotify--a"))
+
+    assert resume == (False, 1_000)

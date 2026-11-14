@@ -42,6 +42,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import (
     AUDIOBOOK_CHAPTERS_PAGE_SIZE,
@@ -58,6 +59,7 @@ from .parsers import (
     parse_audiobook,
     parse_audiobook_chapters,
     parse_audiobook_from_album,
+    parse_bookmark_time,
     parse_date,
     parse_gw_track,
     parse_playlist,
@@ -669,8 +671,10 @@ class DeezerMediaManager:
         for ep in episodes:
             ep.fully_played = False
             ep.resume_position_ms = 0
+            ep.resume_position_timestamp = None
             if ep.item_id in bookmarks:
-                ep.fully_played, ep.resume_position_ms, _ = bookmarks[ep.item_id]
+                ep.fully_played, ep.resume_position_ms, bookmarked_at = bookmarks[ep.item_id]
+                ep.resume_position_timestamp = parse_bookmark_time(bookmarked_at)
             yield ep
 
     @use_cache(3600)
@@ -752,7 +756,7 @@ class DeezerMediaManager:
         if result is None:
             return []
         all_edges = list(result.albums.edges)
-        while result.albums.page_info.has_next_page:
+        while result.albums.page_info.has_next_page and len(all_edges) < ARTIST_ALBUMS_LIMIT:
             result = await self.provider.gql_client.get_artist(
                 artist_id=prov_artist_id,
                 albums_after=result.albums.page_info.end_cursor,
@@ -761,7 +765,9 @@ class DeezerMediaManager:
                 break
             all_edges.extend(result.albums.edges)
         return [
-            parse_album(self.provider, edge.node) for edge in all_edges if edge.node is not None
+            parse_album(self.provider, edge.node)
+            for edge in all_edges[:ARTIST_ALBUMS_LIMIT]
+            if edge.node is not None
         ]
 
     async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:

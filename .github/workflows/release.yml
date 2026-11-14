@@ -47,8 +47,8 @@ on:
 
 env:
   BASE_IMAGE_VERSION_STABLE: "1.6.3"
-  BASE_IMAGE_VERSION_BETA: "1.7.0"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.7.0"
+  BASE_IMAGE_VERSION_BETA: "1.7.1"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.7.1"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
 
@@ -868,7 +868,7 @@ jobs:
           path: source/dist/
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1246,7 +1246,7 @@ jobs:
           done
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1292,7 +1292,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1595,15 +1595,17 @@ jobs:
         shell: python
         run: |
           import os
+          import re
           import tomllib
 
+          # Sources from before the frontend left PyPI pin it by version instead of URL
+          pin = re.compile(
+              r"music-assistant-frontend(?:==| @ "
+              r"https://github\.com/music-assistant/frontend/releases/download/)([^/\s]+)"
+          )
           with open("pyproject.toml", "rb") as file_handle:
               dependencies = tomllib.load(file_handle)["project"]["dependencies"]
-          matches = [
-              dependency.removeprefix("music-assistant-frontend==")
-              for dependency in dependencies
-              if dependency.startswith("music-assistant-frontend==")
-          ]
+          matches = [match[1] for dependency in dependencies if (match := pin.match(dependency))]
           if len(matches) != 1:
               raise RuntimeError("Expected one pinned music-assistant-frontend dependency")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:

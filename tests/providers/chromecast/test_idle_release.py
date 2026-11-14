@@ -27,7 +27,6 @@ def _fake_player(
     prev_state: PlaybackState = PlaybackState.PLAYING,
     player_type: PlayerType = PlayerType.PLAYER,
     active_cast_group: str | None = None,
-    flow_underrun: bool = False,
 ) -> Any:
     """
     Build a Cast player on mocked collaborators, so it handles media status for real.
@@ -35,7 +34,6 @@ def _fake_player(
     :param prev_state: Playback state the player was in before the status arrives.
     :param player_type: Type of the player.
     :param active_cast_group: Player id of the cast group the player plays through, if any.
-    :param flow_underrun: Whether the queue's flow stream has been fully consumed.
     """
     # __init__ is skipped: it needs a provider, cast info and a live Chromecast connection.
     # Typed as Any because the collaborators below are read back as the mocks they are.
@@ -44,9 +42,9 @@ def _fake_player(
     fake.logger = MagicMock()
     fake.cc = MagicMock(app_id=MASS_APP_ID)
     fake.update_state = MagicMock()
-    fake._flow_stream_underrun = MagicMock(return_value=flow_underrun)
     fake._media_error_reported = False
     fake._app_quit_task_id = "cast_quit_app_test"
+    fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.active_cast_group = active_cast_group
     # display_name is a cached property, normally built from the config in __init__
     fake._cache = {"display_name": "Test Cast"}
@@ -63,7 +61,6 @@ def _media_status(
     *,
     playing: bool = False,
     paused: bool = False,
-    buffering: bool = False,
     content_id: str = "",
 ) -> MagicMock:
     """
@@ -71,17 +68,14 @@ def _media_status(
 
     :param playing: Whether the receiver reports playback.
     :param paused: Whether the receiver reports paused playback.
-    :param buffering: Whether the receiver reports buffering, which it counts as playing.
     :param content_id: Content id the receiver has loaded, if any.
     """
     status = MagicMock()
     status.content_id = content_id
-    status.player_state = (
-        "BUFFERING" if buffering else "PLAYING" if playing else "PAUSED" if paused else "IDLE"
-    )
-    status.player_is_playing = playing or buffering
+    status.player_state = "PLAYING" if playing else "PAUSED" if paused else "IDLE"
+    status.player_is_playing = playing
     status.player_is_paused = paused
-    status.player_is_idle = not playing and not paused and not buffering
+    status.player_is_idle = not playing and not paused
     return status
 
 
@@ -117,16 +111,6 @@ def test_an_announcement_on_an_idle_player_releases_the_device() -> None:
 
     fake._handle_media_status(_media_status())
 
-    _assert_release_scheduled(fake)
-
-
-def test_a_device_that_ran_dry_at_the_end_of_the_flow_stream_releases_it() -> None:
-    """A device stuck buffering at flow EOF counts as finished, so it is released too."""
-    fake = _fake_player(flow_underrun=True)
-
-    fake._handle_media_status(_media_status(buffering=True, content_id="http://mass/flow.flac"))
-
-    assert fake._attr_playback_state == PlaybackState.IDLE
     _assert_release_scheduled(fake)
 
 

@@ -27,6 +27,7 @@ from music_assistant_models.media_items import Playlist, ProviderMapping
 
 from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.models.music_provider import MusicProvider
+from tests.controllers.music.helpers import media_item_events
 
 if TYPE_CHECKING:
     from music_assistant.controllers.music.media.playlists import PlaylistController
@@ -139,8 +140,7 @@ async def test_move_reaches_the_provider_and_announces_the_new_order(
         2,
     ]
     assert provider.bypass_seen == [True, True, True]
-    signal_event.assert_called_once()
-    assert signal_event.call_args.args[0] == EventType.MEDIA_ITEM_UPDATED
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
     assert (await playlists.get_library_item(added.item_id)).metadata.last_refresh is None
 
 
@@ -212,7 +212,7 @@ async def test_move_to_the_same_position_changes_nothing(
 
     provider.move_playlist_track.assert_not_awaited()
     provider.get_playlist_tracks.assert_not_awaited()
-    signal_event.assert_not_called()
+    assert media_item_events(signal_event) == []
 
 
 @pytest.mark.parametrize(("from_position", "to_position"), [(0, 1), (1, 0)])
@@ -253,7 +253,7 @@ async def test_move_tracks_reaches_the_provider_in_playlist_order(
 
     provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [2, 5], 1)
     assert provider.bypass_seen == [True, True, True]
-    signal_event.assert_called_once()
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
 
 
 async def test_move_tracks_that_fail_part_way_still_read_the_playlist_back(
@@ -273,7 +273,7 @@ async def test_move_tracks_that_fail_part_way_still_read_the_playlist_back(
         await playlists.move_playlist_tracks(added.item_id, [5, 2], 1)
 
     assert provider.bypass_seen == [True, True, True]
-    signal_event.assert_called_once()
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
 
 
 async def test_move_tracks_already_in_place_changes_nothing(
@@ -291,7 +291,7 @@ async def test_move_tracks_already_in_place_changes_nothing(
         await playlists.move_playlist_tracks(added.item_id, [3, 2], 2)
 
     provider.move_playlist_tracks.assert_not_awaited()
-    signal_event.assert_not_called()
+    assert media_item_events(signal_event) == []
 
 
 async def test_move_tracks_without_a_target_moves_them_to_the_end(
@@ -310,7 +310,7 @@ async def test_move_tracks_without_a_target_moves_them_to_the_end(
         await playlists.move_playlist_tracks(added.item_id, [1])
 
     provider.move_playlist_tracks.assert_awaited_once_with(prov_item_id, [1], None)
-    signal_event.assert_called_once()
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
 
 
 @pytest.mark.parametrize(
@@ -506,3 +506,96 @@ async def test_move_that_failed_releases_the_playlist(
         await playlists.move_playlist_track(added.item_id, 3, 1)
 
     assert provider.move_playlist_track.await_count == 2
+
+
+def _listed(*uris: str) -> list[MagicMock]:
+    """Return playlist items holding the given uris at positions 1, 2, ..."""
+    return [MagicMock(position=index, uri=uri) for index, uri in enumerate(uris, start=1)]
+
+
+async def test_move_of_a_changed_playlist_is_refused(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A move by a position that now holds another item never reaches the provider."""
+    added = await _add(playlists)
+    provider = _provider()
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(playlists, "tracks", AsyncMock(return_value=_listed("a", "c"))),
+        patch.object(music_mass_module, "signal_event") as signal_event,
+        pytest.raises(InvalidDataError) as err,
+    ):
+        await playlists.move_playlist_tracks(added.item_id, [2], 1, uris=["b"])
+
+    assert err.value.translation_key == "playlist_changed"
+    provider.move_playlist_tracks.assert_not_awaited()
+    # the playlist is announced, so a client showing the old listing reads it again
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
+
+
+async def test_move_of_the_listed_items_is_accepted(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A move whose uris match the playlist reaches the provider."""
+    added = await _add(playlists)
+    provider = _provider()
+    prov_item_id = next(iter(added.provider_mappings)).item_id
+
+    with (
+        _as_user(OWNER),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch.object(playlists, "tracks", AsyncMock(return_value=_listed("a", "b"))),
+    ):
+        await playlists.move_playlist_track(added.item_id, 2, 1, uri="b")
+
+    provider.move_playlist_track.assert_awaited_once_with(prov_item_id, 2, 1)
+
+
+async def test_removal_from_a_changed_playlist_is_refused(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A removal by a position that now holds another item is never queued."""
+    added = await _add(playlists)
+
+    with (
+        _as_user(OWNER),
+        patch.object(playlists, "tracks", AsyncMock(return_value=_listed("a", "c"))),
+        patch.object(music_mass_module, "signal_event"),
+        patch.object(music_mass_module.tasks, "run_background_task") as run_task,
+        pytest.raises(InvalidDataError),
+    ):
+        await playlists.remove_playlist_tracks(added.item_id, (2,), uris=["b"])
+
+    run_task.assert_not_called()
+
+
+async def test_edit_while_another_is_checked_is_refused(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The playlist is held while an edit's positions are checked, so a second edit waits."""
+    added = await _add(playlists)
+    listed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_tracks(*_args: object, **_kwargs: object) -> list[MagicMock]:
+        listed.set()
+        await release.wait()
+        return _listed("a", "b")
+
+    with (
+        _as_user(OWNER),
+        patch.object(playlists, "tracks", AsyncMock(side_effect=_slow_tracks)),
+        patch.object(music_mass_module.tasks, "run_background_task") as run_task,
+    ):
+        first = asyncio.create_task(
+            playlists.remove_playlist_tracks(added.item_id, (1,), uris=["a"])
+        )
+        await listed.wait()
+        with pytest.raises(ResourceBusyError):
+            await playlists.remove_playlist_tracks(added.item_id, (1,), uris=["a"])
+        release.set()
+        await first
+
+    run_task.assert_called_once()

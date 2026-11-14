@@ -9,10 +9,10 @@ from urllib.parse import urljoin
 from xml.etree.ElementTree import ParseError as XMLParseError
 
 import podcastparser
-from aiohttp.client import ClientError, ClientTimeout
+from aiohttp.client import ClientError, ClientResponseError, ClientTimeout
 from defusedxml.ElementTree import fromstring as parse_xml
 from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -54,6 +54,8 @@ _TRANSCRIPT_READ_CHUNK = 64 * 1024
 # fetches override the Music Assistant user agent that the session sends by default
 # https://github.com/music-assistant/support/issues/3596
 _BROWSER_UA_HEADERS = {"User-Agent": "Mozilla/5.0"}
+# HTTP statuses that mean a feed no longer exists, as opposed to a host that is down
+_FEED_GONE_STATUSES = frozenset({404, 410})
 
 # transcript formats carrying timings, most preferred first. Anything else is still
 # usable, but only as untimed text.
@@ -91,25 +93,37 @@ async def get_podcastparser_dict(
     Get feed parsed by podcastparser by providing the url.
 
     max_episodes = 0 does not limit the returned episodes.
+
+    :raises MediaNotFoundError: The feed is gone or returns invalid RSS data.
+    :raises ProviderUnavailableError: The feed could not be retrieved right now.
     """
     feed_data: bytes | None = None
+    feed_gone = False
+    last_error: ClientError | TimeoutError | None = None
     # reports on discord show that some feeds need the opposite, so also try without any UA
     for headers in [_BROWSER_UA_HEADERS, {}]:
         # raises ClientError on status failure
         # ClientError is the base class of all possible Error, i.e. not authorized,
         # url doesn't exist etc. The body is read inside the context manager, so a
-        # connection is never left open when a feed fails midway.
+        # connection is never left open when a feed fails midway. TimeoutError (raised on
+        # total-timeout) is not a ClientError, so it is caught explicitly.
         try:
             async with session.get(feed_url, headers=headers, raise_for_status=True) as response:
                 feed_data = await response.read()
-        except ClientError:
+        except (ClientError, TimeoutError) as err:
+            last_error = err
+            if isinstance(err, ClientResponseError) and err.status in _FEED_GONE_STATUSES:
+                feed_gone = True
             continue
         break
     if feed_data is None:
-        # we did not get a single acceptable response
-        raise MediaNotFoundError(
+        # only the host saying the feed is gone counts as not found, so an outage or a
+        # refused user agent does not mark the podcast unavailable
+        if feed_gone:
+            raise MediaNotFoundError(f"The feed at {feed_url} no longer exists.")
+        raise ProviderUnavailableError(
             f"Did not get acceptable response while trying to access {feed_url}."
-        )
+        ) from last_error
     feed_stream = BytesIO(feed_data)
     try:
         parsed: dict[str, Any] = podcastparser.parse(
@@ -140,7 +154,8 @@ async def get_cached_podcast(
     :param max_episodes: Maximum number of episodes to parse, 0 for unlimited.
     :param cache_category: Cache category to store the parsed feed under.
     :param cache_expiration: Time in seconds the cached feed stays valid.
-    :raises MediaNotFoundError: If the feed could not be retrieved or parsed.
+    :raises MediaNotFoundError: The feed is gone or returns invalid RSS data.
+    :raises ProviderUnavailableError: The feed could not be retrieved right now.
     """
     parsed_feed = await mass.cache.get(
         key=feed_url,
@@ -182,7 +197,8 @@ async def refresh_cached_podcast(
     :param max_episodes: Maximum number of episodes to parse, 0 for unlimited.
     :param cache_category: Cache category to store the parsed feed under.
     :param cache_expiration: Time in seconds the cached feed stays valid.
-    :raises MediaNotFoundError: If the feed could not be retrieved or parsed.
+    :raises MediaNotFoundError: The feed is gone or returns invalid RSS data.
+    :raises ProviderUnavailableError: The feed could not be retrieved right now.
     """
     parsed_feed = await get_podcastparser_dict(
         session=mass.http_session, feed_url=feed_url, max_episodes=max_episodes

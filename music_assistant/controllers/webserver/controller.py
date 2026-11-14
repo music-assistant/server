@@ -581,6 +581,31 @@ class WebserverController(CoreController):
                 user.username if user else "unknown",
             )
 
+    def set_sendspin_player_for_ingress_client(
+        self, ha_user_id: str, client_key: str, player_id: str
+    ) -> None:
+        """
+        Set the sendspin player_id on the Home Assistant Ingress websocket clients of a browser.
+
+        The Ingress counterpart of set_sendspin_player_for_token: Ingress connections hold no
+        token, so the key a browser identifies itself with, together with the Home Assistant
+        user it is signed in as, decides which connections a web player belongs to.
+
+        :param ha_user_id: Id of the Home Assistant user the browser is signed in as.
+        :param client_key: The key the browser identifies itself with.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if not client.matches_ingress_client(ha_user_id, client_key):
+                continue
+            client.bind_sendspin_player(player_id)
+            user = client.authenticated_user
+            self.logger.debug(
+                "Set sendspin player %s for Ingress websocket client of user %s",
+                player_id,
+                user.username if user else "unknown",
+            )
+
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
         """
         Set the sendspin player_id on a websocket client for a WebRTC session.

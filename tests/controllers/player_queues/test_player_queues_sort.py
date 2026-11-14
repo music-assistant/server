@@ -333,6 +333,7 @@ def _streaming_resolver(tracks: list[Track]) -> tuple[MediaResolver, list[str], 
     :return: The resolver, the ids of the tracks streamed so far and the playlist's tracks listing.
     """
     mass = MagicMock()
+    mass.players.get_player.return_value.offline_by_power_control = False
     streamed: list[str] = []
 
     async def _iter_tracks(*_args: Any, **_kwargs: Any) -> AsyncIterator[Track]:
@@ -408,7 +409,9 @@ def _controller() -> Any:
     """Build a bare controller with a queue, whose play requests stop at the queue loader."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.logger = MagicMock()
+    ctrl.mass.players._resolve_playback_owner = lambda player: player  # plays on its own
     ctrl._check_player_permission = MagicMock()  # type: ignore[method-assign]
     ctrl.get = MagicMock()  # type: ignore[method-assign]
     ctrl._handle_play_media = AsyncMock()  # type: ignore[method-assign]

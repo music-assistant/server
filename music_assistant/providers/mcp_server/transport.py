@@ -104,7 +104,7 @@ class MCPTransport:
             # a notification (such as notifications/initialized) or a response, which
             # needs no answer
             return web.Response(status=202)
-        return await self._handle_request_message(message, protocol_version, from_home_assistant)
+        return await self._handle_request_message(message, protocol_version)
 
     async def _refuse_request(
         self, request: web.Request, from_home_assistant: bool
@@ -127,7 +127,7 @@ class MCPTransport:
         return None
 
     async def _handle_request_message(
-        self, message: dict[str, Any], protocol_version: str, from_home_assistant: bool
+        self, message: dict[str, Any], protocol_version: str
     ) -> web.Response:
         """Handle a JSON-RPC request message and return the response to it."""
         message_id = message["id"]
@@ -147,9 +147,7 @@ class MCPTransport:
                     message_id, {"tools": [tool.to_dict() for tool in TOOLS.values()]}
                 )
             case "tools/call":
-                return await self._call_tool(
-                    message_id, params, protocol_version, from_home_assistant
-                )
+                return await self._call_tool(message_id, params, protocol_version)
         return _error_response(message_id, METHOD_NOT_FOUND, f"Method not found: {method}")
 
     def _initialize(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -165,11 +163,7 @@ class MCPTransport:
         }
 
     async def _call_tool(
-        self,
-        message_id: Any,
-        params: dict[str, Any],
-        protocol_version: str,
-        from_home_assistant: bool,
+        self, message_id: Any, params: dict[str, Any], protocol_version: str
     ) -> web.Response:
         """Run the tool of a tools/call request and return its result."""
         name = params.get("name")
@@ -180,8 +174,7 @@ class MCPTransport:
         if not isinstance(arguments, dict):
             return _error_response(message_id, INVALID_PARAMS, "Arguments must be an object")
         try:
-            if from_home_assistant:
-                await impersonate_home_assistant_user(self.mass, params)
+            await impersonate_home_assistant_user(self.mass, params)
             self._check_scopes(tool)
             result = await tool.call(self.mass, arguments)
         except (ToolError, MusicAssistantError) as err:

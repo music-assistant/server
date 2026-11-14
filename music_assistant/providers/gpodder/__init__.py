@@ -32,6 +32,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -472,7 +473,7 @@ class GPodder(MusicProvider):
                         refreshing[refresh(next_feed_url)] = next_feed_url
                     try:
                         parsed_podcast = task.result()
-                    except MediaNotFoundError as err:
+                    except (MediaNotFoundError, ProviderUnavailableError) as err:
                         self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
                         continue
                     yield feed_url, parsed_podcast

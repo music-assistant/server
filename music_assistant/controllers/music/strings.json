@@ -33,7 +33,8 @@
     "remove_playlist_tracks": "Remove items from playlist {0}",
     "import_playlist_matching": "Import playlist {0}",
     "import_radios": "Import {0} radio stations",
-    "reconcile_duplicate_tracks": "Reconcile duplicate tracks"
+    "reconcile_duplicate_tracks": "Reconcile duplicate tracks",
+    "check_unavailable_mappings": "Check unavailable podcasts and radio stations"
   },
   "errors": {
     "album_not_available_on_music_services": "This album is not available on any of your music services"

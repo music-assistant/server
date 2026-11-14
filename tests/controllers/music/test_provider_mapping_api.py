@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +10,8 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import Playlist, ProviderMapping
+
+from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -99,3 +102,31 @@ async def test_mapping_with_another_providers_domain_is_refused(
 
     db_item = await music_mass_module.music.playlists.get_library_item(db_item.item_id)
     assert mapping not in db_item.provider_mappings
+
+
+async def test_mapping_retargeted_to_a_python_module_is_refused(
+    music_mass_module: MusicAssistant, tmp_path: Path
+) -> None:
+    """A filesystem playlist mapping can not be pointed at a non-playlist file in the root."""
+    module = tmp_path / "providers" / "podcastfeed" / "setup_flow.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("x = 1\n", encoding="utf-8")
+    fs_provider = LocalFileSystemProvider.__new__(LocalFileSystemProvider)
+    fs_provider.base_path = str(tmp_path)
+    fs_provider.logger = MagicMock()
+    provider = _provider(None)
+    provider.get_playlist = fs_provider.get_playlist
+    db_item = await music_mass_module.music.playlists.add_item_to_library(_playlist("poc.m3u"))
+    mapping = _mapping("providers/podcastfeed/setup_flow.py")
+
+    with (
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await music_mass_module.music.add_provider_mapping(
+            MediaType.PLAYLIST, db_item.item_id, mapping
+        )
+
+    db_item = await music_mass_module.music.playlists.get_library_item(db_item.item_id)
+    assert mapping not in db_item.provider_mappings
+    assert module.read_text(encoding="utf-8") == "x = 1\n"

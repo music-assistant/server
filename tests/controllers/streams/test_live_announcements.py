@@ -552,6 +552,7 @@ def _player() -> MagicMock:
     player.player_id = PLAYER_ID
     player.display_name = "Kitchen"
     player.available = True
+    player.offline_by_power_control = False
     player.protocol_parent_id = None
     return player
 
