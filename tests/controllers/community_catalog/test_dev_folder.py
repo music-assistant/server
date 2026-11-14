@@ -18,6 +18,7 @@ from music_assistant.controllers.community_catalog.dependencies import Community
 from music_assistant.helpers.util import purge_provider_modules
 from tests.conftest import full_mass_context
 from tests.controllers.community_catalog.test_dependencies import _build_wheel
+from tests.controllers.community_catalog.test_settings import _wait_for_start
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -63,6 +64,13 @@ def location(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
             purge_provider_modules(provider_dir.name)
 
 
+@pytest.fixture
+async def mass(mass: MusicAssistant) -> MusicAssistant:
+    """Return the server once its own start of the community catalog is done."""
+    await _wait_for_start(mass)
+    return mass
+
+
 async def test_dev_provider_loads(tmp_path: Path, location: Path) -> None:
     """A provider in the folder loads as community provider, with its texts and requirements."""
     _write_provider(location, "dev_one", requirements=[REQUIREMENT])
@@ -70,6 +78,7 @@ async def test_dev_provider_loads(tmp_path: Path, location: Path) -> None:
     _seed_instance(tmp_path, "dev_one")
 
     async with full_mass_context(tmp_path) as mass:
+        await _wait_for_start(mass)
         # the server's own load passed the instance over: its domain had no manifest yet
         assert mass.config.get(f"{CONF_PROVIDERS}/dev_one/last_error") is None
         assert "load_provider_dev_one" not in mass._tracked_timers
