@@ -1381,14 +1381,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
             "AND p.fully_played = 0 "
             "AND p.seconds_played > 0 "
-            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago}) "
+            # an episode shows for a week, or as long as its podcast is in the library
+            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago} "
+            f"OR EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            "WHERE pm.media_type = 'podcast' AND pm.provider_instance = p.provider "
+            "AND pm.provider_item_id = p.podcast_item_id AND pm.in_library = 1)) "
         )
         query += (
             "AND ( "
             "CASE WHEN p.provider = 'library' THEN "
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
             "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
-            "AND m.available = 1 "
+            # a library row that only holds a dislike is not in the library
+            "AND m.available = 1 AND m.in_library = 1 "
         )
         if not all_users and (user := get_current_user()):
             filter_for_str = available_providers_str
