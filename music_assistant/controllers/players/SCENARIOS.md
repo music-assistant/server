@@ -1624,11 +1624,15 @@ The Kitchen speaker has played its queue to the end. Half a second before the qu
 for ended, a resume, a play of another track or a play of the first item starts. The speaker
 takes the stream and reports that it plays only 11 s later, or never. The play command is done
 after the 5 s it waits for the speaker, as before. The queue is not taken for ended and keeps
-the audio it prepared, and it plays once the speaker reports that it does.
+the audio it prepared, and it plays once the speaker reports that it does. The same goes for a
+play of another track 2 s before the last track of the queue ends, on a speaker that drops what
+it played and is as slow to start.
 
 - End-to-end: **no**: it needs a device that takes more than 5 s to start a stream, in the
   second in which the server takes its queue for ended.
-- Proven by: `test_stopped_queue.py::test_a_play_on_a_slow_speaker_keeps_its_audio_as_the_queue_would_end`
+- Proven by:
+  - `test_stopped_queue.py::test_a_play_on_a_slow_speaker_keeps_its_audio_as_the_queue_would_end`
+  - `test_stopped_queue.py::test_a_play_in_the_last_seconds_of_a_queue_keeps_its_audio_on_a_slow_speaker`
 
 ### PAUSE-10 · A queue that played out is taken for ended
 

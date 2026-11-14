@@ -394,6 +394,63 @@ async def test_a_play_on_a_slow_speaker_keeps_its_audio_as_the_queue_would_end(
         assert not audio.cancelled
 
 
+@pytest.mark.parametrize("reports", [True, False], ids=["reports late", "never reports"])
+async def test_a_play_in_the_last_seconds_of_a_queue_keeps_its_audio_on_a_slow_speaker(
+    scenario: Scenario, monkeypatch: pytest.MonkeyPatch, reports: bool
+) -> None:
+    """
+    A play that replaces a queue in its last seconds is not ended as the playback it replaced.
+
+    :param reports: Whether the speaker reports at all that it plays.
+    """
+    speaker, player_id = await _speaker(scenario, can_pause=False)
+    await _play_track_by_track(scenario, speaker, player_id)
+    await scenario.advance(TRACK_SECONDS - 2)
+    handed: list[PlayerMedia] = []
+
+    async def _drop_the_stream_and_take_the_new_one(media: PlayerMedia) -> None:
+        speaker._apply("play_media", media, playback_state=PlaybackState.IDLE, current_media=None)
+        handed.append(media)
+
+    monkeypatch.setattr(speaker, "play_media", _drop_the_stream_and_take_the_new_one)
+    with _slow_music_source(scenario):
+        started = await scenario.command(_play_another_track(scenario, player_id))
+        await scenario.advance(SOURCE_DELAY)
+        assert len(handed) == 1
+        item = _queue(scenario, player_id).current_item
+        assert item is not None
+        assert item.streamdetails is not None
+        audio = item.streamdetails.buffer
+        assert audio is not None
+        await scenario.advance(LATE_REPORT_SECONDS)
+        assert started.done()
+        await started
+
+        position = _position(scenario, player_id)
+        assert (position.state, position.ended, position.uri) == (
+            PlaybackState.IDLE,
+            False,
+            OTHER_TRACK_URI,
+        )
+        assert item.streamdetails.buffer is audio
+        assert not audio.cancelled
+        if reports:
+            await scenario.report(
+                speaker,
+                playback_state=PlaybackState.PLAYING,
+                current_media=handed[0],
+                elapsed_time=0,
+                elapsed_time_last_updated=scenario.wall_time(),
+            )
+            await scenario.advance(1)
+            position = _position(scenario, player_id)
+            assert (position.state, position.ended, position.uri) == (
+                PlaybackState.PLAYING,
+                False,
+                OTHER_TRACK_URI,
+            )
+
+
 async def test_a_play_that_looks_up_its_music_as_the_queue_would_end_plays(
     scenario: Scenario, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -245,6 +245,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             self._queue_data[queue_id].prev_state = new_state
         else:
             self._queue_data[queue_id].prev_state = None
+        if queue.state != PlaybackState.IDLE:
+            queue_data.played_session_id = queue_data.session_id
 
         # return early if nothing changed
         if len(changed_keys) == 0:
@@ -551,8 +553,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             player = self.mass.players.get_player(queue.queue_id)
             return player is not None and player.offline_by_power_control
 
-        # the check belongs to the playback that went idle here
-        session_id = queue_data.session_id
+        # the check belongs to the playback that went idle here, which is not the queue's
+        # stream session when a play started before its player was seen idle
+        session_id = queue_data.played_session_id
 
         async def _still_at_its_end() -> bool:
             # a command that holds the player (a play action that starts the queue, a stop) is

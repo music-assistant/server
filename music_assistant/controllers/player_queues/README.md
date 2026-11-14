@@ -208,7 +208,7 @@ starts a stream session, taken back by a pause or a stop that fails, and reset w
 cleared or marked as ended.
 
 That check runs in a task of its own, holds no lock, and belongs to the playback that went idle:
-it remembers the queue's stream session. After every wait (each of its five rounds, the fetch of
+it remembers the stream session the queue was last seen playing. After every wait (each of its five rounds, the fetch of
 the dynamic source) it first waits for the command that holds the player's playback lock, and
 then gives up when the queue is not idle, a command halted it, or a play started since: the queue
 has another stream session, also while its player does not report yet that it plays. So it

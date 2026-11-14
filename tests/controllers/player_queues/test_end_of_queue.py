@@ -316,6 +316,7 @@ def _tracker(*items: Any) -> Any:
             sleep_timer_stopped_target=None,
             halted_by_command=False,
             session_id=None,
+            played_session_id=None,
         )
     }
     tracker.mass.players.get_player.return_value.offline_by_power_control = False

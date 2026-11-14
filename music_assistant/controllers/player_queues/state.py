@@ -78,6 +78,8 @@ class PlayerQueueData:
     # a command (a pause, a stop) halted the playback of the queue's items and it has not played
     # since: the queue keeps its place, and its player going idle is not the end of the queue
     halted_by_command: bool = False
+    # the stream session the queue was last seen playing or paused
+    played_session_id: str | None = None
     play_action_refcount: int = 0
     # skip seconds awaiting the playback lock and the item they apply to; a burst of presses
     # is merged into one seek
