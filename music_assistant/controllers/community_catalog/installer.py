@@ -94,7 +94,8 @@ class Installer:
         try:
             return await self._stage(domain, version, entry.repository, release)
         except Exception:
-            await asyncio.to_thread(_discard, staged)
+            with suppress(OSError):
+                await asyncio.to_thread(_discard, staged)
             raise
 
     async def activate(self, domain: str) -> None:
@@ -250,7 +251,11 @@ def _unpack(archive: Path, folder: str, target: Path) -> None:
             # the first part is the top-level folder GitHub names after the repository and commit
             if parts[1 : len(prefix) + 1] != prefix:
                 continue
-            path = target.joinpath(*parts[len(prefix) + 1 :])
+            relative = parts[len(prefix) + 1 :]
+            # compiled files are no part of the content hash, so they are not installed either
+            if "__pycache__" in relative or name.suffix == ".pyc":
+                continue
+            path = target.joinpath(*relative)
             if member.isdir():
                 path.mkdir(parents=True, exist_ok=True)
             elif member.isfile() and (source := tar.extractfile(member)) is not None:
@@ -274,11 +279,16 @@ def _verify(folder: Path, domain: str, expected_hash: str) -> ProviderManifest:
     :param folder: The staged provider folder.
     :param domain: The domain the provider must have.
     :param expected_hash: The content hash the catalog lists.
-    :raises ValueError: The manifest is missing, invalid or of another domain, or the content
-        differs from what the catalog lists.
+    :raises ValueError: The content differs from what the catalog lists, or the manifest is
+        missing, invalid or of another domain.
     """
+    if content_hash(folder) != expected_hash:
+        msg = "its content is not what the community catalog lists"
+        raise ValueError(msg)
     try:
-        manifest = ProviderManifest.from_json((folder / "manifest.json").read_text())
+        manifest = ProviderManifest.from_json(
+            (folder / "manifest.json").read_text(encoding="utf-8")
+        )
     except FileNotFoundError as err:
         msg = "it has no manifest.json"
         raise ValueError(msg) from err
@@ -287,9 +297,6 @@ def _verify(folder: Path, domain: str, expected_hash: str) -> ProviderManifest:
         raise ValueError(msg) from err
     if manifest.domain != domain:
         msg = f"its manifest is for {manifest.domain}"
-        raise ValueError(msg)
-    if content_hash(folder) != expected_hash:
-        msg = "its content is not what the community catalog lists"
         raise ValueError(msg)
     return manifest
 

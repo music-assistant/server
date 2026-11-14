@@ -126,6 +126,25 @@ async def test_stage_keeps_only_whether_a_file_is_executable(
     assert stat.S_IMODE((staged / "__init__.py").stat().st_mode) == 0o644
 
 
+async def test_stage_leaves_compiled_files_out(
+    tmp_path: Path, installer: Installer, github: GitHub
+) -> None:
+    """Compiled Python files are no part of the content hash, so they are not installed."""
+    compiled = {
+        "stray.pyc": b"x",
+        "__pycache__/__init__.cpython-314.pyc": b"x",
+        "helpers/__pycache__/notes.txt": b"x",
+    }
+    archive = build_archive(_repository({**PROVIDER, **compiled}))
+    entry = _index_entry(github, archive)
+
+    await installer.stage(DOMAIN, entry, VERSION)
+
+    staged = tmp_path / "community_providers" / ".staging" / DOMAIN
+    assert _read(staged) == PROVIDER
+    assert not list(staged.rglob("__pycache__"))
+
+
 @pytest.mark.parametrize(
     ("kind", "linkname"),
     [
