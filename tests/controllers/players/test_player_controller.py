@@ -1122,8 +1122,8 @@ class TestSleepTimer:
 
         assert expires_at == 123.0
         set_target.assert_called_with("player_1", SleepTimerMode.END_OF_CHAPTER)
-        assert player.state.sleep_timer_mode == SleepTimerMode.END_OF_CHAPTER
-        assert player.state.sleep_timer_expires_at == 123.0
+        assert player.sleep_timer_mode == SleepTimerMode.END_OF_CHAPTER
+        assert player.sleep_timer_expires_at == 123.0  # type: ignore[unreachable]
         # the queue's timer replaces the duration timer, which stops nothing any more
         mock_mass.cancel_timer.assert_called_with("player_sleep_timer_player_1")
         # the queue stops itself, no stop is scheduled here
