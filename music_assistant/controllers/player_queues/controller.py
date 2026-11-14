@@ -1055,9 +1055,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if not (queue := self.get(queue_id)):
             return
         queue_active = queue.active
+        queue_data = self._queue_data[queue_id]
+        was_paused = queue_data.paused
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
-            self._queue_data[queue_id].paused = True
+            queue_data.paused = True
         if (
             player := self.mass.players.get_player(queue_id)
         ) is not None and player.offline_by_power_control:
@@ -1066,7 +1068,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
-        await self.mass.players._handle_cmd_pause(queue_id)
+        try:
+            await self.mass.players._handle_cmd_pause(queue_id)
+        except Exception:
+            # the pause did not go through
+            queue_data.paused = was_paused
+            raise
 
         async def _watch_pause(player: Player) -> None:
             count = 0

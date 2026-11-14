@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -271,6 +272,31 @@ async def test_a_paused_queue_that_is_stopped_at_the_pause_timeout_is_not_ended(
         elapsed_time=PLAYED_SECONDS,
         resume_pos=0,
     )
+
+
+async def test_a_queue_whose_pause_failed_still_ends_when_it_played_out(
+    scenario: Scenario,
+) -> None:
+    """A pause the speaker refuses leaves the queue playing, and it is taken for ended as any."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+
+    async def _refuse() -> None:
+        raise PlayerCommandFailed("The speaker refused to pause")
+
+    with pytest.MonkeyPatch.context() as patches:
+        patches.setattr(speaker, "pause", _refuse)
+        with pytest.raises(PlayerCommandFailed, match="refused to pause"):
+            await scenario.mass.players.cmd_pause(player_id)
+    await scenario.settle()
+    assert _position(scenario, player_id).state == PlaybackState.PLAYING
+
+    await _play_out(scenario, speaker, player_id, TRACK_SECONDS - PLAYED_SECONDS)
+    await scenario.advance(SETTLE_SECONDS - 0.5)
+    assert not _position(scenario, player_id).ended
+    await scenario.advance(1)
+    assert _position(scenario, player_id).ended
 
 
 def _resume(scenario: Scenario, player_id: str) -> Coroutine[Any, Any, None]:

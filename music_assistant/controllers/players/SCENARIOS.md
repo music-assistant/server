@@ -1567,3 +1567,11 @@ is there, and the queue is not taken for ended.
 - End-to-end: **no**: it needs a play that starts within the few milliseconds in which the
   server takes the queue for ended.
 - Proven by: `test_paused_queue.py::test_a_play_that_starts_as_an_ended_queue_is_settled_plays`
+
+### PAUSE-5 · A queue whose pause failed still ends when it played out
+
+A speaker refuses a pause 5 s into the last track of its queue, so the pause fails and the queue
+plays on. Once the track has played to its end, the queue is taken for ended after 5 s.
+
+- End-to-end: **no**: it needs a device that refuses a pause.
+- Proven by: `test_paused_queue.py::test_a_queue_whose_pause_failed_still_ends_when_it_played_out`
