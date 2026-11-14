@@ -193,11 +193,12 @@ async def test_artist_toptracks_skips_drm_track_and_keeps_others(
     provider: SoundcloudMusicProvider, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A DRM protected track in an artist's top tracks is skipped without dropping others."""
-    provider._soundcloud.get_tracks_from_user.return_value = {"collection": [{"id": 1}, {"id": 2}]}
-    provider._soundcloud.get_track_details.side_effect = [
-        [_track_obj(1, "Danceteria", DRM_TRANSCODINGS)],
-        [_track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS)],
-    ]
+    provider._soundcloud.get_tracks_from_user.return_value = {
+        "collection": [
+            _track_obj(1, "Danceteria", DRM_TRANSCODINGS),
+            _track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS),
+        ]
+    }
 
     get_toptracks: Any = (
         SoundcloudMusicProvider.get_artist_toptracks.__wrapped__  # type: ignore[attr-defined]
@@ -215,11 +216,12 @@ async def test_similar_tracks_skips_drm_track_and_keeps_others(
     provider: SoundcloudMusicProvider, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A DRM protected similar track is skipped without dropping the other results."""
-    provider._soundcloud.get_recommended.return_value = {"collection": [{"id": 1}, {"id": 2}]}
-    provider._soundcloud.get_track_details.side_effect = [
-        [_track_obj(1, "Danceteria", DRM_TRANSCODINGS)],
-        [_track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS)],
-    ]
+    provider._soundcloud.get_recommended.return_value = {
+        "collection": [
+            _track_obj(1, "Danceteria", DRM_TRANSCODINGS),
+            _track_obj(2, "Lofi Beat", PLAIN_TRANSCODINGS),
+        ]
+    }
 
     get_similar: Any = SoundcloudMusicProvider.get_similar_tracks.__wrapped__  # type: ignore[attr-defined]
     with caplog.at_level(logging.DEBUG):

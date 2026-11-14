@@ -1,0 +1,1 @@
+"""Community catalog controller package."""

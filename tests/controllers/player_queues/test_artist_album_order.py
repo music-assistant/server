@@ -2,21 +2,20 @@
 Tests for the order an artist plays in (``default_enqueue_order_artist``).
 
 The order setting plays the artist shuffled (the default), or plays the artist's albums one after
-the other, at random or oldest first. The album orders leave out singles, and the compilations
-found only on a provider. Each album plays as it does on its own.
-The tests resolve an artist through a real MusicAssistant with a real SQLite database, stubbing
-the streaming provider where one is needed.
+the other, at random or oldest first. The album orders play the artist's library albums and leave
+out singles. Each album plays as it does on its own.
+The tests resolve an artist through a real MusicAssistant with a real SQLite database.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, Mock
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID
+from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
@@ -120,56 +119,18 @@ async def _artist_with_albums(mass: MusicAssistant) -> Artist:
     return artist
 
 
-def _streaming_album(name: str, year: int, provider: str = "streaming") -> Album:
-    """Build an album as a streaming provider lists it."""
-    item_id = uuid4().hex
-    return Album(
-        item_id=item_id,
-        provider=provider,
-        name=name,
-        year=year,
-        album_type=AlbumType.ALBUM,
-        provider_mappings={
-            ProviderMapping(item_id=item_id, provider_domain=provider, provider_instance=provider)
-        },
-    )
-
-
-def _stub_provider(mass: MusicAssistant, albums: list[Album]) -> AsyncMock:
+def _stub_album_tracks(mass: MusicAssistant, albums: list[Album]) -> AsyncMock:
     """
-    Let the streaming provider list the given albums, each holding two tracks.
+    Let the album tracks lookup answer two tracks for each of the given albums.
 
-    The tracks are named after the album and their number. Returns the album tracks lookup.
+    The tracks are named after the album and their number. Returns the lookup.
     """
-    resolver = mass.player_queues._media_resolver
-    resolver._provider_artist_albums = AsyncMock(return_value=albums)  # type: ignore[method-assign]
-    resolver._provider_artist_tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
     names = {album.item_id: album.name for album in albums}
     lookup = AsyncMock(
         side_effect=lambda item_id, *_, **__: [_track(f"{names[item_id]} {n}") for n in (1, 2)]
     )
     mass.music.albums.tracks = lookup  # type: ignore[method-assign]
     return lookup
-
-
-def _stub_providers(mass: MusicAssistant, states: dict[str, str]) -> None:
-    """
-    Load the named providers in the given state: "up", "down" or "no albums".
-
-    A provider that is down is not returned, as MA's own provider lookup does.
-    """
-    get_provider = mass.get_provider
-
-    def _get_provider(instance: str, *args: Any, **kwargs: Any) -> Any:
-        if instance not in states:
-            return get_provider(instance, *args, **kwargs)
-        if states[instance] == "down":
-            return None
-        lists_albums = states[instance] == "up"
-        return Mock(available=True, supports_feature=Mock(return_value=lists_albums))
-
-    mass.get_provider = _get_provider  # type: ignore[method-assign, assignment]
-    mass.music.get_unique_providers = Mock(return_value=list(states))  # type: ignore[method-assign]
 
 
 def _set_order(mass: MusicAssistant, order: str) -> None:
@@ -247,6 +208,27 @@ async def test_artist_order_defaults_to_shuffled_tracks(mass: MusicAssistant) ->
     await _add_album(mass, artist, "Gold", 1992, ("Dancing Queen", "Knowing Me", "Take a Chance"))
 
     assert mass.player_queues._media_resolver.get_artist_order() is ArtistOrder.SHUFFLED_TRACKS
+    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
+
+    assert sorted(_names(result)) == [
+        "Dancing Queen",
+        "Knowing Me",
+        "My Love",
+        "Take a Chance",
+        "When I Kissed",
+    ]
+
+
+@pytest.mark.parametrize("selection", ["library_tracks", "library_album_tracks"])
+async def test_shuffled_tracks_play_a_song_on_two_albums_once(
+    mass: MusicAssistant, selection: str
+) -> None:
+    """Each library selection plays a song on two of the artist's albums only once."""
+    artist = await _add_artist(mass)
+    await _add_album(mass, artist, "Arrival", 1976, ("When I Kissed", "Dancing Queen", "My Love"))
+    await _add_album(mass, artist, "Gold", 1992, ("Dancing Queen", "Knowing Me", "Take a Chance"))
+    _set_selection(mass, selection)
+
     result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
     assert sorted(_names(result)) == [
@@ -368,47 +350,55 @@ async def test_prefer_library_without_albums_plays_the_top_tracks(mass: MusicAss
     assert _names(result) == ["Waterloo"]
 
 
-async def test_all_tracks_adds_the_albums_only_on_a_provider(mass: MusicAssistant) -> None:
-    """All tracks also plays the artist's albums that are only on a streaming provider."""
-    artist = await _add_artist(mass)
-    await _add_album(mass, artist, "Waterloo", 1974)
-    arrival = _streaming_album("Arrival", 1976)
-    real_tracks = mass.music.albums.tracks
-    lookup = _stub_provider(mass, [arrival])
-    provider_tracks = lookup.side_effect
-
-    async def _tracks(item_id: str, *args: object, **kwargs: object) -> list[Track]:
-        if item_id == arrival.item_id:
-            return provider_tracks(item_id)  # type: ignore[no-any-return]
-        return await real_tracks(item_id, *args, **kwargs)  # type: ignore[arg-type]
-
-    lookup.side_effect = _tracks
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
+@pytest.mark.parametrize("order", list(ArtistOrder))
+async def test_an_artist_outside_the_library_plays_its_top_tracks(
+    mass: MusicAssistant, order: ArtistOrder
+) -> None:
+    """An artist that is not in the library plays its top tracks, in any order."""
+    artist = Artist(
+        item_id="abba",
+        provider="streaming",
+        name="ABBA",
+        provider_mappings={
+            ProviderMapping(
+                item_id="abba", provider_domain="streaming", provider_instance="streaming"
+            )
+        },
+    )
+    mass.music.artists.top_tracks = AsyncMock(return_value=[_track("Waterloo")])  # type: ignore[method-assign]
+    albums = mass.music.artists.albums = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    tracks = mass.music.artists.tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    _set_order(mass, order)
 
     result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
-    assert _names(result) == ["Waterloo 1", "Waterloo 2", "Waterloo 3", "Arrival 1", "Arrival 2"]
+    assert _names(result) == ["Waterloo"]
+    albums.assert_not_awaited()
+    tracks.assert_not_awaited()
 
 
 @pytest.mark.parametrize("selection", ["library_tracks", "library_album_tracks", "prefer_library"])
-async def test_a_library_selection_plays_only_library_albums(
+async def test_an_album_order_plays_only_library_albums(
     mass: MusicAssistant, selection: str
 ) -> None:
-    """The library selections leave out the albums that are only on a streaming provider."""
+    """An album order plays the artist's library albums, never the albums a provider lists."""
     artist = await _add_artist(mass)
     await _add_album(mass, artist, "Waterloo", 1974)
-    _stub_provider(mass, [_streaming_album("Arrival", 1976)])
-    mass.music.albums.tracks = AsyncMock(return_value=[_track("Waterloo 1")])  # type: ignore[method-assign]
+    artist.provider_mappings.add(
+        ProviderMapping(item_id="abba", provider_domain="streaming", provider_instance="streaming")
+    )
+    provider_albums = AsyncMock(return_value=[])
+    mass.music.artists.get_provider_artist_albums = provider_albums  # type: ignore[method-assign]
     _set_selection(mass, selection)
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
 
     result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
 
-    assert _names(result) == ["Waterloo 1"]
-    mass.player_queues._media_resolver._provider_artist_albums.assert_not_called()  # type: ignore[attr-defined]
+    assert _names(result) == ["Waterloo 1", "Waterloo 2", "Waterloo 3"]
+    provider_albums.assert_not_awaited()
 
 
-@pytest.mark.parametrize("selection", ["library_tracks", "prefer_library", "all_tracks"])
+@pytest.mark.parametrize("selection", ["library_tracks", "prefer_library", "library_album_tracks"])
 @pytest.mark.parametrize(
     ("album_setting", "in_library_only"), [("library_tracks", True), ("all_tracks", False)]
 )
@@ -431,243 +421,12 @@ async def test_an_album_plays_as_it_does_on_its_own(
     assert lookup.call_args.kwargs["in_library_only"] is in_library_only
 
 
-async def test_a_library_album_is_not_played_again_from_its_provider(mass: MusicAssistant) -> None:
-    """A library album also listed by its streaming provider plays once, even dated apart."""
-    artist = await _add_artist(mass)
-    remaster = _streaming_album("Arrival", 2001)
-    library_album = await _add_album(mass, artist, "Arrival", 1976)
-    library_album.provider_mappings.update(remaster.provider_mappings)
-    await mass.music.albums.update_item_in_library(library_album.item_id, library_album)
-    resolver = mass.player_queues._media_resolver
-    resolver._provider_artist_albums = AsyncMock(return_value=[remaster])  # type: ignore[method-assign]
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1", "Arrival 2", "Arrival 3"]
-
-
-async def test_a_library_single_is_not_played_from_its_provider(mass: MusicAssistant) -> None:
-    """A library single stays left out when its provider lists it as an album."""
-    artist = await _add_artist(mass)
-    await _add_album(mass, artist, "Arrival", 1976)
-    provider_copy = _streaming_album("SOS", 1975)
-    single = await _add_album(mass, artist, "SOS", 1975, album_type=AlbumType.SINGLE)
-    single.provider_mappings.update(provider_copy.provider_mappings)
-    await mass.music.albums.update_item_in_library(single.item_id, single)
-    resolver = mass.player_queues._media_resolver
-    resolver._provider_artist_albums = AsyncMock(return_value=[provider_copy])  # type: ignore[method-assign]
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1", "Arrival 2", "Arrival 3"]
-
-
-async def test_a_library_single_does_not_hide_a_provider_album_of_its_name(
-    mass: MusicAssistant,
-) -> None:
-    """A provider album plays when the library only holds a single of the same name."""
-    artist = await _add_artist(mass)
-    await _add_album(mass, artist, "SOS", 1975, album_type=AlbumType.SINGLE)
-    provider_album = _streaming_album("SOS", 1975)
-    provider_album.artists = UniqueList([artist])
-    resolver = mass.player_queues._media_resolver
-    resolver._provider_artist_albums = AsyncMock(return_value=[provider_album])  # type: ignore[method-assign]
-    library_tracks = mass.music.albums.tracks
-
-    async def _tracks(item_id: str, *args: Any, **kwargs: Any) -> list[Track]:
-        if item_id == provider_album.item_id:
-            return [_track("SOS (album) 1")]
-        return await library_tracks(item_id, *args, **kwargs)
-
-    mass.music.albums.tracks = _tracks  # type: ignore[method-assign]
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    resolved = await resolver.resolve_artist_tracks(artist)
-
-    assert _names(resolved.tracks) == ["SOS (album) 1"]
-    assert resolved.plays_albums is True
-
-
-async def test_a_library_album_is_not_played_again_from_another_provider(
-    mass: MusicAssistant,
-) -> None:
-    """A library album plays once when a provider it isn't linked to lists it too."""
-    artist = await _add_artist(mass)
-    library_album = await _add_album(mass, artist, "Arrival", 1976)
-    library_album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    await mass.music.albums.update_item_in_library(library_album.item_id, library_album)
-    other_copy = _streaming_album("Arrival", 1976)
-    other_copy.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    resolver = mass.player_queues._media_resolver
-    resolver._provider_artist_albums = AsyncMock(return_value=[other_copy])  # type: ignore[method-assign]
-    library_tracks = mass.music.albums.tracks
-
-    async def _tracks(item_id: str, *args: Any, **kwargs: Any) -> list[Track]:
-        if item_id == other_copy.item_id:
-            return [_track("Arrival (other) 1")]
-        return await library_tracks(item_id, *args, **kwargs)
-
-    mass.music.albums.tracks = _tracks  # type: ignore[method-assign]
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1", "Arrival 2", "Arrival 3"]
-
-
-async def test_an_album_on_two_providers_plays_once(mass: MusicAssistant) -> None:
-    """An album only on the providers, but on two of them, plays once."""
-    artist = await _add_artist(mass)
-    first = _streaming_album("Arrival", 1976, "streaming")
-    second = _streaming_album("Arrival", 1976, "other")
-    for album in (first, second):
-        album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    _stub_provider(mass, [first, second])
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1", "Arrival 2"]
-
-
-async def test_an_album_plays_from_its_other_copy_when_one_fails(mass: MusicAssistant) -> None:
-    """When one copy of an album on two providers can't be fetched, the other copy plays."""
-    artist = await _add_artist(mass)
-    first = _streaming_album("Arrival", 1976, "streaming")
-    second = _streaming_album("Arrival", 1976, "other")
-    for album in (first, second):
-        album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    lookup = _stub_provider(mass, [first, second])
-    provider_tracks = lookup.side_effect
-
-    def _tracks(item_id: str, *args: object, **kwargs: object) -> list[Track]:
-        if item_id == first.item_id:
-            raise MediaNotFoundError("provider is offline")
-        return provider_tracks(item_id, *args, **kwargs)  # type: ignore[no-any-return]
-
-    lookup.side_effect = _tracks
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1", "Arrival 2"]
-
-
-async def test_an_album_plays_from_its_other_copy_when_one_has_nothing_to_play(
-    mass: MusicAssistant,
-) -> None:
-    """When one copy of an album has no playable tracks, the other copy plays."""
-    artist = await _add_artist(mass)
-    first = _streaming_album("Arrival", 1976, "streaming")
-    second = _streaming_album("Arrival", 1976, "other")
-    for album in (first, second):
-        album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    lookup = _stub_provider(mass, [first, second])
-    provider_tracks = lookup.side_effect
-    lookup.side_effect = lambda item_id, *args, **kwargs: (
-        [] if item_id == first.item_id else provider_tracks(item_id, *args, **kwargs)
-    )
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1", "Arrival 2"]
-
-
-@pytest.mark.parametrize(
-    ("album_setting", "expected"), [("library_tracks", []), ("all_tracks", ["Arrival (other) 1"])]
-)
-async def test_a_library_album_with_nothing_to_play_is_replaced_only_without_library_tracks(
-    mass: MusicAssistant, album_setting: str, expected: list[str]
-) -> None:
-    """A library album with nothing to play plays from another copy, unless only saved tracks may play."""
-    artist = await _add_artist(mass)
-    library_album = await _add_album(mass, artist, "Arrival", 1976)
-    library_album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    await mass.music.albums.update_item_in_library(library_album.item_id, library_album)
-    other_copy = _streaming_album("Arrival", 1976)
-    other_copy.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    resolver = mass.player_queues._media_resolver
-    resolver._provider_artist_albums = AsyncMock(return_value=[other_copy])  # type: ignore[method-assign]
-
-    async def _tracks(item_id: str, *_: Any, **__: Any) -> list[Track]:
-        return [_track("Arrival (other) 1")] if item_id == other_copy.item_id else []
-
-    mass.music.albums.tracks = _tracks  # type: ignore[method-assign]
-    mass.config.set_raw_core_config_value(
-        "player_queues", CONF_DEFAULT_ENQUEUE_SELECT_ALBUM, album_setting
-    )
-    _set_selection(mass, "all_tracks")
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await resolver.get_artist_tracks(artist)
-
-    assert _names(result) == expected
-
-
-@pytest.mark.parametrize(
-    ("first_in_library", "expected"), [(False, ["Arrival 1", "Arrival 2"]), (True, [])]
-)
-async def test_with_library_tracks_only_a_copy_outside_the_library_is_replaced(
-    mass: MusicAssistant, first_in_library: bool, expected: list[str]
-) -> None:
-    """With the library tracks album setting, a copy in the library plays only its saved tracks."""
-    artist = await _add_artist(mass)
-    first = _streaming_album("Arrival", 1976, "streaming")
-    second = _streaming_album("Arrival", 1976, "other")
-    for album in (first, second):
-        album.external_ids.add((ExternalID.MB_ALBUM, "arrival-mbid"))
-    lookup = _stub_provider(mass, [first, second])
-    provider_tracks = lookup.side_effect
-    lookup.side_effect = lambda item_id, *args, **kwargs: (
-        [] if item_id == first.item_id else provider_tracks(item_id, *args, **kwargs)
-    )
-    if first_in_library:
-        # the first copy is in the library under another artist, without saved tracks
-        library_item = mass.music.albums.get_library_item_by_prov_id
-
-        async def _library_item(item_id: str, provider_instance_id_or_domain: str) -> Album | None:
-            return (
-                first
-                if item_id == first.item_id
-                else await library_item(item_id, provider_instance_id_or_domain)
-            )
-
-        mass.music.albums.get_library_item_by_prov_id = _library_item  # type: ignore[method-assign]
-    mass.config.set_raw_core_config_value(
-        "player_queues", CONF_DEFAULT_ENQUEUE_SELECT_ALBUM, "library_tracks"
-    )
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
-
-    assert _names(result) == expected
-
-
-async def test_provider_singles_and_compilations_are_left_out(mass: MusicAssistant) -> None:
-    """The singles and compilations found only on a provider are left out."""
-    artist = await _add_artist(mass)
-    arrival = _streaming_album("Arrival", 1976)
-    single = _streaming_album("Single", 1975)
-    single.album_type = AlbumType.SINGLE
-    gold = _streaming_album("Gold", 1992)
-    gold.album_type = AlbumType.COMPILATION
-    _stub_provider(mass, [single, gold, arrival])
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1", "Arrival 2"]
-
-
 async def test_a_failing_album_lookup_keeps_the_other_albums(mass: MusicAssistant) -> None:
     """When one album's tracks can't be looked up, the other albums still play."""
     artist = await _add_artist(mass)
-    voulez_vous = _streaming_album("Voulez-Vous", 1979)
-    waterloo = _streaming_album("Waterloo", 1974)
-    lookup = _stub_provider(mass, [voulez_vous, waterloo])
+    voulez_vous = await _add_album(mass, artist, "Voulez-Vous", 1979)
+    waterloo = await _add_album(mass, artist, "Waterloo", 1974)
+    lookup = _stub_album_tracks(mass, [voulez_vous, waterloo])
     provider_tracks = lookup.side_effect
 
     def _tracks(item_id: str, *args: object, **kwargs: object) -> list[Track]:
@@ -686,7 +445,7 @@ async def test_a_failing_album_lookup_keeps_the_other_albums(mass: MusicAssistan
 async def test_an_unexpected_album_lookup_error_is_raised(mass: MusicAssistant) -> None:
     """An error that isn't a provider failure is a bug, so it isn't hidden."""
     artist = await _add_artist(mass)
-    lookup = _stub_provider(mass, [_streaming_album("Waterloo", 1974)])
+    lookup = _stub_album_tracks(mass, [await _add_album(mass, artist, "Waterloo", 1974)])
     lookup.side_effect = RuntimeError("bug")
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
 
@@ -697,8 +456,10 @@ async def test_an_unexpected_album_lookup_error_is_raised(mass: MusicAssistant) 
 async def test_album_lookups_run_in_small_batches(mass: MusicAssistant) -> None:
     """A big discography is looked up a few albums at a time, and still plays in order."""
     artist = await _add_artist(mass)
-    albums = [_streaming_album(f"Album {index:02}", 1970 + index) for index in range(12)]
-    lookup = _stub_provider(mass, albums)
+    albums = [
+        await _add_album(mass, artist, f"Album {index:02}", 1970 + index) for index in range(12)
+    ]
+    lookup = _stub_album_tracks(mass, albums)
     provider_tracks = lookup.side_effect
     running = 0
     peak = 0
@@ -718,96 +479,6 @@ async def test_album_lookups_run_in_small_batches(mass: MusicAssistant) -> None:
 
     assert 1 < peak <= media_resolver.ALBUM_LOOKUP_BATCH
     assert _names(result)[::2] == [f"Album {index:02} 1" for index in range(12)]
-
-
-async def test_a_failing_provider_keeps_the_albums_of_the_others(mass: MusicAssistant) -> None:
-    """When one provider can't list the artist's albums, those of its other providers play."""
-    artist = Artist(
-        item_id="abba",
-        provider="streaming",
-        name="ABBA",
-        provider_mappings={
-            ProviderMapping(item_id="abba", provider_domain=domain, provider_instance=domain)
-            for domain in ("offline", "streaming")
-        },
-    )
-    arrival = _streaming_album("Arrival", 1976)
-
-    async def _albums(_item_id: str, provider: str, *_: object, **__: object) -> list[Album]:
-        if provider == "offline":
-            raise MediaNotFoundError("provider is offline")
-        return [arrival]
-
-    _stub_providers(mass, {"offline": "up", "streaming": "up"})
-    mass.music.artists.albums = AsyncMock(side_effect=_albums)  # type: ignore[method-assign]
-    mass.music.albums.tracks = AsyncMock(return_value=[_track("Arrival 1")])  # type: ignore[method-assign]
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
-
-    assert _names(result) == ["Arrival 1"]
-
-
-@pytest.mark.parametrize("outage", ["unavailable", "error"])
-async def test_an_artist_whose_albums_cant_be_listed_plays_nothing(
-    mass: MusicAssistant, outage: str
-) -> None:
-    """When no provider can list the artist's albums, the artist plays nothing, not shuffled songs."""
-    artist = Artist(
-        item_id="abba",
-        provider="streaming",
-        name="ABBA",
-        provider_mappings={
-            ProviderMapping(
-                item_id="abba", provider_domain="streaming", provider_instance="streaming"
-            )
-        },
-    )
-    _stub_providers(mass, {"streaming": "down" if outage == "unavailable" else "up"})
-    if outage == "error":
-        mass.music.artists.albums = AsyncMock(side_effect=MediaNotFoundError("provider is offline"))  # type: ignore[method-assign]
-    mass.player_queues._media_resolver._provider_artist_tracks = AsyncMock(  # type: ignore[method-assign]
-        return_value=[_track("Dancing Queen")]
-    )
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    assert await mass.player_queues._media_resolver.get_artist_tracks(artist) == []
-
-
-async def test_a_provider_that_cant_list_albums_does_not_hide_an_outage(
-    mass: MusicAssistant,
-) -> None:
-    """A provider without album listing doesn't count as having found no albums."""
-    artist = Artist(
-        item_id="abba",
-        provider="streaming",
-        name="ABBA",
-        provider_mappings={
-            ProviderMapping(item_id="abba", provider_domain=domain, provider_instance=domain)
-            for domain in ("files", "streaming")
-        },
-    )
-    _stub_providers(mass, {"files": "no albums", "streaming": "down"})
-    mass.player_queues._media_resolver._provider_artist_tracks = AsyncMock(  # type: ignore[method-assign]
-        return_value=[_track("Dancing Queen")]
-    )
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    assert await mass.player_queues._media_resolver.get_artist_tracks(artist) == []
-
-
-async def test_library_albums_play_when_no_provider_can_list_albums(mass: MusicAssistant) -> None:
-    """When no provider can list the artist's albums, the library albums still play."""
-    artist = await _artist_with_albums(mass)
-    artist.provider_mappings.add(
-        ProviderMapping(item_id="abba", provider_domain="offline", provider_instance="offline")
-    )
-    _stub_providers(mass, {"offline": "down"})
-    _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
-
-    result = await mass.player_queues._media_resolver.get_artist_tracks(artist)
-
-    assert _names(result)[::3] == ["Waterloo 1", "Voulez-Vous 1"]
 
 
 def _unsaved_mapping() -> set[ProviderMapping]:
@@ -840,7 +511,7 @@ async def _add_song(
     )
 
 
-@pytest.mark.parametrize("selection", ["library_tracks", "prefer_library", "all_tracks"])
+@pytest.mark.parametrize("selection", ["library_tracks", "prefer_library", "library_album_tracks"])
 @pytest.mark.parametrize("album_setting", ["library_tracks", "all_tracks"])
 async def test_the_artist_plays_each_album_as_the_album_button_does(
     mass: MusicAssistant, selection: str, album_setting: str
@@ -851,7 +522,6 @@ async def test_the_artist_plays_each_album_as_the_album_button_does(
     arrival = await _add_album(mass, artist, "Arrival", 1976)
     await _add_song(mass, artist, arrival, "Arrival unsaved", saved=False)
     resolver = mass.player_queues._media_resolver
-    resolver._provider_artist_albums = AsyncMock(return_value=[])  # type: ignore[method-assign]
     mass.config.set_raw_core_config_value(
         "player_queues", CONF_DEFAULT_ENQUEUE_SELECT_ALBUM, album_setting
     )
@@ -973,11 +643,8 @@ async def test_an_artist_with_albums_never_falls_back_to_shuffled_songs(
 async def test_albums_that_all_fail_to_load_play_nothing(mass: MusicAssistant) -> None:
     """When every album lookup fails, the artist plays nothing instead of shuffled songs."""
     artist = await _add_artist(mass)
-    lookup = _stub_provider(mass, [_streaming_album("Waterloo", 1974)])
+    lookup = _stub_album_tracks(mass, [await _add_album(mass, artist, "Waterloo", 1974)])
     lookup.side_effect = MediaNotFoundError("provider is offline")
-    mass.player_queues._media_resolver._provider_artist_tracks = AsyncMock(  # type: ignore[method-assign]
-        return_value=[_track("Dancing Queen")]
-    )
     _set_order(mass, ArtistOrder.ALBUMS_BY_RELEASE)
 
     assert await mass.player_queues._media_resolver.get_artist_tracks(artist) == []

@@ -228,14 +228,18 @@ async def test_api_runs_hook_before_request() -> None:
     """Every request of the api client awaits the hook first."""
     calls: list[str] = []
     hook = AsyncMock(side_effect=lambda: calls.append("hook"))
-    api = _SoundcloudAPI("OAuth token", "client-id", Mock(), hook)
+    response = MagicMock(status=200)
+    response.json = AsyncMock(return_value={})
 
-    async def _get(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    def _get(**_kwargs: Any) -> MagicMock:
         calls.append("request")
-        return {}
+        request = MagicMock()
+        request.__aenter__.return_value = response
+        return request
 
-    with patch("soundcloudpy.SoundcloudAsyncAPI.get", side_effect=_get):
-        await api.get("https://api-v2.soundcloud.com/me")
+    api = _SoundcloudAPI("OAuth token", "client-id", Mock(get=_get), hook, Mock())
+
+    await api.get("https://api-v2.soundcloud.com/me")
 
     assert calls == ["hook", "request"]
 

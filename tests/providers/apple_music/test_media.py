@@ -1,4 +1,4 @@
-"""Unit tests for Apple Music catalog/library endpoint selection in the media manager."""
+"""Unit tests for the Apple Music media manager."""
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.media_items import Track
 
+from music_assistant.providers.apple_music import media
+from music_assistant.providers.apple_music.api_client import AppleMusicAPIClient
 from music_assistant.providers.apple_music.media import AppleMusicMediaManager
 from tests.common import use_real_create_task
 
@@ -125,3 +127,25 @@ async def test_get_track_library_id_prefers_catalog_twin(
 
     assert result.item_id == "1234567890"
     assert result.name == "Catalog 1234567890"
+
+
+@pytest.mark.asyncio
+async def test_get_artist_albums_stops_paging_at_limit(
+    manager: AppleMusicMediaManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large discography stops paging once the album limit is reached."""
+
+    async def _get_data(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        offset, limit = kwargs["offset"], kwargs["limit"]
+        page = [{"id": str(idx)} for idx in range(offset, min(offset + limit, 1000))]
+        return {"data": page, "next": "more" if offset + limit < 1000 else None}
+
+    monkeypatch.setattr(media, "parse_album", lambda _provider, album: album["id"])
+    api = AppleMusicAPIClient(MagicMock())
+    api.get_data = AsyncMock(side_effect=_get_data)  # type: ignore[method-assign]
+    manager.api = api
+
+    albums = await manager.get_artist_albums("123")
+
+    assert albums == [str(idx) for idx in range(100)]
+    assert api.get_data.await_count == 1

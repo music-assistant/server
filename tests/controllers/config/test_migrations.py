@@ -18,10 +18,12 @@ from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_apple_music_sync_schedule,
+    _migrate_artist_catalogue_selection,
     _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
     _migrate_drop_http_profile,
     _migrate_emby_album_artists_heal,
+    _migrate_milkdrop_drop_color_tint,
     _migrate_nicovideo_drop_mail_login,
     _migrate_orphaned_disabled_protocol_configs,
     _migrate_player_icons,
@@ -1310,6 +1312,47 @@ def test_migrate_nicovideo_drop_mail_login_survives_malformed_config() -> None:
     assert data["providers"]["nicovideo--a"]["values"] == "broken"
 
 
+async def test_migrate_milkdrop_drop_color_tint_removes_the_stored_value() -> None:
+    """The color tint is removed from every milkdrop instance, whatever its value."""
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": False, "log_level": "debug"},
+            },
+            "milkdrop_visualizer--b": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": True},
+            },
+            "milkdrop_visualizer--c": {"domain": "milkdrop_visualizer"},
+            "spotify--s": {"domain": "spotify", "values": {"color_tint": False}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["milkdrop_visualizer"]["values"] == {"log_level": "debug"}
+    assert providers["milkdrop_visualizer--b"]["values"] == {}
+    assert providers["milkdrop_visualizer--c"] == {"domain": "milkdrop_visualizer"}
+    assert providers["spotify--s"]["values"] == {"color_tint": False}
+
+    # a second run has nothing left to remove
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+
+
+def test_migrate_milkdrop_drop_color_tint_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_milkdrop_drop_color_tint({"providers": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {"domain": "milkdrop_visualizer", "values": "broken"},
+            "broken": "broken",
+        }
+    }
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+    assert data["providers"]["milkdrop_visualizer"]["values"] == "broken"
+
+
 def test_migrate_raumfeld_icy_basic_moves_former_default() -> None:
     """Raumfeld players on the former "full" ICY default move to "basic", once."""
     data: dict[str, Any] = {
@@ -1348,6 +1391,37 @@ def test_migrate_raumfeld_icy_basic_survives_malformed_players() -> None:
     }
     assert _migrate_raumfeld_icy_basic(data) is True
     assert data["players"]["raumfeld_bar"] == "broken"
+
+
+async def test_migrate_artist_catalogue_selection_moves_to_library_album_tracks() -> None:
+    """A stored artist selection that listed the whole catalogue plays the library albums."""
+    for stored in ("all_tracks", "all_album_tracks"):
+        values: dict[str, Any] = {"default_enqueue_select_artist": stored, "other": "kept"}
+        data: dict[str, Any] = {"core": {"player_queues": {"values": values}}}
+
+        assert await migrate(data) is True
+        assert values == {
+            "default_enqueue_select_artist": "library_album_tracks",
+            "other": "kept",
+        }
+        assert _migrate_artist_catalogue_selection(data) is False
+
+
+def test_migrate_artist_catalogue_selection_leaves_other_data_alone() -> None:
+    """An offered selection, or a missing or malformed config, is left as it is."""
+    cases: list[dict[str, Any]] = [
+        {},
+        {"core": "broken"},
+        {"core": {"player_queues": "broken"}},
+        {"core": {"player_queues": {"values": None}}},
+        {"core": {"player_queues": {"values": {}}}},
+        {"core": {"player_queues": {"values": {"default_enqueue_select_artist": ["odd"]}}}},
+        {"core": {"player_queues": {"values": {"default_enqueue_select_artist": "top_tracks"}}}},
+    ]
+    for data in cases:
+        before = deepcopy(data)
+        assert _migrate_artist_catalogue_selection(data) is False
+        assert data == before
 
 
 def test_migrate_raumfeld_icy_basic_noop_without_raumfeld() -> None:

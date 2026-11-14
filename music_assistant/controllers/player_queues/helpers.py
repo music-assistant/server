@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import random
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, overload
 
 from music_assistant_models.enums import MediaType, SleepTimerMode
-from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemMetadata,
@@ -19,7 +21,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
-from music_assistant.controllers.player_queues.constants import ArtistOrder
+from music_assistant.controllers.player_queues.constants import (
+    PLAY_REQUEST_RESOLVE_TIMEOUT,
+    ArtistOrder,
+)
 from music_assistant.controllers.players.constants import SwitchedOffAction
 
 if TYPE_CHECKING:
@@ -175,6 +180,33 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     if func is not None:
         return decorator(func)
     return decorator
+
+
+@asynccontextmanager
+async def play_request_deadline(translation_owner: str) -> AsyncIterator[None]:
+    """
+    Bound the resolution of what a play request plays to PLAY_REQUEST_RESOLVE_TIMEOUT.
+
+    A deadline that is already running around it is not extended.
+
+    :param translation_owner: The owner of the translated error.
+    :raises PlayerCommandFailed: When the deadline ran out; the body was cancelled.
+    """
+    timeout = asyncio.timeout(PLAY_REQUEST_RESOLVE_TIMEOUT)
+    try:
+        async with timeout:
+            yield
+    except TimeoutError as err:
+        # a timeout of the work itself is not the deadline
+        if not timeout.expired():
+            raise
+        msg = f"Resolving the media to play took longer than {PLAY_REQUEST_RESOLVE_TIMEOUT} seconds"
+        raise PlayerCommandFailed(
+            msg,
+            translation_key="play_request_timeout",
+            translation_owner=translation_owner,
+            translation_args=[PLAY_REQUEST_RESOLVE_TIMEOUT],
+        ) from err
 
 
 def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
