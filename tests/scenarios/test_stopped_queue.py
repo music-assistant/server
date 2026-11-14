@@ -548,6 +548,36 @@ async def test_a_queue_whose_stop_failed_still_ends_when_it_played_out(
     assert _position(scenario, player_id).ended
 
 
+async def test_a_stop_that_fails_leaves_a_paused_queue_paused(
+    scenario: Scenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paused queue whose stop the speaker refuses is still not ended when the speaker stops."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await scenario.advance(PLAYED_SECONDS)
+    await scenario.mass.players.cmd_pause(player_id)
+    await scenario.advance(1)
+
+    async def _refuse() -> None:
+        raise PlayerCommandFailed("The speaker refused to stop")
+
+    monkeypatch.setattr(speaker, "stop", _refuse)
+    with pytest.raises(PlayerCommandFailed, match="refused to stop"):
+        await scenario.mass.players.cmd_stop(player_id)
+    await scenario.settle()
+    assert _position(scenario, player_id).state == PlaybackState.PAUSED
+
+    # the speaker drops its paused stream on its own
+    await scenario.report(speaker, playback_state=PlaybackState.IDLE, current_media=None)
+    await scenario.advance(SETTLE_SECONDS + 1)
+    position = _position(scenario, player_id)
+    assert (position.state, position.ended, position.resume_pos) == (
+        PlaybackState.IDLE,
+        False,
+        PLAYED_SECONDS,
+    )
+
+
 async def test_a_queue_stopped_by_its_sleep_timer_at_the_end_is_taken_for_ended(
     scenario: Scenario,
 ) -> None:

@@ -1576,12 +1576,14 @@ moment plays as well, and no client sees the queue as ended in between.
 
 A speaker refuses a pause 5 s into the last track of its queue, so the pause fails and the queue
 plays on. Once the track has played to its end, the queue is taken for ended after 5 s. The
-same goes for a stop that the speaker refuses.
+same goes for a stop that the speaker refuses. A paused queue whose stop is refused stays
+paused: it is not taken for ended when its speaker stops later.
 
 - End-to-end: **no**: it needs a device that refuses a pause or a stop.
 - Proven by:
   - `test_paused_queue.py::test_a_queue_whose_pause_failed_still_ends_when_it_played_out`
   - `test_stopped_queue.py::test_a_queue_whose_stop_failed_still_ends_when_it_played_out`
+  - `test_stopped_queue.py::test_a_stop_that_fails_leaves_a_paused_queue_paused`
 
 ### PAUSE-6 · A stop is not the end of a queue
 
