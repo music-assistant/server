@@ -556,3 +556,77 @@ async def test_a_power_on_ends_with_the_player_that_is_removed(
     assert not den.player.power_on_in_progress
     await asyncio.sleep(BOOT_TIME * 2)
     assert setup.joined.await_count == (0 if gone == "owner" else 1)
+
+
+async def test_a_member_that_still_boots_is_waited_for_again_and_its_control_left_alone(
+    mock_mass: MagicMock,
+) -> None:
+    """A new start of the group takes the member along whose power on was called off."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    den = setup.speakers["den"]
+    await controller._power_on_group_members(setup.group)
+    await asyncio.sleep(BOOT_TIME / 4)
+    controller._cancel_power_on(setup.group)
+    await asyncio.sleep(BOOT_TIME / 2)
+    assert controller._member_joins == {}
+    den.control.power_on.assert_awaited_once()  # type: ignore[union-attr]
+
+    await controller._power_on_group_members(setup.group)
+
+    assert list(controller._member_joins) == ["den"]
+    assert den.player.power_on_in_progress
+    await asyncio.sleep(BOOT_TIME)
+    setup.joined.assert_awaited_once_with(den.player)
+    den.control.power_on.assert_awaited_once()  # type: ignore[union-attr]
+    assert controller._member_joins == {}
+
+
+async def test_a_member_that_still_boots_gets_the_time_that_is_left_of_its_power_on(
+    mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A member that is waited for again is given up when its first power on would have been."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",), stays_away=("den",))
+    controller = setup.controller
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(players_power, "OFFLINE_POWER_ON_TIMEOUT", 5),
+    ):
+        await controller._power_on_group_members(setup.group)
+        await asyncio.sleep(1)
+        controller._cancel_power_on(setup.group)
+        await asyncio.sleep(1)
+        await controller._power_on_group_members(setup.group)
+        await asyncio.sleep(2.5)
+        assert list(controller._member_joins) == ["den"]
+        assert caplog.records == []
+        await asyncio.sleep(1)
+
+        assert [record.getMessage() for record in caplog.records] == [
+            "Player Den did not come online after powering it on, it is left out of Downstairs"
+        ]
+        assert controller._member_joins == {}
+        # its time is over: a later start leaves it out
+        await controller._power_on_group_members(setup.group)
+        assert controller._member_joins == {}
+    setup.speakers["den"].control.power_on.assert_awaited_once()  # type: ignore[union-attr]
+
+
+async def test_a_member_that_went_away_after_it_was_online_is_not_waited_for(
+    mock_mass: MagicMock,
+) -> None:
+    """Only a power on that was called off before the device was online is taken up again."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    den = setup.speakers["den"]
+    await controller._power_on_group_members(setup.group)
+    await asyncio.sleep(BOOT_TIME * 2)
+    setup.joined.assert_awaited_once()
+
+    # its device drops off the network, with its control still on
+    den.protocol._attr_available = False
+    den.player.update_state(signal_event=False, force_update=True)
+    await controller._power_on_group_members(setup.group)
+
+    assert controller._member_joins == {}

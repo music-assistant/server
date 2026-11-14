@@ -326,6 +326,41 @@ async def test_a_universal_group_plays_once_on_a_member_that_is_back_before_the_
     await _stop(scenario, group_id)
 
 
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+async def test_a_group_that_is_stopped_and_played_again_takes_a_member_along_that_still_boots(
+    scenario: Scenario, group_type: str
+) -> None:
+    """
+    A new play of a group takes the member along whose power on the stop before it called off.
+
+    The stop leaves the plug of the member on, so its device still boots. The group is played
+    again before the device is back: it plays on the other members, and the member joins once
+    its device is back. The plug is not switched a second time.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id, dynamic=False)
+    plug = await _switch_off(scenario, den)
+    await scenario.play(group_id)
+    await _stop(scenario, group_id)
+    assert _state(scenario, den_id).available is False
+
+    play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
+    await scenario.advance(5)
+    await play
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert (_state(scenario, den_id).available, _state(scenario, den_id).powered) == (True, True)
+    await _come_back(scenario, den)
+    await scenario.idle()
+
+    assert plug.commands == [True]
+    assert den_id in _state(scenario, group_id).group_members
+    assert _state(scenario, den_id).active_group == group_id
+    assert _state(scenario, den_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
+
+
 async def test_a_play_on_a_member_of_a_group_switches_on_the_members_that_are_off(
     scenario: Scenario,
 ) -> None:

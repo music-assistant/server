@@ -1601,6 +1601,18 @@ stream of Downstairs once.
 - End-to-end: **no**: it needs a command that holds a group while a device boots.
 - Proven by: `test_group_power_on.py::test_a_universal_group_plays_once_on_a_member_that_is_back_before_the_play`
 
+### GROUP-36 · A group that is played again takes a member along that still boots
+
+Downstairs, a sync group or a universal group with a fixed member list, plays on Kitchen and
+Office and switched Den's plug on. The user stops Downstairs, which leaves the plug on, and
+plays it again before Den's device is back. Downstairs plays on Kitchen and Office, Den shows as
+available and powered on again, and Den joins once its device is back. The plug is not switched
+a second time.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_group_power_on.py::test_a_group_that_is_stopped_and_played_again_takes_a_member_along_that_still_boots`
+
 ### GROUP-37 · A play on a member of a group switches on the members that are off
 
 Downstairs, a sync group with a fixed member list, plays on Kitchen and Office: the plug of Den
