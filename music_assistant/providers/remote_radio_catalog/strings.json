@@ -1,0 +1,14 @@
+{
+  "config_entries": {
+    "catalog_url": {
+      "label": "Catalog URL",
+      "description": "HTTP or HTTPS URL of one M3U, M3U8 or JSON radio catalog. Add another provider instance for another catalog."
+    }
+  },
+  "errors": {
+    "invalid_catalog_url": "Enter an HTTP or HTTPS catalog URL without embedded credentials."
+  },
+  "manifest": {
+    "description": "Subscribe to an externally hosted M3U, M3U8 or JSON radio catalog."
+  }
+}
