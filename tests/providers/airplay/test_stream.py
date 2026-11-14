@@ -4170,3 +4170,55 @@ async def test_accepts_audio_ends_with_the_audio_eof() -> None:
         assert not stream.accepts_audio
     finally:
         await cli_proc.close()
+
+
+async def test_control_relay_requires_helper_owned_group() -> None:
+    """Discovery from another sender never establishes ownership for Home controls."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stream._cli_proc = MagicMock(closed=False)
+    group = "11111111-2222-3333-4444-555555555555"
+    player.airplay_discovery_info.decoded_properties.update(gid=group, psi="receiver")
+    relay = MagicMock(start=AsyncMock(), close=AsyncMock())
+    with patch(
+        "music_assistant.providers.airplay.stream.HomePodControlRelay", return_value=relay
+    ) as factory:
+        await stream.refresh_control_relay()
+        factory.assert_not_called()
+        stream._handle_status_line(f"[STATUS] control_group={group}")
+        await stream.refresh_control_relay()
+        factory.assert_called_once()
+        relay.start.assert_awaited_once()
+        await stream.refresh_control_relay()
+        factory.assert_called_once()
+        player.airplay_discovery_info.decoded_properties["gid"] = "another-sender-group"
+        await stream.refresh_control_relay()
+        relay.close.assert_awaited_once()
+        assert stream._control_relay is None
+
+
+async def test_control_relay_stops_and_ignores_volume_when_stream_replaced() -> None:
+    """Old controller confirmations cannot update the replacement stream's player."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stream._cli_proc = MagicMock(closed=False)
+    stream._adopt_control_volume(29)
+    player.adopt_control_relay_volume.assert_called_once_with(29)
+    player.adopt_control_relay_volume.reset_mock()
+    relay = MagicMock(close=AsyncMock())
+    stream._control_relay = relay
+    player.stream = MagicMock()
+    stream._adopt_control_volume(30)
+    player.adopt_control_relay_volume.assert_not_called()
+    await stream.refresh_control_relay()
+    relay.close.assert_awaited_once()
+    assert stream._control_relay is None
+
+
+def test_control_group_rejects_invalid_helper_status() -> None:
+    """Malformed status cannot establish ownership of a discovery group."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line("[STATUS] control_group=invalid")
+    assert stream._control_group is None

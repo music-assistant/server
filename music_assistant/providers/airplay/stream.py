@@ -16,7 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Final, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
@@ -46,6 +46,7 @@ from music_assistant.providers.airplay.constants import (
     ClockReadiness,
     StreamingProtocol,
 )
+from music_assistant.providers.airplay.control_relay import HomePodControlRelay
 from music_assistant.providers.airplay.helpers import (
     CLI_CLOCK_OFFSET_NS,
     default_buffer_depth,
@@ -144,6 +145,9 @@ class AirPlayStream:
         self._stopping = False
         self._cleanup_complete = False
         self._stop_lock = asyncio.Lock()
+        self._control_group: str | None = None
+        self._control_relay: HomePodControlRelay | None = None
+        self._control_relay_lock = asyncio.Lock()
         # Both wake a track-change metadata push waiting out its artwork render
         # budget inside the metadata lock: the first is set permanently the
         # moment stop() begins, the second while start() is waiting on the lock
@@ -396,6 +400,55 @@ class AirPlayStream:
         # settle the position and any artwork that missed the bundle budget
         # on top of the identity push above
         self.player.on_player_media_updated()
+        self.mass.create_task(self.refresh_control_relay())
+
+    async def refresh_control_relay(self) -> None:
+        """Reconcile native Home controls with this stream's confirmed group."""
+        async with self._control_relay_lock:
+            info = self.player.airplay_discovery_info
+            properties = (
+                {
+                    key: value
+                    for key, value in info.decoded_properties.items()
+                    if isinstance(value, str)
+                }
+                if info
+                else {}
+            )
+            eligible = (
+                self.running
+                and self.player.stream is self
+                and self._control_group
+                and properties.get("gid", "").upper() == self._control_group
+                and properties.get("psi")
+            )
+            if not eligible:
+                if self._control_relay is not None:
+                    await self._control_relay.close()
+                    self._control_relay = None
+                return
+            if self._control_relay is not None:
+                return
+            assert info is not None
+            assert info.port is not None
+            relay = HomePodControlRelay(
+                name=f"MA {self.player.player_id} Control",
+                address=self.player.address,
+                port=info.port,
+                properties=properties,
+                publish_ip=str(self.mass.streams.publish_ip),
+                zeroconf=self.mass.discovery.aiozc,
+                volume_confirmed=self._adopt_control_volume,
+                volume_level=self.player.volume_level or 0,
+            )
+            try:
+                await relay.start()
+            except Exception as err:
+                self.player.logger.warning(
+                    "Cannot advertise HomePod controls: %s", type(err).__name__
+                )
+                return
+            self._control_relay = relay
 
     async def stop(self, force: bool = False) -> None:
         """
@@ -407,6 +460,7 @@ class AirPlayStream:
             if self._cleanup_complete:
                 return
             self._stopping = True
+            await self._close_control_relay()
             self._teardown_started.set()
             async with self._metadata_lock:
                 self._metadata_generation += 1
@@ -1449,6 +1503,7 @@ class AirPlayStream:
 
         logger.debug("cliairplay stderr reader ended for %s", player.display_name)
         self._process_ended.set()
+        await self._close_control_relay()
         if not self._stopped and not self._stopping:
             self._stopped = True
             try:
@@ -1527,7 +1582,12 @@ class AirPlayStream:
     def _handle_status_line(self, line: str) -> bool:  # noqa: C901, PLR0912, PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""
         player = self.player
-        if "[STATUS] connected" in line:
+        if "[STATUS] control_group=" in line:
+            try:
+                self._control_group = str(UUID(line.split("control_group=", 1)[1].strip())).upper()
+            except ValueError:
+                self._control_group = None
+        elif "[STATUS] connected" in line:
             self._connected.set()
             # whatever the device accepted just now is a working password
             player.set_password_invalid(False)
@@ -1778,6 +1838,7 @@ class AirPlayStream:
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
+        await self._close_control_relay()
         self._stopped = True
         stdout_reader_task = self._stdout_reader_task
         if stdout_reader_task and not stdout_reader_task.done():
@@ -1795,6 +1856,16 @@ class AirPlayStream:
             await self.commands_pipe.remove()
             self._cleanup_complete = True
             self._cli_proc = None
+
+    async def _close_control_relay(self) -> None:
+        async with self._control_relay_lock:
+            relay, self._control_relay = self._control_relay, None
+            if relay is not None:
+                await relay.close()
+
+    def _adopt_control_volume(self, volume: int) -> None:
+        if self.running and self.player.stream is self:
+            self.player.adopt_control_relay_volume(volume)
 
     def _arm_start_answer(self) -> None:
         """Clear the slots the binary answers a START in, so only this one's answer is read."""

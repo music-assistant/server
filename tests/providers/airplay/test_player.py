@@ -2192,3 +2192,22 @@ def test_pin_pairing_keeps_its_own_setup_reason(airplay_player: AirPlayPlayer) -
 
     assert airplay_player.needs_setup is True
     assert airplay_player.setup_reason == "pairing_required"
+
+
+@pytest.mark.parametrize("volume", [0, 29, 100])
+def test_control_relay_volume_adoption_does_not_write_to_device(
+    airplay_player: AirPlayPlayer, volume: int
+) -> None:
+    """Receiver confirmations update MA without duplicate device commands or mute changes."""
+    airplay_player._attr_volume_level = 45
+    airplay_player._attr_volume_muted = False
+    airplay_player.stream = MagicMock()
+    with patch.object(airplay_player, "update_state") as update:
+        airplay_player.adopt_control_relay_volume(volume)
+        assert airplay_player.volume_level == volume
+        assert airplay_player.volume_muted is False
+        airplay_player.stream.send_cli_command.assert_not_called()
+        update.assert_called_once()
+        cast(
+            "MagicMock", airplay_player.mass.config.set_raw_player_config_value
+        ).assert_called_once_with(airplay_player.player_id, CONF_STORED_VOLUME, volume)
