@@ -95,11 +95,16 @@ class LastFMAPIClient:
                 if response.status == HTTPStatus.TOO_MANY_REQUESTS:
                     raise self._rate_limited(response, method)
                 try:
-                    data: dict[str, Any] = await response.json(content_type=None)
+                    data = await response.json(content_type=None)
                 except ValueError as err:
                     response.raise_for_status()
                     msg = f"Last.fm sent no valid JSON (method: {method})"
                     raise InvalidDataError(msg) from err
+                if not isinstance(data, dict):
+                    # an empty body parses to None, and a list or a string is no answer either
+                    response.raise_for_status()
+                    msg = f"Last.fm sent no JSON object (method: {method})"
+                    raise InvalidDataError(msg)
                 # Last.fm sends its error in the response body, along with an HTTP error status
                 if "error" not in data:
                     response.raise_for_status()

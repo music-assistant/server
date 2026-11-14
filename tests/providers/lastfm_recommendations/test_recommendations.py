@@ -391,9 +391,19 @@ async def test_artist_toptracks_are_matched_off_the_event_loop(
     [
         (500, '{"error": 8, "message": "Operation failed"}'),
         (503, "Service Unavailable"),
+        (503, ""),
+        (200, ""),
+        (502, "[]"),
         TimeoutError(),
     ],
-    ids=["error_payload", "http_error", "timeout"],
+    ids=[
+        "error_payload",
+        "http_error",
+        "empty_error_body",
+        "empty_body",
+        "not_an_object",
+        "timeout",
+    ],
 )
 async def test_failed_toptracks_request_is_not_cached(
     provider: LastFMRecommendationsProvider,
@@ -549,7 +559,9 @@ class _FakeResponse:
         """Leave the request context."""
 
     async def json(self, content_type: str | None = "application/json") -> Any:
-        """Return the parsed body."""
+        """Return the parsed body, None for an empty one like aiohttp does."""
+        if not self.body.strip():
+            return None
         return json.loads(self.body)
 
     def raise_for_status(self) -> None:
