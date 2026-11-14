@@ -678,7 +678,20 @@ class AlbumsController(MediaControllerBase[Album]):
         # edition's own links and barcode are tried, never those of the whole group; the
         # editions linked to the user's own services go first, as only those resolve by link
         services = {source.domain for source in self.mass.music.providers if source.available}
-        ranked = sorted(editions, key=lambda edition: _streaming_edition_rank(edition, services))
+        barcode_lookup = any(
+            provider.supports_feature(ProviderFeature.ALBUM_BY_EXTERNAL_ID)
+            for provider in self.mass.music.providers
+        )
+        # an edition none of the user's services can be asked for would spend a turn on a
+        # MusicBrainz lookup alone, so only the findable ones are tried
+        ranked = sorted(
+            (
+                edition
+                for edition in editions
+                if _is_findable_edition(edition, services, barcode_lookup)
+            ),
+            key=lambda edition: _streaming_edition_rank(edition, services),
+        )
         for edition in ranked[:_MAX_EDITION_LOOKUPS]:
             try:
                 release = await musicbrainz.get_release_details(edition.id)
@@ -1768,6 +1781,30 @@ def _canonical_album_barcodes(album: Album) -> set[str]:
     }
 
 
+def _is_findable_edition(
+    release: MusicBrainzBarcodeRelease, services: set[str], barcode_lookup: bool
+) -> bool:
+    """
+    Return whether the user's music services can be asked for an edition, by link or by barcode.
+
+    :param release: The edition as the release group browse lists it.
+    :param services: The domains of the music services the user may see.
+    :param barcode_lookup: Whether any of the user's music services looks albums up by barcode.
+    """
+    if _linked_services(release) & services:
+        return True
+    return barcode_lookup and release.barcode is not None and is_valid_barcode(release.barcode)
+
+
+def _linked_services(release: MusicBrainzBarcodeRelease) -> set[str]:
+    """Return the domains of the music services a release links to as an album."""
+    return {
+        service
+        for url in relation_urls(release.relations)
+        if (service := share_url_provider(url, MediaType.ALBUM))
+    }
+
+
 def _streaming_edition_rank(
     release: MusicBrainzBarcodeRelease, services: set[str]
 ) -> tuple[bool, bool, bool, bool, str]:
@@ -1777,11 +1814,7 @@ def _streaming_edition_rank(
     :param release: The edition as the release group browse lists it.
     :param services: The domains of the music services the user may see.
     """
-    linked = {
-        service
-        for url in relation_urls(release.relations)
-        if (service := share_url_provider(url, MediaType.ALBUM))
-    }
+    linked = _linked_services(release)
     return (
         not linked & services,
         not is_digital_release(release),
