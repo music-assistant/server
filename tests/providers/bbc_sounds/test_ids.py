@@ -102,7 +102,7 @@ class TestRadioFourId:
 
     async def test_station_search_uses_the_service_id(self, provider: BBCSoundsProvider) -> None:
         """Test a station found by search has Radio 4's service id."""
-        parser = Parser()
+        parser = Parser()  # type: ignore[no-untyped-call]
         _mock(provider.client.content).search.return_value = parser.parse_search(
             RADIO_FOUR_SEARCH_RESPONSE
         )
