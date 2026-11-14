@@ -204,13 +204,14 @@ class LastFMRecommendationManager:
         return await self._find_library_item(item_data, media_type) is not None
 
     async def _find_library_item(
-        self, item_data: dict[str, Any], media_type: MediaType
+        self, item_data: dict[str, Any], media_type: MediaType, strict: bool = False
     ) -> Artist | Album | Track | None:
         """
         Return the MA library's copy of a Last.fm item, None when the library has none.
 
         :param item_data: Raw Last.fm item data (artist, album, or track dict).
         :param media_type: Type of media item to look up.
+        :param strict: Only accept a library item whose name matches exactly.
         """
         name = item_data.get("name", "")
         # MBID lookup is the most reliable; fall back to name search for items without MBID.
@@ -236,15 +237,16 @@ class LastFMRecommendationManager:
                     return library_track
 
         # Library search is fuzzy and always returns a best-effort row, so verify the hit's
-        # name actually matches before treating the item as owned. Lenient (strict=False) so
-        # tagging variants still count, erring towards filtering over showing owned items.
+        # name actually matches before treating the item as owned. Lenient by default so
+        # tagging variants still count, erring towards filtering over showing owned items;
+        # strict when the hit is listed in place of the Last.fm item.
         if media_type == MediaType.ARTIST:
             if name:
                 artist_results = await self.mass.music.artists.library_items(
                     search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 artist_match = next(
-                    (a for a in artist_results if compare_strings(name, a.name, strict=False)),
+                    (a for a in artist_results if compare_strings(name, a.name, strict=strict)),
                     None,
                 )
                 if artist_match:
@@ -259,7 +261,7 @@ class LastFMRecommendationManager:
                     search=name, limit=LIBRARY_MATCH_SCAN_LIMIT, summary=False
                 )
                 album_match = next(
-                    (a for a in album_results if compare_strings(name, a.name, strict=False)),
+                    (a for a in album_results if compare_strings(name, a.name, strict=strict)),
                     None,
                 )
                 if album_match:
@@ -289,9 +291,9 @@ class LastFMRecommendationManager:
                     (
                         track
                         for track in track_results
-                        if compare_strings(clean_name, track.name, strict=False)
+                        if compare_strings(clean_name, track.name, strict=strict)
                         and any(
-                            compare_strings(artist_name, track_artist.name, strict=False)
+                            compare_strings(artist_name, track_artist.name, strict=strict)
                             for track_artist in track.artists
                         )
                         and not (mbid and track.mbid and track.mbid != mbid)
@@ -937,7 +939,7 @@ class LastFMRecommendationManager:
                 # found on a music provider
                 item = cast(
                     "_MediaItemT | None",
-                    await self._find_library_item(lastfm_item, base_class.media_type),
+                    await self._find_library_item(lastfm_item, base_class.media_type, strict=True),
                 )
             if item is not None:
                 if item not in found.values():

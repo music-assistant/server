@@ -253,6 +253,23 @@ async def test_titles_with_a_musicbrainz_id_are_looked_up_first() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_near_match_in_the_library_is_not_listed_in_its_place() -> None:
+    """A library track with almost the same title does not stand in for the Last.fm title."""
+    mass = _mass(in_library=set(), on_service={1})
+    sibling = Track(
+        item_id="99",
+        provider="library",
+        name="Song 2",
+        provider_mappings=set(),
+        artists=UniqueList([_artist("Artist 1", "library")]),
+    )
+    mass.music.tracks.library_items = AsyncMock(return_value=[sibling])
+    tracks, _resolve = await _similar_tracks(mass, _lastfm_tracks(1, start=1), limit=10)
+
+    assert [(track.provider, track.item_id) for track in tracks] == [("spotify", "1")]
+
+
+@pytest.mark.asyncio
 async def test_remembered_miss_still_lists_the_library_copy() -> None:
     """A title no music service has is still listed when the library holds it."""
     mass = _mass(in_library={0}, on_service=set())
