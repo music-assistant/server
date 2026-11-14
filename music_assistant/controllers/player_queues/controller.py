@@ -636,7 +636,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if audible_change and queue.state == PlaybackState.PLAYING:
             # restart playback from the current position so the change is heard
             # immediately instead of after the player's audio buffer drains
-            await self.resume(queue_id)
+            with self.mass.players.without_member_power_on():
+                await self.resume(queue_id)
 
     def set_sleep_timer_target(self, queue_id: str, mode: SleepTimerMode) -> float | None:
         """
@@ -736,7 +737,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue.playback_speed = speed
         self.signal_update(queue_id)
         if queue.state == PlaybackState.PLAYING:
-            await self.resume(queue_id)
+            with self.mass.players.without_member_power_on():
+                await self.resume(queue_id)
 
     @api_command(
         "player_queues/play_media", required_scope=Scope.QUEUES_CONTROL, allow_impersonation=True
@@ -1886,7 +1888,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                         "Resuming playback after flow stream completed for %s",
                         queue.display_name,
                     )
-                    await self.play_index(queue_id, next_index)
+                    with self.mass.players.without_member_power_on():
+                        await self.play_index(queue_id, next_index)
 
         task_id = f"queue_buffer_completed_{queue_id}"
         self.mass.create_task(_resume_on_idle(), task_id=task_id, task_name=task_id)

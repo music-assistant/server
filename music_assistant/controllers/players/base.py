@@ -83,6 +83,7 @@ class _PlayerControllerBase(CoreController):
     _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
     _source_sessions: dict[str, AudioSourceSession]
     _member_joins: dict[str, MemberJoin]
+    _continuing_tasks: set[asyncio.Task[Any]]
     _state_update_subscribers: list[Callable[[Player, dict[str, tuple[Any, Any]]], None]]
 
     def iter_players(

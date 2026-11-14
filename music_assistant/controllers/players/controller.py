@@ -139,6 +139,9 @@ class PlayerController(
         # the players that are powered on for a group or leader that took them along and have
         # not joined it yet, by their id
         self._member_joins: dict[str, MemberJoin] = {}
+        # the tasks that continue playback for the server itself, which powers on no member
+        # of a group player (see without_member_power_on)
+        self._continuing_tasks: set[asyncio.Task[Any]] = set()
         # Subscribers for player state updates (called with player + changed_values)
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]

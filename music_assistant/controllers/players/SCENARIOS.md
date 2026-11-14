@@ -1611,6 +1611,17 @@ joins Kitchen once its device is back.
 - End-to-end: **possible with** a power control that refuses a command.
 - Proven by: `test_group_power_on.py::test_a_play_on_a_member_of_a_group_switches_on_the_members_that_are_off`
 
+### GROUP-38 · A queue that plays on by itself switches no member on
+
+Downstairs, a sync group or a universal group with a fixed member list, played its queue out on
+Kitchen, Office and Den. Someone switches Den's plug off. The queue then plays on without a
+command: music is added to it, its dynamic source hands back new tracks, or a track was added
+behind its flow stream. Downstairs plays on Kitchen and Office, and Den's plug stays off.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by: `test_group_power_on.py::test_a_queue_that_the_server_plays_on_switches_no_member_on`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -122,6 +123,26 @@ class PowerMixin(_PlayerControllerBase):
         )
         async with lock:
             await self._handle_cmd_power(player_id, powered)
+
+    @contextmanager
+    def without_member_power_on(self) -> Iterator[None]:
+        """
+        Keep the playback that is started inside from powering on the members of a group player.
+
+        For playback that the server continues or restarts by itself, such as the next items
+        of a queue that played out or a restart that applies a changed setting. That is no
+        command that starts the group, so its members that are switched off at their power
+        control stay off.
+        """
+        task = asyncio.current_task()
+        if task is None or task in self._continuing_tasks:
+            yield
+            return
+        self._continuing_tasks.add(task)
+        try:
+            yield
+        finally:
+            self._continuing_tasks.discard(task)
 
     def awaits_member_join(self, owner_id: str, member_id: str) -> bool:
         """
@@ -532,14 +553,17 @@ class PowerMixin(_PlayerControllerBase):
         Each of them joins the group once its device is online. Returns right away while a
         member of the group can play, and for a group without such a member; otherwise it
         returns once the first device is online. Takes no lock, as waiting for a device takes
-        far longer than other commands wait for a player lock.
+        far longer than other commands wait for a player lock. Does nothing for playback the
+        server continues by itself (see without_member_power_on).
 
         :param group: The group player that is about to play.
         :raises PlayerUnavailableError: When no member can play and none comes online.
         """
-        if group.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-            # an announcement to a group plays on the members that are on, and so does the
-            # playback it restores afterwards
+        if asyncio.current_task() in self._continuing_tasks or group.extra_data.get(
+            ATTR_ANNOUNCEMENT_IN_PROGRESS
+        ):
+            # playback the server continues by itself plays on the members that are on, and
+            # so do an announcement to a group and the playback it restores afterwards
             return
         members = [
             member

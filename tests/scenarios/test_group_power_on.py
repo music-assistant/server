@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, QueueOption
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.controllers.players.constants import PlayerLockPurpose
@@ -25,6 +25,13 @@ from .test_grouping import (
     _stop,
     _switch_off,
 )
+from .test_paused_queue import (
+    OTHER_TRACK_URI,
+    SETTLE_SECONDS,
+    TRACK_SECONDS,
+    _fetch_the_flow_stream,
+)
+from .test_stopped_queue import _DynamicSource, _other_track
 
 if TYPE_CHECKING:
     from .harness import Scenario
@@ -362,4 +369,72 @@ async def test_a_play_on_a_member_of_a_group_switches_on_the_members_that_are_of
     await scenario.idle()
 
     assert _state(scenario, den_id).synced_to == kitchen_id
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+@pytest.mark.parametrize(
+    "continuation", ["music added while idle", "dynamic source", "flow stream that ended"]
+)
+async def test_a_queue_that_the_server_plays_on_switches_no_member_on(
+    scenario: Scenario, group_type: str, continuation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A queue of a group that the server plays on by itself leaves a switched-off member off.
+
+    The queue of the group, which has a fixed member list, played out. Den is switched off at
+    its plug. The queue then plays on without a command: music was added to it, its dynamic
+    source hands back new tracks, or a track was added behind its flow stream. The group
+    plays on Kitchen and Office, and Den's plug stays off.
+
+    :param continuation: What makes the queue play on.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id, dynamic=False)
+    plug = await scenario.add_power_control("switch.den_plug", "Den plug", powered=True)
+    await scenario.configure_player(den_id, power_control=plug.control_id)
+    queues = scenario.mass.player_queues
+    await scenario.play(group_id)
+    queue = scenario.queue(group_id)
+    assert queue is not None
+    assert queue.current_item is not None
+    if continuation == "music added while idle":
+        queues.mark_item_served(group_id, queue.current_item.queue_item_id)
+        await scenario.report(
+            kitchen, elapsed_time=0, elapsed_time_last_updated=scenario.wall_time()
+        )
+    else:
+        await _fetch_the_flow_stream(scenario, kitchen, group_id)
+    if continuation == "dynamic source":
+        _DynamicSource(scenario, group_id, [await _other_track(scenario)], monkeypatch)
+    if continuation == "flow stream that ended":
+        await queues.play_media(group_id, OTHER_TRACK_URI, option=QueueOption.ADD)
+    await scenario.advance(TRACK_SECONDS)
+    for speaker in (kitchen, office, den):
+        await scenario.report(speaker, playback_state=PlaybackState.IDLE, current_media=None)
+    if group_type == "universal_group":
+        await scenario.mass.players.get_player(group_id).own_protocol.poll()  # type: ignore[union-attr]
+    for _ in range(16):
+        if queue.state == PlaybackState.IDLE:
+            break
+        # the queue follows its player with a short delay
+        await scenario.advance(0.125)
+    assert queue.state == PlaybackState.IDLE
+
+    # someone switches the plug of Den off
+    await scenario.switch(plug, False)
+    await scenario.unregister(den)
+    await scenario.settle()
+    kitchen.commands.clear()
+    if continuation == "music added while idle":
+        await queues.play_media(group_id, OTHER_TRACK_URI, option=QueueOption.ADD)
+    await scenario.advance(SETTLE_SECONDS + 2)
+
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert queue.current_index == 1
+    assert "play_media" in [command[0] for command in kitchen.commands]
+    assert plug.commands == []
+    assert _state(scenario, den_id).powered is False
     await _stop(scenario, group_id)
