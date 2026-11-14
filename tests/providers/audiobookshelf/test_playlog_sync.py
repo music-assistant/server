@@ -87,6 +87,23 @@ async def test_progress_of_web_ui_applied(
     ] == played
 
 
+async def test_reset_of_web_ui_applied_with_its_time(playlog_provider: Audiobookshelf) -> None:
+    """A progress reset in another abs client is applied with the time abs recorded it."""
+    playlog_provider.abs_user_id = "user1"
+    reset = _progress()
+    reset.current_time = 0
+    reset.is_finished = False
+
+    with patch("music_assistant.providers.audiobookshelf.USER_UPDATED_DEBOUNCE_SECONDS", 0):
+        await playlog_provider._socket_abs_user_updated(_user("user1", [reset]))
+        await _drain(playlog_provider)
+
+    mark_item_unplayed = cast("AsyncMock", playlog_provider.mass.music.mark_item_unplayed)
+    assert [call.kwargs["progress_timestamp"] for call in mark_item_unplayed.await_args_list] == [
+        1767225600
+    ]
+
+
 async def test_restart_syncs_progress_changed_offline(playlog_provider: Audiobookshelf) -> None:
     """A restart applies progresses changed while mass was offline, without a library sync."""
     playlog_provider.mass.cache.get = AsyncMock(return_value=playlog_provider.libraries.to_dict())  # type: ignore[method-assign]
