@@ -6,6 +6,7 @@ import asyncio
 from time import time
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
+from uuid import NAMESPACE_URL, uuid5
 
 import aiohttp
 import pytest
@@ -30,7 +31,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import LifeSpan
 
-from music_assistant.constants import DB_TABLE_ALBUMS
+from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_ARTISTS
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
     CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
@@ -38,11 +39,13 @@ from music_assistant.controllers.metadata.constants import (
     CONF_THUMB_CACHE_MAX_SIZE,
     MUSICBRAINZ_LINK_BATCH_SIZE,
     MUSICBRAINZ_LINK_TASK_ID,
+    MUSICBRAINZ_RELINK_TASK_ID_PREFIX,
     REFRESH_INTERVAL,
 )
 from music_assistant.controllers.metadata.controller import (
     _albums_to_identify_query,
     _artists_to_identify_query,
+    _misses_musicbrainz_links,
     _relink_query,
     _tracks_to_identify_query,
 )
@@ -804,8 +807,10 @@ async def _add_artist(
     name: str = "Radiohead",
     mbid: str | None = ARTIST_ID,
     in_library: bool = True,
+    domains: Sequence[str] = ("qobuz",),
+    refreshed: int | None = None,
 ) -> Artist:
-    """Add an artist row mapped to qobuz with the given MusicBrainz lookup marker and id."""
+    """Add an artist row with the given MusicBrainz lookup marker, id and provider mappings."""
     return await mass.music.artists.add_item_to_library(
         Artist(
             item_id="0",
@@ -813,14 +818,15 @@ async def _add_artist(
             name=name,
             provider_mappings={
                 ProviderMapping(
-                    item_id=f"qobuz-{name}",
-                    provider_domain="qobuz",
-                    provider_instance="qobuz_1",
+                    item_id=f"{domain}-{name}",
+                    provider_domain=domain,
+                    provider_instance=f"{domain}_1",
                     in_library=in_library,
                 )
+                for domain in domains
             },
             external_ids={(ExternalID.MB_ARTIST, mbid)} if mbid else set(),
-            metadata=MediaItemMetadata(last_musicbrainz_lookup=looked_up),
+            metadata=MediaItemMetadata(last_musicbrainz_lookup=looked_up, last_refresh=refreshed),
         )
     )
 
@@ -1092,3 +1098,222 @@ async def test_link_item_keeps_a_stored_life_span_musicbrainz_lacks(mass: MusicA
 
     assert stored.metadata.artist_entity_type == ArtistEntityType.GROUP
     assert stored.metadata.life_span == LifeSpan(begin="1985-01-01")
+
+
+# --------------------------------------------------------------------------- #
+#  relink on access                                                            #
+# --------------------------------------------------------------------------- #
+
+
+def _relink_task_id(artist: Artist) -> str:
+    """Return the id of the relink task of a library artist."""
+    assert artist.uri is not None
+    return f"{MUSICBRAINZ_RELINK_TASK_ID_PREFIX}_{uuid5(NAMESPACE_URL, artist.uri).hex}"
+
+
+async def _open_artist(
+    mass: MusicAssistant,
+    artist: Artist,
+    *,
+    allow_update_metadata: bool = True,
+    syncing: bool = False,
+    rate_limited: bool = False,
+) -> None:
+    """Fetch a library artist the way opening its page does, with spotify loaded."""
+    with (
+        patch.object(mass.music, "get_provider_instances", _provider_instances(["spotify"])),
+        patch.object(
+            type(mass.music),
+            "active_sync_tasks",
+            new_callable=PropertyMock,
+            return_value=[Mock()] if syncing else [],
+        ),
+        patch.object(
+            MusicbrainzProvider,
+            "rate_limited",
+            new_callable=PropertyMock,
+            return_value=rate_limited,
+        ),
+    ):
+        await mass.music.artists.get(
+            artist.item_id, "library", allow_update_metadata=allow_update_metadata
+        )
+        await _wait_for_task(mass, _relink_task_id(artist))
+
+
+async def _wait_for_task(mass: MusicAssistant, task_id: str) -> None:
+    """Wait until a background task, when it was queued, has finished."""
+    for _ in range(200):
+        task = next((task for task in mass.tasks.list_tasks() if task.id == task_id), None)
+        if task is None or task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"task {task_id} did not finish")
+
+
+async def test_opening_an_artist_links_it_once_to_a_provider_loaded_since_its_lookup(
+    mass: MusicAssistant,
+) -> None:
+    """An identified artist looked up before spotify was loaded is linked once on access."""
+    now = int(time())
+    artist = await _add_artist(mass, looked_up=now - 20, refreshed=now)
+    mass.config.set_raw_core_config_value(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, [f"spotify:{now - 10}"]
+    )
+    details = MusicBrainzArtist(id=ARTIST_ID, name="Radiohead", sort_name="Radiohead")
+    with (
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=details)
+        ) as get_details,
+        patch.object(mass.metadata, "update_metadata", AsyncMock()) as update_metadata,
+    ):
+        await _open_artist(mass, artist)
+        await _open_artist(mass, artist)
+
+    get_details.assert_awaited_once_with(ARTIST_ID)
+    update_metadata.assert_not_called()
+    stored = await mass.music.artists.get_library_item(artist.item_id)
+    assert stored.metadata.last_musicbrainz_lookup is not None
+    assert stored.metadata.last_musicbrainz_lookup > now - 10
+
+
+async def test_opening_an_artist_twice_queues_one_relink(mass: MusicAssistant) -> None:
+    """A second access while the relink is still pending does not queue another."""
+    now = int(time())
+    artist = await _add_artist(mass, looked_up=now - 20, refreshed=now)
+    mass.config.set_raw_core_config_value(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, [f"spotify:{now - 10}"]
+    )
+    release = asyncio.Event()
+
+    async def _link(_item: Artist) -> None:
+        await release.wait()
+
+    with patch.object(
+        mass.metadata, "link_item_to_musicbrainz", AsyncMock(side_effect=_link)
+    ) as link:
+        with (
+            patch.object(mass.music, "get_provider_instances", _provider_instances(["spotify"])),
+            patch.object(
+                type(mass.music), "active_sync_tasks", new_callable=PropertyMock, return_value=[]
+            ),
+            patch.object(
+                MusicbrainzProvider, "rate_limited", new_callable=PropertyMock, return_value=False
+            ),
+        ):
+            for _ in range(3):
+                await mass.music.artists.get(artist.item_id, "library")
+                await asyncio.sleep(0.05)
+        release.set()
+        await _wait_for_task(mass, _relink_task_id(artist))
+
+    link.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("artist_kwargs", "open_kwargs", "linked_domains", "linking"),
+    [
+        pytest.param({"domains": ("qobuz", "spotify")}, {}, "spotify:{seen}", True, id="mapped"),
+        pytest.param({"mbid": None}, {}, "spotify:{seen}", True, id="unidentified"),
+        pytest.param({"looked_up": "now"}, {}, "spotify:{seen}", True, id="looked-up-since"),
+        pytest.param(
+            {}, {"allow_update_metadata": False}, "spotify:{seen}", True, id="no-metadata-update"
+        ),
+        pytest.param({}, {}, "spotify:{seen}", False, id="linking-disabled"),
+        pytest.param({}, {"syncing": True}, "spotify:{seen}", True, id="sync-active"),
+        pytest.param({}, {"rate_limited": True}, "spotify:{seen}", True, id="rate-limited"),
+        pytest.param({}, {}, "deezer:{seen}", True, id="provider-not-loaded"),
+        pytest.param({}, {}, None, True, id="provider-not-recorded-yet"),
+    ],
+)
+async def test_opening_an_artist_queues_no_relink(
+    mass: MusicAssistant,
+    artist_kwargs: dict[str, Any],
+    open_kwargs: dict[str, Any],
+    linked_domains: str | None,
+    linking: bool,
+) -> None:
+    """An artist that misses no new provider's links, or may not be linked now, is left alone."""
+    now = int(time())
+    seen = now - 10
+    kwargs: dict[str, Any] = {"looked_up": now - 20, "refreshed": now, **artist_kwargs}
+    if kwargs["looked_up"] == "now":
+        kwargs["looked_up"] = now
+    artist = await _add_artist(mass, **kwargs)
+    mass.config.set_raw_core_config_value(
+        "metadata",
+        CONF_MUSICBRAINZ_LINKED_DOMAINS,
+        [linked_domains.format(seen=seen)] if linked_domains else [],
+    )
+    with (
+        patch.object(
+            type(mass.metadata),
+            "link_providers_via_musicbrainz",
+            new_callable=PropertyMock,
+            return_value=linking,
+        ),
+        patch.object(mass.metadata, "link_item_to_musicbrainz", AsyncMock()) as link,
+        patch.object(mass.metadata, "update_metadata", AsyncMock()) as update_metadata,
+        patch.object(
+            mass.tasks, "run_background_task", wraps=mass.tasks.run_background_task
+        ) as run_background_task,
+    ):
+        await _open_artist(mass, artist, **open_kwargs)
+        queued = [call.kwargs["task_id"] for call in run_background_task.call_args_list]
+
+    assert _relink_task_id(artist) not in queued
+    link.assert_not_called()
+    update_metadata.assert_not_called()
+
+
+async def test_opening_an_artist_due_for_a_refresh_refreshes_it_instead(
+    mass: MusicAssistant,
+) -> None:
+    """An artist whose metadata refresh is due gets that refresh, which links it as well."""
+    now = int(time())
+    artist = await _add_artist(mass, looked_up=now - 20, refreshed=now - REFRESH_INTERVAL - 1)
+    mass.config.set_raw_core_config_value(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, [f"spotify:{now - 10}"]
+    )
+    with (
+        patch.object(mass.metadata, "link_item_to_musicbrainz", AsyncMock()) as link,
+        patch.object(mass.metadata, "update_metadata", AsyncMock()) as update_metadata,
+    ):
+        await _open_artist(mass, artist)
+        await _wait_for_task(mass, mass.metadata._get_metadata_lookup_task_id(str(artist.uri)))
+
+    update_metadata.assert_awaited_once_with(artist.uri)
+    link.assert_not_called()
+
+
+async def test_relink_check_selects_what_the_relink_query_selects(mass: MusicAssistant) -> None:
+    """The per-item relink check and the relink phase's query agree on every combination."""
+    now = int(time())
+    seen = now - 10
+    artists = [
+        await _add_artist(
+            mass, name=f"Artist {index}", mbid=mbid, looked_up=looked_up, domains=domains
+        )
+        for index, (mbid, looked_up, domains) in enumerate(
+            (mbid, looked_up, domains)
+            for mbid in (ARTIST_ID, None)
+            for looked_up in (None, seen - 1, seen, seen + 1)
+            for domains in (("qobuz",), ("qobuz", "spotify"))
+        )
+    ]
+
+    selected = await mass.music.artists.get_library_items_by_query(
+        extra_query_parts=[_relink_query(DB_TABLE_ARTISTS, MediaType.ARTIST, ExternalID.MB_ARTIST)],
+        extra_query_params={"domain": "spotify", "seen": seen},
+    )
+
+    checked = {
+        artist.item_id
+        for artist in artists
+        if _misses_musicbrainz_links(
+            await mass.music.artists.get_library_item(artist.item_id), {"spotify": seen}
+        )
+    }
+    assert {artist.item_id for artist in selected} == checked
+    # identified, not mapped to spotify, looked up at or before it was seen or never
+    assert len(checked) == 3
