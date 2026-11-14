@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING, NamedTuple, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerType, ProtocolRole
-from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+)
 from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import CONF_POWER_CONTROL
@@ -442,4 +447,24 @@ async def test_a_member_that_went_away_after_it_was_online_is_not_waited_for(
 
     assert await controller._power_on_members(setup.group) == set()
     assert asyncio.get_running_loop().time() == started
+    assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+@pytest.mark.parametrize("command", ["cmd_stop", "cmd_pause"])
+async def test_a_stop_of_a_group_that_plays_no_queue_calls_the_wait_off(
+    mock_mass: MagicMock, command: str
+) -> None:
+    """A stop or a pause of the group ends the wait, also when no queue takes the command."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",), stays_away=("den",))
+    controller = setup.controller
+    mock_mass.player_queues.get = MagicMock(return_value=None)
+    waiting = asyncio.create_task(controller._power_on_members(setup.group))
+    await asyncio.sleep(0.75)
+
+    with suppress(MusicAssistantError):
+        # a group that plays nothing may refuse the command itself
+        await getattr(controller, command)("downstairs")
+
+    with pytest.raises(PlayerUnavailableError, match="was called off"):
+        await waiting
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}

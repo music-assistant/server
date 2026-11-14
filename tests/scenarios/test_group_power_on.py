@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
-from music_assistant_models.enums import PlaybackState, QueueOption
+from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
+from music_assistant.controllers.streams.announcements import (
+    ANNOUNCEMENT_PCM_FORMAT,
+    AnnouncementRender,
+)
 from tests.common import record_lock_waits
 
 from .harness import TEST_TRACK_URI
@@ -34,7 +42,9 @@ from .test_paused_queue import (
 from .test_stopped_queue import _DynamicSource, _other_track
 
 if TYPE_CHECKING:
-    import asyncio
+    from collections.abc import Awaitable, Callable
+
+    from music_assistant_models.player import PlayerMedia
 
     from .harness import FakePowerControl, FakeProtocol, Scenario
 
@@ -879,4 +889,123 @@ async def test_a_new_start_after_a_stop_waits_again_for_a_member_that_still_boot
 
     assert plug.commands == [True]
     assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    await _stop(scenario, group_id)
+
+
+async def _rendered_clip(render: AnnouncementRender) -> None:
+    """Stand in for the rendering of an announcement: one sample of silence, ready at once."""
+    render._chunks = [b"\0" * ANNOUNCEMENT_PCM_FORMAT.pcm_sample_size]
+    render._total_bytes = len(render._chunks[0])
+    render._ready.set()
+    render._finished.set()
+
+
+async def _announce(
+    scenario: Scenario, player_id: str, group_id: str, speakers: list[FakeProtocol]
+) -> None:
+    """
+    Play an announcement on a player with the real controller, and let the clip play out.
+
+    Only the rendering of the audio is stubbed, and each speaker stops by itself a second after
+    it was told to play while the announcement of the group or of the player runs.
+
+    :param player_id: The player the announcement is sent to.
+    :param group_id: The group player of the speakers.
+    :param speakers: The speakers that may play the clip.
+    """
+
+    def _stops_after(speaker: FakeProtocol) -> Callable[[PlayerMedia], Awaitable[None]]:
+        play_media = speaker.play_media
+
+        async def _play(media: PlayerMedia) -> None:
+            await play_media(media)
+            group = scenario.mass.players.get_player(group_id)
+            if media.media_type == MediaType.ANNOUNCEMENT or (
+                group is not None and group.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+            ):
+                asyncio.get_running_loop().call_later(
+                    1, lambda: speaker._apply("stop", playback_state=PlaybackState.IDLE)
+                )
+
+        return _play
+
+    with contextlib.ExitStack() as patches:
+        patches.enter_context(patch.object(AnnouncementRender, "_render", new=_rendered_clip))
+        for speaker in speakers:
+            patches.enter_context(
+                patch.object(speaker, "play_media", side_effect=_stops_after(speaker))
+            )
+        clip = await scenario.command(
+            scenario.mass.players.play_announcement(
+                player_id, url="http://clip.invalid/announcement.wav", pre_announce=False
+            )
+        )
+        await scenario.advance(20)
+        assert clip.done()
+        await clip
+
+
+@pytest.mark.parametrize("group", GROUPS)
+@pytest.mark.parametrize("before", ["idle", "playing", "paused"])
+async def test_an_announcement_to_a_group_switches_no_member_on(
+    scenario: Scenario, group: str, before: str
+) -> None:
+    """
+    An announcement to a group plays on the members that are on and switches nothing on.
+
+    Den's plug is switched off. The group is idle, plays or is paused on Kitchen and Office:
+    the plug of Den refused when it started, and works again. The announcement switches the
+    plug on on no path, also not when it resumes the group afterwards, and waits for no device.
+    """
+    group_id, speakers, _ = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
+    den = speakers[2]
+    plug = await _switch_off(scenario, den)
+    _expect_the_form_without(scenario, group)
+    if before != "idle":
+        control = scenario.mass.players.get_player_control(plug.control_id)
+        assert control is not None
+        power_on = control.power_on
+        _refuse_to_switch_on(scenario, plug)
+        await scenario.play(group_id)
+        control.power_on = power_on
+    if before == "paused":
+        pause = await scenario.command(scenario.mass.player_queues.pause(group_id))
+        await scenario.advance(1)
+        await pause
+
+    await _announce(scenario, group_id, group_id, speakers)
+
+    assert plug.commands == []
+    assert den.commands == []
+    await _stop(scenario, group_id)
+
+
+async def test_an_announcement_to_a_member_switches_no_other_member_on(
+    scenario: Scenario,
+) -> None:
+    """
+    The group that plays on after an announcement to one of its members switches nothing on.
+
+    The sync group, which has a fixed member list, plays on Kitchen and Office: the plug of
+    Den refused when it started, and works again. An announcement to Kitchen takes Kitchen out
+    of the group and restores it afterwards: Den's plug stays off.
+    """
+    group_id, speakers, player_ids = await _downstairs(
+        scenario, "fixed sync group", "Kitchen", "Office", "Den"
+    )
+    den = speakers[2]
+    plug = await _switch_off(scenario, den)
+    control = scenario.mass.players.get_player_control(plug.control_id)
+    assert control is not None
+    power_on = control.power_on
+    _refuse_to_switch_on(scenario, plug)
+    _expect_the_form_without(scenario, "fixed sync group")
+    await scenario.play(group_id)
+    control.power_on = power_on
+
+    await _announce(scenario, player_ids[0], group_id, speakers)
+
+    assert plug.commands == []
+    assert den.commands == []
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     await _stop(scenario, group_id)

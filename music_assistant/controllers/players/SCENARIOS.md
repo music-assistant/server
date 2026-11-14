@@ -1596,6 +1596,20 @@ time.
   container of a virtual player.
 - Proven by: `test_group_power_on.py::test_a_new_start_after_a_stop_waits_again_for_a_member_that_still_boots`
 
+### GROUP-34 · An announcement to a group switches no member on
+
+Den's plug is switched off, and Downstairs is idle, plays or is paused on Kitchen and Office. An
+announcement to Downstairs plays on Kitchen and Office: Den's plug stays off and nothing waits
+for Den, also not when Downstairs plays on afterwards. The same holds for an announcement to
+Kitchen alone while Downstairs plays: Kitchen leaves Downstairs for the clip, and the restore
+that follows switches nothing on.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a client that sends an announcement.
+- Proven by:
+  - `test_group_power_on.py::test_an_announcement_to_a_group_switches_no_member_on`
+  - `test_group_power_on.py::test_an_announcement_to_a_member_switches_no_other_member_on`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
