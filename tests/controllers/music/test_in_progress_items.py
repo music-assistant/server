@@ -30,6 +30,8 @@ async def _add_in_progress_row(
     provider: str = "library",
     media_type: MediaType = MediaType.AUDIOBOOK,
     userid: str = "user-a",
+    days_ago: int = 0,
+    podcast_item_id: str | None = None,
 ) -> None:
     """Insert a single in-progress (partially played) playlog row."""
     await mass.music.database.insert(
@@ -39,11 +41,12 @@ async def _add_in_progress_row(
             "provider": provider,
             "media_type": media_type.value,
             "name": f"Item {item_id}",
-            "timestamp": int(utc_timestamp()),
+            "timestamp": int(utc_timestamp()) - days_ago * 86400,
             "fully_played": False,
             "seconds_played": 60,
             "userid": userid,
             "user_initiated": True,
+            "podcast_item_id": podcast_item_id,
         },
     )
 
@@ -155,6 +158,40 @@ async def test_in_progress_items_combines_explicit_and_user_music_sources(
     with patch(GET_CURRENT_USER, return_value=user_a):
         result = await mass.music.in_progress_items(limit=10, providers=["audible_1"])
     assert result == []
+
+
+@pytest.mark.parametrize(
+    ("podcast_item_id", "days_ago", "shown"),
+    [
+        ("podcastfeed_1-1", 30, True),
+        ("podcast-elsewhere", 30, False),
+        ("podcast-elsewhere", 1, True),
+    ],
+)
+async def test_in_progress_items_keeps_older_episodes_of_library_podcasts(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    podcast_item_id: str,
+    days_ago: int,
+    shown: bool,
+) -> None:
+    """An episode older than a week only shows while its podcast is in the library."""
+    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["podcastfeed_1"])
+    await _add_provider_mapping(
+        mass, item_id=1, provider_instance="podcastfeed_1", media_type=MediaType.PODCAST
+    )
+    await _add_in_progress_row(
+        mass,
+        "episode-1",
+        provider="podcastfeed_1",
+        media_type=MediaType.PODCAST_EPISODE,
+        days_ago=days_ago,
+        podcast_item_id=podcast_item_id,
+    )
+
+    result = await mass.music.in_progress_items(limit=10)
+
+    assert ([item.item_id for item in result] == ["episode-1"]) is shown
 
 
 async def test_in_progress_items_excludes_unavailable_mapping(

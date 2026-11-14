@@ -1381,7 +1381,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
             "AND p.fully_played = 0 "
             "AND p.seconds_played > 0 "
-            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago}) "
+            # an episode shows for a week, or as long as its podcast is in the library
+            f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago} "
+            f"OR EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            "WHERE pm.media_type = 'podcast' AND pm.provider_instance = p.provider "
+            "AND pm.provider_item_id = p.podcast_item_id)) "
         )
         query += (
             "AND ( "
