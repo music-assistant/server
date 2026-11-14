@@ -217,7 +217,6 @@ class AirPlayStreamSession:
             await self._start_members(
                 position_ms,
                 await self._seat_member_anchors(position_ms, start_unix_ms),
-                cold=True,
             )
         except asyncio.CancelledError:
             await self.stop()
@@ -1313,14 +1312,7 @@ class AirPlayStreamSession:
 
     async def _seat_member_anchors(self, position_ms: int, start_unix_ms: int) -> int:
         """
-        Have every member of a cold buffered group accept an anchor before audio leaves.
-
-        A strict receiver rejects its anchor until its clock is seated while the
-        binary retries, and by then the other members' first seconds of audio can
-        be on the wire. The instant is commanded far enough out that nothing has
-        left when the last ack arrives, so the real one that follows costs no one
-        any audio. Only groups with a member that accepted late before take this
-        step; everyone else gets the single START they always did.
+        Have every member of a cold buffered group accept an anchor before its audio leaves.
 
         :param position_ms: Media position mapped to the first sample of the anchor.
         :param start_unix_ms: Shared audible-start instant planned for the group.
@@ -1329,16 +1321,21 @@ class AirPlayStreamSession:
         streams = [player.stream for player in self.sync_clients if player.stream]
         if len(streams) < 2 or not all(stream.buffered_route for stream in streams):
             return start_unix_ms
-        late = self.prov.late_anchor_players
-        if not any(player.player_id in late for player in self.sync_clients):
-            return start_unix_ms
+        # A receiver can refuse its anchor until its clock has locked onto ours,
+        # which the binary retries for seconds. A re-START cannot give back audio
+        # a member already sent, so anchor everyone far enough out that nothing
+        # has left before the slowest member accepts, then command the real
+        # instant, which the members' fresh clock readiness must still allow.
         seat_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_ANCHOR_SEAT_LEAD_MS
-        await asyncio.gather(*[stream.start(seat_unix_ms, position_ms) for stream in streams])
-        return max(start_unix_ms, int(cli_clock_time() * 1000) + AIRPLAY_GROUP_START_LEAD_MS)
+        async with asyncio.TaskGroup() as task_group:
+            for stream in streams:
+                task_group.create_task(stream.start(seat_unix_ms, position_ms))
+        floor_unix_ms = int(cli_clock_time() * 1000) + AIRPLAY_GROUP_START_LEAD_MS
+        if ready_at_unix_ms := await self._wait_members_clock_ready():
+            floor_unix_ms = max(floor_unix_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
+        return max(start_unix_ms, floor_unix_ms)
 
-    async def _start_members(
-        self, position_ms: int, start_unix_ms: int, *, cold: bool = False
-    ) -> None:
+    async def _start_members(self, position_ms: int, start_unix_ms: int) -> None:
         """
         Anchor every member's playback at one shared audible instant.
 
@@ -1352,13 +1349,11 @@ class AirPlayStreamSession:
 
         :param position_ms: Media position mapped to the first sample of the anchor.
         :param start_unix_ms: Shared audible-start instant in unix epoch ms.
-        :param cold: A first start of the session: a group member whose first
-            round is corrected is remembered as a late acceptor.
         """
         target_ms = start_unix_ms
         corrected_ms = start_unix_ms
-        for round_index in range(4):
-            member_tasks: list[tuple[str, int, asyncio.Task[int]]] = []
+        for _ in range(4):
+            member_tasks: list[tuple[int, asyncio.Task[int]]] = []
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
                     stream = player.stream
@@ -1368,7 +1363,6 @@ class AirPlayStreamSession:
                     adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
                     member_tasks.append(
                         (
-                            player.player_id,
                             adjust_ms,
                             task_group.create_task(
                                 stream.start(target_ms + adjust_ms, position_ms)
@@ -1376,14 +1370,8 @@ class AirPlayStreamSession:
                         )
                     )
             corrected_ms = target_ms
-            for _, adjust_ms, task in member_tasks:
+            for adjust_ms, task in member_tasks:
                 corrected_ms = max(corrected_ms, task.result() - adjust_ms)
-            if cold and round_index == 0 and len(member_tasks) > 1:
-                self.prov.late_anchor_players.update(
-                    player_id
-                    for player_id, adjust_ms, task in member_tasks
-                    if task.result() - adjust_ms > target_ms + 2
-                )
             if corrected_ms <= target_ms + 2:
                 break
             if len(member_tasks) == 1:

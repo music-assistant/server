@@ -12,6 +12,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
@@ -333,7 +334,7 @@ async def _start_group(
     accept_delays: dict[str, float],
     *,
     buffered: bool = True,
-    late: set[str] | None = None,
+    ready_at: list[int] | None = None,
     now: float = 100.0,
 ) -> tuple[AirPlayStreamSession, dict[str, list[int]], dict[str, int]]:
     """
@@ -344,7 +345,7 @@ async def _start_group(
     already left is never heard. A member's accept delay is the time its first
     anchor takes to be accepted, moving the instant if that outlasts it.
 
-    :param late: Players the provider already knows accept late; updated in place.
+    :param ready_at: Clock readiness every member projects, one value per wait.
     :return: The session, the instants each member was commanded and the
         milliseconds of audio each one lost to a re-START.
     """
@@ -353,7 +354,6 @@ async def _start_group(
     commanded: dict[str, list[int]] = {name: [] for name in accept_delays}
     lost_ms: dict[str, int] = dict.fromkeys(accept_delays, 0)
     session = _make_session(0, 0)
-    session.prov.late_anchor_players = set() if late is None else late
     players: list[Any] = [
         MagicMock(player_id=name, protocol=StreamingProtocol.AIRPLAY2) for name in accept_delays
     ]
@@ -378,6 +378,10 @@ async def _start_group(
         stream.wait_for_connection = AsyncMock()
         stream.wait_audio_present = AsyncMock(return_value=True)
         stream.start = AsyncMock(side_effect=start)
+        if ready_at:
+            stream.wait_clock_ready = AsyncMock(
+                side_effect=[(ClockReadiness.PROJECTED, at) for at in ready_at]
+            )
         return stream
 
     async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
@@ -397,39 +401,43 @@ async def _start_group(
 
 
 @pytest.mark.asyncio
-async def test_group_start_remembers_a_receiver_that_accepted_late() -> None:
-    """A member whose start had to be corrected is remembered as a late acceptor."""
-    late: set[str] = set()
-    await _start_group({"quick": 0.0, "slow": 3.0}, late=late)
-
-    assert late == {"slow"}
-
-
-@pytest.mark.asyncio
-async def test_known_late_acceptor_costs_the_group_no_audio() -> None:
-    """With a known late acceptor in the group, no member loses audio to a re-START."""
-    session, commanded, lost_ms = await _start_group({"quick": 0.0, "slow": 3.0}, late={"slow"})
+async def test_late_acceptor_costs_the_buffered_group_no_audio() -> None:
+    """A member that accepts its anchor late makes no one lose audio to a re-START."""
+    session, commanded, lost_ms = await _start_group({"quick": 0.0, "slow": 3.0})
 
     assert lost_ms == {"quick": 0, "slow": 0}
     assert commanded["quick"][-1] == commanded["slow"][-1] == session.start_unix_ms
+    # The planned instant passed while the slow member was accepting its seat.
+    assert session.start_unix_ms == 103_000 + AIRPLAY_GROUP_START_LEAD_MS
 
 
 @pytest.mark.asyncio
-async def test_group_without_known_late_acceptors_gets_one_start() -> None:
-    """Receivers not known to accept late get the single START they always did."""
+async def test_prompt_buffered_group_keeps_the_planned_instant() -> None:
+    """When every member accepts at once, the seat costs the group no start time."""
     session, commanded, _ = await _start_group({"first": 0.0, "second": 0.0})
 
+    seat = 100_000 + AIRPLAY_ANCHOR_SEAT_LEAD_MS
     instant = 100_000 + AIRPLAY_COLD_GROUP_START_LEAD_MS
-    assert commanded == {"first": [instant], "second": [instant]}
+    assert commanded == {"first": [seat, instant], "second": [seat, instant]}
+    assert session.start_unix_ms == instant
+
+
+@pytest.mark.asyncio
+async def test_seated_group_start_waits_for_fresh_clock_readiness() -> None:
+    """The real instant after the seat is never earlier than the members' clocks allow."""
+    session, commanded, _ = await _start_group(
+        {"first": 0.0, "second": 0.0}, ready_at=[100_500, 104_000]
+    )
+
+    instant = 104_000 + AIRPLAY_CLOCK_READY_LEAD_MS
+    assert commanded["first"][-1] == commanded["second"][-1] == instant
     assert session.start_unix_ms == instant
 
 
 @pytest.mark.asyncio
 async def test_unbuffered_group_start_commands_a_single_instant() -> None:
     """Without a buffered route audio may leave at once, so no anchor can be rehearsed."""
-    _, commanded, _ = await _start_group(
-        {"first": 0.0, "second": 0.0}, buffered=False, late={"first"}
-    )
+    _, commanded, _ = await _start_group({"first": 0.0, "second": 0.0}, buffered=False)
 
     assert commanded == {
         "first": [100_000 + AIRPLAY_COLD_GROUP_START_LEAD_MS],

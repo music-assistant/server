@@ -244,10 +244,6 @@ class AirPlayProvider(PlayerProvider):
         # planned, so all rooms render the clip in sync (managed by
         # announce.py, pruned as plans pass).
         self._announce_plans: dict[tuple[str, str], int] = {}
-        # Players whose receiver accepted a cold group start late, so their next
-        # cold group starts seat an anchor first (see _seat_member_anchors).
-        # Kept for this run only: learning one again costs one drifting start.
-        self.late_anchor_players: set[str] = set()
 
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)

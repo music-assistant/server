@@ -264,7 +264,8 @@ class AirPlayStream:
         # timeline. Reset per process (and on every re-anchoring START/resume);
         # a new cliairplay re-anchors from scratch.
         self.cumulative_shift_seconds: float = 0.0
-        # True on the buffered (type 103) route, set by the [STATUS] route line.
+        # True on the buffered (type 103) route: requested on the [STATUS] route
+        # line, cleared when the session falls back to NTP timing.
         self.buffered_route: bool = False
         # Set once a stalled receiver clock has been reported, so the warning
         # stays a single support signal instead of repeating with every
@@ -2188,6 +2189,8 @@ class AirPlayStream:
         # readiness rather than a bare missing instant.
         if mode == "ntp":
             self._clock_readiness = ClockReadiness.NOT_APPLICABLE
+            # Buffered needs PTP timing, so the binary streams realtime instead.
+            self.buffered_route = False
         elif stalled:
             self._clock_readiness = ClockReadiness.STALLED
         else:
