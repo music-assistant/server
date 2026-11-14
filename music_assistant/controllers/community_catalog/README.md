@@ -30,7 +30,7 @@ Nothing is created until the catalog is switched on or a provider is installed. 
 
 ## When a Community Provider Loads
 
-A community provider is registered (its manifest and texts) only while it may load. Both ways the server imports provider code start from a registered manifest, so not registering is the whole gate. Its settings entries are ordinary provider entries; while the provider is not registered they are served as entries without a provider, with the reason from `unavailable_reason()`.
+A community provider is registered (its manifest and texts) only while it may load. Both ways the server imports provider code start from a registered manifest, so not registering is the whole gate. Its settings entries are ordinary provider entries; while the provider is not registered they are served as entries without a provider, with the reason from `unavailable_reason()`. An installed provider whose manifest names no support link gets its repository as one, so the app sends questions to its maintainer.
 
 At start (a background task after the server's own providers, never in safe mode):
 

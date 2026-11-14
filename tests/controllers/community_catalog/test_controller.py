@@ -102,6 +102,7 @@ async def test_install(tmp_path: Path, catalog: Path, registry: Registry, github
         manifest = mass.get_provider_manifest(DOMAIN)
         assert manifest.tier == ProviderTier.COMMUNITY
         assert manifest.builtin is False
+        assert manifest.support_url == f"https://github.com/someone/{DOMAIN}"
         assert mass.translations.get_translation(f"provider.{DOMAIN}.manifest.name") == "One"
         assert _events(signal_event) == 1
         _assert_loaded(mass, catalog, DOMAIN)
@@ -112,6 +113,8 @@ async def test_install(tmp_path: Path, catalog: Path, registry: Registry, github
 
     async with _server(tmp_path) as mass:
         _assert_loaded(mass, catalog, DOMAIN)
+        manifest = mass.get_provider_manifest(DOMAIN)
+        assert manifest.support_url == f"https://github.com/someone/{DOMAIN}"
 
 
 async def test_restart_without_the_registry(

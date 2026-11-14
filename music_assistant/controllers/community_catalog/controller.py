@@ -1321,7 +1321,13 @@ class CommunityCatalogController(CoreController):
         :param provider_path: The folder of the provider.
         """
         self.mass.add_provider_location(os.path.dirname(provider_path))
-        await self.mass.register_provider_manifest(str(provider_path), ProviderTier.COMMUNITY)
+        manifest = await self.mass.register_provider_manifest(
+            str(provider_path), ProviderTier.COMMUNITY
+        )
+        installed = self._store.state.installed.get(manifest.domain)
+        if installed is not None and not manifest.support_url:
+            # help with a community provider is asked of its maintainer
+            manifest.support_url = f"https://github.com/{installed.repository}"
 
     async def _load_instances(self, domains: set[str]) -> None:
         """
