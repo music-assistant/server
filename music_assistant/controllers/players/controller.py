@@ -1105,6 +1105,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             cur_volume = self._group_volume_nudge_base(group_player)
             if cur_volume is None:
                 return
+            if cur_volume >= 100 and group_player.state.group_members:
+                await self._step_up_group_members_below_maximum(group_player)
+                return
             new_volume = min(100, cur_volume + self._get_volume_step(cur_volume))
             await self.cmd_group_volume(player_id, new_volume)
 
@@ -3250,6 +3253,31 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if base is None or child_volume > base:
                 base = child_volume
         return base
+
+    async def _step_up_group_members_below_maximum(self, group_player: Player) -> None:
+        """
+        Step up the members below 100 of a group that is already at 100.
+
+        The group volume is the level of its loudest member, so this is the only way a
+        group nudge can still raise the others. The raised levels become the new balance,
+        so the snapshot is dropped, but only when a member moves: with every member at
+        100 the press does nothing and the next step down still restores the balance.
+
+        :param group_player: The group player or sync leader.
+        """
+        new_levels: dict[str, int] = {}
+        for member in self.iter_group_members(group_player, only_powered=True, exclude_self=False):
+            if member.state.volume_control == PLAYER_CONTROL_NONE:
+                continue
+            level = self._volume_nudge_base(member)
+            if level is not None and level < 100:
+                new_levels[member.player_id] = min(100, level + self._get_volume_step(level))
+        if not new_levels:
+            return
+        group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
+        await asyncio.gather(
+            *(self._set_member_volume(member_id, level) for member_id, level in new_levels.items())
+        )
 
     def _unexpired_volume_target(self, player: Player) -> int | None:
         """Return the volume level last commanded, or None once it is too old to trust."""
