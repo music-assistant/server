@@ -36,6 +36,9 @@ class Verdict(StrEnum):
     # not installed: a moved provider that waits to be installed from the catalog
     MOVED = "moved"
     MOVE_FAILED = "move_failed"
+    # not decided: the start of the community catalog is not done, or does not run at all
+    STARTING = "starting"
+    SAFE_MODE = "safe_mode"
 
 
 @dataclass(frozen=True, slots=True)

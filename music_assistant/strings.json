@@ -1221,6 +1221,8 @@
     "community_provider_restart_to_update": "Version {0} of this is ready. Restart Music Assistant to finish the update.",
     "community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
     "community_provider_move_failed": "This moved to the community catalog, but Music Assistant could not install it from there ({0}). It tries again at every start and whenever it checks the catalog.",
+    "community_provider_starting": "Music Assistant is still starting what comes from the community catalog. This runs in a moment.",
+    "community_provider_safe_mode": "Nothing from the community catalog runs while Music Assistant is in safe mode.",
     "media_not_found": "The requested media item could not be found.",
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",

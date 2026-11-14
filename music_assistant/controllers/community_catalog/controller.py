@@ -118,6 +118,13 @@ _REASONS: Final[dict[Verdict, str]] = {
         "This moved to the community catalog, but Music Assistant could not install it from "
         "there ({0}). It tries again at every start and whenever it checks the catalog."
     ),
+    Verdict.STARTING: (
+        "Music Assistant is still starting what comes from the community catalog. "
+        "This runs in a moment."
+    ),
+    Verdict.SAFE_MODE: (
+        "Nothing from the community catalog runs while Music Assistant is in safe mode."
+    ),
 }
 
 
@@ -146,6 +153,8 @@ class CommunityCatalogController(CoreController):
         self._folder_hashes: dict[str, str | None] = {}
         # by moved domain that waits: why the last try to install it failed
         self._move_errors: dict[str, str] = {}
+        # whether the start decided what loads and registered it
+        self._started = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -167,6 +176,10 @@ class CommunityCatalogController(CoreController):
                 depends_on=CONF_ENABLED,
             ),
         )
+
+    async def setup(self, config: CoreConfig) -> None:
+        """Read what is installed; the settings entries of it tell why it does not run yet."""
+        await self._store.load()
 
     async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
         """Handle logic when the config is updated."""
@@ -192,7 +205,6 @@ class CommunityCatalogController(CoreController):
         Runs once, after the server's own providers are loaded; never in safe mode.
         """
         async with self._lock:
-            await self._store.load()
             if self._needs_index():
                 await self._index_client.fetch()
                 self._schedule_check()
@@ -203,6 +215,7 @@ class CommunityCatalogController(CoreController):
             await self._update_at_start(providers)
             providers |= await self._dev_providers()
             domains, requirements_installed = await self._load_providers(providers)
+            self._started = True
             if domains or self._needs_index():
                 # clients fetched the manifests before these were registered
                 self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
@@ -217,7 +230,10 @@ class CommunityCatalogController(CoreController):
         :param domain: The domain of the provider.
         """
         decision = self._decisions.get(domain)
-        if decision is None and domain in self._waiting_moves():
+        if not self._started and domain in self._store.state.installed:
+            # what the start decides is only final, and registered, once it is done
+            decision = Decision(Verdict.SAFE_MODE if self.mass.safe_mode else Verdict.STARTING)
+        elif decision is None and domain in self._waiting_moves():
             error = self._move_errors.get(domain)
             decision = Decision(Verdict.MOVE_FAILED, error) if error else Decision(Verdict.MOVED)
         if decision is None or decision.verdict == Verdict.LOAD:
@@ -631,6 +647,9 @@ class CommunityCatalogController(CoreController):
 
         :param domain: The domain of the provider.
         """
+        if domain not in self._community_manifests():
+            # nothing of it runs; a provider of the server itself by this name is left alone
+            return
         # unregistered first, so a retry that is due cannot load it again
         await self.mass.unregister_provider_manifest(domain)
         for provider in self.mass.providers:

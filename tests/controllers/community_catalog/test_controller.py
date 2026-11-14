@@ -484,6 +484,13 @@ async def test_safe_mode(tmp_path: Path, registry: Registry, github: GitHub) -> 
         with pytest.raises(KeyError):
             mass.get_provider_manifest(DOMAIN)
         assert mass.get_provider(DOMAIN) is None
+        conf = _settings_entry(
+            await mass.config.get_provider_configs(include_unavailable=True), DOMAIN
+        )
+        assert conf.status == ProviderStatus.UNAVAILABLE
+        assert conf.last_error is not None
+        assert conf.last_error.translation_key == "community_provider_safe_mode"
+        assert conf.last_error.message == _REASONS[Verdict.SAFE_MODE]
         for command in (
             mass.community_catalog.get_providers(),
             mass.community_catalog.refresh(),
@@ -494,6 +501,63 @@ async def test_safe_mode(tmp_path: Path, registry: Registry, github: GitHub) -> 
                 await command
 
     assert len(registry.requests) == requests
+
+
+async def test_settings_entry_while_the_catalog_starts(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """Until the catalog has started, the entry of an installed provider says it is starting."""
+    await _install(tmp_path, registry, github)
+    registry.delay = 1
+
+    try:
+        async with full_mass_context(tmp_path) as mass:
+            conf = _settings_entry(
+                await mass.config.get_provider_configs(include_unavailable=True), DOMAIN
+            )
+            assert conf.status == ProviderStatus.UNAVAILABLE
+            assert conf.last_error is not None
+            assert conf.last_error.translation_key == "community_provider_starting"
+            assert conf.last_error.message == _REASONS[Verdict.STARTING]
+
+            await _wait_for_start(mass)
+            _assert_loaded(mass, catalog, DOMAIN)
+    finally:
+        _forget_imports(tmp_path)
+
+
+async def test_remove_leaves_a_provider_of_the_server_alone(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """Removing an installed provider whose domain the server ships by now leaves that one running."""
+    await _install(tmp_path, registry, github)
+    # a new process has only the server's own providers on the package path
+    providers_package.__path__.remove(str(catalog))
+    shipped = tmp_path / "shipped" / DOMAIN
+    shipped.mkdir(parents=True)
+    for name, content in _provider_files(DOMAIN).items():
+        (shipped / name).write_bytes(content)
+    original_start = CommunityCatalogController.start
+
+    async def start(self: CommunityCatalogController) -> None:
+        # the server has a provider of its own by this name before the catalog starts
+        self.mass.add_provider_location(str(shipped.parent))
+        await self.mass.register_provider_manifest(str(shipped), ProviderTier.CORE)
+        await self.mass.load_provider(DOMAIN)
+        await original_start(self)
+
+    with patch.object(CommunityCatalogController, "start", start):
+        async with _server(tmp_path) as mass:
+            module = sys.modules[f"{providers_package.__name__}.{DOMAIN}"]
+            assert module.__file__ == str(shipped / "__init__.py")
+
+            await mass.community_catalog.remove_provider(DOMAIN)
+
+            assert not (catalog / DOMAIN).exists()
+            provider = mass.get_provider(DOMAIN)
+            assert provider is not None
+            assert provider.available
+            assert sys.modules[f"{providers_package.__name__}.{DOMAIN}"] is module
 
 
 def test_reasons_match_the_texts() -> None:

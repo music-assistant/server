@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from typing import TYPE_CHECKING, Any
@@ -22,11 +23,13 @@ from music_assistant.controllers.community_catalog.dependencies import Dependenc
 from music_assistant.controllers.community_catalog.gate import Verdict
 from music_assistant.controllers.community_catalog.installer import InstallError
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
+from tests.conftest import full_mass_context
 from tests.controllers.community_catalog.conftest import ADDED, RELEASED, build_archive
 from tests.controllers.community_catalog.test_controller import (  # noqa: F401 - a fixture
     DEV_REQUIREMENT,
     REQUIREMENT,
     _assert_not_loaded,
+    _forget_imports,
     _index,
     _seed_instance,
     _server,
@@ -191,14 +194,17 @@ async def test_update_refused_on_a_clash(
         _assert_runs(mass, DOMAIN, OLD)
 
 
-async def test_failed_update_goes_back(tmp_path: Path, registry: Registry, github: GitHub) -> None:
+@pytest.mark.parametrize("bug", ['raise TypeError("broken")', "raise NotImplementedError"])
+async def test_failed_update_goes_back(
+    tmp_path: Path, registry: Registry, github: GitHub, bug: str
+) -> None:
     """A new version that fails with a bug goes back; it is not updated to again, a newer one is."""
     entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
     await _install(tmp_path, registry, {DOMAIN: entry})
     folder = _catalog(tmp_path)
 
     async with _server(tmp_path) as mass:
-        broken = _files(DOMAIN, NEW, setup='raise TypeError("broken")')
+        broken = _files(DOMAIN, NEW, setup=bug)
         await _publish(mass, registry, github, {NEW: broken}, entry)
 
         providers = await mass.community_catalog.update_providers(DOMAIN)
@@ -298,6 +304,39 @@ async def test_switch_at_start(tmp_path: Path, registry: Registry, github: GitHu
 
     async with _server(tmp_path) as mass:
         _assert_runs(mass, DOMAIN, NEW)
+
+
+async def test_settings_entry_while_a_switch_runs_at_start(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """While the start switches a version, its settings entry says it is starting."""
+    entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
+    await _install(tmp_path, registry, {DOMAIN: entry})
+    registry.document = _index({DOMAIN: _entry(github, DOMAIN, {NEW: _files(DOMAIN, NEW)})})
+    registry.etag = '"two"'
+    # the download of the new version does not finish until the test lets it
+    github.stall = True
+
+    try:
+        async with full_mass_context(tmp_path) as mass:
+            catalog_controller = mass.community_catalog
+            for _ in range(200):
+                decision = catalog_controller._decisions.get(DOMAIN)
+                if decision is not None and decision.verdict == Verdict.SWITCH:
+                    break
+                await asyncio.sleep(0.05)
+            reason = catalog_controller.unavailable_reason(DOMAIN)
+            assert reason is not None
+            assert reason.message == _REASONS[Verdict.STARTING]
+
+            github.release.set()
+            await _wait_for_start(mass)
+            # the download was cut short, so there was nothing to switch to
+            reason = catalog_controller.unavailable_reason(DOMAIN)
+            assert reason is not None
+            assert reason.message == _REASONS[Verdict.NOT_FOR_THIS_VERSION]
+    finally:
+        _forget_imports(tmp_path)
 
 
 @pytest.mark.parametrize("latest", ["missing", "failed"])

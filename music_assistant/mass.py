@@ -165,12 +165,19 @@ def is_audio_analysis_provider(
     return provider.type == ProviderType.AUDIO_ANALYSIS
 
 
+class _UnexpectedSetupError(SetupFailedError):
+    """A provider load step that failed with an unexpected error that has no message."""
+
+
 def _provider_error_from_exc(exc: BaseException) -> ProviderError:
     """Build a serializable, localizable ProviderError from a provider setup exception."""
     message = str(exc) or type(exc).__name__
     if isinstance(exc, MusicAssistantError):
         return ProviderError(
-            error_code=exc.error_code,
+            # a failure that only names an unexpected error is as unexpected as that error
+            error_code=UNHANDLED_PROVIDER_ERROR_CODE
+            if isinstance(exc, _UnexpectedSetupError)
+            else exc.error_code,
             message=message,
             translation_key=exc.translation_key,
             translation_args=list(exc.translation_args),
@@ -224,7 +231,7 @@ async def _provider_load_step(
         # an exception without a message (a bare TimeoutError from an http call, say) would
         # otherwise reach the user as nothing but its class name, with no hint of what failed
         msg = f"Provider {domain} failed to {action}: {type(err).__name__}"
-        raise SetupFailedError(msg) from err
+        raise _UnexpectedSetupError(msg) from err
 
 
 class MusicAssistant:

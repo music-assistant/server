@@ -297,6 +297,8 @@
   "common.errors.community_provider_requirements_clash": "This needs versions of Python packages that clash with Music Assistant or with something else from the community catalog, so it does not run.",
   "common.errors.community_provider_restart_to_go_back": "Version {0} of this failed to load. Restart Music Assistant to finish going back to the version before it.",
   "common.errors.community_provider_restart_to_update": "Version {0} of this is ready. Restart Music Assistant to finish the update.",
+  "common.errors.community_provider_safe_mode": "Nothing from the community catalog runs while Music Assistant is in safe mode.",
+  "common.errors.community_provider_starting": "Music Assistant is still starting what comes from the community catalog. This runs in a moment.",
   "common.errors.community_provider_went_back": "Version {0} of this failed to load, and the version before it is no longer available, so it does not run.",
   "common.errors.config_value_required": "{0} is required.",
   "common.errors.connect_failed": "Failed to connect to {0}.",
