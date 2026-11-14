@@ -7,11 +7,16 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 from music_assistant_models.enums import ExternalID, ImageType, ProviderFeature
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.external_ids import barcode_to_upc
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -27,6 +32,8 @@ SUPPORTED_FEATURES = {
 }
 
 ITUNES_LOOKUP_URL = "https://itunes.apple.com/lookup"
+# iTunes answers a client that exceeds its rate limit with a 403 (sometimes a 429)
+RATE_LIMIT_STATUSES = (403, 429)
 
 
 async def setup(
@@ -43,6 +50,10 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
     Fetches high-resolution album artwork from the iTunes catalog using UPC barcode lookup.
     """
 
+    # Apple documents the Search API as limited to approximately 20 calls per minute
+    # an artwork lookup must not hang on retries: two attempts, then it gives up
+    throttler = ThrottlerManager(rate_limit=20, period=60, retry_attempts=2, initial_backoff=2)
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return ()
@@ -51,6 +62,11 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
         return 30
+
+    @property
+    def rate_limited(self) -> bool:
+        """Whether iTunes is currently holding requests back with a rate limit."""
+        return self.throttler.cooldown_remaining > 0
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """
@@ -84,6 +100,7 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
         )
 
     @use_cache(86400 * 30)
+    @throttle_with_retries
     async def _get_artwork_url(self, barcode: str) -> str | None:
         """
         Look up album artwork URL from iTunes by UPC barcode.
@@ -95,6 +112,9 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
             async with self.mass.http_session.get(
                 ITUNES_LOOKUP_URL, params={"upc": upc}
             ) as response:
+                if response.status in RATE_LIMIT_STATUSES:
+                    backoff_time = parse_retry_after(response.headers.get("Retry-After"))
+                    raise RateLimited("iTunes rate limit", backoff_time=backoff_time)
                 response.raise_for_status()
                 data = await response.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError, JSONDecodeError) as err:

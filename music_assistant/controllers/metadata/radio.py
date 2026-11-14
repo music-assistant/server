@@ -18,6 +18,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -205,6 +206,7 @@ class RadioArtworkMixin:
             except (
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 InvalidDataError,
             ):
                 pass
@@ -495,6 +497,7 @@ class RadioArtworkMixin:
             except (
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 InvalidDataError,
             ):
                 pass

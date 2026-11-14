@@ -86,6 +86,33 @@ async def test_communicate_releases_streams(timeout: bool) -> None:
     assert await asyncio.wait_for(proc.read_stderr(), 0.1) == b""
 
 
+@pytest.mark.asyncio
+async def test_communicate_returns_the_output_of_a_process_that_already_exited() -> None:
+    """
+    A process that exited before it is asked for its output still hands it over.
+
+    A short-lived process such as a tag probe can finish and be reaped while the event
+    loop is busy, before its caller gets to communicate with it.
+    """
+    proc = AsyncProcess(["sh", "-c", "echo output; echo error >&2"], stdout=True, stderr=True)
+    await proc.start()
+    await proc.wait()
+
+    assert await proc.communicate() == (b"output\n", b"error\n")
+    await proc.close()
+
+
+@pytest.mark.asyncio
+async def test_communicate_refuses_a_closed_process() -> None:
+    """A process that was closed has no output left to hand over."""
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=True)
+    await proc.start()
+    await proc.close()
+
+    with pytest.raises(RuntimeError, match="closed process"):
+        await proc.communicate()
+
+
 @pytest.fixture(name="piped_process")
 async def piped_process_fixture() -> AsyncGenerator[tuple[AsyncProcess, int]]:
     """
