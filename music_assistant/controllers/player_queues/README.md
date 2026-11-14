@@ -136,8 +136,8 @@ All live state lives in memory on the controller instance in one `PlayerQueueDat
 keyed by `queue_id` (`state.py`). Each record wraps the wire `PlayerQueue` and holds the rest of the
 server-side state around it: the ordered `QueueItem` list, the full media items behind the dynamic
 `sources`, the enqueued parent items and the owning user, plus the runtime-only fields — a
-previous-state snapshot, a transitioning flag, an in-progress play-action refcount, a
-last-counted-play marker, the flow-buffer-completed session, and the
+previous-state snapshot, a transitioning flag, a halted-by-command flag, an in-progress
+play-action refcount, a last-counted-play marker, the flow-buffer-completed session, and the
 current stream session's id, flow play-log and next-enqueued item id.
 
 `PlayerQueueData` owns the pair's (de)serialization; the wire `PlayerQueue` carries no cache logic of
@@ -195,6 +195,27 @@ stream-time). It diffs the incoming state against the previous-state snapshot to
 **Flow mode** is the special case here: instead of one stream per track, the whole queue is a
 single continuous stream of concatenated items, so the player's cumulative stream index and
 position must be mapped back to a per-track index and per-track elapsed time.
+
+A queue whose player goes idle on its last item, with that item played (or, in flow mode,
+streamed) to its end, is taken for ended 5 seconds later, unless it plays again by then: it is
+refilled from its dynamic source when it has one, and marked as ended otherwise. A pause or a
+stop is never that end. A queue whose playback a command halted (`halted_by_command`: set by a
+pause and by the common stop handler) keeps its place until it plays again, also when the
+command left its player idle (a player without a pause of its own is stopped, and a paused player
+is stopped once the pause timeout passes). Only the stop of a sleep timer that waited for the
+end of an item or a chapter ends the queue, at that point; a timer that runs out mid-track stops
+the queue like any other stop. The flag is cleared when the queue is seen playing, when its
+paused player is told to play on or when a play action starts a stream session, taken back by a
+pause or a stop that fails, and reset when the queue is cleared or marked as ended.
+
+That check runs in a task of its own, holds no lock, and belongs to the playback that went idle:
+it remembers the stream session the queue was last seen playing. After every wait (each of its
+five rounds, the fetch of the dynamic source) it first waits for the command that holds the
+player's playback lock, and then gives up when the queue is not idle or a play started since:
+another stream session started last (`started_session_id`), also while its player does not
+report yet that it plays and when a stop ended it before that. So it never refills, restarts or
+ends a queue on behalf of a playback that is no longer its last. It also gives up when the
+player is still held at the timeout of that lock.
 
 Data flow: player state → diff against the previous snapshot → updated `PlayerQueue` fields →
 signalled events + cache write.
