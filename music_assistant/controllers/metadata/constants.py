@@ -98,6 +98,8 @@ MUSICBRAINZ_LINK_TASK_ID = "metadata_musicbrainz_link_v1"
 
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 
+MUSICBRAINZ_RELINK_TASK_ID_PREFIX = "metadata_musicbrainz_relink"
+
 METADATA_SCAN_BATCH_SIZE = 25
 
 # how many library items one MusicBrainz link run identifies, across all of its phases
