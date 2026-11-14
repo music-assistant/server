@@ -9,7 +9,12 @@ import pytest
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_PASSWORD
-from music_assistant.models.setup_flow import SetupFlowContext, SetupSession, StepExpiredError
+from music_assistant.models.setup_flow import (
+    SetupFlowContext,
+    SetupFlowError,
+    SetupSession,
+    StepExpiredError,
+)
 from music_assistant.providers.ard_audiothek import (
     CONF_DISPLAY_NAME,
     CONF_EMAIL,
@@ -131,6 +136,18 @@ async def test_abandoned_login_stops_polling(monkeypatch: pytest.MonkeyPatch) ->
 
     assert request.await_count == 2
     finish.assert_not_awaited()
+
+
+async def test_failed_finish_shows_the_translated_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed provider creation returns to the form with the error itself, so it is translated."""
+    session, finish, form = _make_session(monkeypatch, [False, False])
+    error = SetupFlowError("Loading failed", translation_key="setup_failed", translation_args=["x"])
+    finish.side_effect = [error, {"instance_id": "ard_audiothek--test"}]
+
+    await ard_flow.run_setup(session)
+
+    assert form.call_args.kwargs["errors"] == {"base": error}
+    assert finish.await_count == 2
 
 
 async def test_failed_login_shows_the_form_again(monkeypatch: pytest.MonkeyPatch) -> None:
