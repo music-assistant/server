@@ -45,7 +45,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 FFPROBE_TIMEOUT = 60
 FFMPEG_DURATION_TIMEOUT = 600
 NETWORK_READ_TIMEOUT = 10
-MAX_ID3_TAG_SIZE = 16 * 1024 * 1024
+MAX_ID3_TAG_SIZE = 32 * 1024 * 1024
 
 
 # the only multi-item splitter we accept is the semicolon,

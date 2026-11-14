@@ -61,7 +61,7 @@ async def test_oversized_id3_closes_opener_descriptor(
         os.fstat(descriptor)
 
 
-@pytest.mark.parametrize("header", [b"", b"RIFF123456", _id3_header(16 * 1024 * 1024)])
+@pytest.mark.parametrize("header", [b"", b"RIFF123456", _id3_header(tags.MAX_ID3_TAG_SIZE)])
 async def test_small_or_other_headers_continue_to_probe(
     tmp_path: Path, probe_process: MagicMock, header: bytes
 ) -> None:
