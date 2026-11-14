@@ -182,6 +182,14 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # audibly out of sync. Warm re-anchors reuse a locked clock and keep the
 # short leads above; solo cold starts have no sync partner to miss.
 AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+# How far out a cold group whose members all stream buffered first anchors, so
+# every receiver has accepted an anchor before any audio leaves. A strict
+# receiver can reject anchors for the whole 5.5-second retry span of
+# AIRPLAY_START_ACK_TIMEOUT_MS, and audio leaves up to one send window before
+# the anchor (3 s at the deepest CONF_BUFFER_DEPTH), so this clears both with
+# 500 ms to spare. A re-START after audio has left never puts it back: that
+# member skips what it was already sent and plays ahead of the others.
+AIRPLAY_ANCHOR_SEAT_LEAD_MS: Final[int] = 9000
 
 # How long a start waits for the source to hand over its first audio before it
 # judges the members on what they never received. A seek may land up to
