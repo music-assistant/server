@@ -1,11 +1,12 @@
 """Test the ytmusicapi call wrapper's handling of a signed-out session."""
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, RetriesExhausted
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.models.content.enums import PlaylistSortOrder
@@ -221,3 +222,32 @@ async def test_move_playlist_entries_orders_manually_then_moves_in_one_request(
             },
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    "make_call",
+    [
+        lambda: helpers.get_home(headers={}),
+        lambda: helpers.search("query"),
+        helpers.get_visitor_id,
+    ],
+    ids=["account", "search", "visitor_id"],
+)
+async def test_no_call_reaches_youtube_during_a_rate_limit_cooldown(
+    make_call: Callable[[], Awaitable[Any]],
+) -> None:
+    """All calls share one throttler, so its rate limit cooldown holds back every call."""
+    helpers._YTMusicGate.throttler.set_cooldown(3600)
+    with patch.object(ytmusicapi, "YTMusic") as mock_ytmusic, pytest.raises(RetriesExhausted):
+        await make_call()
+
+    mock_ytmusic.assert_not_called()
+
+
+async def test_http_429_arms_the_shared_rate_limit_cooldown() -> None:
+    """An HTTP 429 from YouTube Music is a rate limit that holds back every later call."""
+    error = YTMusicServerError("Server returned HTTP 429: Too Many Requests.\nQuota exceeded.")
+    with _patch_get_home(error), pytest.raises(RetriesExhausted):
+        await helpers.get_home(headers={})
+
+    assert helpers._YTMusicGate.throttler.cooldown_remaining > 0

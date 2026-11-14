@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -269,7 +269,8 @@ async def test_regroup_supersedes_pending_resume() -> None:
     use_real_create_task(mass)
     member = MagicMock()
     member.player_id = "member"
-    member.state = SlimPlayerState.STOPPED
+    # the mock is both the member's sync client and the member player
+    member.state = member.client.state = SlimPlayerState.STOPPED
     mass.players.get_player.return_value = member
     # the playback lock an announcement holds on the leader while it plays
     leader_busy = asyncio.Event()
@@ -401,8 +402,9 @@ async def test_setup_restores_volume_without_a_valid_cache_entry(
     with patch.object(player, "update_attributes"):
         await player.setup()
 
-    player.client.mute.assert_not_called()
-    player.client.volume_set.assert_awaited_once_with(expected_volume)
+    client = cast("MagicMock", player.client)
+    client.mute.assert_not_called()
+    client.volume_set.assert_awaited_once_with(expected_volume)
     mass.players.register_or_update.assert_awaited_once_with(player)
     assert stored[CONF_STORED_VOLUME] == expected_volume
 
@@ -416,7 +418,7 @@ async def test_volume_changed_on_the_player_is_stored() -> None:
         mass.config.set_raw_player_config_value.reset_mock()
         event = SlimEvent(type=SlimEventType.PLAYER_UPDATED, player_id="p1")
 
-        player.client.volume_level = 65
+        cast("MagicMock", player.client).volume_level = 65
         player.handle_slim_event(event)
         assert stored[CONF_STORED_VOLUME] == 65
 

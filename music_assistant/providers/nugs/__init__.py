@@ -60,7 +60,7 @@ from music_assistant.helpers.throttle_retry import (
     throttle_with_retries,
 )
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT, MusicProvider
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
@@ -191,14 +191,16 @@ class NugsProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
         params = {
             "artistIds": prov_artist_id,
             "contentType": "any",
         }
         return [
             self._parse_album(item)
-            for item in await self._get_all_items("catalog", "releases/recent", **params)
+            for item in await self._get_all_items(
+                "catalog", "releases/recent", max_items=ARTIST_ALBUMS_LIMIT, **params
+            )
             if (item and item["id"])
         ]
 
@@ -959,7 +961,7 @@ class NugsProvider(MusicProvider):
             raise InvalidDataError(f"Nugs API request failed with HTTP {response.status}")
 
     async def _get_all_items(
-        self, nugs_api: str, endpoint: str, **kwargs: Any
+        self, nugs_api: str, endpoint: str, max_items: int | None = None, **kwargs: Any
     ) -> list[dict[str, Any]]:
         limit = 100
         offset = 0
@@ -971,10 +973,10 @@ class NugsProvider(MusicProvider):
             result = await self._get_data(nugs_api, endpoint, **kwargs)
             total = result["total"]
             all_items += result["items"]
-            if total <= offset + limit:
+            if total <= offset + limit or (max_items is not None and len(all_items) >= max_items):
                 break
             offset += limit
-        return all_items
+        return all_items[:max_items]
 
     @use_cache(3600 * 4, base_class=RecommendationFolder)  # Cache for 4 hours
     async def _get_recommendation_folder(self, item_id: str) -> RecommendationFolder | None:

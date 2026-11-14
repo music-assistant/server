@@ -407,10 +407,9 @@ class AsyncProcess:
         if self.closed:
             raise RuntimeError("communicate called while process already done")
         # abort existing readers on stderr/stdout first before we send communicate
-        await self._stderr_lock.acquire()
-        await self._stdout_lock.acquire()
-        assert self.proc is not None  # for type checking
-        stdout, stderr = await asyncio.wait_for(self.proc.communicate(input), timeout)
+        async with self._stderr_lock, self._stdout_lock:
+            assert self.proc is not None  # for type checking
+            stdout, stderr = await asyncio.wait_for(self.proc.communicate(input), timeout)
         return (stdout, stderr)
 
     async def close(self) -> None:
