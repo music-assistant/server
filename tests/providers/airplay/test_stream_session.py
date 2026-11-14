@@ -12,6 +12,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_ANCHOR_SEAT_LEAD_MS,
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
@@ -49,6 +50,7 @@ def _stream_defaults(stream: MagicMock) -> MagicMock:
     stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
     stream.warm_lead_ms = 0
     stream.flushed_head_unix_ms = 0
+    stream.buffered_route = False
     return stream
 
 
@@ -326,6 +328,121 @@ async def test_solo_start_with_a_usable_clock_keeps_the_short_lead() -> None:
         await session.start(MagicMock())
 
     assert player.stream.start.await_args.args[0] == int(now * 1000) + AIRPLAY_START_LEAD_MS
+
+
+async def _start_group(
+    accept_delays: dict[str, float],
+    *,
+    buffered: bool = True,
+    ready_at: list[int] | None = None,
+    now: float = 100.0,
+) -> tuple[AirPlayStreamSession, dict[str, list[int]], dict[str, int]]:
+    """
+    Cold-start a group against members behaving like the binary.
+
+    Audio leaves for a receiver from one send window before its anchor, and a
+    re-START puts the next unsent sample on the new anchor, so whatever had
+    already left is never heard. A member's accept delay is the time its first
+    anchor takes to be accepted, moving the instant if that outlasts it.
+
+    :param ready_at: Clock readiness every member projects, one value per wait.
+    :return: The session, the instants each member was commanded and the
+        milliseconds of audio each one lost to a re-START.
+    """
+    send_window_ms = 1750
+    clock = [now]
+    commanded: dict[str, list[int]] = {name: [] for name in accept_delays}
+    lost_ms: dict[str, int] = dict.fromkeys(accept_delays, 0)
+    session = _make_session(0, 0)
+    players: list[Any] = [
+        MagicMock(protocol_id=name, protocol=StreamingProtocol.AIRPLAY2) for name in accept_delays
+    ]
+    for player in players:
+        player.config.get_value = MagicMock(return_value=0)
+    session.sync_clients = players
+
+    def member_stream(name: str) -> MagicMock:
+        async def start(start_unix_ms: int, _position_ms: int) -> int:
+            first = not commanded[name]
+            commanded[name].append(start_unix_ms)
+            now_ms = int(clock[0] * 1000)
+            if not first:
+                sent_ms = now_ms + send_window_ms - commanded[name][-2]
+                lost_ms[name] += max(0, sent_ms)
+                return start_unix_ms
+            clock[0] += accept_delays[name]
+            return max(start_unix_ms, int(clock[0] * 1000) + 500)
+
+        stream = _stream_defaults(MagicMock(running=True))
+        stream.buffered_route = buffered
+        stream.wait_for_connection = AsyncMock()
+        stream.wait_audio_present = AsyncMock(return_value=True)
+        stream.start = AsyncMock(side_effect=start)
+        if ready_at:
+            stream.wait_clock_ready = AsyncMock(
+                side_effect=[(ClockReadiness.PROJECTED, at) for at in ready_at]
+            )
+        return stream
+
+    async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        player.stream = member_stream(player.protocol_id)
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
+        patch(
+            "music_assistant.providers.airplay.stream_session.cli_clock_time",
+            side_effect=lambda: clock[0],
+        ),
+    ):
+        await session.start(MagicMock())
+    return session, commanded, lost_ms
+
+
+@pytest.mark.asyncio
+async def test_late_acceptor_costs_the_buffered_group_no_audio() -> None:
+    """A member that accepts its anchor late makes no one lose audio to a re-START."""
+    session, commanded, lost_ms = await _start_group({"quick": 0.0, "slow": 3.0})
+
+    assert lost_ms == {"quick": 0, "slow": 0}
+    assert commanded["quick"][-1] == commanded["slow"][-1] == session.start_unix_ms
+    # The planned instant passed while the slow member was accepting its seat.
+    assert session.start_unix_ms == 103_000 + AIRPLAY_GROUP_START_LEAD_MS
+
+
+@pytest.mark.asyncio
+async def test_prompt_buffered_group_keeps_the_planned_instant() -> None:
+    """When every member accepts at once, the seat costs the group no start time."""
+    session, commanded, _ = await _start_group({"first": 0.0, "second": 0.0})
+
+    seat = 100_000 + AIRPLAY_ANCHOR_SEAT_LEAD_MS
+    instant = 100_000 + AIRPLAY_COLD_GROUP_START_LEAD_MS
+    assert commanded == {"first": [seat, instant], "second": [seat, instant]}
+    assert session.start_unix_ms == instant
+
+
+@pytest.mark.asyncio
+async def test_seated_group_start_waits_for_fresh_clock_readiness() -> None:
+    """The real instant after the seat is never earlier than the members' clocks allow."""
+    session, commanded, _ = await _start_group(
+        {"first": 0.0, "second": 0.0}, ready_at=[100_500, 104_000]
+    )
+
+    instant = 104_000 + AIRPLAY_CLOCK_READY_LEAD_MS
+    assert commanded["first"][-1] == commanded["second"][-1] == instant
+    assert session.start_unix_ms == instant
+
+
+@pytest.mark.asyncio
+async def test_unbuffered_group_start_commands_a_single_instant() -> None:
+    """Without a buffered route audio may leave at once, so no anchor can be rehearsed."""
+    _, commanded, _ = await _start_group({"first": 0.0, "second": 0.0}, buffered=False)
+
+    assert commanded == {
+        "first": [100_000 + AIRPLAY_COLD_GROUP_START_LEAD_MS],
+        "second": [100_000 + AIRPLAY_COLD_GROUP_START_LEAD_MS],
+    }
 
 
 @pytest.mark.asyncio

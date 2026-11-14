@@ -697,6 +697,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
+        player.stream.buffered_route = False
         player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0

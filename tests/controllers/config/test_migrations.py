@@ -25,6 +25,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_bose_soundtouch_presets,
     _migrate_drop_http_profile,
     _migrate_emby_album_artists_heal,
+    _migrate_milkdrop_drop_color_tint,
     _migrate_nicovideo_drop_mail_login,
     _migrate_player_icons,
     _migrate_player_setup_data,
@@ -1327,6 +1328,108 @@ def test_migrate_nicovideo_drop_mail_login_survives_malformed_config() -> None:
     }
     assert _migrate_nicovideo_drop_mail_login(data) is False
     assert data["providers"]["nicovideo--a"]["values"] == "broken"
+
+
+async def test_migrate_milkdrop_drop_color_tint_removes_the_stored_value() -> None:
+    """The color tint is removed from every milkdrop instance, whatever its value."""
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": False, "log_level": "debug"},
+            },
+            "milkdrop_visualizer--b": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": True},
+            },
+            "milkdrop_visualizer--c": {"domain": "milkdrop_visualizer"},
+            "spotify--s": {"domain": "spotify", "values": {"color_tint": False}},
+        }
+    }
+    providers = data["providers"]
+
+    assert await migrate(data) is True
+    assert providers["milkdrop_visualizer"]["values"] == {"log_level": "debug"}
+    assert providers["milkdrop_visualizer--b"]["values"] == {}
+    assert providers["milkdrop_visualizer--c"] == {"domain": "milkdrop_visualizer"}
+    assert providers["spotify--s"]["values"] == {"color_tint": False}
+
+    # a second run has nothing left to remove
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+
+
+def test_migrate_milkdrop_drop_color_tint_survives_malformed_config() -> None:
+    """Malformed provider configs are skipped without raising."""
+    assert _migrate_milkdrop_drop_color_tint({"providers": "broken"}) is False
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {"domain": "milkdrop_visualizer", "values": "broken"},
+            "broken": "broken",
+        }
+    }
+    assert _migrate_milkdrop_drop_color_tint(data) is False
+    assert data["providers"]["milkdrop_visualizer"]["values"] == "broken"
+
+
+async def test_migrate_drops_the_milkdrop_color_tint_of_a_config_from_before_the_split() -> None:
+    """A config from before the split loses the color tint and is split in one start."""
+    data: dict[str, Any] = {
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": False},
+            }
+        },
+        "players": {
+            "sonos_1": {
+                "provider": "sonos",
+                "player_type": "player",
+                # a player's value of that name is not the provider's
+                "values": {"output_codec": "mp3", "color_tint": False},
+            }
+        },
+    }
+
+    assert await migrate(data) is True
+
+    assert data["providers"]["milkdrop_visualizer"]["values"] == {}
+    assert data["player_protocols"]["sonos_1"]["values"] == {
+        "output_codec": "mp3",
+        "color_tint": False,
+    }
+    assert await migrate(data) is False
+
+
+async def test_migrate_drops_the_milkdrop_color_tint_of_a_split_config() -> None:
+    """A config split before this step existed loses the color tint, and nothing else."""
+    data: dict[str, Any] = {
+        CONF_PLAYER_SPLIT_SESSION_ONLY: True,
+        CONF_PLAYER_SPLIT_TREE: True,
+        "providers": {
+            "milkdrop_visualizer": {
+                "domain": "milkdrop_visualizer",
+                "values": {"color_tint": True},
+            }
+        },
+        "players": {"pl_a": {"player_id": "pl_a", "provider": "sonos", "values": {}}},
+        "player_protocols": {
+            "sonos_a": {
+                "protocol_id": "sonos_a",
+                "provider": "sonos",
+                "player_id": "pl_a",
+                "role": "native",
+                "enabled": True,
+                "values": {"output_codec": "mp3", "color_tint": True},
+            }
+        },
+    }
+    records = deepcopy({key: data[key] for key in ("players", "player_protocols")})
+
+    assert await migrate(data) is True
+
+    assert data["providers"]["milkdrop_visualizer"]["values"] == {}
+    assert {key: data[key] for key in ("players", "player_protocols")} == records
+    assert await migrate(data) is False
 
 
 def test_migrate_raumfeld_icy_basic_moves_former_default() -> None:
