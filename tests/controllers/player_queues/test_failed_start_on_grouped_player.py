@@ -190,7 +190,7 @@ class _Setup:
         for _ in range(2):
             for player in sorted(self.players._players.values(), key=lambda p: p.player_id != "g"):
                 player._cache.clear()
-                for protocol in player.protocols.values():
+                for protocol in player.attached_protocols.values():
                     protocol._cache.clear()
                 player.update_state(force_update=True, signal_event=False)
 

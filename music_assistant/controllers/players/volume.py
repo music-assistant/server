@@ -550,7 +550,7 @@ class VolumeMixin(_PlayerControllerBase):
             # raw device volume and does not apply min/max scaling of its own
             await player_control.volume_set(device_volume)
             return
-        if protocol_player := player.protocols.get(player.state.volume_control):
+        if protocol_player := player.attached_protocols.get(player.state.volume_control):
             # forward the already-scaled device volume: the limits configured on the
             # player are the only ones that apply to the command
             self.logger.debug(
@@ -664,7 +664,7 @@ class VolumeMixin(_PlayerControllerBase):
             return
 
         # handle a protocol as volume_mute control
-        if protocol_player := player.protocols.get(mute_control):
+        if protocol_player := player.attached_protocols.get(mute_control):
             self.logger.debug(
                 "Redirecting mute command to protocol %s",
                 protocol_player.provider.manifest.name,

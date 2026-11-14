@@ -392,7 +392,9 @@ def is_own_client_player(player: Player | None) -> bool:
     :param player: The player to check, or None.
     """
     # a client announces the id of its own protocol, which is attached to its player
-    client_protocol = player.protocols.get(get_sendspin_player_id() or "") if player else None
+    client_protocol = (
+        player.attached_protocols.get(get_sendspin_player_id() or "") if player else None
+    )
     if client_protocol is None or not client_protocol.private:
         return False
     acting_user = get_impersonated_user()

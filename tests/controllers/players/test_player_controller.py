@@ -154,7 +154,7 @@ def _refresh(*players: Player) -> None:
     for player in players:
         # config-derived values are cached until the config is set again
         player._cache.clear()
-        for protocol in player.protocols.values():
+        for protocol in player.attached_protocols.values():
             protocol._cache.clear()
         player.update_state(signal_event=False, force_update=True)
 
@@ -3152,7 +3152,7 @@ class TestOfflinePowerControl:
         await controller.cmd_power("player_1", True)
 
         assert not player.power_on_in_progress
-        assert player.protocols[_proto("player_1")] is not protocol
+        assert player.attached_protocols[_proto("player_1")] is not protocol
         assert player.state.available is True
         assert player.state.powered is True
 

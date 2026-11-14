@@ -433,7 +433,7 @@ class PowerMixin(_PlayerControllerBase):
                     while True:
                         # a protocol that is still attaching may not be played to yet
                         if player.available_for_playback and self._attaching.keys().isdisjoint(
-                            player.protocols
+                            player.attached_protocols
                         ):
                             # a device can come online before its control reports on, while
                             # what follows (e.g. an announcement) reads the power state

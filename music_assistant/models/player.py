@@ -668,8 +668,8 @@ class Player:
         return self._initialized
 
     @property
-    def protocols(self) -> Mapping[str, PlayerProtocol]:
-        """Return the protocols that are attached to the player, by their id."""
+    def attached_protocols(self) -> Mapping[str, PlayerProtocol]:
+        """Return the protocol objects that are attached to the player right now, by their id."""
         return self._protocols
 
     @property

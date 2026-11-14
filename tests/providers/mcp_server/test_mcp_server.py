@@ -713,5 +713,5 @@ def _fake_player(player_id: str, name: str) -> MagicMock:
     player.state.group_members = []
     player.state.current_media = None
     # no client protocol, so no caller counts as connected on it
-    player.protocols = {}
+    player.attached_protocols = {}
     return player

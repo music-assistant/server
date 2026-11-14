@@ -1831,7 +1831,7 @@ class SyncGroupPlayer(PlayerProtocol):
         return next(
             (
                 protocol
-                for protocol in player.protocols.values()
+                for protocol in player.attached_protocols.values()
                 if protocol.provider.domain == domain
             ),
             None,

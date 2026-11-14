@@ -91,7 +91,7 @@ async def test_two_zones_of_one_chassis_are_two_players(scenario: Scenario) -> N
 
     assert _player_id(second_zone) != _player_id(main_zone)
     assert second_zone.player is not None
-    assert set(second_zone.player.protocols) == {SECOND_ZONE_ID}
+    assert set(second_zone.player.attached_protocols) == {SECOND_ZONE_ID}
     assert (IdentifierType.ZONE, SECOND_ZONE_ID) in second_zone.identifiers
 
 
@@ -115,7 +115,7 @@ async def test_the_airplay_receiver_of_the_chassis_lands_on_the_main_zone(
 
     assert scenario.player_of(airplay) == _player_id(main_zone)
     assert second_zone.player is not None
-    assert set(second_zone.player.protocols) == {SECOND_ZONE_ID}
+    assert set(second_zone.player.attached_protocols) == {SECOND_ZONE_ID}
 
 
 async def test_a_new_zone_does_not_take_the_record_of_a_zone_that_is_away(

@@ -177,7 +177,7 @@ class _Setup:
         for _ in range(2):
             for player in sorted(players._players.values(), key=lambda p: p.player_id != "g"):
                 player._cache.clear()
-                for attached in player.protocols.values():
+                for attached in player.attached_protocols.values():
                     attached._cache.clear()
                 player.update_state(force_update=True, signal_event=False)
         member = players._players["a"].state

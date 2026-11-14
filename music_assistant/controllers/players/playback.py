@@ -689,7 +689,7 @@ class PlaybackMixin(_PlayerControllerBase):
             not is_fresh_start
             and player.active_output_protocol
             and player.active_output_protocol != "native"
-            and (protocol_player := player.protocols.get(player.active_output_protocol))
+            and (protocol_player := player.attached_protocols.get(player.active_output_protocol))
         ):
             # Use the already-set protocol directly
             output_protocol = player.get_linked_protocol(player.active_output_protocol)
@@ -777,7 +777,7 @@ class PlaybackMixin(_PlayerControllerBase):
         player = self._get_reachable_player(player_id)
         protocol_player = player.foreign_protocol
         if player.active_output_protocol and player.active_output_protocol != "native":
-            protocol_player = player.protocols.get(player.active_output_protocol)
+            protocol_player = player.attached_protocols.get(player.active_output_protocol)
         if player.state.playback_state == PlaybackState.IDLE:
             # The player already reports idle but an output protocol is still marked
             # active: the protocol may never have received a stop at all

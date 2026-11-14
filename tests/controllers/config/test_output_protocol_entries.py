@@ -75,7 +75,7 @@ def _make_player(
     player = MagicMock()
     player.output_protocols = protocols
     player.own_protocol = None
-    player.protocols = attached or {}
+    player.attached_protocols = attached or {}
     return player
 
 

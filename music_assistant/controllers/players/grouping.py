@@ -576,7 +576,9 @@ def _output_view(player: Player, output: OutputProtocol) -> OutputView:
         protocol_id = own.protocol_id if (own := player.own_protocol) is not None else None
     else:
         protocol_id = (
-            output.output_protocol_id if output.output_protocol_id in player.protocols else None
+            output.output_protocol_id
+            if output.output_protocol_id in player.attached_protocols
+            else None
         )
     return OutputView(
         output_id=output.output_protocol_id,

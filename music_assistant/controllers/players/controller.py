@@ -232,7 +232,7 @@ class PlayerController(
         A player without protocols says in its state whether its provider is installed.
         """
         for player in self._players.values():
-            if not player.protocols:
+            if not player.attached_protocols:
                 self.trigger_player_update(player.player_id)
 
     @property

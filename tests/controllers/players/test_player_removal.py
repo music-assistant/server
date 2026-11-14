@@ -289,7 +289,7 @@ def _record_leaving_members(
     ) -> None:
         for member_id in player_ids_to_remove or []:
             member = scenario.mass.players.get_player(member_id)
-            left_while_attached[member_id] = member is not None and bool(member.protocols)
+            left_while_attached[member_id] = member is not None and bool(member.attached_protocols)
         if leave_error:
             raise leave_error
         await set_members(player_ids_to_add, player_ids_to_remove)

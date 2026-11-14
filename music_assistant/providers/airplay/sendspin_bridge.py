@@ -1818,5 +1818,5 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
         """Feed a volume/mute change of a player back into the bridge roles of its protocols."""
         if not changed_values.keys() & _VOLUME_STATE_FIELDS:
             return
-        for protocol_id in updated_player.protocols:
+        for protocol_id in updated_player.attached_protocols:
             self.sync_volume(protocol_id)

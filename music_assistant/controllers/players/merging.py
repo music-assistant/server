@@ -153,7 +153,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         self._merge_player_config(keep_id, absorb_id, protocol_ids)
         await self.mass.config.async_save()
         absorbed = self._players.get(absorb_id)
-        moving = list(absorbed.protocols.values()) if absorbed is not None else []
+        moving = list(absorbed.attached_protocols.values()) if absorbed is not None else []
         # the output that plays for the absorbed player, e.g. in a group, stays the active output
         # of the kept one, so the group keeps its member
         playing_through = (
@@ -205,7 +205,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
             keeper.update_state()
             if (
                 playing_through is not None
-                and keeper.protocols.get(playing_through.protocol_id) is playing_through
+                and keeper.attached_protocols.get(playing_through.protocol_id) is playing_through
                 and keeper.active_output_protocol is None
             ):
                 keeper.set_active_output_protocol(playing_through.protocol_id)

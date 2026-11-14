@@ -1328,7 +1328,7 @@ class PlayerProtocol(ABC):
             # a protocol that waits for its player is matched again on what it reports now
             self.mass.players.on_unattached_protocol_update(self)
             return
-        if player.protocols.get(self._protocol_id) is not self:
+        if player.attached_protocols.get(self._protocol_id) is not self:
             # a debounced update of an object that was detached or replaced meanwhile
             return
         player.update_state(force_update=force_update, signal_event=signal_event)

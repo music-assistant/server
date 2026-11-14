@@ -266,7 +266,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
 
         :param player: The player.
         """
-        for protocol in list(player.protocols.values()):
+        for protocol in list(player.attached_protocols.values()):
             if self._attach_role(protocol, player.player_id) != player.get_role(
                 protocol.protocol_id
             ):
@@ -360,7 +360,7 @@ class ProtocolLinkingMixin(_PlayerControllerBase):
         # this domain slot. The provider should remove stale protocols explicitly.
         return any(
             other.provider.domain == domain and other is not protocol
-            for other in player.protocols.values()
+            for other in player.attached_protocols.values()
         )
 
     def _get_protocol_ids(self, player_id: str) -> set[str]:

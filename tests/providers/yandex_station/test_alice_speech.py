@@ -48,7 +48,7 @@ def _make_provider(
     mass = MagicMock()
     mass.register_api_command = MagicMock(side_effect=lambda *_a, **_kw: MagicMock())
     known = {
-        player_id: MagicMock(protocols={f"protocol_of_{player_id}": protocol})
+        player_id: MagicMock(attached_protocols={f"protocol_of_{player_id}": protocol})
         for player_id, protocol in (players or {}).items()
     }
     mass.players.get_player = MagicMock(side_effect=known.get)
