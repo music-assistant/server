@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "hermes_agent_radio",
+  "stage": "alpha",
+  "name": "Hermes Agent Radio",
+  "description": "A 24/7 AI-produced radio station about agents and the open-source agent world, with six live stations.",
+  "codeowners": ["@rahlquist"],
+  "requirements": [],
+  "documentation": "https://www.music-assistant.io/music-providers/hermes-agent-radio/",
+  "multi_instance": false,
+  "icon": "radio"
+}
