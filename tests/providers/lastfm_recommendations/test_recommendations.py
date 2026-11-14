@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
+from aiohttp import ClientResponseError
 from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.errors import MusicAssistantError, RateLimited
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -18,12 +21,15 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lastfm_recommendations import (
     SUPPORTED_FEATURES,
     LastFMRecommendationsProvider,
 )
+from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
     ARTIST_TOP_TRACKS_FETCH_LIMIT,
+    RATE_LIMIT_COOLDOWN_SECONDS,
 )
 from tests.common import use_real_create_task
 
@@ -380,7 +386,219 @@ async def test_artist_toptracks_are_matched_off_the_event_loop(
     assert threads[0] is not threading.current_thread()
 
 
-def _use_dict_cache(mass_mock: Mock) -> None:
+@pytest.mark.parametrize(
+    "failure",
+    [
+        (500, '{"error": 8, "message": "Operation failed"}'),
+        (503, "Service Unavailable"),
+        (503, ""),
+        (200, ""),
+        (502, "[]"),
+        TimeoutError(),
+    ],
+    ids=[
+        "error_payload",
+        "http_error",
+        "empty_error_body",
+        "empty_body",
+        "not_an_object",
+        "timeout",
+    ],
+)
+async def test_failed_toptracks_request_is_not_cached(
+    provider: LastFMRecommendationsProvider,
+    mass_mock: Mock,
+    failure: tuple[int, str] | TimeoutError,
+) -> None:
+    """A failed Last.fm request raises and stores nothing, so the next call asks again."""
+    store = _use_dict_cache(mass_mock)
+    responses = _use_http_responses(
+        provider,
+        mass_mock,
+        [failure, (200, '{"toptracks": {"track": [{"name": "Creep"}]}}')],
+    )
+    artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
+
+    with pytest.raises(MusicAssistantError):
+        await provider.get_artist_toptrack_titles(artist, 10)
+    assert not store
+
+    assert await provider.get_artist_toptrack_titles(artist, 10) == ["Creep"]
+    assert not responses
+
+
+async def test_unknown_artist_toptracks_answer_is_cached(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """Last.fm not knowing an artist is an answer: cached, and not asked for again."""
+    _use_dict_cache(mass_mock)
+    responses = _use_http_responses(
+        provider,
+        mass_mock,
+        [(400, '{"error": 6, "message": "The artist could not be found"}')],
+    )
+    artist = Artist(item_id="1", provider="library", name="Nobody", provider_mappings=set())
+
+    assert await provider.get_artist_toptrack_titles(artist, 10) == []
+    assert not responses
+    assert await provider.get_artist_toptrack_titles(artist, 10) == []
+
+
+async def test_failed_similar_artists_request_is_empty(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """A similar artists listing stays empty, without an error, when Last.fm fails."""
+    _use_http_responses(provider, mass_mock, [(503, "Service Unavailable")])
+    artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
+
+    assert await provider.get_similar_artists(artist) == []
+
+
+@pytest.mark.parametrize(
+    "rate_limit",
+    [
+        (429, "Too Many Requests"),
+        (429, '{"error": 29, "message": "Rate Limit Exceeded"}'),
+        (200, '{"error": 29, "message": "Rate Limit Exceeded"}'),
+    ],
+    ids=["http_429", "http_429_error_29", "error_29"],
+)
+async def test_rate_limit_holds_back_every_request(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock, rate_limit: tuple[int, str]
+) -> None:
+    """A rate limit from Last.fm stops all requests to it for the default cooldown."""
+    responses = _use_http_responses(
+        provider, mass_mock, [rate_limit, (200, '{"similarartists": {"artist": []}}')]
+    )
+
+    with pytest.raises(RateLimited):
+        await provider.api.get_artist_top_tracks("Radiohead")
+    assert (
+        RATE_LIMIT_COOLDOWN_SECONDS - 5
+        < provider.api.throttler.cooldown_remaining
+        <= RATE_LIMIT_COOLDOWN_SECONDS
+    )
+
+    assert await provider.api.get_similar_artists("Radiohead") == []
+    with pytest.raises(RateLimited):
+        await provider.api.get_artist_top_tracks("Radiohead")
+    assert len(responses) == 1
+
+
+async def test_rate_limit_honours_retry_after(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """The cooldown lasts as long as Last.fm's Retry-After header asks."""
+    _use_http_responses(provider, mass_mock, [(429, "", {"Retry-After": "30"})])
+
+    with pytest.raises(RateLimited) as err:
+        await provider.api.get_artist_top_tracks("Radiohead")
+    assert err.value.backoff_time == 30
+    assert 25 < provider.api.throttler.cooldown_remaining <= 30
+
+
+async def test_rate_limit_skips_the_by_name_attempt(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """A rate limit on the MBID lookup is not followed by the lookup by name."""
+    responses = _use_http_responses(
+        provider,
+        mass_mock,
+        [(429, "Too Many Requests"), (200, '{"similarartists": {"artist": [{"name": "Muse"}]}}')],
+    )
+
+    assert await provider.api.get_similar_artists("Radiohead", "mbid-1") == []
+    assert len(responses) == 1
+
+
+async def test_rate_limited_toptracks_are_not_cached(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """Top tracks are asked for again once the cooldown of a rate limit has passed."""
+    store = _use_dict_cache(mass_mock)
+    responses = _use_http_responses(
+        provider,
+        mass_mock,
+        [(429, "Too Many Requests"), (200, '{"toptracks": {"track": [{"name": "Creep"}]}}')],
+    )
+    artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
+
+    with pytest.raises(RateLimited):
+        await provider.get_artist_toptrack_titles(artist, 10)
+    with pytest.raises(RateLimited):
+        await provider.get_artist_toptrack_titles(artist, 10)
+    assert not store
+    assert len(responses) == 1
+
+    # a fresh throttler stands in for the cooldown running out
+    provider.api.throttler = ThrottlerManager(rate_limit=5, period=1)
+    assert await provider.get_artist_toptrack_titles(artist, 10) == ["Creep"]
+    assert not responses
+
+
+class _FakeResponse:
+    """A canned Last.fm HTTP response."""
+
+    def __init__(self, status: int, body: str, headers: dict[str, str] | None = None) -> None:
+        """
+        Initialize the response.
+
+        :param status: The HTTP status code.
+        :param body: The response body.
+        :param headers: The response headers.
+        """
+        self.status = status
+        self.body = body
+        self.headers = headers or {}
+
+    async def __aenter__(self) -> Self:
+        """Enter the request context."""
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        """Leave the request context."""
+
+    async def json(self, content_type: str | None = "application/json") -> Any:
+        """Return the parsed body, None for an empty one like aiohttp does."""
+        if not self.body.strip():
+            return None
+        return json.loads(self.body)
+
+    def raise_for_status(self) -> None:
+        """Raise for an HTTP error status."""
+        if self.status >= 400:
+            raise ClientResponseError(Mock(), (), status=self.status)
+
+
+def _use_http_responses(
+    provider: LastFMRecommendationsProvider,
+    mass_mock: Mock,
+    responses: list[tuple[int, str] | tuple[int, str, dict[str, str]] | TimeoutError],
+) -> list[tuple[int, str] | tuple[int, str, dict[str, str]] | TimeoutError]:
+    """
+    Give the provider a real Last.fm API client that gets the given responses in order.
+
+    The client gets a throttler of its own, so a rate limit does not reach other tests.
+
+    :param responses: The status, body and optional headers of each response, or the error
+        a request raises.
+    :returns: The responses still unused, so a test can tell how many requests were made.
+    """
+    remaining = list(responses)
+
+    def _get(*_args: Any, **_kwargs: Any) -> _FakeResponse:
+        response = remaining.pop(0)
+        if isinstance(response, TimeoutError):
+            raise response
+        return _FakeResponse(*response)
+
+    mass_mock.http_session = Mock(get=_get)
+    provider.api = LastFMAPIClient(provider)
+    provider.api.throttler = ThrottlerManager(rate_limit=5, period=1)
+    return remaining
+
+
+def _use_dict_cache(mass_mock: Mock) -> dict[str, Any]:
     """Back the mocked cache with a dict so cached methods hit on a second call."""
     store: dict[str, Any] = {}
 
@@ -393,6 +611,7 @@ def _use_dict_cache(mass_mock: Mock) -> None:
     mass_mock.cache.get_with_freshness = AsyncMock(side_effect=_get)
     mass_mock.cache.set = AsyncMock(side_effect=_set)
     use_real_create_task(mass_mock)
+    return store
 
 
 def _library_track(item_id: str, name: str, version: str = "", mbid: str | None = None) -> Track:
