@@ -959,7 +959,7 @@ async def test_group_with_a_48k_only_receiver_and_a_16_bit_member(
     airplay_player.advertised_audio_formats = ALAC_44100_16 | ALAC_48000_24
     _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
     member = AirPlayPlayer(
-        provider=airplay_player.provider,
+        provider=cast("AirPlayProvider", airplay_player.provider),
         player_id="member",
         display_name="Member",
         address="127.0.0.2",
