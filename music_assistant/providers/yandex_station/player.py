@@ -967,7 +967,7 @@ class YandexStationPlayer(PlayerProtocol):
             return
 
         target_player = self.mass.players.get_player(target_id)
-        if target_player is None or not target_player.available_for_playback:
+        if target_player is None or not target_player.available:
             _LOGGER.warning(
                 "[%s] intercept: target player %s not available",
                 self.protocol_id,
