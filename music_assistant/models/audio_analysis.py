@@ -222,8 +222,13 @@ class AudioAnalysisData(DataClassDictMixin):
         return 1.0 + 9.0 * (score + _ENERGY_Z_LIMIT) / (2.0 * _ENERGY_Z_LIMIT)
 
     def as_audio_metadata(self) -> AudioMetadata | None:
-        """Return the bpm and musical key as track AudioMetadata, or None when it holds neither."""
-        if self.bpm is None and self.key is None:
+        """
+        Return the bpm, musical key and energy level as track AudioMetadata.
+
+        The energy level is rounded to a whole number. Returns None when it holds none of them.
+        """
+        energy_level = self.energy_level
+        if self.bpm is None and self.key is None and energy_level is None:
             return None
         musical_key: str | None = None
         if self.key is not None:
@@ -232,6 +237,7 @@ class AudioAnalysisData(DataClassDictMixin):
             bpm=self.bpm,
             musical_key=musical_key,
             camelot_key=camelot_key(self.key, self.mode),
+            energy_level=None if energy_level is None else round(energy_level),
         )
 
 

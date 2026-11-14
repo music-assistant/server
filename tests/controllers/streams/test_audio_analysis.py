@@ -2000,6 +2000,30 @@ async def test_get_track_audio_metadata_asks_the_copy_playback_would_pick_first(
     assert query.await_args_list[0].args[1]["item_id"] == "hifi"
 
 
+@pytest.mark.parametrize(("loudness_row", "level"), [(True, 7), (False, None)])
+@pytest.mark.asyncio
+async def test_get_track_audio_metadata_energy_level_needs_loudness_provider(
+    loudness_row: bool, level: int | None
+) -> None:
+    """The energy level uses a loudness provider's value, never Sonic Analysis' own loudness."""
+    rows = [
+        _aa_row(
+            SONIC_ANALYSIS_DOMAIN,
+            1,
+            bpm=120.0,
+            brightness=0.2,
+            arousal=0.6,
+            loudness_integrated=-8.0,
+        )
+    ]
+    if loudness_row:
+        rows.append(_aa_row(PROVIDER_LOUDNESS_DOMAIN, 2, loudness_integrated=-8.0))
+    c = _analysis_controller_with_rows(rows)
+    result = await c.get_track_audio_metadata(_track_with_mapping())
+    assert result is not None
+    assert result.energy_level == level
+
+
 @pytest.mark.asyncio
 async def test_get_wave_form_returns_rms_bins() -> None:
     """wave_form returns the stored RMS energy bins as a plain list of floats."""

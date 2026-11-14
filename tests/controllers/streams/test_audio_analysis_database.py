@@ -632,6 +632,33 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
 
 
 @pytest.mark.asyncio
+async def test_tracks_audio_metadata_energy_level_matches_single_track_lookup(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """The energy level takes loudness only from a loudness provider, in both lookups."""
+    await _setup_metadata_fixture(ctrl)
+    sonic = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-12.0)
+    await ctrl.set_audio_analysis("e1", "fs--a", SONIC_ANALYSIS_DOMAIN, sonic)
+    await ctrl.set_audio_analysis(
+        "e1", "fs--a", PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)
+    )
+    await ctrl.set_audio_analysis(
+        "e2",
+        "fs--a",
+        SONIC_ANALYSIS_DOMAIN,
+        AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0),
+    )
+    tracks = [_track(("e1", "fs--a", ContentType.MP3)), _track(("e2", "fs--a", ContentType.MP3))]
+
+    batched_result = await ctrl.get_tracks_audio_metadata(tracks)
+
+    assert batched_result == [await ctrl.get_track_audio_metadata(track) for track in tracks]
+    assert batched_result[0] is not None
+    assert batched_result[0].energy_level == 7
+    assert batched_result[1] is None
+
+
+@pytest.mark.asyncio
 async def test_tracks_audio_metadata_ignores_unavailable_aa_providers(
     ctrl: AudioAnalysisController,
 ) -> None:

@@ -158,3 +158,12 @@ def test_energy_level_is_not_serialised() -> None:
     """energy_level is derived, not stored."""
     data = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0)
     assert "energy_level" not in data.to_dict()
+
+
+def test_as_audio_metadata_carries_rounded_energy_level() -> None:
+    """The energy level alone yields AudioMetadata, rounded to a whole number."""
+    data = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0)
+    metadata = data.as_audio_metadata()
+    assert metadata is not None
+    assert metadata.energy_level == 7
+    assert metadata.bpm is None
