@@ -30,6 +30,10 @@ MISS_CACHE_EXPIRATION_SECONDS = 60 * 60 * 24  # 1 day
 # rotate daily, so a daily recompute is plenty and keeps the per-artist tag fan-out cheap.
 TOP_GENRES_CACHE_EXPIRATION_SECONDS = 60 * 60 * 24  # 1 day
 
+# How long Last.fm is left alone after a rate limit that names no wait of its own: Last.fm
+# averages its rate limit over five minutes
+RATE_LIMIT_COOLDOWN_SECONDS = 60 * 5
+
 # Concurrency limits
 # Maximum number of concurrent provider searches to prevent overwhelming APIs
 SEARCH_CONCURRENCY_LIMIT = 5

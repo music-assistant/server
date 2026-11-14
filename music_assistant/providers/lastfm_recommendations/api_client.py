@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from aiohttp import ClientError
@@ -10,12 +11,20 @@ from music_assistant_models.errors import (
     InvalidDataError,
     InvalidToken,
     MusicAssistantError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.throttle_retry import ThrottlerManager
-from music_assistant.providers.lastfm_recommendations.constants import CONF_API_KEY
+from music_assistant.helpers.throttle_retry import (
+    MAX_RETRY_AFTER,
+    ThrottlerManager,
+    parse_retry_after,
+)
+from music_assistant.providers.lastfm_recommendations.constants import (
+    CONF_API_KEY,
+    RATE_LIMIT_COOLDOWN_SECONDS,
+)
 
 # Built-in Last.fm API key (read-only access, no secret needed)
 _DEFAULT_API_KEY: str = app_var("lastfm_api_key")
@@ -23,7 +32,7 @@ _DEFAULT_API_KEY: str = app_var("lastfm_api_key")
 if TYPE_CHECKING:
     import logging
 
-    from aiohttp import ClientSession
+    from aiohttp import ClientResponse, ClientSession
 
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
 
@@ -40,10 +49,10 @@ class LastFMAPIClient:
         4: AuthenticationFailed,
         10: InvalidToken,
         26: InvalidToken,
-        29: ResourceTemporarilyUnavailable,
     }
     # Last.fm answers a lookup of an artist, track or user it does not know with this error
     _ERROR_NOT_FOUND = 6
+    _ERROR_RATE_LIMIT = 29
 
     def __init__(self, provider: LastFMRecommendationsProvider) -> None:
         """
@@ -65,7 +74,13 @@ class LastFMAPIClient:
 
         :param method: The Last.fm API method to call.
         :param params: Additional query parameters.
+        :raises RateLimited: When Last.fm asked us to wait, also while that wait still holds.
         """
+        # Last.fm only enriches a page or a background job, so a call does not sit out a
+        # rate limit but fails right away
+        if (remaining := self.throttler.cooldown_remaining) > 0:
+            msg = f"Last.fm rate limit holds for another {remaining:.0f} seconds (method: {method})"
+            raise RateLimited(msg, backoff_time=round(remaining))
         async with self.throttler.acquire():
             api_key = self.provider.config.get_value(CONF_API_KEY) or _DEFAULT_API_KEY
             params.update(
@@ -77,6 +92,8 @@ class LastFMAPIClient:
             )
 
             async with self.http_session.get(self.BASE_URL, params=params) as response:
+                if response.status == HTTPStatus.TOO_MANY_REQUESTS:
+                    raise self._rate_limited(response, method)
                 try:
                     data: dict[str, Any] = await response.json(content_type=None)
                 except ValueError as err:
@@ -91,6 +108,8 @@ class LastFMAPIClient:
             error_code = int(data.get("error", 0))
             if error_code == self._ERROR_NOT_FOUND:
                 return {}
+            if error_code == self._ERROR_RATE_LIMIT:
+                raise self._rate_limited(response, method)
             error_msg = data.get("message", "Unknown error")
             msg = f"Last.fm API error {error_code}: {error_msg} (method: {method})"
             exc_cls = self._ERROR_MAP.get(error_code, InvalidDataError)
@@ -509,3 +528,18 @@ class LastFMAPIClient:
             return [tracks]
 
         return tracks
+
+    def _rate_limited(self, response: ClientResponse, method: str) -> RateLimited:
+        """
+        Hold back every request to Last.fm for the wait a rate limit asks for.
+
+        :param response: The response that carries the rate limit.
+        :param method: The Last.fm API method that was called.
+        :returns: The error to raise for the rate limited call.
+        """
+        retry_after = min(parse_retry_after(response.headers.get("Retry-After")), MAX_RETRY_AFTER)
+        wait = retry_after or RATE_LIMIT_COOLDOWN_SECONDS
+        self.throttler.set_cooldown(wait)
+        self.logger.warning("Last.fm rate limit, pausing requests for %s seconds", wait)
+        msg = f"Last.fm rate limit, retry in {wait} seconds (method: {method})"
+        return RateLimited(msg, backoff_time=wait)

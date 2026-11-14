@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, call, patch
 import pytest
 from aiohttp import ClientResponseError
 from music_assistant_models.enums import ExternalID, MediaType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError, RateLimited
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lastfm_recommendations import (
     SUPPORTED_FEATURES,
     LastFMRecommendationsProvider,
@@ -28,6 +29,7 @@ from music_assistant.providers.lastfm_recommendations import (
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
     ARTIST_TOP_TRACKS_FETCH_LIMIT,
+    RATE_LIMIT_COOLDOWN_SECONDS,
 )
 from tests.common import use_real_create_task
 
@@ -387,12 +389,11 @@ async def test_artist_toptracks_are_matched_off_the_event_loop(
 @pytest.mark.parametrize(
     "failure",
     [
-        (429, '{"error": 29, "message": "Rate Limit Exceeded"}'),
         (500, '{"error": 8, "message": "Operation failed"}'),
         (503, "Service Unavailable"),
         TimeoutError(),
     ],
-    ids=["rate_limit", "error_payload", "http_error", "timeout"],
+    ids=["error_payload", "http_error", "timeout"],
 )
 async def test_failed_toptracks_request_is_not_cached(
     provider: LastFMRecommendationsProvider,
@@ -443,18 +444,102 @@ async def test_failed_similar_artists_request_is_empty(
     assert await provider.get_similar_artists(artist) == []
 
 
+@pytest.mark.parametrize(
+    "rate_limit",
+    [
+        (429, "Too Many Requests"),
+        (429, '{"error": 29, "message": "Rate Limit Exceeded"}'),
+        (200, '{"error": 29, "message": "Rate Limit Exceeded"}'),
+    ],
+    ids=["http_429", "http_429_error_29", "error_29"],
+)
+async def test_rate_limit_holds_back_every_request(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock, rate_limit: tuple[int, str]
+) -> None:
+    """A rate limit from Last.fm stops all requests to it for the default cooldown."""
+    responses = _use_http_responses(
+        provider, mass_mock, [rate_limit, (200, '{"similarartists": {"artist": []}}')]
+    )
+
+    with pytest.raises(RateLimited):
+        await provider.api.get_artist_top_tracks("Radiohead")
+    assert (
+        RATE_LIMIT_COOLDOWN_SECONDS - 5
+        < provider.api.throttler.cooldown_remaining
+        <= RATE_LIMIT_COOLDOWN_SECONDS
+    )
+
+    assert await provider.api.get_similar_artists("Radiohead") == []
+    with pytest.raises(RateLimited):
+        await provider.api.get_artist_top_tracks("Radiohead")
+    assert len(responses) == 1
+
+
+async def test_rate_limit_honours_retry_after(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """The cooldown lasts as long as Last.fm's Retry-After header asks."""
+    _use_http_responses(provider, mass_mock, [(429, "", {"Retry-After": "30"})])
+
+    with pytest.raises(RateLimited) as err:
+        await provider.api.get_artist_top_tracks("Radiohead")
+    assert err.value.backoff_time == 30
+    assert 25 < provider.api.throttler.cooldown_remaining <= 30
+
+
+async def test_rate_limit_skips_the_by_name_attempt(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """A rate limit on the MBID lookup is not followed by the lookup by name."""
+    responses = _use_http_responses(
+        provider,
+        mass_mock,
+        [(429, "Too Many Requests"), (200, '{"similarartists": {"artist": [{"name": "Muse"}]}}')],
+    )
+
+    assert await provider.api.get_similar_artists("Radiohead", "mbid-1") == []
+    assert len(responses) == 1
+
+
+async def test_rate_limited_toptracks_are_not_cached(
+    provider: LastFMRecommendationsProvider, mass_mock: Mock
+) -> None:
+    """Top tracks are asked for again once the cooldown of a rate limit has passed."""
+    store = _use_dict_cache(mass_mock)
+    responses = _use_http_responses(
+        provider,
+        mass_mock,
+        [(429, "Too Many Requests"), (200, '{"toptracks": {"track": [{"name": "Creep"}]}}')],
+    )
+    artist = Artist(item_id="1", provider="library", name="Radiohead", provider_mappings=set())
+
+    with pytest.raises(RateLimited):
+        await provider.get_artist_toptrack_titles(artist, 10)
+    with pytest.raises(RateLimited):
+        await provider.get_artist_toptrack_titles(artist, 10)
+    assert not store
+    assert len(responses) == 1
+
+    # a fresh throttler stands in for the cooldown running out
+    provider.api.throttler = ThrottlerManager(rate_limit=5, period=1)
+    assert await provider.get_artist_toptrack_titles(artist, 10) == ["Creep"]
+    assert not responses
+
+
 class _FakeResponse:
     """A canned Last.fm HTTP response."""
 
-    def __init__(self, status: int, body: str) -> None:
+    def __init__(self, status: int, body: str, headers: dict[str, str] | None = None) -> None:
         """
         Initialize the response.
 
         :param status: The HTTP status code.
         :param body: The response body.
+        :param headers: The response headers.
         """
         self.status = status
         self.body = body
+        self.headers = headers or {}
 
     async def __aenter__(self) -> Self:
         """Enter the request context."""
@@ -476,12 +561,15 @@ class _FakeResponse:
 def _use_http_responses(
     provider: LastFMRecommendationsProvider,
     mass_mock: Mock,
-    responses: list[tuple[int, str] | TimeoutError],
-) -> list[tuple[int, str] | TimeoutError]:
+    responses: list[tuple[int, str] | tuple[int, str, dict[str, str]] | TimeoutError],
+) -> list[tuple[int, str] | tuple[int, str, dict[str, str]] | TimeoutError]:
     """
     Give the provider a real Last.fm API client that gets the given responses in order.
 
-    :param responses: The status and body of each response, or the error a request raises.
+    The client gets a throttler of its own, so a rate limit does not reach other tests.
+
+    :param responses: The status, body and optional headers of each response, or the error
+        a request raises.
     :returns: The responses still unused, so a test can tell how many requests were made.
     """
     remaining = list(responses)
@@ -494,6 +582,7 @@ def _use_http_responses(
 
     mass_mock.http_session = Mock(get=_get)
     provider.api = LastFMAPIClient(provider)
+    provider.api.throttler = ThrottlerManager(rate_limit=5, period=1)
     return remaining
 
 
