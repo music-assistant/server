@@ -236,8 +236,8 @@ class AirPlayStream:
         # tied to it would re-render and re-send the same art on every update
         # until the churn stops.
         self._metadata_artwork_checksum = ""
-        # Queue item of the last delivered metadata identity.
-        self._metadata_item_id = ""
+        # The binary's now-playing item for the last delivered metadata.
+        self._metadata_item_identity = ""
         self._pending_metadata_checksum = ""
         self._metadata_generation = 0
         self._metadata_lock = asyncio.Lock()
@@ -384,7 +384,7 @@ class AirPlayStream:
         async with self._metadata_lock:
             self._metadata_text_checksum = ""
             self._metadata_artwork_checksum = ""
-            self._metadata_item_id = ""
+            self._metadata_item_identity = ""
             self._pending_metadata_checksum = ""
             self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
@@ -809,6 +809,7 @@ class AirPlayStream:
         artist = ""
         album = ""
         item_id = ""
+        item_identity = ""
         if metadata:
             duration = self._full_media_duration(metadata)
             # each field is a single line of the newline-delimited command
@@ -821,6 +822,9 @@ class AirPlayStream:
             # full metadata each time — which makes an Apple TV re-render its
             # Now Playing popup.
             text_checksum = f"{item_id}|{title}|{artist}|{album}"
+            # how the binary tells now-playing items apart: the queue item
+            # id, or the text for media without one (an audio source)
+            item_identity = item_id or f"{title}|{artist}|{album}"
             # the artwork identity must survive URL-form changes: the session
             # media and the player state carry the same image behind different
             # base URLs, and re-sending on such a flip would re-render and
@@ -839,8 +843,10 @@ class AirPlayStream:
                     self._pending_metadata_checksum = metadata_checksum
                     self._metadata_generation += 1
                 metadata_generation = self._metadata_generation
-            if metadata and item_id != self._metadata_item_id:
-                # the binary drops artwork on a new item, so re-send a cover shared with the last track
+            if metadata and item_identity != self._metadata_item_identity:
+                # the binary drops the artwork when the now-playing item
+                # changes, so a new item needs it again, also when the image
+                # is the same (the next track of an album)
                 self._metadata_artwork_checksum = ""
             needs_artwork = artwork_checksum != self._metadata_artwork_checksum
             if (
@@ -886,7 +892,7 @@ class AirPlayStream:
                             self._artwork_render_generations.discard(metadata_generation)
                         return
                     self._metadata_text_checksum = text_checksum
-                    self._metadata_item_id = item_id
+                    self._metadata_item_identity = item_identity
                     # every identity push is followed by one explicit progress
                     # anchor, even at position zero: some receivers (WiiM Amp)
                     # mute a flushed-and-restarted session mid-track when no
