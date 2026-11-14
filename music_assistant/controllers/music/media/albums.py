@@ -416,21 +416,9 @@ class AlbumsController(MediaControllerBase[Album]):
         :param favorite_only: Only count the albums the current user likes.
         :param album_types: Only count albums of these types.
         """
-        sql_query = f"SELECT item_id FROM {self.db_table}"
-        query_parts: list[str] = []
         query_params: dict[str, Any] = {}
-        if favorite_only:
-            query_parts.append(self._favorite_filter_clause(query_params, True))
-        if album_types:
-            query_parts.append("albums.album_type IN :album_types")
-            query_params["album_types"] = [x.value for x in album_types]
-        if provider_filter := self._ensure_provider_filter(None):
-            query_parts.append(
-                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
-            )
-        if query_parts:
-            sql_query += f" WHERE {' AND '.join(query_parts)}"
-        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
+        query_parts = self._library_filter_parts(query_params, album_types)
+        return await self._library_count(favorite_only, query_parts, query_params)
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete item from the library(database)."""
