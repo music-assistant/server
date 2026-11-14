@@ -97,6 +97,7 @@ from music_assistant.helpers.util import (
     TaskManager,
     is_hass_supervisor,
     load_provider_module,
+    set_provider_tier,
     warn_if_missing_x86_64_v2,
 )
 from music_assistant.models import ProviderInstanceType
@@ -1369,6 +1370,7 @@ class MusicAssistant:
             self.dashboard,
             self.statistics,
             self.storage,
+            self.community_catalog,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -1723,7 +1725,7 @@ class MusicAssistant:
             os.path.join(provider_path, "manifest.json")
         )
         # the tier follows from where a provider loads, not from its manifest file
-        provider_manifest.tier = tier
+        set_provider_tier(provider_manifest, tier)
         if tier == ProviderTier.COMMUNITY:
             domain = provider_manifest.domain
             # the folder name is the module name, and a provider is imported by its domain
@@ -1733,8 +1735,6 @@ class MusicAssistant:
             if domain in self._provider_manifests:
                 msg = f"Provider domain {domain} is already registered"
                 raise AlreadyRegisteredError(msg)
-            provider_manifest.builtin = False
-            provider_manifest.allow_disable = True
         # detect provider icon image variants (svg preferred over png)
         icons = await detect_provider_icons(provider_path)
         if icons:

@@ -13,6 +13,19 @@ from music_assistant.helpers.app_vars import has_bundled_app_vars
 BUILD_INFO_FILE: Final[Path] = Path("/app/build_info.json")
 
 
+def release_channel(version: str) -> str:
+    """
+    Return the release channel a server version belongs to: nightly, beta or stable.
+
+    :param version: The version of the server, as in MusicAssistant.version.
+    """
+    if version == "0.0.0" or ".dev" in version:
+        return "nightly"
+    if "b" in version or "rc" in version:
+        return "beta"
+    return "stable"
+
+
 async def get_official_build_info() -> dict[str, str] | None:
     """
     Return the build info of the official release build the server runs from.
