@@ -58,6 +58,13 @@ RECOMMENDATIONS_ITEMS_TIMEOUT: Final[int] = 30
 # contractually fast (no live backend calls) so a short timeout suffices
 RECOMMENDATIONS_ROWS_TIMEOUT: Final[int] = 5
 
+# browse scheme under which every recommendation row can be opened in full
+RECOMMENDATIONS_BROWSE_SCHEME: Final[str] = "discover"
+
+# max items a library recommendation row returns when browsed in full,
+# instead of the handful its Discover row shows
+RECOMMENDATIONS_BROWSE_LIMIT: Final[int] = 500
+
 # how long after a provider is loaded its library sync runs for the first time,
 # leaving the rest of the startup work room to settle first
 INITIAL_SYNC_DELAY: Final[int] = 10

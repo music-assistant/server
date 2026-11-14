@@ -88,6 +88,7 @@ from music_assistant.controllers.music.constants import (
     INITIAL_SYNC_DELAY,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
+    RECOMMENDATIONS_BROWSE_SCHEME,
     SEARCH_CACHE_EXPIRATION_COMBINED,
     SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
     SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
@@ -1088,15 +1089,25 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         browse_prov = self.mass.get_provider(provider_instance)
         if browse_prov and not self._apply_user_provider_filter([browse_prov]):
             raise InsufficientPermissions(f"{browse_prov.name} is not a music source of this user")
+        is_recommendations = provider_instance == RECOMMENDATIONS_BROWSE_SCHEME
         # handle regular provider listing, always add back folder first
-        if not browse_prov or not sub_path:
+        if not (browse_prov or is_recommendations) or not sub_path:
             prepend_items.append(
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
-            if not browse_prov:
+            if not (browse_prov or is_recommendations):
                 return _listed(prepend_items, [])
         else:
-            back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
+            if is_recommendations:
+                # a row id may carry slashes of its own, so only the provider ends a level
+                provider_level, _, row_id = sub_path.partition("/")
+                back_path = (
+                    f"{provider_instance}://{provider_level}"
+                    if row_id
+                    else f"{provider_instance}://"
+                )
+            else:
+                back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
                 BrowseFolder(
                     item_id="back",
@@ -1104,6 +1115,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     path=back_path,
                     name="..",
                 )
+            )
+        if is_recommendations:
+            return _listed(
+                prepend_items,
+                await self.recommendations.browse(sub_path, random_seed=random_seed),
             )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
