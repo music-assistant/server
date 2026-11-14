@@ -44,7 +44,7 @@ def _provider() -> AmpliPiPlayerProvider:
     prov.logger = MagicMock()
     prov.api = MagicMock()
     prov.mass = MagicMock()
-    prov.mass.players.attach = AsyncMock()
+    prov.mass.players.register = AsyncMock()
     prov.mass.players.get_protocol.return_value = None
     prov.mass.players.wants_protocol.return_value = True
     prov._players = {}
@@ -310,7 +310,7 @@ class TestDiscoverAndHelpers:
         await prov.discover_players()
 
         assert set(prov._players) == {0, 2}
-        assert cast("MagicMock", prov.mass.players).attach.await_count == 2
+        assert cast("MagicMock", prov.mass.players).register.await_count == 2
 
     async def test_discover_skips_attached_and_unwanted_zones(
         self, monkeypatch: pytest.MonkeyPatch
@@ -330,7 +330,7 @@ class TestDiscoverAndHelpers:
         monkeypatch.setattr("music_assistant.providers.amplipi.provider.AmpliPiZonePlayer", built)
         await prov.discover_players()
         built.assert_not_called()
-        cast("MagicMock", prov.mass.players).attach.assert_awaited_once_with(detached)
+        cast("MagicMock", prov.mass.players).register.assert_awaited_once_with(detached)
 
     async def test_removed_zone_is_registered_again_as_a_new_player(self) -> None:
         """A removed zone player is let go of, so the next discovery registers a new one."""
@@ -355,7 +355,7 @@ class TestDiscoverAndHelpers:
             await prov.discover_players()
         assert set(prov._players) == {0, 1}
         assert prov._players[0] is not removed
-        cast("MagicMock", prov.mass.players).attach.assert_awaited_once_with(prov._players[0])
+        cast("MagicMock", prov.mass.players).register.assert_awaited_once_with(prov._players[0])
 
     def test_status_property(self) -> None:
         """The status property returns the last polled status."""

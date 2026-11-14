@@ -51,8 +51,8 @@ def _info() -> Info:
     )
 
 
-async def _attach(scenario: Scenario) -> BoseSoundTouchPlayer:
-    """Attach the protocol of a speaker the way discovery sets it up, without contacting it."""
+async def _register(scenario: Scenario) -> BoseSoundTouchPlayer:
+    """Register the protocol of a speaker the way discovery sets it up, without contacting it."""
     provider: Any = scenario.mass.get_provider("bose_soundtouch") or await scenario.add_provider(
         "bose_soundtouch"
     )
@@ -63,7 +63,7 @@ async def _attach(scenario: Scenario) -> BoseSoundTouchPlayer:
     protocol = BoseSoundTouchPlayer(provider, PROTOCOL_ID, client, _info())
     protocol.set_static_attributes(_info())
     protocol._attr_needs_poll = False
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     return protocol
 
@@ -78,7 +78,7 @@ async def test_a_new_speaker_is_the_native_protocol_of_a_minted_player(
 ) -> None:
     """A speaker first seen now gets a player of its own, identified by its device id."""
     with patch.object(BoseSoundTouchPlayer, "_listen", _listen_forever):
-        protocol = await _attach(scenario)
+        protocol = await _register(scenario)
 
     assert protocol.player is not None
     assert protocol.player.player_id.startswith(PLAYER_ID_PREFIX)
@@ -90,17 +90,17 @@ async def test_a_new_speaker_is_the_native_protocol_of_a_minted_player(
 async def test_the_speaker_is_listened_to_while_attached(scenario: Scenario) -> None:
     """The notification channel runs while the protocol is attached, again after a detach."""
     with patch.object(BoseSoundTouchPlayer, "_listen", _listen_forever):
-        protocol = await _attach(scenario)
+        protocol = await _register(scenario)
         first_listener = protocol._listener_task
         assert first_listener is not None
         assert not first_listener.done()
 
-        await scenario.mass.players.detach(PROTOCOL_ID)
+        await scenario.mass.players.unregister(PROTOCOL_ID)
         await scenario.settle()
         assert first_listener.cancelled()
         assert protocol._listener_task is None
 
-        await scenario.mass.players.attach(protocol)
+        await scenario.mass.players.register(protocol)
         await scenario.settle()
         second_listener: asyncio.Task[None] | None = protocol._listener_task
         assert second_listener is not None
@@ -110,7 +110,7 @@ async def test_the_speaker_is_listened_to_while_attached(scenario: Scenario) -> 
 async def test_a_preset_press_plays_on_the_queue_of_the_player(scenario: Scenario) -> None:
     """A preset pressed on a speaker with a minted player id plays on that player's queue."""
     with patch.object(BoseSoundTouchPlayer, "_listen", _listen_forever):
-        protocol = await _attach(scenario)
+        protocol = await _register(scenario)
     assert protocol.player is not None
     cast_provider: Any = protocol.provider
     cast_provider.get_preset_media = MagicMock(return_value="library://track/1")
@@ -126,12 +126,12 @@ async def test_a_preset_press_plays_on_the_queue_of_the_player(scenario: Scenari
 async def test_a_new_speaker_streams_in_the_codec_of_its_own_record(scenario: Scenario) -> None:
     """The output codec of a speaker with a minted player id is read from its protocol."""
     with patch.object(BoseSoundTouchPlayer, "_listen", _listen_forever):
-        protocol = await _attach(scenario)
+        protocol = await _register(scenario)
         assert protocol.player is not None
         player_id = protocol.player.player_id
         await scenario.mass.config.save_protocol_config(PROTOCOL_ID, {CONF_OUTPUT_CODEC: "flac"})
-        await scenario.mass.players.detach(PROTOCOL_ID)
-        await scenario.mass.players.attach(protocol)
+        await scenario.mass.players.unregister(PROTOCOL_ID)
+        await scenario.mass.players.register(protocol)
         await scenario.settle()
     media = PlayerMedia(
         uri="source://line_in",

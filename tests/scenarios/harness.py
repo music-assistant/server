@@ -322,7 +322,7 @@ class FakePlayerProvider(PlayerProvider):
     """
     A player provider of an impersonated domain, owning the FakeProtocols a test creates.
 
-    Like a real provider, it attaches the devices that are present when it loads and when one
+    Like a real provider, it registers the devices that are present when it loads and when one
     of its players gets enabled or removed.
     """
 
@@ -359,7 +359,7 @@ class FakePlayerProvider(PlayerProvider):
         **state: Any,
     ) -> FakeProtocol:
         """
-        Create a new device with its protocol object of this provider; attach it to use it.
+        Create a new device with its protocol object of this provider; register it to use it.
 
         :param protocol_id: ID of the protocol object.
         :param name: The name the device reports.
@@ -381,12 +381,12 @@ class FakePlayerProvider(PlayerProvider):
         return self._protocol_for(protocol_id)
 
     async def discover_players(self) -> None:
-        """Attach the present devices of this provider that are not attached."""
+        """Register the present devices of this provider that are not attached."""
         for protocol_id, device in self._devices.items():
             if device.provider_id != self.instance_id or not device.present:
                 continue
             if self.mass.players.get_protocol(protocol_id) is None:
-                await self.mass.players.attach(self._protocol_for(protocol_id))
+                await self.mass.players.register(self._protocol_for(protocol_id))
 
     def _protocol_for(self, protocol_id: str) -> FakeProtocol:
         """Return the protocol object of a device on this provider instance."""
@@ -517,29 +517,29 @@ class Scenario:
         await self.mass.config.remove_provider_config(provider.instance_id)
         await self.settle()
 
-    async def attach(self, protocol: FakeProtocol, role: Role | None = None) -> None:
+    async def register(self, protocol: FakeProtocol, role: Role | None = None) -> None:
         """
-        Attach a protocol object: its provider found the device, or found it again.
+        Register a protocol object: its provider found the device, or found it again.
 
-        :param protocol: The protocol object to attach.
+        :param protocol: The protocol object to register.
         :param role: A new role of the protocol, for a device that changed its role.
         """
         self._check_current(protocol)
         if role is not None:
             protocol._set_reported(role=_ROLES[role])
         protocol._device.present = True
-        await self.mass.players.attach(protocol)
+        await self.mass.players.register(protocol)
         await self.settle()
 
-    async def detach(self, protocol: FakeProtocol) -> None:
+    async def unregister(self, protocol: FakeProtocol) -> None:
         """
-        Detach a protocol object: its provider lost the device.
+        Unregister a protocol object: its provider lost the device.
 
-        :param protocol: The protocol object to detach.
+        :param protocol: The protocol object to unregister.
         """
         self._check_current(protocol)
         protocol._device.present = False
-        await self.mass.players.detach(protocol.protocol_id)
+        await self.mass.players.unregister(protocol.protocol_id)
         await self.settle()
 
     def set_present(self, protocol_id: str, present: bool) -> None:
@@ -561,11 +561,11 @@ class Scenario:
         :param state: Values by attribute name without the ``_attr_`` prefix (``available``,
             ``powered``, ``volume_level``, ``playback_state``, ``supported_features``, ...),
             plus ``identifiers`` (merged into the reported device info, a None value drops
-            one). A role changes with attach().
+            one). A role changes with register().
         """
         self._check_current(protocol)
         if "role" in state:
-            msg = "a role changes with attach(protocol, role=...)"
+            msg = "a role changes with register(protocol, role=...)"
             raise ScenarioError(msg)
         protocol._set_reported(**state)
         protocol.update_state()

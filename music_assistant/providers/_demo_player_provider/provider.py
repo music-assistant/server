@@ -124,7 +124,7 @@ class DemoPlayerprovider(PlayerProvider):
             if protocol := self.get_protocol(protocol_id):
                 # the device has become unavailable: its player stays, without this protocol
                 self.logger.debug("Device offline: %s", protocol.display_name)
-                await self.mass.players.detach(protocol_id)
+                await self.mass.players.unregister(protocol_id)
             return
         # handle update for existing device
         # (state change is either updated or added)
@@ -157,7 +157,7 @@ class DemoPlayerprovider(PlayerProvider):
         #     return
 
     async def discover_players(self) -> None:
-        """Attach every device this provider knows of that has no attached protocol."""
+        """Register every device this provider knows of that has no attached protocol."""
         # This is an optional method that you can implement if
         # you want to (manually) discover devices on the
         # network and you do not use mdns discovery.
@@ -174,10 +174,10 @@ class DemoPlayerprovider(PlayerProvider):
             if self.get_protocol(protocol_id):
                 continue  # already attached
             protocol = DemoPlayer(provider=self, protocol_id=protocol_id)
-            # attach the protocol object: the player controller finds the player the
-            # device belongs to, or creates it. Nothing is attached for a player the
-            # user disabled.
-            await self.mass.players.attach(protocol)
+            # register the protocol object: the player controller attaches it to the
+            # player the device belongs to, or creates that player. Nothing is attached
+            # for a player the user disabled; on_attach tells when it is attached.
+            await self.mass.players.register(protocol)
             # once the protocol is attached, you can either let the players controller
             # poll it for state changes (needs_poll) or you can implement your own logic to listen for
             # state changes from the device and update the protocol object accordingly.

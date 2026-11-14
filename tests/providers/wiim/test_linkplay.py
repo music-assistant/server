@@ -555,7 +555,7 @@ class TestProviderRouting:
         """A reachable generic LinkPlay device is attached as a LinkPlay control protocol."""
         mock_provider.protocols = []
         registered: list[Any] = []
-        mock_provider.mass.players.attach = AsyncMock(side_effect=registered.append)
+        mock_provider.mass.players.register = AsyncMock(side_effect=registered.append)
         with patch("music_assistant.providers.wiim.provider.WiiMClient", return_value=mock_client):
             await WiimProvider.try_add_linkplay_player(
                 mock_provider,
@@ -579,7 +579,7 @@ class TestProviderRouting:
         self, mock_provider: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
         """A device that does not answer the LinkPlay API is not attached."""
-        mock_provider.mass.players.attach = AsyncMock()
+        mock_provider.mass.players.register = AsyncMock()
         bad_client = MagicMock()
         bad_client.get_device_info_model = AsyncMock(side_effect=WiiMError("no api"))
         with patch("music_assistant.providers.wiim.provider.WiiMClient", return_value=bad_client):
@@ -590,14 +590,14 @@ class TestProviderRouting:
                 mock_upnp_device,
                 "http://192.168.1.50:49152/description.xml",
             )
-        mock_provider.mass.players.attach.assert_not_called()
+        mock_provider.mass.players.register.assert_not_called()
 
     async def test_device_of_a_disabled_player_is_not_contacted(
         self, mock_provider: MagicMock, mock_upnp_device: MagicMock
     ) -> None:
         """Discovery leaves a LinkPlay device alone while the server does not want it."""
         mock_provider.mass.players.wants_protocol = MagicMock(return_value=False)
-        mock_provider.mass.players.attach = AsyncMock()
+        mock_provider.mass.players.register = AsyncMock()
         with patch("music_assistant.providers.wiim.provider.WiiMClient") as client_class:
             await WiimProvider.try_add_linkplay_player(
                 mock_provider,
@@ -607,7 +607,7 @@ class TestProviderRouting:
                 "http://192.168.1.50:49152/description.xml",
             )
         client_class.assert_not_called()
-        mock_provider.mass.players.attach.assert_not_called()
+        mock_provider.mass.players.register.assert_not_called()
         mock_provider.mass.players.wants_protocol.assert_called_once_with(EDIFIER_PLAYER_ID)
 
     @pytest.mark.parametrize("wanted", [True, False], ids=["skipped", "disabled"])
@@ -621,7 +621,7 @@ class TestProviderRouting:
             skips it (its player got disabled meanwhile).
         """
         mock_provider.mass.players.wants_protocol = MagicMock(return_value=wanted)
-        mock_provider.mass.players.attach = AsyncMock()
+        mock_provider.mass.players.register = AsyncMock()
         # nothing is attached under the id: the controller kept the object for itself
         mock_provider.get_protocol = MagicMock(return_value=None)
         with patch(
@@ -634,7 +634,7 @@ class TestProviderRouting:
                 MagicMock(udn="uuid:official", friendly_name="WiiM Pro"),
                 "http://192.168.1.60:49152/description.xml",
             )
-        assert mock_provider.mass.players.attach.await_count == (1 if wanted else 0)
+        assert mock_provider.mass.players.register.await_count == (1 if wanted else 0)
         create_device.assert_not_awaited()
         mock_provider.native_groups.refresh_leader.assert_not_awaited()
 

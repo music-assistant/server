@@ -216,20 +216,20 @@ async def _claim(scenario: Scenario, sendspin: Any, carrier: PlayerProtocol) -> 
     await scenario.settle()
 
 
-async def _attach_or_fail(scenario: Scenario, protocol: PlayerProtocol) -> None:
+async def _register_or_fail(scenario: Scenario, protocol: PlayerProtocol) -> None:
     """
-    Attach a protocol and let the server settle; fail when the attach does not finish.
+    Register a protocol and let the server settle; fail when the register does not finish.
 
     :param scenario: The running server.
-    :param protocol: The protocol to attach.
+    :param protocol: The protocol to register.
     """
-    attach = asyncio.create_task(scenario.mass.players.attach(protocol))
+    register = asyncio.create_task(scenario.mass.players.register(protocol))
     await scenario.settle()
-    if not attach.done():
-        attach.cancel()
-        await asyncio.wait([attach])
-        pytest.fail(f"the attach of {protocol.protocol_id} never finished")
-    attach.result()
+    if not register.done():
+        register.cancel()
+        await asyncio.wait([register])
+        pytest.fail(f"the register of {protocol.protocol_id} never finished")
+    register.result()
 
 
 def _assert_the_only_player(scenario: Scenario, player_id: str, *, available: bool) -> None:
@@ -260,7 +260,7 @@ async def _bridged_device(scenario: Scenario, domain: str) -> tuple[str, dict[st
     await scenario.add_provider("sendspin")
     sendspin = _sendspin(scenario)
     carrier = _carrier(scenario, domain)
-    await scenario.mass.players.attach(carrier)
+    await scenario.mass.players.register(carrier)
     await scenario.settle()
     assert carrier.player is not None
     player_id = carrier.player.player_id
@@ -300,7 +300,7 @@ async def test_a_bridged_device_keeps_its_player_whichever_connects_first(
         await _send_hello(scenario, sendspin, first_hello)
         # until the protocol it rides on is back, the bridge is no output to play on
         _assert_the_only_player(scenario, player_id, available=False)
-        await scenario.mass.players.attach(carrier)
+        await scenario.mass.players.register(carrier)
         await scenario.settle()
         if domain == "chromecast":
             await _claim(scenario, sendspin, carrier)
@@ -308,7 +308,7 @@ async def test_a_bridged_device_keeps_its_player_whichever_connects_first(
             # the AirPlay bridge registers its client at every attach of its protocol
             await _set_up_bridge(scenario, sendspin, carrier)
     else:
-        await scenario.mass.players.attach(carrier)
+        await scenario.mass.players.register(carrier)
         await scenario.settle()
         await _set_up_bridge(scenario, sendspin, carrier)
         if domain == "chromecast":
@@ -328,7 +328,7 @@ async def test_a_bridged_device_keeps_its_player_whichever_connects_first(
     for protocol_id, record in records.items():
         assert scenario.mass.config.get_protocol_record(protocol_id) == record
 
-    await scenario.mass.players.detach(carrier.protocol_id)
+    await scenario.mass.players.unregister(carrier.protocol_id)
     await scenario.settle()
 
     _assert_the_only_player(scenario, player_id, available=False)
@@ -355,7 +355,7 @@ async def test_a_cast_device_claims_the_receiver_app_that_connected_before_it(
     provider: Any = carrier.provider
     provider.bridge_manager = SendspinBridgeManager(provider)
 
-    await _attach_or_fail(scenario, carrier)
+    await _register_or_fail(scenario, carrier)
 
     # the claimed client is an output of the Cast device's player (switched off for now:
     # Sendspin over Cast is only offered once the user enables it)
@@ -363,5 +363,5 @@ async def test_a_cast_device_claims_the_receiver_app_that_connected_before_it(
     record = scenario.mass.config.get_protocol_record(BRIDGE_ID) or {}
     assert record.get("player_id") == carrier.player.player_id
     other = (await scenario.add_provider("sonos")).protocol("RINCON_OTHER", "Speaker B")
-    await _attach_or_fail(scenario, other)
+    await _register_or_fail(scenario, other)
     assert scenario.player_of(other) is not None

@@ -67,7 +67,7 @@ async def test_discovery_attaches_a_zone_enabled_again(
 
     await network.provider.discover_players()
 
-    network.mass.players.attach.assert_called_once()
+    network.mass.players.register.assert_called_once()
     setup.assert_awaited_once()
     player = network.registry["B___zone2"]
     assert player is not disabled
@@ -76,7 +76,7 @@ async def test_discovery_attaches_a_zone_enabled_again(
 
     await network.provider.discover_players()
 
-    network.mass.players.attach.assert_called_once()
+    network.mass.players.register.assert_called_once()
 
 
 async def test_discovery_leaves_a_disabled_zone_alone(
@@ -91,7 +91,7 @@ async def test_discovery_leaves_a_disabled_zone_alone(
     await network.provider.discover_players()
 
     setup.assert_not_awaited()
-    network.mass.players.attach.assert_not_called()
+    network.mass.players.register.assert_not_called()
 
 
 async def test_player_enabled_while_receiver_unreachable(

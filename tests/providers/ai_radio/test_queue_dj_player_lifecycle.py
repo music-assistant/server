@@ -42,7 +42,7 @@ async def test_a_dj_stays_on_the_queue_of_a_player_that_is_disabled_and_enabled(
     """Disabling a player is no removal: its queue keeps its DJ once it is enabled again."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     dj = _queue_dj(scenario, tmp_path)
     await scenario.play(player_id)
@@ -64,7 +64,7 @@ async def test_a_dj_goes_with_its_player_when_that_is_removed(
     """A removed player is gone: its queue loses its DJ."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     dj = _queue_dj(scenario, tmp_path)
     await dj.set_queue_dj(player_id, "rick")
@@ -87,12 +87,12 @@ async def test_a_dj_keeps_a_browser_player_whose_client_disconnects(
     """
     sendspin = await scenario.add_provider("sendspin")
     browser = sendspin.protocol("sendspin_web_3f2a", "Web Browser", session_only=True)
-    await scenario.attach(browser)
+    await scenario.register(browser)
     dj = _queue_dj(scenario, tmp_path)
     await dj.set_queue_dj("sendspin_web_3f2a", "rick")
     await scenario.idle()
 
-    await scenario.detach(browser)
+    await scenario.unregister(browser)
     await scenario.idle()
 
     away = scenario.player("sendspin_web_3f2a")
@@ -100,13 +100,13 @@ async def test_a_dj_keeps_a_browser_player_whose_client_disconnects(
     assert away.available is False
     assert scenario.removals() == []
 
-    await scenario.attach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.register(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert dj._dj_queues["sendspin_web_3f2a"].host_id == "rick"
 
     await dj.set_queue_dj("sendspin_web_3f2a", None)
-    await scenario.detach(scenario.protocol("sendspin_web_3f2a"))
+    await scenario.unregister(scenario.protocol("sendspin_web_3f2a"))
     await scenario.idle()
 
     assert scenario.player("sendspin_web_3f2a") is not None
@@ -119,7 +119,7 @@ async def test_a_dj_goes_with_a_disabled_player_that_is_removed(
     """A disabled player that is then removed is gone: its queue loses its DJ."""
     wiim = await scenario.add_provider("wiim")
     living = wiim.protocol("wiim_living", "Living", identifiers=LIVING)
-    await scenario.attach(living)
+    await scenario.register(living)
     player_id = scenario.single_player(living).player_id
     dj = _queue_dj(scenario, tmp_path)
     await dj.set_queue_dj(player_id, "rick")
@@ -144,9 +144,9 @@ async def test_a_dj_goes_with_a_disabled_player_that_goes_in_a_merge(
     tv_cast = chromecast.protocol(
         "cast_tv", "Living TV", role="audio", identifiers={IdentifierType.CAST_UUID: "6f0c1a2b"}
     )
-    await scenario.attach(tv_airplay)
+    await scenario.register(tv_airplay)
     await scenario.advance(15)
-    await scenario.attach(tv_cast)
+    await scenario.register(tv_cast)
     await scenario.advance(15)
     keep_id = scenario.single_player(tv_airplay).player_id
     absorb_id = scenario.single_player(tv_cast).player_id

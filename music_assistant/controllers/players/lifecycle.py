@@ -85,16 +85,19 @@ class _Attach:
 class PlayerLifecycleMixin(_PlayerControllerBase):
     """Mixin class providing the lifecycle of players and protocols for PlayerController."""
 
-    async def attach(self, protocol: PlayerProtocol) -> None:
+    async def register(self, protocol: PlayerProtocol) -> None:
         """
-        Attach a protocol to its player: its provider found the device, or found it again.
+        Register a protocol: its provider found the device, or found it again.
 
-        The player the protocol belongs to is created when the device is new. Nothing is
-        attached for a player the user disabled or a protocol the user switched off.
-        Attaching the object that is attached already publishes what it reports now;
-        another object under the same id takes its place.
+        The controller attaches the protocol to the player it belongs to, which it creates
+        for a new device, or holds it until it knows which player that is. It leaves it
+        unattached for a player the user disabled or a protocol the user switched off.
+        Registering an object that is attached already publishes what it reports now;
+        another object under the same id takes its place. The protocol is told through on_attach
+        and on_detach when it is actually attached to a player or detached from it, so do
+        not assume it is attached when this returns.
 
-        :param protocol: The protocol object to attach.
+        :param protocol: The protocol object to register.
         """
         if self._teardown_in_progress(protocol):
             return
@@ -113,17 +116,20 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         # when a protocol is attached (provider IDs expand to include it)
         self._schedule_update_all_players()
 
-    async def detach(self, protocol_id: str) -> None:
+    async def unregister(self, protocol_id: str) -> None:
         """
-        Detach a protocol from its player: its provider lost the device, or unloads.
+        Unregister a protocol: its provider lost the device, or unloads.
 
-        The player stays and keeps its queue; it is unavailable while none of its other
-        protocols is available. A player that only exists while its device is connected
-        goes with its last protocol, unless it is kept: the user changed its config, a
-        plugin keeps it (see keep_player), or its queue has items. Silently ignored for a
-        protocol that is not attached.
+        The controller detaches the protocol from its player, which tells it through
+        on_detach, and calls off a registration of it that is still in progress. The
+        player stays and keeps its queue; it is unavailable while none of its other
+        protocols is available, unless it is switched off at its external power control.
+        A player that only exists while its device is connected goes with its last
+        protocol, unless it is kept: the user changed its config, a plugin keeps it (see
+        keep_player), or its queue has items. Silently ignored for a protocol the
+        controller does not know.
 
-        :param protocol_id: Id of the protocol to detach.
+        :param protocol_id: Id of the protocol to unregister.
         """
         # an attach that is still setting this protocol up stops at its next step
         self._attaching.pop(protocol_id, None)
@@ -166,7 +172,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
             await self.remove_protocol(derived_id)
         protocol = self._protocols.get(protocol_id)
         player_id = self.get_player_id_of_protocol(protocol_id)
-        await self.detach(protocol_id)
+        await self.unregister(protocol_id)
         self.mass.config.remove_protocol_record(protocol_id)
         if protocol is not None:
             # the provider forgot the device, so what it stored about it is not needed anymore
@@ -291,7 +297,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
         Not when the user disabled the player it belongs to, or switched the protocol
         itself off as an output of that player. A provider that sets up a connection
-        for a device before it attaches it can ask this first.
+        for a device before it registers it can ask this first.
 
         :param protocol_id: Id of the protocol.
         :param protocol: The protocol object about to be attached, when the provider has one:
@@ -367,7 +373,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
                 PlayerType.STEREO_PAIR,
             ):
                 await self._resolve_mac_addresses(protocol)
-                # the await above may have staled the guards of attach()
+                # the await above may have staled the guards of register()
                 if self._attach_aborted(protocol, attach) or self._teardown_in_progress(protocol):
                     return
             if (

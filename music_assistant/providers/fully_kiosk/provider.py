@@ -103,7 +103,7 @@ class FullyKioskProvider(PlayerProvider):
                 )
                 self._host_players[protocol_id] = player
             # connects only when the server wants the device
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
 
     def forget_host(self, host: str, port: int) -> None:
         """

@@ -3,7 +3,7 @@
 Acceptance scenarios of the players controller: what a client sees when a provider finds, loses
 or re-identifies a device, after a restart, when the user removes, merges or groups players, and
 what commands, outputs and volume do. They drive a real server only through what providers and
-clients use (attach and detach, reported state, `players/all`, events, queues, the config API),
+clients use (register and unregister, reported state, `players/all`, events, queues, the config API),
 so they stay valid whatever the controller does inside.
 
 ## The harness
@@ -25,8 +25,8 @@ tests of the harness itself.
   as a real one does; `native_grouping_requires_own_stream` is reported like any other state. `role="native"`, `"audio"`, `"control"` or `"virtual"` (a group) stands for the role of
   the protocol on its device, `session_only=True` for a protocol that reports it exists only
   while attached (a browser session). Every fake protocol has one config entry of its own,
-  `FAKE_SETTING`, like a provider setting of the device. A device is present from `attach()`
-  until `detach()` (or `set_present()`), and like a real provider the fake one attaches the
+  `FAKE_SETTING`, like a provider setting of the device. A device is present from `register()`
+  until `unregister()` (or `set_present()`), and like a real provider the fake one registers the
   present devices when it loads (boot, reload) and on every discovery request of the server
   (5 s after a player of it gets enabled, removed or merged, for example). A protocol object belongs to one server and provider instance: after a restart or a
   reload, `scenario.protocol(protocol_id)` returns the current one.
@@ -59,7 +59,7 @@ tests of the harness itself.
 | Action | Does |
 |---|---|
 | `add_provider(domain)`, `reload_provider(provider)`, `remove_provider(provider)` | load a new fake provider instance, reload one, remove one as a user does |
-| `attach(protocol, role=None)`, `detach(protocol)` | the provider found the device (again, possibly in a new role), or lost it |
+| `register(protocol, role=None)`, `unregister(protocol)` | the provider found the device (again, possibly in a new role), or lost it |
 | `report(protocol, **state)` | the device reports new state (`available`, `powered`, `identifiers`, ...); a None identifier value drops it |
 | `remove(player_id)`, `enable(id)`, `disable(id)`, `configure_player(id, **values)` | what a user does with a player |
 | `add_power_control(id, name)`, `switch(control, powered)` | an external power control (select it with `configure_player(id, power_control=...)`), switched by hand |
@@ -121,7 +121,7 @@ async def test_native_device_attaches_as_available_player(scenario: Scenario) ->
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_1", "Kitchen", identifiers={IdentifierType.MAC_ADDRESS: MAC})
 
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.idle()
 
     assert scenario.players_carrying(speaker) == [

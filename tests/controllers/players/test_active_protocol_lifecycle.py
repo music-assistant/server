@@ -164,7 +164,7 @@ class TestPlayMediaProtocolSelection:
         # the native protocol keeps the session going, so this is no fresh start
         native._attr_playback_state = PlaybackState.PLAYING
         mock_mass.config.get_player_object_config = AsyncMock(return_value=player.config)
-        await controller.detach("proto_1")
+        await controller.unregister("proto_1")
         assert player.state.playback_state == PlaybackState.PLAYING
         media = PlayerMedia(uri="http://test/stream")
 

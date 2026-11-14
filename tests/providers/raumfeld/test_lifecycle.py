@@ -293,7 +293,7 @@ async def test_discovery_leaves_attached_rooms_alone(scenario: Scenario) -> None
     bar = _attached(provider, BAR)
     controller = scenario.mass.players
 
-    with patch.object(controller, "attach", wraps=controller.attach) as attach:
+    with patch.object(controller, "register", wraps=controller.register) as attach:
         await provider.discover_players()
         await scenario.settle()
         await _sync(scenario, provider, {})
@@ -345,8 +345,8 @@ async def test_the_dlna_renderer_of_a_rooms_speaker_is_an_output_of_its_room(
         },
     )
 
-    await scenario.attach(own)
-    await scenario.attach(second)
+    await scenario.register(own)
+    await scenario.register(second)
     await scenario.idle()
 
     room_player = _player(_attached(provider, BAR)).player_id
@@ -383,7 +383,7 @@ async def test_a_room_whose_speaker_returns_under_another_address_reports_it(
             IdentifierType.MAC_ADDRESS: "00:1e:c0:00:00:02",
         },
     )
-    await scenario.attach(other_device)
+    await scenario.register(other_device)
 
     assert _attached(provider, BAR) is protocol
     assert protocol.device_info.ip_address == "192.168.1.43"

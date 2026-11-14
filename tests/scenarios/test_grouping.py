@@ -53,7 +53,7 @@ async def _speakers(
         for number, (protocol_id, name) in enumerate(zip(ids, names, strict=True), start=10)
     ]
     for speaker in speakers:
-        await scenario.attach(speaker)
+        await scenario.register(speaker)
     await scenario.idle()
     return sonos, speakers
 
@@ -144,7 +144,7 @@ async def test_a_speaker_that_can_not_group_with_the_leader_is_left_out(
     """A speaker the leader can not group with stays out; the others join, and it is logged."""
     sonos, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
     garden = sonos.protocol("sonos_garden", "Garden", identifiers=_device(30))
-    await scenario.attach(garden)
+    await scenario.register(garden)
     await scenario.idle()
     kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
     garden_id = _player_id(scenario, garden)
@@ -275,7 +275,7 @@ async def _mixed_makes(scenario: Scenario) -> tuple[FakeProtocol, str, str]:
         can_group_with={"airplay_lounge"},
     )
     for protocol in (lounge, lounge_airplay, study, study_airplay):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     return lounge_airplay, _player_id(scenario, lounge), _player_id(scenario, study)
 
@@ -553,7 +553,7 @@ async def test_an_airplay_speaker_gives_up_its_own_group_before_it_joins_another
         for number, protocol_id in enumerate(ids, start=50)
     )
     for speaker in (hall, attic, porch):
-        await scenario.attach(speaker)
+        await scenario.register(speaker)
     await scenario.idle()
     hall_id, attic_id = _player_id(scenario, hall), _player_id(scenario, attic)
     porch_id = _player_id(scenario, porch)
@@ -621,7 +621,7 @@ async def test_a_protocol_switch_that_would_silence_a_member_is_refused(
         garage,
         garage_sendspin,
     ):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     lounge_id, study_id = _player_id(scenario, lounge), _player_id(scenario, study)
     garage_id = _player_id(scenario, garage)
@@ -686,13 +686,13 @@ async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
     await scenario.play(group_id)
     await scenario.idle()
 
-    await scenario.detach(office)
+    await scenario.unregister(office)
     # the leader's device drops the member it lost
     await scenario.report(kitchen, group_members=["sonos_kitchen", "sonos_den"])
     await scenario.idle()
     assert _state(scenario, kitchen_id).group_members == [kitchen_id, den_id]
 
-    await scenario.attach(office)
+    await scenario.register(office)
     await scenario.idle()
 
     assert _grouping_commands(kitchen)[-1] == ("set_members", ["sonos_office"], None)

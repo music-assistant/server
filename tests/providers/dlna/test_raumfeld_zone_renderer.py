@@ -66,7 +66,7 @@ async def test_setup_ignores_a_zone_renderer() -> None:
         patch.object(player, "_device_connect", AsyncMock()),
         patch.object(player, "_device_disconnect", disconnect),
         patch.object(player.mass.config, "get_protocol_record", MagicMock(return_value=record)),
-        patch.object(player.mass.players, "attach", attach),
+        patch.object(player.mass.players, "register", attach),
         patch.object(player.mass.players, "remove_protocol", remove_protocol),
     ):
         assert await player.setup() is False
@@ -104,7 +104,7 @@ async def test_setup_keeps_a_speaker_renderer_config() -> None:
         patch.object(player, "_device_connect", AsyncMock()),
         patch.object(player, "_device_disconnect", disconnect),
         patch.object(player, "set_static_attributes", MagicMock()),
-        patch.object(player.mass.players, "attach", attach),
+        patch.object(player.mass.players, "register", attach),
         patch.object(player.mass.players, "remove_protocol", remove_protocol),
     ):
         assert await player.setup() is True

@@ -121,9 +121,9 @@ def _connect(sendspin: Any, approvals: Approvals, *, guest_access: bool) -> Send
     return protocol
 
 
-async def _attach(scenario: Scenario, protocol: SendspinBasePlayer) -> None:
-    """Attach a protocol, as the provider does for a connected client."""
-    await scenario.mass.players.attach(protocol)
+async def _register(scenario: Scenario, protocol: SendspinBasePlayer) -> None:
+    """Register a protocol, as the provider does for a connected client."""
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     assert protocol.player is not None
 
@@ -191,7 +191,7 @@ async def test_a_declined_input_stays_declined(
     sendspin = _sendspin(scenario, approvals)
     guest_access = writer != "dismiss"
     first = _connect(sendspin, approvals, guest_access=guest_access)
-    await _attach(scenario, first)
+    await _register(scenario, first)
 
     await _decline(scenario, first, writer)
 
@@ -201,27 +201,27 @@ async def test_a_declined_input_stays_declined(
     assert player_record is not None
     assert player_record["values"]["session_only"] is True
     assert scenario.mass.config.get_protocol_value(CLIENT_ID, CONF_SOURCE_INPUT_DECLINED) is True
-    await scenario.mass.players.detach(CLIENT_ID)
+    await scenario.mass.players.unregister(CLIENT_ID)
     await scenario.settle()
     state = scenario.player(CLIENT_ID)
     assert state is not None
     assert state.available is False
 
     again = _connect(sendspin, approvals, guest_access=guest_access)
-    await _attach(scenario, again)
+    await _register(scenario, again)
     _assert_declined(scenario, again)
     await scenario.restart()
     sendspin = _sendspin(scenario, approvals)
     after_restart = _connect(sendspin, approvals, guest_access=guest_access)
-    await _attach(scenario, after_restart)
+    await _register(scenario, after_restart)
     _assert_declined(scenario, after_restart)
 
     await after_restart.handle_config_action(CONF_ACTION_SOURCE_INPUT_ENABLE)
     await scenario.settle()
-    await scenario.mass.players.detach(CLIENT_ID)
+    await scenario.mass.players.unregister(CLIENT_ID)
     await scenario.settle()
     approved = _connect(sendspin, approvals, guest_access=guest_access)
-    await _attach(scenario, approved)
+    await _register(scenario, approved)
 
     assert approved.api.roles_by_family("source")
     assert approved._source_input_pending is False
@@ -234,7 +234,7 @@ async def test_approving_the_input_of_a_new_client_stores_nothing(scenario: Scen
     await scenario.add_provider("sendspin")
     sendspin = _sendspin(scenario, approvals)
     display = _connect(sendspin, approvals, guest_access=True)
-    await _attach(scenario, display)
+    await _register(scenario, display)
 
     await display.run_setup_flow(
         _session({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED_WITH_INPUT})

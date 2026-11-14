@@ -1030,7 +1030,7 @@ async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
     await prov._setup_player("apdb1ff0aae80e", "Garage [AirPlay]", info)
 
     prov.mass.discovery.async_find_mdns_service.assert_not_called()
-    prov.mass.players.attach.assert_not_called()
+    prov.mass.players.register.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1052,7 +1052,7 @@ async def test_setup_player_flags_shairport_on_this_host(
     prov.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
     prov.mass.players.wants_protocol.return_value = True
     prov.mass.players.get_protocol.return_value = None
-    prov.mass.players.attach = AsyncMock()
+    prov.mass.players.register = AsyncMock()
     prov._is_own_airplay_receiver = AsyncMock(return_value=False)  # type: ignore[method-assign]
     prov._bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
     info = _discovery_info([address], properties={"am": model})

@@ -113,7 +113,7 @@ async def test_a_detach_during_the_connect_leaves_no_connection(scenario: Scenar
     """A server detached while its attach still connects holds no connection or idle loop."""
     provider = await add_provider(scenario, [HOST])
     protocol = _protocol(provider, FIRST)
-    await scenario.mass.players.detach(FIRST)
+    await scenario.mass.players.unregister(FIRST)
     await scenario.settle()
     connecting = asyncio.Event()
     release = asyncio.Event()
@@ -125,7 +125,7 @@ async def test_a_detach_during_the_connect_leaves_no_connection(scenario: Scenar
     with patch.object(FakeMPDClient, "connect", _held_connect):
         task = await scenario.command(provider.discover_players())
         assert connecting.is_set()
-        await scenario.mass.players.detach(FIRST)
+        await scenario.mass.players.unregister(FIRST)
         release.set()
         await scenario.settle()
         await task
@@ -141,9 +141,9 @@ async def test_discovery_leaves_an_attached_server_alone(scenario: Scenario) -> 
     provider = await add_provider(scenario, BOTH)
     protocol = provider.get_protocol(FIRST)
     await scenario.disable(_player(provider, SECOND).player_id)
-    attach = scenario.mass.players.attach
+    attach = scenario.mass.players.register
 
-    with patch.object(scenario.mass.players, "attach", wraps=attach) as attached:
+    with patch.object(scenario.mass.players, "register", wraps=attach) as attached:
         await provider.discover_players()
         await scenario.settle()
 

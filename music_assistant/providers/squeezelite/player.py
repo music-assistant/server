@@ -140,7 +140,7 @@ class SqueezelitePlayer(PlayerProtocol):
         await super().on_detach()
 
     async def setup(self) -> None:
-        """Set up the player and attach it."""
+        """Set up the player and register it."""
         protocol_id = self.client.player_id
         self.logger.info("Player %s connected", self.client.name or protocol_id)
         # update all dynamic attributes
@@ -160,7 +160,7 @@ class SqueezelitePlayer(PlayerProtocol):
             init_volume = last_state[1] if last_state else DEFAULT_PLAYER_VOLUME
         await self.client.stop()
         await self.client.volume_set(init_volume)
-        await self.mass.players.attach(self)
+        await self.mass.players.register(self)
         # carries a volume from the legacy cache over before that entry expires; only after the
         # attach, which creates the record of a new protocol
         self._store_volume()

@@ -119,8 +119,8 @@ async def test_a_web_player_that_is_claimed_as_a_bridge_is_not_session_only() ->
     provider = SendspinProvider.__new__(SendspinProvider)
     provider.logger = Mock()
     provider.mass = Mock()
-    provider.mass.players.attach = AsyncMock()
-    provider.mass.players.detach = AsyncMock()
+    provider.mass.players.register = AsyncMock()
+    provider.mass.players.unregister = AsyncMock()
     provider.get_protocol = Mock(return_value=player)  # type: ignore[method-assign]
     player._attr_underlying_protocol_id = None
     hello = cast("ClientHelloPayload", SimpleNamespace(player_support=None))
@@ -132,8 +132,8 @@ async def test_a_web_player_that_is_claimed_as_a_bridge_is_not_session_only() ->
     # its own first
     assert player.role is ProtocolRole.AUDIO
     assert player.underlying_protocol_id == "cast-protocol"
-    provider.mass.players.detach.assert_awaited_once_with(CLIENT_ID)
-    provider.mass.players.attach.assert_awaited_once_with(player)
+    provider.mass.players.unregister.assert_awaited_once_with(CLIENT_ID)
+    provider.mass.players.register.assert_awaited_once_with(player)
 
 
 @pytest.mark.parametrize("player_class", [SendspinVisualizerPlayer, SendspinSourcePlayer])

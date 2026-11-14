@@ -151,7 +151,7 @@ async def test_a_detached_station_is_disconnected(scenario: Scenario, glagol: Ma
     """Detaching the protocol closes the local connection to the Station."""
     await _attach(scenario, glagol)
 
-    await scenario.mass.players.detach(PROTOCOL_ID)
+    await scenario.mass.players.unregister(PROTOCOL_ID)
     await scenario.settle()
 
     glagol.stop.assert_awaited_once()
@@ -227,9 +227,9 @@ async def test_a_station_attached_again_keeps_its_settings_and_takes_commands(
     voice_control_before = protocol._voice_control_enabled
 
     await scenario.mass.config.save_protocol_config(PROTOCOL_ID, {CONF_VOICE_CONTROL: True})
-    await scenario.mass.players.detach(PROTOCOL_ID)
+    await scenario.mass.players.unregister(PROTOCOL_ID)
     await scenario.settle()
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
 
     assert (voice_control_before, protocol._voice_control_enabled) == (False, True)

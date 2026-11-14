@@ -180,7 +180,7 @@ All Providers (of all types) can be found in the `music_assistant/providers` fol
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
-A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and hands it to `mass.players.attach()`. The server builds the `Player` that users see from the protocols of a device, and gives it to the protocol as `self.player`. The contract between the two:
+A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and registers it with `mass.players.register()`. The server builds the `Player` that users see from the protocols of a device, and attaches the protocol to it: the protocol finds it as `self.player`. The contract between the two:
 
 * A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
 * It reads `self.player.state` only for what the device has to display or follow: the current media and its position.

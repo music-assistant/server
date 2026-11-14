@@ -268,7 +268,7 @@ async def test_a_volume_report_while_the_protocol_is_held_shows_once_it_is_bound
         await scenario.advance(15)
     else:
         airplay = await scenario.add_provider("airplay")
-        await scenario.attach(airplay.protocol("ap_den", "Den"))
+        await scenario.register(airplay.protocol("ap_den", "Den"))
     await scenario.idle()
 
     assert protocol.player is not None
@@ -316,10 +316,10 @@ async def test_a_protocol_attached_again_shows_the_level_reported_while_it_was_d
     assert protocol.player is not None
     player_id = protocol.player.player_id
 
-    await scenario.mass.players.detach(CLIENT_ID)
+    await scenario.mass.players.unregister(CLIENT_ID)
     await scenario.settle()
     client.active_roles[0].on_client_state(_client_state(40, muted=True))
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.idle()
 
     state = scenario.player(player_id)
@@ -348,10 +348,10 @@ async def test_a_protocol_attached_again_takes_the_controls_declared_while_it_wa
     assert state is not None
     assert state.volume_control == "none"
 
-    await scenario.mass.players.detach(CLIENT_ID)
+    await scenario.mass.players.unregister(CLIENT_ID)
     await scenario.settle()
     client.active_roles[0].on_client_state(_client_state(40, muted=False))
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.idle()
 
     state = scenario.player(player_id)

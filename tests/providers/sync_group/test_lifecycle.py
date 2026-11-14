@@ -48,8 +48,8 @@ async def _members(scenario: Scenario) -> list[str]:
     member_b = provider.protocol("member_b", "Player B", supported_features=features)
     member_a._attr_can_group_with = {provider.instance_id}
     member_b._attr_can_group_with = {provider.instance_id}
-    await scenario.attach(member_a)
-    await scenario.attach(member_b)
+    await scenario.register(member_a)
+    await scenario.register(member_b)
     player_ids = [scenario.player_of(member_a), scenario.player_of(member_b)]
     assert None not in player_ids
     return [player_id for player_id in player_ids if player_id]
@@ -129,7 +129,7 @@ async def test_a_new_group_comes_back_with_its_members_after_a_restart(
 
 
 async def test_a_disabled_group_comes_back_when_enabled(scenario: Scenario) -> None:
-    """Enabling a disabled group lets the provider attach it again."""
+    """Enabling a disabled group lets the provider register it again."""
     group = await _create_group(scenario, await _members(scenario), dynamic=True)
     await scenario.disable(group.player_id)
     assert scenario.player(group.player_id) is None
@@ -203,7 +203,7 @@ async def test_discovery_leaves_an_attached_group_alone(scenario: Scenario) -> N
     assert isinstance(provider, PlayerProvider)
 
     with patch.object(
-        scenario.mass.players, "attach", wraps=scenario.mass.players.attach
+        scenario.mass.players, "register", wraps=scenario.mass.players.register
     ) as attach:
         await provider.discover_players()
 

@@ -3135,7 +3135,7 @@ class TestOfflinePowerControl:
     async def test_power_on_follows_a_new_object_of_the_returning_device(
         self, mock_mass: MagicMock
     ) -> None:
-        """A provider attaching a new protocol object for the returning device ends the wait."""
+        """A provider registering a new protocol object for the returning device ends the wait."""
         controller, player, protocol, control = self._setup(mock_mass, comes_online=False)
         provider = cast("MockProvider", protocol.provider)
 

@@ -36,7 +36,7 @@ async def test_item_stream_crossfades_on_a_player_with_a_minted_id(
     """A device found after the split gets a player id of its own; its tracks still crossfade."""
     sonos = await scenario.add_provider("sonos")
     kitchen = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(kitchen)
+    await scenario.register(kitchen)
     await scenario.idle()
     player_id = scenario.single_player(kitchen).player_id
     assert player_id != kitchen.protocol_id

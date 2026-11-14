@@ -187,7 +187,7 @@ async def test_unload_stops_server_and_leaves_the_players_to_the_controller(
     await provider.unload()
 
     mock_server.stop.assert_awaited_once()
-    provider.mass.players.detach.assert_not_awaited()  # type: ignore[attr-defined]
+    provider.mass.players.unregister.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 async def test_unload_no_server(provider: MSXBridgeProvider) -> None:
@@ -201,7 +201,7 @@ async def test_a_new_tv_is_attached_with_its_own_id(provider: MSXBridgeProvider)
     """A TV seen for the first time attaches; commands address the player it got."""
     player = await provider.get_or_register_player("msx_tv", display_name="TV")
 
-    provider.mass.players.attach.assert_awaited_once_with(player)  # type: ignore[attr-defined]
+    provider.mass.players.register.assert_awaited_once_with(player)  # type: ignore[attr-defined]
     provider.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     assert player.protocol_id == "msx_tv"
     assert provider.get_player_id("msx_tv") == "pl_msx_tv"
@@ -218,7 +218,7 @@ async def test_a_tv_of_a_disabled_player_is_not_attached(provider: MSXBridgeProv
 
     player = await provider.get_or_register_player("msx_tv")
 
-    provider.mass.players.attach.assert_not_awaited()  # type: ignore[attr-defined]
+    provider.mass.players.register.assert_not_awaited()  # type: ignore[attr-defined]
     assert player.player is None
     assert await provider.get_or_register_player("msx_tv") is player
 
@@ -233,7 +233,7 @@ async def test_discovery_attaches_an_active_tv_whose_player_was_enabled(
 
     await provider.discover_players()
 
-    provider.mass.players.attach.assert_awaited_once_with(player)  # type: ignore[attr-defined]
+    provider.mass.players.register.assert_awaited_once_with(player)  # type: ignore[attr-defined]
     assert player.player is not None
 
 
@@ -245,11 +245,11 @@ async def test_discovery_leaves_attached_and_idle_tvs_alone(provider: MSXBridgeP
     provider.mass.players.get_protocol = Mock(  # type: ignore[method-assign]
         side_effect=lambda protocol_id: attached if protocol_id == "msx_attached" else None
     )
-    provider.mass.players.attach.reset_mock()  # type: ignore[attr-defined]
+    provider.mass.players.register.reset_mock()  # type: ignore[attr-defined]
 
     await provider.discover_players()
 
-    provider.mass.players.attach.assert_not_awaited()  # type: ignore[attr-defined]
+    provider.mass.players.register.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 async def test_an_idle_tv_is_detached_and_comes_back_on_its_next_request(
@@ -258,12 +258,12 @@ async def test_an_idle_tv_is_detached_and_comes_back_on_its_next_request(
     """The idle timeout detaches a TV; its next request attaches the same object again."""
     player = await provider.get_or_register_player("msx_tv")
 
-    await provider._handle_player_detach("msx_tv")
+    await provider._handle_player_unregister("msx_tv")
 
-    provider.mass.players.detach.assert_awaited_once_with("msx_tv")  # type: ignore[attr-defined]
+    provider.mass.players.unregister.assert_awaited_once_with("msx_tv")  # type: ignore[attr-defined]
     assert "msx_tv" not in provider._player_last_activity
     assert await provider.get_or_register_player("msx_tv") is player
-    assert provider.mass.players.attach.await_count == 2  # type: ignore[attr-defined]
+    assert provider.mass.players.register.await_count == 2  # type: ignore[attr-defined]
 
 
 async def test_a_disabled_tv_is_stopped_when_it_is_detached(

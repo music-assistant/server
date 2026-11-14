@@ -614,7 +614,7 @@ async def test_detaching_the_protocol_that_plays_releases_the_source() -> None:
     await controller._handle_select_source(player.player_id, SOURCE_URI)
     assert controller.get_audio_source_session(player.player_id) is not None
 
-    await controller.detach("speaker_1")
+    await controller.unregister("speaker_1")
 
     assert controller._players[player.player_id] is player
     assert controller.get_audio_source_session(player.player_id) is None
@@ -627,7 +627,7 @@ async def test_detaching_a_protocol_that_does_not_play_keeps_the_source() -> Non
     player = _device(controller, audio_protocol=True)
     await controller._handle_select_source(player.player_id, SOURCE_URI)
 
-    await controller.detach("speaker_1_audio")
+    await controller.unregister("speaker_1_audio")
 
     assert controller.get_audio_source_session(player.player_id) is not None
     provider.on_source_released.assert_not_awaited()

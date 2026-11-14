@@ -53,7 +53,7 @@ async def test_a_pause_stops_the_group_leader_and_keeps_the_group_formed(
     ]
     for device in devices:
         device._attr_can_group_with = {provider.instance_id}
-        await scenario.attach(device)
+        await scenario.register(device)
     for device in devices:
         # what each can group with now includes the other
         device.update_state(force_update=True)

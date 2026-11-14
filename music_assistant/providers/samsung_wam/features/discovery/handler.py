@@ -188,7 +188,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
             player = WamPlayer(self.provider, ip_address, udn, attrs.mac, temp_speaker)
             player.state_sync.apply_initial_state(attrs)
 
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
             if player.player is None:
                 # not attached: the user disabled the player meanwhile
                 await player.on_detach()

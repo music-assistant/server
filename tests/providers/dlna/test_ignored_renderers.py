@@ -35,7 +35,7 @@ async def test_setup_releases_a_renderer_without_play_capability() -> None:
     with (
         patch.object(player, "_device_connect", AsyncMock()),
         patch.object(player, "_device_disconnect", disconnect),
-        patch.object(player.mass.players, "attach", attach),
+        patch.object(player.mass.players, "register", attach),
     ):
         assert await player.setup() is False
     attach.assert_not_called()
@@ -51,7 +51,7 @@ async def test_setup_releases_a_passive_sonos_speaker() -> None:
         patch.object(player, "_device_connect", AsyncMock()),
         patch.object(player, "_device_disconnect", disconnect),
         patch.object(player, "_is_sonos_passive_speaker", AsyncMock(return_value=True)),
-        patch.object(player.mass.players, "attach", attach),
+        patch.object(player.mass.players, "register", attach),
     ):
         assert await player.setup() is False
     attach.assert_not_called()

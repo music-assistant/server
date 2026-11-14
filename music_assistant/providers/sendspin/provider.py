@@ -709,8 +709,8 @@ class SendspinProvider(PlayerProvider):
         )
         if moves:
             # it belongs to another player now: the one of the protocol it rides on
-            await self.mass.players.detach(client_id)
-        await self.mass.players.attach(player)
+            await self.mass.players.unregister(client_id)
+        await self.mass.players.register(player)
         return True
 
     async def create_virtual_player(
@@ -1743,7 +1743,7 @@ class SendspinProvider(PlayerProvider):
                         "Skipping stale add event for %s after HA enrichment", client_id
                     )
                     return
-                await self.mass.players.attach(player)
+                await self.mass.players.register(player)
             finally:
                 if (
                     isinstance(player, SendspinPlayer)
@@ -1816,7 +1816,7 @@ class SendspinProvider(PlayerProvider):
             unregister_event = asyncio.Event()
             self._pending_unregisters[client_id] = unregister_event
             try:
-                await self.mass.players.detach(client_id)
+                await self.mass.players.unregister(client_id)
             finally:
                 self._pending_unregisters.pop(client_id, None)
                 unregister_event.set()
@@ -1861,8 +1861,8 @@ class SendspinProvider(PlayerProvider):
                     if existing_player.session_only
                     else self._device_role(existing_player)
                 )
-                await self.mass.players.detach(client_id)
-            await self.mass.players.attach(existing_player)
+                await self.mass.players.unregister(client_id)
+            await self.mass.players.register(existing_player)
         finally:
             self._finish_client_event(client_id)
 

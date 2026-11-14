@@ -146,7 +146,7 @@ async def test_a_speaker_listens_to_its_events_only_while_attached(scenario: Sce
     unsubscribers = list(client.subscribe.side_effect.results)
     assert len(unsubscribers) == 4
 
-    await scenario.mass.players.detach(UID)
+    await scenario.mass.players.unregister(UID)
     await scenario.settle()
 
     for unsubscribe in unsubscribers:
@@ -163,7 +163,7 @@ async def test_a_speaker_of_a_disabled_player_releases_its_connection(scenario: 
         role="audio",
         identifiers={IdentifierType.MAC_ADDRESS: "F0:F6:C1:CC:8D:04"},
     )
-    await scenario.attach(audio)
+    await scenario.register(audio)
     player_id = scenario.player_of(audio)
     assert player_id is not None
     await scenario.disable(player_id)
@@ -188,7 +188,7 @@ async def test_a_speaker_taken_off_its_player_connects_again(
         role="audio",
         identifiers={IdentifierType.MAC_ADDRESS: "F0:F6:C1:CC:8D:04"},
     )
-    await scenario.attach(audio)
+    await scenario.register(audio)
     assert protocol.player is not None
     old_player_id = protocol.player.player_id
     assert scenario.player_of(audio) == old_player_id

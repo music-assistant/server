@@ -20,13 +20,13 @@ AMP_TWO = f"{HOST_MAC}#2"
 
 
 async def _load(scenario: Scenario) -> None:
-    """Load the snapcast provider; its snapserver is not needed to attach a client."""
+    """Load the snapcast provider; its snapserver is not needed to register a client."""
     provider = await scenario.add_provider("snapcast")
     provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT  # type: ignore[attr-defined]
 
 
 async def _connect(scenario: Scenario, identifier: str, name: str) -> SnapCastPlayer:
-    """Attach the protocol of a connected snapclient of the host, as the provider does."""
+    """Register the protocol of a connected snapclient of the host, as the provider does."""
     provider = scenario.provider("snapcast")
     provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT  # type: ignore[attr-defined]
     snap_client = MagicMock(identifier=identifier, friendly_name=name, connected=True, group=None)
@@ -34,14 +34,14 @@ async def _connect(scenario: Scenario, identifier: str, name: str) -> SnapCastPl
     protocol_id = "ma_" + identifier.replace(":", "").replace("#", "")
     protocol = SnapCastPlayer(provider, protocol_id, snap_client)  # type: ignore[arg-type]
     protocol.setup()
-    await scenario.mass.players.attach(protocol)
+    await scenario.mass.players.register(protocol)
     await scenario.settle()
     return protocol
 
 
 async def _disconnect(scenario: Scenario, protocol: SnapCastPlayer) -> None:
-    """Detach the protocol of a snapclient."""
-    await scenario.mass.players.detach(protocol.protocol_id)
+    """Unregister the protocol of a snapclient, as the provider does."""
+    await scenario.mass.players.unregister(protocol.protocol_id)
     await scenario.settle()
 
 

@@ -144,7 +144,7 @@ class DLNAPlayer(PlayerProtocol):
             return False
 
         self.set_static_attributes()
-        await self.mass.players.attach(self)
+        await self.mass.players.register(self)
         if self.provider.get_protocol(self.protocol_id) is not self:
             # the attach skipped it (e.g. a disabled player or during a teardown):
             # release the subscriptions setup opened, as only an attached protocol

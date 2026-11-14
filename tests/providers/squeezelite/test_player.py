@@ -393,7 +393,7 @@ def _player_for_volume_restore(
     mass.config.get_protocol_value.side_effect = _get_protocol_value
     mass.config.set_protocol_value.side_effect = _set_protocol_value
     mass.cache.get = AsyncMock(return_value=legacy_cache)
-    mass.players.attach = AsyncMock(side_effect=_attach)
+    mass.players.register = AsyncMock(side_effect=_attach)
     return player, mass
 
 
@@ -422,7 +422,7 @@ async def test_setup_restores_volume_without_a_valid_cache_entry(
 
     player.client.mute.assert_not_called()
     player.client.volume_set.assert_awaited_once_with(expected_volume)
-    mass.players.attach.assert_awaited_once_with(player)
+    mass.players.register.assert_awaited_once_with(player)
     assert stored[CONF_STORED_VOLUME] == expected_volume
 
 
@@ -434,7 +434,7 @@ async def test_a_first_connect_stores_the_volume_once_attached() -> None:
     with patch.object(player, "update_attributes"):
         await player.setup()
 
-    mass.players.attach.assert_awaited_once_with(player)
+    mass.players.register.assert_awaited_once_with(player)
     assert stored[CONF_STORED_VOLUME] == DEFAULT_PLAYER_VOLUME
 
 

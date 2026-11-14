@@ -47,9 +47,9 @@ async def test_discovery_leaves_an_attached_device_alone(
     """Discovering again keeps the attached object, with a disabled device to offer."""
     protocol = provider.get_protocol(KITCHEN)
     await scenario.disable(_player(provider, OFFICE).player_id)
-    attach = scenario.mass.players.attach
+    attach = scenario.mass.players.register
 
-    with patch.object(scenario.mass.players, "attach", wraps=attach) as attached:
+    with patch.object(scenario.mass.players, "register", wraps=attach) as attached:
         await provider.discover_players()
         await scenario.settle()
 

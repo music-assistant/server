@@ -187,7 +187,9 @@ async def test_an_attached_receiver_is_left_alone_by_a_repeated_record(
     """Discovery replays the records it holds; an attached receiver is not attached again."""
     protocol = await _announce(scenario, provider, _service())
 
-    with patch.object(scenario.mass.players, "attach", wraps=scenario.mass.players.attach) as spy:
+    with patch.object(
+        scenario.mass.players, "register", wraps=scenario.mass.players.register
+    ) as spy:
         again = await _announce(scenario, provider, _service(name="Receiver A2"))
 
     spy.assert_not_called()
@@ -211,7 +213,9 @@ async def test_a_mac_is_no_player_until_enabled(
     bridge_manager = provider.bridge_manager
     assert isinstance(bridge_manager, MagicMock)
     bridge_manager.evaluate_bridge.assert_not_awaited()
-    with patch.object(scenario.mass.players, "attach", wraps=scenario.mass.players.attach) as spy:
+    with patch.object(
+        scenario.mass.players, "register", wraps=scenario.mass.players.register
+    ) as spy:
         assert await _announce(scenario, provider, mac) is None
     spy.assert_not_called()
     assert scenario.visible_players() == []
@@ -294,7 +298,7 @@ async def test_a_member_whose_stream_dies_leaves_the_airplay_group_for_its_own_p
     native = (await scenario.add_provider("sonos")).protocol(
         "RINCON_M", "Speaker M", identifiers={IdentifierType.MAC_ADDRESS: MEMBER_MAC}
     )
-    await scenario.attach(native)
+    await scenario.register(native)
     member_airplay = await _announce(
         scenario, provider, _service("Speaker M", MEMBER_MAC, "192.168.1.51")
     )
@@ -340,7 +344,7 @@ async def test_an_apple_device_taken_off_its_player_connects_its_controls_again(
         cast_receiver = (await scenario.add_provider("chromecast")).protocol(
             "cast_tv", "Apple TV", role="audio", identifiers={IdentifierType.MAC_ADDRESS: DEVICE_ID}
         )
-        await scenario.attach(cast_receiver)
+        await scenario.register(cast_receiver)
         assert isinstance(protocol, AirPlayControlPlayer)
         old_player_id = _player_of(protocol).player_id
         assert scenario.player_of(cast_receiver) == old_player_id

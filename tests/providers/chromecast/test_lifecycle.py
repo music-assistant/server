@@ -179,8 +179,8 @@ async def test_an_endpoint_found_to_be_passive_is_removed() -> None:
     assert removals.mock_calls == [call.remove_protocol(protocol_id)]
 
 
-async def _attach_cast(scenario: Scenario, cast_info: ChromecastInfo) -> ChromecastPlayer:
-    """Attach the protocol of a Cast device the way discovery sets it up."""
+async def _register_cast(scenario: Scenario, cast_info: ChromecastInfo) -> ChromecastPlayer:
+    """Register the protocol of a Cast device the way discovery sets it up."""
     provider: Any = scenario.mass.get_provider("chromecast") or await scenario.add_provider(
         "chromecast"
     )
@@ -188,7 +188,7 @@ async def _attach_cast(scenario: Scenario, cast_info: ChromecastInfo) -> Chromec
     provider.bridge_manager = MagicMock(evaluate_bridge=AsyncMock())
     protocol = _cast_player(provider, cast_info)
     with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client):
-        await scenario.mass.players.attach(protocol)
+        await scenario.mass.players.register(protocol)
         await scenario.settle()
     return protocol
 
@@ -198,7 +198,7 @@ async def test_a_new_google_device_is_the_native_protocol_of_a_minted_player(
 ) -> None:
     """A Google speaker first seen now gets a player of its own, identified by its Cast UUID."""
     cast_info = _cast_info()
-    protocol = await _attach_cast(scenario, cast_info)
+    protocol = await _register_cast(scenario, cast_info)
 
     player = protocol.player
     assert player is not None
@@ -216,9 +216,9 @@ async def test_the_cast_of_a_device_of_another_brand_joins_its_player(
     speaker = sonos.protocol(
         "RINCON_001122334466", "Speaker A", identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS}
     )
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
 
-    protocol = await _attach_cast(scenario, _cast_info(manufacturer="Sonos"))
+    protocol = await _register_cast(scenario, _cast_info(manufacturer="Sonos"))
 
     assert protocol.player is not None
     assert protocol.player.player_id == scenario.player_of(speaker)
@@ -227,7 +227,7 @@ async def test_the_cast_of_a_device_of_another_brand_joins_its_player(
 
 async def test_a_new_device_reads_its_settings_from_its_own_record(scenario: Scenario) -> None:
     """A setting of the Cast device is read from its protocol record, not the player's."""
-    protocol = await _attach_cast(scenario, _cast_info())
+    protocol = await _register_cast(scenario, _cast_info())
     assert protocol.player is not None
     assert protocol.player.player_id != protocol.protocol_id
     cast_device = cast("MagicMock", protocol.cc)
@@ -283,20 +283,20 @@ async def test_a_cast_device_attached_again_follows_its_status_and_takes_command
             "Speaker A",
             identifiers={IdentifierType.MAC_ADDRESS: MAC_ADDRESS},
         )
-        await scenario.attach(speaker)
+        await scenario.register(speaker)
     cast_info = _cast_info(manufacturer="Sonos" if move == "unlink" else "Google Inc.")
     protocol_id = str(cast_info.uuid)
 
     with patch("pychromecast.get_chromecast_from_cast_info", side_effect=_connect_client):
         protocol = _cast_player(provider, cast_info)
-        await scenario.mass.players.attach(protocol)
+        await scenario.mass.players.register(protocol)
         await scenario.settle()
         if move == "unlink":
             await scenario.mass.players.unlink_protocol(protocol_id)
         else:
-            await scenario.mass.players.detach(protocol_id)
+            await scenario.mass.players.unregister(protocol_id)
             await scenario.settle()
-            await scenario.mass.players.attach(protocol)
+            await scenario.mass.players.register(protocol)
         await scenario.settle()
 
     client = cast("MagicMock", protocol.cc)
@@ -512,7 +512,7 @@ async def test_a_detached_device_ends_the_wait_for_an_app_s_next_track(
     The idle status between two tracks of that app is held back for a while; once the
     protocol is detached, nothing of it reaches the players controller anymore.
     """
-    protocol = await _attach_cast(scenario, _cast_info())
+    protocol = await _register_cast(scenario, _cast_info())
     listener = protocol.status_listener
     assert listener is not None
     client = cast("MagicMock", protocol.cc)
@@ -526,7 +526,7 @@ async def test_a_detached_device_ends_the_wait_for_an_app_s_next_track(
     timer_id = protocol._app_track_change_task_id
     assert timer_id in scenario.mass._tracked_timers
 
-    await scenario.mass.players.detach(protocol.protocol_id)
+    await scenario.mass.players.unregister(protocol.protocol_id)
     with patch.object(
         scenario.mass.players,
         "on_unattached_protocol_update",

@@ -181,7 +181,7 @@ class MusicCastNetwork:
         }
         mass = MagicMock()
         mass.players.get_protocol.side_effect = self.registry.get
-        mass.players.attach.side_effect = self._attach
+        mass.players.register.side_effect = self._attach
         mass.players.wants_protocol.side_effect = lambda protocol_id: (
             protocol_id not in self.disabled
         )

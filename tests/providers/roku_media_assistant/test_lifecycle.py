@@ -218,8 +218,8 @@ async def test_a_new_roku_keeps_its_settings_on_its_own_record(
         flow_mode_before = protocol.flow_mode
 
         await scenario.mass.config.save_protocol_config(PROTOCOL_ID, {CONF_FLOW_MODE: True})
-        await scenario.mass.players.detach(PROTOCOL_ID)
-        await scenario.mass.players.attach(protocol)
+        await scenario.mass.players.unregister(PROTOCOL_ID)
+        await scenario.mass.players.register(protocol)
         await scenario.settle()
 
     assert (flow_mode_before, protocol.flow_mode) == (False, True)

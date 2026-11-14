@@ -26,11 +26,11 @@ What the controller guarantees, scenario by scenario and each proven by tests, i
 ## Overview
 
 The Player Controller is a core controller that owns every player users and clients see. A player
-stands for one device or one group. The player providers do not own players: they attach a
-protocol object to the player of its device for every way they reach it (the vendor's own
-protocol, AirPlay, Chromecast, DLNA, Sendspin, ...). The controller decides which player a protocol
-belongs to, derives the state of the player from what its protocols report, and routes every
-command to the protocol that has to carry it out.
+stands for one device or one group. The player providers do not own players: they register a
+protocol object for every way they reach a device (the vendor's own protocol, AirPlay, Chromecast,
+DLNA, Sendspin, ...), and the controller attaches it to the player of that device. The controller
+decides which player a protocol belongs to, derives the state of the player from what its protocols
+report, and routes every command to the protocol that has to carry it out.
 
 A player outlives its protocols. It is created from its stored config at startup, before any
 provider loads, and stays listed (unavailable) while its device is away, with its settings and its
@@ -370,8 +370,8 @@ The lifecycle of players and protocols lives in [lifecycle.py](lifecycle.py).
 
 | What happens | What it means for the player and its protocols |
 |---|---|
-| A provider finds a device, or finds it again (`attach`) | The protocol is bound to the player of its device, which is created when the device is new. `on_config_updated()` and `on_attach(player)` run. Another object under the same id replaces the attached one. Nothing attaches for a disabled player or an output the user switched off. |
-| A device goes away, or its provider unloads (`detach`) | `on_detach()` runs. The player stays, unavailable while no other protocol is, and keeps its queue; the queue only stops when this protocol was the one that played. A player that only exists while connected and has no record goes with its last protocol, unless its queue has items: then it gets its record first (as `keep_player` gives it) and stays. |
+| A provider finds a device, or finds it again (`register`) | The protocol is attached to the player of its device, which is created when the device is new. `on_config_updated()` and `on_attach(player)` run. Another object under the same id replaces the attached one. Nothing attaches for a disabled player or an output the user switched off. |
+| A device goes away, or its provider unloads (`unregister`) | The protocol is detached and `on_detach()` runs. The player stays, unavailable while no other protocol is, and keeps its queue; the queue only stops when this protocol was the one that played. A player that only exists while connected and has no record goes with its last protocol, unless its queue has items: then it gets its record first (as `keep_player` gives it) and stays. |
 | A provider forgets a device (`remove_protocol`) | The protocol record goes, and so do the protocols that ride on it. An output or control choice of the player that names it falls back to its default. The player goes for good when no protocol record of it is left. |
 | The user removes a player | The player goes for good, with its protocol records, DSP and queue settings, saved queue, group memberships and user filter entries; `PLAYER_REMOVED` is sent once, also for a disabled player, which is not live. Every protocol gets `on_remove()`, also one whose player is not live. A device still on the network comes back as a new player. |
 | The user removes what is unavailable | Every player that no protocol reaches goes for good, once its providers are loaded and had time to find their devices again. While only players remain whose providers still need that time, the request is refused, also as a dry run. |
@@ -401,7 +401,7 @@ output.
    folder it loads from; the reason follows a manifest that is registered or removed while the
    server runs (`on_provider_manifests_changed`).
 3. The webserver starts: clients get one complete list, unavailable players included.
-4. The providers load and attach their protocols.
+4. The providers load and register their protocols.
 
 ## Configuration Storage
 
@@ -750,8 +750,10 @@ The contract for a provider is in `DEVELOPMENT.md` ("Building your own Player Pr
    self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
    self._attr_device_info.add_identifier(IdentifierType.UUID, uuid)
    ```
-3. `await mass.players.attach(protocol)` when the device is found, `detach(protocol_id)` when it
-   is gone, `remove_protocol(protocol_id)` when the provider forgets it.
+3. `await mass.players.register(protocol)` when the device is found, `unregister(protocol_id)`
+   when it is gone, `remove_protocol(protocol_id)` when the provider forgets it. The controller
+   attaches a registered protocol once it knows its player, which can be after `register` returns:
+   `on_attach` tells when.
 4. Claim per-device resources in `on_attach` and release them in `on_detach`; forget what the
    provider keeps about a device in `on_remove`.
 5. `discover_players()` offers every known device that has no attached protocol, and is safe to

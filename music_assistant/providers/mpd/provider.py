@@ -81,7 +81,7 @@ class MPDPlayerProvider(PlayerProvider):
                 await self.mass.players.remove_protocol(protocol_id)
 
     async def discover_players(self) -> None:
-        """Attach one MPDPlayer per entry in the hosts config that is not attached."""
+        """Register one MPDPlayer per entry in the hosts config that is not attached."""
         entries = cast("list[str]", self.config.get_value(CONF_MANUAL_IPS) or [])
         for entry in entries:
             host, port = _parse_host_entry(entry)
@@ -92,7 +92,7 @@ class MPDPlayerProvider(PlayerProvider):
                 player = MPDPlayer(provider=self, protocol_id=protocol_id, host=host, port=port)
                 self._host_players[protocol_id] = player
             # connects only when the server wants the device
-            await self.mass.players.attach(player)
+            await self.mass.players.register(player)
 
     def forget_host(self, host: str, port: int) -> None:
         """

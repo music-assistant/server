@@ -253,7 +253,7 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     monkeypatch.setattr(SendspinBasePlayer, "_get_security_config_entries", _no_security_entries)
     squeezelite = await scenario.add_provider("squeezelite")
     kitchen = squeezelite.protocol("aabbccddeeff", "Kitchen")
-    await scenario.attach(kitchen)
+    await scenario.register(kitchen)
     kitchen_id = scenario.player_of(kitchen)
     assert kitchen_id is not None
     sendspin = await scenario.add_provider("sendspin")
@@ -263,20 +263,20 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     cast("Any", sendspin).is_virtual_player = lambda _client_id: False
     first = _line_in(sendspin)
     assert first.session_only is True
-    await scenario.mass.players.attach(first)
+    await scenario.mass.players.register(first)
     await scenario.settle()
     session = MagicMock(context=SimpleNamespace(values={}))
     session.form = AsyncMock(return_value={CONF_SOURCE_AUTOSTART_TARGET: kitchen_id})
 
     await first._run_source_autostart_step(session)
-    await scenario.mass.players.detach(LINE_IN_ID)
+    await scenario.mass.players.unregister(LINE_IN_ID)
     await scenario.settle()
     state = scenario.player(LINE_IN_ID)
     assert state is not None
     assert state.available is False
 
     again = _line_in(sendspin)
-    await scenario.mass.players.attach(again)
+    await scenario.mass.players.register(again)
     await scenario.settle()
     assert again.config.get_value(CONF_SOURCE_AUTOSTART_TARGET) == kitchen_id
     await scenario.restart()
@@ -286,7 +286,7 @@ async def test_the_line_in_target_picked_in_the_setup_flow_is_kept(
     cast("Any", sendspin).server_api = SimpleNamespace(get_client=clients.get)
     cast("Any", sendspin).is_virtual_player = lambda _client_id: False
     after_restart = _line_in(sendspin)
-    await scenario.mass.players.attach(after_restart)
+    await scenario.mass.players.register(after_restart)
     await scenario.settle()
     assert after_restart.config.get_value(CONF_SOURCE_AUTOSTART_TARGET) == kitchen_id
     assert after_restart.player is not None

@@ -729,7 +729,7 @@ async def test_update_ip_leaves_a_responding_speaker_alone(sonos_player: SonosPl
 
 async def test_setup_reads_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
     """Reading the initial state of a speaker must not stall the event loop."""
-    attach = cast("MagicMock", sonos_player.mass.players).attach = AsyncMock()
+    attach = cast("MagicMock", sonos_player.mass.players).register = AsyncMock()
     reading_threads: list[int] = []
 
     with (

@@ -1,4 +1,4 @@
-"""Tests for how the Sendspin provider attaches and detaches the protocols of its clients."""
+"""Tests for how the Sendspin provider registers and unregisters the protocols of its clients."""
 
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ def _provider(*, wanted: bool = True) -> tuple[SendspinProvider, MagicMock]:
     """
     provider = SendspinProvider.__new__(SendspinProvider)
     mass = MagicMock()
-    mass.players.attach = AsyncMock()
-    mass.players.detach = AsyncMock()
+    mass.players.register = AsyncMock()
+    mass.players.unregister = AsyncMock()
     mass.players.wants_protocol.return_value = wanted
     provider.mass = mass
     provider.logger = logging.getLogger("test.sendspin.client_events")
@@ -59,7 +59,7 @@ async def test_nothing_is_set_up_for_the_client_of_a_disabled_player() -> None:
 
     mass.players.wants_protocol.assert_called_once_with(CLIENT_ID, created)
     provider._auto_trust_guest_access.assert_not_awaited()  # type: ignore[attr-defined]
-    mass.players.attach.assert_not_awaited()
+    mass.players.register.assert_not_awaited()
 
 
 async def test_a_reconnected_client_replaces_the_attached_object() -> None:
@@ -73,8 +73,8 @@ async def test_a_reconnected_client_replaces_the_attached_object() -> None:
 
     await provider._handle_client_added(CLIENT_ID, provider._begin_client_event(CLIENT_ID))
 
-    mass.players.attach.assert_awaited_once_with(created)
-    mass.players.detach.assert_not_awaited()
+    mass.players.register.assert_awaited_once_with(created)
+    mass.players.unregister.assert_not_awaited()
 
 
 async def test_a_disconnected_client_is_detached() -> None:
@@ -83,7 +83,7 @@ async def test_a_disconnected_client_is_detached() -> None:
 
     await provider._handle_client_removed(CLIENT_ID, provider._begin_client_event(CLIENT_ID))
 
-    mass.players.detach.assert_awaited_once_with(CLIENT_ID)
+    mass.players.unregister.assert_awaited_once_with(CLIENT_ID)
 
 
 @pytest.mark.parametrize(("session_only_after", "moves"), [(False, False), (True, True)])
@@ -110,8 +110,8 @@ async def test_a_new_hello_that_changes_what_the_client_is_moves_it(
 
     await provider._handle_client_updated(CLIENT_ID, provider._begin_client_event(CLIENT_ID))
 
-    assert mass.players.detach.await_count == (1 if moves else 0)
-    mass.players.attach.assert_awaited_once_with(existing)
+    assert mass.players.unregister.await_count == (1 if moves else 0)
+    mass.players.register.assert_awaited_once_with(existing)
     if moves:
         assert existing.underlying_protocol_id is None
         assert existing.role is ProtocolRole.NATIVE

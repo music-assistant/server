@@ -25,7 +25,7 @@ async def test_native_device_attaches_as_available_player(scenario: Scenario) ->
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
 
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.idle()
 
     assert scenario.players_carrying(speaker) == [
@@ -58,12 +58,12 @@ async def test_airplay_and_cast_of_one_device_become_one_player(scenario: Scenar
     den_airplay = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
     den_cast = chromecast.protocol("cast_den", "Den", role="audio", identifiers=DEN)
 
-    await scenario.attach(den_airplay)
+    await scenario.register(den_airplay)
     await scenario.idle()
 
     player_id = scenario.single_player(den_airplay).player_id
 
-    await scenario.attach(den_cast)
+    await scenario.register(den_cast)
     await scenario.idle()
 
     assert scenario.players_carrying(den_airplay, den_cast) == [
@@ -89,11 +89,11 @@ async def test_detached_native_player_is_listed_also_after_restart(scenario: Sce
     """
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     scenario.clear_events()
 
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
     await scenario.idle()
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
@@ -112,7 +112,7 @@ async def test_detached_native_player_is_listed_also_after_restart(scenario: Sce
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, False)]
     assert scenario.queue(player_id) is not None
 
-    await scenario.attach(scenario.protocol("RINCON_KITCHEN"))
+    await scenario.register(scenario.protocol("RINCON_KITCHEN"))
     await scenario.idle()
 
     assert [(p.player_id, p.available) for p in scenario.visible_players()] == [(player_id, True)]
@@ -122,11 +122,11 @@ async def test_detached_native_player_stays_listed_unavailable(scenario: Scenari
     """A native player whose protocol detaches stays listed as unavailable and keeps its queue."""
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     scenario.clear_events()
 
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
     await scenario.idle()
 
     assert [(player.player_id, player.available) for player in scenario.visible_players()] == [
@@ -145,13 +145,13 @@ async def test_a_returning_device_resumes_where_its_queue_was(scenario: Scenario
     """
     sonos = await scenario.add_provider("sonos")
     speaker = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     player_id = scenario.single_player(speaker).player_id
     await scenario.play(player_id)
     await scenario.report(speaker, elapsed_time=25, elapsed_time_last_updated=scenario.wall_time())
     await scenario.advance(5)
 
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
     await scenario.idle()
 
     queue = scenario.queue(player_id)
@@ -165,7 +165,7 @@ async def test_a_returning_device_resumes_where_its_queue_was(scenario: Scenario
 
     # the provider finds the device again, as it reports itself after a reboot
     returned = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(returned)
+    await scenario.register(returned)
     await scenario.idle()
 
     assert returned.commands == []
@@ -201,7 +201,7 @@ async def test_a_new_device_whose_setup_is_called_off_leaves_nothing_behind(
 
     speaker.on_config_updated = _never_returns  # type: ignore[method-assign]
     scenario.clear_events()
-    attach = await scenario.command(scenario.mass.players.attach(speaker))
+    attach = await scenario.command(scenario.mass.players.register(speaker))
     attach.cancel()
     with pytest.raises(asyncio.CancelledError):
         await attach
@@ -213,7 +213,7 @@ async def test_a_new_device_whose_setup_is_called_off_leaves_nothing_behind(
     assert scenario.events(EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED) == []
 
     found_again = sonos.protocol("RINCON_KITCHEN", "Kitchen", identifiers=KITCHEN)
-    await scenario.attach(found_again)
+    await scenario.register(found_again)
     await scenario.idle()
 
     assert [player.name for player in scenario.players_carrying(found_again)] == ["Kitchen"]
@@ -256,7 +256,7 @@ async def test_a_player_keeps_its_stored_name_while_only_another_protocol_is_the
         identifiers=KITCHEN,
     )
     for protocol in (speaker, renderer):
-        await scenario.attach(protocol)
+        await scenario.register(protocol)
     await scenario.idle()
     player_id = scenario.single_player(speaker, renderer).player_id
 
@@ -264,7 +264,7 @@ async def test_a_player_keeps_its_stored_name_while_only_another_protocol_is_the
         scenario.set_present("RINCON_KITCHEN", False)
         await scenario.restart()
     else:
-        await scenario.detach(speaker)
+        await scenario.unregister(speaker)
     await scenario.idle()
 
     assert _names(scenario, player_id) == ("Kitchen", "Kitchen")
@@ -273,18 +273,18 @@ async def test_a_player_keeps_its_stored_name_while_only_another_protocol_is_the
     # renamed in the vendor's own app while it was away
     speaker = scenario.protocol("RINCON_KITCHEN")
     await scenario.report(speaker, name="Study")
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.idle()
 
     assert _names(scenario, player_id) == ("Study", "Study")
     assert await _stored_name(scenario, player_id) == "Study"
 
     await scenario.configure_player(player_id, name="Den")
-    await scenario.detach(speaker)
+    await scenario.unregister(speaker)
     await scenario.idle()
     assert _names(scenario, player_id) == ("Den", "Den")
     await scenario.report(speaker, name="Patio")
-    await scenario.attach(speaker)
+    await scenario.register(speaker)
     await scenario.idle()
     assert _names(scenario, player_id) == ("Den", "Den")
 
@@ -293,7 +293,7 @@ async def test_a_player_of_an_audio_receiver_alone_follows_its_name(scenario: Sc
     """A player without a protocol of its own takes the name its receiver reports."""
     airplay = await scenario.add_provider("airplay")
     receiver = airplay.protocol("airplay_den", "Den", role="audio", identifiers=DEN)
-    await scenario.attach(receiver)
+    await scenario.register(receiver)
     await scenario.idle()
     player_id = scenario.single_player(receiver).player_id
 
