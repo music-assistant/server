@@ -117,14 +117,24 @@ async def test_provider_report_keeps_its_time(
 
 
 @pytest.mark.parametrize(
-    ("progress_timestamp", "expected_row"), [(1000, (120, 2000)), (3000, (300, 3000))]
+    ("reset", "progress_timestamp", "expected_row"),
+    [
+        (False, 1000, (120, 2000)),
+        (False, 3000, (300, 3000)),
+        (True, 1000, (120, 2000)),
+        (True, 3000, None),
+    ],
 )
 async def test_older_provider_report_keeps_newer_progress(
-    mass: MusicAssistant, progress_timestamp: int, expected_row: tuple[int, int]
+    mass: MusicAssistant,
+    reset: bool,
+    progress_timestamp: int,
+    expected_row: tuple[int, int] | None,
 ) -> None:
-    """A changed progress the provider recorded before the stored one does not replace it."""
-    listener = await mass.webserver.auth.create_user(f"older{progress_timestamp}")
-    audiobook = await _add_audiobook(mass, f"older_{progress_timestamp}")
+    """A progress or reset the provider recorded before the stored progress does not replace it."""
+    name = f"older_{reset}_{progress_timestamp}"
+    listener = await mass.webserver.auth.create_user(name)
+    audiobook = await _add_audiobook(mass, name)
     row_key = {
         "item_id": audiobook.item_id,
         "provider": "library",
@@ -142,15 +152,21 @@ async def test_older_provider_report_keeps_newer_progress(
         },
     )
 
-    await mass.music.mark_item_played(
-        audiobook,
-        fully_played=False,
-        seconds_played=300,
-        user_initiated=False,
-        provider_instance_id=PROVIDER_INSTANCE,
-        progress_timestamp=progress_timestamp,
-    )
+    if reset:
+        await mass.music.mark_item_unplayed(
+            audiobook,
+            provider_instance_id=PROVIDER_INSTANCE,
+            progress_timestamp=progress_timestamp,
+        )
+    else:
+        await mass.music.mark_item_played(
+            audiobook,
+            fully_played=False,
+            seconds_played=300,
+            user_initiated=False,
+            provider_instance_id=PROVIDER_INSTANCE,
+            progress_timestamp=progress_timestamp,
+        )
 
     row = await mass.music.database.get_row(DB_TABLE_MEDIA_PROGRESS, row_key)
-    assert row is not None
-    assert (row["seconds_played"], row["timestamp"]) == expected_row
+    assert (row and (row["seconds_played"], row["timestamp"])) == expected_row

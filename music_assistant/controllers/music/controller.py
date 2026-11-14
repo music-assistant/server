@@ -2187,6 +2187,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_item: MediaItemType | ItemMapping,
         userid: str | None = None,
         provider_instance_id: str | None = None,
+        progress_timestamp: int | None = None,
     ) -> None:
         """
         Mark item as unplayed in playlog.
@@ -2195,6 +2196,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param all_users: If True, mark the item as unplayed for all users.
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
         :param provider_instance_id: The provider instance reporting the change, whose user it is.
+        :param progress_timestamp: When the progress was reset (epoch seconds), as the reporting
+            provider recorded it. A user's progress stored after it is kept.
         """
         # the playlog is keyed by the identity the caller referenced, not the resolved one
         reference = media_item
@@ -2224,12 +2227,26 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         else:
             # NOTE: if no user was found, we will alter the playlog for all users
             user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+        reset_timestamp = min(progress_timestamp or float("inf"), utc_timestamp())
+        playlog_reset = False
         for user_id in user_ids:
             params["userid"] = user_id
+            if (
+                progress_timestamp is not None
+                and (row := await self.database.get_row(DB_TABLE_MEDIA_PROGRESS, params))
+                and row["timestamp"] > reset_timestamp
+            ):
+                # the stored progress is newer than the reset the provider reports
+                continue
             await self.database.delete(DB_TABLE_MEDIA_PROGRESS, params)
-        self._signal_playlog_updated(
-            reference, fully_played=False, seconds_played=0, userid=user.user_id if user else None
-        )
+            playlog_reset = True
+        if playlog_reset:
+            self._signal_playlog_updated(
+                reference,
+                fully_played=False,
+                seconds_played=0,
+                userid=user.user_id if user else None,
+            )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         await self._forward_play_report(
