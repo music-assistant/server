@@ -660,6 +660,9 @@ class _PlayerControllerBase(CoreController):
             player_id: str,
             purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
         ) -> AbstractAsyncContextManager[None]: ...
+        def holds_player_lock(
+            self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        ) -> bool: ...
         def get_group_and_player_lock(
             self, player_id: str
         ) -> AbstractAsyncContextManager[None]: ...

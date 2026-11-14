@@ -1569,6 +1569,27 @@ plugs are switched on, and Downstairs is on once the device of Office is back.
   container of a virtual player.
 - Proven by: `test_group_power_on.py::test_a_group_that_is_powered_on_waits_for_the_first_member_that_is_back`
 
+### GROUP-34 · A power control that refuses leaves the member out
+
+Downstairs, a sync group or a universal group with a fixed member list, has Den as a member,
+and Den's plug is switched off and does not answer. The user plays Downstairs: it plays on
+Kitchen and Office, and it is logged once that Den could not be powered on and is left out of
+Downstairs. The plug works again and the user plays Downstairs once more: the plug is switched
+on, and Den plays along once its device is back.
+
+- End-to-end: **possible with** a power control that refuses a command.
+- Proven by: `test_group_power_on.py::test_a_power_control_that_refuses_leaves_the_member_out`
+
+### GROUP-37 · A play on a member of a group switches on the members that are off
+
+Downstairs, a sync group with a fixed member list, plays on Kitchen and Office: the plug of Den
+did not answer when it started. Downstairs is paused, and the plug works again. The user presses
+play on Office, which goes to Downstairs: Downstairs plays on, Den's plug is switched on, and Den
+joins Kitchen once its device is back.
+
+- End-to-end: **possible with** a power control that refuses a command.
+- Proven by: `test_group_power_on.py::test_a_play_on_a_member_of_a_group_switches_on_the_members_that_are_off`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered

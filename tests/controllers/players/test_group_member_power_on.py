@@ -444,3 +444,24 @@ async def test_a_member_that_is_removed_from_its_owner_is_not_powered_on_for_it_
     set_members.assert_not_awaited()
     # the control is left as it is
     setup.speakers["den"].control.power_off.assert_not_awaited()  # type: ignore[union-attr]
+
+
+async def test_a_power_control_that_fails_leaves_the_member_out_with_one_warning(
+    mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A member whose control can not switch it on is left out, and its group plays on."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    den = setup.speakers["den"]
+    cast("AsyncMock", den.control.power_on).side_effect = RuntimeError("no answer")
+
+    with caplog.at_level(logging.WARNING):
+        online = setup.controller._power_on_member(setup.group, den.player)
+        assert await online is False
+        await asyncio.sleep(1)
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Player Den could not be powered on, it is left out of Downstairs: no answer"
+    ]
+    assert setup.controller._member_joins == {}
+    assert not den.player.power_on_in_progress
+    setup.joined.assert_not_awaited()

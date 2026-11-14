@@ -566,18 +566,29 @@ class PowerMixin(_PlayerControllerBase):
             with system_auth_context():
                 try:
                     member = await self._power_on_switched_off_player(member_id)
-                except PlayerUnavailableError as err:
+                except Exception as err:
                     join.online.set_result(False)
                     owner = self.get_player(join.owner_id)
-                    self.logger.log(
-                        # a power on that its owner called off is no failure
-                        logging.WARNING
-                        if self._member_joins.get(member_id) is join
-                        else logging.DEBUG,
-                        "%s, it is left out of %s",
-                        err,
-                        owner.name if owner else join.owner_id,
-                    )
+                    owner_name = owner.name if owner else join.owner_id
+                    if isinstance(err, PlayerUnavailableError):
+                        self.logger.log(
+                            # a power on that its owner called off is no failure
+                            logging.WARNING
+                            if self._member_joins.get(member_id) is join
+                            else logging.DEBUG,
+                            "%s, it is left out of %s",
+                            err,
+                            owner_name,
+                        )
+                    else:
+                        # its power control could not switch it on
+                        player = self.get_player(member_id)
+                        self.logger.warning(
+                            "Player %s could not be powered on, it is left out of %s: %s",
+                            player.name if player else member_id,
+                            owner_name,
+                            err,
+                        )
                     return
                 # a play that waits for its first member does not start once the power on
                 # was called off, also when the device is online by then

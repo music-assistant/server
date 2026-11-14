@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 
@@ -192,3 +193,101 @@ async def test_a_group_that_is_powered_on_waits_for_the_first_member_that_is_bac
     power_off = await scenario.command(scenario.mass.players.cmd_power(group_id, False))
     await scenario.advance(10)
     await power_off
+
+
+@pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
+async def test_a_power_control_that_refuses_leaves_the_member_out(
+    scenario: Scenario, group_type: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A member whose plug refuses to switch on is left out, which is logged once.
+
+    The group, which has a fixed member list, plays on the other members. The warning names
+    the member and the group. A later play of the group, when the plug works again, takes the
+    member along.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, group_type, kitchen_id, office_id, den_id, dynamic=False)
+    plug = await _switch_off(scenario, den)
+    control = scenario.mass.players.get_player_control(plug.control_id)
+    assert control is not None
+    power_on = control.power_on
+
+    async def _refuse() -> None:
+        raise PlayerCommandFailed("The plug does not answer")
+
+    control.power_on = _refuse
+    scenario.expect_log("The plug does not answer")
+
+    with caplog.at_level(logging.WARNING, logger="music_assistant"):
+        await scenario.play(group_id)
+        await scenario.advance(2)
+
+    assert [
+        message
+        for record in caplog.records
+        if "The plug does not answer" in (message := record.getMessage())
+    ] == [
+        "Player Den could not be powered on, it is left out of Downstairs: The plug does not answer"
+    ]
+    assert plug.commands == []
+    assert _state(scenario, den_id).powered is False
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+
+    control.power_on = power_on
+    await scenario.play(group_id)
+    assert plug.commands == [True]
+    await _come_back(scenario, den)
+    await scenario.idle()
+
+    assert _state(scenario, den_id).playback_state == PlaybackState.PLAYING
+    assert den_id in _state(scenario, group_id).group_members
+    await _stop(scenario, group_id)
+
+
+async def test_a_play_on_a_member_of_a_group_switches_on_the_members_that_are_off(
+    scenario: Scenario,
+) -> None:
+    """
+    A play on a member of a group player goes to the group, which takes its members along.
+
+    The sync group, which has a fixed member list, plays on Kitchen and Office: the plug of
+    Den refused to switch on. The group is paused and the plug works again. The user presses
+    play on Office: the group plays on, Den's plug is switched on, and Den joins once its
+    device is back.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, "sync_group", kitchen_id, office_id, den_id, dynamic=False)
+    plug = await _switch_off(scenario, den)
+    control = scenario.mass.players.get_player_control(plug.control_id)
+    assert control is not None
+    power_on = control.power_on
+
+    async def _refuse() -> None:
+        raise PlayerCommandFailed("The plug does not answer")
+
+    control.power_on = _refuse
+    scenario.expect_log("The plug does not answer")
+    await scenario.play(group_id)
+    control.power_on = power_on
+    pause = await scenario.command(scenario.mass.players.cmd_pause(group_id))
+    await scenario.advance(2)
+    await pause
+    assert _state(scenario, group_id).playback_state == PlaybackState.PAUSED
+    assert plug.commands == []
+
+    play = await scenario.command(scenario.mass.players.cmd_play(office_id))
+    await scenario.advance(5)
+    await play
+
+    assert plug.commands == [True]
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _come_back(scenario, den)
+    await scenario.idle()
+
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    await _stop(scenario, group_id)
