@@ -755,5 +755,8 @@
   "core.player_queues.config_entries.volume_normalization.option_descriptions.global": "Följ standardinställningen för spelarköer.",
   "core.player_queues.config_entries.volume_normalization.options.disabled": "Inaktiverad",
   "core.player_queues.config_entries.volume_normalization.options.enabled": "Aktiverad",
-  "core.player_queues.config_entries.volume_normalization.options.global": "Global"
+  "core.player_queues.config_entries.volume_normalization.options.global": "Global",
+  "core.player_queues.errors.play_request_timeout": "Det du bad om att spela tog längre än {0} sekunder att läsa in och avbröts.",
+  "core.player_queues.manifest.description": "Konfiguration av kärnmodulen för hantering av spelarköer",
+  "core.player_queues.manifest.name": "Spelarköer"
 }
