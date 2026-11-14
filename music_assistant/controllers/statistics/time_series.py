@@ -65,6 +65,9 @@ class TimeSeriesMixin(_StatisticsBase):
         timezone: str = "UTC",
         users: list[str] | None = None,
         all_users: bool = False,
+        item_id: str | None = None,
+        provider: str | None = None,
+        media_type: MediaType | None = None,
     ) -> list[TimeSeriesPoint]:
         """
         Get play counts over time (time series data).
@@ -79,11 +82,17 @@ class TimeSeriesMixin(_StatisticsBase):
         :param timezone: IANA timezone for calendar buckets and boundaries; defaults to UTC.
         :param users: User ids or usernames whose plays are combined; defaults to the current user.
         :param all_users: Combine the plays of every user, instead of the given users.
+        :param item_id: Optional track, album or artist ID; requires provider and media_type.
+        :param provider: Provider instance or domain of the filtered item.
+        :param media_type: Type of the filtered item.
         """
         if not (user_ids := await self._get_statistics_user_ids(users, all_users)):
             return []
 
         cutoff_timestamp = self._get_period_cutoff(period, timezone)
+        item_filter, item_params = await self._get_item_history_filter(
+            item_id, provider, media_type
+        )
         now_timestamp = time.time()
 
         if granularity not in TIME_SERIES_DATE_FORMATS:
@@ -93,7 +102,7 @@ class TimeSeriesMixin(_StatisticsBase):
         buckets: dict[str, int] = {}
         if timezone != "UTC":
             async for local_time, count in self._iter_local_play_counts(
-                user_ids, cutoff_timestamp, timezone
+                user_ids, cutoff_timestamp, timezone, item_filter, item_params
             ):
                 bucket = _bucket_key(local_time, granularity)
                 buckets[bucket] = buckets.get(bucket, 0) + count
@@ -110,10 +119,11 @@ class TimeSeriesMixin(_StatisticsBase):
                 FROM (
                     SELECT CAST(timestamp AS INTEGER) / {bucket_seconds} AS bucket,
                         COUNT(*) AS play_count
-                    FROM {DB_TABLE_PLAY_HISTORY}
+                    FROM {DB_TABLE_PLAY_HISTORY} AS history
                     WHERE userid IN :user_ids
                         AND timestamp >= :cutoff_timestamp
                         AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
+                        {item_filter}
                     GROUP BY bucket
                 )
                 GROUP BY time_bucket
@@ -123,6 +133,7 @@ class TimeSeriesMixin(_StatisticsBase):
             params = {
                 "user_ids": user_ids,
                 "cutoff_timestamp": cutoff_timestamp,
+                **item_params,
             }
 
             rows = await self.mass.music.database.get_rows_from_query(query, params, limit=0)
@@ -325,22 +336,29 @@ class TimeSeriesMixin(_StatisticsBase):
         return result
 
     async def _iter_local_play_counts(
-        self, user_ids: list[str], cutoff_timestamp: float, timezone: str
+        self,
+        user_ids: list[str],
+        cutoff_timestamp: float,
+        timezone: str,
+        item_filter: str = "",
+        item_params: dict[str, str] | None = None,
     ) -> AsyncGenerator[tuple[datetime, int]]:
         """Yield completed play counts with their local event time."""
         # Recorded-history zone offsets align to 15-minute UTC buckets; grouping first keeps
         # the per-play conversion out of Python and preserves local hour/day boundaries.
         query = f"""
             SELECT CAST(timestamp AS INTEGER) / 900 AS bucket, COUNT(*) AS play_count
-            FROM {DB_TABLE_PLAY_HISTORY}
+            FROM {DB_TABLE_PLAY_HISTORY} AS history
             WHERE userid IN :user_ids
                 AND timestamp >= :cutoff_timestamp
                 AND media_type IN ({PLAY_HISTORY_EVENT_TYPE_SQL})
+                {item_filter}
             GROUP BY bucket
         """
         zone = get_timezone(timezone)
         async for row in self.mass.music.database.iter_rows_from_query(
-            query, {"user_ids": user_ids, "cutoff_timestamp": cutoff_timestamp}
+            query,
+            {"user_ids": user_ids, "cutoff_timestamp": cutoff_timestamp, **(item_params or {})},
         ):
             yield (
                 datetime.fromtimestamp(row["bucket"] * 900, UTC).astimezone(zone),
