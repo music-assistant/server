@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -244,6 +245,43 @@ async def test_a_power_control_that_refuses_leaves_the_member_out(
 
     assert _state(scenario, den_id).playback_state == PlaybackState.PLAYING
     assert den_id in _state(scenario, group_id).group_members
+    await _stop(scenario, group_id)
+
+
+async def test_a_universal_group_plays_once_on_a_member_that_is_back_before_the_play(
+    scenario: Scenario,
+) -> None:
+    """
+    A member whose device is back before the group starts gets the stream of the group once.
+
+    The play of the group switched the member on and waits for another command that holds the
+    group. The device is back meanwhile, so the play starts on it with the other members.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, "universal_group", kitchen_id, office_id, den_id)
+    plug = await _switch_off(scenario, den)
+    await _load_music(scenario)
+    busy = asyncio.Event()
+
+    async def _hold_the_group() -> None:
+        async with scenario.mass.players.get_player_lock(group_id, PlayerLockPurpose.PLAYBACK):
+            await busy.wait()
+
+    holder = await scenario.command(_hold_the_group())
+    play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
+    assert plug.commands == [True]
+    await _come_back(scenario, den)
+    busy.set()
+    await scenario.advance(5)
+    await holder
+    await play
+    await scenario.idle()
+
+    assert [command[0] for command in den.commands] == ["play_media"]
+    assert _state(scenario, den_id).active_group == group_id
+    assert _state(scenario, den_id).playback_state == PlaybackState.PLAYING
     await _stop(scenario, group_id)
 
 

@@ -1114,6 +1114,19 @@ class TestMemberTheGroupPoweredOn:
         assert media.uri.endswith("?player_id=den")
         assert media.queue_session_id == "session_1"
 
+    async def test_a_member_the_play_took_in_already_is_not_played_again(self) -> None:
+        """A member whose device was back when the session started plays the stream once."""
+        mass = _make_mock_mass()
+        ugp = self._group(mass, live=True)
+        ugp._attr_group_members = ["m1", "den"]
+        den = _make_member(mass, "den")
+
+        with patch.object(ugp, "_play_media_on_member", AsyncMock()) as play:
+            await ugp.on_member_powered_on(den)
+
+        assert ugp._attr_group_members == ["m1", "den"]
+        play.assert_not_awaited()
+
     async def test_a_group_that_plays_nothing_any_more_takes_no_member(self) -> None:
         """Without a session the member stays out: the next play takes it."""
         mass = _make_mock_mass()

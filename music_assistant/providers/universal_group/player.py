@@ -453,10 +453,13 @@ class UniversalGroupPlayer(PlayerProtocol):
         if not self.is_active_session and self._attr_powered is not True:
             return
         member_id = member.player_id
-        if member_id not in self._attr_group_members:
-            if member_id not in self._attr_static_group_members:
-                return
-            self._attr_group_members.append(member_id)
+        if (
+            # the play that started the session took it in when its device was online by then
+            member_id in self._attr_group_members
+            or member_id not in self._attr_static_group_members
+        ):
+            return
+        self._attr_group_members.append(member_id)
         if self.stream and not self.stream.done:
             await self._play_media_on_member(member_id, self._member_media(member_id))
         self.update_state()

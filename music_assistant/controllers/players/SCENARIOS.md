@@ -1580,6 +1580,16 @@ on, and Den plays along once its device is back.
 - End-to-end: **possible with** a power control that refuses a command.
 - Proven by: `test_group_power_on.py::test_a_power_control_that_refuses_leaves_the_member_out`
 
+### GROUP-35 · A universal group plays once on a member that is back before it starts
+
+Downstairs is a universal group of Kitchen, Office and Den, and Den's plug is switched off. The
+user plays Downstairs while another command holds it: Den's plug is switched on and the play
+waits its turn. Den's device is back meanwhile, so the play starts on all three. Den gets the
+stream of Downstairs once.
+
+- End-to-end: **no**: it needs a command that holds a group while a device boots.
+- Proven by: `test_group_power_on.py::test_a_universal_group_plays_once_on_a_member_that_is_back_before_the_play`
+
 ### GROUP-37 · A play on a member of a group switches on the members that are off
 
 Downstairs, a sync group with a fixed member list, plays on Kitchen and Office: the plug of Den
