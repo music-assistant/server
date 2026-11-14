@@ -366,3 +366,11 @@ def _delete(folder: Path) -> None:
 def _raise(err: OSError) -> NoReturn:
     """Raise an error of os.walk, which would skip what it cannot read."""
     raise err
+
+
+def _folder_hash(folder: Path) -> str | None:
+    """Return the content hash of a provider folder, None when it cannot be read (blocking)."""
+    try:
+        return content_hash(folder) if folder.is_dir() else None
+    except OSError, ValueError:
+        return None

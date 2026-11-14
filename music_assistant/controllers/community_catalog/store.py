@@ -15,6 +15,8 @@ from music_assistant.helpers.json import json_dumps, json_loads
 if TYPE_CHECKING:
     import logging
 
+    from music_assistant.controllers.community_catalog.models import InstalledProvider
+
 _INDEX_FILE: Final = "index.json"
 _STATE_FILE: Final = "state.json"
 
@@ -91,6 +93,17 @@ class CatalogStore:
         """
         await asyncio.to_thread(self._write, None, state)
         self.state = state
+
+    async def save_installed(self, domain: str, installed: InstalledProvider) -> None:
+        """
+        Write what is installed of a provider to the state.
+
+        :param domain: The domain of the provider.
+        :param installed: What is installed now.
+        :raises OSError: The state cannot be written; the state in use stays as it was.
+        """
+        state = self.state
+        await self.save_state(replace(state, installed={**state.installed, domain: installed}))
 
     def _read(self) -> tuple[CatalogIndex | None, CatalogState]:
         """Return the kept copy and the state (blocking)."""
