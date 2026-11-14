@@ -35,13 +35,15 @@ class LastFMAPIClient:
     throttler = ThrottlerManager(rate_limit=5, period=1)  # 5 requests per second
 
     # Map known Last.fm API error codes to MA exceptions. Unmapped codes raise
-    # InvalidDataError which callers treat as a recoverable empty response.
+    # InvalidDataError, a failed request like a network error.
     _ERROR_MAP: ClassVar[dict[int, type[MusicAssistantError]]] = {
         4: AuthenticationFailed,
         10: InvalidToken,
         26: InvalidToken,
         29: ResourceTemporarilyUnavailable,
     }
+    # Last.fm answers a lookup of an artist, track or user it does not know with this error
+    _ERROR_NOT_FOUND = 6
 
     def __init__(self, provider: LastFMRecommendationsProvider) -> None:
         """
@@ -75,12 +77,20 @@ class LastFMAPIClient:
             )
 
             async with self.http_session.get(self.BASE_URL, params=params) as response:
-                response.raise_for_status()
-                data: dict[str, Any] = await response.json()
+                try:
+                    data: dict[str, Any] = await response.json(content_type=None)
+                except ValueError as err:
+                    response.raise_for_status()
+                    msg = f"Last.fm sent no valid JSON (method: {method})"
+                    raise InvalidDataError(msg) from err
+                # Last.fm sends its error in the response body, along with an HTTP error status
+                if "error" not in data:
+                    response.raise_for_status()
 
-        # Last.fm returns errors in the response body rather than as an HTTP status.
         if "error" in data:
             error_code = int(data.get("error", 0))
+            if error_code == self._ERROR_NOT_FOUND:
+                return {}
             error_msg = data.get("message", "Unknown error")
             msg = f"Last.fm API error {error_code}: {error_msg} (method: {method})"
             exc_cls = self._ERROR_MAP.get(error_code, InvalidDataError)
@@ -100,6 +110,9 @@ class LastFMAPIClient:
         """
         Fetch a list-type Last.fm response, retrying with the fallback params when empty.
 
+        Empty when Last.fm has nothing for any of the params; a request that fails without
+        another one answering raises ResourceTemporarilyUnavailable.
+
         :param method: Last.fm API method to call.
         :param container: Top-level response key wrapping the result list.
         :param item_key: Key of the result list within the container.
@@ -113,6 +126,7 @@ class LastFMAPIClient:
         if fallback_params is not None:
             attempts.append(fallback_params)
 
+        failure: Exception | None = None
         for index, params in enumerate(attempts):
             if index:
                 self.logger.debug("%s: MBID lookup empty, retrying by name", log_label)
@@ -120,6 +134,7 @@ class LastFMAPIClient:
                 data = await self._get_data(method, **params)
             except (TimeoutError, ClientError, InvalidDataError) as err:
                 self.logger.debug("%s request failed: %s", log_label, err)
+                failure = err
                 continue
 
             items: list[dict[str, Any]] | dict[str, Any] = data.get(container, {}).get(item_key, [])
@@ -129,6 +144,9 @@ class LastFMAPIClient:
             if items:
                 return items
 
+        if failure is not None:
+            msg = f"{log_label} request failed: {failure!r}"
+            raise ResourceTemporarilyUnavailable(msg) from failure
         return []
 
     async def get_similar_artists(
@@ -162,14 +180,17 @@ class LastFMAPIClient:
         if primary_params is None:
             return []
 
-        return await self._get_list(
-            "artist.getSimilar",
-            "similarartists",
-            "artist",
-            "Similar artists",
-            primary_params,
-            fallback_params,
-        )
+        try:
+            return await self._get_list(
+                "artist.getSimilar",
+                "similarartists",
+                "artist",
+                "Similar artists",
+                primary_params,
+                fallback_params,
+            )
+        except ResourceTemporarilyUnavailable:
+            return []
 
     async def get_similar_tracks(
         self,
@@ -210,14 +231,17 @@ class LastFMAPIClient:
         if primary_params is None:
             return []
 
-        return await self._get_list(
-            "track.getSimilar",
-            "similartracks",
-            "track",
-            "Similar tracks",
-            primary_params,
-            fallback_params,
-        )
+        try:
+            return await self._get_list(
+                "track.getSimilar",
+                "similartracks",
+                "track",
+                "Similar tracks",
+                primary_params,
+                fallback_params,
+            )
+        except ResourceTemporarilyUnavailable:
+            return []
 
     async def get_artist_top_tracks(
         self, artist_name: str, artist_mbid: str | None = None, limit: int = 10
@@ -228,6 +252,7 @@ class LastFMAPIClient:
         :param artist_name: Name of the artist.
         :param artist_mbid: Optional MusicBrainz ID for more accurate matching.
         :param limit: Maximum number of top tracks to return.
+        :raises ResourceTemporarilyUnavailable: When Last.fm could not be asked.
         """
         self.logger.debug(
             "Fetching top tracks for artist: %s (MBID: %s)",
@@ -358,14 +383,17 @@ class LastFMAPIClient:
             return []
 
         # artist.getTopTags has no limit parameter, so cap the (count-ordered) result ourselves.
-        tags = await self._get_list(
-            "artist.getTopTags",
-            "toptags",
-            "tag",
-            "Artist top tags",
-            primary_params,
-            fallback_params,
-        )
+        try:
+            tags = await self._get_list(
+                "artist.getTopTags",
+                "toptags",
+                "tag",
+                "Artist top tags",
+                primary_params,
+                fallback_params,
+            )
+        except ResourceTemporarilyUnavailable:
+            return []
         return tags[:limit]
 
     async def get_tag_top_artists(self, tag: str, limit: int = 10) -> list[dict[str, Any]]:
