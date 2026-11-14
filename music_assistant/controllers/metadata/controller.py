@@ -40,6 +40,7 @@ from music_assistant.constants import (
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     VERBOSE_LOG_LEVEL,
 )
@@ -812,6 +813,7 @@ class MetaDataController(
                 limit=budget,
                 sort_field=SortField.TIMESTAMP_ADDED,
                 sort_direction=SortDirection.DESC,
+                in_library_only=False,
             )
             for item in items:
                 if musicbrainz.rate_limited:
@@ -998,8 +1000,14 @@ class MetaDataController(
         limit: int = METADATA_SCAN_BATCH_SIZE,
         sort_field: SortField = SortField.RANDOM,
         sort_direction: SortDirection | None = None,
+        in_library_only: bool = True,
     ) -> list[ItemCls]:
-        """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
+        """
+        Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON.
+
+        :param in_library_only: Only select items in the library; False leaves the scope to
+            the query.
+        """
         try:
             items = await media_controller.get_library_items_by_query(
                 limit=limit,
@@ -1007,6 +1015,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[query],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         except sqlite3.OperationalError as err:
             if "malformed JSON" not in str(err):
@@ -1018,6 +1027,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[f"{_valid_metadata_guard(table)} AND {query}"],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         # a clean scan proves the table currently holds no corrupt rows
         self._corrupt_metadata_rows.pop(table, None)
@@ -1126,6 +1136,56 @@ def _has_musicbrainz_id(item_id: str, media_type: MediaType, id_type: ExternalID
     )
 
 
+def _in_library_query(item_id: str, media_type: MediaType) -> str:
+    """
+    Return a query part that is true for an item in the library.
+
+    :param item_id: SQL expression of the library item id, e.g. ``albums.item_id``.
+    :param media_type: Media type of the item.
+    """
+    # the definition the library listings use (in_library_only)
+    return (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+        f"WHERE {DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{media_type.value}' "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {item_id} "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1)"
+    )
+
+
+def _musicbrainz_link_scope(media_type: MediaType) -> str:
+    """
+    Return a query part selecting the items a MusicBrainz link run may work on.
+
+    That is every library item, plus an album holding a library track and an artist
+    credited on a library album or track.
+
+    :param media_type: Media type of the items: album, artist or track.
+    """
+    if media_type == MediaType.ALBUM:
+        library_track = _in_library_query(f"{DB_TABLE_ALBUM_TRACKS}.track_id", MediaType.TRACK)
+        holds_library_track = (
+            f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {DB_TABLE_ALBUMS}.item_id "
+            f"AND {library_track})"
+        )
+        in_library = _in_library_query(f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM)
+        return f"({in_library} OR {holds_library_track})"
+    if media_type == MediaType.ARTIST:
+        scope = [_in_library_query(f"{DB_TABLE_ARTISTS}.item_id", MediaType.ARTIST)]
+        for credit_table, column, credited_type in (
+            (DB_TABLE_ALBUM_ARTISTS, "album_id", MediaType.ALBUM),
+            (DB_TABLE_TRACK_ARTISTS, "track_id", MediaType.TRACK),
+        ):
+            credited_item = _in_library_query(f"{credit_table}.{column}", credited_type)
+            scope.append(
+                f"EXISTS (SELECT 1 FROM {credit_table} "
+                f"WHERE {credit_table}.artist_id = {DB_TABLE_ARTISTS}.item_id "
+                f"AND {credited_item})"
+            )
+        return f"({' OR '.join(scope)})"
+    return _in_library_query(f"{DB_TABLE_TRACKS}.item_id", MediaType.TRACK)
+
+
 def _albums_to_identify_query() -> str:
     """Return a query part selecting albums due for a MusicBrainz lookup (param ``stale``)."""
     marker = _musicbrainz_lookup_marker(DB_TABLE_ALBUMS)
@@ -1133,7 +1193,10 @@ def _albums_to_identify_query() -> str:
         f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM, ExternalID.MB_ALBUM
     )
     # an album MusicBrainz did not know is looked up again once its lookup is stale
-    return f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified}))"
+    return (
+        f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified})) "
+        f"AND {_musicbrainz_link_scope(MediaType.ALBUM)}"
+    )
 
 
 def _artists_to_identify_query() -> str:
@@ -1151,7 +1214,10 @@ def _artists_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.ARTIST)}"
+    )
 
 
 def _tracks_to_identify_query() -> str:
@@ -1169,7 +1235,10 @@ def _tracks_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {DB_TABLE_TRACKS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.TRACK)}"
+    )
 
 
 def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str:
@@ -1192,7 +1261,10 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     )
     marker = _musicbrainz_lookup_marker(table)
     # an id taken from tags or a local server leaves the marker unset: never linked at all
-    return f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen))"
+    return (
+        f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen)) "
+        f"AND {_musicbrainz_link_scope(media_type)}"
+    )
 
 
 def _valid_metadata_guard(table: str) -> str:
