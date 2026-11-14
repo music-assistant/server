@@ -314,6 +314,8 @@ def _tracker(*items: Any) -> Any:
             flow_mode_stream_log=[],
             served_item_ids={"i1"},
             sleep_timer_stopped_target=None,
+            halted_by_command=False,
+            session_id=None,
         )
     }
     tracker.mass.players.get_player.return_value.offline_by_power_control = False
@@ -436,6 +438,17 @@ def test_playing_a_track_to_its_end_settles_the_queue() -> None:
     PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
 
     tracker.mass.create_task.assert_called_once()
+
+
+def test_a_queue_that_a_command_halted_does_not_settle() -> None:
+    """A pause or a stop on the last track is not the end of the queue, however far it played."""
+    tracker = _tracker()
+    tracker._queue_data[QUEUE_ID].halted_by_command = True
+    prev_state, new_state = _stop_states(_item(MediaType.TRACK))
+
+    PlaybackTrackerMixin._handle_end_of_queue(tracker, _queue_stub(), prev_state, new_state)
+
+    tracker.mass.create_task.assert_not_called()
 
 
 def test_a_player_switched_off_at_the_last_track_does_not_settle_the_queue() -> None:

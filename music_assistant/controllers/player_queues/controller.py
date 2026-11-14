@@ -960,6 +960,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         self._clear_sleep_timer(queue_id)
         self.mass.streams.audio_processing.clear(queue_id)
+        queue_data.halted_by_command = False
         queue.ended = True
         queue.current_index = len(queue_data.items) - 1
         queue.current_item = queue_data.items[-1]
@@ -1058,7 +1059,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         pauses_playback = queue.active and queue.state == PlaybackState.PLAYING
         if pauses_playback:
             queue.resume_pos = int(queue.corrected_elapsed_time)
-            self._queue_data[queue_id].paused = True
+            self._queue_data[queue_id].halted_by_command = True
         if (
             player := self.mass.players.get_player(queue_id)
         ) is not None and player.offline_by_power_control:
@@ -1072,7 +1073,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         except Exception:
             if pauses_playback and (queue_data := self._queue_data.get(queue_id)):
                 # the pause did not go through, so the queue plays on
-                queue_data.paused = False
+                queue_data.halted_by_command = False
             raise
 
         async def _watch_pause(player: Player) -> None:
@@ -2454,6 +2455,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
+            if queue.state != PlaybackState.IDLE and queue_data.items:
+                # an idle queue has no playback to halt, and a cleared one no place to keep
+                queue_data.halted_by_command = True
         try:
             # a player switched off at its power control has nothing left to stop, while its
             # session below still needs the teardown
@@ -2724,6 +2728,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.index_in_buffer = None
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
+        # last, as the stop above can have halted the playback of the items that just went
+        self._queue_data[queue_id].halted_by_command = False
 
     def _reset_shuffle(self, queue_id: str) -> None:
         """Switch shuffle off."""
@@ -2933,6 +2939,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None
             queue_data.sleep_timer_stopped_target = None
+            queue_data.halted_by_command = False
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
