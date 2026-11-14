@@ -162,7 +162,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
                 self.check_player_access(player_id)
 
     @api_command("players/cmd/group", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command
+    @handle_player_command(switched_off=SwitchedOffAction.RUN)
     async def cmd_group(self, player_id: str, target_player: str) -> None:
         """
         Handle GROUP command for given player.

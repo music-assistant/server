@@ -11,15 +11,20 @@ from unittest.mock import patch
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
-from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+)
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.controllers.players.config_changes import CONFIG_CHANGE_RESUME_DELAY
 from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
 from music_assistant.controllers.streams.announcements import (
     ANNOUNCEMENT_PCM_FORMAT,
     AnnouncementRender,
 )
-from tests.common import record_lock_waits
+from tests.common import as_user, record_lock_waits
 
 from .harness import TEST_TRACK_URI
 from .test_grouping import (
@@ -317,8 +322,9 @@ async def test_a_stop_of_the_group_calls_off_the_start_that_waits(
     assert plug.commands == [True]
 
 
+@pytest.mark.parametrize("command", ["stop", "power off"])
 async def test_a_command_on_a_member_reaches_the_start_of_the_group_that_owns_its_playback(
-    scenario: Scenario,
+    scenario: Scenario, command: str
 ) -> None:
     """
     A play on a member of a paused group waits for the members of the group, and a stop ends it.
@@ -326,8 +332,10 @@ async def test_a_command_on_a_member_reaches_the_start_of_the_group_that_owns_it
     The sync group, which has a fixed member list, plays on Kitchen and Office: the plug of
     Den refused to switch on. The group is paused and the plug works again. The user presses
     play on Office, which goes to the group: Den's plug is switched on and the play waits.
-    The user presses stop on Office: the play fails, the group is stopped, and Den stays idle
-    when it is back.
+    The user presses stop on Office, or powers it off: the play fails, the group is stopped,
+    and Den stays idle when it is back.
+
+    :param command: The command Office gets while the play waits.
     """
     group_id, speakers, player_ids = await _downstairs(
         scenario, "fixed sync group", "Kitchen", "Office", "Den"
@@ -354,7 +362,9 @@ async def test_a_command_on_a_member_reaches_the_start_of_the_group_that_owns_it
 
     assert not play.done(), play.exception()
     assert plug.commands == [True]
-    stop = await scenario.command(players.cmd_stop(office_id))
+    stop = await scenario.command(
+        players.cmd_stop(office_id) if command == "stop" else players.cmd_power(office_id, False)
+    )
     await scenario.advance(10)
     await stop
     with pytest.raises(PlayerUnavailableError, match="was called off"):
@@ -586,6 +596,145 @@ async def test_a_next_on_a_group_that_waits_for_a_member_runs_at_once(scenario: 
     await _stop(scenario, group_id)
 
 
+async def _playing_without_den(
+    scenario: Scenario, group: str
+) -> tuple[str, list[str], FakePowerControl]:
+    """
+    Let the group Downstairs play two tracks on Kitchen and Office, with Den switched off.
+
+    The plug of Den refused to switch on when the group started, and works again by now.
+
+    :param group: Which kind of group, a key of GROUPS.
+    :return: The id of the group, the ids of the players and the plug of Den.
+    """
+    group_id, speakers, player_ids = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
+    plug = await _switch_off(scenario, speakers[2])
+    control = scenario.mass.players.get_player_control(plug.control_id)
+    assert control is not None
+    power_on = control.power_on
+    _refuse_to_switch_on(scenario, plug)
+    _expect_the_form_without(scenario, group)
+    # the speakers of a scenario take no next track, which the queue logs when it hands one over
+    scenario.expect_log("does not support enqueueing")
+    await scenario.play(group_id)
+    await scenario.mass.player_queues.play_media(group_id, OTHER_TRACK_URI, option=QueueOption.ADD)
+    control.power_on = power_on
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    return group_id, player_ids, plug
+
+
+@pytest.mark.parametrize("group", GROUPS)
+@pytest.mark.parametrize(
+    "command", ["play", "resume", "play index", "play media", "next", "previous"]
+)
+async def test_a_command_on_a_group_that_plays_switches_no_member_on(
+    scenario: Scenario, group: str, command: str
+) -> None:
+    """
+    A command on a group that plays already leaves a switched-off member off.
+
+    The group plays on Kitchen and Office, without Den. A play, a resume, a play of another
+    item or of other media, a next and a previous do not start the group: they switch nothing
+    on and wait for nothing, and the group plays on.
+
+    :param command: The command the group gets.
+    """
+    group_id, player_ids, plug = await _playing_without_den(scenario, group)
+    players, queues = scenario.mass.players, scenario.mass.player_queues
+    commands = {
+        "play": lambda: players.cmd_play(group_id),
+        "resume": lambda: players.cmd_resume(group_id),
+        "play index": lambda: queues.play_index(group_id, 1),
+        "play media": lambda: queues.play_media(group_id, OTHER_TRACK_URI),
+        "next": lambda: queues.next(group_id),
+        "previous": lambda: queues.previous(group_id),
+    }
+
+    sent = await scenario.command(commands[command]())
+    await scenario.advance(5)
+
+    assert sent.done()
+    await sent
+    assert plug.commands == []
+    assert _state(scenario, player_ids[2]).powered is False
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group", ["fixed sync group", "universal group"])
+@pytest.mark.parametrize("setting", ["of the player", "of the queue"])
+async def test_a_restart_for_a_changed_setting_switches_no_member_on(
+    scenario: Scenario, group: str, setting: str
+) -> None:
+    """
+    A queue of a group that is restarted for a changed setting leaves a switched-off member off.
+
+    The group plays on Kitchen and Office, without Den. A setting of the player or of its
+    queue changes that only applies to a new stream, so the server stops the queue and resumes
+    it. That is no start of the group: it plays on Kitchen and Office again without waiting,
+    and Den's plug stays off.
+
+    :param setting: Whose setting changes.
+    """
+    group_id, player_ids, plug = await _playing_without_den(scenario, group)
+    players = scenario.mass.players
+    if setting == "of the player":
+        group_player = players.get_player(group_id)
+        assert group_player is not None
+        await players._restart_playback_after_config_change(group_player, requires_restart=True)
+    else:
+        entry = next(
+            entry
+            for entry in scenario.mass.player_queues.get_queue_config_entries()
+            if entry.requires_reload and entry.options
+        )
+        value = next(o.value for o in entry.options if o.value != entry.default_value)
+        await scenario.mass.config.save_player_queue_config(group_id, {entry.key: value})
+    assert _state(scenario, group_id).playback_state != PlaybackState.PLAYING
+    await scenario.advance(CONFIG_CHANGE_RESUME_DELAY + 5)
+
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert plug.commands == []
+    assert _state(scenario, player_ids[2]).powered is False
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("command", ["resume", "play index", "play media", "play", "power on"])
+async def test_a_user_without_access_to_a_group_switches_no_member_on(
+    scenario: Scenario, command: str
+) -> None:
+    """
+    A user who may not use a group can not have its members switched on.
+
+    Den, a member of the sync group, is switched off at its plug. A user who may use Kitchen
+    only sends the queue of the group a resume or a play of an item or of media, or the group
+    a play or a power on. Each is refused, and the plug stays off.
+
+    :param command: The command the user sends.
+    """
+    group_id, speakers, player_ids = await _downstairs(
+        scenario, "fixed sync group", "Kitchen", "Office", "Den"
+    )
+    plug = await _switch_off(scenario, speakers[2])
+    await _load_music(scenario)
+    players, queues = scenario.mass.players, scenario.mass.player_queues
+    commands = {
+        "resume": lambda: queues.resume(group_id),
+        "play index": lambda: queues.play_index(group_id, 0),
+        "play media": lambda: queues.play_media(group_id, TEST_TRACK_URI),
+        "play": lambda: players.cmd_play(group_id),
+        "power on": lambda: players.cmd_power(group_id, True),
+    }
+
+    with as_user([player_ids[0]]):
+        sent = await scenario.command(commands[command]())
+    await scenario.advance(1)
+
+    assert sent.done()
+    assert isinstance(sent.exception(), InsufficientPermissions)
+    assert plug.commands == []
+
+
 OWNERS = ["leader", "dynamic sync group", "universal group"]
 
 
@@ -629,20 +778,26 @@ def _joined(scenario: Scenario, owner_id: str, den: FakeProtocol, den_id: str) -
 
 
 @pytest.mark.parametrize("owner", OWNERS)
+@pytest.mark.parametrize("command", ["set members", "group"])
 async def test_a_switched_off_speaker_that_is_added_is_waited_for_and_added_once(
-    scenario: Scenario, owner: str
+    scenario: Scenario, owner: str, command: str
 ) -> None:
     """
     A switched-off speaker that is added to a playing leader or group is switched on first.
 
     The command switches its plug on and waits: the leader or group plays on and gets no
     command for it. Once the device is back the speaker is added, once, and plays along.
+
+    :param command: The command that adds the speaker.
     """
     owner_id, speakers, player_ids, plug = await _playing_owner(scenario, owner)
     den, den_id = speakers[2], player_ids[2]
+    players = scenario.mass.players
 
     add = await scenario.command(
-        scenario.mass.players.cmd_set_members(owner_id, player_ids_to_add=[den_id])
+        players.cmd_set_members(owner_id, player_ids_to_add=[den_id])
+        if command == "set members"
+        else players.cmd_group(den_id, owner_id)
     )
 
     assert not add.done(), add.exception()
@@ -826,6 +981,37 @@ async def test_a_member_that_waited_for_its_group_is_not_powered_off_as_idle(
 
     assert plug.commands == [True]
     assert _plays_along(scenario, group_id, player_ids[2])
+    await _stop(scenario, group_id)
+
+
+@pytest.mark.parametrize("group", GROUPS)
+async def test_a_member_that_is_back_early_is_not_powered_off_while_its_group_waits(
+    scenario: Scenario, group: str
+) -> None:
+    """
+    A member that is back before another one is not switched off as idle while the start waits.
+
+    Office and Den are switched off, and Office is powered off after one idle minute. Office
+    is back within seconds, Den takes more than a minute. Office stays on meanwhile, and the
+    group starts on all three when Den is back.
+    """
+    group_id, speakers, player_ids = await _downstairs(scenario, group, "Kitchen", "Office", "Den")
+    await scenario.configure_player(player_ids[1], idle_power_off=1)
+    office_plug = await _switch_off(scenario, speakers[1])
+    den_plug = await _switch_off(scenario, speakers[2])
+    play = await _play(scenario, group_id)
+    await scenario.advance(3)
+    await _come_back(scenario, speakers[1])
+
+    await scenario.advance(70)
+
+    assert not play.done(), play.exception()
+    assert office_plug.commands == [True]
+    await _come_back(scenario, speakers[2])
+    await play
+    await scenario.idle()
+    assert [_plays_along(scenario, group_id, player_id) for player_id in player_ids] == [True] * 3
+    assert office_plug.commands == den_plug.commands == [True]
     await _stop(scenario, group_id)
 
 

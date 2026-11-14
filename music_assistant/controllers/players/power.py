@@ -91,7 +91,7 @@ class PowerMixin(_PlayerControllerBase):
         player = self.get_player(player_id)
         if player is not None and not powered:
             # a group reads as off itself while its start waits for its switched-off members
-            self._cancel_member_power_ons(player)
+            self._cancel_member_power_ons(player, self._resolve_playback_owner(player))
         if player is not None and powered:
             if player.offline_by_power_control:
                 # no lock while the switched off device comes online: that takes far longer
@@ -196,7 +196,7 @@ class PowerMixin(_PlayerControllerBase):
 
         :param player: The player to check.
         """
-        if not self._get_idle_power_off_minutes(player):
+        if not self._get_idle_power_off_minutes(player) or self._is_powered_on_for_a_start(player):
             player.extra_data.pop(ATTR_IDLE_SINCE, None)
             return
         player.extra_data.setdefault(ATTR_IDLE_SINCE, time.monotonic())
@@ -545,17 +545,21 @@ class PowerMixin(_PlayerControllerBase):
         boots after a power on that was called off is waited for again. A player that does not come
         online is logged and left to the caller. Takes no lock: waiting for a device takes
         far longer than other commands wait for a player lock, so this must run before any
-        lock is taken. Does nothing in a task that holds the lock of the owner already, and
-        for playback the server continues by itself (see without_member_power_on).
+        lock is taken. Does nothing in a task that holds the lock of the owner already, for
+        playback the server continues by itself (see without_member_power_on), and for the
+        members of a group player that plays already: that is no start of it.
 
         :param owner: The group player that is about to play, or the group player or leader
             that players are added to.
         :param member_ids: The players to power on. The members of the owner when omitted.
+        :raises InsufficientPermissions: When the current user has no access to the owner.
         :raises PlayerUnavailableError: When the power on is called off meanwhile (see
             _cancel_member_power_ons).
         :return: The ids of the players that did not come online.
         """
         if _CONTINUES_PLAYBACK.get() or self.holds_player_lock(owner.player_id):
+            return set()
+        if member_ids is None and owner.playback_state == PlaybackState.PLAYING:
             return set()
         owner_members = (*owner.group_members, *owner.static_group_members)
         members = [
@@ -568,8 +572,15 @@ class PowerMixin(_PlayerControllerBase):
         ]
         if not members:
             return set()
+        current_user = get_current_user()
+        if current_user and not has_player_access(current_user, owner.player_id, owner):
+            msg = f"{current_user.username} does not have access to player {owner.name}"
+            raise InsufficientPermissions(msg)
         power_ons = asyncio.gather(*(self._power_on_member(owner, member) for member in members))
-        self._member_power_ons[power_ons] = owner.player_id
+        self._member_power_ons[power_ons] = (
+            owner.player_id,
+            frozenset(member.player_id for member in members),
+        )
         try:
             came_online = await power_ons
         except asyncio.CancelledError:
@@ -658,6 +669,18 @@ class PowerMixin(_PlayerControllerBase):
         :param players: The group players or leaders whose members are powered on.
         """
         owners = {player.player_id: player.name for player in players}
-        for power_ons, owner_id in self._member_power_ons.items():
+        for power_ons, (owner_id, _) in self._member_power_ons.items():
             if owner_id in owners and power_ons.cancel():
                 self.logger.debug("Called off the power on of the members of %s", owners[owner_id])
+
+    def _is_powered_on_for_a_start(self, player: Player) -> bool:
+        """
+        Return whether a start, or an addition, still waits for players it powered this one on with.
+
+        Such a player may be online for a while before the others are: it is about to play.
+
+        :param player: The player to check.
+        """
+        return any(
+            player.player_id in member_ids for _, member_ids in self._member_power_ons.values()
+        )

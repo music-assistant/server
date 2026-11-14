@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerType, ProtocolRole
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
@@ -26,6 +27,7 @@ from music_assistant.controllers.players.constants import (
 from tests.common import (
     MockProtocol,
     MockProvider,
+    as_user,
     attach_mock,
     use_real_create_task,
     virtual_loop_clock,
@@ -271,6 +273,42 @@ async def test_playback_the_server_continues_powers_on_no_member(mock_mass: Magi
     assert _power_ons(setup) == {"kitchen": 0, "den": 0}
     # a command that starts the group afterwards does power it on
     assert await controller._power_on_members(setup.group) == set()
+    assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+async def test_a_group_that_plays_already_powers_on_no_member(mock_mass: MagicMock) -> None:
+    """A group that plays is not started: a command on it leaves a switched-off member off."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    group_protocol = cast("MockProtocol", controller.get_protocol("proto_downstairs"))
+    group_protocol._attr_playback_state = PlaybackState.PLAYING
+    setup.group.update_state(signal_event=False, force_update=True)
+    started = asyncio.get_running_loop().time()
+
+    assert await controller._power_on_members(setup.group) == set()
+
+    assert asyncio.get_running_loop().time() == started
+    assert _power_ons(setup) == {"kitchen": 0, "den": 0}
+    # a player that is added to it is powered on all the same
+    assert await controller._power_on_members(setup.group, ["den"]) == set()
+    assert _power_ons(setup) == {"kitchen": 0, "den": 1}
+
+
+async def test_a_user_without_access_to_the_group_powers_on_no_member(
+    mock_mass: MagicMock,
+) -> None:
+    """The members are powered on for a user who may use the group, not for another one."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+
+    with as_user(["kitchen", "den"]), pytest.raises(InsufficientPermissions):
+        await controller._power_on_members(setup.group)
+
+    assert _power_ons(setup) == {"kitchen": 0, "den": 0}
+    assert controller._member_power_ons == {}
+    # access to the group is enough, also without access to the member
+    with as_user(["downstairs"]):
+        assert await controller._power_on_members(setup.group) == set()
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 

@@ -189,12 +189,15 @@ class ConfigChangesMixin(_PlayerControllerBase):
         if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
-            self.mass.call_later(
-                CONFIG_CHANGE_RESUME_DELAY,
-                self.mass.player_queues.resume,
-                resume_queue.queue_id,
-                False,
-            )
+            # a timer keeps the context it is set in: the resume is no command that
+            # starts a group
+            with self.without_member_power_on():
+                self.mass.call_later(
+                    CONFIG_CHANGE_RESUME_DELAY,
+                    self.mass.player_queues.resume,
+                    resume_queue.queue_id,
+                    False,
+                )
 
     def _handle_group_dsp_change(
         self, player: Player, prev_group_members: list[str], new_group_members: list[str]

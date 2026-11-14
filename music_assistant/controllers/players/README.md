@@ -595,7 +595,8 @@ the group player, a play on a member that goes to its group, and a queue transfe
 it. Before it takes any lock it powers those members on and waits until their devices are
 online, all at once and each for at most 90 seconds (`_power_on_members`). Then it runs as it
 does for a group whose members are on, so the group starts once, on all of them. `cmd_set_members`
-does the same for the players it adds to a leader or a group.
+does the same for the players it adds to a leader or a group. The user who sends the command
+needs access to the group player (or the leader), not to each member.
 
 A member that does not come online in time, or whose control fails to switch it on, is left out
 with one warning that names the member and the group, and the group starts on the others (a sync
@@ -604,8 +605,8 @@ When no member can play, the command fails as it does for any group without a me
 play.
 
 A stop, a pause or a power off of the group calls that wait off (`_cancel_member_power_ons`), also
-a stop or a pause of a member whose playback the group owns, and a power off of a group that still
-reads as off while it waits. The command that waits fails as unavailable and starts nothing, also
+that of a member whose playback the group owns, and a power off of a group that still reads as off
+while it waits. The command that waits fails as unavailable and starts nothing, also
 not on the members that are on. The power controls stay on, and a device that comes online
 afterwards stays idle (a sync group with a fixed member list that is formed takes a returning
 member back, as it does without this). Stopping the leader or group that a player is added to ends
@@ -614,10 +615,12 @@ new start right after that waits again for a member whose device still boots: it
 switched on less than those 90 seconds ago, and it is waited for until they are over, without
 switching its control once more.
 
-Only such a command switches a member on; nothing does because a state changed. What a command
-runs under the lock of the group leaves the members as they are, and so does playback that the
-server continues by itself (`without_member_power_on`): the next items of a queue that played out,
-a restart of a playing queue for a changed setting, and a next or previous within a queue. An
+Only such a command switches a member on; nothing does because a state changed. A group player
+that plays already is not started: a command on it, such as a play of other media, switches no
+member on. What a command runs under the lock of the group leaves the members as they
+are, and so does playback that the server continues by itself (`without_member_power_on`): the
+next items of a queue that played out, a restart of a queue for a changed setting, and a next or
+previous within a queue. An
 announcement to a group switches no member on either, also not when it resumes the group
 afterwards: it plays on the members that are on. An announcement to one switched-off player powers
 that player on.
@@ -625,7 +628,8 @@ that player on.
 A player whose power is turned off outside of Music Assistant while it plays its own queue has that
 queue stopped shortly after; a group member leaves its group instead. A player with an idle power
 off time is powered off once it was available, powered on and stopped for that long. An
-announcement that plays, or a power on that still waits for the device, holds that off.
+announcement that plays, a power on that still waits for the device, or a start that powered the
+player on and still waits for another one, holds that off.
 
 ### Sleep Timer, Announcements and Audio Sources
 

@@ -137,8 +137,8 @@ class PlayerController(
         # Live external AudioSource playing on a player, keyed on player_id
         self._source_sessions: dict[str, AudioSourceSession] = {}
         # the wait of each command for the switched-off members of a player, with the id
-        # of that player: cancelling it calls the wait off
-        self._member_power_ons: dict[asyncio.Future[list[bool]], str] = {}
+        # of that player and of those members: cancelling it calls the wait off
+        self._member_power_ons: dict[asyncio.Future[list[bool]], tuple[str, frozenset[str]]] = {}
         # Subscribers for player state updates (called with player + changed_values)
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]
