@@ -929,5 +929,9 @@
   "common.media.genre.christmas_music.description": "Julmusik omfattar olika musikgenrer som regelbundet framförs eller hörs under julperioden. Musik som förknippas med julen kan vara helt instrumental, eller, som i julsånger, ha texter om Jesu födelse, traditioner som gåvor och festligheter, kulturella gestalter som jultomten eller andra ämnen. Många sånger har bara vinter- eller säsongstema, eller har av andra skäl blivit en del av den etablerade repertoaren.",
   "common.media.genre.christmas_music.name": "Julmusik",
   "common.media.genre.church_music.description": "Kyrkomusik är kristen musik som skrivits för framförande i kyrkan eller inom en kyrklig liturgi, eller musik med texter som uttrycker något heligt, till exempel en psalm.",
-  "common.media.genre.church_music.name": "Kyrkomusik"
+  "common.media.genre.church_music.name": "Kyrkomusik",
+  "common.media.genre.chanson.description": "En chanson är i allmänhet en fransk sång där texten står i centrum. På engelska används termen oftast antingen om de världsliga flerstämmiga franska sångerna från senmedeltiden och renässansen eller om en särskild stil av fransk populärmusik som växte fram under 1950- och 1960-talen. Genren har sitt ursprung i trubadurernas och trouvèrernas enstämmiga sånger, även om de enda flerstämmiga föregångarna var 16 verk av Adam de la Halle och ett av Jehan de Lescurel. Först med ars nova-kompositören Guillaume de Machaut skrev någon kompositör ett betydande antal flerstämmiga chansons.",
+  "common.media.genre.chanson.name": "Chanson",
+  "common.media.genre.classical.description": "Konstmusik är musik som anses ha ett högt estetiskt musikaliskt värde. Den innebär vanligtvis avancerade strukturella och teoretiska överväganden eller en skriven musikalisk tradition. I det här sammanhanget beskriver man ofta skillnaden mot vardaglig musik med termer som ”seriös” eller ”kultiverad”. Många kulturer har konstmusiktraditioner, men i västvärlden avser termen vanligtvis västerländsk klassisk musik.",
+  "common.media.genre.classical.name": "Klassisk musik"
 }
