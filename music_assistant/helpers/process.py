@@ -304,8 +304,10 @@ class AsyncProcess:
         timeout: float | None = None,
     ) -> tuple[bytes, bytes]:
         """Communicate with the process and return stdout and stderr."""
-        if self.closed:
-            raise RuntimeError("communicate called while process already done")
+        # keyed on the close flag rather than the returncode (like the reads): a process
+        # that already exited still has its output sitting in the stream buffers
+        if self._close_called:
+            raise RuntimeError("communicate called on a closed process")
         # abort existing readers on stderr/stdout first before we send communicate
         async with self._stderr_lock, self._stdout_lock:
             assert self.proc is not None  # for type checking
