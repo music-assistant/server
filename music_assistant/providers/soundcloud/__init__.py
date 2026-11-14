@@ -40,7 +40,6 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
-from soundcloudpy.const import BASE_URL
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
@@ -72,10 +71,8 @@ TRACK_IDS_BATCH_SIZE = 50
 
 # browse folder that lists the playlists and albums of the users the account follows
 BROWSE_FOLLOWING = "following"
-USER_SETS_ENDPOINTS = ("playlists_without_albums", "albums")
-# a browse listing fetches pages of this size, and stops after the item cap
-BROWSE_PAGE_SIZE = 50
-BROWSE_MAX_ITEMS = 500
+# the number of followed users, or of a user's playlists or albums, a browse listing fetches
+BROWSE_LIMIT = 200
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -386,7 +383,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """
         Browse this provider's items.
 
-        :param path: The path to browse, (e.g. provider_id://following/123/playlists).
+        :param path: The path to browse, (e.g. provider_id://following/muloka).
         """
         base = f"{self.instance_id}://"
         path_parts = [part for part in path.removeprefix(base).split("/") if part]
@@ -889,7 +886,8 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def _get_followed_users(self) -> list[Artist]:
         """Return the users the account follows that have public playlists or albums."""
         artists: list[Artist] = []
-        for user_obj in await self._get_paged_collection(f"/users/{self._user_id}/followings"):
+        following = await self._soundcloud.get_following(self._user_id, BROWSE_LIMIT)
+        for user_obj in self._extract_collection(following) or []:
             # a user without sets would only lead to an empty folder; the count also holds
             # sets that are not public, so a user that passes can still show an empty folder
             if user_obj.get("playlist_count", 1) == 0:
@@ -909,9 +907,13 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         :param user_id: The Soundcloud user id.
         """
-        set_objs: list[dict[str, Any]] = []
-        for endpoint in USER_SETS_ENDPOINTS:
-            set_objs += await self._get_paged_collection(f"/users/{user_id}/{endpoint}")
+        playlists_obj = await self._soundcloud.get_playlists_from_user(user_id, BROWSE_LIMIT)
+        albums_obj = await self._soundcloud.get_album_from_user(user_id, BROWSE_LIMIT)
+        # an unknown or deleted user answers with an error object instead of a collection
+        set_objs = [
+            *(self._extract_collection(playlists_obj) or []),
+            *(self._extract_collection(albums_obj) or []),
+        ]
         set_objs.sort(key=lambda obj: str(obj.get("created_at") or ""), reverse=True)
         playlists: list[Playlist] = []
         for playlist_obj in set_objs:
@@ -925,26 +927,6 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     describe_sync_error(error),
                 )
         return playlists
-
-    async def _get_paged_collection(self, path: str) -> list[dict[str, Any]]:
-        """
-        Return the items of a paged Soundcloud collection, up to BROWSE_MAX_ITEMS.
-
-        :param path: The api path of the collection, e.g. /users/123/albums.
-        """
-        url: str | None = (
-            f"{BASE_URL}{path}?limit={BROWSE_PAGE_SIZE}&linked_partitioning=1"
-            f"&client_id={self._soundcloud.client_id}&app_version={self._soundcloud.app_version}"
-        )
-        items: list[dict[str, Any]] = []
-        while url and len(items) < BROWSE_MAX_ITEMS:
-            response = await self._soundcloud.get(url, headers=self._soundcloud.headers)
-            if not isinstance(response, dict):
-                break
-            # an unknown or deleted user answers with an error object instead of a collection
-            items.extend(response.get("collection") or [])
-            url = response.get("next_href")
-        return items[:BROWSE_MAX_ITEMS]
 
     def _user_folder(self, artist: Artist, base_path: str) -> BrowseFolder:
         """
