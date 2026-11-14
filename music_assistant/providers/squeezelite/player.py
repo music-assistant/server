@@ -385,7 +385,8 @@ class SqueezelitePlayer(Player):
 
         # handle removals first
         if player_ids_to_remove:
-            for sync_client in self._get_sync_clients():
+            # snapshot: the loop removes entries from the group_members it is derived from
+            for sync_client in list(self._get_sync_clients()):
                 if sync_client.player_id in player_ids_to_remove:
                     if sync_client.player_id in self._attr_group_members:
                         # remove child from the group
