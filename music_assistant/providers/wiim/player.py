@@ -835,7 +835,7 @@ class WiimPlayer(PlayerProtocol):
         if self.player is None:
             return None
         queue = self.mass.players.get_active_queue(self.player)
-        if not queue or queue.queue_id != self.player.state.active_source:
+        if not queue or queue.queue_id != self.player.active_source:
             return None
         if not queue.active or not queue.current_item:
             return None

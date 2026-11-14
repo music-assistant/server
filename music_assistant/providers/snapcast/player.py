@@ -285,7 +285,7 @@ class SnapCastPlayer(PlayerProtocol):
                 protocol_id
                 for protocol_id in curr_ma_player_ids
                 if (member := self.mass.players.get_player_by_protocol(protocol_id))
-                and member.player_id in source_player.state.group_members
+                and member.player_id in source_player.group_members
             }
         if sync_group_members is not None and self.protocol_id in (player_ids_to_remove or []):
             # players in sync_group_members will be rejoined

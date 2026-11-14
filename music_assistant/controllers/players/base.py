@@ -101,9 +101,9 @@ class _PlayerControllerBase(CoreController):
         :param provider_filter [str]: Optional filter by the provider (instance) a player names.
         """
         for player in list(self._players.values()):
-            if not (player.state.available or return_unavailable):
+            if not (player.available or return_unavailable):
                 continue
-            if not (player.state.enabled or return_disabled):
+            if not (player.enabled or return_disabled):
                 continue
             if not player.initialized.is_set():
                 continue
@@ -193,7 +193,7 @@ class _PlayerControllerBase(CoreController):
         :return: Player object or None.
         """
         if player := self._players.get(self.resolve_player_id(player_id)):
-            if (not player.state.available or not player.state.enabled) and raise_unavailable:
+            if (not player.available or not player.enabled) and raise_unavailable:
                 msg = f"Player {player_id} is not available"
                 raise PlayerUnavailableError(msg)
             return player
@@ -339,7 +339,7 @@ class _PlayerControllerBase(CoreController):
         matches: list[Player] = []
 
         for player in list(self._players.values()):
-            if player.state.name.strip().lower() == name_normalized:
+            if player.name.strip().lower() == name_normalized:
                 matches.append(player)
 
         if not matches:
@@ -463,9 +463,9 @@ class _PlayerControllerBase(CoreController):
         # update all players that are using this control
         for player in list(self._players.values()):
             if control_id in (
-                player.state.power_control,
-                player.state.volume_control,
-                player.state.mute_control,
+                player.power_control,
+                player.volume_control,
+                player.mute_control,
             ) or (
                 include_configured and control_id in self._configured_control_ids(player.player_id)
             ):
@@ -484,15 +484,15 @@ class _PlayerControllerBase(CoreController):
     def get_active_queue(self, player: Player) -> PlayerQueue | None:
         """Return the current active queue for a player (if any)."""
         # account for player that is synced (sync child)
-        if player.state.synced_to and player.state.synced_to != player.player_id:
-            if sync_leader := self.get_player(player.state.synced_to):
+        if player.synced_to and player.synced_to != player.player_id:
+            if sync_leader := self.get_player(player.synced_to):
                 return self.get_active_queue(sync_leader)
         # handle active group player
-        if player.state.active_group and player.state.active_group != player.player_id:
-            if group_player := self.get_player(player.state.active_group):
+        if player.active_group and player.active_group != player.player_id:
+            if group_player := self.get_player(player.active_group):
                 return self.get_active_queue(group_player)
         # active_source may be filled queue id (or None)
-        active_source = player.state.active_source or player.player_id
+        active_source = player.active_source or player.player_id
         if active_queue := self.mass.player_queues.get(active_source):
             return active_queue
         return None
@@ -506,17 +506,17 @@ class _PlayerControllerBase(CoreController):
         exclude_self: bool = True,
     ) -> Iterator[Player]:
         """Get (child) players attached to a group player or syncgroup."""
-        for child_id in list(group_player.state.group_members):
+        for child_id in list(group_player.group_members):
             if child_player := self.get_player(child_id, False):
-                if not child_player.available_for_playback or not child_player.state.enabled:
+                if not child_player.available_for_playback or not child_player.enabled:
                     continue
-                if only_powered and child_player.state.powered is False:
+                if only_powered and child_player.powered is False:
                     continue
-                if active_only and child_player.state.active_group != group_player.player_id:
+                if active_only and child_player.active_group != group_player.player_id:
                     continue
                 if exclude_self and child_player.player_id == group_player.player_id:
                     continue
-                if only_playing and child_player.state.playback_state not in (
+                if only_playing and child_player.playback_state not in (
                     PlaybackState.PLAYING,
                     PlaybackState.PAUSED,
                 ):
@@ -587,11 +587,11 @@ class _PlayerControllerBase(CoreController):
         :param player: The player to resolve the playback owner for.
         """
         owner = player
-        if owner.state.synced_to and (sync_leader := self.get_player(owner.state.synced_to)):
+        if owner.synced_to and (sync_leader := self.get_player(owner.synced_to)):
             owner = sync_leader
         # a captured sync leader hands its playback on to its group, whose lock has
         # to be taken first (see get_group_and_player_lock)
-        if owner.state.active_group and (group := self.get_player(owner.state.active_group)):
+        if owner.active_group and (group := self.get_player(owner.active_group)):
             owner = group
         return owner
 
@@ -618,9 +618,9 @@ class _PlayerControllerBase(CoreController):
         for _player in self.iter_players():
             if _player.player_id == player_id:
                 continue
-            if _player.state.type != PlayerType.GROUP:
+            if _player.type != PlayerType.GROUP:
                 continue
-            if player_id in _player.state.group_members:
+            if player_id in _player.group_members:
                 yield _player
 
     def _build_legacy_id_index(self) -> None:

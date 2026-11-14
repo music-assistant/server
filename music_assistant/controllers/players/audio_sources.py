@@ -367,18 +367,16 @@ class AudioSourceMixin(_PlayerControllerBase):
             # If player is currently grouped, handle it so the source switch can proceed.
             # This allows external sources (e.g. Spotify Connect, AirPlay) to take over a
             # grouped player.
-            if player.state.active_group and (
-                group_player := self.get_player(player.state.active_group)
-            ):
-                if player_id in group_player.state.static_group_members:
+            if player.active_group and (group_player := self.get_player(player.active_group)):
+                if player_id in group_player.static_group_members:
                     # player is a static member of a permanent group - stop the group
                     # and power it off if supported, rather than removing the member
                     await self._handle_cmd_stop(group_player.player_id)
-                    if group_player.state.power_control != PLAYER_CONTROL_NONE:
+                    if group_player.power_control != PLAYER_CONTROL_NONE:
                         await self._handle_cmd_power(group_player.player_id, False)
                 else:
                     await self.cmd_ungroup(player_id)
-            elif player.state.synced_to:
+            elif player.synced_to:
                 await self.cmd_ungroup(player_id)
             # Delegate to internal handler for actual implementation
             await self._handle_select_source(player_id, source)
@@ -566,11 +564,11 @@ class AudioSourceMixin(_PlayerControllerBase):
 
         :param player: The player to resolve the owner for.
         """
-        if player.state.synced_to and player.state.synced_to != player.player_id:
-            if sync_leader := self.get_player(player.state.synced_to):
+        if player.synced_to and player.synced_to != player.player_id:
+            if sync_leader := self.get_player(player.synced_to):
                 return self._audio_source_owner(sync_leader)
-        if player.state.active_group and player.state.active_group != player.player_id:
-            if group_player := self.get_player(player.state.active_group):
+        if player.active_group and player.active_group != player.player_id:
+            if group_player := self.get_player(player.active_group):
                 return self._audio_source_owner(group_player)
         return player
 
@@ -632,10 +630,10 @@ class AudioSourceMixin(_PlayerControllerBase):
         :raises PlayerCommandFailed: When the caller named a source that is no longer
             the one playing.
         """
-        active_source_id = player.state.active_source or player.player_id
+        active_source_id = player.active_source or player.player_id
         # a queue can be named by a legacy id of its player
         if source_id is not None and self.resolve_player_id(source_id) != active_source_id:
-            msg = f"The source this was meant for is no longer playing on {player.state.name}."
+            msg = f"The source this was meant for is no longer playing on {player.name}."
             raise PlayerCommandFailed(msg)
         return active_source_id
 
@@ -852,7 +850,7 @@ class AudioSourceMixin(_PlayerControllerBase):
         player = self._get_reachable_player(player_id)
         # check if player is already playing and source is different
         # in that case we need to stop the player first
-        prev_source = player.state.active_source
+        prev_source = player.active_source
         if prev_source and source != prev_source:
             with suppress(PlayerCommandFailed, RuntimeError):
                 # just try to stop (regardless of state) and let it settle, so the
@@ -905,19 +903,17 @@ class AudioSourceMixin(_PlayerControllerBase):
                 "Use player_queues.play_media with an explicit AudioSource URI."
             )
         # basic check if player supports source selection
-        if PlayerFeature.SELECT_SOURCE not in player.state.supported_features:
+        if PlayerFeature.SELECT_SOURCE not in player.supported_features:
             raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support source selection"
+                f"Player {player.name} does not support source selection"
             )
         # basic check if source is valid for player
-        if not any(x for x in player.state.source_list if x.id == source):
-            raise PlayerCommandFailed(
-                f"{source} is an invalid source for player {player.state.name}"
-            )
+        if not any(x for x in player.source_list if x.id == source):
+            raise PlayerCommandFailed(f"{source} is an invalid source for player {player.name}")
         # the selected source plays, not the queue that auto play would resume
         await self._power_on_for_playback(player, skip_auto_play=True)
         # forward to player
         if (own := player.own_protocol) is None:
-            msg = f"Player {player.state.name} has no protocol that can select a source"
+            msg = f"Player {player.name} has no protocol that can select a source"
             raise PlayerUnavailableError(msg)
         await own.select_source(source)

@@ -138,7 +138,7 @@ class ConfigChangesMixin(_PlayerControllerBase):
         # signal player provider that the config changed
         if not (player := self.get_player(player_id)):
             return
-        if player.state.playback_state != PlaybackState.PLAYING:
+        if player.playback_state != PlaybackState.PLAYING:
             return
         if active_queue := self.get_active_queue(player):
             # a group change the provider reported can hand this player a queue it is not
@@ -159,15 +159,13 @@ class ConfigChangesMixin(_PlayerControllerBase):
             # this will restart the queue stream/playback
             self.mass.call_later(0, self._resume_queue_after_dsp_change, active_queue.queue_id)
             return
-        if after_group_change and not self._is_ma_managed_source(
-            player, player.state.active_source
-        ):
+        if after_group_change and not self._is_ma_managed_source(player, player.active_source):
             # an external source (a tv input, a connect session) has no stream of ours
             # to rebuild; stopping and starting it would only interrupt it
             self.logger.debug(
                 "Not restarting %s after DSP change: it is playing external source %s",
                 player.display_name,
-                player.state.active_source,
+                player.active_source,
             )
             return
         self.logger.info("Restarting playback of Player %s after DSP change", player_id)
@@ -184,9 +182,9 @@ class ConfigChangesMixin(_PlayerControllerBase):
         :param player: The player whose config changed.
         :param requires_restart: Whether a setting changed that only applies to a new stream.
         """
-        if not requires_restart or not player.state.active_source:
+        if not requires_restart or not player.active_source:
             return
-        resume_queue = self.mass.player_queues.get(player.state.active_source)
+        resume_queue = self.mass.player_queues.get(player.active_source)
         # if the PlayerQueue was playing, restart playback
         if resume_queue and resume_queue.state == PlaybackState.PLAYING:
             # always stop first to ensure the player uses the new config
@@ -204,14 +202,14 @@ class ConfigChangesMixin(_PlayerControllerBase):
         """Handle DSP reload when group membership changes."""
         # reset cached group volume snapshot since membership changed
         player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
-        if player.state.synced_to and player.state.synced_to != player.player_id:
+        if player.synced_to and player.synced_to != player.player_id:
             # a sync child renders its leader's stream, so its own DSP setting cannot
             # require a restart (a leader that just became a child reports its members
             # as gone, which would otherwise read as the group shrinking)
             return
         prev_child_count = len(prev_group_members)
         new_child_count = len(new_group_members)
-        is_player_group = player.state.type == PlayerType.GROUP
+        is_player_group = player.type == PlayerType.GROUP
 
         # handle special case for PlayerGroups: since there are no leaders,
         # DSP still always work with a single player in the group.
@@ -223,12 +221,10 @@ class ConfigChangesMixin(_PlayerControllerBase):
         if prev_is_multiple_devices == new_is_multiple_devices:
             return  # no change in multi-device status
 
-        supports_multi_device_dsp = (
-            PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
-        )
+        supports_multi_device_dsp = PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
 
         dsp_enabled: bool
-        if player.state.type == PlayerType.GROUP:
+        if player.type == PlayerType.GROUP:
             # Since player groups do not have leaders, we will use the only child
             # that was in the group before and after the change
             if prev_is_multiple_devices:

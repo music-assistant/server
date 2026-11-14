@@ -1287,11 +1287,11 @@ class SpotifyConnectProvider(PluginProvider):
         player = self.mass.players.get_player(player_id)
         if player is None:
             return
-        volume_level = player.state.volume_level
+        volume_level = player.volume_level
         if volume_level is None:
             # a group has no level of its own, and the group volume is the level its
             # own volume commands interpolate the members from
-            volume_level = player.state.group_volume
+            volume_level = player.group_volume
         if volume_level is None:
             return
         # clamp: the logical volume can be out of range until volume limit

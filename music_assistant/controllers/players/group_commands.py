@@ -138,7 +138,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
             # a group player the command is passed on to only gains players the user may use
             for player_id in (target_player, *player_ids_to_add):
                 self.check_player_access(player_id)
-        elif not player_ids_to_remove or (target and target.state.synced_to and not group_id):
+        elif not player_ids_to_remove or (target and target.synced_to and not group_id):
             # cmd_set_members detaches a synced target first, unless it passes the
             # command on to the target's group player
             self.check_player_access(target_player)
@@ -233,8 +233,8 @@ class GroupCommandsMixin(_PlayerControllerBase):
 
         :param player_id: ID of the group player to remove.
         """
-        if (player := self.get_player(player_id)) and player.state.type != PlayerType.GROUP:
-            raise UnsupportedFeaturedException(f"Player {player.state.name} is not a group player")
+        if (player := self.get_player(player_id)) and player.type != PlayerType.GROUP:
+            raise UnsupportedFeaturedException(f"Player {player.name} is not a group player")
         await self.remove(player_id)
 
     def _handle_membership_cleanup_on_state_change(
@@ -250,7 +250,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
             or (ATTR_ENABLED in changed_values and changed_values[ATTR_ENABLED][1] is False)
             or player.offline_by_power_control
         )
-        if became_inactive and (player.state.active_group or player.state.synced_to):
+        if became_inactive and (player.active_group or player.synced_to):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
         # A player whose power was turned off outside of an MA power command (e.g. its
@@ -273,8 +273,8 @@ class GroupCommandsMixin(_PlayerControllerBase):
         if player.offline_by_power_control:
             # it went offline along with its power, so it was detached above instead
             return
-        if player.state.type in UNGROUP_ON_POWER_OFF_TYPES and (
-            player.state.synced_to or player.state.active_group or player.state.group_members
+        if player.type in UNGROUP_ON_POWER_OFF_TYPES and (
+            player.synced_to or player.active_group or player.group_members
         ):
             self.mass.create_task(self.cmd_ungroup(player.player_id))
 
@@ -406,7 +406,7 @@ class GroupCommandsMixin(_PlayerControllerBase):
         group = self.get_player(group_id, raise_unavailable=True)
         assert group is not None  # for type checking
         async with self.get_player_lock(group.player_id, PlayerLockPurpose.PLAYBACK):
-            if group.state.power_control != PLAYER_CONTROL_NONE:
+            if group.power_control != PLAYER_CONTROL_NONE:
                 await self._handle_cmd_power(group.player_id, False)
             else:
                 await self._handle_cmd_stop(group.player_id)

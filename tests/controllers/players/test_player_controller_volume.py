@@ -255,7 +255,7 @@ class TestVolumeScalingOnRedirect:
 
         mock_mass.config.get_player_value = MagicMock(side_effect=_conf)
         controller, player, audio = self._player(mock_mass, "audio_user")
-        assert player.state.volume_control == "audio_user"
+        assert player.volume_control == "audio_user"
 
         with patch.object(controller, "_get_active_audio_source", return_value=None):
             await controller._handle_cmd_volume_set("user_player", 100)
@@ -462,7 +462,7 @@ class TestFakeMuteControl:
         await controller.cmd_volume_mute("player_1", True)
         await controller.cmd_volume_mute("player_1", True)
         assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
-        assert player.state.volume_muted is True
+        assert player.volume_muted is True
 
         await controller.cmd_volume_mute("player_1", False)
         volume_set.assert_awaited_with(40)
@@ -477,7 +477,7 @@ class TestFakeMuteControl:
         await controller.cmd_volume_mute("player_1", False)
         volume_set.assert_awaited_with(1)
         player.update_state()
-        assert player.state.volume_muted is False
+        assert player.volume_muted is False
 
     async def test_unmute_of_unmuted_player_keeps_volume(self, mock_mass: MagicMock) -> None:
         """An unmute command for a player that is not muted may not touch the volume."""
@@ -485,7 +485,7 @@ class TestFakeMuteControl:
 
         await controller.cmd_volume_mute("player_1", False)
         volume_set.assert_not_awaited()
-        assert player.state.volume_level == 50
+        assert player.volume_level == 50
 
     async def test_unmute_restores_a_stored_zero_volume(self, mock_mass: MagicMock) -> None:
         """A player that was already silent stays silent after mute and unmute."""
@@ -549,7 +549,7 @@ class TestVolumeStep:
         await controller.cmd_volume_up("player_1")
 
         player.update_state()
-        assert player.state.volume_level == expected
+        assert player.volume_level == expected
 
     @pytest.mark.parametrize(
         ("start", "expected"),
@@ -564,7 +564,7 @@ class TestVolumeStep:
         await controller.cmd_volume_down("player_1")
 
         player.update_state()
-        assert player.state.volume_level == expected
+        assert player.volume_level == expected
 
     async def test_configured_step_moves_up_by_a_flat_amount_mid_range(
         self, mock_mass: MagicMock
@@ -575,7 +575,7 @@ class TestVolumeStep:
         await controller.cmd_volume_up("player_1")
 
         player.update_state()
-        assert player.state.volume_level == 55
+        assert player.volume_level == 55
 
     async def test_configured_step_moves_up_by_a_flat_amount_near_the_extreme(
         self, mock_mass: MagicMock
@@ -586,7 +586,7 @@ class TestVolumeStep:
         await controller.cmd_volume_up("player_1")
 
         player.update_state()
-        assert player.state.volume_level == 10
+        assert player.volume_level == 10
 
     async def test_configured_step_moves_down_by_a_flat_amount_mid_range(
         self, mock_mass: MagicMock
@@ -597,7 +597,7 @@ class TestVolumeStep:
         await controller.cmd_volume_down("player_1")
 
         player.update_state()
-        assert player.state.volume_level == 45
+        assert player.volume_level == 45
 
     async def test_configured_step_moves_down_by_a_flat_amount_near_the_extreme(
         self, mock_mass: MagicMock
@@ -608,7 +608,7 @@ class TestVolumeStep:
         await controller.cmd_volume_down("player_1")
 
         player.update_state()
-        assert player.state.volume_level == 90
+        assert player.volume_level == 90
 
     async def test_large_configured_step_clamps_up_at_the_maximum(
         self, mock_mass: MagicMock
@@ -619,7 +619,7 @@ class TestVolumeStep:
         await controller.cmd_volume_up("player_1")
 
         player.update_state()
-        assert player.state.volume_level == 100
+        assert player.volume_level == 100
 
     async def test_large_configured_step_clamps_down_at_zero(self, mock_mass: MagicMock) -> None:
         """A large configured step clamps volume_down at 0."""
@@ -628,7 +628,7 @@ class TestVolumeStep:
         await controller.cmd_volume_down("player_1")
 
         player.update_state()
-        assert player.state.volume_level == 0
+        assert player.volume_level == 0
 
     async def test_group_volume_up_with_default_step_uses_the_ladder(
         self, mock_mass: MagicMock
@@ -640,7 +640,7 @@ class TestVolumeStep:
 
         for player in players.values():
             player.update_state()
-            assert player.state.volume_level == 53
+            assert player.volume_level == 53
 
     async def test_group_volume_down_with_default_step_uses_the_ladder(
         self, mock_mass: MagicMock
@@ -652,7 +652,7 @@ class TestVolumeStep:
 
         for player in players.values():
             player.update_state()
-            assert player.state.volume_level == 47
+            assert player.volume_level == 47
 
     async def test_group_volume_up_with_configured_step(self, mock_mass: MagicMock) -> None:
         """cmd_group_volume_up honours a configured flat step."""
@@ -662,7 +662,7 @@ class TestVolumeStep:
 
         for player in players.values():
             player.update_state()
-            assert player.state.volume_level == 55
+            assert player.volume_level == 55
 
     async def test_group_volume_down_with_configured_step(self, mock_mass: MagicMock) -> None:
         """cmd_group_volume_down honours a configured flat step."""
@@ -672,7 +672,7 @@ class TestVolumeStep:
 
         for player in players.values():
             player.update_state()
-            assert player.state.volume_level == 45
+            assert player.volume_level == 45
 
     async def test_config_entry_exposes_default_and_range(
         self, controller: PlayerController
@@ -753,7 +753,7 @@ class TestGroupVolumeOrdering:
 
         for player in players.values():
             player.update_state()
-            assert player.state.volume_level == 30
+            assert player.volume_level == 30
 
     async def test_a_command_for_a_member_waits_for_one_for_its_leader(
         self, mock_mass: MagicMock
@@ -785,7 +785,7 @@ class TestGroupVolumeOrdering:
         assert overlapped is False
         for player in players.values():
             player.update_state()
-            assert player.state.volume_level == 30
+            assert player.volume_level == 30
 
     async def test_a_nudge_from_a_member_steps_the_volume_of_the_group(
         self, mock_mass: MagicMock
@@ -793,14 +793,14 @@ class TestGroupVolumeOrdering:
         """A group nudge addressed to a member steps the group, not the member itself."""
         controller, players = self._make_synced_pair(mock_mass, volumes={"member": 40})
         # the group sits at the volume of its loudest member, the member at its own
-        assert players["leader"].state.group_volume == 50
-        assert players["member"].state.group_volume == 40
+        assert players["leader"].group_volume == 50
+        assert players["member"].group_volume == 40
 
         await controller.cmd_group_volume_up("member")
 
         for player in players.values():
             player.update_state()
-        assert players["leader"].state.volume_level == 55
+        assert players["leader"].volume_level == 55
 
     async def test_an_individual_volume_command_waits_for_the_group(
         self, mock_mass: MagicMock
@@ -816,8 +816,8 @@ class TestGroupVolumeOrdering:
 
         for player in players.values():
             player.update_state()
-        assert players["member"].state.volume_level == 10
-        assert players["leader"].state.volume_level == 80
+        assert players["member"].volume_level == 10
+        assert players["leader"].volume_level == 80
 
     async def test_a_muted_leader_keeps_its_mute_on_a_group_volume_change(
         self, mock_mass: MagicMock
@@ -834,8 +834,8 @@ class TestGroupVolumeOrdering:
             await controller.cmd_group_volume("leader", 30)
 
         players["leader"].update_state()
-        assert players["leader"].state.volume_muted is True
-        assert players["leader"].state.volume_level == 30
+        assert players["leader"].volume_muted is True
+        assert players["leader"].volume_level == 30
 
 
 class LateReportingDevice:
@@ -1257,8 +1257,8 @@ class TestFakeMuteInGroup:
 
         for player in players.values():
             player.update_state()
-            assert player.state.volume_muted is True
-            assert player.state.volume_level == 0
+            assert player.volume_muted is True
+            assert player.volume_level == 0
 
     async def test_a_muted_member_does_not_inflate_a_group_nudge(
         self, mock_mass: MagicMock
@@ -1275,7 +1275,7 @@ class TestFakeMuteInGroup:
         await controller.cmd_group_volume_up("leader")
 
         players["leader"].update_state()
-        assert players["leader"].state.volume_level == 55
+        assert players["leader"].volume_level == 55
 
     async def test_a_nudge_after_unmuting_steps_from_the_restored_volume(
         self, mock_mass: MagicMock
@@ -1292,7 +1292,7 @@ class TestFakeMuteInGroup:
         await controller.cmd_volume_up("member")
 
         players["member"].update_state()
-        assert players["member"].state.volume_level == 55
+        assert players["member"].volume_level == 55
 
     async def test_group_volume_down_keeps_a_muted_member_muted(self, mock_mass: MagicMock) -> None:
         """Turning a group down leaves a single muted member silent, at its own volume."""
@@ -1309,11 +1309,11 @@ class TestFakeMuteInGroup:
         assert member_state.volume_muted is True
         assert member_state.volume_level == 0
         # the player that is not muted follows the group volume as usual
-        assert players["leader"].state.volume_level == 25
+        assert players["leader"].volume_level == 25
         # unmuting brings the member back at the volume it had before it was muted
         await controller.cmd_volume_mute("member", False)
         players["member"].update_state()
-        assert players["member"].state.volume_level == 50
+        assert players["member"].volume_level == 50
 
     async def test_unmute_restores_the_volume_from_before_the_mute(
         self, mock_mass: MagicMock
@@ -1327,8 +1327,8 @@ class TestFakeMuteInGroup:
 
         for player in players.values():
             player.update_state()
-            assert player.state.volume_muted is False
-            assert player.state.volume_level == 50
+            assert player.volume_muted is False
+            assert player.volume_level == 50
 
     async def test_group_volume_keeps_a_mixed_pair_muted(self, mock_mass: MagicMock) -> None:
         """Members with a different mute control stay muted alike on a group volume change."""
@@ -1347,7 +1347,7 @@ class TestFakeMuteInGroup:
         mute.assert_awaited_once_with(True)
         for player in players.values():
             player.update_state()
-            assert player.state.volume_muted is True
+            assert player.volume_muted is True
 
 
 class TestMuteControlGuard:
@@ -1636,7 +1636,7 @@ class TestGroupMuteOnNonGroupPlayer:
     ) -> None:
         """A member of a sync group mutes the whole group through its sync leader."""
         controller, players = self._setup(mock_mass, "member")
-        assert players["member"].state.synced_to == "leader"
+        assert players["member"].synced_to == "leader"
         mutes = self._stub_mutes(players)
 
         await controller.cmd_group_volume_mute("member", True)
@@ -1760,8 +1760,8 @@ class TestMuteLockAfterUngroup:
         await controller.cmd_volume_set("member", 70)
 
         players["member"].update_state()
-        assert players["member"].state.volume_level == 70
-        assert players["member"].state.volume_muted is False
+        assert players["member"].volume_level == 70
+        assert players["member"].volume_muted is False
 
     async def test_natively_muted_player_keeps_its_mute_after_ungroup(
         self, mock_mass: MagicMock
@@ -1780,8 +1780,8 @@ class TestMuteLockAfterUngroup:
 
         mute.assert_awaited_once_with(True)
         players["member"].update_state()
-        assert players["member"].state.volume_level == 70
-        assert players["member"].state.volume_muted is True
+        assert players["member"].volume_level == 70
+        assert players["member"].volume_muted is True
 
     async def test_still_grouped_player_keeps_its_lock(self, mock_mass: MagicMock) -> None:
         """A muted player that is still grouped stays silent on a volume change."""
@@ -1791,8 +1791,8 @@ class TestMuteLockAfterUngroup:
         await controller.cmd_volume_set("member", 70)
 
         players["member"].update_state()
-        assert players["member"].state.volume_level == 0
-        assert players["member"].state.volume_muted is True
+        assert players["member"].volume_level == 0
+        assert players["member"].volume_muted is True
 
     async def test_volume_through_an_audio_protocol_follows_the_lock_of_the_player(
         self, mock_mass: MagicMock
@@ -1816,7 +1816,7 @@ class TestMuteLockAfterUngroup:
 
         mock_mass.config.get_player_value = MagicMock(side_effect=_conf)
         _refresh(member)
-        assert member.state.volume_control == "audio_member"
+        assert member.volume_control == "audio_member"
 
         # the lock is earned while the player is grouped
         await controller.cmd_volume_mute("member", True)

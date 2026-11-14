@@ -310,17 +310,17 @@ async def test_remote_session_restores_listener_before_next_track(
 
     try:
         await session.add_guest_listener(guest_player_id)
-        await _wait_for(lambda: guest_player_id in host_player.state.group_members)
+        await _wait_for(lambda: guest_player_id in host_player.group_members)
         await mass.player_queues.play_media(session.queue_id, "test://track/0_0_0")
         await mass.player_queues.stop(session.queue_id)
         await mass.players.cmd_set_members(
             session.player_id,
             player_ids_to_remove=[guest_player_id],
         )
-        await _wait_for(lambda: guest_player_id not in host_player.state.group_members)
+        await _wait_for(lambda: guest_player_id not in host_player.group_members)
 
         await session.restore_guest_listeners()
-        await _wait_for(lambda: guest_player_id in host_player.state.group_members)
+        await _wait_for(lambda: guest_player_id in host_player.group_members)
         await mass.player_queues.play_media(session.queue_id, "test://track/0_0_1")
 
         queue = mass.player_queues.get(session.queue_id)

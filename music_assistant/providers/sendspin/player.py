@@ -2395,12 +2395,12 @@ class SendspinPlayer(SendspinBasePlayer):
     @property
     def _player_media(self) -> PlayerMedia | None:
         """Return the media the player this protocol is attached to shows, if any."""
-        return self.player.state.current_media if self.player is not None else None
+        return self.player.current_media if self.player is not None else None
 
     @property
     def _player_playing(self) -> bool:
         """Return whether the player this protocol is attached to is playing."""
-        return self.player is not None and self.player.state.playback_state == PlaybackState.PLAYING
+        return self.player is not None and self.player.playback_state == PlaybackState.PLAYING
 
     def _media_identity(self) -> tuple[object, ...] | None:
         """Return the current media values that trigger on_player_media_updated when changed."""
@@ -3120,7 +3120,7 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
             )
             if player.type == PlayerType.GROUP
             and self.player is not None
-            and self.player.player_id in player.state.static_group_members
+            and self.player.player_id in player.static_group_members
         ]
 
     async def _play_static_group(self) -> None:

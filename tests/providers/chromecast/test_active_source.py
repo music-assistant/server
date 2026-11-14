@@ -72,7 +72,7 @@ def test_foreign_cast_app_takes_over_the_ma_queue() -> None:
 
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == "bbc_sounds"
+    assert player.active_source == "bbc_sounds"
 
 
 def test_a_known_app_in_its_own_spelling_gets_controls() -> None:

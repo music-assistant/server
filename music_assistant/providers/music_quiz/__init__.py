@@ -1477,7 +1477,7 @@ class MusicQuizPlugin(PluginProvider):
                 "No playback target is available for the Music Quiz game"
             )
         player = self.mass.players.get_player(session.player_id)
-        if player is None or not player.state.available:
+        if player is None or not player.available:
             raise MusicQuizNoPlaybackTargetError(
                 "No playback target is available for the Music Quiz game"
             )
@@ -1515,7 +1515,7 @@ class MusicQuizPlugin(PluginProvider):
             if session is None:
                 return
             player = self.mass.players.get_player(session.player_id)
-            if player is None or not player.state.available:
+            if player is None or not player.available:
                 return
             if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
                 return
@@ -1539,8 +1539,8 @@ class MusicQuizPlugin(PluginProvider):
                 # playback. Its first round then starts without prepared audio.
                 if (
                     venue is None
-                    or not venue.state.available
-                    or venue.state.playback_state != PlaybackState.IDLE
+                    or not venue.available
+                    or venue.playback_state != PlaybackState.IDLE
                 ):
                     return
             session = await self._get_playback_session()
@@ -1761,8 +1761,8 @@ class MusicQuizPlugin(PluginProvider):
         # current track, so its anchor is not this round's track start
         if queue is not None and queue.flow_mode:
             return None
-        elapsed = player.state.elapsed_time
-        last_updated = player.state.elapsed_time_last_updated
+        elapsed = player.elapsed_time
+        last_updated = player.elapsed_time_last_updated
         # providers report no position (Sendspin's play_media sets _attr_elapsed_time to None)
         # or a zero position with a fresh timestamp before real playback progress lands,
         # which would otherwise resolve to "audio started now"
@@ -1872,13 +1872,11 @@ class MusicQuizPlugin(PluginProvider):
         preference = await self._load_playback_preference()
         legacy_mode, legacy_player_id, _ = self._legacy_playback_preference()
         targets = self._venue_playback_targets()
-        visible_players = [player for player in targets if not player.state.hide_in_ui]
+        visible_players = [player for player in targets if not player.hide_in_ui]
         # the caller's own web player is hidden by default: it is offered, but only
         # recommended when it is the remembered choice
         offered_players = [
-            player
-            for player in targets
-            if not player.state.hide_in_ui or is_own_client_player(player)
+            player for player in targets if not player.hide_in_ui or is_own_client_player(player)
         ]
         venue_players: list[MusicQuizVenuePlayerOption] = [
             {"player_id": player.player_id, "name": player.display_name}

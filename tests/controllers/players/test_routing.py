@@ -942,7 +942,7 @@ async def test_device_protocol_is_the_own_protocol_else_the_preferred_audio_prot
 
     assert player.device_protocol is scenario.mass.players.get_protocol("RINCON_KITCHEN")
     assert player.provider_id == native.provider.instance_id
-    assert player.state.device_info.model == "Fake sonos"
+    assert player.device_info.model == "Fake sonos"
 
     await scenario.unregister(native)
     await scenario.idle()
@@ -950,7 +950,7 @@ async def test_device_protocol_is_the_own_protocol_else_the_preferred_audio_prot
     # airplay is preferred over cast
     assert player.device_protocol is scenario.mass.players.get_protocol("ap_kitchen")
     assert player.provider_id == audio.provider.instance_id
-    assert player.state.device_info.model == "Fake airplay"
+    assert player.device_info.model == "Fake airplay"
 
 
 async def test_output_channels_of_the_player_apply_to_the_output_that_renders(
@@ -980,14 +980,14 @@ async def test_sync_the_protocols_report_in_their_own_ids_is_one_of_players() ->
     member = controller.get_player("b")
     assert leader is not None
     assert member is not None
-    assert leader.state.can_group_with == {"b", "c"}
+    assert leader.can_group_with == {"b", "c"}
 
     cast("MockProtocol", leader.own_protocol)._attr_group_members = ["proto_a", "proto_b"]
     for player in controller:
         player.refresh_state(signal_event=False)
 
-    assert leader.state.group_members == ["a", "b"]
-    assert member.state.synced_to == "a"
+    assert leader.group_members == ["a", "b"]
+    assert member.synced_to == "a"
 
     await controller.cmd_set_members("a", player_ids_to_remove=["b"])
 

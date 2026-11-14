@@ -519,9 +519,9 @@ class AriaCastReceiver(PluginProvider):
         if not player_id:
             return None
         player = self.mass.players.get_player(player_id)
-        if not player or player.state.volume_level is None:
+        if not player or player.volume_level is None:
             return None
-        return int(player.state.volume_level)
+        return int(player.volume_level)
 
     async def _handle_volume_command(
         self, ws: web.WebSocketResponse, command: str, payload: dict[str, Any]
@@ -534,7 +534,7 @@ class AriaCastReceiver(PluginProvider):
             return
         player = self.mass.players.get_player(player_id)
 
-        if not player or player.state.volume_level is None:
+        if not player or player.volume_level is None:
             with suppress(Exception):
                 await ws.send_json(
                     {"command": "volume", "action": "volume", "level": -1, "success": False}
@@ -565,7 +565,7 @@ class AriaCastReceiver(PluginProvider):
 
         # Re-fetch the resulting level after the command was applied.
         player = self.mass.players.get_player(player_id)
-        vol = player.state.volume_level if player else None
+        vol = player.volume_level if player else None
         level = int(vol) if vol is not None else -1
         with suppress(Exception):
             await ws.send_json({"command": "volume", "level": level, "success": level != -1})
@@ -1038,7 +1038,7 @@ class AriaCastReceiver(PluginProvider):
             player := self.mass.players.get_player_or_protocol_player(player_id)
         ):
             return None
-        return player.player_id if player.state.available else None
+        return player.player_id if player.available else None
 
 
 # ---------------------------------------------------------------------------

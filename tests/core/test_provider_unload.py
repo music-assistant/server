@@ -294,7 +294,7 @@ async def test_failing_protocol_teardown_does_not_strand_the_others(
     assert mass_minimal.players._protocols == {}
     # the players stay, unavailable, until their device is found again
     assert set(mass_minimal.players._players) == player_ids
-    assert not any(player.state.available for player in mass_minimal.players._players.values())
+    assert not any(player.available for player in mass_minimal.players._players.values())
     assert provider.unloaded
     assert provider.instance_id not in mass_minimal._providers
     assert EventType.PROVIDERS_UPDATED in signalled

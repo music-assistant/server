@@ -184,7 +184,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
         # wasted work that also produces duplicate state updates across the group.
         if (
             not self._mirrors_parent_media(player)
-            and (current_media := player.state.current_media)
+            and (current_media := player.current_media)
             and current_media.image_url
         ):
             if current_media.palette is None:
@@ -228,7 +228,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
             # reports levels too, and a group only ever reports what its members are at,
             # so neither of those counts. a correction always is the device's own doing:
             # the levels we command never fall outside the configured range
-            if player.state.type != PlayerType.GROUP and (
+            if player.type != PlayerType.GROUP and (
                 corrected or self._unexpired_volume_target(player) is None
             ):
                 self._invalidate_group_volume_snapshot(player_id)
@@ -411,7 +411,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
         player = self.get_player(player_id)
         if player is None:
             return
-        current = player.state.current_media
+        current = player.current_media
         if current is None or current.image_url != image_url:
             return  # media changed while fetching
         # Carry the palette on player state so the (sync) serialization reads it back.
@@ -447,7 +447,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
         # TODO: make this fan-out change-aware (skip relatives that derive nothing from
         # the changed fields) once reverse indexes for synced_to/active_group exist.
         # Propagate group or sync-leader updates to child players.
-        if player.state.group_members:
+        if player.group_members:
             for child_player in self.iter_group_members(player, exclude_self=True):
                 for protocol in list(child_player.attached_protocols.values()):
                     if player.type == PlayerType.GROUP:
@@ -464,7 +464,7 @@ class StateUpdatesMixin(_PlayerControllerBase):
                 self.trigger_player_update(group_player.player_id)
 
         # update/signal manually sync-parent player when child updates
-        if (_sync_parent_id := player.state.synced_to) and (
+        if (_sync_parent_id := player.synced_to) and (
             _sync_parent := self.get_player(_sync_parent_id)
         ):
             self.trigger_player_update(_sync_parent.player_id)
@@ -521,12 +521,12 @@ class StateUpdatesMixin(_PlayerControllerBase):
                 self._check_idle_power_off(player)
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
-                if player.state.playback_state == PlaybackState.PLAYING:
+                if player.playback_state == PlaybackState.PLAYING:
                     self.mass.call_later(
                         QUEUE_UPDATE_DEBOUNCE,
                         self.mass.player_queues.on_player_update,
                         player,
-                        {"corrected_elapsed_time": (None, player.state.corrected_elapsed_time)},
+                        {"corrected_elapsed_time": (None, player.corrected_elapsed_time)},
                         task_id=f"queue_on_player_update_{player.player_id}",
                     )
             for protocol in list(self._protocols.values()):

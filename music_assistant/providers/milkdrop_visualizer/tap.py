@@ -514,7 +514,7 @@ class TapManager:
         if not self.provider.config.get_value(CONF_COLOR_TINT):
             return
         player = self.mass.players.get_player(tap.player_id)
-        media = player.state.current_media if player is not None else None
+        media = player.current_media if player is not None else None
         payload = palette_payload(media.palette if media is not None else None)
         if payload != tap.last_color:
             tap.apply_color(payload)

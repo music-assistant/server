@@ -706,7 +706,7 @@ class SendspinSourceProvider(PluginProvider):
         target_id = (
             queue.queue_id
             if queue
-            else (player.state.synced_to or player.state.active_group or player.player_id)
+            else (player.synced_to or player.active_group or player.player_id)
         )
         return target_id, create_uri(MediaType.AUDIO_SOURCE, self.instance_id, client_id)
 

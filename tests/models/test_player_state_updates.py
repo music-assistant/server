@@ -127,7 +127,7 @@ class TestUpdateStateChangeDetection:
             player.update_state()
 
         derive.assert_not_called()
-        assert player.state.elapsed_time == 10.0
+        assert player.elapsed_time == 10.0
 
     def test_position_jump_rebuilds_state(self, player: Player, protocol: MockProtocol) -> None:
         """A corrected-position jump (seek) adopts the new anchor."""
@@ -136,7 +136,7 @@ class TestUpdateStateChangeDetection:
 
         player.update_state(signal_event=False)
 
-        assert player.state.elapsed_time == 61.0
+        assert player.elapsed_time == 61.0
 
     def test_changed_input_rebuilds_state(self, player: Player, protocol: MockProtocol) -> None:
         """A changed player attribute is picked up by the next update_state call."""
@@ -148,7 +148,7 @@ class TestUpdateStateChangeDetection:
             player.update_state(signal_event=False)
 
         derive.assert_called_once()
-        assert player.state.volume_level == 55
+        assert player.volume_level == 55
 
     def test_changed_sound_modes_and_options_rebuild_state(
         self, player: Player, protocol: MockProtocol
@@ -156,13 +156,13 @@ class TestUpdateStateChangeDetection:
         """Sound modes and options the device reports anew reach the state."""
         protocol._attr_sound_mode_list = [PlayerSoundMode(id="movie", name="Movie")]
         player.update_state(signal_event=False)
-        assert [x.id for x in player.state.sound_mode_list] == ["movie"]
+        assert [x.id for x in player.sound_mode_list] == ["movie"]
 
         protocol._attr_options = [
             PlayerOption(key="bass", name="Bass", type=PlayerOptionType.INTEGER, value=3)
         ]
         player.update_state(signal_event=False)
-        assert [(x.key, x.value) for x in player.state.options] == [("bass", 3)]
+        assert [(x.key, x.value) for x in player.options] == [("bass", 3)]
 
     def test_changed_privacy_rebuilds_state(self, player: Player, protocol: MockProtocol) -> None:
         """A player turning private must reach clients, which decide where to show it."""
@@ -174,7 +174,7 @@ class TestUpdateStateChangeDetection:
             player.update_state(signal_event=False)
 
         derive.assert_called_once()
-        assert player.state.private is True
+        assert player.private is True
 
     def test_mark_state_dirty_forces_recalculation(self, player: Player) -> None:
         """mark_state_dirty recalculates even when no own input changed."""
@@ -199,14 +199,14 @@ class TestUpdateStateChangeDetection:
         protocol._attr_elapsed_time = None
         protocol._attr_elapsed_time_last_updated = None
         player.update_state(signal_event=False)
-        assert player.state.elapsed_time is None
+        assert player.elapsed_time is None
 
         protocol._attr_elapsed_time = 0.5
         protocol._attr_elapsed_time_last_updated = time.time()
         player.update_state()
 
         mock_mass.players.on_player_position_jumped.assert_called_once_with(player)
-        assert player.state.elapsed_time == 0.5
+        assert player.elapsed_time == 0.5
 
 
 class TestNativeCurrentMediaPosition:
@@ -245,9 +245,9 @@ class TestNativeCurrentMediaPosition:
             player_last_updated=anchor,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 0
-        assert player.state.current_media.elapsed_time_last_updated == anchor
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 0
+        assert player.current_media.elapsed_time_last_updated == anchor
 
     def test_media_position_wins_without_player_position(self, mock_mass: MagicMock) -> None:
         """A media position is reported even when the player reports none of its own."""
@@ -260,9 +260,9 @@ class TestNativeCurrentMediaPosition:
             player_last_updated=None,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 42
-        assert player.state.current_media.elapsed_time_last_updated == anchor
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 42
+        assert player.current_media.elapsed_time_last_updated == anchor
 
     def test_media_position_is_never_paired_with_the_player_timestamp(
         self, mock_mass: MagicMock
@@ -276,9 +276,9 @@ class TestNativeCurrentMediaPosition:
             player_last_updated=time.time(),
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 42
-        assert player.state.current_media.elapsed_time_last_updated is None
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 42
+        assert player.current_media.elapsed_time_last_updated is None
 
     def test_late_arriving_position_is_adopted(self, mock_mass: MagicMock) -> None:
         """A position reported after the media was published still reaches the state."""
@@ -289,7 +289,7 @@ class TestNativeCurrentMediaPosition:
             player_elapsed_time=None,
             player_last_updated=None,
         )
-        published = player.state.current_media
+        published = player.current_media
         assert published is not None
         assert published.elapsed_time is None
 
@@ -300,7 +300,7 @@ class TestNativeCurrentMediaPosition:
         protocol._attr_elapsed_time_last_updated = anchor
         player.update_state(signal_event=False)
 
-        published = player.state.current_media
+        published = player.current_media
         assert published is not None
         assert published.elapsed_time == 5
         assert published.elapsed_time_last_updated == anchor
@@ -322,9 +322,9 @@ class TestNativeCurrentMediaPosition:
         protocol._attr_elapsed_time_last_updated = anchor + 1
         player.update_state(signal_event=False)
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 10
-        assert player.state.current_media.elapsed_time_last_updated == anchor
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 10
+        assert player.current_media.elapsed_time_last_updated == anchor
 
     def test_player_position_is_paired_with_its_own_timestamp(self, mock_mass: MagicMock) -> None:
         """Falling back to the player position also takes the player level timestamp."""
@@ -337,9 +337,9 @@ class TestNativeCurrentMediaPosition:
             player_last_updated=player_anchor,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 42
-        assert player.state.current_media.elapsed_time_last_updated == player_anchor
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 42
+        assert player.current_media.elapsed_time_last_updated == player_anchor
 
     def test_no_position_reports_no_timestamp(self, mock_mass: MagicMock) -> None:
         """Without any position, the timestamp is dropped along with it."""
@@ -351,9 +351,9 @@ class TestNativeCurrentMediaPosition:
             player_last_updated=time.time(),
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time is None
-        assert player.state.current_media.elapsed_time_last_updated is None
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time is None
+        assert player.current_media.elapsed_time_last_updated is None
 
 
 class TestStreamMetadataPosition:
@@ -416,10 +416,10 @@ class TestStreamMetadataPosition:
             queue_last_updated=metadata_anchor - 30,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.title == "Live Track"
-        assert player.state.current_media.elapsed_time == 0
-        assert player.state.current_media.elapsed_time_last_updated == metadata_anchor
+        assert player.current_media is not None
+        assert player.current_media.title == "Live Track"
+        assert player.current_media.elapsed_time == 0
+        assert player.current_media.elapsed_time_last_updated == metadata_anchor
 
     def test_queue_position_is_paired_with_its_own_timestamp(self, mock_mass: MagicMock) -> None:
         """Without a metadata position, both values come from the queue."""
@@ -432,10 +432,10 @@ class TestStreamMetadataPosition:
             queue_last_updated=queue_anchor,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.title == "Live Track"
-        assert player.state.current_media.elapsed_time == 300
-        assert player.state.current_media.elapsed_time_last_updated == queue_anchor
+        assert player.current_media is not None
+        assert player.current_media.title == "Live Track"
+        assert player.current_media.elapsed_time == 300
+        assert player.current_media.elapsed_time_last_updated == queue_anchor
 
     def test_a_song_duration_without_its_position_reports_no_position(
         self, mock_mass: MagicMock
@@ -451,10 +451,10 @@ class TestStreamMetadataPosition:
             metadata_duration=430,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.duration == 430
-        assert player.state.current_media.elapsed_time is None
-        assert player.state.current_media.elapsed_time_last_updated is None
+        assert player.current_media is not None
+        assert player.current_media.duration == 430
+        assert player.current_media.elapsed_time is None
+        assert player.current_media.elapsed_time_last_updated is None
 
     def test_a_radio_station_keeps_its_own_position(self, mock_mass: MagicMock) -> None:
         """
@@ -476,9 +476,9 @@ class TestStreamMetadataPosition:
             media_type=MediaType.RADIO,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 42
-        assert player.state.current_media.elapsed_time_last_updated == metadata_anchor
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 42
+        assert player.current_media.elapsed_time_last_updated == metadata_anchor
 
     def test_a_live_source_elsewhere_does_not_move_this_players_clock(
         self, mock_mass: MagicMock
@@ -511,7 +511,7 @@ class TestStreamMetadataPosition:
         )
         player.update_state(signal_event=False)
 
-        assert player.state.elapsed_time == 123.0
+        assert player.elapsed_time == 123.0
 
 
 class TestLiveSourcePosition:
@@ -565,11 +565,11 @@ class TestLiveSourcePosition:
             metadata_last_updated=metadata_anchor,
         )
 
-        assert player.state.current_media is not None
-        assert player.state.elapsed_time == 0
-        assert player.state.current_media.elapsed_time == 0
-        assert player.state.elapsed_time_last_updated == metadata_anchor
-        assert player.state.current_media.elapsed_time_last_updated == metadata_anchor
+        assert player.current_media is not None
+        assert player.elapsed_time == 0
+        assert player.current_media.elapsed_time == 0
+        assert player.elapsed_time_last_updated == metadata_anchor
+        assert player.current_media.elapsed_time_last_updated == metadata_anchor
 
     def test_source_without_a_position_falls_back_to_the_player(self, mock_mass: MagicMock) -> None:
         """A source that reports no position leaves the player's own clock in charge."""
@@ -580,9 +580,9 @@ class TestLiveSourcePosition:
             metadata_last_updated=anchor,
         )
 
-        assert player.state.elapsed_time == 300.0
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 300
+        assert player.elapsed_time == 300.0
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 300
 
     def test_the_source_names_what_is_playing(self, mock_mass: MagicMock) -> None:
         """The media on screen is the track the source reports, on the source's uri."""
@@ -590,7 +590,7 @@ class TestLiveSourcePosition:
             mock_mass, metadata_elapsed_time=12, metadata_last_updated=time.time()
         )
 
-        media = player.state.current_media
+        media = player.current_media
         assert media is not None
         assert media.title == "Live Track"
         assert media.media_type is MediaType.AUDIO_SOURCE
@@ -639,7 +639,7 @@ class TestLiveSourceAudioDetails:
 
         player.update_state(signal_event=False)
 
-        assert player.state.active_source_audio == details
+        assert player.active_source_audio == details
 
     def test_replacing_source_audio_details_signals_player_update(
         self, mock_mass: MagicMock
@@ -667,8 +667,8 @@ class TestLiveSourceAudioDetails:
         player.mark_state_dirty()
         player.update_state()
 
-        assert player.state.active_source_audio is not None
-        assert player.state.active_source_audio.input_fidelity.quality is AudioQuality.STANDARD
+        assert player.active_source_audio is not None
+        assert player.active_source_audio.input_fidelity.quality is AudioQuality.STANDARD
         mock_mass.players.signal_player_state_update.assert_called_once()
 
     def test_ending_source_session_clears_player_audio_details(self, mock_mass: MagicMock) -> None:
@@ -693,7 +693,7 @@ class TestLiveSourceAudioDetails:
         player.mark_state_dirty()
         player.update_state(signal_event=False)
 
-        assert player.state.active_source_audio is None
+        assert player.active_source_audio is None
 
 
 class TestMediaUpdatedCallback:
@@ -757,7 +757,7 @@ class TestInputCollection:
 
         player.update_state(signal_event=False)
 
-        assert player.state.synced_to == (leader.player_id if synced else None)
+        assert player.synced_to == (leader.player_id if synced else None)
         assert mock_mass.get_provider.called is not synced
 
     @pytest.mark.parametrize("grouped_id", ["member", "member_protocol", "old_member"])
@@ -783,8 +783,8 @@ class TestInputCollection:
 
         leader.update_state(signal_event=False)
 
-        assert leader.state.group_members == [leader.player_id, member.player_id]
-        assert leader.state.group_volume == (80 if can_play else 20)
+        assert leader.group_members == [leader.player_id, member.player_id]
+        assert leader.group_volume == (80 if can_play else 20)
 
     def test_sync_leader_named_by_a_legacy_id_is_followed(self, mock_mass: MagicMock) -> None:
         """A player synced to a legacy id of its leader mirrors the player that answers to it."""
@@ -802,10 +802,10 @@ class TestInputCollection:
 
         follower.update_state(signal_event=False)
 
-        assert follower.state.synced_to == leader.player_id
-        assert follower.state.playback_state == PlaybackState.PLAYING
-        assert follower.state.active_source == leader.state.active_source
-        assert follower.state.current_media is leader.state.current_media
+        assert follower.synced_to == leader.player_id
+        assert follower.playback_state == PlaybackState.PLAYING
+        assert follower.active_source == leader.active_source
+        assert follower.current_media is leader.current_media
 
     def test_members_of_the_active_output_protocol_count_for_the_group_volume(
         self, mock_mass: MagicMock
@@ -824,8 +824,8 @@ class TestInputCollection:
 
         leader.set_active_output_protocol("leader_protocol")
 
-        assert leader.state.group_members == [leader.player_id, member.player_id]
-        assert leader.state.group_volume == 80
+        assert leader.group_members == [leader.player_id, member.player_id]
+        assert leader.group_volume == 80
 
     def test_member_of_an_active_group_player_shows_what_the_group_plays(
         self, mock_mass: MagicMock
@@ -845,9 +845,9 @@ class TestInputCollection:
 
         player.update_state(signal_event=False)
 
-        assert player.state.active_group == group.player_id
-        assert player.state.active_source == group.state.active_source
-        assert player.state.current_media is group.state.current_media
+        assert player.active_group == group.player_id
+        assert player.active_source == group.active_source
+        assert player.current_media is group.current_media
 
     @pytest.mark.parametrize(
         ("kind", "looked_up"),
@@ -885,7 +885,7 @@ class TestInputCollection:
         player.update_state(signal_event=False)
 
         assert mock_mass.metadata.get_image_url.called is looked_up
-        media = player.state.current_media
+        media = player.current_media
         assert (media.image_url if media else None) == (
             "http://ma/cover.jpg" if looked_up else None
         )
@@ -899,8 +899,8 @@ class TestInputCollection:
         player.update_state(signal_event=False)
 
         assert mock_mass.metadata.get_image_url.call_count == 1
-        assert player.state.current_media is not None
-        assert player.state.current_media.image_url == "http://ma/track.jpg"
+        assert player.current_media is not None
+        assert player.current_media.image_url == "http://ma/track.jpg"
 
     @pytest.mark.parametrize("stream_image_url", [None, "http://stream/now.jpg"])
     def test_artwork_of_a_stream_with_metadata_is_only_looked_up_where_it_is_shown(
@@ -919,8 +919,8 @@ class TestInputCollection:
         player.update_state(signal_event=False)
 
         assert mock_mass.metadata.get_image_url.call_count == (1 if stream_image_url is None else 0)
-        assert player.state.current_media is not None
-        assert player.state.current_media.image_url == (stream_image_url or "http://ma/item.jpg")
+        assert player.current_media is not None
+        assert player.current_media.image_url == (stream_image_url or "http://ma/item.jpg")
 
     @pytest.mark.parametrize("stream_image_url", [None, "http://stream/now.jpg"])
     def test_image_of_a_live_source_is_only_looked_up_when_what_it_plays_has_none(
@@ -954,8 +954,8 @@ class TestInputCollection:
         player.update_state(signal_event=False)
 
         assert mock_mass.metadata.get_image_url.called is (stream_image_url is None)
-        assert player.state.current_media is not None
-        assert player.state.current_media.image_url == (stream_image_url or "http://ma/source.jpg")
+        assert player.current_media is not None
+        assert player.current_media.image_url == (stream_image_url or "http://ma/source.jpg")
 
 
 class TestLegacyIds:
@@ -980,7 +980,7 @@ class TestLegacyIds:
 
         player.update_state(signal_event=False)
 
-        assert player.state.legacy_ids == expected
+        assert player.legacy_ids == expected
 
     def test_changed_legacy_ids_publish_an_update(
         self, mock_mass: MagicMock, player: Player
@@ -994,7 +994,7 @@ class TestLegacyIds:
         mock_mass.players.signal_player_state_update.assert_called_once()
         changed_values = mock_mass.players.signal_player_state_update.call_args.args[1]
         assert changed_values["legacy_ids"] == ((), ("old_1",))
-        assert player.state.legacy_ids == ["old_1"]
+        assert player.legacy_ids == ["old_1"]
 
     def test_wire_form_of_the_state_lists_the_legacy_ids(self, mock_mass: MagicMock) -> None:
         """The serialized state carries the legacy ids, and a client reads them back."""

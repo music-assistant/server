@@ -116,8 +116,8 @@ class PlayerMergingMixin(_PlayerControllerBase):
         player_id = player.player_id
         if (
             self._resolve_playback_owner(player) is not player
-            or player.state.active_source != player_id
-            or player.state.playback_state == PlaybackState.IDLE
+            or player.active_source != player_id
+            or player.playback_state == PlaybackState.IDLE
         ):
             return
         try:
@@ -158,7 +158,7 @@ class PlayerMergingMixin(_PlayerControllerBase):
         # of the kept one, so the group keeps its member
         playing_through = (
             absorbed.resolve_output_protocol()
-            if absorbed is not None and absorbed.state.playback_state != PlaybackState.IDLE
+            if absorbed is not None and absorbed.playback_state != PlaybackState.IDLE
             else None
         )
         # the providers of the protocols that are not attached look for their devices again

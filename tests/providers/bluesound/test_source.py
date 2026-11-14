@@ -115,7 +115,7 @@ def test_published_source_after_ma_to_library_switch(own_stream: bool) -> None:
     protocol._attr_playback_state = PlaybackState.PLAYING
     player.set_active_mass_source(player.player_id)
     player.update_state(signal_event=False)
-    assert player.state.active_source == player.player_id
+    assert player.active_source == player.player_id
 
     status = _player().status
     if own_stream:
@@ -126,12 +126,12 @@ def test_published_source_after_ma_to_library_switch(own_stream: bool) -> None:
     BluesoundPlayer._resolve_media(protocol)
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == (player.player_id if own_stream else "LocalMusic")
+    assert player.active_source == (player.player_id if own_stream else "LocalMusic")
     if not own_stream:
-        assert player.state.current_media is not None
-        assert player.state.current_media.title == "Kashmir"
-        assert player.state.current_media.artist == "Led Zeppelin"
-        assert player.state.current_media.album == "Mothership"
+        assert player.current_media is not None
+        assert player.current_media.title == "Kashmir"
+        assert player.current_media.artist == "Led Zeppelin"
+        assert player.current_media.album == "Mothership"
 
 
 async def test_a_grouped_zone_reports_the_player_of_its_leader_as_source() -> None:

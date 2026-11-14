@@ -137,7 +137,7 @@ class TestCanGroupWith:
         server.refresh()
 
         # Get can_group_with while native is active
-        groupable = sonos_player.state.can_group_with
+        groupable = sonos_player.can_group_with
 
         # NEW BEHAVIOR: Should show both native AND protocol players
         # even when native protocol is active
@@ -165,7 +165,7 @@ class TestCanGroupWith:
         server.refresh()
 
         # Get can_group_with while AirPlay is active
-        groupable = sonos_player.state.can_group_with
+        groupable = sonos_player.can_group_with
 
         # NEW BEHAVIOR: Should show ALL protocols + native players
         # regardless of which protocol is active
@@ -202,7 +202,7 @@ class TestCanGroupWith:
         server.refresh()
 
         # Get can_group_with with no active protocol
-        groupable = sonos_player.state.can_group_with
+        groupable = sonos_player.can_group_with
 
         # Should show native players + AirPlay players (supports SET_MEMBERS)
         # but NOT DLNA players (no SET_MEMBERS support)
@@ -240,7 +240,7 @@ class TestNativePlayerProtocolGrouping:
         homepod, sonos_player, _ = self._homepod_and_sonos(server)
         server.refresh(sonos_player, homepod)
 
-        groupable = homepod.state.can_group_with
+        groupable = homepod.can_group_with
 
         # HomePod should see the Sonos PLAYER, not its AirPlay protocol
         assert sonos_player.player_id in groupable
@@ -254,7 +254,7 @@ class TestNativePlayerProtocolGrouping:
         sonos_native._attr_can_group_with = set()  # No native Sonos grouping peers
         server.refresh(homepod, sonos_player)
 
-        groupable = sonos_player.state.can_group_with
+        groupable = sonos_player.can_group_with
 
         # Sonos should see HomePod via its AirPlay protocol's can_group_with
         assert homepod.player_id in groupable
@@ -285,7 +285,7 @@ class TestFinalGroupMembersTranslation:
         server.refresh(sonos_player, apple_tv)
 
         # Final group_members should show player ids
-        final_members = apple_tv.state.group_members
+        final_members = apple_tv.group_members
         assert apple_tv.player_id in final_members
         assert sonos_player.player_id in final_members
         # Protocol ids should NOT appear in final state
@@ -317,8 +317,8 @@ class TestFinalActiveGroupTranslation:
         ]
         server.refresh(group_player, sonos_player)
 
-        assert group_player.state.group_members == [sonos_player.player_id]
-        assert sonos_player.state.active_group == group_player.player_id
+        assert group_player.group_members == [sonos_player.player_id]
+        assert sonos_player.active_group == group_player.player_id
 
 
 class TestFinalSyncedToWithNativeProtocolParent:
@@ -352,7 +352,7 @@ class TestFinalSyncedToWithNativeProtocolParent:
         server.refresh(apple_tv, sonos_player)
 
         # Sonos's final synced_to should be the Apple TV player
-        assert sonos_player.state.synced_to == apple_tv.player_id
+        assert sonos_player.synced_to == apple_tv.player_id
 
 
 class TestGroupingLockedPolicy:
@@ -370,8 +370,8 @@ class TestGroupingLockedPolicy:
         protocol._attr_supported_features = {PlayerFeature.SET_MEMBERS, PlayerFeature.VOLUME_SET}
         server.refresh()
 
-        assert PlayerFeature.SET_MEMBERS not in player.state.supported_features
-        assert PlayerFeature.VOLUME_SET in player.state.supported_features
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
+        assert PlayerFeature.VOLUME_SET in player.supported_features
 
     def test_locked_player_withholds_protocol_derived_set_members(self) -> None:
         """Even the SET_MEMBERS of an audio protocol of the player is suppressed while locked."""
@@ -386,7 +386,7 @@ class TestGroupingLockedPolicy:
         _attach_audio(server, "airplay", "airplay_p", player)
         server.refresh()
 
-        assert PlayerFeature.SET_MEMBERS not in player.state.supported_features
+        assert PlayerFeature.SET_MEMBERS not in player.supported_features
 
     def test_locked_player_offers_no_group_targets(self) -> None:
         """A locked player exposes no group targets, even an otherwise groupable peer."""
@@ -398,7 +398,7 @@ class TestGroupingLockedPolicy:
         peer, _ = attach_mock(provider, "peer_1", "Peer")
         server.refresh(peer, player)
 
-        assert player.state.can_group_with == set()
+        assert player.can_group_with == set()
 
     def test_unlocked_player_keeps_grouping(self) -> None:
         """A normal (unlocked) player keeps SET_MEMBERS and its group targets."""
@@ -410,8 +410,8 @@ class TestGroupingLockedPolicy:
         peer, _ = attach_mock(provider, "peer_2", "Peer2")
         server.refresh(peer, player)
 
-        assert PlayerFeature.SET_MEMBERS in player.state.supported_features
-        assert peer.player_id in player.state.can_group_with
+        assert PlayerFeature.SET_MEMBERS in player.supported_features
+        assert peer.player_id in player.can_group_with
 
     def test_locked_peer_excluded_from_group_targets(self) -> None:
         """An unlocked leader drops a locked peer but keeps an unlocked one as a target."""
@@ -428,8 +428,8 @@ class TestGroupingLockedPolicy:
 
         # the locked peer keeps its own group read-only, so it is not offered as a target,
         # while the ordinary peer still is
-        assert locked_peer.player_id not in leader.state.can_group_with
-        assert open_peer.player_id in leader.state.can_group_with
+        assert locked_peer.player_id not in leader.can_group_with
+        assert open_peer.player_id in leader.can_group_with
 
     def test_linked_protocol_cannot_reintroduce_locked_member(self) -> None:
         """A locked member offered by an audio protocol is still kept out of the targets."""
@@ -447,8 +447,8 @@ class TestGroupingLockedPolicy:
         server.refresh(locked_peer, open_peer, leader)
 
         # the audio protocol lists the locked peer, but the final filter still excludes it
-        assert locked_peer.player_id not in leader.state.can_group_with
-        assert open_peer.player_id in leader.state.can_group_with
+        assert locked_peer.player_id not in leader.can_group_with
+        assert open_peer.player_id in leader.can_group_with
 
 
 def _live_source(item_id: str, provider: str = "spotify_connect") -> AudioSource:

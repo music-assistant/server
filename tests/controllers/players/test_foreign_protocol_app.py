@@ -123,7 +123,7 @@ def test_the_app_replaces_the_same_service_among_own_sources(
 
     player.refresh_state(signal_event=False)
 
-    source = next(x for x in player.state.source_list if x.id == "tunein")
+    source = next(x for x in player.source_list if x.id == "tunein")
     assert source.name == "TuneIn"
 
 
@@ -133,8 +133,8 @@ def test_a_paused_app_shows_on_an_idle_player(
     """An app paused from here stays on the player, to be resumed."""
     player, _, _ = _linked(provider, controller, PlaybackState.PAUSED)
 
-    assert player.state.active_source == "tunein"
-    assert player.state.playback_state == PlaybackState.PAUSED
+    assert player.active_source == "tunein"
+    assert player.playback_state == PlaybackState.PAUSED
 
 
 @pytest.mark.parametrize(

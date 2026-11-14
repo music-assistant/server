@@ -432,7 +432,7 @@ class TestInputTakeover:
         owner = _attach(player)
         owner.set_active_mass_source(owner.player_id)
         player._update_ma_state_from_sdk_cache()
-        assert owner.state.active_source == owner.player_id
+        assert owner.active_source == owner.player_id
         return player
 
     @pytest.mark.asyncio
@@ -459,7 +459,7 @@ class TestInputTakeover:
         player._update_ma_state_from_sdk_cache()
 
         assert player.player is not None
-        assert player.player.state.active_source == source_id
+        assert player.player.active_source == source_id
 
 
 class TestSupportedFeatures:

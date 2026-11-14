@@ -1724,7 +1724,7 @@ class AirPlayStream:
         # identity checksum back and forth — and every flip is a full
         # now-playing replace that makes an Apple TV degrade its Now Playing
         # screen on the next track change.
-        state_media = self.player.player.state.current_media if self.player.player else None
+        state_media = self.player.player.current_media if self.player.player else None
         if (
             metadata is not None
             and state_media is not None

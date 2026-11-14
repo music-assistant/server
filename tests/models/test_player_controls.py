@@ -260,15 +260,15 @@ class TestOfflineByPowerControl:
         player = self._offline_player(mock_mass, power_state=False)
 
         assert player.offline_by_power_control is True
-        assert player.state.available is True
-        assert player.state.powered is False
+        assert player.available is True
+        assert player.powered is False
 
     def test_control_on_reports_unavailable(self, mock_mass: MagicMock) -> None:
         """An unreachable device whose control is on is a real fault: unavailable."""
         player = self._offline_player(mock_mass, power_state=True)
 
         assert player.offline_by_power_control is False
-        assert player.state.available is False
+        assert player.available is False
 
     def test_power_on_in_progress_keeps_it_available(self, mock_mass: MagicMock) -> None:
         """While Music Assistant powers it on, the booting device stays available."""
@@ -277,8 +277,8 @@ class TestOfflineByPowerControl:
         player.refresh_state(signal_event=False)
 
         assert player.offline_by_power_control is True
-        assert player.state.available is True
-        assert player.state.powered is True
+        assert player.available is True
+        assert player.powered is True
 
     def test_a_called_off_power_on_shows_at_the_next_state_calculation(
         self, mock_mass: MagicMock
@@ -287,13 +287,13 @@ class TestOfflineByPowerControl:
         player = self._offline_player(mock_mass, power_state=True)
         player.set_power_on_in_progress(True)
         player.update_state(signal_event=False)
-        assert player.state.available is True
+        assert player.available is True
 
         player.set_power_on_in_progress(False)
         player.update_state(signal_event=False)
 
         assert player.offline_by_power_control is False
-        assert player.state.available is False
+        assert player.available is False
 
     def test_reachable_device_is_not_offline(self, mock_mass: MagicMock) -> None:
         """A device that is online is never offline by its power control."""
@@ -302,14 +302,14 @@ class TestOfflineByPowerControl:
         player.update_state(signal_event=False)
 
         assert player.offline_by_power_control is False
-        assert player.state.available is True
+        assert player.available is True
 
     def test_group_players_are_left_out(self, mock_mass: MagicMock) -> None:
         """A group player keeps reporting its own availability."""
         player = self._offline_player(mock_mass, power_state=False, player_type=PlayerType.GROUP)
 
         assert player.offline_by_power_control is False
-        assert player.state.available is False
+        assert player.available is False
 
     def test_native_power_control_reports_unavailable(self, mock_mass: MagicMock) -> None:
         """Without an external power control an unreachable device stays unavailable."""
@@ -320,7 +320,7 @@ class TestOfflineByPowerControl:
 
         assert player._power_control == PLAYER_CONTROL_NATIVE
         assert player.offline_by_power_control is False
-        assert player.state.available is False
+        assert player.available is False
 
     def test_device_cut_off_mid_song_reports_idle(self, mock_mass: MagicMock) -> None:
         """A device that lost power while playing plays nothing, whatever it last reported."""
@@ -328,7 +328,7 @@ class TestOfflineByPowerControl:
         _own(player)._attr_playback_state = PlaybackState.PLAYING
         player.update_state(signal_event=False)
 
-        assert player.state.playback_state == PlaybackState.IDLE
+        assert player.playback_state == PlaybackState.IDLE
 
         # once it is back, it reports its own state again
         _own(player)._attr_available = True
@@ -370,7 +370,7 @@ class TestVolumeControlExplicitConfig:
         # to be recalculated to prove the invalid control does not put VOLUME_SET back
         player.set_initialized()
         player.update_state(signal_event=False)
-        assert PlayerFeature.VOLUME_SET not in player.state.supported_features
+        assert PlayerFeature.VOLUME_SET not in player.supported_features
 
     def test_explicit_native_degrades_to_protocol(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config degrades to a protocol that can drive the volume."""
@@ -446,7 +446,7 @@ class TestMuteControlExplicitConfig:
         # to be recalculated to prove the invalid control does not put VOLUME_MUTE back
         player.set_initialized()
         player.update_state(signal_event=False)
-        assert PlayerFeature.VOLUME_MUTE not in player.state.supported_features
+        assert PlayerFeature.VOLUME_MUTE not in player.supported_features
 
     def test_explicit_native_degrades_to_protocol(self, mock_mass: MagicMock) -> None:
         """Stale NATIVE config degrades to a protocol that can drive the mute."""
@@ -487,7 +487,7 @@ class TestMuteControlExplicitConfig:
         # a native mute capability is irrelevant here: the user explicitly picked fake
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
         assert player._mute_control == PLAYER_CONTROL_NONE
-        assert PlayerFeature.VOLUME_MUTE not in player.state.supported_features
+        assert PlayerFeature.VOLUME_MUTE not in player.supported_features
 
 
 class TestMuteControlAutoSelect:

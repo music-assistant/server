@@ -166,7 +166,7 @@ async def test_a_room_the_host_no_longer_lists_is_detached_until_it_returns(
 
     assert provider.get_protocol(TV) is None
     assert scenario.player(tv_player).available is False  # type: ignore[union-attr]
-    assert _player(_attached(provider, BAR)).state.available is True
+    assert _player(_attached(provider, BAR)).available is True
     await _sync(scenario, provider, {"Bar": BAR_SPEAKER, "TV": TV_SPEAKER})
     assert _player(_attached(provider, TV)).player_id == tv_player
     assert scenario.player(tv_player).available is True  # type: ignore[union-attr]

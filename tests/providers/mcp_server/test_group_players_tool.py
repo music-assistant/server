@@ -18,7 +18,7 @@ def controller() -> PlayerController:
     """Build a players controller over three ungrouped players the tool can see."""
     controller = grouping_player_controller("a", "b", "c")
     # the tool only offers players that are not hidden
-    assert not any(player.state.hide_in_ui for player in controller._players.values())
+    assert not any(player.hide_in_ui for player in controller._players.values())
     return controller
 
 

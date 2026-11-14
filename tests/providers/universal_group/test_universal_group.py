@@ -918,7 +918,7 @@ class TestCommandOnAMemberOfAHeldGroup:
         assert ugp.player is not None
         for player in (ugp.player, *members):
             player.refresh_state(signal_event=False)
-        assert members[0].state.active_group == GROUP_PLAYER_ID
+        assert members[0].active_group == GROUP_PLAYER_ID
         played_on: list[str] = []
         route_play_media = players._handle_play_media
 

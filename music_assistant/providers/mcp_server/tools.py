@@ -90,7 +90,7 @@ async def play(
     item = await _resolve_media(mass, media, media_type)
     to_play = f"radio_playlist://playlist/{item.uri}" if radio_mode else item
     await mass.player_queues.play_media(target.player_id, to_play, QueueOption(mode))
-    return {"player": target.state.name, "playing": _compact_item(item)}
+    return {"player": target.name, "playing": _compact_item(item)}
 
 
 @mcp_tool("control_player", (Scope.PLAYERS_CONTROL, Scope.QUEUES_CONTROL))
@@ -186,7 +186,7 @@ async def set_playback_options(
         await mass.players.cmd_shuffle(target.player_id, shuffle)
     if repeat is not None:
         await mass.players.cmd_repeat(target.player_id, RepeatMode(repeat))
-    return {"player": target.state.name, "shuffle": shuffle, "repeat": repeat}
+    return {"player": target.name, "shuffle": shuffle, "repeat": repeat}
 
 
 @mcp_tool("get_queue", Scope.QUEUES_READ)
@@ -202,7 +202,7 @@ async def get_queue(mass: MusicAssistant, player: str, limit: int = 20) -> dict[
     offset = queue.current_index + 1 if queue.current_index is not None else 0
     upcoming = mass.player_queues.get_queue_items(queue.queue_id, _clamp_limit(limit), offset)
     return {
-        "player": target.state.name,
+        "player": target.name,
         "queue": queue.display_name,
         "state": queue.state.value,
         "shuffle": queue.shuffle_enabled,
@@ -319,7 +319,7 @@ async def ungroup_player(mass: MusicAssistant, player: str) -> dict[str, Any]:
 
 def _players(mass: MusicAssistant) -> list[Player]:
     """Return the players the current user may use."""
-    return [player for player in mass.players.all_players() if not player.state.hide_in_ui]
+    return [player for player in mass.players.all_players() if not player.hide_in_ui]
 
 
 def _resolve_player(mass: MusicAssistant, player: str) -> Player:
@@ -332,9 +332,9 @@ def _resolve_player(mass: MusicAssistant, player: str) -> Player:
             return candidate
     name = player.strip().lower()
     for candidate in players:
-        if candidate.state.name.strip().lower() == name:
+        if candidate.name.strip().lower() == name:
             return candidate
-    available = ", ".join(candidate.state.name for candidate in players) or "none"
+    available = ", ".join(candidate.name for candidate in players) or "none"
     raise ToolError(f"Unknown player {player!r}. Available players: {available}")
 
 
@@ -342,7 +342,7 @@ def _active_queue(mass: MusicAssistant, player: Player) -> PlayerQueue:
     """Return the queue that plays on the player, such as the queue of its group leader."""
     if queue := mass.player_queues.get_player_active_queue(player.player_id):
         return queue
-    raise ToolError(f"{player.state.name} has no queue")
+    raise ToolError(f"{player.name} has no queue")
 
 
 async def _resolve_media(
@@ -439,7 +439,7 @@ def _compact_player(mass: MusicAssistant, player: Player) -> dict[str, Any]:
     """Return the fields of a player that a model needs."""
     state = player.state
     members = [
-        member.state.name if (member := mass.players.get_player(member_id)) else member_id
+        member.name if (member := mass.players.get_player(member_id)) else member_id
         for member_id in state.group_members
     ]
     return {

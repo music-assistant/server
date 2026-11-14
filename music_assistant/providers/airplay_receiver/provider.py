@@ -779,8 +779,8 @@ class AirPlayReceiverProvider(PluginProvider):
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
         player_volume = 100  # Default to 100%
         if _player := self.mass.players.get_player(daemon.player_id):
-            if _player.state.volume_level is not None:
-                player_volume = _player.state.volume_level
+            if _player.volume_level is not None:
+                player_volume = _player.volume_level
         # Map 0-100 to -30.0...0.0
         airplay_volume = (player_volume / 100.0) * 30.0 - 30.0
         config_content = config_content.replace("{DEFAULT_VOLUME}", f"{airplay_volume:.1f}")

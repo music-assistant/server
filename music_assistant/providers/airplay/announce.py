@@ -396,7 +396,7 @@ def _owning_group_entity(player: AirPlayPlayer) -> str | None:
     """
     if player.player is None:
         return None
-    return player.player.state.active_group
+    return player.player.active_group
 
 
 def _member_span_ms(stream: AirPlayStream) -> int:
@@ -440,7 +440,7 @@ def _member_duck_db(member: AirPlayPlayer, volume_level: int | None) -> float:
         return duck_db
     if (target := _volume_target(member)) is None:
         return duck_db
-    if (prev_volume := target.state.volume_level) is None:
+    if (prev_volume := target.volume_level) is None:
         return duck_db
     # the levels are logical, and the volume limits configured on the target decide
     # what they land on: the device levels are what the rise is actually made of
@@ -494,7 +494,7 @@ async def _apply_announcement_volume(
     for member in members:
         if (target := _volume_target(member)) is None:
             continue
-        prev_volume = target.state.volume_level
+        prev_volume = target.volume_level
         if prev_volume is None or prev_volume == volume_level or target.player_id in bumped:
             continue
         bumped[target.player_id] = prev_volume

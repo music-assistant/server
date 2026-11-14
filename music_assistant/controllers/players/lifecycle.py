@@ -227,7 +227,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         waits: list[float] = []
         for player in list(self._players.values()):
             if (
-                player.state.available
+                player.available
                 or not player.initialized.is_set()
                 or any(protocol.available for protocol in player.attached_protocols.values())
             ):
@@ -771,9 +771,9 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         player.set_initialized()
         self.logger.info(
             "Player (type %s) added: %s/%s",
-            player.state.type.value,
+            player.type.value,
             player_id,
-            player.state.name,
+            player.name,
         )
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player_id, data=player)
         await self.mass.player_queues.on_player_register(player)
@@ -983,12 +983,12 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
 
         :param player: The player that goes.
         """
-        if not player.state.available:
+        if not player.available:
             return
         # edge case: ensure that the player is powered off if the player gets disabled
-        if player.state.power_control != PLAYER_CONTROL_NONE:
+        if player.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, False)
-        elif player.state.playback_state != PlaybackState.IDLE:
+        elif player.playback_state != PlaybackState.IDLE:
             await self.cmd_stop(player.player_id)
 
     async def _release_player_that_is_removed(self, player: Player) -> None:
@@ -1002,10 +1002,7 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         """
         try:
             if self._resolve_playback_owner(player) is player:
-                if (
-                    player.available_for_playback
-                    and player.state.playback_state != PlaybackState.IDLE
-                ):
+                if player.available_for_playback and player.playback_state != PlaybackState.IDLE:
                     await self._handle_cmd_stop(player.player_id)
                 return
             # check for group memberships that need to be updated: a static group refuses

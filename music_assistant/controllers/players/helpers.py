@@ -210,6 +210,6 @@ async def wait_for_power_on(
     except TimeoutError:
         logger.debug(
             "Player %s did not report powered on within %s seconds",
-            player.state.name,
+            player.name,
             timeout,
         )

@@ -1169,7 +1169,7 @@ class AirPlayProvider(PlayerProvider):
                             "Prevent playback command detected for player %s",
                             player.name,
                         )
-                        if player.synced_to or parent_player.state.active_group:
+                        if player.synced_to or parent_player.active_group:
                             self.mass.create_task(
                                 self.mass.players.cmd_ungroup(parent_player.player_id)
                             )
