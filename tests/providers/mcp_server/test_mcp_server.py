@@ -22,7 +22,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.hassio import SupervisorError
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.providers.mcp_server import CONF_HOME_ASSISTANT_SECRET
 from music_assistant.providers.mcp_server.auth import META_HA_USER_ID
 from music_assistant.providers.mcp_server.registry import TOOLS
 from music_assistant.providers.mcp_server.transport import MCPTransport
@@ -37,16 +36,6 @@ INGRESS_IP = "172.30.32.1"
 HOST_IP = "192.168.1.2"
 LAN_IP = "192.168.1.10"
 JSON_HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-
-
-@pytest.fixture(autouse=True)
-def host_addresses() -> Any:
-    """Give the host this server runs on a LAN and a bridge address."""
-    with patch(
-        "music_assistant.providers.mcp_server.auth.get_ip_addresses",
-        AsyncMock(return_value=(HOST_IP, INGRESS_IP)),
-    ):
-        yield
 
 
 @pytest.fixture
@@ -295,99 +284,18 @@ async def test_origin_check(mass: MusicAssistant, admin_token: str) -> None:
     assert response.status == 200
 
 
-@pytest.mark.parametrize("peer", [HOST_IP, INGRESS_IP, "127.0.0.1", f"::ffff:{HOST_IP}"])
-async def test_home_assistant_needs_no_token(mass: MusicAssistant, peer: str) -> None:
-    """Home Assistant on the host reaches the internal site without a token, as its system user."""
+@pytest.mark.parametrize("peer", [HOST_IP, INGRESS_IP, "172.30.33.7", HASSIO_SUPERVISOR_IP])
+async def test_internal_site_requires_token(mass: MusicAssistant, peer: str) -> None:
+    """Without a token the internal site answers 401, the host and the Ingress proxy included."""
     await _create_admin(mass)
-    seen = _capture_user(mass)
-    with seen.patch:
-        response = await _post(
-            mass, _call("get_players", {}), None, peer=peer, ingress=True, home_assistant=True
-        )
-    assert not _body(response)["result"]["isError"]
-    system_user = await mass.webserver.auth.get_homeassistant_system_user()
-    assert seen.users == [system_user]
-
-
-@pytest.mark.parametrize(
-    ("peer", "home_assistant"),
-    [
-        ("172.30.33.7", True),
-        (HASSIO_SUPERVISOR_IP, True),
-        ("172.30.33.7", False),
-        (HASSIO_SUPERVISOR_IP, False),
-        # the host itself on the public endpoint, without the secret
-        (INGRESS_IP, False),
-        (HOST_IP, False),
-    ],
-)
-async def test_other_requests_on_internal_site_need_token(
-    mass: MusicAssistant, peer: str, home_assistant: bool
-) -> None:
-    """Only the host on the private endpoint goes without a token, the Ingress proxy included."""
-    await _create_admin(mass)
-    response = await _post(
-        mass, _rpc("ping"), None, peer=peer, ingress=True, home_assistant=home_assistant
-    )
+    response = await _post(mass, _rpc("ping"), None, peer=peer, ingress=True)
     assert response.status == 401
 
 
-async def test_private_endpoint_routes(mass: MusicAssistant) -> None:
-    """The private endpoint is only served on the secret path, which still needs a token here."""
+async def test_meta_impersonates_linked_home_assistant_user(mass: MusicAssistant) -> None:
+    """With the Home Assistant system token the HA user in _meta is impersonated if linked."""
     await _create_admin(mass)
-    base_url = mass.webserver.internal_base_url
-    for path, status in ((f"/mcp/{_secret(mass)}", 401), ("/mcp/not-the-secret", 404)):
-        async with mass.http_session_no_ssl.post(
-            f"{base_url}{path}", json=_rpc("ping"), headers=JSON_HEADERS
-        ) as response:
-            assert response.status == status, path
-
-
-async def test_well_known_probes_not_logged(
-    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The OAuth metadata probes on the private endpoint answer 404 without logging the secret."""
-    secret = _secret(mass)
-    base_url = mass.webserver.internal_base_url
-    for path in (
-        f"/.well-known/oauth-protected-resource/mcp/{secret}",
-        f"/.well-known/oauth-authorization-server/mcp/{secret}",
-        f"/.well-known/openid-configuration/mcp/{secret}",
-        f"/mcp/{secret}/.well-known/openid-configuration",
-    ):
-        async with mass.http_session_no_ssl.get(f"{base_url}{path}") as response:
-            assert response.status == 404, path
-    assert secret not in caplog.text
-
-
-async def test_secret_survives_reload(mass: MusicAssistant) -> None:
-    """The secret is generated once and kept when the plugin loads again."""
-    provider = mass.get_provider("mcp_server")
-    assert provider is not None
-    secret = _secret(mass)
-    assert len(secret) >= 32
-    await mass.unload_provider(provider.instance_id)
-    await mass.load_provider(provider.instance_id)
-    assert _secret(mass) == secret
-    assert mass.get_provider("mcp_server") is not provider
-
-
-@pytest.mark.parametrize(
-    ("peer", "home_assistant", "with_token"),
-    [
-        # Home Assistant before 2026.12, without a token on the private endpoint
-        (INGRESS_IP, True, False),
-        # Home Assistant 2026.12 and newer, with the system token of the discovery
-        (HOST_IP, False, True),
-        ("172.30.33.7", True, True),
-    ],
-)
-async def test_meta_impersonates_linked_home_assistant_user(
-    mass: MusicAssistant, peer: str, home_assistant: bool, with_token: bool
-) -> None:
-    """For Home Assistant the HA user in _meta is impersonated; an unlinked one is not."""
-    await _create_admin(mass)
-    token = await mass.webserver.auth.get_homeassistant_system_user_token() if with_token else None
+    token = await mass.webserver.auth.get_homeassistant_system_user_token()
     member = await mass.webserver.auth.create_user(username="member")
     await mass.webserver.auth.link_user_to_provider(
         member, AuthProviderType.HOME_ASSISTANT, "ha-member"
@@ -400,9 +308,8 @@ async def test_meta_impersonates_linked_home_assistant_user(
                 # the literal key Home Assistant sends, so a rename of the constant shows here
                 _call("get_players", {}, meta={"io.home-assistant/user_id": ha_user_id}),
                 token,
-                peer=peer,
+                peer=HOST_IP,
                 ingress=True,
-                home_assistant=home_assistant,
             )
     system_user = await mass.webserver.auth.get_homeassistant_system_user()
     assert [user.user_id if user else None for user in seen.users] == [
@@ -425,14 +332,11 @@ async def test_meta_ignored_with_token(mass: MusicAssistant) -> None:
     assert [user.user_id if user else None for user in seen.users] == [admin.user_id]
 
 
-@pytest.mark.parametrize("home_assistant", [False, True])
-async def test_home_assistant_token_refused_on_public_site(
-    mass: MusicAssistant, home_assistant: bool
-) -> None:
+async def test_home_assistant_token_refused_on_public_site(mass: MusicAssistant) -> None:
     """The token of the Home Assistant system user only works on the internal site."""
     await _create_admin(mass)
     token = await mass.webserver.auth.get_homeassistant_system_user_token()
-    response = await _post(mass, _rpc("ping"), token, peer=HOST_IP, home_assistant=home_assistant)
+    response = await _post(mass, _rpc("ping"), token, peer=HOST_IP)
     assert response.status == 401
 
 
@@ -458,7 +362,7 @@ async def test_discovery_announced_and_withdrawn(
         json_data={
             "service": "mcp",
             "config": {
-                "url": f"http://abcd1234-music-assistant:{INGRESS_SERVER_PORT}/mcp/{_secret(mass)}",
+                "url": f"http://abcd1234-music-assistant:{INGRESS_SERVER_PORT}/mcp",
                 "token": await mass.webserver.auth.get_homeassistant_system_user_token(),
             },
         },
@@ -494,15 +398,15 @@ async def test_meta_disabled_linked_user_refused(mass: MusicAssistant) -> None:
     )
     set_current_user(admin)
     await mass.webserver.auth.disable_user(member.user_id)
+    token = await mass.webserver.auth.get_homeassistant_system_user_token()
     seen = _capture_user(mass)
     with seen.patch:
         response = await _post(
             mass,
             _call("get_players", {}, meta={META_HA_USER_ID: "ha-member"}),
-            None,
-            peer=INGRESS_IP,
+            token,
+            peer=HOST_IP,
             ingress=True,
-            home_assistant=True,
         )
     result = _body(response)["result"]
     assert result["isError"]
@@ -617,13 +521,6 @@ async def _create_admin(mass: MusicAssistant) -> User:
     return await mass.webserver.auth.create_user(username="admin", role=UserRole.ADMIN)
 
 
-def _secret(mass: MusicAssistant) -> str:
-    """Return the secret of the private Home Assistant endpoint."""
-    provider = mass.get_provider("mcp_server")
-    assert provider is not None
-    return str(provider.get_config_value(CONF_HOME_ASSISTANT_SECRET))
-
-
 def _rpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return a JSON-RPC request message."""
     message: dict[str, Any] = {"jsonrpc": "2.0", "id": 1, "method": method}
@@ -648,7 +545,6 @@ async def _post(
     headers: dict[str, str] | None = None,
     peer: str = LAN_IP,
     ingress: bool = False,
-    home_assistant: bool = False,
 ) -> web.Response:
     """
     Send a message to the MCP endpoint and return the response.
@@ -659,7 +555,6 @@ async def _post(
     :param headers: Extra headers, which replace the default ones.
     :param peer: The address the request comes from.
     :param ingress: Whether the request arrives on the internal (ingress) site.
-    :param home_assistant: Whether the request is sent to the private Home Assistant endpoint.
     """
     all_headers = dict(JSON_HEADERS)
     if token:
@@ -679,10 +574,7 @@ async def _post(
     request = make_mocked_request(
         "POST", "/mcp", headers=all_headers, app=app, transport=transport, payload=payload
     )
-    mcp_transport = MCPTransport(mass)
-    if home_assistant:
-        return await mcp_transport.handle_home_assistant_request(request)
-    return await mcp_transport.handle_request(request)
+    return await MCPTransport(mass).handle_request(request)
 
 
 def _body(response: web.Response) -> dict[str, Any]:

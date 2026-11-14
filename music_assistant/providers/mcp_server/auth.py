@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.auth import AuthProviderType
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     get_authenticated_user,
-    is_request_from_ingress,
     resolve_impersonated_user,
     set_current_token,
     set_current_user,
     set_impersonated_user,
 )
-from music_assistant.helpers.util import get_ip_addresses, normalize_ip_address
 
 from .registry import ToolError
 
@@ -31,64 +28,19 @@ if TYPE_CHECKING:
 # the call is made for, as Home Assistant sends it (reverse-DNS prefix, as the MCP spec asks)
 META_HA_USER_ID: Final = "io.home-assistant/user_id"
 
-LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.mcp_server")
 
-
-async def is_request_from_home_assistant(request: web.Request) -> bool:
-    """
-    Return whether the request comes from Home Assistant on the internal (ingress) site.
-
-    Home Assistant runs on the host network, as this server does, so it connects from one of
-    this server's own addresses and such a request needs no token.
-
-    :param request: The aiohttp request.
-    """
-    # stands in for the bearer token Home Assistant older than 2026.12 does not send,
-    # see handle_async_init
-    if not is_request_from_ingress(request) or request.transport is None:
-        return False
-    peername = request.transport.get_extra_info("peername")
-    sockname = request.transport.get_extra_info("sockname")
-    if not peername or not sockname:
-        return False
-    # the host may connect from its LAN address rather than the bridge address the
-    # internal site is bound to, so any address of this host counts
-    local_addresses = {sockname[0], "127.0.0.1", "::1", *await get_ip_addresses(include_ipv6=True)}
-    return normalize_ip_address(peername[0]) in local_addresses
-
-
-async def authenticate_request(
-    mass: MusicAssistant, request: web.Request, from_home_assistant: bool
-) -> User | None:
+async def authenticate_request(request: web.Request) -> User | None:
     """
     Authenticate the request and set the user and token of the request context.
 
-    :param mass: The Music Assistant instance.
     :param request: The aiohttp request.
-    :param from_home_assistant: Whether the request comes from Home Assistant on the
-        internal site, which runs as the Home Assistant system user without a token.
     :return: The authenticated user, None when the request is not authenticated.
     """
     token: str | None = None
-    if from_home_assistant:
-        user: User | None = await mass.webserver.auth.get_homeassistant_system_user()
-        if request.transport:
-            LOGGER.debug(
-                "Accepted Home Assistant request without a token from %s (local address %s)",
-                request.transport.get_extra_info("peername"),
-                request.transport.get_extra_info("sockname"),
-            )
-    else:
-        user = await get_authenticated_user(request)
-        auth_header = request.headers.get("Authorization", "")
-        if user and auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-        if user is None and is_request_from_ingress(request) and request.transport:
-            LOGGER.debug(
-                "Refused unauthenticated request on the internal site from %s (local address %s)",
-                request.transport.get_extra_info("peername"),
-                request.transport.get_extra_info("sockname"),
-            )
+    user = await get_authenticated_user(request)
+    auth_header = request.headers.get("Authorization", "")
+    if user and auth_header.lower().startswith("bearer "):
+        token = auth_header[7:]
     set_current_user(user)
     set_current_token(token)
     set_impersonated_user(None)
