@@ -807,10 +807,6 @@ class PlayerLifecycleMixin(_PlayerControllerBase):
         await self._release_audio_source(player_id)
         if self._players.get(player_id) is player:
             del self._players[player_id]
-        # a power on that waits for a device ends with the player: its own, that of the
-        # members it took along, and its wait to join the player that took it along
-        self._cancel_power_on(player)
-        self._member_joins.pop(player_id, None)
         # clean up all lock entries for this player
         for prefix in [p.value for p in PlayerLockPurpose]:
             self._player_command_locks.pop(f"{prefix}_{player_id}", None)

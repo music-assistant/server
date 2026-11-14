@@ -364,7 +364,7 @@ class TestPowerlessLifecycle:
         assert ugp._attr_group_members == ["m1"]
 
     async def test_a_member_that_is_switched_off_is_not_captured(self) -> None:
-        """A member that is switched off at its power control is taken in once it is online."""
+        """A member that is still switched off at its power control is left out of the session."""
         mass = _make_mock_mass()
         ugp = _make_ugp(mass)
         ugp._attr_static_group_members = ["m1", "den"]
@@ -794,16 +794,6 @@ class TestSupportedFeaturesFromMembers:
 
         assert PlayerFeature.VOLUME_MUTE not in ugp.supported_features
 
-    def test_a_switched_off_member_contributes(self) -> None:
-        """A member that is switched off at its power control is still a member of the group."""
-        mass = _make_mock_mass()
-        ugp = _make_ugp(mass)
-        member = _switched_off_member(mass, "m1")
-        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_MUTE}
-        ugp._attr_group_members = ["m1"]
-
-        assert PlayerFeature.VOLUME_MUTE in ugp.supported_features
-
     def test_dormant_group_resolves_a_native_mute_control(self) -> None:
         """
         An idle group resolves a mute control, which is what HA gates its mute button on.
@@ -1082,88 +1072,3 @@ class TestStreamContentLength:
         resp = await self._serve(member_setting=True, member_id="ghost")
 
         assert resp.content_length is None
-
-
-class TestMemberTheGroupPoweredOn:
-    """A member the group powered on at its power control joins once it is online."""
-
-    def _group(self, mass: MagicMock, *, live: bool) -> UniversalGroupPlayer:
-        """Return a group of m1 and den that plays on m1, with or without a live stream."""
-        ugp = _make_ugp(mass)
-        ugp._attr_static_group_members = ["m1", "den"]
-        ugp._attr_group_members = ["m1"]
-        ugp.stream = MagicMock(done=not live, session_id="session_1")
-        return ugp
-
-    async def test_the_member_plays_the_live_stream(self) -> None:
-        """The member is listed and gets the stream the group is playing."""
-        mass = _make_mock_mass()
-        ugp = self._group(mass, live=True)
-        den = _make_member(mass, "den")
-
-        with (
-            patch.object(ugp, "update_state"),
-            patch.object(ugp, "_play_media_on_member", AsyncMock()) as play,
-        ):
-            await ugp.on_member_powered_on(den)
-
-        assert ugp._attr_group_members == ["m1", "den"]
-        play.assert_awaited_once()
-        player_id, media = play.await_args_list[0].args
-        assert player_id == "den"
-        assert media.uri.endswith("?player_id=den")
-        assert media.queue_session_id == "session_1"
-
-    async def test_a_member_the_play_took_in_already_is_not_played_again(self) -> None:
-        """A member whose device was back when the session started plays the stream once."""
-        mass = _make_mock_mass()
-        ugp = self._group(mass, live=True)
-        ugp._attr_group_members = ["m1", "den"]
-        den = _make_member(mass, "den")
-
-        with patch.object(ugp, "_play_media_on_member", AsyncMock()) as play:
-            await ugp.on_member_powered_on(den)
-
-        assert ugp._attr_group_members == ["m1", "den"]
-        play.assert_not_awaited()
-
-    async def test_a_group_that_plays_nothing_any_more_takes_no_member(self) -> None:
-        """Without a session the member stays out: the next play takes it."""
-        mass = _make_mock_mass()
-        ugp = self._group(mass, live=False)
-        den = _make_member(mass, "den")
-
-        with patch.object(ugp, "_play_media_on_member", AsyncMock()) as play:
-            await ugp.on_member_powered_on(den)
-
-        assert ugp._attr_group_members == ["m1"]
-        play.assert_not_awaited()
-
-    async def test_a_group_the_user_powered_on_lists_the_member_without_playing(self) -> None:
-        """A group that is powered on and idle holds the member, as it holds the others."""
-        mass = _make_mock_mass()
-        ugp = self._group(mass, live=False)
-        ugp._attr_powered = True
-        den = _make_member(mass, "den")
-
-        with (
-            patch.object(ugp, "update_state"),
-            patch.object(ugp, "_play_media_on_member", AsyncMock()) as play,
-        ):
-            await ugp.on_member_powered_on(den)
-
-        assert ugp._attr_group_members == ["m1", "den"]
-        play.assert_not_awaited()
-
-    async def test_a_player_that_is_no_configured_member_is_not_taken(self) -> None:
-        """Only a member the group has configured joins this way."""
-        mass = _make_mock_mass()
-        ugp = self._group(mass, live=True)
-        ugp._attr_static_group_members = ["m1"]
-        den = _make_member(mass, "den")
-
-        with patch.object(ugp, "_play_media_on_member", AsyncMock()) as play:
-            await ugp.on_member_powered_on(den)
-
-        assert ugp._attr_group_members == ["m1"]
-        play.assert_not_awaited()

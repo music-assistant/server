@@ -995,8 +995,8 @@ class Player:
 
         For the players controller and the models, where a stream or a command goes to the
         device at this instant. Everyone else reads available: a player that is switched off
-        at its power control is available too (see offline_by_power_control), and the
-        controller powers it on for whoever takes it along.
+        at its power control is available too (see offline_by_power_control), and a command
+        that starts playback on it powers it on first.
         """
         if not self._config.enabled:
             return False

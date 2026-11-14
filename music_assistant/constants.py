@@ -994,7 +994,6 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_IDLE_SINCE: Final[str] = "idle_since"
-ATTR_POWER_ON_DEADLINE: Final[str] = "power_on_deadline"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

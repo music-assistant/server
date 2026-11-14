@@ -37,7 +37,7 @@ from music_assistant.models.player import Player, PlayerState
 if TYPE_CHECKING:
     import asyncio
     import weakref
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
     from contextlib import AbstractAsyncContextManager
 
     from music_assistant_models.config_entries import PlayerConfig
@@ -54,7 +54,6 @@ if TYPE_CHECKING:
     from .constants import PlayerLockPurpose
     from .lifecycle import _Attach
     from .matching import DeviceIdentity
-    from .power import MemberJoin
 
 
 class _PlayerControllerBase(CoreController):
@@ -82,8 +81,7 @@ class _PlayerControllerBase(CoreController):
     _register_lock: asyncio.Lock
     _pending_protocol_evaluations: dict[str, asyncio.TimerHandle]
     _source_sessions: dict[str, AudioSourceSession]
-    _member_joins: dict[str, MemberJoin]
-    _continuing_tasks: set[asyncio.Task[Any]]
+    _member_power_ons: dict[asyncio.Future[list[bool]], str]
     _state_update_subscribers: list[Callable[[Player, dict[str, tuple[Any, Any]]], None]]
 
     def iter_players(
@@ -508,18 +506,7 @@ class _PlayerControllerBase(CoreController):
         active_only: bool = False,
         exclude_self: bool = True,
     ) -> Iterator[Player]:
-        """
-        Iterate over the members of a group player or sync leader that play along right now.
-
-        A member that can not be played to at this instant is left out, also one that is
-        switched off at its power control and is still powered on for the group.
-
-        :param group_player: The group player or sync leader.
-        :param only_powered: Leave out the members that are powered off.
-        :param only_playing: Only the members that play or are paused.
-        :param active_only: Only the members this group holds.
-        :param exclude_self: Leave out the group player or leader itself.
-        """
+        """Get (child) players attached to a group player or syncgroup."""
         for child_id in list(group_player.group_members):
             if child_player := self.get_player(child_id, False):
                 if not child_player.available_for_playback or not child_player.enabled:
@@ -816,11 +803,11 @@ class _PlayerControllerBase(CoreController):
             self, player: Player, skip_auto_play: bool = False
         ) -> None: ...
         async def _power_on_switched_off_player(self, player_id: str) -> Player: ...
-        def _power_on_member(
-            self, owner: Player, member: Player, added: bool = False
-        ) -> asyncio.Future[bool]: ...
-        def _cancel_power_on(self, player: Player) -> bool: ...
-        def _cancel_member_join(self, owner: Player, member_id: str) -> None: ...
+        async def _power_on_members(
+            self, owner: Player, member_ids: Iterable[str] | None = None
+        ) -> set[str]: ...
+        def _cancel_power_on(self, player: Player) -> None: ...
+        def _cancel_member_power_ons(self, *players: Player) -> None: ...
         # volume
         def _enforce_volume_limits(self, player: Player) -> bool: ...
         def _invalidate_group_volume_snapshot(self, player_id: str) -> None: ...

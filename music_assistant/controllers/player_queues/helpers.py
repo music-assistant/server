@@ -123,8 +123,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
         its external power control (see SwitchedOffAction), handled before the locks are
         taken: refused by default, ignored, powered on first for actions that start
         playback, or run as is for actions that handle it themselves. An action that powers
-        such a player on does the same for the switched-off members of a group player, unless
-        it runs inside a command on that group.
+        such a player on also waits for the switched-off members of a group player.
     """  # noqa: D401
 
     def decorator(
@@ -161,11 +160,8 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 switched_off == SwitchedOffAction.POWER_ON
                 and player is not None
                 and player.type == PlayerType.GROUP
-                # an action that runs inside a command on the group leaves its members to
-                # that command, which powered them on before it took the lock
-                and not self.mass.players.holds_player_lock(queue_id)
             ):
-                await self.mass.players._power_on_switched_off_player(queue_id)
+                await self.mass.players._power_on_members(player)
             queue = queue_data.queue
             # a play action on the queue of a player captured by a (sync)group releases the
             # player from it first, which takes the group's lock - so that one is taken

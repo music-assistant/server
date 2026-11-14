@@ -128,10 +128,8 @@ class AnnouncementsMixin(_PlayerControllerBase):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
         # a player switched off at its power control is powered on for the announcement (and
         # then stays on), before the lock is taken: waiting for it to come online takes far
-        # longer than other commands wait for the lock. The members of a group are left as
-        # they are: the announcement plays on those that are on.
-        if player.type != PlayerType.GROUP:
-            player = await self._power_on_switched_off_player(player.player_id)
+        # longer than other commands wait for the lock
+        player = await self._power_on_switched_off_player(player.player_id)
         # A member's announcement detaches it from its (sync)group and joins it back
         # afterwards, which takes the group's lock - so that one is taken before the
         # member's own (see get_group_and_player_lock). A spoken message is rendered under

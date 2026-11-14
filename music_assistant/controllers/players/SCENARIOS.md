@@ -1208,15 +1208,20 @@ played on until the stop, and neither queue shows an action in progress.
 - End-to-end: **no**: it needs a music service that refuses requests for an hour.
 - Proven by: `test_commands.py::test_a_play_that_its_music_service_refuses_frees_the_player_and_its_leader`
 
-### BUSY-14 · A group that switches a member on holds no player meanwhile
+### BUSY-14 · A group that waits for a member holds no player meanwhile
 
-Downstairs, a sync group of Kitchen, Office and Den, plays on Kitchen and Office while it waits
-for Den, whose plug it switched on. A seek on Downstairs meanwhile runs at once. Once Den's
-device is back, Den joins Kitchen.
+Downstairs, a sync group or a universal group of Kitchen, Office and Den, is played while Den's
+plug is switched off: the plug is switched on and the play waits for Den's device. A volume
+command, a pause or a stop of Downstairs and a play on Kitchen meanwhile run at once and wait
+for no lock. A second play of Downstairs waits for the same device, not for a lock. A next on
+Downstairs, which was paused, runs at once as well: the next track plays on Kitchen and Office,
+and on Den too once its device is back.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player, and a third player of one kind.
-- Proven by: `test_commands.py::test_a_group_that_switches_a_member_on_holds_no_player_meanwhile`
+- Proven by:
+  - `test_group_power_on.py::test_a_group_that_waits_for_a_member_holds_no_player_meanwhile`
+  - `test_group_power_on.py::test_a_next_on_a_group_that_waits_for_a_member_runs_at_once`
 
 ## What a stopped player keeps for a moment
 
@@ -1258,8 +1263,8 @@ are of one make, else an audio protocol they share, such as AirPlay. A sync grou
 its own whose members are grouped on one of them, its leader, while it plays. Most examples use
 speakers of one make that can all group with each other (Kitchen, Office, Den), and speakers of
 two makes that share an AirPlay receiver (Lounge, Study). A speaker that is switched off at its
-power control is taken along: the group or the leader switches it on, and it joins once its
-device is back (GROUP-22 and on).
+power control is switched on first: the group that is started, or the leader or group it is
+added to, waits until its device is back (GROUP-22 and on).
 
 ### GROUP-1 · Speakers of one make group through their own protocol
 
@@ -1273,7 +1278,7 @@ provider knows Office by. Office shows as synced to Kitchen, and Kitchen lists b
 
 The user adds Garden and Office to Kitchen, but Kitchen can not group with Garden: Office joins,
 Garden stays out, and that is logged. A speaker that can not be reached right now is left out the
-same way, unless it is only switched off at its power control (GROUP-27).
+same way; one that is only switched off at its power control is switched on first (GROUP-28).
 
 - End-to-end: **yes**. Add a stopped player, or a player of another kind, next to a Squeezelite
   player.
@@ -1454,185 +1459,130 @@ members and its power.
   - `tests/providers/sync_group/test_lifecycle.py::test_a_new_group_comes_back_with_its_members_after_a_restart`
   - `tests/providers/universal_group/test_lifecycle.py::test_a_new_group_comes_back_with_its_members_after_a_restart`
 
-### GROUP-22 · A sync group switches on a member that is off at its power control
+### GROUP-22 · A group waits for the members it switches on and starts once
 
-Downstairs is a sync group of Kitchen, Office and Den, with a fixed member list or not. Den is on
-a smart plug that is switched off, so its device is off the network. The user plays Downstairs:
-it plays on Kitchen and Office at once, and the plug is switched on. Once Den's device is back,
-Den joins Kitchen and Downstairs plays on with all three.
+Downstairs is a sync group, with a fixed member list or not, or a universal group of Kitchen,
+Office and Den. One of them, or all three, are on a smart plug that is switched off, so their
+devices are off the network. The user plays Downstairs: the plugs are switched on and the play
+waits. No speaker gets a command until the last device is back. Then Downstairs starts once, on
+all three.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player, and a third player of one kind.
-- Proven by: `test_grouping.py::test_a_sync_group_switches_a_member_on_and_starts_without_it`
+- Proven by: `test_group_power_on.py::test_a_group_waits_for_its_switched_off_members_and_starts_once`
 
-### GROUP-23 · A universal group switches on a member that is off at its power control
+### GROUP-23 · Every command that starts a group waits for its members
 
-Downstairs is a universal group of Kitchen, Office and Den, and Den's plug is switched off. The
-user plays Downstairs: Kitchen and Office play its stream at once, and the plug is switched on.
-Once Den's device is back, Den plays the stream of Downstairs as well.
-
-- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
-  container of a virtual player.
-- Proven by: `test_grouping.py::test_a_universal_group_switches_a_member_on_and_starts_without_it`
-
-### GROUP-24 · A group whose members are all switched off starts on the first that is back
-
-Downstairs is a sync group or a universal group of Kitchen and Office, and both are on a plug
-that is switched off. The user plays Downstairs: both plugs are switched on and the play waits.
-Once Office's device is back, Downstairs plays on Office. Kitchen joins when its device is back.
+Downstairs, a sync group with a fixed member list or a universal group, holds music in its queue
+and Den's plug is switched off. A play, a resume or a play of an item of its queue, sent to the
+queue or to the player, switches the plug on and starts Downstairs on all members once Den's
+device is back. So does a power on of Downstairs when it has a power control of its own, and a
+queue that is transferred to it from Bedroom, which plays on until then.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
-- Proven by: `test_grouping.py::test_a_group_of_switched_off_speakers_starts_on_the_first_that_comes_online`
+- Proven by:
+  - `test_group_power_on.py::test_every_command_that_starts_a_group_waits_for_its_members`
+  - `test_group_power_on.py::test_a_group_that_is_powered_on_waits_for_its_members`
+  - `test_group_power_on.py::test_a_queue_that_is_transferred_to_a_group_waits_for_its_members`
 
-### GROUP-25 · Stopping a group calls off the power on of its members
+### GROUP-24 · A member that does not come online is left out
 
-Downstairs, a sync group or a universal group, plays on Kitchen and Office while it waits for
-Den, whose plug it switched on. The user stops Downstairs, pauses it or powers it off. Den, whose
-device is not there yet, shows as unavailable from then on. When its device is back after that,
-Den stays out: it gets no command, is idle and in no group. Its plug stays on.
-
-- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
-  container of a virtual player.
-- Proven by: `test_grouping.py::test_a_stop_of_the_group_calls_off_the_power_on_of_its_members`
-
-### GROUP-26 · A member that does not come online is left out
-
-Downstairs, a sync group or a universal group, plays on Kitchen and Office and switched Den's
-plug on, but Den's device does not come back. After 90 s that is logged once, Downstairs plays on
-without Den, and Den, whose plug is on by then, shows as unavailable.
+The user plays Downstairs, which switches Den's plug on, but Den's device does not come back.
+Nothing plays for 90 s. Then that is logged once, with Den and Downstairs, and Downstairs starts
+on Kitchen and Office. Den, whose plug is on by then, shows as unavailable. With the plug
+switched off again, a later play of Downstairs switches it on and waits once more.
 
 - End-to-end: **possible with** a power control the lab can switch and a container that stays
   stopped.
-- Proven by: `test_grouping.py::test_a_member_that_does_not_come_online_is_left_out`
+- Proven by: `test_group_power_on.py::test_a_member_that_does_not_come_online_is_left_out`
 
-### GROUP-27 · A switched-off speaker added to a leader joins once it is online
+### GROUP-25 · A power control that refuses leaves the member out
 
-Den's plug is switched off. The user adds Den and Office to Kitchen: Office joins at once, Den's
-plug is switched on, and nothing is logged about leaving Den out. Once Den's device is back, Den
-joins Kitchen.
-
-- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
-  container of a virtual player, and a third player of one kind.
-- Proven by: `test_grouping.py::test_a_switched_off_speaker_added_to_a_leader_joins_once_it_is_online`
-
-### GROUP-28 · A speaker that was switched on to join is not powered off as idle before it joined
-
-Den has an idle power off of one minute and its plug is switched off. The user adds Den to
-Kitchen, which switches the plug on. Den's device is back while Kitchen is busy with a play that
-takes longer than that minute, so Den waits, on and idle. It is not powered off meanwhile, and
-joins Kitchen once the play is done.
-
-- End-to-end: **no**: it needs a device that takes that long over a command.
-- Proven by: `test_grouping.py::test_a_woken_member_is_not_powered_off_as_idle_before_it_joins`
-
-### GROUP-29 · A speaker whose leader or group is stopped while it waits to join stays out
-
-Den's plug is switched off. The user adds Den to Kitchen, which leads Office, or to the sync
-group or universal group Downstairs of Kitchen and Office, while it plays. Den's device is back
-while another command holds Kitchen or Downstairs, so Den waits to join. The user stops or pauses
-Kitchen or Downstairs meanwhile: once the other command is done Den does not join. It gets no
-command, is idle and in no group, and its plug stays on.
-
-- End-to-end: **no**: it needs a command that holds a player while a device boots.
-- Proven by: `test_group_power_on.py::test_a_speaker_whose_owner_is_stopped_while_it_waits_to_join_stays_out`
-
-### GROUP-30 · A speaker that is removed before it is online stays out
-
-Den's plug is switched off. The user adds Den to Kitchen or to the group Downstairs, as in
-GROUP-29, and removes it again before its device is back. When the device is back Den does not
-join: it gets no command, is in no group, and Kitchen or Downstairs does not list it. Its plug
-stays on.
-
-- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
-  container of a virtual player, and a third player of one kind.
-- Proven by: `test_group_power_on.py::test_a_speaker_that_is_removed_before_it_is_online_stays_out`
-
-### GROUP-31 · A power off of a group that waits for its members ends the wait
-
-Downstairs, a sync group or a universal group with a power control of its own, has Kitchen and
-Office as members, and both plugs are switched off. The user plays Downstairs, which switches
-both plugs on and waits. The user powers Downstairs off, which is still off itself: the play
-fails as unavailable. When Office's device is back after that, Downstairs stays idle and Office
-gets no command.
-
-- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
-  container of a virtual player.
-- Proven by: `test_group_power_on.py::test_a_power_off_of_a_group_that_waits_for_its_members_ends_the_wait`
-
-### GROUP-32 · A group that is powered on waits for the first member that is back
-
-Downstairs is as in GROUP-31, with both plugs switched off. The user powers Downstairs on: both
-plugs are switched on, and Downstairs is on once the device of Office is back.
-
-- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
-  container of a virtual player.
-- Proven by: `test_group_power_on.py::test_a_group_that_is_powered_on_waits_for_the_first_member_that_is_back`
-
-### GROUP-33 · A member that waits for its busy sync group is not powered off as idle
-
-Den has an idle power off of one minute and its plug is switched off. The sync group Downstairs
-of Kitchen, Office and Den plays on Kitchen and Office and switched the plug on. Den's device is
-back while a command holds Downstairs for longer than that minute, so Den waits, on and idle. It
-is not powered off meanwhile, and joins Kitchen at Kitchen's next report once Downstairs is
-free.
-
-- End-to-end: **no**: it needs a command that holds a group for over a minute.
-- Proven by: `test_group_power_on.py::test_a_member_that_waits_for_its_busy_sync_group_is_not_powered_off_as_idle`
-
-### GROUP-34 · A power control that refuses leaves the member out
-
-Downstairs, a sync group or a universal group with a fixed member list, has Den as a member,
-and Den's plug is switched off and does not answer. The user plays Downstairs: it plays on
-Kitchen and Office, and it is logged once that Den could not be powered on and is left out of
-Downstairs. The plug works again and the user plays Downstairs once more: the plug is switched
-on, and Den plays along once its device is back.
+Den's plug is switched off and does not answer. The user plays Downstairs: it starts on Kitchen
+and Office at once, and it is logged once that Den is left out of Downstairs. The plug works
+again and the user plays Downstairs once more: the plug is switched on, and Downstairs starts on
+all three once Den's device is back.
 
 - End-to-end: **possible with** a power control that refuses a command.
 - Proven by: `test_group_power_on.py::test_a_power_control_that_refuses_leaves_the_member_out`
 
-### GROUP-35 · A universal group plays once on a member that is back before it starts
+### GROUP-26 · A stop of the group calls off the start that waits
 
-Downstairs is a universal group of Kitchen, Office and Den, and Den's plug is switched off. The
-user plays Downstairs while another command holds it: Den's plug is switched on and the play
-waits its turn. Den's device is back meanwhile, so the play starts on all three. Den gets the
-stream of Downstairs once.
-
-- End-to-end: **no**: it needs a command that holds a group while a device boots.
-- Proven by: `test_group_power_on.py::test_a_universal_group_plays_once_on_a_member_that_is_back_before_the_play`
-
-### GROUP-36 · A group that is played again takes a member along that still boots
-
-Downstairs, a sync group or a universal group with a fixed member list, plays on Kitchen and
-Office and switched Den's plug on. The user stops Downstairs, which leaves the plug on, and
-plays it again before Den's device is back. Downstairs plays on Kitchen and Office, Den shows as
-available and powered on again, and Den joins once its device is back. The plug is not switched
-a second time.
+The user plays Downstairs, which switches Den's plug on and waits. The user stops Downstairs,
+pauses it or powers it off, through the player or its queue; Downstairs itself still reads as
+off. The play fails as unavailable and nothing starts, also not on Kitchen and Office. Den shows
+as unavailable until its device is back, then it is idle and in no group. Its plug stays on.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
-- Proven by: `test_group_power_on.py::test_a_group_that_is_stopped_and_played_again_takes_a_member_along_that_still_boots`
+- Proven by: `test_group_power_on.py::test_a_stop_of_the_group_calls_off_the_start_that_waits`
 
-### GROUP-37 · A play on a member of a group switches on the members that are off
+### GROUP-27 · A command on a member reaches the start of the group that owns its playback
 
 Downstairs, a sync group with a fixed member list, plays on Kitchen and Office: the plug of Den
 did not answer when it started. Downstairs is paused, and the plug works again. The user presses
-play on Office, which goes to Downstairs: Downstairs plays on, Den's plug is switched on, and Den
-joins Kitchen once its device is back.
+play on Office, which goes to Downstairs: Den's plug is switched on and the play waits. The user
+presses stop on Office: the play fails, Downstairs is stopped, and Den stays idle when its device
+is back.
 
 - End-to-end: **possible with** a power control that refuses a command.
-- Proven by: `test_group_power_on.py::test_a_play_on_a_member_of_a_group_switches_on_the_members_that_are_off`
+- Proven by: `test_group_power_on.py::test_a_command_on_a_member_reaches_the_start_of_the_group_that_owns_its_playback`
 
-### GROUP-38 · A queue that plays on by itself switches no member on
+### GROUP-28 · A switched-off speaker that is added is waited for and added once
+
+Kitchen leads Office, or the sync group or universal group Downstairs of the two plays. Den's
+plug is switched off. The user adds Den: the plug is switched on and the command waits, while
+Kitchen and Office play on and get no command for Den. Once Den's device is back, Den is added
+once and plays along.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a third player of one kind.
+- Proven by: `test_group_power_on.py::test_a_switched_off_speaker_that_is_added_is_waited_for_and_added_once`
+
+### GROUP-29 · A speaker that is added and does not come online is left out
+
+As in GROUP-28, but Den's device does not come back. After 90 s it is logged once that Den is
+left out of Kitchen or Downstairs, which plays on. Den is not added.
+
+- End-to-end: **possible with** a power control the lab can switch and a container that stays
+  stopped.
+- Proven by: `test_group_power_on.py::test_a_speaker_that_is_added_and_does_not_come_online_is_left_out`
+
+### GROUP-30 · An addition that waits for a speaker can be ended
+
+As in GROUP-28, while the command waits for Den. The user removes Den again, or stops Kitchen or
+Downstairs: the addition ends at once and adds nothing. When Den's device is back, Den gets no
+command and is in no group. Its plug stays on.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player, and a third player of one kind.
+- Proven by: `test_group_power_on.py::test_an_addition_that_waits_for_a_speaker_can_be_ended`
+
+### GROUP-31 · A queue that plays on by itself switches no member on
 
 Downstairs, a sync group or a universal group with a fixed member list, played its queue out on
 Kitchen, Office and Den. Someone switches Den's plug off. The queue then plays on without a
 command: music is added to it, its dynamic source hands back new tracks, or a track was added
-behind its flow stream. Downstairs plays on Kitchen and Office, and Den's plug stays off.
+behind its flow stream. Downstairs plays on Kitchen and Office without waiting, and Den's plug
+stays off.
 
 - End-to-end: **possible with** a power control the lab can switch, which stops and starts the
   container of a virtual player.
 - Proven by: `test_group_power_on.py::test_a_queue_that_the_server_plays_on_switches_no_member_on`
+
+### GROUP-32 · The idle power off of a member follows what its group did with it
+
+Den has an idle power off of one minute and its plug is switched off. The user plays Downstairs:
+it starts as soon as Den's device is back, so Den plays and is not powered off. When the user
+stops Downstairs while it still waits for Den, Den's plug stays on and its device comes back
+idle: a minute later Den is powered off, as any idle player is.
+
+- End-to-end: **possible with** a power control the lab can switch, which stops and starts the
+  container of a virtual player.
+- Proven by:
+  - `test_group_power_on.py::test_a_member_that_waited_for_its_group_is_not_powered_off_as_idle`
+  - `test_group_power_on.py::test_a_member_its_group_never_started_is_powered_off_as_idle`
 
 ## Where playback goes
 

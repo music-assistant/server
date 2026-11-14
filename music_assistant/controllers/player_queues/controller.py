@@ -806,11 +806,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (
             option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
             and (player := self.mass.players.get_player(queue_id)) is not None
-            and (player.offline_by_power_control or player.type == PlayerType.GROUP)
         ):
             # powered on before the play action takes its locks, and so are the switched-off
             # members of a group; media that is only enqueued leaves the player switched off
-            await self.mass.players._power_on_switched_off_player(queue_id)
+            if player.offline_by_power_control:
+                await self.mass.players._power_on_switched_off_player(queue_id)
+            elif player.type == PlayerType.GROUP:
+                await self.mass.players._power_on_members(player)
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
             queue_id,
@@ -1070,8 +1072,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self.mass.players._cancel_power_on(player)
             return
         if player is not None:
-            # a member that was powered on to join what is paused now stays out of it
-            self.mass.players._cancel_power_on(player)
+            # a start of the player that still waits for its switched-off members ends here
+            self.mass.players._cancel_member_power_ons(player)
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
         try:
@@ -1165,7 +1167,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # debounce rapid next button presses using call_later
         self.mass.call_later(
             1,
-            self.play_index,
+            self._move_to_index,
             queue_id,
             next_index,
             task_id=f"queue_play_index_{queue_id}",
@@ -1208,7 +1210,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # debounce rapid previous button presses using call_later
         self.mass.call_later(
             1,
-            self.play_index,
+            self._move_to_index,
             queue_id,
             prev_index,
             task_id=f"queue_play_index_{queue_id}",
@@ -1389,13 +1391,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             source = self.get(source_queue_id)
             plays_on_target = source is not None and source.state == PlaybackState.PLAYING
         target_player = self.mass.players.get_player(target_queue_id)
-        if (
-            plays_on_target
-            and target_player is not None
-            and (target_player.offline_by_power_control or target_player.type == PlayerType.GROUP)
-            and target_player.type in PLAYBACK_TARGET_TYPES
-        ):
-            await self.mass.players._power_on_switched_off_player(target_queue_id)
+        if plays_on_target and target_player is not None:
+            if target_player.type == PlayerType.GROUP:
+                await self.mass.players._power_on_members(target_player)
+            elif (
+                target_player.offline_by_power_control
+                and target_player.type in PLAYBACK_TARGET_TYPES
+            ):
+                await self.mass.players._power_on_switched_off_player(target_queue_id)
         # both queues change here, and a play action on either runs under its player's lock:
         # hold both players until the target plays, so neither runs in the middle of the other
         async with self.mass.players.get_playback_locks(source_queue_id, target_queue_id):
@@ -2478,13 +2481,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 halts_playback = queue_data.halted_by_command = True
         try:
             # a player switched off at its power control has nothing left to stop, while its
-            # session below still needs the teardown. Read before the power on is called off:
-            # a player that waits for its device counts as switched off until then
-            player = self.mass.players.get_player(queue_id)
-            switched_off = player is not None and player.offline_by_power_control
-            if player is not None:
+            # session below still needs the teardown
+            if (
+                player := self.mass.players.get_player(queue_id)
+            ) and player.offline_by_power_control:
                 self.mass.players._cancel_power_on(player)
-            if not switched_off:
+            else:
+                if player is not None:
+                    # a start of the player that still waits for its switched-off members
+                    # ends here
+                    self.mass.players._cancel_member_power_ons(player)
                 # Use internal handler to avoid circular redirect:
                 # public cmd_stop redirects to queue.stop when a queue is active,
                 # which would loop back here indefinitely.
@@ -2916,6 +2922,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.resume_pos = 0
+
+    async def _move_to_index(self, queue_id: str, index: int) -> None:
+        """
+        Play another item of a queue, for a step within it (next, previous).
+
+        Unlike play_index it is no command that starts the queue's player: the members of a
+        group player that are switched off at their power control stay off.
+
+        :param queue_id: The queue to play the item of.
+        :param index: The index of the item to play.
+        """
+        with self.mass.players.without_member_power_on():
+            await self.play_index(queue_id, index)
 
     async def _play_index(  # noqa: PLR0915
         self,

@@ -1110,28 +1110,6 @@ class PlayerProtocol(ABC):
         # default implementation will simply trigger an update for the state of the player
         self._trigger_player_update()
 
-    async def on_member_powered_on(self, member: Player) -> bool:
-        """
-        Handle a member this group powered on at its power control that is online by now.
-
-        The group was started while the member was switched off, and took it along. Take it
-        into what the group plays, if it still plays. Called with the playback lock of the
-        group player held.
-
-        The member counts as joined once this returns, and is powered off as idle from then
-        on like any other player. A group that lets the member join later returns True
-        instead. It then lets the member join only while
-        ``mass.players.awaits_member_join(group_player_id, member_id)`` holds, which a stop,
-        a pause or a power off of the group and a removal of the member end, and calls
-        ``mass.players.member_join_ended(group_player_id, member_id)`` once the member
-        joined or the group gave it up.
-
-        :param member: The player of the member.
-        :return: True when the member joins later, as described above.
-        """
-        # optional callback, for the protocol of a group player
-        return False
-
     def on_group_updated(
         self, group_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:

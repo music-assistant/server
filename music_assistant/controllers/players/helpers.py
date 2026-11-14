@@ -97,10 +97,10 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
         the command has nothing to act on (volume), ignored after calling off a power on
         under way (stop, pause), powered on first (before any lock is taken) for commands
         that start playback, or run as is for commands that handle it themselves. A command
-        that powers such a player on does the same for the switched-off members of the group
-        player it plays (the player itself, or the owner of its playback), and one that calls
-        a power on off does so for the members that the owner of the player's playback took
-        along.
+        that powers such a player on also waits for the switched-off members of the group
+        player it starts (the player itself, or the owner of its playback), and one that
+        calls a power on off ends the wait of the player and of the owner of its playback
+        for their members.
     :param accept_unavailable: Run the command for an unavailable player too, for a
         command that handles such a player itself (power).
     :param to_playback_owner: The command acts on the owner of the player's playback (its
@@ -152,12 +152,13 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
                 msg = f"Player {player.name} is switched off"
                 raise PlayerUnavailableError(msg)
             if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
-                for target in (player, self._resolve_playback_owner(player)):
-                    self._cancel_power_on(target)
+                self._cancel_member_power_ons(player, self._resolve_playback_owner(player))
             if is_switched_off and switched_off in (
                 SwitchedOffAction.IGNORE,
                 SwitchedOffAction.CANCEL_POWER_ON,
             ):
+                if switched_off == SwitchedOffAction.CANCEL_POWER_ON:
+                    self._cancel_power_on(player)
                 self.logger.debug(
                     "Ignoring command %s for player %s: it is switched off",
                     fn.__name__,
@@ -166,17 +167,11 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
                 return
 
             try:
-                if switched_off == SwitchedOffAction.POWER_ON:
-                    if is_switched_off:
-                        await self._power_on_switched_off_player(player.player_id)
-                    # the switched-off members of the group player the command plays, unless
-                    # it runs inside a command on that group, which powered them on before
-                    # it took the lock
-                    group = self._resolve_playback_owner(player) if to_playback_owner else player
-                    if group.type == PlayerType.GROUP and not self.holds_player_lock(
-                        group.player_id
-                    ):
-                        await self._power_on_switched_off_player(group.player_id)
+                target = self._resolve_playback_owner(player) if to_playback_owner else player
+                if is_switched_off and switched_off == SwitchedOffAction.POWER_ON:
+                    await self._power_on_switched_off_player(player.player_id)
+                elif switched_off == SwitchedOffAction.POWER_ON and target.type == PlayerType.GROUP:
+                    await self._power_on_members(target)
                 if lock:
                     async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)

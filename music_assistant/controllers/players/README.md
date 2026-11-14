@@ -582,52 +582,46 @@ the device; stop and pause call off a power on under way and otherwise do nothin
 ungroup do nothing; power, play/pause and announcements handle it themselves; every other command
 is refused.
 
-Code that is about to play on another player, or to send it a command, reads the published
-`available` of that player to decide whether it takes part, as a client does. A player that
-takes part and is off is switched on through the controller, never through its protocol or its
-control. A device in standby is on within seconds: it is powered on in line, as part of the
-command. A player that is switched off at its external power control
-(`offline_by_power_control`) has no device on the network yet: the controller switches the control
-on without holding a lock, and the player joins what it was taken along for once its device is
-online. That is the one case of a player that is available and can not play yet, and it also holds
-while a power on still waits for the device, when the player already shows as powered on.
+Such a player is the one case of a player that is available and can not play yet, and it stays
+that while a power on still waits for its device, when it already shows as powered on. Code
+outside the controller reads the published `available` of another player to decide whether that
+player may take part, as a client does, and `offline_by_power_control` next to it where it has to
+know that the device is there now. It never switches the player on through its protocol or its
+control: the controller does that.
 
-So a group player that is played, resumed, powered on or made the target of a queue transfer
-starts on the members that can play now, and a member that was switched on joins it later
-(`PlayerProtocol.on_member_powered_on`, called under the lock of the group player). A play on a
-member that goes to its group does the same. A group none of whose members can play waits for
-the first one, as a single player does. A player added to a leader or a group while it is
-switched off is added by the same member change again once it is online.
+A command that starts a group player waits for the members that are switched off at their power
+control: a play, a resume, a play of an item or of media on its queue, a play or a power on of
+the group player, a play on a member that goes to its group, and a queue transfer that plays on
+it. Before it takes any lock it powers those members on and waits until their devices are
+online, all at once and each for at most 90 seconds (`_power_on_members`). Then it runs as it
+does for a group whose members are on, so the group starts once, on all of them. `cmd_set_members`
+does the same for the players it adds to a leader or a group.
 
-A stop, a pause or a power off of the group, or of the leader, calls such a power on off, and so
-does removing the player from it: a device that comes online afterwards stays out and idle, with
-its control left on. That is looked at once more under the lock the player joins under, so a
-player that was online already and waited for its busy group or leader stays out too. One
-exception is older than this rule: a sync group with a fixed member list takes back every member
-that returns while it is formed, also while it is paused. A member that does not come online
-within 90 seconds, or whose control fails to switch it on, is left out, with one warning. A new
-start of the group takes a member along again: one that is still off is switched on, and one
-whose device still boots after a power on that was called off is waited for until those 90
-seconds are over, without switching its control once more.
+A member that does not come online in time, or whose control fails to switch it on, is left out
+with one warning that names the member and the group, and the group starts on the others (a sync
+group that forms without a member also logs that, as it does for any member it can not reach).
+When no member can play, the command fails as it does for any group without a member that can
+play.
 
-The join lasts until the member has joined. A group that lets the member join later returns
-True from `on_member_powered_on`, lets it join only while `awaits_member_join` holds, and
-reports the end with `member_join_ended`; until then the member is not powered off as idle.
+A stop, a pause or a power off of the group calls that wait off (`_cancel_power_on`), also a stop
+or a pause of a member whose playback the group owns, and a power off of a group that still reads
+as off while it waits. The command that waits fails as unavailable and starts nothing, also not
+on the members that are on. The power controls stay on, and a device that comes online afterwards
+stays idle. Stopping the leader or group that a player is added to ends the addition the same
+way, and removing that player from it ends the wait for that player alone.
 
-Nothing switches a member on when a state changes: only a command that starts a group or adds a
-member does, once, before it takes its locks. What that command runs under the lock of the
-group leaves the members as they are, and so does playback that the server continues by itself
-(`without_member_power_on`): the next items of a queue that played out, and a restart of a
-playing queue for a changed overlay or playback speed. An announcement to a group does not
-switch its members on either: it plays on the members that are on. Whether a stream or a command
-can go to a device at this instant is the controller's own knowledge: a group provider gets the
-members that play along now from `iter_group_members`.
+Only such a command switches a member on. Nothing does because a state changed, and no member
+joins later by this rule. What a command runs under the lock of the group leaves the members as
+they are, and so does playback that the server continues by itself (`without_member_power_on`):
+the next items of a queue that played out, a restart of a playing queue for a changed setting,
+and a next or previous within a queue. An announcement to a group switches no member on either,
+also not when it resumes the group afterwards: it plays on the members that are on. An
+announcement to one switched-off player powers that player on.
 
 A player whose power is turned off outside of Music Assistant while it plays its own queue has that
 queue stopped shortly after; a group member leaves its group instead. A player with an idle power
 off time is powered off once it was available, powered on and stopped for that long. An
-announcement that plays, a power on that still waits for the device, or a player that was powered
-on to join a group or leader and has not joined it yet holds that off.
+announcement that plays, or a power on that still waits for the device, holds that off.
 
 ### Sleep Timer, Announcements and Audio Sources
 
@@ -736,6 +730,11 @@ the group up front costs nothing further down the call chain. The re-entrancy is
 group command fans out to its members in tasks of their own (a group announcement), those tasks
 take the member's lock only.
 
+A command that waits for a device holds no lock meanwhile: a power on of a player that is
+switched off at its power control, and that of the members of a group that is started or of the
+players that are added, run before the command takes its first lock. A command that already
+holds the group does not wait for a member.
+
 A command holds the lock of the player it works on, and of no player it only passes through:
 - A command that works on the player under its group uses `get_group_and_player_lock`. It takes
   the lock of the group holding the player (following the same redirect as `cmd_set_members`),
@@ -790,12 +789,6 @@ Group changes nobody issued as a command:
   free (`get_player_lock_if_free`), then the leader's, then each member's only when it is free. It
   holds them while it adds the members. A busy group is left as it is and a busy member is left
   out; the leader's next report tries again.
-- A power on of a member that a group or leader took along holds no lock while it waits for the
-  device. The member then joins under the lock of that group or leader, preceded by that of the
-  group holding the leader (`get_group_and_player_lock`), where a join that was called off
-  meanwhile ends. Under it a universal group plays its stream on the member under the member's
-  lock, a leader adds it through `cmd_set_members`, and a sync group only notes it: it adds it
-  later as a member that came back, under the locks above.
 - Work that a handler hands to tasks of its own and waits for never waits for a lock its caller
   holds: a universal group plays a member whose lock the calling command holds (a play action on
   that member's own queue) in the command's own task.
