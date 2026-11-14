@@ -1981,7 +1981,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(
+    async def mark_item_played(  # noqa: PLR0913
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
@@ -1993,6 +1993,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         skip_artist_ids: list[str] | None = None,
         playback_speed: float | None = None,
         provider_instance_id: str | None = None,
+        progress_timestamp: float | None = None,
     ) -> None:
         """
         Mark item as played in playlog.
@@ -2012,8 +2013,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             If None, any previously stored speed for the item is preserved.
         :param provider_instance_id: The provider instance reporting the play, whose user it is.
             A report equal to the stored progress keeps its timestamp.
+        :param progress_timestamp: When the progress was made (epoch seconds), as the reporting
+            provider recorded it. Defaults to now; a time in the future counts as now.
         """
-        timestamp = utc_timestamp()
+        timestamp = min(progress_timestamp or float("inf"), utc_timestamp())
         # we deliberately skip one-off items: sound effects and live inputs whoever owns
         # them, and everything the builtin provider plays (except playlists) is a one-off url
         if media_item.media_type in (MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE):

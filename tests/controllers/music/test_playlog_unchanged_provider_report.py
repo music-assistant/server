@@ -1,4 +1,4 @@
-"""Tests that a provider sync repeating unchanged progress keeps the playlog timestamp."""
+"""Tests that a provider report stamps the playlog with the time its progress was made."""
 
 from __future__ import annotations
 
@@ -7,9 +7,27 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 
 from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.mass import MusicAssistant
 
 PROVIDER_INSTANCE = "audiobookshelf--sync"
+
+
+async def _add_audiobook(mass: MusicAssistant, item_id: str) -> Audiobook:
+    return await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id=item_id,
+            provider=PROVIDER_INSTANCE,
+            name="Book",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain="audiobookshelf",
+                    provider_instance=PROVIDER_INSTANCE,
+                )
+            },
+        )
+    )
 
 
 @pytest.mark.parametrize(("seconds_played", "timestamp_kept"), [(120, True), (300, False)])
@@ -23,20 +41,7 @@ async def test_unchanged_provider_report_keeps_timestamp(
     """
     listener = await mass.webserver.auth.create_user(f"listener{seconds_played}")
     newcomer = await mass.webserver.auth.create_user(f"newcomer{seconds_played}")
-    audiobook = await mass.music.audiobooks.add_item_to_library(
-        Audiobook(
-            item_id=f"book_{seconds_played}",
-            provider=PROVIDER_INSTANCE,
-            name="Book",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=f"book_{seconds_played}",
-                    provider_domain="audiobookshelf",
-                    provider_instance=PROVIDER_INSTANCE,
-                )
-            },
-        )
-    )
+    audiobook = await _add_audiobook(mass, f"book_{seconds_played}")
     row_key = {
         "item_id": audiobook.item_id,
         "provider": "library",
@@ -74,3 +79,38 @@ async def test_unchanged_provider_report_keeps_timestamp(
     assert listener_row["name"] == "Book"
     assert newcomer_row is not None
     assert newcomer_row["seconds_played"] == seconds_played
+
+
+@pytest.mark.parametrize(
+    ("progress_timestamp", "expected_timestamp"), [(1000.0, 1000), (4102444800.0, None)]
+)
+async def test_provider_report_keeps_its_time(
+    mass: MusicAssistant, progress_timestamp: float, expected_timestamp: int | None
+) -> None:
+    """A report is stamped with the time the provider recorded; a future one counts as now."""
+    listener = await mass.webserver.auth.create_user(f"timed{int(progress_timestamp)}")
+    audiobook = await _add_audiobook(mass, f"timed_{int(progress_timestamp)}")
+
+    await mass.music.mark_item_played(
+        audiobook,
+        fully_played=False,
+        seconds_played=60,
+        user_initiated=False,
+        userid=listener.user_id,
+        progress_timestamp=progress_timestamp,
+    )
+
+    row = await mass.music.database.get_row(
+        DB_TABLE_MEDIA_PROGRESS,
+        {
+            "item_id": audiobook.item_id,
+            "provider": "library",
+            "media_type": MediaType.AUDIOBOOK.value,
+            "userid": listener.user_id,
+        },
+    )
+    assert row is not None
+    if expected_timestamp is None:
+        assert abs(row["timestamp"] - utc_timestamp()) < 60
+    else:
+        assert row["timestamp"] == expected_timestamp
