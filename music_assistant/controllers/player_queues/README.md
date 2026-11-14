@@ -203,16 +203,18 @@ stop is never that end. A queue whose playback a command halted (`halted_by_comm
 pause and by the common stop handler) keeps its place until it plays again, also when the
 command left its player idle (a player without a pause of its own is stopped, and a paused player
 is stopped once the pause timeout passes). Only the stop of a sleep timer ends the queue, at the
-point that timer waited for. The flag is cleared when the queue is seen playing or a play action
-starts a stream session, taken back by a pause or a stop that fails, and reset when the queue is
-cleared or marked as ended.
+point that timer waited for. The flag is cleared when the queue is seen playing, when its paused
+player is told to play on or when a play action starts a stream session, taken back by a pause or
+a stop that fails, and reset when the queue is cleared or marked as ended.
 
 That check runs in a task of its own, holds no lock, and belongs to the playback that went idle:
-it remembers the stream session the queue was last seen playing. After every wait (each of its five rounds, the fetch of
-the dynamic source) it first waits for the command that holds the player's playback lock, and
-then gives up when the queue is not idle, a command halted it, or a play started since: the queue
-has another stream session, also while its player does not report yet that it plays. So it
-never refills, restarts or ends a queue on behalf of a playback that is no longer its last.
+it remembers the stream session the queue was last seen playing. After every wait (each of its
+five rounds, the fetch of the dynamic source) it first waits for the command that holds the
+player's playback lock, and then gives up when the queue is not idle, a command halted it, or a
+play started since: another stream session started last (`started_session_id`), also while its
+player does not report yet that it plays and when a stop ended it before that. So it never
+refills, restarts or ends a queue on behalf of a playback that is no longer its last. It also
+gives up when the player is still held at the timeout of that lock.
 
 Data flow: player state → diff against the previous snapshot → updated `PlayerQueue` fields →
 signalled events + cache write.

@@ -11,6 +11,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Playlist
 
 from music_assistant.controllers.player_queues.constants import PLAYBACK_START_TIMEOUT
+from music_assistant.controllers.players.constants import PLAYER_LOCK_TIMEOUT
 
 from .harness import TEST_TRACK_URI
 from .test_paused_queue import (
@@ -280,6 +281,55 @@ async def test_a_queue_halted_in_a_new_playback_is_not_ended_for_the_one_before(
     )
     await scenario.advance(SETTLE_SECONDS + 2)
     assert _position(scenario, player_id) == halted
+
+
+@pytest.mark.parametrize("dynamic", [False, True], ids=["plain", "dynamic source"])
+async def test_a_play_stopped_before_its_speaker_plays_is_not_ended_for_the_playback_before(
+    scenario: Scenario, monkeypatch: pytest.MonkeyPatch, dynamic: bool
+) -> None:
+    """
+    A queue that played out, is played again and stopped before its speaker plays is left.
+
+    :param dynamic: Whether the queue was started from a dynamic playlist that has more music.
+    """
+    speaker, player_id = await _speaker(scenario, can_pause=False)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    source = (
+        _DynamicSource(scenario, player_id, [await _other_track(scenario)], monkeypatch)
+        if dynamic
+        else None
+    )
+    await _play_out(scenario, speaker, player_id, TRACK_SECONDS)
+
+    async def _take_the_stream(media: PlayerMedia) -> None:
+        speaker._apply("play_media", media)
+
+    monkeypatch.setattr(speaker, "play_media", _take_the_stream)
+    started = await scenario.command(
+        scenario.mass.player_queues.play_index(player_id, 0, seek_position=PLAYED_SECONDS)
+    )
+    # the stop waits for the play ahead of the check of the playback before, so that check
+    # next reads a queue whose new playback is over already
+    await scenario.advance(0.25)
+    stopped = await scenario.command(scenario.mass.player_queues.stop(player_id))
+    await scenario.advance(PLAYBACK_START_TIMEOUT)
+    assert started.done()
+    await started
+    assert stopped.done()
+    await stopped
+    speaker.commands.clear()
+    items = _queue(scenario, player_id).items
+
+    await scenario.advance(2 * SETTLE_SECONDS)
+    position = _position(scenario, player_id)
+    assert (position.state, position.ended, position.current_index) == (
+        PlaybackState.IDLE,
+        False,
+        0,
+    )
+    assert _queue(scenario, player_id).items == items
+    assert speaker.commands == []
+    assert source is None or source.fetches == 0
 
 
 @pytest.mark.parametrize("fetched", [True, False], ids=["tracks", "nothing"])
@@ -558,16 +608,27 @@ async def test_a_queue_stopped_and_started_at_once_still_ends_when_it_played_out
     assert _position(scenario, player_id).ended
 
 
+@pytest.mark.parametrize(
+    ("paused_seconds", "queue_follows_the_pause"), [(0.0, False), (0.25, False), (1.0, True)]
+)
 async def test_a_queue_that_plays_on_after_a_pause_still_ends_when_it_played_out(
-    scenario: Scenario,
+    scenario: Scenario, paused_seconds: float, queue_follows_the_pause: bool
 ) -> None:
-    """A queue that is paused and plays on is taken for ended as any other once it played out."""
+    """
+    A queue that is paused and plays on is taken for ended as any other once it played out.
+
+    :param paused_seconds: Seconds between the pause and the play.
+    :param queue_follows_the_pause: Whether the queue reads paused in between; it follows its
+        player with a short delay, so it never does for a pause that is taken back at once.
+    """
     speaker, player_id = await _speaker(scenario, can_pause=True)
     await _play_in_flow_mode(scenario, speaker, player_id)
     await scenario.advance(PLAYED_SECONDS)
     await scenario.mass.players.cmd_pause(player_id)
-    await scenario.advance(1)
-    assert _position(scenario, player_id).state == PlaybackState.PAUSED
+    await scenario.advance(paused_seconds)
+    assert speaker.commands[-1] == ("pause",)
+    queue_paused = _position(scenario, player_id).state == PlaybackState.PAUSED
+    assert queue_paused is queue_follows_the_pause
 
     await scenario.mass.players.cmd_play(player_id)
     await scenario.advance(1)
@@ -579,6 +640,27 @@ async def test_a_queue_that_plays_on_after_a_pause_still_ends_when_it_played_out
     assert not _position(scenario, player_id).ended
     await scenario.advance(1)
     assert _position(scenario, player_id).ended
+
+
+async def test_a_queue_that_played_out_on_a_player_that_stays_busy_keeps_its_place(
+    scenario: Scenario,
+) -> None:
+    """A queue that played out is left as it is when a command holds its player for too long."""
+    speaker, player_id = await _speaker(scenario, can_pause=True)
+    await _play_in_flow_mode(scenario, speaker, player_id)
+    await _play_out(scenario, speaker, player_id, TRACK_SECONDS)
+    played_out = _position(scenario, player_id)
+
+    async def _hold_the_player() -> None:
+        async with scenario.mass.players.get_group_and_player_lock(player_id):
+            await asyncio.sleep(PLAYER_LOCK_TIMEOUT + SETTLE_SECONDS)
+
+    scenario.expect_log("Gave up waiting")
+    stuck = await scenario.command(_hold_the_player())
+    await scenario.advance(PLAYER_LOCK_TIMEOUT + SETTLE_SECONDS)
+    await stuck
+    await scenario.advance(SETTLE_SECONDS + 1)
+    assert _position(scenario, player_id) == played_out
 
 
 async def test_a_queue_whose_stop_failed_still_ends_when_it_played_out(

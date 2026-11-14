@@ -1600,6 +1600,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
 
+    def on_player_unpaused(self, queue_id: str) -> None:
+        """
+        Call when the paused player of a queue was told to play on.
+
+        :param queue_id: The queue the player plays.
+        """
+        if (queue_data := self.queue_data_or_none(queue_id)) is not None:
+            queue_data.halted_by_command = False
+
     def on_player_elapsed_time_corrected(self, player: Player) -> None:
         """Correct the queue's timing base if the player's real elapsed_time diverged."""
         queue_id = player.player_id
@@ -2954,7 +2963,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # this start leaves behind
             self.mass.streams.audio.clear_crossfade_handover(queue_id)
             # always update session id when we start a new playback session
-            queue_data.session_id = shortuuid.random(length=8)
+            queue_data.session_id = queue_data.started_session_id = shortuuid.random(length=8)
             self.mass.streams.audio_processing.start_session(
                 queue_id,
                 queue_data.session_id,

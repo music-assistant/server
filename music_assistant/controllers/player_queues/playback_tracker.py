@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     MusicAssistantError,
+    ResourceBusyError,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -244,7 +245,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         else:
             self._queue_data[queue_id].prev_state = None
         if queue.state != PlaybackState.IDLE:
-            queue_data.played_session_id = queue_data.session_id
+            queue_data.played_session_id = queue_data.started_session_id
 
         # return early if nothing changed
         if len(changed_keys) == 0:
@@ -551,23 +552,26 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             player = self.mass.players.get_player(queue.queue_id)
             return player is not None and player.offline_by_power_control
 
-        # the check belongs to the playback that went idle here, which is not the queue's
-        # stream session when a play started before its player was seen idle
+        # the check belongs to the playback that went idle here, which is not the session that
+        # started last when a play started before its player was seen idle
         session_id = queue_data.played_session_id
 
         async def _still_at_its_end() -> bool:
             # a command that holds the player (a play action that starts the queue, a stop) is
-            # done first
-            async with self.mass.players.get_group_and_player_lock(queue.queue_id):
-                pass
+            # done first; a player that stays busy keeps its queue as it is
+            try:
+                async with self.mass.players.get_group_and_player_lock(queue.queue_id):
+                    pass
+            except ResourceBusyError:
+                return False
             if self._queue_data.get(queue.queue_id) is not queue_data:
                 # the queue was removed or re-registered
                 return False
             if queue.state != PlaybackState.IDLE or queue_data.halted_by_command:
                 return False
-            if queue_data.session_id not in (session_id, None):
+            if queue_data.started_session_id != session_id:
                 # a play started since, which has the queue also while its player does not
-                # report that it plays yet
+                # report that it plays yet, and when a stop ended it before that
                 return False
             return not _switched_off()
 

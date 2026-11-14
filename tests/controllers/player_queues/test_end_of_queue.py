@@ -313,7 +313,7 @@ def _tracker(*items: Any) -> Any:
             served_item_ids={"i1"},
             sleep_timer_stopped_target=None,
             halted_by_command=False,
-            session_id=None,
+            started_session_id=None,
             played_session_id=None,
         )
     }

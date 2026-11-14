@@ -1611,12 +1611,15 @@ The Kitchen speaker has played its queue to the end. Before the queue is taken f
 first track is played again from 5 s and paused or stopped at once. The queue stays idle on that
 track at 5 s. The same goes for a queue whose dynamic playlist is being asked for more tracks at
 that moment: whatever the playlist hands back, nothing is added to the queue and nothing starts.
+And for a play that is stopped before the speaker reports that it plays: the queue is not taken
+for ended, and a dynamic playlist is not asked for more tracks.
 
 - End-to-end: **no**: it needs a play and a pause within the 5 s in which the server waits to
   take the queue for ended.
 - Proven by:
   - `test_stopped_queue.py::test_a_queue_halted_in_a_new_playback_is_not_ended_for_the_one_before`
   - `test_stopped_queue.py::test_a_queue_paused_while_its_dynamic_source_is_fetched_stays_paused`
+  - `test_stopped_queue.py::test_a_play_stopped_before_its_speaker_plays_is_not_ended_for_the_playback_before`
 
 ### PAUSE-9 · A play on a speaker that is slow to start is not ended for the playback before
 
@@ -1653,7 +1656,8 @@ sleep timer that stops the speaker at the end of the last track ends the queue a
 The Kitchen speaker takes a stop 5 s into the last track of its queue, and has not reported that
 it stopped when a play of that track follows. The track plays. Once it has played to its end,
 the queue is taken for ended after 5 s. So is the queue of a speaker with a pause of its own
-that is paused and plays on a second later.
+that is paused and plays on a second later, or at once: before its queue, which follows the
+speaker with a short delay, read paused.
 
 - End-to-end: **no**: it needs a play within the moment in which a device has not reported its
   stop yet.
@@ -1670,3 +1674,13 @@ and the server no longer holds it for a queue that a command halted.
 - End-to-end: **no**: a client sees no difference; the test reads the server's own record of the
   queue.
 - Proven by: `test_stopped_queue.py::test_a_queue_whose_content_went_is_not_one_a_command_halted`
+
+### PAUSE-13 · A queue that played out on a speaker that stays busy keeps its place
+
+The Kitchen speaker plays the last track of its queue out while a command holds the speaker,
+and that command is still not done two minutes later. The server gives up waiting for it and
+leaves the queue as it is: on its last track, not ended.
+
+- End-to-end: **no**: it needs a command that hangs for two minutes.
+- Proven by:
+  `test_stopped_queue.py::test_a_queue_that_played_out_on_a_player_that_stays_busy_keeps_its_place`
