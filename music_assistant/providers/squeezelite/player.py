@@ -391,7 +391,8 @@ class SqueezelitePlayer(PlayerProtocol):
 
         # handle removals first
         if player_ids_to_remove:
-            for sync_client in self._get_sync_clients():
+            # snapshot: the loop removes entries from the group_members it is derived from
+            for sync_client in list(self._get_sync_clients()):
                 if sync_client.player_id in player_ids_to_remove:
                     if sync_client.player_id in self._attr_group_members:
                         # remove child from the group
@@ -445,11 +446,13 @@ class SqueezelitePlayer(PlayerProtocol):
                 # the next resume (LMS takes the stream-idle / _syncStart path, not _Resume)
                 self._restream_needed = True
 
-    def remove_disconnected_member(self, player_id: str) -> None:
+    def release_member(self, player_id: str) -> None:
         """
-        Remove a group member whose slimproto connection dropped.
+        Remove a group member that left the group stream on its own, e.g. it disconnected.
 
-        :param player_id: The protocol id of the disconnected member.
+        The other members keep playing without a restart of the stream.
+
+        :param player_id: The protocol id of the member that left.
         """
         if player_id not in self._attr_group_members:
             return
