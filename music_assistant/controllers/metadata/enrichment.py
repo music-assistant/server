@@ -52,7 +52,11 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.external_ids import is_valid_barcode, is_valid_isrc
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
+from music_assistant.providers.musicbrainz.provider import (
+    MusicbrainzProvider,
+    artist_type_and_life_span,
+    relation_urls,
+)
 
 from .constants import (
     CONF_ENABLE_ONLINE_METADATA,
@@ -870,6 +874,11 @@ class MetadataEnrichmentMixin:
                 if follow_merged:
                     # MusicBrainz answers a merged artist's old id with the artist it was merged into
                     await self._follow_merged_id(artist, details.id)
+                entity_type, life_span = artist_type_and_life_span(details)
+                merge_metadata(
+                    artist.metadata,
+                    MediaItemMetadata(artist_entity_type=entity_type, life_span=life_span),
+                )
                 urls = relation_urls(details.relations)
                 if not artist.get_external_id(ExternalID.DISCOGS) and (
                     discogs := discogs_external_id(urls, MediaType.ARTIST)
