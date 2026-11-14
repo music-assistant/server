@@ -114,6 +114,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     calculate_content_length,
     create_streaming_wave_header,
+    format_icy_metadata_frame,
     get_content_length,
     get_mime_type,
     pcm_container_bit_depth,
@@ -2838,12 +2839,8 @@ def _icy_metadata_block(queue: PlayerQueue, *, full: bool) -> bytes:
         title = current_item.name
     else:
         title = "Music Assistant"
-    metadata = f"StreamTitle='{title}';".encode()
-    if full and current_item and current_item.image:
-        metadata += f"StreamURL='{current_item.image.path}'".encode()
-    while len(metadata) % 16 != 0:
-        metadata += b"\x00"
-    return chr(len(metadata) // 16).encode() + metadata
+    image_url = current_item.image.path if full and current_item and current_item.image else None
+    return format_icy_metadata_frame(title, image_url)
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:
