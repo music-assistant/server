@@ -1,0 +1,405 @@
+"""Test the ARD account features of the ARD Audiothek provider."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from datetime import UTC, datetime
+from typing import Any, cast
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
+from music_assistant_models.media_items import PodcastEpisode
+
+from music_assistant.constants import CONF_PASSWORD
+from music_assistant.providers.ard_audiothek import (
+    CONF_EMAIL,
+    CONF_EXPIRY_TIME,
+    CONF_REFRESH_TOKEN,
+    CONF_TOKEN_BEARER,
+    CONF_USERID,
+    SUPPORTED_FEATURES,
+    ARDAudiothek,
+    setup,
+)
+from music_assistant.providers.ard_audiothek.auth import ArdTokens, PlayHistoryEntry
+
+MODULE = "music_assistant.providers.ard_audiothek"
+CORE_ID = "urn:ard:publication:ff44198a1a2d64b5"
+ASSET_ID = "urn:ard:episode:8d38a19c5de2bdc8"
+CONFIG = {"log_level": "INFO", "max_num_episodes": 0, "podcast_finished_time": 95}
+
+
+def _provider(asset_id: str | None = ASSET_ID) -> ARDAudiothek:
+    """Return a signed in provider whose API knows the given asset id for every episode."""
+    config = Mock(instance_id="ard_audiothek--test", enabled=True)
+    config.get_value.side_effect = lambda key, default=None: CONFIG.get(key, default)
+    provider = ARDAudiothek(Mock(), Mock(domain="ard_audiothek"), config, SUPPORTED_FEATURES)
+    provider.get_setup_value = Mock(  # type: ignore[method-assign]
+        side_effect=lambda key, default=None: (
+            "refresh-token" if key == CONF_REFRESH_TOKEN else default
+        )
+    )
+    provider.token = "id-token"
+    provider.user_id = "uid"
+    provider._account_error = None
+    provider.remote_progress = {}
+    provider._asset_ids = {}
+    provider._durations = {}
+    provider._progress_fetched_at = -60
+
+    session = Mock(
+        execute=AsyncMock(
+            return_value={"itemByCoreId": {"assetId": asset_id} if asset_id else None}
+        )
+    )
+    client = Mock(__aenter__=AsyncMock(return_value=session), __aexit__=AsyncMock())
+    provider.get_client = AsyncMock(return_value=client)  # type: ignore[method-assign]
+    return provider
+
+
+def _episode(duration: int = 1000) -> Mock:
+    """Return a podcast episode of the given duration in seconds."""
+    return Mock(spec=PodcastEpisode, duration=duration)
+
+
+def _setup_provider(setup_data: dict[str, Any]) -> ARDAudiothek:
+    """Return a provider with the given setup data, for testing the client creation."""
+    config = Mock(instance_id="ard_audiothek--test", enabled=True)
+    config.get_value.side_effect = lambda key, default=None: CONFIG.get(key, default)
+    provider = ARDAudiothek(Mock(), Mock(domain="ard_audiothek"), config, SUPPORTED_FEATURES)
+    provider.get_setup_value = Mock(  # type: ignore[method-assign]
+        side_effect=lambda key, default=None: setup_data.get(key, default)
+    )
+    provider._update_setup_data = Mock()  # type: ignore[method-assign]
+    provider._client_initialized = False
+    provider._client_token = None
+    provider._refresh_retry_at = 0.0
+    provider._refresh_lock = asyncio.Lock()
+    provider._account_error = None
+    return provider
+
+
+async def test_expired_token_is_refreshed() -> None:
+    """An expired ID token is replaced using the refresh token, and the new one is stored."""
+    provider = _setup_provider(
+        {
+            CONF_REFRESH_TOKEN: "refresh-token",
+            CONF_TOKEN_BEARER: "old-token",
+            CONF_USERID: "uid",
+            CONF_EXPIRY_TIME: "0",
+        }
+    )
+    tokens = ArdTokens("new-token", "new-refresh", "uid", "Jane", "jane@example.com", 5000.0)
+
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock(return_value=tokens)) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport") as transport,
+    ):
+        await provider.get_client()
+
+    refresh.assert_awaited_once_with(provider.mass.http_session, "refresh-token")
+    assert provider.token == "new-token"
+    update_setup_data = cast("Mock", provider._update_setup_data)
+    update_setup_data.assert_any_call(CONF_REFRESH_TOKEN, "new-refresh")
+    update_setup_data.assert_any_call(CONF_EXPIRY_TIME, "4940.0")
+    transport.assert_called_once_with({"Authorization": "Bearer new-token"})
+
+
+async def test_concurrent_requests_refresh_once() -> None:
+    """Requests that find the token expired at the same time share a single refresh."""
+    provider = _setup_provider(
+        {
+            CONF_REFRESH_TOKEN: "refresh-token",
+            CONF_TOKEN_BEARER: "old-token",
+            CONF_USERID: "uid",
+            CONF_EXPIRY_TIME: "0",
+        }
+    )
+    tokens = ArdTokens("new-token", "new-refresh", "uid", "Jane", "", time.time() + 3600)
+
+    async def _refresh(*_: Any) -> ArdTokens:
+        await asyncio.sleep(0)
+        return tokens
+
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock(side_effect=_refresh)) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport"),
+    ):
+        await asyncio.gather(*(provider.get_client() for _ in range(3)))
+
+    refresh.assert_awaited_once()
+    assert provider.token == "new-token"
+
+
+async def test_valid_token_is_not_refreshed() -> None:
+    """A token that has not expired yet is used as is."""
+    provider = _setup_provider(
+        {
+            CONF_REFRESH_TOKEN: "refresh-token",
+            CONF_TOKEN_BEARER: "token",
+            CONF_USERID: "uid",
+            CONF_EXPIRY_TIME: str(time.time() + 600),
+        }
+    )
+
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock()) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport"),
+    ):
+        await provider.get_client()
+
+    refresh.assert_not_awaited()
+
+
+async def test_password_login_is_dropped() -> None:
+    """The former password login is forgotten and the provider runs without the account."""
+    provider = _setup_provider({CONF_EMAIL: "jane@example.com", CONF_PASSWORD: "secret"})
+
+    provider._drop_password_login()
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock()) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport") as transport,
+    ):
+        await provider.get_client()
+
+    update_setup_data = cast("Mock", provider._update_setup_data)
+    update_setup_data.assert_any_call(CONF_EMAIL, None)
+    update_setup_data.assert_any_call(CONF_PASSWORD, None)
+    refresh.assert_not_awaited()
+    transport.assert_called_once_with(None)
+
+
+async def test_signed_in_account_keeps_its_data() -> None:
+    """Dropping the password login leaves an account linked with the device login alone."""
+    provider = _setup_provider({CONF_REFRESH_TOKEN: "refresh-token", CONF_PASSWORD: "secret"})
+
+    provider._drop_password_login()
+
+    cast("Mock", provider._update_setup_data).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("error", "retried"),
+    [(LoginFailed("TOKEN_EXPIRED"), False), (ResourceTemporarilyUnavailable("503"), True)],
+    ids=["rejected", "unavailable"],
+)
+async def test_failed_refresh_keeps_the_catalogue(error: Exception, retried: bool) -> None:
+    """A failed refresh serves the public catalogue and only retries a passing failure."""
+    provider = _setup_provider(
+        {
+            CONF_REFRESH_TOKEN: "refresh-token",
+            CONF_TOKEN_BEARER: "old-token",
+            CONF_USERID: "uid",
+            CONF_EXPIRY_TIME: "0",
+        }
+    )
+
+    with (
+        patch(f"{MODULE}.refresh_tokens", AsyncMock(side_effect=error)) as refresh,
+        patch(f"{MODULE}.Client"),
+        patch(f"{MODULE}._create_aiohttptransport") as transport,
+    ):
+        await provider.get_client()
+        await provider.get_client()
+        if retried:
+            # the backoff ran out
+            provider._refresh_retry_at = 0.0
+        await provider.get_client()
+
+    transport.assert_called_once_with(None)
+    assert refresh.await_count == (2 if retried else 1)
+    with pytest.raises(type(error)):
+        await provider._get_account()
+
+
+async def test_library_podcasts_raise_when_the_account_is_unavailable() -> None:
+    """A linked account that cannot be reached fails the sync instead of emptying the library."""
+    provider = _provider()
+    provider.token = None
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        _ = [item async for item in provider.get_library_podcasts()]
+
+
+async def test_unavailable_play_history_keeps_the_progress() -> None:
+    """When the play history cannot be read, the last known progress stays in place."""
+    provider = _provider()
+    provider.remote_progress = {ASSET_ID: PlayHistoryEntry(False, 330.0, None)}
+
+    with patch(f"{MODULE}.get_play_history", AsyncMock(side_effect=RuntimeError("503"))):
+        await provider._update_progress(force=True)
+
+    assert provider.remote_progress == {ASSET_ID: PlayHistoryEntry(False, 330.0, None)}
+
+
+@pytest.mark.parametrize(
+    ("playtime", "completed", "finished"),
+    [(960.0, False, True), (500.0, True, True), (500.0, False, False)],
+    ids=["threshold", "completed", "in-progress"],
+)
+async def test_progress_from_ard_applies_the_finished_share(
+    playtime: float, completed: bool, finished: bool
+) -> None:
+    """Progress read from ARD counts as finished past the configured share, like stored progress."""
+    provider = _provider()
+    provider._asset_ids = {CORE_ID: ASSET_ID}
+    provider._durations = {CORE_ID: 1000}
+    provider.remote_progress = {ASSET_ID: PlayHistoryEntry(completed, playtime, None)}
+
+    assert provider._get_progress(CORE_ID) == (finished, int(playtime * 1000))
+
+
+async def test_library_podcasts_skip_unavailable_ones() -> None:
+    """A subscribed podcast ARD cannot serve is reported and the others are still listed."""
+    provider = _provider()
+    podcast = Mock()
+    provider.get_podcast = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[MediaNotFoundError("gone"), podcast]
+    )
+    provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
+
+    with patch(f"{MODULE}.get_subscribed_podcast_ids", AsyncMock(return_value=["a", "b"])):
+        podcasts = [item async for item in provider.get_library_podcasts()]
+
+    assert podcasts == [podcast]
+    provider.report_skipped_sync_item.assert_called_once()
+    assert provider.report_skipped_sync_item.call_args.args[:2] == (MediaType.PODCAST, "a")
+
+
+async def test_progress_is_stored_under_the_asset_id() -> None:
+    """The play history is keyed by the episode's asset id, not by its core id."""
+    provider = _provider()
+
+    with patch(f"{MODULE}.set_play_history_entry", AsyncMock()) as store:
+        await provider.on_played(MediaType.PODCAST_EPISODE, CORE_ID, False, 85, _episode())
+
+    store.assert_awaited_once_with(
+        provider.mass.http_session, "id-token", "uid", ASSET_ID, 85, False
+    )
+    assert provider._get_progress(CORE_ID) == (False, 85000)
+
+
+@pytest.mark.parametrize(
+    ("position", "fully_played", "completed"),
+    [(950, False, True), (400, True, True), (400, False, False)],
+    ids=["threshold", "fully-played", "in-progress"],
+)
+async def test_progress_marks_finished_episodes(
+    position: int, fully_played: bool, completed: bool
+) -> None:
+    """An episode counts as finished once played to the end or past the configured share."""
+    provider = _provider()
+
+    with patch(f"{MODULE}.set_play_history_entry", AsyncMock()) as store:
+        await provider.on_played(
+            MediaType.PODCAST_EPISODE, CORE_ID, fully_played, position, _episode(1000)
+        )
+
+    assert store.call_args.args[5] is completed
+
+
+@pytest.mark.parametrize("asset_id", [ASSET_ID, None], ids=["too-short", "no-asset-id"])
+async def test_progress_is_not_always_stored(asset_id: str | None) -> None:
+    """Short plays and episodes without an asset id are left out of the play history."""
+    provider = _provider(asset_id)
+    position = 20 if asset_id else 85
+
+    with patch(f"{MODULE}.set_play_history_entry", AsyncMock()) as store:
+        await provider.on_played(MediaType.PODCAST_EPISODE, CORE_ID, False, position, _episode())
+
+    store.assert_not_awaited()
+
+
+async def test_unplayed_episode_leaves_the_play_history() -> None:
+    """An episode marked as unplayed is removed from the play history."""
+    provider = _provider()
+    provider.remote_progress = {ASSET_ID: PlayHistoryEntry(True, 1000.0, None)}
+
+    with (
+        patch(f"{MODULE}.remove_play_history_entry", AsyncMock()) as remove,
+        patch(f"{MODULE}.set_play_history_entry", AsyncMock()) as store,
+    ):
+        await provider.on_played(MediaType.PODCAST_EPISODE, CORE_ID, False, 0, _episode())
+
+    remove.assert_awaited_once_with(provider.mass.http_session, "id-token", "uid", ASSET_ID)
+    store.assert_not_awaited()
+    assert ASSET_ID not in provider.remote_progress
+
+
+async def test_starting_playback_keeps_the_play_history() -> None:
+    """Position 0 while the episode is playing is no request to mark it as unplayed."""
+    provider = _provider()
+
+    with patch(f"{MODULE}.remove_play_history_entry", AsyncMock()) as remove:
+        await provider.on_played(
+            MediaType.PODCAST_EPISODE, CORE_ID, False, 0, _episode(), is_playing=True
+        )
+
+    remove.assert_not_awaited()
+
+
+async def test_resume_position_comes_from_the_play_history() -> None:
+    """Right before playback the play history is read again, with its timestamp."""
+    provider = _provider()
+    provider._progress_fetched_at = time.monotonic()
+    updated_on = datetime(2026, 11, 13, 21, 0, tzinfo=UTC)
+    history = {ASSET_ID: PlayHistoryEntry(False, 330.0, updated_on)}
+
+    with patch(f"{MODULE}.get_play_history", AsyncMock(return_value=history)) as read:
+        result = await provider.get_resume_position(CORE_ID, MediaType.PODCAST_EPISODE)
+
+    read.assert_awaited_once()
+    assert result == (False, 330000, updated_on)
+
+
+async def test_episode_listings_reuse_the_play_history() -> None:
+    """Listing episodes reads the play history at most once a minute."""
+    provider = _provider()
+
+    with patch(f"{MODULE}.get_play_history", AsyncMock(return_value={})) as read:
+        await provider._update_progress()
+        await provider._update_progress()
+
+    read.assert_awaited_once()
+
+
+@pytest.mark.parametrize("refresh_token", ["refresh-token", None], ids=["signed-in", "anonymous"])
+async def test_library_only_with_an_account(refresh_token: str | None) -> None:
+    """Only a provider linked to an ARD account syncs and changes its subscriptions."""
+    mass = Mock()
+    mass.config.get_provider_setup_value.return_value = refresh_token
+    config = Mock(instance_id="ard_audiothek--test", enabled=True)
+    config.get_value.side_effect = lambda key, default=None: CONFIG.get(key, default)
+
+    provider = await setup(mass, Mock(domain="ard_audiothek"), config)
+
+    for feature in (ProviderFeature.LIBRARY_PODCASTS, ProviderFeature.LIBRARY_PODCASTS_EDIT):
+        assert (feature in provider.supported_features) is bool(refresh_token)
+
+
+async def test_library_add_and_remove_change_the_subscriptions() -> None:
+    """Adding a podcast to the library subscribes to it, removing it unsubscribes."""
+    provider = _provider()
+    podcast = Mock(media_type=MediaType.PODCAST, item_id="urn:ard:show:2af809299201a921")
+
+    with (
+        patch(f"{MODULE}.add_subscription", AsyncMock()) as add,
+        patch(f"{MODULE}.remove_subscription", AsyncMock()) as remove,
+    ):
+        assert await provider.library_add(podcast) is True
+        assert await provider.library_remove(podcast.item_id, MediaType.PODCAST) is True
+
+    args = (provider.mass.http_session, "id-token", "uid", "urn:ard:show:2af809299201a921")
+    add.assert_awaited_once_with(*args)
+    remove.assert_awaited_once_with(*args)
