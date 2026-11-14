@@ -160,7 +160,7 @@ jobs:
           echo "## 🔍 Vulnerability Scan Results" > audit_report.md
           echo "" >> audit_report.md
 
-          .venv/bin/pip-audit --desc --format=markdown >> audit_report.md 2>&1 || true
+          .venv/bin/pip-audit --format=markdown >> audit_report.md 2>&1 || true
           .venv/bin/pip-audit --format=json --output=audit.json || true
 
           # Gate when the scan itself could not be completed, rather than pass silently.

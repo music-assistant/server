@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
@@ -172,6 +173,7 @@ AUDIOBOOK_PREFIX = "audiobook:"
 CHAPTER_PREFIX = "Chapter"
 EPISODE_PREFIX = "Episode"
 PLEX_LOUDNESS_REFERENCE_LUFS = -18.0
+THUMB_PATH_PATTERN = re.compile(r"/library/metadata/[0-9]+/thumb/[0-9]+")
 
 
 async def setup(
@@ -454,6 +456,14 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     async def resolve_image(self, path: str) -> str | bytes:
         """Return the full image URL including the auth token."""
         return str(self._plex_server.url(path, True))
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like the thumbnail of a Plex library item.
+
+        :param path: The stored image path.
+        """
+        return THUMB_PATH_PATTERN.fullmatch(path) is not None
 
     @use_cache(3600)  # Cache for 1 hour
     async def search(

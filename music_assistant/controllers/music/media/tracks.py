@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -53,7 +54,7 @@ from music_assistant.controllers.music.helpers import (
     search_name_match_clause,
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
-from music_assistant.controllers.music.listing_cache import Listing
+from music_assistant.controllers.music.listing_cache import Listing, invalidate_listings
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     TrackMatchConfidence,
@@ -686,6 +687,25 @@ class TracksController(MediaControllerBase[Track]):
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"track_id": db_id})
         # delete entry(s) from trackartists table
         await self.mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": db_id})
+
+    async def remove_album_link(self, item_id: str | int, album_id: str | int) -> None:
+        """
+        Remove a library track from a library album, keeping both items.
+
+        :param item_id: The library item id of the track.
+        :param album_id: The library item id of the album.
+        """
+        db_id = int(item_id)  # ensure integer
+        db_album_id = int(album_id)  # ensure integer
+        await self.mass.music.database.delete(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": db_id, "album_id": db_album_id}
+        )
+        with suppress(MediaNotFoundError):
+            await invalidate_listings(
+                self.mass, await self.mass.music.albums.get_library_item(db_album_id)
+            )
+        with suppress(MediaNotFoundError):
+            await invalidate_listings(self.mass, await self.get_library_item(db_id))
 
     async def set_identifiers(
         self,

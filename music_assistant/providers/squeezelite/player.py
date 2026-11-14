@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import statistics
 import time
-from collections import deque
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
@@ -14,6 +12,7 @@ from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
+from aioslimproto.sync import SyncGroup
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -31,6 +30,7 @@ from music_assistant.constants import (
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
+    CONF_SYNC_ADJUST,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
@@ -48,13 +48,8 @@ from .constants import (
     CONF_ENTRY_VISUALIZATION,
     CONF_STORED_VOLUME,
     DEFAULT_PLAYER_VOLUME,
-    DEVIATION_JUMP_IGNORE,
-    MAX_SKIP_AHEAD_MS,
-    MIN_DEVIATION_ADJUST,
-    MIN_REQ_PLAYPOINTS,
     REPEATMODE_MAP,
     STATE_MAP,
-    SyncPlayPoint,
 )
 from .multi_client_stream import MultiClientStream
 
@@ -128,11 +123,21 @@ class SqueezelitePlayer(Player):
             for bd in (16, 24)
         ]
         self.multi_client_stream: MultiClientStream | None = None
-        self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
-        self._do_not_resync_before: float = 0.0
+        self._sync_group = SyncGroup()
+        # song position captured at pause (LMS resumeTime, the master's extrapolated
+        # song elapsed); the group resume uses it to align the members. The queue
+        # position is a different clock (the multi-client stream runs the players
+        # ahead of the queue), so using it added the stream headroom as a resume delay.
+        self._paused_at: float = 0.0
+        # set when the group membership changed while not playing, so the next resume
+        # must rebuild the stream session instead of taking the LMS _Resume path
+        self._restream_needed: bool = False
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
+        # map the per-player sync delay setting to the LMS play delay
+        sync_adjust = self.config.get_value(CONF_SYNC_ADJUST, 0)
+        self.client.play_delay = sync_adjust if isinstance(sync_adjust, int) else 0
         # set presets and display
         await self._set_preset_items()
         await self._set_display()
@@ -213,6 +218,7 @@ class SqueezelitePlayer(Player):
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
             self.multi_client_stream = None
+        self._paused_at = 0.0
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 if self.type == PlayerType.PROTOCOL:
@@ -223,12 +229,35 @@ class SqueezelitePlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
+        if self.group_members:
+            if self._restream_needed or self._group_needs_restream():
+                # a member was (re)added or its stream is gone: LMS takes the stream-idle
+                # path (re-stream, then coordinated _syncStart), not _Resume
+                self._restream_needed = False
+                # shares the regroup restart's id, so back-to-back restarts collapse
+                self.mass.create_task(
+                    self.mass.players.cmd_resume(self.player_id),
+                    task_id=f"squeezelite_regroup_resume_{self.player_id}",
+                    abort_existing=True,
+                )
+                return
+            if (paused_at := self._paused_at) > 0:
+                # stream still live: LMS _Resume (coordinated startAt + check holdoff);
+                # the pause position is only valid for the pause it was taken at
+                self._paused_at = 0.0
+                await self._sync_group.resume(self._get_sync_clients(), paused_at)
+                return
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.play())
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
+        if self.group_members:
+            # remember where the group was paused, in the players' own clock (LMS
+            # resumeTime = the master's extrapolated song elapsed); the group resume
+            # needs it to align the members
+            self._paused_at = self.client.song_elapsed_seconds
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.pause())
@@ -247,6 +276,9 @@ class SqueezelitePlayer(Player):
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
             self.multi_client_stream = None
+        # the new stream covers the current members and has no pause to resume from
+        self._paused_at = 0.0
+        self._restream_needed = False
 
         # Clear next media item during announcements to prevent playing the
         # next enqueued track after it finishes.
@@ -353,7 +385,8 @@ class SqueezelitePlayer(Player):
 
         # handle removals first
         if player_ids_to_remove:
-            for sync_client in self._get_sync_clients():
+            # snapshot: the loop removes entries from the group_members it is derived from
+            for sync_client in list(self._get_sync_clients()):
                 if sync_client.player_id in player_ids_to_remove:
                     if sync_client.player_id in self._attr_group_members:
                         # remove child from the group
@@ -388,25 +421,28 @@ class SqueezelitePlayer(Player):
         # always update the state after modifying group members
         self.update_state()
 
-        if (
-            (players_added or player_ids_to_remove)
-            and self.state.current_media
-            and self._attr_playback_state == PlaybackState.PLAYING
-        ):
-            # restart stream session if it was already playing
-            # for now, we dont support late joining into an existing stream
-            # a back-to-back restart reads the position of the one before it, so the newest wins
-            self.mass.create_task(
-                self.mass.players.cmd_resume(self.player_id),
-                task_id=f"squeezelite_regroup_resume_{self.player_id}",
-                abort_existing=True,
-            )
+        if (players_added or player_ids_to_remove) and self.state.current_media:
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                # restart stream session if it was already playing
+                # for now, we dont support late joining into an existing stream
+                # a back-to-back restart reads the position of the one before it, so the newest wins
+                self.mass.create_task(
+                    self.mass.players.cmd_resume(self.player_id),
+                    task_id=f"squeezelite_regroup_resume_{self.player_id}",
+                    abort_existing=True,
+                )
+            else:
+                # membership changed while not playing: the stream must be rebuilt on
+                # the next resume (LMS takes the stream-idle / _syncStart path, not _Resume)
+                self._restream_needed = True
 
-    def remove_disconnected_member(self, player_id: str) -> None:
+    def release_member(self, player_id: str) -> None:
         """
-        Remove a group member whose slimproto connection dropped.
+        Remove a group member that left the group stream on its own, e.g. it disconnected.
 
-        :param player_id: The player id of the disconnected member.
+        The other members keep playing without a restart of the stream.
+
+        :param player_id: The player id of the member that left.
         """
         if player_id not in self._attr_group_members:
             return
@@ -529,11 +565,10 @@ class SqueezelitePlayer(Player):
             stream_threshold=stream_threshold,
             output_threshold=output_threshold,
         )
-        # TODO: When we implement server clock sync, we can remove the pause here
-        # and rely on unpause_at + HEADROOM in the buffer_ready handler. LMS
-        # also does NOT use an explicit pause. For now, we pause here to avoid
-        # WiiM devices starting playback too early, causing huge initial drift.
-        if is_group_playback:
+        # Secondary-protocol devices (WiiM/LinkPlay and the AirPlay/Cast/UPnP
+        # bridges) ignore the no-autostart flag and start before the coordinated
+        # group instant; hold them until the group start.
+        if is_group_playback and is_protocol_only_device(slimplayer.device_model):
             await slimplayer.pause()
         # if queue is set to single track repeat,
         # immediately set this track as the next
@@ -572,7 +607,7 @@ class SqueezelitePlayer(Player):
             self.update_state()
 
         # handle sync
-        if self.synced_to:
+        if self.group_members:
             self._handle_sync()
 
     async def _handle_buffer_ready(self) -> None:
@@ -601,14 +636,13 @@ class SqueezelitePlayer(Player):
                 break
             count += 1
 
-        # all child's ready (or timeout) - start play
-        async with TaskManager(self.mass) as tg:
-            for sync_client in self._get_sync_clients():
-                # NOTE: Officially you should do an unpause_at based on the player timestamp
-                # but I did not have any good results with that.
-                # Instead just start playback on all players and let the sync logic work out
-                # the delays etc.
-                tg.create_task(pause_and_unpause(sync_client, 200))
+        # all children ready (or timeout) - start playback in sync
+        clients = list(self._get_sync_clients())
+        if len(clients) < 2:
+            # the members dropped out while buffering, so there is nothing to sync
+            await self.client.unpause_at(self.client.jiffies)
+            return
+        await self._sync_group.start(clients)
 
     async def _handle_player_cli_event(self, event: SlimEvent) -> None:
         """Process CLI Event."""
@@ -655,79 +689,22 @@ class SqueezelitePlayer(Player):
         self.logger.log(VERBOSE_LOG_LEVEL, "CLI Event: %s", event_data)
 
     def _handle_sync(self) -> None:
-        """Synchronize audio of a sync slimplayer."""
-        sync_master_id = self.synced_to
-        if not sync_master_id:
-            # we only correct sync members, not the sync master itself
+        """Synchronize audio of the sync group."""
+        if not self.group_members:
             return
-        if not self._provider.slimproto or not (
-            sync_master := self._provider.slimproto.get_player(sync_master_id)
-        ):
-            return  # just here as a guard as bad things can happen
+        self.mass.create_task(self._sync_group.check(self._get_sync_clients()))
 
-        if sync_master.state != SlimPlayerState.PLAYING:
-            return
-        if self.client.state != SlimPlayerState.PLAYING:
-            return
+    def _group_needs_restream(self) -> bool:
+        """
+        Return if the group stream must be rebuilt before it can resume.
 
-        # we collect a few playpoints of the player to determine
-        # average lag/drift so we can adjust accordingly
-        sync_playpoints = self._sync_playpoints
-
-        now = time.time()
-        if now < self._do_not_resync_before:
-            return
-
-        last_playpoint = sync_playpoints[-1] if sync_playpoints else None
-        if last_playpoint and (now - last_playpoint.timestamp) > 10:
-            # last playpoint is too old, invalidate
-            sync_playpoints.clear()
-        if last_playpoint and last_playpoint.sync_master != sync_master.player_id:
-            # this should not happen, but just in case
-            sync_playpoints.clear()
-
-        diff = int(
-            self._provider.get_corrected_elapsed_milliseconds(sync_master)
-            - self._provider.get_corrected_elapsed_milliseconds(self.client)
-        )
-
-        sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
-
-        # ignore unexpected spikes
-        if (
-            sync_playpoints
-            and abs(statistics.fmean(abs(x.diff) for x in sync_playpoints) - abs(diff))
-            > DEVIATION_JUMP_IGNORE
-        ):
-            return
-
-        min_req_playpoints = 2 if sync_master.elapsed_seconds < 2 else MIN_REQ_PLAYPOINTS
-        if len(sync_playpoints) < min_req_playpoints:
-            return
-
-        # get the average diff
-        avg_diff = statistics.fmean(x.diff for x in sync_playpoints)
-        delta = int(abs(avg_diff))
-
-        if delta < MIN_DEVIATION_ADJUST:
-            return
-
-        # resync the player by skipping ahead or pause for x amount of (milli)seconds
-        sync_playpoints.clear()
-        self._do_not_resync_before = now + 5
-        if avg_diff > MAX_SKIP_AHEAD_MS:
-            # player lagging behind more than MAX_SKIP_AHEAD_MS,
-            # we need to correct the sync_master
-            self.logger.debug("%s resync: pauseFor %sms", sync_master.name, delta)
-            self.mass.create_task(pause_and_unpause(sync_master, delta))
-        elif avg_diff > 0:
-            # handle player lagging behind, fix with skip_ahead
-            self.logger.debug("%s resync: skipAhead %sms", self.display_name, delta)
-            self.mass.create_task(self.client.skip_over(delta))
-        else:
-            # handle player is drifting too far ahead, use pause_for to adjust
-            self.logger.debug("%s resync: pauseFor %sms", self.display_name, delta)
-            self.mass.create_task(pause_and_unpause(self.client, delta))
+        Mirrors LMS's stream-state check: a group whose stream is gone, or that has a
+        member without a live stream (e.g. one just added by set_members), needs the
+        re-stream / _syncStart path rather than _Resume.
+        """
+        if self.multi_client_stream is None or self.multi_client_stream.done:
+            return True
+        return any(client.state == SlimPlayerState.STOPPED for client in self._get_sync_clients())
 
     async def _set_preset_items(self) -> None:
         """Set the presets for a player."""
@@ -814,15 +791,3 @@ class SqueezelitePlayer(Player):
             self.player_id, CONF_STORED_VOLUME
         ):
             self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
-
-
-async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
-    """
-    Pause player and schedule unpause after specified duration.
-
-    This is used instead of pause_for because WiiM devices
-    don't properly auto-unpause after pause_for interval.
-    """
-    await slim_client.pause()
-    unpause_timestamp = slim_client.jiffies + pause_duration_ms
-    await slim_client.unpause_at(unpause_timestamp)

@@ -1862,7 +1862,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_audio_metadata(self, items: Sequence[PlaylistPlayableItem]) -> None:
         """
-        Fill in bpm and musical key from stored audio analysis on tracks that lack them.
+        Fill in bpm, musical key and energy level from stored audio analysis on tracks that lack them.
 
         :param items: One page of playlist items, updated in place.
         """

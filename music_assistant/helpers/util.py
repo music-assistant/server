@@ -659,9 +659,14 @@ def filename_from_string(string: str) -> str:
 _FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+def strip_control_characters(value: str) -> str:
+    """Replace control characters (including line breaks) with a space and strip the result."""
+    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+
+
 def sanitize_http_header_value(value: str) -> str:
     """Replace control characters that are not allowed in HTTP header values."""
-    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+    return strip_control_characters(value)
 
 
 def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:

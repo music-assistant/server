@@ -452,6 +452,17 @@ async def _fetch_source_image(
             # the provider looked and has nothing at this path: a miss, not a failed fetch
             msg = f"{provider} has no image at {path_or_url}"
             raise _NoImageError(msg)
+        # an accepted stored path must resolve to image data or a remote URL, never fall
+        # through to the local file and ffmpeg routes below
+        if prov.accepts_stored_image_path(path_or_url) and not (
+            (isinstance(resolved_image, bytes) and resolved_image)
+            or (
+                isinstance(resolved_image, str)
+                and resolved_image.startswith(("http://", "https://", "data:image"))
+            )
+        ):
+            msg = f"{provider} resolved image {path_or_url} to neither image data nor a URL"
+            raise FileNotFoundError(msg)
         if resolved_image:
             if isinstance(resolved_image, bytes):
                 return resolved_image, True
