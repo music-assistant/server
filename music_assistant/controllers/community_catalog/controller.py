@@ -114,6 +114,10 @@ _REASONS: Final[dict[Verdict, str]] = {
         "This moved to the community catalog. Music Assistant installs it from there by itself "
         "as soon as the catalog offers it for this version and your server can reach it."
     ),
+    Verdict.MOVE_FAILED: (
+        "This moved to the community catalog, but Music Assistant could not install it from "
+        "there ({0}). It tries again at every start and whenever it checks the catalog."
+    ),
 }
 
 
@@ -140,6 +144,8 @@ class CommunityCatalogController(CoreController):
         # by installed domain: whether it loads, and the content hash of its live folder
         self._decisions: dict[str, Decision] = {}
         self._folder_hashes: dict[str, str | None] = {}
+        # by moved domain that waits: why the last try to install it failed
+        self._move_errors: dict[str, str] = {}
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -212,7 +218,8 @@ class CommunityCatalogController(CoreController):
         """
         decision = self._decisions.get(domain)
         if decision is None and domain in self._waiting_moves():
-            decision = Decision(Verdict.MOVED)
+            error = self._move_errors.get(domain)
+            decision = Decision(Verdict.MOVE_FAILED, error) if error else Decision(Verdict.MOVED)
         if decision is None or decision.verdict == Verdict.LOAD:
             return None
         detail = decision.detail or ""
@@ -555,6 +562,7 @@ class CommunityCatalogController(CoreController):
             try:
                 await self._install(domain, moved=True)
             except (MusicAssistantError, OSError) as err:
+                self._move_errors[domain] = str(err)
                 self.logger.warning(
                     "Could not install %s from the community catalog, where it moved: %s",
                     domain,

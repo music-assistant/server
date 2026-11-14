@@ -35,6 +35,7 @@ class Verdict(StrEnum):
     RESTART_TO_UPDATE = "restart_to_update"
     # not installed: a moved provider that waits to be installed from the catalog
     MOVED = "moved"
+    MOVE_FAILED = "move_failed"
 
 
 @dataclass(frozen=True, slots=True)

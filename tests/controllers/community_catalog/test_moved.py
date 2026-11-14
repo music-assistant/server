@@ -97,15 +97,23 @@ async def test_dismiss_notice(tmp_path: Path, registry: Registry, github: GitHub
 
 
 @pytest.mark.usefixtures("moved")
-@pytest.mark.parametrize("cause", ["not_offered", "registry_unreachable", "github_unreachable"])
+@pytest.mark.parametrize(
+    ("cause", "why"),
+    [
+        ("not_offered", "does not offer"),
+        ("registry_unreachable", "does not offer"),
+        ("github_unreachable", "503"),
+    ],
+)
 async def test_waits_until_it_can_be_installed(
     tmp_path: Path,
     registry: Registry,
     github: GitHub,
     caplog: pytest.LogCaptureFixture,
     cause: str,
+    why: str,
 ) -> None:
-    """A moved provider that cannot be installed waits with a reason; a later refresh installs it."""
+    """A moved provider that cannot be installed waits and says why; a later refresh installs it."""
     folder = tmp_path / "data" / "community_providers"
     entry = _publish(github, MOVED)
     registry.document = _index({MOVED: entry})
@@ -129,8 +137,9 @@ async def test_waits_until_it_can_be_installed(
             )
             assert conf.status == ProviderStatus.UNAVAILABLE
             assert conf.last_error is not None
-            assert conf.last_error.translation_key == "community_provider_moved"
-            assert conf.last_error.message == _REASONS[Verdict.MOVED]
+            assert conf.last_error.translation_key == "community_provider_move_failed"
+            assert conf.last_error.message.startswith(_REASONS[Verdict.MOVE_FAILED].split(" (")[0])
+            assert why in conf.last_error.message
             assert sum("where it moved" in r.getMessage() for r in caplog.records) == 1
 
             registry.status, github.status = 200, 200
@@ -200,6 +209,10 @@ async def test_safe_mode(tmp_path: Path, registry: Registry, github: GitHub) -> 
         assert mass.get_provider(MOVED) is None
         with pytest.raises(ActionUnavailable, match="safe mode"):
             await mass.community_catalog.dismiss_notice(MOVED)
+        # nothing was tried, so there is no cause to tell
+        reason = mass.community_catalog.unavailable_reason(MOVED)
+        assert reason is not None
+        assert reason.message == _REASONS[Verdict.MOVED]
 
     assert registry.requests == []
     assert not (tmp_path / "data" / "community_providers").exists()
