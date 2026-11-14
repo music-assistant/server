@@ -62,6 +62,8 @@ TOKEN_URL = "https://secure.soundcloud.com/oauth/token"  # noqa: S105 - endpoint
 TOKEN_REFRESH_BUFFER = 300
 TOKEN_REFRESH_RETRY_DELAY = 60
 
+ARTIST_PLAYLISTS_LIMIT = 100
+
 # Soundcloud documents no rate limit for its web api, so stay at a conservative pace
 API_RATE_LIMIT = 4
 API_RATE_PERIOD = 1
@@ -75,6 +77,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.ARTIST_PLAYLISTS,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.RECOMMENDATIONS,
 }
@@ -372,6 +375,36 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if item_id == f"{self.instance_id}_sc_subscribed_feed":
             return UniqueList(await self._get_subscribed_feed_tracks())
         return await self._recommendation_items_from_payload(item_id)
+
+    @use_cache(900)
+    async def get_artist_playlists(self, prov_artist_id: str) -> list[Playlist]:
+        """Return up to 100 public playlists created by this SoundCloud user."""
+        if not prov_artist_id.isascii() or not prov_artist_id.isdecimal():
+            raise InvalidDataError("Invalid SoundCloud user ID")
+        response = await self._soundcloud.get_playlists_from_user(
+            prov_artist_id, ARTIST_PLAYLISTS_LIMIT
+        )
+        if not isinstance(response, dict) or not isinstance(response.get("collection"), list):
+            raise MediaNotFoundError("SoundCloud playlists could not be loaded")
+        playlists = []
+        seen: set[str] = set()
+        for item in response["collection"][:ARTIST_PLAYLISTS_LIMIT]:
+            if (
+                not isinstance(item, dict)
+                or item.get("kind") != "playlist"
+                or item.get("sharing") != "public"
+                or item.get("is_album")
+                or not item.get("id")
+                or not item.get("title")
+                or not isinstance(item.get("user"), dict)
+                or str(item["user"].get("id")) != prov_artist_id
+            ):
+                continue
+            if str(item["id"]) in seen:
+                continue
+            seen.add(str(item["id"]))
+            playlists.append(await self._parse_playlist(item))
+        return playlists
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the mixed-selection collections as folders with items."""
@@ -735,11 +768,13 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             item_id=playlist_id,
             provider=self.domain,
             name=playlist_obj["title"],
+            owner=(playlist_obj.get("user") or {}).get("username", ""),
             provider_mappings={
                 ProviderMapping(
                     item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=playlist_obj.get("permalink_url"),
                 )
             },
         )
