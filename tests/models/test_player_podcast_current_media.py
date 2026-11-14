@@ -55,7 +55,7 @@ def test_podcast_episode_reports_podcast_as_artist_only() -> None:
 
     player.update_state(signal_event=False)
 
-    media = player.state.current_media
+    media = player.current_media
     assert media is not None
     assert media.title == "Episode 1"
     assert media.artist == "My Podcast"

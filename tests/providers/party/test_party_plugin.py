@@ -442,7 +442,7 @@ async def test_session_survives_an_outage_and_ends_when_its_player_is_gone() -> 
     session.close = AsyncMock()
     plugin._session = session
     player = MagicMock()
-    player.state.available = False
+    player.available = False
     get_player = cast("MagicMock", plugin.mass.players.get_player)
     get_player.return_value = player
 

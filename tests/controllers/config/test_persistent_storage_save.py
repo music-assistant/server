@@ -162,11 +162,9 @@ async def test_player_config_summary_read_does_not_rewrite_settings(
     controller._data = {CONF_PLAYERS: {player_id: deepcopy(raw_config)}}
     live_player = SimpleNamespace(
         provider_id=raw_config["provider"],
-        state=SimpleNamespace(
-            name="solarium-bath-sl",
-            available=False,
-            type=PlayerType.PLAYER,
-        ),
+        name="solarium-bath-sl",
+        available=False,
+        type=PlayerType.PLAYER,
     )
     mass.players.get_player.return_value = live_player
 

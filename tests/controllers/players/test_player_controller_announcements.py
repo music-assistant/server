@@ -167,7 +167,7 @@ def _mute_natively(player: Player) -> AsyncMock:
     mute_mock = AsyncMock(side_effect=lambda muted: setattr(protocol, "_attr_volume_muted", muted))
     protocol.volume_mute = mute_mock  # type: ignore[method-assign]
     _refresh(player)
-    assert player.state.volume_muted is True
+    assert player.volume_muted is True
     return mute_mock
 
 
@@ -309,7 +309,8 @@ class TestNativeRouteIgnoresWantedVolume:
         """Build a fake target player with the given volume control and level."""
         return SimpleNamespace(
             player_id="p1",
-            state=SimpleNamespace(volume_control=volume_control, volume_level=volume_level),
+            volume_control=volume_control,
+            volume_level=volume_level,
         )
 
     @staticmethod
@@ -412,7 +413,7 @@ class TestPlayAnnouncementCleanup:
         await controller.play_announcement("player_1", "http://test/announcement.mp3")
 
         announce.assert_awaited_once()
-        assert player.state.playback_state == PlaybackState.IDLE
+        assert player.playback_state == PlaybackState.IDLE
         assert ATTR_IDLE_SINCE not in player.extra_data
 
     async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
@@ -1467,7 +1468,7 @@ class TestPlayAnnouncementRestore:
         # the member has no own input change to trigger a recalculation of its
         # (group derived) state, so force it here - just like an attach does
         _refresh(player)
-        assert player.state.active_group == group.player_id
+        assert player.active_group == group.player_id
         real_set_members = group_protocol.set_members
 
         async def _set_members(**kwargs: list[str]) -> None:
@@ -1592,7 +1593,7 @@ class TestPlayAnnouncementRestore:
             call(player_ids_to_add=[], player_ids_to_remove=["player_1"]),
             call(player_ids_to_add=["player_1"], player_ids_to_remove=[]),
         ]
-        assert player.state.active_group == group.player_id
+        assert player.active_group == group.player_id
 
     async def test_restore_failure_does_not_mask_the_announcement_error(
         self, mock_mass: MagicMock
@@ -1644,7 +1645,7 @@ class TestPlayAnnouncementRestore:
         protocol._attr_playback_state = PlaybackState.IDLE
         protocol._attr_powered = None
         group, set_members = self._add_group(player, supports_set_members=True)
-        assert player.state.power_control == PLAYER_CONTROL_NONE
+        assert player.power_control == PLAYER_CONTROL_NONE
 
         await controller._play_announcement(player, _announcement())
 
@@ -1652,7 +1653,7 @@ class TestPlayAnnouncementRestore:
             call(player_ids_to_add=[], player_ids_to_remove=["player_1"]),
             call(player_ids_to_add=["player_1"], player_ids_to_remove=[]),
         ]
-        assert player.state.active_group == group.player_id
+        assert player.active_group == group.player_id
 
     async def test_muted_player_is_unmuted_and_muted_back(self, mock_mass: MagicMock) -> None:
         """A muted player hears the announcement and is muted again afterwards."""
@@ -1676,7 +1677,7 @@ class TestPlayAnnouncementRestore:
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )
         mute_mock = _mute_natively(player)
-        assert player.state.volume_control == PLAYER_CONTROL_NONE
+        assert player.volume_control == PLAYER_CONTROL_NONE
 
         await controller._play_announcement(player, _announcement())
 
@@ -1745,7 +1746,7 @@ class TestPlayAnnouncementRestore:
         member, _ = _attach(cast("MockProvider", _own(leader).provider), "player_2", "Player 2")
         _own(leader)._attr_group_members = [_proto("player_1"), _proto("player_2")]
         _refresh(leader, member)
-        assert leader.state.group_members == ["player_1", "player_2"]
+        assert leader.group_members == ["player_1", "player_2"]
         mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
         # both members were muted while grouped, so both hold a mute lock
         for player in (leader, member):
@@ -1778,7 +1779,7 @@ class TestPlayAnnouncementRestore:
         protocol.volume_set = volume_set  # type: ignore[method-assign]
         _refresh(player)
         await controller.cmd_volume_mute("player_1", True)
-        assert player.state.volume_muted is True
+        assert player.volume_muted is True
         controller.get_announcement_volume = MagicMock(return_value=80)  # type: ignore[method-assign]
 
         await controller._play_announcement(player, _announcement())
@@ -1791,7 +1792,7 @@ class TestPlayAnnouncementRestore:
             call(40),
             call(0),
         ]
-        assert player.state.volume_muted is True
+        assert player.volume_muted is True
         assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40
 
 
@@ -1858,7 +1859,7 @@ class TestPlayNativeAnnouncement:
         member, _ = _attach(cast("MockProvider", _own(leader).provider), "player_2", "Player 2")
         _own(leader)._attr_group_members = [_proto("player_1"), _proto("player_2")]
         _refresh(leader, member)
-        assert leader.state.group_members == ["player_1", "player_2"]
+        assert leader.group_members == ["player_1", "player_2"]
         mute_mocks = {player.player_id: _mute_natively(player) for player in (leader, member)}
         # both members were muted while grouped, so both hold a mute lock
         for player in (leader, member):
@@ -1889,10 +1890,10 @@ class TestPlayNativeAnnouncement:
         protocol.volume_set = volume_set  # type: ignore[method-assign]
         _refresh(player)
         await controller.cmd_volume_mute("player_1", True)
-        assert player.state.volume_muted is True
+        assert player.volume_muted is True
         # stand in for the configured strategy, which reads the volume of the player
         controller.get_announcement_volume = MagicMock(  # type: ignore[method-assign]
-            side_effect=lambda _player_id, _volume_level: player.state.volume_level
+            side_effect=lambda _player_id, _volume_level: player.volume_level
         )
 
         await controller._play_native_announcement(player, protocol, _announcement(), None)
@@ -1900,5 +1901,5 @@ class TestPlayNativeAnnouncement:
         assert announce_mock.await_args == call(ANY, 40)
         # unmute to 40 for the announcement, park back on 0 for the fake mute
         assert volume_set.await_args_list == [call(0), call(40), call(0)]
-        assert player.state.volume_muted is True
+        assert player.volume_muted is True
         assert player.extra_data[ATTR_PREVIOUS_VOLUME] == 40

@@ -624,7 +624,7 @@ class AirPlayProvider(PlayerProvider):
                 # best effort: a registered player's live name, else its stored config
                 # name; when neither resolves the port match stays the strong signal
                 if player := self.mass.players.get_player(player_id):
-                    player_name: str | None = player.display_name
+                    player_name: str | None = player.name
                 else:
                     stored_name = self.mass.config.get_player_value(
                         player_id, "name"
@@ -1169,7 +1169,7 @@ class AirPlayProvider(PlayerProvider):
                             "Prevent playback command detected for player %s",
                             player.name,
                         )
-                        if player.synced_to or parent_player.state.active_group:
+                        if player.synced_to or parent_player.active_group:
                             self.mass.create_task(
                                 self.mass.players.cmd_ungroup(parent_player.player_id)
                             )

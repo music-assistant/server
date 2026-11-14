@@ -76,9 +76,9 @@ async def test_transfer_queue_ad_hoc_member_ungroups_target_not_leader() -> None
     recurse back into transfer_queue, so only the target may be ungrouped.
     """
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.synced_to = "leaderA"
-    target_player.state.active_group = None
+    target_player.type = PlayerType.PLAYER
+    target_player.synced_to = "leaderA"
+    target_player.active_group = None
     fake = _fake_controller("src", target_player)
 
     await PlayerQueuesController.transfer_queue(
@@ -95,7 +95,7 @@ async def test_transfer_queue_refuses_non_audio_target() -> None:
     The source queue must survive intact: no stop, no clear, no item handover.
     """
     target_player = MagicMock()
-    target_player.state.type = PlayerType.VISUALIZER
+    target_player.type = PlayerType.VISUALIZER
     fake = _fake_controller("src", target_player)
 
     with pytest.raises(PlayerCommandFailed):
@@ -112,9 +112,9 @@ async def test_transfer_queue_refuses_non_audio_target() -> None:
 async def test_transfer_queue_group_member_ungroups_group() -> None:
     """Transferring onto a virtual-group member releases the group player itself."""
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.synced_to = None
-    target_player.state.active_group = "groupP"
+    target_player.type = PlayerType.PLAYER
+    target_player.synced_to = None
+    target_player.active_group = "groupP"
     fake = _fake_controller("src", target_player)
 
     await PlayerQueuesController.transfer_queue(
@@ -204,9 +204,9 @@ def _shuffle_controller(
         PlayerQueuesController._resolve_default_toggles(fake, queue_data)
     )
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.synced_to = None
-    target_player.state.active_group = None
+    target_player.type = PlayerType.PLAYER
+    target_player.synced_to = None
+    target_player.active_group = None
     target_player.offline_by_power_control = False
     fake.mass.players.get_player = MagicMock(return_value=target_player)
     fake.mass.streams.is_smart_fades_active = MagicMock(return_value=False)

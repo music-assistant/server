@@ -1203,7 +1203,7 @@ class PlayerProtocol(ABC):
     def display_name(self) -> str:
         """Return the name to show for the device: that of its player, else its own."""
         if self._player is not None:
-            return self._player.display_name
+            return self._player.name
         return self.name or self._config.default_name or self.protocol_id
 
     @property

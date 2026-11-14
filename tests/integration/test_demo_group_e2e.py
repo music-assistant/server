@@ -20,7 +20,7 @@ from .conftest import demo_players, group_players, play_test_track, wait_for
 
 def _mirrors_uri(player: Player, uri: str) -> bool:
     """Return True if the player's current media matches the given uri."""
-    current = player.state.current_media
+    current = player.current_media
     return current is not None and current.uri == uri
 
 
@@ -40,19 +40,19 @@ async def test_demo_group_mirrors_current_media(e2e_mass: MusicAssistant) -> Non
 
     # 1. form the sync group
     await group_players(e2e_mass, leader, members)
-    assert await wait_for(lambda: len(leader.state.group_members) == 3), (
-        f"group not formed: {leader.state.group_members}"
+    assert await wait_for(lambda: len(leader.group_members) == 3), (
+        f"group not formed: {leader.group_members}"
     )
-    assert leader.state.group_members[0] == leader.player_id
+    assert leader.group_members[0] == leader.player_id
     for member in members:
-        assert member.state.synced_to == leader.player_id
+        assert member.synced_to == leader.player_id
 
     # 2. play a fake track (carries artwork) on the group
     await play_test_track(e2e_mass, leader.player_id)
-    assert await wait_for(lambda: leader.state.current_media is not None), (
+    assert await wait_for(lambda: leader.current_media is not None), (
         "leader current_media never populated"
     )
-    leader_media = leader.state.current_media
+    leader_media = leader.current_media
     assert leader_media is not None
     assert leader_media.image_url
 
@@ -61,6 +61,6 @@ async def test_demo_group_mirrors_current_media(e2e_mass: MusicAssistant) -> Non
         assert await wait_for(partial(_mirrors_uri, member, leader_media.uri)), (
             f"{member.player_id} did not mirror the leader's media"
         )
-        member_media = member.state.current_media
+        member_media = member.current_media
         assert member_media is not None
         assert member_media.image_url == leader_media.image_url

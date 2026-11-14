@@ -37,7 +37,7 @@ def test_a_source_a_trusting_player_lists_itself_takes_over_from_the_ma_queue() 
 
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == "YouTube Music"
+    assert player.active_source == "YouTube Music"
 
 
 def test_a_listed_device_input_does_not_take_over_when_the_player_is_not_trusted() -> None:
@@ -51,7 +51,7 @@ def test_a_listed_device_input_does_not_take_over_when_the_player_is_not_trusted
 
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == PLAYER_ID
+    assert player.active_source == PLAYER_ID
 
 
 def test_an_unlisted_source_does_not_take_over_from_the_ma_queue() -> None:
@@ -63,7 +63,7 @@ def test_an_unlisted_source_does_not_take_over_from_the_ma_queue() -> None:
 
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == PLAYER_ID
+    assert player.active_source == PLAYER_ID
 
 
 def test_a_known_external_source_takes_over_from_the_ma_queue() -> None:
@@ -75,7 +75,7 @@ def test_a_known_external_source_takes_over_from_the_ma_queue() -> None:
 
     player.update_state(signal_event=False)
 
-    assert player.state.active_source == "qobuz"
+    assert player.active_source == "qobuz"
 
 
 @pytest.mark.parametrize(
@@ -120,7 +120,7 @@ def test_ma_source_expires_only_if_player_remains_idle(
         callback()
 
     expected_source = PLAYER_ID if resumed_state == PlaybackState.IDLE else "group_queue"
-    assert player.state.active_source == expected_source
+    assert player.active_source == expected_source
 
 
 def test_an_early_wake_up_keeps_the_ma_source_until_its_time(
@@ -151,9 +151,9 @@ def test_an_early_wake_up_keeps_the_ma_source_until_its_time(
 
     now[0] += 4.9
     armed[-1][1]()
-    assert player.state.active_source == "group_queue"
+    assert player.active_source == "group_queue"
     assert armed[-1][0] == pytest.approx(0.1)
 
     now[0] += 0.1
     armed[-1][1]()
-    assert player.state.active_source == PLAYER_ID
+    assert player.active_source == PLAYER_ID

@@ -425,7 +425,7 @@ class AlexaPlayer(PlayerProtocol):
         if self._last_stream_url is None or self.player is None:
             return
 
-        media = self.player.state.current_media
+        media = self.player.current_media
 
         async def _upload_metadata() -> None:
             stream_url = self._last_stream_url

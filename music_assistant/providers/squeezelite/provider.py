@@ -141,7 +141,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
     def _lookup_display_name(self, player_id: str) -> str | None:
         """Return Music Assistant's display name for a slimproto player, or None if unknown."""
         mass_player = self.mass.players.get_player_by_protocol(player_id)
-        return mass_player.display_name if mass_player else None
+        return mass_player.name if mass_player else None
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None

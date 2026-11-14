@@ -147,7 +147,7 @@ async def test_a_new_receiver_is_an_audio_protocol_of_a_minted_player(
     player = _player_of(protocol)
     assert player.player_id.startswith(PLAYER_ID_PREFIX)
     assert player.player_id != PROTOCOL_ID
-    assert player.state.available is True
+    assert player.available is True
     assert (IdentifierType.AIRPLAY_ID, PROTOCOL_ID) in protocol.identifiers
     assert (IdentifierType.MAC_ADDRESS, DEVICE_ID) in protocol.identifiers
 
@@ -178,7 +178,7 @@ async def test_the_stored_volume_comes_back_with_the_receiver(
     assert back is not protocol
     assert back.volume_level == 33
     assert _player_of(back).player_id == player_id
-    assert _player_of(back).state.available is True
+    assert _player_of(back).available is True
 
 
 async def test_an_attached_receiver_is_left_alone_by_a_repeated_record(
@@ -224,7 +224,7 @@ async def test_a_mac_is_no_player_until_enabled(
     protocol = await _announce(scenario, provider, mac)
 
     assert _player_of(protocol).player_id == listed[0].player_id
-    assert _player_of(protocol).state.available is True
+    assert _player_of(protocol).available is True
 
 
 async def test_a_removed_player_forgets_its_bridge_and_comes_back_as_a_new_player(
@@ -310,8 +310,8 @@ async def test_a_member_whose_stream_dies_leaves_the_airplay_group_for_its_own_p
         leader.player_id, player_ids_to_add=[member.player_id]
     )
     await scenario.settle()
-    assert member.player_id in leader.state.group_members
-    assert member.state.active_output_protocol == member_airplay.protocol_id
+    assert member.player_id in leader.group_members
+    assert member.active_output_protocol == member_airplay.protocol_id
 
     scenario.expect_log("cliairplay process stopped unexpectedly")
     stream = AirPlayStream(member_airplay)
@@ -324,9 +324,9 @@ async def test_a_member_whose_stream_dies_leaves_the_airplay_group_for_its_own_p
         await stream._stderr_reader()
         await scenario.idle()
 
-    assert member.player_id not in leader.state.group_members
-    assert member.state.synced_to is None
-    assert member.state.active_output_protocol in (None, "native")
+    assert member.player_id not in leader.group_members
+    assert member.synced_to is None
+    assert member.active_output_protocol in (None, "native")
     native.commands.clear()
     await scenario.mass.players.cmd_volume_set(member.player_id, 25)
     assert ("volume_set", 25) in native.commands

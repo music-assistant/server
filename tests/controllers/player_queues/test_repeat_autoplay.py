@@ -161,9 +161,7 @@ def _player(queues: Any, player_id: str = "p1") -> Any:
     :param queues: The queue-controller stand-in, whose players controller gets the player.
     :param player_id: The id of the player.
     """
-    player = SimpleNamespace(
-        player_id=player_id, state=SimpleNamespace(name="Player A", available=True)
-    )
+    player = SimpleNamespace(player_id=player_id, name="Player A", available=True)
     queues.mass.players.get_player = MagicMock(
         side_effect=lambda queried_id: player if queried_id == player_id else None
     )
@@ -307,9 +305,9 @@ async def test_repeating_queue_is_transferred_with_locked_autoplay_override() ->
     """A transferred repeating queue keeps the saved autoplay override and stays locked off."""
     queues, _ = _controller(global_autoplay=False)
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.active_group = None
-    target_player.state.synced_to = None
+    target_player.type = PlayerType.PLAYER
+    target_player.active_group = None
+    target_player.synced_to = None
     queues.mass.players.get_player = MagicMock(return_value=target_player)
 
     source_queue = PlayerQueue(

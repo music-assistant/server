@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import inspect
 import logging
 import pathlib
@@ -54,6 +55,12 @@ from music_assistant.models.player_state import (
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderAccess
     from music_assistant_models.event import MassEvent
+
+
+# every value of a published state: its fields and its calculated properties
+_PLAYER_STATE_NAMES = [field.name for field in dataclasses.fields(PlayerState)] + [
+    name for name, value in vars(PlayerState).items() if isinstance(value, property)
+]
 
 
 def utf8_safe(value: object) -> object:
@@ -776,6 +783,24 @@ def make_player_state(player_id: str = "player_1", **values: Any) -> PlayerState
         "device_info": DeviceInfo(),
     }
     return PlayerState(player_id=player_id, **(defaults | values))
+
+
+def mock_player(player_id: str = "player_1", **values: Any) -> MagicMock:
+    """
+    Return a mocked player whose final values are those of its published state.
+
+    For code that reads both ``player.<field>`` and the snapshot ``player.state``. The
+    mock has the spec of ``Player``; set what else the code reads on it.
+
+    :param player_id: Id of the player.
+    :param values: The values of its state that differ from ``make_player_state()``.
+    """
+    state = make_player_state(player_id, **values)
+    player = MagicMock(spec=Player)
+    player.state = state
+    for name in _PLAYER_STATE_NAMES:
+        setattr(player, name, getattr(state, name))
+    return player
 
 
 def make_protocol_snapshot(protocol_id: str = "player_1", **values: Any) -> ProtocolSnapshot:

@@ -212,16 +212,12 @@ class AnnouncementsMixin(_PlayerControllerBase):
         if volume_level is None and volume_strategy == "absolute":
             volume_level = int(cast("float", volume_strategy_volume))
         elif volume_level is None and volume_strategy == "relative":
-            if player and player.state.volume_level is not None:
-                volume_level = int(
-                    player.state.volume_level + cast("float", volume_strategy_volume)
-                )
+            if player and player.volume_level is not None:
+                volume_level = int(player.volume_level + cast("float", volume_strategy_volume))
         elif volume_level is None and volume_strategy == "percentual":
-            if player and player.state.volume_level is not None:
-                percentual = (player.state.volume_level / 100) * cast(
-                    "float", volume_strategy_volume
-                )
-                volume_level = int(player.state.volume_level + percentual)
+            if player and player.volume_level is not None:
+                percentual = (player.volume_level / 100) * cast("float", volume_strategy_volume)
+                volume_level = int(player.volume_level + percentual)
         if volume_level is not None:
             announce_volume_min = cast(
                 "float",
@@ -283,7 +279,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         try:
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            if player.state.type == PlayerType.GROUP:
+            if player.type == PlayerType.GROUP:
                 # the output that announces for a member is resolved once the audio is
                 # there, so the decision below is taken on the state the members act on
                 await render.wait_ready()
@@ -304,7 +300,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             url = announce_data["announcement_url"]
             self.logger.info(
                 "Playback announcement to player %s (with pre-announce: %s): %s",
-                player.state.name,
+                player.name,
                 announce_data["pre_announce"],
                 url,
             )
@@ -317,7 +313,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 self.logger.warning(
                     "Announcement to player %s - the player no longer announces "
                     "natively, skipping it",
-                    player.state.name,
+                    player.name,
                 )
                 return
             # create a PlayerMedia object for the announcement so
@@ -382,10 +378,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             return False
         if self.get_announcement_volume(player.player_id, volume_level) is None:
             return False
-        return (
-            player.state.volume_control != PLAYER_CONTROL_NONE
-            and player.state.volume_level is not None
-        )
+        return player.volume_control != PLAYER_CONTROL_NONE and player.volume_level is not None
 
     def _resolve_announce_player(self, player: Player) -> PlayerProtocol | None:
         """
@@ -413,7 +406,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # that live stream, in sync with the rest of the group) instead of a
             # second mechanism firing beside the playback.
             return announce_player
-        if player.state.playback_state != PlaybackState.PLAYING:
+        if player.playback_state != PlaybackState.PLAYING:
             # An idle player may announce through any audio protocol. A
             # PLAYING player deliberately gets no such fallback: routing to
             # an idle audio protocol (e.g. the AirPlay protocol of a WiiM
@@ -451,7 +444,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         if not await render.wait_ready():
             self.logger.warning(
                 "Announcement to player %s - no audio available for %s",
-                player.state.name,
+                player.name,
                 url,
             )
         if PlayerFeature.PLAY_ANNOUNCEMENT not in announce_player.supported_features:
@@ -522,8 +515,8 @@ class AnnouncementsMixin(_PlayerControllerBase):
         # in case of a (sync) group, this covers all child players.
         muted_players = [
             muted_player
-            for member_id in player.state.group_members or (player.player_id,)
-            if (muted_player := self.get_player(member_id)) and muted_player.state.volume_muted
+            for member_id in player.group_members or (player.player_id,)
+            if (muted_player := self.get_player(member_id)) and muted_player.volume_muted
         ]
         # filled while the announcement volume is applied below
         prev_volumes: dict[str, int] = {}
@@ -578,25 +571,23 @@ class AnnouncementsMixin(_PlayerControllerBase):
         support for the PLAY_ANNOUNCEMENT feature, or when its native route ignores a
         requested volume (see AnnouncementFeature.SUPPORTS_VOLUME) and a level is wanted.
         """
-        prev_state = player.state.playback_state
+        prev_state = player.playback_state
         # A player without power control has no power state to restore, so it counts as
         # powered here - otherwise the restore below would be skipped altogether for it,
         # leaving the player ungrouped from its (sync)group.
         prev_power = (
-            player.state.power_control == PLAYER_CONTROL_NONE
-            or bool(player.state.powered)
+            player.power_control == PLAYER_CONTROL_NONE
+            or bool(player.powered)
             or prev_state != PlaybackState.IDLE
         )
-        prev_synced_to = player.state.synced_to
-        prev_group = (
-            self.get_player(player.state.active_group) if player.state.active_group else None
-        )
-        prev_source = player.state.active_source
-        prev_media = player.state.current_media
+        prev_synced_to = player.synced_to
+        prev_group = self.get_player(player.active_group) if player.active_group else None
+        prev_source = player.active_source
+        prev_media = player.current_media
         prev_media_name = prev_media.title or prev_media.uri if prev_media else None
         # An announcement is transient: a player that is still busy with an earlier
         # announcement holds no user content, so there is nothing to restore for it.
-        # The raw media attribute is read here (instead of state.current_media, which
+        # The raw media attribute is read here (instead of player.current_media, which
         # reports the active queue item) since it tells what the device is playing.
         device_media = (
             output_protocol.current_media
@@ -625,7 +616,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # play the announcement
             self.logger.debug(
                 "Announcement to player %s - playing the announcement on the player...",
-                player.state.name,
+                player.name,
             )
             render = (
                 self.mass.streams.announcement_renderer.get(
@@ -639,7 +630,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 # regardless when it came up empty, so the restore still runs
                 self.logger.warning(
                     "Announcement to player %s - no audio available for %s",
-                    player.state.name,
+                    player.name,
                     announcement.uri,
                 )
             await self._handle_play_media(player.player_id, announcement)
@@ -711,17 +702,17 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # ungroup player if its currently synced
             self.logger.debug(
                 "Announcement to player %s - ungrouping player from %s...",
-                player.state.name,
+                player.name,
                 prev_synced_to,
             )
             await self.cmd_ungroup(player.player_id)
         elif prev_group:
             # if the player is part of a group player, we need to ungroup it
-            if PlayerFeature.SET_MEMBERS in prev_group.state.supported_features:
+            if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
                 self.logger.debug(
                     "Announcement to player %s - ungrouping from group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
+                    player.name,
+                    prev_group.name,
                 )
                 await self.cmd_set_members(
                     prev_group.player_id, player_ids_to_remove=[player.player_id]
@@ -731,15 +722,15 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 # we need to power off the groupplayer instead
                 self.logger.debug(
                     "Announcement to player %s - turning off group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
+                    player.name,
+                    prev_group.name,
                 )
                 await self._handle_cmd_power(prev_group.player_id, False)
         elif prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             # normal/standalone player: stop player if its currently playing
             self.logger.debug(
                 "Announcement to player %s - stop existing content (%s)...",
-                player.state.name,
+                player.name,
                 prev_media_name,
             )
             # Stop the queue (not just the device) so resume_pos is saved.
@@ -753,24 +744,24 @@ class AnnouncementsMixin(_PlayerControllerBase):
         # unmute and adjust volume if needed
         # in case of a (sync) group, we need to do this for all child players
         async with TaskManager(self.mass) as tg:
-            for volume_player_id in player.state.group_members or (player.player_id,):
+            for volume_player_id in player.group_members or (player.player_id,):
                 if not (volume_player := self.get_player(volume_player_id)):
                     continue
                 # catch any players that have a different source active
                 if (
-                    volume_player.state.active_source
+                    volume_player.active_source
                     not in (
-                        player.state.active_source,
+                        player.active_source,
                         volume_player.player_id,
                         None,
                     )
-                    and volume_player.state.playback_state == PlaybackState.PLAYING
+                    and volume_player.playback_state == PlaybackState.PLAYING
                 ):
                     self.logger.warning(
                         "Detected announcement to playergroup %s while group member %s is playing "
                         "other content, this may lead to unexpected behavior.",
-                        player.state.name,
-                        volume_player.state.name,
+                        player.name,
+                        volume_player.name,
                     )
                     tg.create_task(self._handle_cmd_stop(volume_player.player_id))
                 tg.create_task(
@@ -808,9 +799,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         :param prev_media: The media that was loaded before the announcement.
         :param restore_playback: Whether playback needs to be resumed.
         """
-        self.logger.debug(
-            "Announcement to player %s - restore previous state...", player.state.name
-        )
+        self.logger.debug("Announcement to player %s - restore previous state...", player.name)
         # restore volume
         async with TaskManager(self.mass) as tg:
             for volume_player_id, prev_volume in prev_volumes.items():
@@ -829,23 +818,23 @@ class AnnouncementsMixin(_PlayerControllerBase):
                 # prev_power is always True for a player without power control,
                 # so there is an actual power control to switch off here
                 self.logger.debug(
-                    "Announcement to player %s - turning player off again...", player.state.name
+                    "Announcement to player %s - turning player off again...", player.name
                 )
                 await self._handle_cmd_power(player.player_id, False)
                 return
             if prev_synced_to:
                 self.logger.debug(
                     "Announcement to player %s - syncing back to %s...",
-                    player.state.name,
+                    player.name,
                     prev_synced_to,
                 )
                 await self.cmd_set_members(prev_synced_to, player_ids_to_add=[player.player_id])
             elif prev_group:
-                if PlayerFeature.SET_MEMBERS in prev_group.state.supported_features:
+                if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
                     self.logger.debug(
                         "Announcement to player %s - grouping back to group player %s...",
-                        player.state.name,
-                        prev_group.display_name,
+                        player.name,
+                        prev_group.name,
                     )
                     await self.cmd_set_members(
                         prev_group.player_id, player_ids_to_add=[player.player_id]
@@ -855,8 +844,8 @@ class AnnouncementsMixin(_PlayerControllerBase):
                     # we need to restart the groupplayer
                     self.logger.debug(
                         "Announcement to player %s - restarting playback on group player %s...",
-                        player.state.name,
-                        prev_group.display_name,
+                        player.name,
+                        prev_group.name,
                     )
                     await self.cmd_play(prev_group.player_id)
             elif restore_playback:
@@ -868,7 +857,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
             # raises. CancelledError is a BaseException and still propagates.
             self.logger.warning(
                 "Announcement to player %s - restoring the previous state failed: %s",
-                player.state.name,
+                player.name,
                 err,
             )
 
@@ -889,15 +878,15 @@ class AnnouncementsMixin(_PlayerControllerBase):
         :param prev_muted: Set that is filled in-place with the ids of the players that
             were muted.
         """
-        if volume_player.state.volume_muted:
+        if volume_player.volume_muted:
             # an announcement is always meant to be heard, so a deliberate mute is lifted
             # for its duration. this happens before the volume is read below, since a
             # fake mute control parks the player at volume 0 to mute it.
             prev_muted.add(volume_player.player_id)
             await self._set_announcement_mute(volume_player, False)
-        if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
+        if volume_player.volume_control == PLAYER_CONTROL_NONE:
             return
-        if (prev_volume := volume_player.state.volume_level) is None:
+        if (prev_volume := volume_player.volume_level) is None:
             return
         announcement_volume = self.get_announcement_volume(volume_player.player_id, volume_level)
         # get_announcement_volume already returns None when the volume must be left
@@ -908,7 +897,7 @@ class AnnouncementsMixin(_PlayerControllerBase):
         prev_volumes[volume_player.player_id] = prev_volume
         self.logger.debug(
             "Announcement to player %s - setting temporary volume (%s)...",
-            volume_player.state.name,
+            volume_player.name,
             announcement_volume,
         )
         await self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
@@ -944,15 +933,15 @@ class AnnouncementsMixin(_PlayerControllerBase):
         :param prev_volumes: Mapping that is filled in-place with the previous volume level
             per player id, so the caller can restore the volume even if this call fails.
         """
-        if player.state.volume_control == PLAYER_CONTROL_NONE:
+        if player.volume_control == PLAYER_CONTROL_NONE:
             # nothing in the signal path can set a volume at all
             return
-        if (prev_volume := player.state.volume_level) is None or prev_volume == announcement_volume:
+        if (prev_volume := player.volume_level) is None or prev_volume == announcement_volume:
             return
         prev_volumes[player.player_id] = prev_volume
         self.logger.debug(
             "Announcement to player %s - setting temporary volume (%s)...",
-            player.state.name,
+            player.name,
             announcement_volume,
         )
         await self._handle_cmd_volume_set(player.player_id, announcement_volume)

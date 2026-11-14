@@ -144,27 +144,28 @@ def _make_venue_player(  # noqa: PLR0913
         if PlayerFeature.PLAY_MEDIA in supported_features or linked_protocol
         else []
     )
-    return SimpleNamespace(
+    player = SimpleNamespace(
         player_id=player_id,
-        display_name=name,
+        name=name,
         attached_protocols={f"client_{player_id}": SimpleNamespace(private=private)},
-        playback_state=playback_state,
         provider=SimpleNamespace(domain=provider_domain),
-        state=SimpleNamespace(
-            available=available,
-            enabled=enabled,
-            hide_in_ui=hidden,
-            needs_setup=needs_setup,
-            synced_to=None,
-            active_group=None,
-            group_members=[],
-            type=player_type,
-            supported_features=supported_features,
-            output_protocols=output_protocols,
-            playback_state=playback_state,
-        ),
+        available=available,
+        enabled=enabled,
+        hide_in_ui=hidden,
+        needs_setup=needs_setup,
+        synced_to=None,
+        active_group=None,
+        group_members=[],
+        type=player_type,
+        supported_features=supported_features,
+        output_protocols=output_protocols,
+        playback_state=playback_state,
         extra_data={},
     )
+    # the code reads both player.<field> and the snapshot player.state: the stub is its own
+    # state, so a value a test changes is the same for both
+    player.state = player
+    return player
 
 
 @contextmanager
@@ -407,8 +408,8 @@ def _install_reported_playback(
     """Attach a playback session whose venue target reports the given position anchor."""
     plugin._playback_session = _mock_playback_session("venue_player", "venue_player")
     venue_player = cast("MagicMock", plugin.mass.players.all_players).return_value[0]
-    venue_player.state.elapsed_time = elapsed_time
-    venue_player.state.elapsed_time_last_updated = elapsed_time_last_updated
+    venue_player.elapsed_time = elapsed_time
+    venue_player.elapsed_time_last_updated = elapsed_time_last_updated
     cast("MagicMock", plugin.mass.player_queues).get = MagicMock(
         return_value=SimpleNamespace(flow_mode=flow_mode)
     )
@@ -423,11 +424,11 @@ def _configure_venue_listener_playback(
         "Venue Player",
         features={PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS},
     )
-    venue_player.state.can_group_with = {"web_player"}
-    venue_player.state.group_members = []
+    venue_player.can_group_with = {"web_player"}
+    venue_player.group_members = []
     guest_player = SimpleNamespace(
         player_id="web_player",
-        state=SimpleNamespace(available=True),
+        available=True,
     )
     cast("MagicMock", plugin.mass.players.all_players).return_value = [venue_player]
     cast("MagicMock", plugin.mass.players.get_player).side_effect = {
@@ -442,11 +443,11 @@ def _configure_venue_listener_playback(
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         for player_id in player_ids_to_remove or []:
-            if player_id in venue_player.state.group_members:
-                venue_player.state.group_members.remove(player_id)
+            if player_id in venue_player.group_members:
+                venue_player.group_members.remove(player_id)
         for player_id in player_ids_to_add or []:
-            if player_id not in venue_player.state.group_members:
-                venue_player.state.group_members.append(player_id)
+            if player_id not in venue_player.group_members:
+                venue_player.group_members.append(player_id)
 
     set_members = AsyncMock(side_effect=_set_members)
     cast("MagicMock", plugin.mass.players).cmd_set_members = set_members
@@ -460,11 +461,11 @@ def _configure_venue_listener_playback(
     ) -> None:
         assert queue_id == "venue_player"
         assert option == QueueOption.REPLACE
-        assert "web_player" in venue_player.state.group_members
+        assert "web_player" in venue_player.group_members
         played_tracks.append(track_uri)
 
     async def _stop(_queue_id: str) -> None:
-        venue_player.state.group_members.clear()
+        venue_player.group_members.clear()
 
     cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock(side_effect=_play_media)
     cast("MagicMock", plugin.mass.player_queues).stop = AsyncMock(side_effect=_stop)
@@ -752,12 +753,12 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         "Z Bathroom",
         playback_state=PlaybackState.PLAYING,
     )
-    playing_bathroom.state.group_members = ["bathroom", "bedroom"]
+    playing_bathroom.group_members = ["bathroom", "bedroom"]
     synced_child = _make_venue_player("bedroom", "Synced Child")
-    synced_child.state.synced_to = "bathroom"
+    synced_child.synced_to = "bathroom"
     active_group_member = _make_venue_player("group-member", "Active Group Member")
-    active_group_member.state.active_group = "group"
-    group.state.group_members = ["group-member"]
+    active_group_member.active_group = "group"
+    group.group_members = ["group-member"]
     audio_only = _make_venue_player(
         "audio-only",
         "Kitchen Speaker",
@@ -1134,12 +1135,12 @@ async def test_invalid_explicit_venue_create_preserves_existing_game(
     """Reject missing or ineligible venue targets without mutating game state."""
     plugin = _create_plugin()
     valid_player = _make_venue_player("valid", "Valid")
-    valid_player.state.group_members = ["valid", "synced"]
+    valid_player.group_members = ["valid", "synced"]
     unavailable_player = _make_venue_player("unavailable", "Unavailable", available=False)
     synced_player = _make_venue_player("synced", "Synced")
-    synced_player.state.synced_to = "valid"
+    synced_player.synced_to = "valid"
     active_group_member = _make_venue_player("group-member", "Active Group Member")
-    active_group_member.state.active_group = "group"
+    active_group_member.active_group = "group"
     cast("MagicMock", plugin.mass.players.all_players).return_value = [
         valid_player,
         unavailable_player,
@@ -1581,9 +1582,7 @@ async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
         )
         get_player = cast("MagicMock", plugin.mass.players.get_player)
         get_player.side_effect = None
-        get_player.return_value = SimpleNamespace(
-            state=SimpleNamespace(available=True), extra_data={}
-        )
+        get_player.return_value = SimpleNamespace(available=True, extra_data={})
         play_media = AsyncMock(side_effect=_play_media)
         cast("MagicMock", plugin.mass.player_queues).play_media = play_media
         requesting_user = cast("User", _guest_user())
@@ -1826,7 +1825,7 @@ async def test_play_track_rejects_busy_announcement_target() -> None:
     get_player = cast("MagicMock", plugin.mass.players.get_player)
     get_player.side_effect = None
     get_player.return_value = SimpleNamespace(
-        state=SimpleNamespace(available=True), extra_data={"announcement_in_progress": True}
+        available=True, extra_data={"announcement_in_progress": True}
     )
     play_media = AsyncMock()
     cast("MagicMock", plugin.mass.player_queues).play_media = play_media
@@ -6031,7 +6030,7 @@ async def test_advance_uses_queued_item_when_available() -> None:
     plugin._get_playback_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
     get_player = cast("MagicMock", plugin.mass.players.get_player)
     get_player.side_effect = None
-    get_player.return_value = SimpleNamespace(state=SimpleNamespace(available=True), extra_data={})
+    get_player.return_value = SimpleNamespace(available=True, extra_data={})
 
     queued_item = MagicMock()
     queued_item.queue_item_id = "item-warm"
@@ -6059,7 +6058,7 @@ async def test_advance_uses_a_queue_item_resolved_to_the_library_track() -> None
     plugin._get_playback_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
     get_player = cast("MagicMock", plugin.mass.players.get_player)
     get_player.side_effect = None
-    get_player.return_value = SimpleNamespace(state=SimpleNamespace(available=True), extra_data={})
+    get_player.return_value = SimpleNamespace(available=True, extra_data={})
 
     queued_item = MagicMock()
     queued_item.queue_item_id = "item-library"
@@ -6150,7 +6149,7 @@ def _install_staging_target(
     cast("MagicMock", session).mode = SharedPlaybackMode.VENUE
     plugin._get_playback_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
     venue_player = cast("MagicMock", plugin.mass.players.all_players).return_value[0]
-    venue_player.state.playback_state = playback_state
+    venue_player.playback_state = playback_state
     staged_item = MagicMock()
     staged_item.queue_item_id = "item-staged"
     staged_item.available = True
@@ -6204,7 +6203,7 @@ async def test_warm_first_track_leaves_a_busy_target_alone(
     plugin = _create_plugin()
     _, get_audio_buffer = _install_staging_target(plugin, playback_state)
     venue_player = cast("MagicMock", plugin.mass.players.all_players).return_value[0]
-    venue_player.state.available = available
+    venue_player.available = available
     queues = cast("MagicMock", plugin.mass.player_queues)
 
     await plugin._warm_first_track("library://track/0")
@@ -6689,7 +6688,7 @@ async def test_busy_venue_is_snapshotted_right_before_the_first_round_replaces_i
     """A venue left alone in the lobby is copied when the first round takes its queue over."""
     plugin = _create_plugin()
     venue_player = cast("MagicMock", plugin.mass.players.all_players).return_value[0]
-    venue_player.state.playback_state = PlaybackState.PLAYING
+    venue_player.playback_state = PlaybackState.PLAYING
     session = _mock_playback_session("venue_player", "venue_player")
     cast("MagicMock", session).mode = SharedPlaybackMode.VENUE
     plugin._playback_session = session

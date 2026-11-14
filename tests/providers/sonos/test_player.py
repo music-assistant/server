@@ -1306,7 +1306,7 @@ async def test_pause_stops_a_speaker_playing_the_queue_of_its_player(queue_playi
     group.pause = AsyncMock()
     group.playback_actions.can_pause = True
     player._player = MagicMock(spec=Player)
-    player._player.state.active_source = "pl0123456789ab"
+    player._player.active_source = "pl0123456789ab"
     mass.player_queues.get.return_value = MagicMock() if queue_playing else None
 
     await player.pause()

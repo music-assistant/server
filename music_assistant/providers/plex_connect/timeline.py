@@ -50,9 +50,9 @@ class TimelineMixin:
         if queue is not None:
             state = queue.state
         elif player is not None:
-            # player.state.playback_state is MA's resolved/final state, which already
+            # player.playback_state is MA's resolved/final state, which already
             # follows the active output protocol and sync leader.
-            state = player.state.playback_state
+            state = player.playback_state
         else:
             return "stopped"
 

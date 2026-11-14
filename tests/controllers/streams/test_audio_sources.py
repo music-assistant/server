@@ -566,7 +566,7 @@ class TestAudioSourceElapsedTimeOverride:
     """
     Verify PlayerState.elapsed_time prefers what the live source reports.
 
-    The override is load-bearing — player.state.corrected_elapsed_time is
+    The override is load-bearing — player.corrected_elapsed_time is
     consumed by the queue controller's resume logic and several player
     providers; without it those flows would run against the byte-consumed
     clock and lose upstream seeks / pause-resume on a live source.
@@ -589,7 +589,7 @@ class TestAudioSourceElapsedTimeOverride:
         player.update_state(signal_event=False)
 
         # Override wins over the player's own elapsed_time
-        assert player.state.elapsed_time == 42
+        assert player.elapsed_time == 42
 
     def test_audio_source_no_elapsed_time_falls_through(
         self,
@@ -607,7 +607,7 @@ class TestAudioSourceElapsedTimeOverride:
 
         player.update_state(signal_event=False)
 
-        assert player.state.elapsed_time == 10.0
+        assert player.elapsed_time == 10.0
 
     def test_audio_source_elapsed_time_with_output_protocol(
         self,
@@ -635,9 +635,9 @@ class TestAudioSourceElapsedTimeOverride:
         player.refresh_state(signal_event=False)
 
         # The override is layered AFTER protocol/sync resolution, so it wins
-        assert player.state.elapsed_time == 42
-        assert player.state.current_media is not None
-        assert player.state.current_media.elapsed_time == 42
+        assert player.elapsed_time == 42
+        assert player.current_media is not None
+        assert player.current_media.elapsed_time == 42
 
     def test_audio_source_elapsed_time_last_updated_fallback(
         self,
@@ -660,11 +660,11 @@ class TestAudioSourceElapsedTimeOverride:
         player.update_state(signal_event=False)
         after = time.time()
 
-        assert player.state.elapsed_time == 42
+        assert player.elapsed_time == 42
         # Should snap to time.time() — not inherit the stale player timestamp
-        assert player.state.elapsed_time_last_updated is not None
-        assert player.state.elapsed_time_last_updated >= before
-        assert player.state.elapsed_time_last_updated <= after
+        assert player.elapsed_time_last_updated is not None
+        assert player.elapsed_time_last_updated >= before
+        assert player.elapsed_time_last_updated <= after
 
     def test_audio_source_media_position_follows_the_player(
         self,
@@ -689,13 +689,10 @@ class TestAudioSourceElapsedTimeOverride:
         airplay.update_state(signal_event=False)
         player.refresh_state(signal_event=False)
 
-        assert player.state.current_media is not None
-        assert player.state.elapsed_time == 5.0
-        assert player.state.current_media.elapsed_time == 5
-        assert (
-            player.state.current_media.elapsed_time_last_updated
-            == player.state.elapsed_time_last_updated
-        )
+        assert player.current_media is not None
+        assert player.elapsed_time == 5.0
+        assert player.current_media.elapsed_time == 5
+        assert player.current_media.elapsed_time_last_updated == player.elapsed_time_last_updated
 
 
 # ----------------------------------------------- silence-keepalive wrapper

@@ -67,7 +67,7 @@ async def test_a_second_server_on_the_host_gets_a_player_of_its_own(scenario: Sc
     assert second_player != first_player
     assert second_player.startswith(PLAYER_ID_PREFIX)
     assert _player(provider, FIRST).player_id == first_player
-    assert _player(provider, FIRST).display_name == "MPD one"
+    assert _player(provider, FIRST).name == "MPD one"
     assert len(scenario.visible_players()) == 2
 
 
@@ -87,7 +87,7 @@ async def test_each_server_finds_its_own_player_after_a_restart(scenario: Scenar
 
     assert _player(provider, FIRST).player_id == first_player
     assert _player(provider, SECOND).player_id == second_player
-    assert _player(provider, FIRST).display_name == "MPD one"
+    assert _player(provider, FIRST).name == "MPD one"
 
 
 async def test_a_server_disconnects_at_every_detach(scenario: Scenario) -> None:

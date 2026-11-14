@@ -269,7 +269,7 @@ class _FakeLock:
 class _FakePlayer:
     def __init__(self, player_id: str) -> None:
         self.player_id = player_id
-        self.display_name = player_id
+        self.name = player_id
         self.offline_by_power_control = False
 
 

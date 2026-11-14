@@ -224,7 +224,7 @@ async def test_removed_protocol_that_is_not_attached_leaves_the_outputs_of_its_p
     assert _stored_protocols(mass) == [NATIVE_ID]
     assert AUDIO_ID not in player.protocol_ids
     assert AUDIO_ID not in {output.output_protocol_id for output in player._output_protocols}
-    assert AUDIO_ID not in {protocol.protocol_id for protocol in player.state.protocols}
+    assert AUDIO_ID not in {protocol.protocol_id for protocol in player.protocols}
     assert mass.players.get_player(PLAYER_ID) is player
 
 

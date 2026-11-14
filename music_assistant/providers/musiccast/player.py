@@ -546,7 +546,7 @@ class MusicCastPlayer(PlayerProtocol):
         if update_state:
             self.update_state()
 
-        # state.current_media is queue-derived, so a current_uri change alone does not
+        # the player's current_media is queue-derived, so a current_uri change alone does not
         # produce a state diff. Nudge the queue directly so it re-parses the new URI.
         if (
             update_state

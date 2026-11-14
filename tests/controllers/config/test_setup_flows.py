@@ -1690,7 +1690,7 @@ async def test_player_setup_reaches_unavailable_player(flow_mass: MusicAssistant
     player, own, _ = _attach_player(flow_mass, own_class=_FlowProtocol)
     own._attr_needs_setup = True
     player.refresh_state(signal_event=False)
-    assert player.state.available is False
+    assert player.available is False
 
     step = await flow_mass.config.setup_player(PLAYER_ID)
 
@@ -1820,7 +1820,7 @@ async def test_player_setup_reason_in_state_fingerprint(flow_mass: MusicAssistan
 
     player.refresh_state(signal_event=False)
 
-    assert player.state.setup_reason == "pairing_required"
+    assert player.setup_reason == "pairing_required"
     assert _state_fingerprint(player.state)["setup_reason"] == "pairing_required"
 
 
@@ -1835,7 +1835,7 @@ async def test_has_setup_flow_serialized_for_own_flow(flow_mass: MusicAssistant)
 
     player.update_state(force_update=True)
 
-    assert player.state.has_setup_flow is True
+    assert player.has_setup_flow is True
     assert player.to_dict()["has_setup_flow"] is True
     # tracked leaf of the fingerprint, so a protocol that attaches late drives an event
     assert _state_fingerprint(player.state)["has_setup_flow"] is True

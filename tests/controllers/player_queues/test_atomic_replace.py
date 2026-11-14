@@ -334,7 +334,8 @@ async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_po
                 source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
             )
         ),
-        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=12.0),
+        playback_state=PlaybackState.PLAYING,
+        corrected_elapsed_time=12.0,
     )
 
     updated = ctrl._update_current_index_from_player(queue, cast("Player", player))

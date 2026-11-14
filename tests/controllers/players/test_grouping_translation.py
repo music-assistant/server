@@ -209,7 +209,7 @@ def _grouping(
         parent.set_active_output_protocol(group_protocol.protocol_id)
         _refresh(controller)
     member_ids = list(member_ids)
-    parent.state.can_group_with = set(parent.state.can_group_with) | set(member_ids)
+    parent.state.can_group_with = set(parent.can_group_with) | set(member_ids)
     leg, native = _planned(controller, parent, member_ids, remove)
     protocol_members: list[str] = []
     protocol: PlayerProtocol | None = None
@@ -478,7 +478,7 @@ class TestJoinActiveNativeSession:
         preferred[players["sonos_b"].player_id] = "airplay_b"
         # Parent A stopped: active protocol still reads "native" but playback is idle.
         players["sonos_a"].set_active_output_protocol("native")
-        assert players["sonos_a"].state.playback_state == PlaybackState.IDLE
+        assert players["sonos_a"].playback_state == PlaybackState.IDLE
 
         protocol_members, native_members, _, protocol_domain = _grouping(
             controller, players["sonos_a"], [players["sonos_b"].player_id], group_protocol=None
@@ -818,7 +818,7 @@ class TestRegroupOffUnneededProtocol:
         group.leader.set_active_output_protocol("bridge_leader")
         group.bridge_leader._attr_playback_state = playback_state
         group.leader.refresh_state(signal_event=False)
-        assert group.leader.state.playback_state == playback_state
+        assert group.leader.playback_state == playback_state
         media = PlayerMedia(uri="http://test/stream")
 
         await controller._handle_play_media(group.leader.player_id, media)
@@ -1223,8 +1223,8 @@ class TestProtocolSwitchingDuringPlayback:
         member_native._attr_active_source = "Amazon Music"
         member.update_state(signal_event=False)
 
-        assert member.state.playback_state == PlaybackState.PLAYING
-        assert member.state.active_source == "Amazon Music"
+        assert member.playback_state == PlaybackState.PLAYING
+        assert member.active_source == "Amazon Music"
 
 
 class TestNativeProtocolPlayerGrouping:

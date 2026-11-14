@@ -130,7 +130,7 @@ async def test_a_new_room_is_the_native_protocol_of_a_new_player(scenario: Scena
     player = _player(_attached(provider, BAR))
     assert player.player_id.startswith(PLAYER_ID_PREFIX)
     assert player.get_role(BAR) == ProtocolRole.NATIVE
-    assert player.display_name == "Bar"
+    assert player.name == "Bar"
     assert scenario.protocol_config(BAR)["enable_icy_metadata"] == "basic"  # type: ignore[index]
     assert "enable_icy_metadata" not in _player_values(scenario, player.player_id)
 
@@ -166,7 +166,7 @@ async def test_a_room_the_host_no_longer_lists_is_detached_until_it_returns(
 
     assert provider.get_protocol(TV) is None
     assert scenario.player(tv_player).available is False  # type: ignore[union-attr]
-    assert _player(_attached(provider, BAR)).state.available is True
+    assert _player(_attached(provider, BAR)).available is True
     await _sync(scenario, provider, {"Bar": BAR_SPEAKER, "TV": TV_SPEAKER})
     assert _player(_attached(provider, TV)).player_id == tv_player
     assert scenario.player(tv_player).available is True  # type: ignore[union-attr]
@@ -214,7 +214,7 @@ async def test_a_room_under_another_id_keeps_its_player_and_settings(scenario: S
 
     returned = _attached(provider, "raumfeld_room-tv2")
     assert _player(returned).player_id == player_id
-    assert _player(returned).display_name == "Television"
+    assert _player(returned).name == "Television"
     assert returned._group_restarts_on_join()
     assert scenario.mass.config.get_protocol_record("raumfeld_room-tv") is None
     assert [player.name for player in scenario.visible_players()] == ["Bar", "Television"]
@@ -238,7 +238,7 @@ async def test_two_rooms_on_one_address_stay_two_players(scenario: Scenario) -> 
 
     tv_player = _player(_attached(provider, TV))
     assert tv_player.player_id != bar_player
-    assert tv_player.display_name == "TV"
+    assert tv_player.name == "TV"
     assert scenario.mass.config.get_protocol_record(BAR)["player_id"] == bar_player  # type: ignore[index]
     await _sync(scenario, provider, {"Bar": bar, "TV": TV_SPEAKER})
     assert _player(_attached(provider, BAR)).player_id == bar_player
@@ -283,7 +283,7 @@ async def test_a_removed_room_comes_back_as_a_new_player(scenario: Scenario) -> 
     returned = _attached(provider, BAR)
     assert returned is not removed
     assert _player(returned).player_id != player_id
-    assert _player(returned).display_name == "Bar"
+    assert _player(returned).name == "Bar"
 
 
 async def test_discovery_leaves_attached_rooms_alone(scenario: Scenario) -> None:

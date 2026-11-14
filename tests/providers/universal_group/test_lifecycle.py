@@ -103,14 +103,14 @@ async def test_a_new_group_gets_a_player_of_its_own(scenario: Scenario) -> None:
     group = await _create_group(scenario, members)
 
     assert group.player_id.startswith(PLAYER_ID_PREFIX)
-    assert group.state.type == PlayerType.GROUP
-    assert group.display_name == "Group Z"
+    assert group.type == PlayerType.GROUP
+    assert group.name == "Group Z"
     protocol = _group_protocol(scenario, group.player_id)
     assert protocol.protocol_id != group.player_id
     assert scenario.mass.config.get_protocol_value(protocol.protocol_id, CONF_GROUP_MEMBERS) == (
         members
     )
-    assert group.state.static_group_members == members
+    assert group.static_group_members == members
     # the stream of the group is served under the id of its protocol
     assert _routes(scenario) == {
         f"/ugp/{protocol.protocol_id}.flac",
@@ -129,8 +129,8 @@ async def test_a_new_group_is_announced_with_its_members(scenario: Scenario) -> 
         if event == EventType.PLAYER_ADDED and isinstance(data, Player):
             announced.append(
                 (
-                    list(data.state.static_group_members),
-                    PlayerFeature.SET_MEMBERS in data.state.supported_features,
+                    list(data.static_group_members),
+                    PlayerFeature.SET_MEMBERS in data.supported_features,
                 )
             )
         signal_event(event, object_id, data)
@@ -152,7 +152,7 @@ async def test_a_new_group_advertises_power_with_the_fake_power_control(
     await scenario.configure_player(group.player_id, **{CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
 
     assert PlayerFeature.POWER in protocol.supported_features
-    assert PlayerFeature.POWER in group.state.supported_features
+    assert PlayerFeature.POWER in group.supported_features
 
 
 async def test_a_new_group_comes_back_with_its_members_after_a_restart(
@@ -245,8 +245,8 @@ async def test_discovery_attaches_a_group_that_is_stored_without_a_player(
     assert protocol is not None
     assert protocol.player is not None
     assert protocol.player.player_id.startswith(PLAYER_ID_PREFIX)
-    assert protocol.player.display_name == "Group Y"
-    assert protocol.player.state.static_group_members == members
+    assert protocol.player.name == "Group Y"
+    assert protocol.player.static_group_members == members
 
 
 def _member_media(scenario: Scenario, group: Player, member_id: str) -> PlayerMedia:
@@ -256,7 +256,7 @@ def _member_media(scenario: Scenario, group: Player, member_id: str) -> PlayerMe
     return PlayerMedia(
         uri=f"{base_url}?player_id={member_id}",
         media_type=MediaType.FLOW_STREAM,
-        title=group.display_name,
+        title=group.name,
         source_id=group.player_id,
         queue_session_id="session_a",
         custom_data={"ugp_player_id": group.player_id},

@@ -204,7 +204,7 @@ class PlayerLocksMixin(_PlayerControllerBase):
                 "Player %s changed its group while waiting for its lock, taking it again",
                 player_id,
             )
-        name = player.display_name if (player := self.get_player(player_id)) else player_id
+        name = player.name if (player := self.get_player(player_id)) else player_id
         msg = f"Player {name} changed its group while the command waited for its playback lock"
         raise ResourceBusyError(
             msg,
@@ -262,7 +262,7 @@ class PlayerLocksMixin(_PlayerControllerBase):
             raise self._player_busy_error(
                 f"{PlayerLockPurpose.PLAYBACK.value}_{busy_id}", PlayerLockPurpose.PLAYBACK, busy_id
             ) from None
-        name = player.display_name if (player := self.get_player(waited)) else waited
+        name = player.name if (player := self.get_player(waited)) else waited
         msg = f"Player {name} stayed busy while the command took the locks of several players"
         raise ResourceBusyError(
             msg,
@@ -382,7 +382,7 @@ class PlayerLocksMixin(_PlayerControllerBase):
         :param purpose: The lock's category, named in the log line and the error.
         :param player_id: The player the lock belongs to.
         """
-        name = player.display_name if (player := self.get_player(player_id)) else player_id
+        name = player.name if (player := self.get_player(player_id)) else player_id
         # the holder's call graph shows what it waits for, so a stuck command can be found
         holder = self._lock_holders.get(lock_key)
         self.logger.warning(

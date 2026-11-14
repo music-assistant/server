@@ -183,13 +183,13 @@ class SharedPlaybackSession:
         """
         if (host_player := self._get_host_player()) is None:
             return False
-        if PlayerFeature.SET_MEMBERS not in host_player.state.supported_features:
+        if PlayerFeature.SET_MEMBERS not in host_player.supported_features:
             return False
-        # state.can_group_with handles all protocol expansion and translation,
+        # can_group_with handles all protocol expansion and translation,
         # for both a real venue player and a (virtual) Sendspin host player
         return (
-            web_player_id in host_player.state.can_group_with
-            or web_player_id in host_player.state.group_members
+            web_player_id in host_player.can_group_with
+            or web_player_id in host_player.group_members
         )
 
     async def add_guest_listener(self, web_player_id: str) -> None:
@@ -217,14 +217,14 @@ class SharedPlaybackSession:
         host_player = self._get_host_player()
         if host_player is None or not self._guest_listeners:
             return
-        group_members = set(host_player.state.group_members)
+        group_members = set(host_player.group_members)
         for web_player_id in sorted(self._guest_listeners):
             if web_player_id in group_members:
                 continue
             guest_player = self.mass.players.get_player(web_player_id)
             if (
                 guest_player is None
-                or not guest_player.state.available
+                or not guest_player.available
                 or not self.can_listen_in(web_player_id)
             ):
                 continue
@@ -387,6 +387,6 @@ class SharedPlaybackSession:
     def _get_host_player(self) -> Player | None:
         """Return the (available) player hosting this session, if any."""
         player = self.mass.players.get_player(self._player_id)
-        if player is None or not player.state.available:
+        if player is None or not player.available:
             return None
         return player

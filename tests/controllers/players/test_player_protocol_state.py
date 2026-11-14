@@ -67,7 +67,7 @@ class TestFinalPlaybackStateWithActiveProtocol:
         player.refresh_state(signal_event=False)
 
         assert controller.get_player(player.player_id) is player
-        assert player.state.playback_state == PlaybackState.PLAYING
+        assert player.playback_state == PlaybackState.PLAYING
 
     def test_idle_protocol_propagates_idle(
         self,
@@ -98,7 +98,7 @@ class TestFinalPlaybackStateWithActiveProtocol:
         player.refresh_state(signal_event=False)
 
         assert controller.get_player(player.player_id) is player
-        assert player.state.playback_state == PlaybackState.IDLE
+        assert player.playback_state == PlaybackState.IDLE
 
     def test_no_active_protocol_uses_native_state(
         self,
@@ -114,7 +114,7 @@ class TestFinalPlaybackStateWithActiveProtocol:
         player.update_state(signal_event=False)
 
         assert controller.get_player(player.player_id) is player
-        assert player.state.playback_state == PlaybackState.PLAYING
+        assert player.playback_state == PlaybackState.PLAYING
 
     def test_negative_elapsed_time_is_clamped(
         self,
@@ -131,7 +131,7 @@ class TestFinalPlaybackStateWithActiveProtocol:
 
         assert native.elapsed_time == 0
         assert native.corrected_elapsed_time == 0
-        assert player.state.elapsed_time == 0
+        assert player.elapsed_time == 0
 
 
 def _source_session(elapsed: float | None, updated: float | None, player_id: str) -> MagicMock:
@@ -170,7 +170,7 @@ class TestFinalPlaybackStateAudioSourceElapsed:
 
         player.update_state(signal_event=False)
 
-        assert player.state.elapsed_time == 42.0
+        assert player.elapsed_time == 42.0
 
     def test_group_uses_its_sources_clock_not_the_leaders(
         self,
@@ -204,7 +204,7 @@ class TestFinalPlaybackStateAudioSourceElapsed:
 
         group.update_state(signal_event=False)
 
-        assert group.state.elapsed_time == 42.0
+        assert group.elapsed_time == 42.0
 
     def test_a_player_without_a_source_keeps_its_own_clock(
         self,
@@ -226,4 +226,4 @@ class TestFinalPlaybackStateAudioSourceElapsed:
 
         player.update_state(signal_event=False)
 
-        assert player.state.elapsed_time == 5.0
+        assert player.elapsed_time == 5.0

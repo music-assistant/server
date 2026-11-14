@@ -221,7 +221,7 @@ async def _build(
     for player in (*controller._players.values(), controller._players["a"]):
         player.update_state(force_update=True, signal_event=False)
     use_api_command_registry(mass, controller)
-    assert controller._players["a"].state.active_group == "g"
+    assert controller._players["a"].active_group == "g"
     return controller, group
 
 
@@ -250,11 +250,11 @@ def _end_state(controller: PlayerController) -> dict[str, tuple[Any, ...]]:
         player.update_state(force_update=True, signal_event=False)
     return {
         player.player_id: (
-            player.state.powered,
-            player.state.playback_state,
-            player.state.active_group,
-            player.state.synced_to,
-            sorted(player.state.group_members),
+            player.powered,
+            player.playback_state,
+            player.active_group,
+            player.synced_to,
+            sorted(player.group_members),
         )
         for player in players
     }

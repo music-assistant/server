@@ -180,9 +180,9 @@ def test_state_of_a_player_lists_its_legacy_ids() -> None:
     kitchen.update_state(signal_event=False)
     bedroom.update_state(signal_event=False)
 
-    assert kitchen.state.legacy_ids == ["old_kitchen", "older_kitchen"]
+    assert kitchen.legacy_ids == ["old_kitchen", "older_kitchen"]
     assert kitchen.to_dict()["legacy_ids"] == ["old_kitchen", "older_kitchen"]
-    assert bedroom.state.legacy_ids == []
+    assert bedroom.legacy_ids == []
 
 
 async def test_absorbed_frozen_id_names_the_keeper_and_still_its_protocol(

@@ -76,7 +76,7 @@ async def test_a_new_renderer_is_the_audio_protocol_of_a_minted_player(
     assert player is not None
     assert player.player_id.startswith(PLAYER_ID_PREFIX)
     assert player.get_role(UDN) == ProtocolRole.AUDIO
-    assert player.state.type == PlayerType.PLAYER
+    assert player.type == PlayerType.PLAYER
 
 
 async def test_a_new_renderer_reads_its_settings_from_its_own_record(

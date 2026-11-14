@@ -330,17 +330,17 @@ The Sync Group provider is:
 
 ## State Properties
 
-The SyncGroupPlayer reads most state from the sync leader: what its protocols report where `.state.*` would route back to the group (see the leader-responsibilities note above), else the leader's state:
+The SyncGroupPlayer reads most state from the sync leader: what its protocols report where the leader's final values would route back to the group (see the leader-responsibilities note above), else the leader's final values:
 
 | Property | Source |
 |----------|--------|
 | `powered` | `_attr_powered` — set by `power()`, the canonical "is this group active" signal |
-| `playback_state` | Sync leader's `state.playback_state` (or IDLE if no leader) |
-| `elapsed_time` | Sync leader's `state.elapsed_time` |
-| `elapsed_time_last_updated` | Sync leader's `state.elapsed_time_last_updated` |
+| `playback_state` | Sync leader's `playback_state` (or IDLE if no leader) |
+| `elapsed_time` | Sync leader's `elapsed_time` |
+| `elapsed_time_last_updated` | Sync leader's `elapsed_time_last_updated` |
 | `current_media` | Reported by the protocol that carries the session (set optimistically in `play_media`) |
 | `active_source` | Reported by the protocol of the leader's device (set optimistically in `play_media`) |
-| `group_members` | Sync leader's reported `state.group_members` (preferred) or internal list |
+| `group_members` | Sync leader's `group_members` (preferred) or internal list |
 | `can_group_with` | Aggregated from all current members' `can_group_with` |
 | `supported_features` | Base features + features inherited from the active sync leader |
 

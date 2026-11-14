@@ -735,7 +735,7 @@ def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
     """Build a minimal AirPlay player mock sufficient for _build_cli_args."""
     player = MagicMock()
     player.protocol_id = "apaabbccddeeff"
-    player.display_name = "Player A"
+    player.name = "Player A"
     player.address = "192.168.1.50"
     player.protocol = StreamingProtocol.AIRPLAY2
     player.protocol_override = None
@@ -826,7 +826,7 @@ def _receiver_filter_provider(
         if player_id not in live_player_names:
             return None
         player = MagicMock()
-        player.display_name = live_player_names[player_id]
+        player.name = live_player_names[player_id]
         return player
 
     prov = AirPlayProvider.__new__(AirPlayProvider)

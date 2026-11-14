@@ -422,7 +422,7 @@ class ChromecastPlayer(PlayerProtocol):
             return
         if self._attr_playback_state != PlaybackState.PLAYING:
             return
-        if (player := self.player) is None or not (current_media := player.state.current_media):
+        if (player := self.player) is None or not (current_media := player.current_media):
             return
         if not (
             (self._attr_current_media and "/flow/" in self._attr_current_media.uri)

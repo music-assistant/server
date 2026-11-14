@@ -80,11 +80,9 @@ class _Harness:
         )
         player = SimpleNamespace(
             player_id=player_id,
-            state=SimpleNamespace(
-                group_members=list(group_members),
-                supported_features=features,
-                type=player_type,
-            ),
+            group_members=list(group_members),
+            supported_features=features,
+            type=player_type,
             resolve_output_protocol=lambda: protocol if resolved else None,
         )
         protocol.player = player

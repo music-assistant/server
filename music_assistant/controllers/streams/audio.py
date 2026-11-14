@@ -5618,13 +5618,13 @@ class StreamsAudio:
             return False
         output_players = [
             member
-            for member_id in player.state.group_members
+            for member_id in player.group_members
             if (member := self.mass.players.get_player(member_id))
         ]
         # a group player that hands DSP to its members has no DSP config of its own
         if not (
-            player.state.type == PlayerType.GROUP
-            and PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
+            player.type == PlayerType.GROUP
+            and PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
         ):
             output_players.append(player)
         # a player whose output is not selected yet has no DSP established, which keeps the limiter

@@ -142,8 +142,8 @@ async def test_a_speaker_attached_again_follows_its_events_and_takes_commands(
     await scenario.settle()
     player = protocol.player
     assert player is not None
-    assert player.state.available is True
-    assert player.state.volume_level == 33
+    assert player.available is True
+    assert player.volume_level == 33
     await scenario.mass.players.cmd_volume_set(player.player_id, 20)
     device.async_set_volume.assert_awaited_once_with(20)
     device.disconnect.assert_not_awaited()

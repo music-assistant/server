@@ -497,7 +497,7 @@ def _name_of_player_with(*protocols: tuple[str, str]) -> str:
         )
     assert player is not None
     player.refresh_state(signal_event=False)
-    return player.state.name
+    return player.name
 
 
 def test_name_of_a_protocol_only_player_prefers_its_cast_name() -> None:
@@ -534,7 +534,7 @@ def test_name_of_a_player_is_the_name_its_device_reports() -> None:
     player, _ = attach_mock(MockProvider("airplay", mass=mass), "ap_123456", "HomePod Mini")
     player.refresh_state(signal_event=False)
 
-    assert player.state.name == "HomePod Mini"
+    assert player.name == "HomePod Mini"
 
 
 def test_player_keeps_its_name_while_its_protocols_report_no_usable_one() -> None:
@@ -544,12 +544,12 @@ def test_player_keeps_its_name_while_its_protocols_report_no_usable_one() -> Non
         MockProvider("squeezelite", mass=mass), "sq_123456", "Kitchen", role=ProtocolRole.AUDIO
     )
     player.refresh_state(signal_event=False)
-    assert player.state.name == "Kitchen"
+    assert player.name == "Kitchen"
 
     protocol._attr_name = "AA:BB:CC:DD:EE:FF"
     player.refresh_state(signal_event=False)
 
-    assert player.state.name == "Kitchen"
+    assert player.name == "Kitchen"
     assert all(
         "AA:BB:CC:DD:EE:FF" not in call.args
         for call in mass.config.set_player_default_name.call_args_list

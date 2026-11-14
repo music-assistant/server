@@ -66,7 +66,7 @@ class OutputsMixin(_PlayerControllerBase):
         """
         if protocol := player.foreign_protocol or player.own_protocol:
             return protocol
-        msg = f"Player {player.display_name} has no protocol that can take this command"
+        msg = f"Player {player.name} has no protocol that can take this command"
         raise PlayerUnavailableError(msg)
 
     async def _clear_active_output_protocol_when_idle(self, player: Player) -> None:
@@ -98,7 +98,7 @@ class OutputsMixin(_PlayerControllerBase):
         if not player.active_output_protocol or player.active_output_protocol == "native":
             return
 
-        new_source = player.state.active_source
+        new_source = player.active_source
 
         # Check if new source is external (not MA-managed)
         if self._is_ma_managed_source(player, new_source):
@@ -128,7 +128,7 @@ class OutputsMixin(_PlayerControllerBase):
             "External source '%s' took over on %s while playing via protocol %s - "
             "clearing active output protocol and ungrouping",
             new_source,
-            player.display_name,
+            player.name,
             protocol_player.provider.domain,
         )
 
@@ -187,7 +187,7 @@ class OutputsMixin(_PlayerControllerBase):
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Selecting output protocol for %s",
-            player.state.name,
+            player.name,
         )
 
         # 1. Check if any output protocol is currently grouped
@@ -195,7 +195,7 @@ class OutputsMixin(_PlayerControllerBase):
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
                 "Selected protocol for %s: %s (grouped)",
-                player.state.name,
+                player.name,
                 protocol.provider.name,
             )
             return protocol, player.get_linked_protocol(protocol.protocol_id)
@@ -221,7 +221,7 @@ class OutputsMixin(_PlayerControllerBase):
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: native (user preference)",
-                        player.state.name,
+                        player.name,
                     )
                     return own, None
             else:
@@ -231,7 +231,7 @@ class OutputsMixin(_PlayerControllerBase):
                             self.logger.log(
                                 VERBOSE_LOG_LEVEL,
                                 "Selected protocol for %s: %s (user preference)",
-                                player.state.name,
+                                player.name,
                                 protocol.provider.name,
                             )
                             return protocol, player.get_linked_protocol(protocol.protocol_id)
@@ -239,9 +239,7 @@ class OutputsMixin(_PlayerControllerBase):
 
         # 3. Use native playback if available
         if own is not None and native_playback:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL, "Selected protocol for %s: native", player.state.name
-            )
+            self.logger.log(VERBOSE_LOG_LEVEL, "Selected protocol for %s: native", player.name)
             return own, None
 
         # 4. Use the player's preferred default protocol domain, if it declares one and a
@@ -256,7 +254,7 @@ class OutputsMixin(_PlayerControllerBase):
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: %s (default domain %s)",
-                        player.state.name,
+                        player.name,
                         protocol.provider.name,
                         default_domain,
                     )
@@ -268,12 +266,12 @@ class OutputsMixin(_PlayerControllerBase):
                 self.logger.log(
                     VERBOSE_LOG_LEVEL,
                     "Selected protocol for %s: %s (priority-based)",
-                    player.state.name,
+                    player.name,
                     protocol.provider.name,
                 )
                 return protocol, player.get_linked_protocol(protocol.protocol_id)
 
-        raise PlayerCommandFailed(f"Player {player.state.name} has no available output protocols")
+        raise PlayerCommandFailed(f"Player {player.name} has no available output protocols")
 
     def _get_grouped_output_protocol(self, player: Player) -> PlayerProtocol | None:
         """

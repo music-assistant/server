@@ -107,9 +107,9 @@ def test_the_display_name_is_the_one_set_in_music_assistant() -> None:
     """The name for a client comes from Music Assistant's player, and is None for an unknown one."""
     provider = MagicMock()
     # the CLI names a client by its slimproto id, which is the id of its protocol
-    provider.mass.players.get_player_by_protocol.side_effect = {
-        "p1": MagicMock(display_name="Kitchen")
-    }.get
+    player = MagicMock()
+    player.name = "Kitchen"
+    provider.mass.players.get_player_by_protocol.side_effect = {"p1": player}.get
 
     assert SqueezelitePlayerProvider._lookup_display_name(provider, "p1") == "Kitchen"
     assert SqueezelitePlayerProvider._lookup_display_name(provider, "other") is None

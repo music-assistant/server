@@ -7,7 +7,7 @@ unchanged across pause/resume, so the debounced media-updated callback never
 fired. Also covers the stale-anchor bug this uncovered: the player's own
 elapsed-time anchor (_attr_elapsed_time_last_updated) is only advanced by the
 audio commit loop, which stops while paused, so it must be fast-forwarded on
-resume - and the snapshot the metadata push actually reads (self.state.current_media)
+resume - and the final value the metadata push actually reads (self.player.current_media)
 must be patched directly, since the queue controller that rebuilds it only
 refreshes its own cached anchor via a 500ms-debounced callback.
 """
@@ -48,7 +48,7 @@ def _player(
     # player/mass), so the snapshot it would normally rebuild is seeded directly here.
     # The fix under test reads/mutates the state of the player, not update_state().
     player._player = SimpleNamespace(  # type: ignore[assignment]
-        state=SimpleNamespace(current_media=current_media, playback_state=player_state)
+        current_media=current_media, playback_state=player_state
     )
     player.update_state = Mock()  # type: ignore[method-assign,misc]
     player.send_current_media_metadata = AsyncMock()  # type: ignore[method-assign]

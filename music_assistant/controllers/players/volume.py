@@ -184,11 +184,11 @@ class VolumeMixin(_PlayerControllerBase):
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
-        if player.state.type == PlayerType.GROUP or player.state.group_members:
+        if player.type == PlayerType.GROUP or player.group_members:
             # dedicated group player or sync leader
             await self._mute_group_members(player, muted)
             return
-        if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
+        if player.synced_to and (sync_leader := self.get_player(player.synced_to)):
             # redirect to sync leader
             await self._mute_group_members(sync_leader, muted)
             return
@@ -219,9 +219,7 @@ class VolumeMixin(_PlayerControllerBase):
 
         mute_control = player.mute_control
         if mute_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support muting"
-            )
+            raise UnsupportedFeaturedException(f"Player {player.name} does not support muting")
 
         # Set mute lock for players in a group
         # This prevents auto-unmute when group volume changes
@@ -270,7 +268,7 @@ class VolumeMixin(_PlayerControllerBase):
         :param group_player: The group player or sync leader.
         :param volume_level: Target volume level (0..100).
         """
-        cur_volume = group_player.state.group_volume
+        cur_volume = group_player.group_volume
         if cur_volume is None:
             return
 
@@ -278,7 +276,7 @@ class VolumeMixin(_PlayerControllerBase):
         for child_player in self.iter_group_members(
             group_player, only_powered=True, exclude_self=False
         ):
-            if child_player.state.volume_control == PLAYER_CONTROL_NONE:
+            if child_player.volume_control == PLAYER_CONTROL_NONE:
                 continue
             children.append(child_player)
         if not children:
@@ -371,10 +369,10 @@ class VolumeMixin(_PlayerControllerBase):
         min_volume, max_volume = self._get_volume_limits(player_id)
         if min_volume == 0 and max_volume == 100:
             return False
-        # state.volume_level is the resolved logical volume, available for all
+        # player.volume_level is the resolved logical volume, available for all
         # volume control types; a device volume outside the configured range
         # surfaces here as a value outside 0-100 (scaling does not clamp)
-        logical_volume = player.state.volume_level
+        logical_volume = player.volume_level
         if logical_volume is None or 0 <= logical_volume <= 100:
             return False
         clamped = max(0, min(100, logical_volume))
@@ -387,11 +385,11 @@ class VolumeMixin(_PlayerControllerBase):
         player = self.get_player(player_id)
         if not player:
             return
-        if player.state.group_members:
+        if player.group_members:
             player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
         for group_player in self._get_player_groups(player):
             group_player.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
-        if player.state.synced_to and (leader := self.get_player(player.state.synced_to)):
+        if player.synced_to and (leader := self.get_player(player.synced_to)):
             leader.extra_data.pop(ATTR_GROUP_VOLUME_SNAPSHOT, None)
 
     def _record_volume_target(self, player: Player, volume_level: int) -> None:
@@ -405,11 +403,11 @@ class VolumeMixin(_PlayerControllerBase):
         target = self._unexpired_volume_target(player)
         if target is not None:
             return target
-        return player.state.volume_level
+        return player.volume_level
 
     def _group_volume_nudge_base(self, group_player: Player) -> int | None:
         """Return the volume level a group volume nudge for the given group steps from."""
-        if not group_player.state.group_members:
+        if not group_player.group_members:
             # an ungrouped player is stepped through its own volume, so it is that
             # volume the command lands on and that a following nudge steps from
             return self._volume_nudge_base(group_player)
@@ -420,7 +418,7 @@ class VolumeMixin(_PlayerControllerBase):
         for child_player in self.iter_group_members(
             group_player, only_powered=True, exclude_self=group_player.type != PlayerType.PLAYER
         ):
-            if child_player.state.volume_control == PLAYER_CONTROL_NONE:
+            if child_player.volume_control == PLAYER_CONTROL_NONE:
                 continue
             if (child_volume := self._volume_nudge_base(child_player)) is None:
                 continue
@@ -451,12 +449,12 @@ class VolumeMixin(_PlayerControllerBase):
         # the group volume lock this resolves to may not share the VOLUME purpose:
         # set_group_volume sets the volume of the members concurrently and a sync leader
         # is a member of its own group, so a group command would wait on its own lock.
-        if player.state.type == PlayerType.GROUP or player.state.group_members:
+        if player.type == PlayerType.GROUP or player.group_members:
             # dedicated group player or sync leader
             return player
-        if player.state.synced_to:
+        if player.synced_to:
             # a synced player follows its sync leader
-            return self.get_player(player.state.synced_to)
+            return self.get_player(player.synced_to)
         return None
 
     async def _set_member_volume(self, player_id: str, volume_level: int) -> None:
@@ -535,10 +533,10 @@ class VolumeMixin(_PlayerControllerBase):
         # player has no volume support at all
         if player.volume_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support volume control"
+                f"Player {player.name} does not support volume control"
             )
         # handle external player control
-        if player_control := self._controls.get(player.state.volume_control):
+        if player_control := self._controls.get(player.volume_control):
             control_name = player_control.name
             self.logger.debug("Redirecting volume command to PlayerControl %s", control_name)
             if not player_control.supports_volume:
@@ -550,7 +548,7 @@ class VolumeMixin(_PlayerControllerBase):
             # raw device volume and does not apply min/max scaling of its own
             await player_control.volume_set(device_volume)
             return
-        if protocol_player := player.attached_protocols.get(player.state.volume_control):
+        if protocol_player := player.attached_protocols.get(player.volume_control):
             # forward the already-scaled device volume: the limits configured on the
             # player are the only ones that apply to the command
             self.logger.debug(
@@ -624,13 +622,13 @@ class VolumeMixin(_PlayerControllerBase):
             # user wants to use fake mute control - so we use volume instead
             self.logger.debug(
                 "Using volume for muting for player %s",
-                player.state.name,
+                player.name,
             )
             if muted:
                 already_muted = bool(player.extra_data.get(ATTR_FAKE_MUTE))
                 if not already_muted:
                     # on a repeated mute command the volume is already 0
-                    player.extra_data[ATTR_PREVIOUS_VOLUME] = player.state.volume_level
+                    player.extra_data[ATTR_PREVIOUS_VOLUME] = player.volume_level
                 await self._handle_cmd_volume_set(player.player_id, 0)
                 # set the flag after the volume command, as that clears it
                 player.extra_data[ATTR_FAKE_MUTE] = True
@@ -673,7 +671,7 @@ class VolumeMixin(_PlayerControllerBase):
             return
 
         # the configured control disappeared after the mute control was resolved
-        raise UnsupportedFeaturedException(f"Player {player.state.name} does not support muting")
+        raise UnsupportedFeaturedException(f"Player {player.name} does not support muting")
 
     async def _hand_over_volume(
         self, player: Player, volume_control: str | None, mute_control: str | None
@@ -691,7 +689,7 @@ class VolumeMixin(_PlayerControllerBase):
         :param mute_control: The mute control that takes over, None when it stays.
         """
         # read both first: what a protocol reports back is published right away
-        volume_level, volume_muted = player.state.volume_level, player.state.volume_muted
+        volume_level, volume_muted = player.volume_level, player.volume_muted
         if (
             volume_control
             and volume_level is not None
@@ -705,7 +703,7 @@ class VolumeMixin(_PlayerControllerBase):
                 self.logger.warning(
                     "Could not give %s the volume of %s: %s",
                     protocol.protocol_id,
-                    player.display_name,
+                    player.name,
                     err,
                 )
         if (
@@ -719,6 +717,6 @@ class VolumeMixin(_PlayerControllerBase):
                 self.logger.warning(
                     "Could not give %s the mute of %s: %s",
                     protocol.protocol_id,
-                    player.display_name,
+                    player.name,
                     err,
                 )

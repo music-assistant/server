@@ -130,9 +130,7 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
 
             current_user = get_current_user()
             if current_user and not has_player_access(current_user, player.player_id, player):
-                msg = (
-                    f"{current_user.username} does not have access to player {player.display_name}"
-                )
+                msg = f"{current_user.username} does not have access to player {player.name}"
                 raise InsufficientPermissions(msg)
             if to_playback_owner and (owner := self._resolve_playback_owner(player)) is not player:
                 self.check_player_access(owner.player_id)
@@ -140,13 +138,13 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
             self.logger.debug(
                 "Handling command %s for player %s (%s)",
                 fn.__name__,
-                player.display_name,
+                player.name,
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
             is_switched_off = player.offline_by_power_control
             if is_switched_off and switched_off == SwitchedOffAction.REFUSE:
-                msg = f"Player {player.display_name} is switched off"
+                msg = f"Player {player.name} is switched off"
                 raise PlayerUnavailableError(msg)
             if is_switched_off and switched_off in (
                 SwitchedOffAction.IGNORE,
@@ -157,7 +155,7 @@ def handle_player_command[PlayerControllerT: "_PlayerControllerBase", **P, R](
                 self.logger.debug(
                     "Ignoring command %s for player %s: it is switched off",
                     fn.__name__,
-                    player.display_name,
+                    player.name,
                 )
                 return
 
@@ -210,6 +208,6 @@ async def wait_for_power_on(
     except TimeoutError:
         logger.debug(
             "Player %s did not report powered on within %s seconds",
-            player.state.name,
+            player.name,
             timeout,
         )

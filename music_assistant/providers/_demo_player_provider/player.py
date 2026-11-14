@@ -411,7 +411,7 @@ class DemoPlayer(PlayerProtocol):
         # OPTIONAL
         # this method is optional and should be implemented if you need to handle
         # any logic once the player the device belongs to is known (self.player).
-        self.logger.info("%s attached to player %s", self.name, player.display_name)
+        self.logger.info("%s attached to player %s", self.name, player.name)
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""

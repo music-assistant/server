@@ -272,7 +272,7 @@ async def test_regroup_supersedes_pending_resume() -> None:
     player._attr_playback_state = PlaybackState.PLAYING
     # the protocol is attached to a player with an id of its own, whose queue plays
     player._player = MagicMock(player_id="pl_leader")
-    player._player.state.current_media = PlayerMedia(uri="fake://x")
+    player._player.current_media = PlayerMedia(uri="fake://x")
     use_real_create_task(mass)
     # the member as the slimproto client of the group and as the protocol it is attached as
     member = MagicMock()

@@ -83,8 +83,8 @@ def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     player.player.display_name = player_id
     player.player.mass = player.mass
     player.player.logger = logging.getLogger("test.airplay.announce")
-    player.player.state.active_group = None
-    player.player.state.volume_level = 30
+    player.player.active_group = None
+    player.player.volume_level = 30
     player.has_live_audio = stream is not None
     player.stream = stream
     player._lock = asyncio.Lock()
@@ -374,7 +374,7 @@ async def test_announcement_volume_lands_on_the_player() -> None:
     the command travels through the controller to the player, on the player's scale.
     """
     (member,) = _make_playing_group(_make_stream())
-    member.player.state.volume_level = 20
+    member.player.volume_level = 20
 
     with _timeline(member):
         await announce.play_announcement(member, _make_announcement(), 55)
@@ -420,16 +420,16 @@ def test_member_duck_compensates_the_volume_bump() -> None:
     down shallows it symmetrically, and without a bump the base duck applies.
     """
     member = _make_player("m")
-    member.player.state.volume_level = 38
+    member.player.volume_level = 38
     assert announce._member_duck_db(member, 61) == pytest.approx(-24.9)
     assert announce._member_duck_db(member, 18) == pytest.approx(-12.0)
     assert announce._member_duck_db(member, None) == pytest.approx(-18.0)
     assert announce._member_duck_db(member, 38) == pytest.approx(-18.0)
     # extreme bumps clamp to the binary's usable range (never boost the music)
-    member.player.state.volume_level = 0
+    member.player.volume_level = 0
     assert announce._member_duck_db(member, 100) == pytest.approx(-48.0)
     assert announce._member_duck_db(member, 0) == pytest.approx(-18.0)
-    member.player.state.volume_level = 100
+    member.player.volume_level = 100
     assert announce._member_duck_db(member, 0) == pytest.approx(0.0)
 
 
@@ -438,7 +438,7 @@ def test_member_duck_compensates_the_volume_target_bump() -> None:
     member = _make_player("child")
     # the receiver's own level is not what the announcement volume moves
     member.volume_level = 100
-    member.player.state.volume_level = 38
+    member.player.volume_level = 38
 
     assert announce._member_duck_db(member, 61) == pytest.approx(-24.9)
 
@@ -452,7 +452,7 @@ def test_member_duck_compensates_the_bump_the_device_actually_gets() -> None:
     duck deepened by that delta would bury it.
     """
     member = _make_player("m")
-    member.player.state.volume_level = 30
+    member.player.volume_level = 30
     # max_volume 60: logical 30 lands on device 18, logical 55 on device 33
     member.mass.players.scale_volume_to_device = MagicMock(
         side_effect=lambda _player_id, level: (level * 60) // 100
@@ -586,7 +586,7 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
     render = _make_render()
     for member in members:
         member.provider = provider
-        member.player.state.active_group = "syncgroup_1"
+        member.player.active_group = "syncgroup_1"
         if member is not leader:
             member.synced_to = leader.protocol_id
         member.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
@@ -628,7 +628,7 @@ async def test_group_entity_session_leader_announces_alone() -> None:
     members = _make_playing_group(*streams)
     leader = members[0]
     # the group state lives on the player the protocol renders for
-    leader.player.state.active_group = "syncgroup_1"
+    leader.player.active_group = "syncgroup_1"
     members[1].synced_to = leader.protocol_id
 
     await announce.play_announcement(leader, _make_announcement(), None)

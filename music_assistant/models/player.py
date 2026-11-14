@@ -631,7 +631,7 @@ class Player:
             player_id=player_id,
             provider=self.provider_id,
             type=self.reported_type,
-            name=self.display_name,
+            name=self._display_name,
             available=False,
             device_info=self._device_info,
             enabled=self._config.enabled,
@@ -984,22 +984,6 @@ class Player:
         """Return the translation owner namespace ("provider.<domain>") of the player."""
         return f"provider.{self.provider_id.split('--', maxsplit=1)[0]}"
 
-    @cached_property
-    def display_name(self) -> str:
-        """Return the (FINAL) display name of the player."""
-        if custom_name := self._config.name:
-            # always prefer the custom name over the default name
-            return custom_name
-        if name := self._followed_name() or self._config.default_name:
-            return name
-        # a new device that reports nothing better is shown by the name it reports,
-        # also while it is away
-        return (
-            next((p.name for p in self._protocols.values() if p.name), None)
-            or self._stored_protocol_name()
-            or self.player_id
-        )
-
     @property
     def available_for_playback(self) -> bool:
         """
@@ -1131,13 +1115,13 @@ class Player:
                 protocol_name = protocol.provider.name
             self.logger.info(
                 "Setting active output protocol on %s to %s",
-                self.display_name,
+                self.name,
                 protocol_name,
             )
         else:
             self.logger.info(
                 "Clearing active output protocol on %s",
-                self.display_name,
+                self.name,
             )
         self._active_output_protocol = protocol_id
         self.update_state()
@@ -1380,7 +1364,7 @@ class Player:
         self._state, effects = derive_player_state(self._collect_state_inputs(reachable))
         self._foreign_protocol_id = effects.foreign_protocol_id
         if effects.clear_active_output:
-            self.logger.info("Clearing active output protocol on %s", self.display_name)
+            self.logger.info("Clearing active output protocol on %s", self.name)
             self._active_output_protocol = None
         # track stop called state
         if effects.left_idle:
@@ -1710,11 +1694,11 @@ class Player:
 
     def __str__(self) -> str:
         """Return a string representation of the Player."""
-        return f"Player {self.display_name} ({self.player_id})"
+        return f"Player {self.name} ({self.player_id})"
 
     def __repr__(self) -> str:
         """Return a string representation of the Player."""
-        return f"<Player name={self.display_name} id={self.player_id} available={self.available}>"
+        return f"<Player name={self.name} id={self.player_id} available={self.available}>"
 
     def __eq__(self, other: object) -> bool:
         """Check equality of two Player objects."""
@@ -1738,6 +1722,22 @@ class Player:
             if protocol.available and self._roles[protocol_id] != ProtocolRole.CONTROL:
                 return True
         return False
+
+    @cached_property
+    def _display_name(self) -> str:
+        """Return the name the player is published with."""
+        if custom_name := self._config.name:
+            # always prefer the custom name over the default name
+            return custom_name
+        if name := self._followed_name() or self._config.default_name:
+            return name
+        # a new device that reports nothing better is shown by the name it reports,
+        # also while it is away
+        return (
+            next((p.name for p in self._protocols.values() if p.name), None)
+            or self._stored_protocol_name()
+            or self.player_id
+        )
 
     @property
     def _device_info(self) -> DeviceInfo:
@@ -2417,7 +2417,7 @@ class Player:
             now=time.time(),
             previous_state=self._state,
             enabled=self._config.enabled,
-            name=self.display_name,
+            name=self._display_name,
             device_name=self._followed_name(),
             default_name=self._config.default_name,
             hide_in_ui=self._hide_in_ui,

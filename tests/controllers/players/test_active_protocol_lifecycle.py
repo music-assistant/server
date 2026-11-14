@@ -165,7 +165,7 @@ class TestPlayMediaProtocolSelection:
         native._attr_playback_state = PlaybackState.PLAYING
         mock_mass.config.get_player_object_config = AsyncMock(return_value=player.config)
         await controller.unregister("proto_1")
-        assert player.state.playback_state == PlaybackState.PLAYING
+        assert player.playback_state == PlaybackState.PLAYING
         media = PlayerMedia(uri="http://test/stream")
 
         await controller._handle_play_media(player.player_id, media)
@@ -275,7 +275,7 @@ class TestGroupPlayMediaPower:
         group_player.refresh_state(signal_event=False)
         for player in (leader, display):
             player.refresh_state(signal_event=False)
-        assert leader.state.can_group_with == {"display"}
+        assert leader.can_group_with == {"display"}
 
         snapshot = object()
         target.snapshot = snapshot  # type: ignore[attr-defined]
@@ -307,9 +307,9 @@ class TestGroupPlayMediaPower:
 
         assert group._attr_powered is True
         assert group.sync_leader is leader
-        assert leader.state.active_group == "group"
+        assert leader.active_group == "group"
         assert group._attr_group_members == ["leader", "display"]
-        assert group_player.state.group_members == ["leader"]
+        assert group_player.group_members == ["leader"]
         assert target.play_media_calls == []
         assert events == ["clear", "set_members", "play", "finish"]
         assert group._pending_content_takeover is None

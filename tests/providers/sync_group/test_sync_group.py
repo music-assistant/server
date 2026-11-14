@@ -365,7 +365,7 @@ class TestProtocolAwareLeaderSelection:
         switched_off = _make_member(mass, "switched_off")
         # clients still see it as available (and off), the device itself is offline
         _set_reachable(switched_off, False)
-        assert switched_off.state.available
+        assert switched_off.available
         player_b = _make_member(mass, "player_b")
         sgp._attr_group_members = ["switched_off", "player_b"]
 
@@ -1348,7 +1348,7 @@ class TestCommandOnAMemberOfASyncGroup:
         for player in (leader, group.player, member):
             assert player is not None
             player.refresh_state(signal_event=False)
-        assert member.state.active_group == _group_id(group)
+        assert member.active_group == _group_id(group)
         waits = record_lock_waits(players)
 
         await getattr(players, command)("B")
@@ -1367,7 +1367,7 @@ class TestCommandOnAMemberOfASyncGroup:
         child.own_protocol._attr_synced_to = "sonos_L"  # type: ignore[union-attr]
         for player in (leader, child):
             player.refresh_state(signal_event=False)
-        assert child.state.synced_to == "L"
+        assert child.synced_to == "L"
         waits = record_lock_waits(players)
 
         await getattr(players, command)("B")
@@ -1513,7 +1513,7 @@ class TestRejoinLeavesABusyMemberAlone:
         await group._rejoin_members()
 
         join.assert_awaited_once()
-        assert member.state.active_group == _group_id(group)
+        assert member.active_group == _group_id(group)
 
 
 def _group_on_sendspin_with_an_airplay_member_back(
@@ -1590,8 +1590,8 @@ def _group_on_sendspin_with_an_airplay_member_back(
     group.update_state = MagicMock()  # type: ignore[method-assign,misc]
     _queue_resume_plays(players)
     _refresh()
-    assert a.state.playback_state == PlaybackState.PLAYING
-    assert a.state.active_group == _group_id(group)
+    assert a.playback_state == PlaybackState.PLAYING
+    assert a.active_group == _group_id(group)
     assert group._missing_members(a) == ["C"]
     return players, group, a, b, c
 
@@ -1605,7 +1605,7 @@ class TestRejoinThatMovesTheGroupToAnotherProtocol:
     ) -> None:
         """Assert the group plays on A over AirPlay again, with B and C following."""
         assert a.active_output_protocol == "airplay_A"
-        assert a.state.playback_state == PlaybackState.PLAYING
+        assert a.playback_state == PlaybackState.PLAYING
         assert _protocol(a, "sendspin").playback_state == PlaybackState.IDLE
         assert set(_protocol(a, "airplay").group_members) == {"airplay_A", "airplay_B", "airplay_C"}
         assert c.active_output_protocol == "airplay_C"
@@ -1651,7 +1651,7 @@ class TestRejoinThatMovesTheGroupToAnotherProtocol:
         assert a.active_output_protocol == "sendspin_A"
         assert b.active_output_protocol == "sendspin_B"
         assert c.active_output_protocol is None
-        assert a.state.playback_state == PlaybackState.PLAYING
+        assert a.playback_state == PlaybackState.PLAYING
         assert _protocol(a, "sendspin").group_members == ["sendspin_A", "sendspin_B"]
         assert _protocol(a, "airplay").group_members == []
         for player in (a, b, c):
@@ -1680,7 +1680,7 @@ class TestMemberAddedToTheLeaderByHand:
     def _assert_plays_on_airplay_with_every_member(a: Player, c: Player) -> None:
         """Assert the group plays on A over AirPlay again, with B and C following."""
         assert a.active_output_protocol == "airplay_A"
-        assert a.state.playback_state == PlaybackState.PLAYING
+        assert a.playback_state == PlaybackState.PLAYING
         assert _protocol(a, "sendspin").playback_state == PlaybackState.IDLE
         assert set(_protocol(a, "airplay").group_members) == {"airplay_A", "airplay_B", "airplay_C"}
         assert c.active_output_protocol == "airplay_C"
@@ -2311,7 +2311,7 @@ def test_group_media_uses_active_session(active_output: str | None) -> None:
 
     expected = bridge if active_output == "sendspin_leader" else native
     assert group.current_media is expected.current_media
-    assert group.current_media is not leader.state.current_media
+    assert group.current_media is not leader.current_media
 
 
 class TestIdleGraceTimer:
@@ -2934,9 +2934,9 @@ class TestSupportedFeaturesFromActiveMembers:
         group = sgp.player
         assert group is not None
         group.update_state(signal_event=False)
-        assert PlayerFeature.VOLUME_SET in group.state.supported_features
-        assert PlayerFeature.VOLUME_MUTE in group.state.supported_features
-        assert group.state.group_volume == 40
+        assert PlayerFeature.VOLUME_SET in group.supported_features
+        assert PlayerFeature.VOLUME_MUTE in group.supported_features
+        assert group.group_volume == 40
 
     def test_playback_features_stay_bound_to_the_sync_leader(self) -> None:
         """Enqueue, gapless and DSP come from the leader only; a member cannot add them."""

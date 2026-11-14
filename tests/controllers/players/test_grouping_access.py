@@ -136,7 +136,7 @@ async def test_grouping_another_player_is_refused(
         await command(controller)
 
     _assert_unchanged(controller)
-    assert all(not p.state.group_members for p in controller._players.values())
+    assert all(not p.group_members for p in controller._players.values())
 
 
 async def test_removing_a_player_from_another_players_group_is_refused(
@@ -161,8 +161,8 @@ async def test_removing_several_players_needs_access_to_each_of_them(
         await _set_members("c", remove=["a", "b"])(controller)
 
     _assert_unchanged(controller)
-    assert controller._players["a"].state.synced_to == "c"
-    assert controller._players["b"].state.synced_to == "c"
+    assert controller._players["a"].synced_to == "c"
+    assert controller._players["b"].synced_to == "c"
 
 
 @pytest.mark.parametrize(
@@ -183,7 +183,7 @@ async def test_a_synced_player_the_user_can_not_use_stays_synced(
         await command(controller)
 
     _assert_unchanged(controller)
-    assert controller._players["b"].state.synced_to == "c"
+    assert controller._players["b"].synced_to == "c"
 
 
 @pytest.mark.parametrize(
@@ -199,7 +199,7 @@ async def test_own_player_joins_a_group_the_user_can_not_use_through_a_member(
 ) -> None:
     """Adding a player of one's own through a member of a group player is passed on to it."""
     _capture(controller, "a", "b")
-    assert controller._players["a"].state.active_group == "g"
+    assert controller._players["a"].active_group == "g"
 
     with as_user(["a", "c"]):
         await command(controller)
@@ -224,7 +224,7 @@ async def test_removing_another_member_of_a_group_the_user_can_not_use_is_refuse
         await _set_members("a", add=add, remove=["b"])(controller)
 
     _assert_unchanged(controller)
-    assert set(controller._players["g"].state.group_members) == {"a", "b"}
+    assert set(controller._players["g"].group_members) == {"a", "b"}
 
 
 @pytest.mark.parametrize(
@@ -252,7 +252,7 @@ async def test_own_synced_player_leaves_a_group_the_user_can_not_use(
     """A user may take their own player out of a group player while it is synced in it."""
     _sync(controller, "c", "a")
     _capture(controller, "c", "a")
-    assert controller._players["a"].state.synced_to == "c"
+    assert controller._players["a"].synced_to == "c"
 
     with as_user(["a"]):
         await _set_members("a", remove=["a"])(controller)
@@ -353,7 +353,7 @@ def _capture_static(controller: PlayerController, power_control: bool) -> MockPr
         protocol.stop = AsyncMock()  # type: ignore[method-assign]
     for player_id in ("g", "a"):
         controller._players[player_id].update_state(force_update=True, signal_event=False)
-    assert controller._players["a"].state.active_group == "g"
+    assert controller._players["a"].active_group == "g"
     return group_protocol
 
 
@@ -423,7 +423,7 @@ async def test_static_member_the_user_can_not_use_is_refused(
 
     group.power.assert_not_awaited()  # type: ignore[attr-defined]
     member.power.assert_not_awaited()  # type: ignore[attr-defined]
-    assert set(controller._players["g"].state.group_members) == {"a", "b"}
+    assert set(controller._players["g"].group_members) == {"a", "b"}
 
 
 async def test_own_dynamic_member_leaves_its_group_only(controller: PlayerController) -> None:

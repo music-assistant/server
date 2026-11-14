@@ -72,13 +72,11 @@ def _player_reports(
         resolve_output_protocol=lambda: SimpleNamespace(
             current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id=item_id, uri=None)
         ),
-        state=SimpleNamespace(
-            name="Sonos",
-            available=True,
-            playback_state=state,
-            corrected_elapsed_time=elapsed,
-            group_members=[],
-        ),
+        name="Sonos",
+        available=True,
+        playback_state=state,
+        corrected_elapsed_time=elapsed,
+        group_members=[],
     )
     ctrl._update_queue_from_player(player)  # type: ignore[arg-type]
 

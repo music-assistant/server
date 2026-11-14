@@ -384,7 +384,7 @@ class MediaAssistantPlayer(PlayerProtocol):
 
                 if (
                     self.player is None
-                    or not (current_media := self.player.state.current_media)
+                    or not (current_media := self.player.current_media)
                     or self._attr_playback_state != PlaybackState.PLAYING
                 ):
                     return

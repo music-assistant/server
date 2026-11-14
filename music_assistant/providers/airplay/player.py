@@ -1049,7 +1049,7 @@ class AirPlayPlayer(PlayerProtocol):
         """Handle callback when the current media of the player is updated."""
         if not self.stream or not self.stream.running:
             return
-        metadata = self.player.state.current_media if self.player else None
+        metadata = self.player.current_media if self.player else None
         if not metadata:
             return
         progress = int(metadata.corrected_elapsed_time or 0)

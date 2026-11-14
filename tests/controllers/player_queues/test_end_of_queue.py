@@ -63,9 +63,7 @@ def _controller(*, player_available: bool = True) -> tuple[PlayerQueuesControlle
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)
     ctrl.mass.players.get_player = Mock(
-        return_value=MagicMock(
-            state=MagicMock(playback_state=PlaybackState.IDLE), offline_by_power_control=False
-        )
+        return_value=MagicMock(playback_state=PlaybackState.IDLE, offline_by_power_control=False)
         if player_available
         else None
     )

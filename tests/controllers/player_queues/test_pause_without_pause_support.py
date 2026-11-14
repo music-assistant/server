@@ -92,7 +92,7 @@ def _playback_state(player: Player) -> PlaybackState:
 
     Read through a call, so a check after a state change is not narrowed by an earlier one.
     """
-    return player.state.playback_state
+    return player.playback_state
 
 
 def _take_pause_watcher(ctrl: PlayerQueuesController) -> Coroutine[Any, Any, None]:

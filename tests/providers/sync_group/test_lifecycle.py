@@ -80,15 +80,15 @@ async def test_a_new_group_gets_a_player_of_its_own(scenario: Scenario) -> None:
     group = await _create_group(scenario, members, dynamic=False)
 
     assert group.player_id.startswith(PLAYER_ID_PREFIX)
-    assert group.state.type == PlayerType.GROUP
-    assert group.display_name == "Group Z"
+    assert group.type == PlayerType.GROUP
+    assert group.name == "Group Z"
     protocol = _group_protocol(scenario, group.player_id)
     assert protocol.protocol_id != group.player_id
     config = scenario.mass.config
     assert config.get_protocol_value(protocol.protocol_id, CONF_GROUP_MEMBERS) == members
     assert protocol.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS) is False
     assert config.get_player_value(group.player_id, CONF_GROUP_MEMBERS) is None
-    assert group.state.static_group_members == members
+    assert group.static_group_members == members
 
 
 async def test_a_new_group_leaves_out_a_member_that_still_needs_setup(scenario: Scenario) -> None:
@@ -98,7 +98,7 @@ async def test_a_new_group_leaves_out_a_member_that_still_needs_setup(scenario: 
 
     group = await _create_group(scenario, members, dynamic=False)
 
-    assert group.state.static_group_members == members[:1]
+    assert group.static_group_members == members[:1]
 
 
 async def test_a_new_group_advertises_power_with_the_fake_power_control(
@@ -112,7 +112,7 @@ async def test_a_new_group_advertises_power_with_the_fake_power_control(
     await scenario.configure_player(group.player_id, **{CONF_POWER_CONTROL: PLAYER_CONTROL_FAKE})
 
     assert PlayerFeature.POWER in protocol.supported_features
-    assert PlayerFeature.POWER in group.state.supported_features
+    assert PlayerFeature.POWER in group.supported_features
 
 
 async def test_a_new_group_comes_back_with_its_members_after_a_restart(
@@ -164,8 +164,8 @@ async def test_a_new_group_is_announced_with_its_members(scenario: Scenario) -> 
         if event == EventType.PLAYER_ADDED and isinstance(data, Player):
             announced.append(
                 (
-                    list(data.state.group_members),
-                    PlayerFeature.SET_MEMBERS in data.state.supported_features,
+                    list(data.group_members),
+                    PlayerFeature.SET_MEMBERS in data.supported_features,
                 )
             )
         signal_event(event, object_id, data)
@@ -201,8 +201,8 @@ async def test_discovery_attaches_a_group_that_is_stored_without_a_player(
     assert protocol is not None
     assert protocol.player is not None
     assert protocol.player.player_id.startswith(PLAYER_ID_PREFIX)
-    assert protocol.player.display_name == "Group Y"
-    assert protocol.player.state.static_group_members == members
+    assert protocol.player.name == "Group Y"
+    assert protocol.player.static_group_members == members
 
 
 async def test_discovery_leaves_an_attached_group_alone(scenario: Scenario) -> None:

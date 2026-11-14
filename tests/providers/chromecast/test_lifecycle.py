@@ -304,8 +304,8 @@ async def test_a_cast_device_attached_again_follows_its_status_and_takes_command
     await scenario.settle()
     player = protocol.player
     assert player is not None
-    assert player.state.available is True
-    assert player.state.volume_level == 42
+    assert player.available is True
+    assert player.volume_level == 42
     await scenario.mass.players.cmd_volume_set(player.player_id, 30)
     client.set_volume.assert_called_once_with(0.3)
     client.disconnect.assert_not_called()

@@ -441,7 +441,7 @@ class SonosPlayer(PlayerProtocol):
         if self.client.player.is_passive:
             self.logger.debug("Ignore PAUSE command: Player is synced to another player.")
             return
-        active_source = self.player.state.active_source if self.player is not None else None
+        active_source = self.player.active_source if self.player is not None else None
         if active_source and self.mass.player_queues.get(active_source):
             # Sonos seems to be bugged when playing our queue tracks and we send pause,
             # it can't resume the current track and simply aborts/skips it
