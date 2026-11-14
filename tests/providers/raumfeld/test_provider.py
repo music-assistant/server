@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import aiohttp
 import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, ResourceBusyError
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
@@ -2477,6 +2477,8 @@ def _registering_provider(
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
     registry = {player.player_id: player for player in registered}
+    for player in registered:
+        player.mass = mass
     players = mass.players
     players.iter_players.side_effect = lambda **_: list(registry.values())
     players.get_player.side_effect = registry.get
@@ -2484,7 +2486,14 @@ def _registering_provider(
     async def register(player: RaumfeldPlayer) -> None:
         registry[player.player_id] = player
 
+    async def replace_device(
+        player: RaumfeldPlayer, identifiers: dict[IdentifierType, str]
+    ) -> None:
+        player.device_info.identifiers.clear()
+        player.device_info.identifiers.update(identifiers)
+
     players.register = AsyncMock(side_effect=register)
+    players.replace_device = AsyncMock(side_effect=replace_device)
     return provider, registry
 
 
@@ -2497,6 +2506,7 @@ def _registered(room: str, player_id: str) -> RaumfeldPlayer:
     player._playback_generation = 0
     player._attr_device_info = DeviceInfo(model="Raumfeld One S", manufacturer="Teufel")
     player._line_in = None
+    player._renderer_uuid = None
     return player
 
 
@@ -2602,6 +2612,51 @@ async def test_a_room_whose_speaker_is_swapped_shows_its_new_speaker() -> None:
     assert marshall.device_info.model == "Raumfeld One M"
     version.assert_awaited_once_with("Marshall")
     assert marshall.device_info.software_version == "2.22.0"
+
+
+async def test_a_room_whose_speaker_is_swapped_is_linked_to_its_new_speaker() -> None:
+    """The player a room keeps names its new speaker, so that speaker's outputs link to it."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    await provider._sync_rooms()
+    marshall = registry["raumfeld_d83addda8e62"]
+    assert marshall.device_info.identifiers == {
+        IdentifierType.UUID: "pi4",
+        IdentifierType.IP_ADDRESS: "192.168.1.31",
+    }
+    replace_device = cast("AsyncMock", cast("MagicMock", provider.mass).players.replace_device)
+
+    await provider._sync_rooms()
+    replace_device.assert_not_awaited()
+
+    _place_speakers(provider, {"Marshall": ("uuid:5e1d", "uuid:pi3")})
+    await provider._sync_rooms()
+
+    replace_device.assert_awaited_once_with(
+        marshall, {IdentifierType.UUID: "pi3", IdentifierType.IP_ADDRESS: "192.168.1.44"}
+    )
+    assert marshall.device_info.identifiers == {
+        IdentifierType.UUID: "pi3",
+        IdentifierType.IP_ADDRESS: "192.168.1.44",
+    }
+
+
+async def test_a_room_whose_speaker_got_another_address_keeps_its_links() -> None:
+    """The same speaker under a new IP address only updates the address the room shows."""
+    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    await provider._sync_rooms()
+    marshall = registry["raumfeld_d83addda8e62"]
+    replace_device = cast("AsyncMock", cast("MagicMock", provider.mass).players.replace_device)
+
+    await marshall.set_renderer("pi4", "192.168.1.32")
+    # a renderer that was not read keeps the speaker the room is linked to
+    await marshall.set_renderer("pi4", None)
+    await marshall.set_renderer(None, None)
+
+    replace_device.assert_not_awaited()
+    assert marshall.device_info.identifiers == {
+        IdentifierType.UUID: "pi4",
+        IdentifierType.IP_ADDRESS: "192.168.1.32",
+    }
 
 
 async def test_a_room_read_through_another_speaker_offers_that_speakers_line_in() -> None:

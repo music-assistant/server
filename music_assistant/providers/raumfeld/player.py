@@ -307,6 +307,7 @@ class RaumfeldPlayer(Player):
         # native player to the same renderer's DLNA/Chromecast/Sendspin representation
         # instead of showing them as duplicate players.
         renderer_uuid, renderer_ip = provider.resolve_room_renderer(room)
+        self._renderer_uuid = renderer_uuid
         # (stream url, title) of this room's analog Line-In input, if it has one
         self._line_in: tuple[str, str] | None = provider.line_in(renderer_uuid)
         if renderer_uuid:
@@ -430,6 +431,28 @@ class RaumfeldPlayer(Player):
             return
         self._attr_device_info.model = model
         self.update_state()
+
+    async def set_renderer(self, renderer_uuid: str | None, renderer_ip: str | None) -> None:
+        """
+        Link this room to the speaker it plays through now, keeping the known one if unread.
+
+        :param renderer_uuid: The UUID of the room's renderer, or ``None`` if it is unknown.
+        :param renderer_ip: The IP address of the room's renderer, or ``None`` if it is unknown.
+        """
+        if renderer_uuid is None:
+            return
+        if renderer_uuid == self._renderer_uuid:
+            # the same speaker, which may have got another IP address
+            if renderer_ip and renderer_ip != self.device_info.ip_address:
+                self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, renderer_ip)
+                self.update_state()
+            return
+        self._renderer_uuid = renderer_uuid
+        # another speaker: its DLNA/Chromecast outputs take over from those of the previous one
+        identifiers = {IdentifierType.UUID: renderer_uuid}
+        if renderer_ip:
+            identifiers[IdentifierType.IP_ADDRESS] = renderer_ip
+        await self.mass.players.replace_device(self, identifiers)
 
     def set_line_in(self, line_in: tuple[str, str] | None) -> None:
         """

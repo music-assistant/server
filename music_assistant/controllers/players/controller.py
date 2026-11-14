@@ -1949,6 +1949,36 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             task_id=task_id,
         )
 
+    async def replace_device(self, player: Player, identifiers: dict[IdentifierType, str]) -> None:
+        """
+        Move a registered player over to another physical device.
+
+        For a player that keeps its player_id while the device behind it is replaced (e.g. a
+        speaker swapped into a room): the player gets the identifiers of the new device, the
+        protocol outputs of the previous device are released and those of the new device are
+        linked to it.
+
+        :param player: The registered player whose device was replaced.
+        :param identifiers: The identifiers of the new device, as the provider reports them.
+        """
+        device_info = player.device_info
+        device_info.identifiers.clear()
+        for identifier_type, value in identifiers.items():
+            device_info.add_identifier(identifier_type, value)
+        # the MAC the previous device's IP resolved to would still match its protocols
+        conf_base = f"{CONF_PLAYERS}/{player.player_id}/values"
+        self.mass.config.set(f"{conf_base}/{CONF_CACHED_ARP_MAC}", None)
+        self.mass.config.set(f"{conf_base}/{CONF_REPORTED_MAC}", None)
+        player.extra_data.pop("reported_mac", None)
+        if player.type not in (PlayerType.GROUP, PlayerType.STEREO_PAIR):
+            await self._resolve_mac_addresses(player)
+        if self._players.get(player.player_id) is not player:
+            # unregistered while the MAC was looked up
+            return
+        if player.state.type not in (PlayerType.PROTOCOL, PlayerType.GROUP):
+            self._relink_protocols_to_replaced_device(player)
+        player.update_state()
+
     async def unregister(
         self,
         player_id: str,
