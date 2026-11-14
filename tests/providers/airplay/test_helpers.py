@@ -14,6 +14,9 @@ from music_assistant.providers.airplay.helpers import (
     default_buffer_depth,
     get_cli_binary,
     get_decoded_property,
+    get_model_info,
+    is_apple_device,
+    is_apple_tv,
     probe_audio_formats,
     serialize_txt_records,
     supports_airplay2,
@@ -271,3 +274,13 @@ def test_default_buffer_depth_family_table() -> None:
     assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 0
     assert default_buffer_depth("Sonos", "Era 100", "p20.96.0-79160") == 0
     assert default_buffer_depth("Apple Inc.", "AppleTV11,1", None) == 0
+
+
+def test_home_accessory_is_recognised_as_apple_receiver() -> None:
+    """HomeAccessory models (Apple HomeView) are Apple receivers but not Apple TVs."""
+    info = MagicMock()
+    info.decoded_properties = {"model": "HomeAccessory17,1"}
+    manufacturer, model = get_model_info(info)
+    assert (manufacturer, model) == ("Apple", "HomeView")
+    assert is_apple_device(manufacturer, model)
+    assert not is_apple_tv(manufacturer, model)
