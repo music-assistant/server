@@ -248,7 +248,10 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
      then sends one shared audible start instant with an anchor lead
      (400 ms solo / 500 ms warm group / 2500 ms cold group, see
      `AIRPLAY_COLD_GROUP_START_LEAD_MS`); readiness is fully event-driven, so no
-     setup time is guessed and the binary bursts the receiver pre-fill after START
+     setup time is guessed and the binary bursts the receiver pre-fill after START.
+     A cold group whose members all stream buffered first anchors far out
+     (`AIRPLAY_ANCHOR_SEAT_LEAD_MS`), so a receiver that accepts its anchor late
+     costs the others no audio already sent
 
 2. **Client Setup** (per player, `_start_client()` method)
    - Creates an `AirPlayStream` instance with the player's PCM format
@@ -472,7 +475,11 @@ protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 3. Send one shared `START` (now + 400 ms solo / 500 ms warm group / 2500 ms cold
    group, see `AIRPLAY_COLD_GROUP_START_LEAD_MS`) to every member; readiness is
    event-confirmed so a warm anchor covers only the receiver re-anchor, and the
-   binary bursts the receiver pre-fill from START
+   binary bursts the receiver pre-fill from START. A cold group whose members
+   all stream buffered sends a far-out `START` first
+   (`AIRPLAY_ANCHOR_SEAT_LEAD_MS`) and only commands this instant once every
+   member has accepted that one: audio sent before a re-`START` is skipped on
+   that member, leaving it ahead of the group
 4. **Warm seek / next-track / grouped resume** reuse the live connections: MA
    stops feeding old audio, kills the per-seek ffmpeg (never the persistent
    stdin), sends `ACTION=FLUSH` to every member and awaits `[STATUS] flushed`,
