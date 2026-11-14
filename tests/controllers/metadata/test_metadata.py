@@ -175,40 +175,47 @@ async def test_lyrics_of_a_library_track_refresh_the_stored_item(
     # the minimal server runs no cache database
     mass_minimal.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     mass_minimal.cache.set = AsyncMock()  # type: ignore[method-assign]
-    await mass_minimal.music._setup_database()
-    set_music_source_access(
-        mass_minimal,
-        {"spotify_theirs": ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
-    )
-    with patch.object(mass_minimal, "metadata", MagicMock()):
-        stored = await mass_minimal.music.tracks.add_item_to_library(
-            create_track("spotify_theirs", "t1")
+    try:
+        await mass_minimal.music._setup_database()
+        set_music_source_access(
+            mass_minimal,
+            {
+                "spotify_theirs": ProviderAccess(
+                    owner=owner.user_id, sharing=ProviderSharing.PRIVATE
+                )
+            },
         )
-    refreshing_users: list[User | None] = []
+        with patch.object(mass_minimal, "metadata", MagicMock()):
+            stored = await mass_minimal.music.tracks.add_item_to_library(
+                create_track("spotify_theirs", "t1")
+            )
+        refreshing_users: list[User | None] = []
 
-    async def _refresh(*_: object, **__: object) -> None:
-        refreshing_users.append(get_current_user())
+        async def _refresh(*_: object, **__: object) -> None:
+            refreshing_users.append(get_current_user())
 
-    refresh = AsyncMock(side_effect=_refresh)
-    metadata_controller._update_track_metadata = refresh  # type: ignore[method-assign]
-    crafted = create_track("spotify_theirs", "t1", name="Crafted")
-    crafted.item_id, crafted.provider = stored.item_id, "library"
+        refresh = AsyncMock(side_effect=_refresh)
+        metadata_controller._update_track_metadata = refresh  # type: ignore[method-assign]
+        crafted = create_track("spotify_theirs", "t1", name="Crafted")
+        crafted.item_id, crafted.provider = stored.item_id, "library"
 
-    for user in (member, owner):
-        user_token = current_user.set(user)
-        try:
-            if user is member:
-                # the only source of the track is hidden from the member
-                with pytest.raises(MediaNotFoundError):
-                    await metadata_controller.get_track_lyrics(crafted)
-                refresh.assert_not_awaited()
-            else:
-                assert await metadata_controller.get_track_lyrics(crafted) == (None, None)
-        finally:
-            current_user.reset(user_token)
-    assert refresh.await_args is not None
-    refreshed = refresh.await_args.args[0]
-    assert (refreshed.item_id, refreshed.name) == (stored.item_id, "Test Track")
-    # the refresh fills the household's item, so it runs as the server, not as the caller
-    assert refreshing_users == [None]
-    assert get_current_user() is None
+        for user in (member, owner):
+            user_token = current_user.set(user)
+            try:
+                if user is member:
+                    # the only source of the track is hidden from the member
+                    with pytest.raises(MediaNotFoundError):
+                        await metadata_controller.get_track_lyrics(crafted)
+                    refresh.assert_not_awaited()
+                else:
+                    assert await metadata_controller.get_track_lyrics(crafted) == (None, None)
+            finally:
+                current_user.reset(user_token)
+        assert refresh.await_args is not None
+        refreshed = refresh.await_args.args[0]
+        assert (refreshed.item_id, refreshed.name) == (stored.item_id, "Test Track")
+        # the refresh fills the household's item, so it runs as the server, not as the caller
+        assert refreshing_users == [None]
+        assert get_current_user() is None
+    finally:
+        await mass_minimal.music.close()
