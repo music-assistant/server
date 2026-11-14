@@ -467,7 +467,7 @@ class SonosPlayer(Player):
                 for result in results:
                     self.log_subscription_result(result, "Creating subscription", logging.WARNING)
                 if any(isinstance(result, Exception) for result in results):
-                    raise SonosSubscriptionsFailed
+                    raise SonosSubscriptionsFailed  # noqa: TRY301 - handled by except below
             except SonosSubscriptionsFailed:
                 self.logger.warning("Creating subscriptions failed for %s", self.display_name)
                 # the subscription lock is already held here and is not reentrant

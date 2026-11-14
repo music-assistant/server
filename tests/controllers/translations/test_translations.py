@@ -61,6 +61,7 @@ def _make_controller() -> TranslationController:
     ctrl._locale_files = {}
     ctrl._locale_locks = {}
     ctrl._available_locales = {SOURCE_LANGUAGE}
+    ctrl._provider_strings = {}
     return ctrl
 
 
@@ -534,6 +535,35 @@ def test_setup_flow_finish_library_sync_is_shared() -> None:
         serialized["description"]
         == ctrl._source["common.setup_flow.finish_library_sync.description"]
     )
+
+
+def test_setup_flow_field_errors_are_shared() -> None:
+    """
+    A form field the setup flow engine rejects reads as a message instead of its error slug.
+
+    The engine marks such a field "required" or "invalid_value"; a provider without a message of
+    its own gets the shared one, while a provider that has one keeps it.
+    """
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+
+    def rejected_form(owner: str) -> SetupFlowStep:
+        return SetupFlowStep(
+            flow_id="test",
+            step_id="user",
+            type=FlowStepType.FORM,
+            errors={"username": "required", "port": "invalid_value"},
+            translation_owner=owner,
+        )
+
+    with _active_resolver(ctrl, None):
+        shared_errors = rejected_form("provider.without_own_strings").to_dict()["errors"]
+        owned_errors = rejected_form("provider.sendspin").to_dict()["errors"]
+    assert shared_errors == {
+        "username": "This field is required.",
+        "port": "This value is not valid.",
+    }
+    assert owned_errors["port"] == ctrl._source["provider.sendspin.errors.invalid_value"]
 
 
 def test_config_action_result_localized_serialization() -> None:

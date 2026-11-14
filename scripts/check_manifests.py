@@ -7,6 +7,9 @@ omits one of them — or whose ``domain`` does not match its folder, whose ``typ
 provider type, or whose ``codeowners`` are malformed — only fails once the server tries to load the
 provider. This pre-commit/CI guard scans every provider manifest up front and prints each problem.
 
+A manifest must not contain ``tier``: the server sets it from where the provider loads. An optional
+``support_url`` must be an ``https`` URL with a host.
+
 When invoked with file or folder arguments (as pre-commit does for the changed files) only the
 manifests in scope are validated; with no arguments every provider manifest is scanned.
 
@@ -20,6 +23,7 @@ import json
 import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # ruff: noqa: T201
 
@@ -124,6 +128,10 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
             issues.append(f"'{text_key}' must be a non-empty string")
     if "codeowners" in data:
         issues.extend(_validate_codeowners(data["codeowners"]))
+    if "tier" in data:
+        issues.append("'tier' is set by the server and must not be in the manifest")
+    if "support_url" in data and not _is_https_url(data["support_url"]):
+        issues.append("'support_url' must be an https URL with a host")
     return issues
 
 
@@ -136,6 +144,17 @@ def _validate_codeowners(codeowners: object) -> list[str]:
         for owner in codeowners
         if not (isinstance(owner, str) and owner.startswith("@"))
     ]
+
+
+def _is_https_url(value: object) -> bool:
+    """Return True when ``value`` is an ``https://`` URL with a host."""
+    if not isinstance(value, str):
+        return False
+    try:
+        url = urlsplit(value)
+    except ValueError:
+        return False
+    return url.scheme == "https" and bool(url.hostname)
 
 
 if __name__ == "__main__":

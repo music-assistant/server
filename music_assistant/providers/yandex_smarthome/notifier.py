@@ -290,11 +290,13 @@ class StateNotifier:
                         "errors will be suppressed at debug level until the next "
                         f"successful callback. Body: {body[:200]}",
                     )
-                    raise _CallbackErrorAlreadyLogged(
+                    raise _CallbackErrorAlreadyLogged(  # noqa: TRY301 - re-raised by except below
                         f"State callback failed with HTTP {resp.status}"
                     )
 
-                raise RuntimeError(f"State callback failed with HTTP {resp.status}: {body[:200]}")
+                raise RuntimeError(  # noqa: TRY301 - logged by except below
+                    f"State callback failed with HTTP {resp.status}: {body[:200]}"
+                )
         except asyncio.CancelledError:
             # Cooperative cancellation must propagate untouched.
             raise

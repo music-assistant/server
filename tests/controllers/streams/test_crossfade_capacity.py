@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
+import time
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -55,8 +57,9 @@ def _buffer(duration_available: float, ready: bool, eof: bool = False) -> AudioB
     audio_buffer.is_valid.return_value = True
     audio_buffer.duration_available = duration_available
     audio_buffer.eof = eof
-    audio_buffer.ready = MagicMock()
-    audio_buffer.ready.is_set.return_value = ready
+    audio_buffer.ready = asyncio.Event()
+    if ready:
+        audio_buffer.ready.set()
     return audio_buffer
 
 
@@ -185,6 +188,8 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
     mass.player_queues.index_by_id.return_value = 1
+    # nothing was left to prepare, so the boundary has nothing to wait for
+    mass.player_queues.prepare_next_audio_buffer.return_value = None
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
     audio.select_pcm_format = AsyncMock(return_value=pcm_format)  # type: ignore[method-assign]
@@ -211,11 +216,15 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
         standard_crossfade_duration=8,
     )
 
+    started = time.monotonic()
     output = b"".join([chunk async for chunk in stream])
 
+    assert time.monotonic() - started < 0.5
     assert len(output) == pcm_format.pcm_sample_size * 16
     assert next_item.available
     build.assert_not_awaited()
+    # the missing incoming audio is (re)requested relative to the outgoing item
+    mass.player_queues.prepare_next_audio_buffer.assert_called_once_with("queue-1", "current")
 
 
 @pytest.mark.parametrize("playback_speed", [0.5, 2.0])

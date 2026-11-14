@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
+import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, quote, urlparse
@@ -14,7 +19,13 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
@@ -31,12 +42,31 @@ from soundcloudpy import SoundcloudAsyncAPI
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider, describe_sync_error
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
+CONF_REFRESH_TOKEN = "refresh_token"  # noqa: S105 - config key
+
+# Since the new Soundcloud login flow the web player's access token is a short-lived JWT, which
+# the web player renews with the oauth_refresh_token cookie against this endpoint.
+TOKEN_URL = "https://secure.soundcloud.com/oauth/token"  # noqa: S105 - endpoint url
+# renew the access token this many seconds before it expires
+TOKEN_REFRESH_BUFFER = 300
+TOKEN_REFRESH_RETRY_DELAY = 60
+
+# Soundcloud documents no rate limit for its web api, so stay at a conservative pace
+API_RATE_LIMIT = 4
+API_RATE_PERIOD = 1
+# the tracks endpoint rejects a request for more ids than this
+TRACK_IDS_BATCH_SIZE = 50
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -59,6 +89,60 @@ SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 # Such a track does still advertise plain mp3 transcodings, but requesting one of those returns
 # a 404, so the presence of an encrypted protocol is what tells us the track is unplayable.
 DRM_PROTOCOL_MARKER = "encrypted"
+# 30 second previews (policy SNIP) are served from their own CDN, even for a progressive mp3
+PREVIEW_CDN_HOST = "cf-preview-media.sndcdn.com"
+
+
+class _SoundcloudAPI(SoundcloudAsyncAPI):  # type: ignore[misc]
+    """Soundcloud api client that throttles every request and awaits a hook before it."""
+
+    def __init__(
+        self,
+        auth_token: str,
+        client_id: str,
+        http_session: ClientSession,
+        before_request: Callable[[], Awaitable[None]],
+        logger: logging.Logger,
+    ) -> None:
+        """
+        Initialize the api client.
+
+        :param auth_token: The authorization header value.
+        :param client_id: The Soundcloud client id.
+        :param http_session: The aiohttp session to send the requests with.
+        :param before_request: Coroutine function awaited before each request.
+        :param logger: Logger for the throttling and retry messages.
+        """
+        super().__init__(auth_token, client_id, http_session)
+        self._before_request = before_request
+        self.logger = logger
+        self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
+
+    @throttle_with_retries
+    async def get(
+        self,
+        url: str,
+        headers: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Run the hook, then send the request within the rate limit.
+
+        :param url: The url to request.
+        :param headers: The headers to send along.
+        :param params: The query parameters to add to the url.
+        :raises RetriesExhausted: When Soundcloud keeps rate limiting the request or stays
+            unavailable.
+        """
+        await self._before_request()
+        async with self.http_session.get(url=url, params=params, headers=headers) as response:
+            if response.status == 429:
+                msg = "Soundcloud rate limit reached"
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                raise RateLimited(msg, backoff_time=retry_after)
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
+            return cast("dict[str, Any]", await response.json())
 
 
 class DrmProtectedTrackError(MediaNotFoundError):
@@ -73,8 +157,9 @@ class DrmProtectedTrackError(MediaNotFoundError):
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Awaitable, Callable
 
+    from aiohttp import ClientSession
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
@@ -99,6 +184,8 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
     _me: dict[str, Any]
+    _token_expires_at: int | None = None
+    _token_lock: asyncio.Lock
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -111,11 +198,31 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not client_id or not auth_token:
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
-        self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
+        # the cookie value is often pasted without the prefix the Authorization header needs
+        auth_token = f"OAuth {str(auth_token).strip().removeprefix('OAuth ')}"
+        self._token_expires_at = _token_claims(auth_token).get("exp")
+        self._token_lock = asyncio.Lock()
+        self._soundcloud = _SoundcloudAPI(
+            auth_token,
+            str(client_id),
+            self.mass.http_session,
+            self._ensure_valid_token,
+            self.logger,
+        )
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()
         # the API returns the id as a number, while it is only ever used to build request urls
         self._user_id = str(self._me["id"])
+        self._schedule_token_refresh()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Handle unload/close of the provider.
+
+        :param is_removed: Set to True when the provider is removed from the configuration.
+        """
+        self.mass.cancel_timer(self._token_refresh_task_id)
+        await super().unload(is_removed)
 
     @use_cache(3600 * 48)  # Cache for 48 hours
     async def search(
@@ -328,12 +435,14 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._soundcloud.get_user_details(prov_artist_id)
+        msg = f"Soundcloud artist {prov_artist_id} is not available"
+        if not artist_obj:
+            raise MediaNotFoundError(msg)
         try:
-            if artist_obj:
-                artist = await self._parse_artist(artist_obj)
+            return await self._parse_artist(artist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Skipping artist %s: %s", prov_artist_id, describe_sync_error(error))
-        return artist
+            raise MediaNotFoundError(msg) from error
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_track(self, prov_track_id: str) -> Track:
@@ -351,12 +460,13 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get full playlist details by id."""
         playlist_obj = await self._get_playlist_object(prov_playlist_id)
         try:
-            playlist = await self._parse_playlist(playlist_obj)
+            return await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug(
                 "Skipping playlist %s: %s", prov_playlist_id, describe_sync_error(error)
             )
-        return playlist
+            msg = f"Soundcloud playlist {prov_playlist_id} is not available"
+            raise MediaNotFoundError(msg) from error
 
     async def _get_playlist_object(self, prov_playlist_id: str) -> dict[str, Any]:
         """Get playlist object from Soundcloud API based on playlist ID type."""
@@ -381,18 +491,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if "tracks" not in playlist_obj:
             return result
         drm_protected = 0
-        for index, item in enumerate(playlist_obj["tracks"], 1):
+        tracks = await self._with_full_track_objects(playlist_obj["tracks"])
+        for index, item in enumerate(tracks, 1):
             try:
-                # Skip some ugly "tracks" entries, example:
-                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}
-                if "title" in item:
-                    if track := await self._parse_track(item, index):
-                        result.append(track)
-                # But also try to get the track details if the track is not in the playlist
-                else:
-                    track_details = await self._soundcloud.get_track_details(item["id"])
-                    if track := await self._parse_track(track_details[0], index):
-                        result.append(track)
+                result.append(await self._parse_track(item, index))
             except DrmProtectedTrackError:
                 drm_protected += 1
                 continue
@@ -442,15 +544,16 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         drm_protected = 0
         for item in collection:
-            song = await self._soundcloud.get_track_details(item["id"])
             try:
-                track = await self._parse_track(song[0])
+                track = await self._parse_track(item)
                 tracks.append(track)
             except DrmProtectedTrackError:
                 drm_protected += 1
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Skipping track %s: %s", item["id"], describe_sync_error(error))
+                self.logger.debug(
+                    "Skipping track %s: %s", _item_id(item), describe_sync_error(error)
+                )
                 continue
         if drm_protected:
             self.logger.debug(
@@ -483,15 +586,16 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
         drm_protected = 0
         for item in collection:
-            song = await self._soundcloud.get_track_details(item["id"])
             try:
-                track = await self._parse_track(song[0])
+                track = await self._parse_track(item)
                 tracks.append(track)
             except DrmProtectedTrackError:
                 drm_protected += 1
                 continue
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Skipping track %s: %s", item["id"], describe_sync_error(error))
+                self.logger.debug(
+                    "Skipping track %s: %s", _item_id(item), describe_sync_error(error)
+                )
                 continue
 
         if drm_protected:
@@ -516,23 +620,30 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not track_auth:
             return None
         transcodings = track_info.get("media", {}).get("transcodings", [])
-        # Two passes: prefer progressive mp3, fall back to any mp3 (which may be HLS)
-        for preferred_protocol in ("progressive", None):
-            for transcoding in transcodings:
-                preset = transcoding.get("preset", "")
-                protocol = transcoding.get("format", {}).get("protocol", "")
-                if not preset.startswith("mp3"):
-                    continue
-                if preferred_protocol is not None and protocol != preferred_protocol:
-                    continue
-                stream_url = (
-                    f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
-                    f"&track_authorization={track_auth}"
-                )
-                req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
-                if isinstance(req, dict) and "url" in req:
-                    return str(req["url"])
-        return None
+        # a 30 second preview is only used when the track has no full stream at all
+        preview_url: str | None = None
+        # prefer progressive mp3, then any other mp3 or aac (which may be HLS)
+        for transcoding in sorted(
+            transcodings,
+            key=lambda item: item.get("format", {}).get("protocol") != "progressive",
+        ):
+            if not transcoding.get("preset", "").startswith(("mp3", "aac")):
+                continue
+            if preview_url and transcoding.get("snipped"):
+                continue
+            stream_url = (
+                f"{transcoding['url']}?client_id={self._soundcloud.client_id}"
+                f"&track_authorization={track_auth}"
+            )
+            req = await self._soundcloud.get(stream_url, headers=self._soundcloud.headers)
+            if not isinstance(req, dict) or "url" not in req:
+                continue
+            url = str(req["url"])
+            if transcoding.get("snipped") or urlparse(url).hostname == PREVIEW_CDN_HOST:
+                preview_url = preview_url or url
+                continue
+            return url
+        return preview_url
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -550,7 +661,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # that makes a fresh HTTP request to the stored URL, which may have expired.
         expiration = 30  # conservative default if expiry cannot be determined
         if parsed_qs := parse_qs(urlparse(url).query):
-            for param in ("Expires", "expire"):
+            for param in ("Expires", "expires", "expire"):
                 if expire_ts := parsed_qs.get(param, [None])[0]:
                     expiration = max(30, int(expire_ts) - int(time.time()) - 10)
                     break
@@ -563,7 +674,10 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 content_type=ContentType.UNKNOWN,
             ),
             stream_type=StreamType.HLS
-            if url.startswith("https://cf-hls-media.sndcdn.com")
+            if (
+                url.startswith("https://cf-hls-media.sndcdn.com")
+                or urlparse(url).path.endswith(".m3u8")
+            )
             else StreamType.HTTP,
             path=url,
             can_seek=True,
@@ -681,11 +795,7 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
             },
             position=playlist_position,
         )
-        user_id = track_obj["user"]["id"]
-        user = await self._soundcloud.get_user_details(user_id)
-        artist = await self._parse_artist(user)
-        if artist and artist.item_id not in {x.item_id for x in track.artists}:
-            track.artists.append(artist)
+        track.artists.append(await self._parse_artist(track_obj["user"]))
 
         if track_obj.get("artwork_url"):
             track.metadata.images = UniqueList(
@@ -712,6 +822,27 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         # This is undocumented in their API docs, but was previously
         return artwork_url.replace("large", "t500x500")
 
+    async def _with_full_track_objects(
+        self, track_objs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """
+        Return the given track objects, with each stub replaced by the full track object.
+
+        A stub of a track that Soundcloud no longer returns is kept as is.
+
+        :param track_objs: Raw track objects, of which some may hold little more than an id.
+        """
+        # Soundcloud sends the later tracks of a playlist as stubs like this one:
+        # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}  # noqa: ERA001
+        stub_ids = [str(item["id"]) for item in track_objs if "title" not in item and "id" in item]
+        full_objs: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(stub_ids), TRACK_IDS_BATCH_SIZE):
+            batch = stub_ids[start : start + TRACK_IDS_BATCH_SIZE]
+            details = await self._soundcloud.get_track_details(",".join(batch))
+            if isinstance(details, list):
+                full_objs.update((str(obj.get("id")), obj) for obj in details)
+        return [full_objs.get(str(item.get("id")), item) for item in track_objs]
+
     def _report_skipped_item(
         self, media_type: MediaType, item_obj: dict[str, Any], err: Exception
     ) -> None:
@@ -725,11 +856,117 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         item_id = item_obj.get("id")
         self.report_skipped_sync_item(media_type, str(item_id) if item_id else None, err)
 
+    @property
+    def _token_refresh_task_id(self) -> str:
+        """Return the timer id of the scheduled access token refresh."""
+        return f"soundcloud_token_refresh_{self.instance_id}"
+
+    def _schedule_token_refresh(self) -> None:
+        """Schedule renewing the access token shortly before it expires."""
+        expires_at = self._token_expires_at
+        if not expires_at:
+            # a token from the old login flow does not expire
+            return
+        if not self.get_setup_value(CONF_REFRESH_TOKEN):
+            self.logger.warning(
+                "The Soundcloud access token expires at %s and no refresh token is configured, "
+                "add the oauth_refresh_token cookie to the provider settings to stay signed in",
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(expires_at)),
+            )
+            return
+        delay = max(expires_at - time.time() - TOKEN_REFRESH_BUFFER, 0)
+        self.mass.call_later(
+            delay, self._scheduled_token_refresh, task_id=self._token_refresh_task_id
+        )
+
+    async def _scheduled_token_refresh(self) -> None:
+        """Renew the access token from the timer."""
+        try:
+            async with self._token_lock:
+                await self._refresh_access_token()
+        except LoginFailed as err:
+            self.unload_with_error(err)
+            return
+        except (ClientError, TimeoutError) as err:
+            self.logger.warning("Refreshing the Soundcloud access token failed, retrying: %s", err)
+            self.mass.call_later(
+                TOKEN_REFRESH_RETRY_DELAY,
+                self._scheduled_token_refresh,
+                task_id=self._token_refresh_task_id,
+            )
+
+    async def _ensure_valid_token(self) -> None:
+        """Renew the access token first when it is about to expire."""
+        # the timer alone is not enough: it does not run while the host is asleep
+        if not self._token_expiring():
+            return
+        async with self._token_lock:
+            # a concurrent request may have renewed it while this one waited for the lock
+            if self._token_expiring():
+                await self._refresh_access_token()
+
+    def _token_expiring(self) -> bool:
+        """Return True when the access token expires within the refresh buffer."""
+        expires_at = self._token_expires_at
+        return expires_at is not None and expires_at - time.time() < TOKEN_REFRESH_BUFFER
+
+    async def _refresh_access_token(self) -> None:
+        """Exchange the refresh token for a new access token, and plan its renewal."""
+        refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
+        if not refresh_token:
+            msg = (
+                "The Soundcloud access token expired, sign in again "
+                "or add the oauth_refresh_token cookie to stay signed in"
+            )
+            raise LoginFailed(msg)
+        # the web player refreshes with the client the token was issued to
+        client_id = _token_claims(self._soundcloud.o_auth).get("client_id")
+        async with self.mass.http_session.post(
+            TOKEN_URL,
+            data={
+                "client_id": client_id or self._soundcloud.client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        ) as response:
+            if response.status in (400, 401, 403):
+                msg = f"Soundcloud did not accept the refresh token (status {response.status})"
+                raise LoginFailed(msg)
+            response.raise_for_status()
+            token_data = await response.json()
+        # the refresh token is single use, so store the rotated one before anything else
+        if new_refresh_token := token_data.get("refresh_token"):
+            self._update_setup_data(CONF_REFRESH_TOKEN, new_refresh_token)
+        auth_token = f"OAuth {token_data['access_token']}"
+        self._soundcloud.o_auth = auth_token
+        self._soundcloud.headers["Authorization"] = auth_token
+        self._update_setup_data(CONF_AUTHORIZATION, auth_token)
+        self._token_expires_at = _token_claims(auth_token).get("exp")
+        self.logger.debug("Refreshed the Soundcloud access token")
+        self._schedule_token_refresh()
+
 
 def _item_id(item_obj: Any) -> Any:
     """Return the id of a raw api object, or None if it does not have a readable one."""
     # called from the handlers that log an unusable object, so it must never raise itself
     return item_obj.get("id") if isinstance(item_obj, dict) else None
+
+
+def _token_claims(auth_token: str) -> dict[str, Any]:
+    """
+    Return the claims of a JWT access token, or an empty dict for an opaque token.
+
+    :param auth_token: The authorization value, with or without the "OAuth " prefix.
+    """
+    parts = auth_token.removeprefix("OAuth ").split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        claims = json.loads(payload)
+    except binascii.Error, ValueError:
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 def _is_drm_protected(track_obj: dict[str, Any]) -> bool:

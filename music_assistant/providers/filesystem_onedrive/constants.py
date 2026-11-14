@@ -6,7 +6,7 @@ from typing import Final
 OAUTH_AUTHORIZE_URL: Final[str] = (
     "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
 )
-OAUTH_TOKEN_URL: Final[str] = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+OAUTH_TOKEN_URL: Final[str] = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"  # noqa: S105 - URL
 # read access to all the user's files + a refresh token
 OAUTH_SCOPE: Final[str] = "Files.Read.All offline_access"
 # Microsoft Graph API base URL

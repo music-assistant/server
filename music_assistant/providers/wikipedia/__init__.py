@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import MediaItemMetadata
 
+from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import (
     ThrottlerManager,
@@ -61,6 +62,11 @@ class WikipediaMetadataProvider(MetadataProvider):
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
         return 25
+
+    @property
+    def rate_limited(self) -> bool:
+        """Whether Wikipedia is currently holding requests back with a rate limit."""
+        return self.throttler.cooldown_remaining > 0
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -189,9 +195,7 @@ class WikipediaMetadataProvider(MetadataProvider):
         :param url: Request URL.
         :param params: Optional query parameters.
         """
-        headers = {
-            "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
-        }
+        headers = {"User-Agent": MASS_USER_AGENT}
         try:
             async with self.mass.http_session.get(url, params=params, headers=headers) as response:
                 if response.status == 404:

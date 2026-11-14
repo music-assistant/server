@@ -142,7 +142,7 @@ async def _qr_login(session: SetupSession) -> str:
                 token, target = await _mint_login_token(http_session)
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    raise TimeoutError
+                    raise TimeoutError  # noqa: TRY301 - converted to AbortFlow below
                 try:
                     return await session.progress_until(
                         _poll_until_approved(http_session, token, target),

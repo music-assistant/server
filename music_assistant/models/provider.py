@@ -170,6 +170,17 @@ class Provider:
     ) -> None:
         """Handle UPNP/SSDP discovery callback."""
 
+    async def resolve_image(self, path: str) -> str | bytes | None:
+        """
+        Resolve an image from a provider-specific image path.
+
+        Return the raw image bytes, a string with an http(s) URL or local path that is
+        accessible from the server, or None when there is no image at the path.
+
+        :param path: Provider-specific image path.
+        """
+        return path
+
     @property
     @final
     def type(self) -> ProviderType:

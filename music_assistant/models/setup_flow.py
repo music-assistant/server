@@ -29,10 +29,14 @@ from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepTyp
 from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.setup_flow import SetupFlowStep, TranslationRef
 
+from music_assistant.constants import ENCRYPT_SUFFIX
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.security import contains_encrypted_value
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
+
+    from music_assistant_models.auth import User
 
     from music_assistant.mass import MusicAssistant
 
@@ -127,6 +131,12 @@ class SetupFlowContext:
     setup_data: dict[str, Any] = field(default_factory=dict)
     # values: the target's existing (options) config values, for prefill
     values: dict[str, ConfigValueType] = field(default_factory=dict)
+    # manages_all_sources: whether the caller manages every music source (the server itself
+    # or such a user); false for a user who adds a music source of its own
+    manages_all_sources: bool = True
+    # user: the user who started a provider flow; None when the server started it, and in a
+    # player flow
+    user: User | None = None
 
 
 class SetupSession:
@@ -192,6 +202,7 @@ class SetupSession:
         last_step: bool | None = None,
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
     ) -> dict[str, ConfigValueType]:
         """
         Show a form to the user and wait for the submitted (validated) values.
@@ -204,6 +215,7 @@ class SetupSession:
         :param expires_in: Optional deadline in seconds; when it passes,
             StepExpiredError is raised here (and the client countdown runs out).
         :param translation_params: Optional values for placeholders in the step translations.
+        :param copy_text: Optional value the client may copy to the clipboard.
         """
         step = self._build_step(
             FlowStepType.FORM,
@@ -213,6 +225,7 @@ class SetupSession:
             last_step=last_step,
             translation_params=translation_params,
             expires_in=expires_in,
+            copy_text=copy_text,
         )
         for key, error in (errors or {}).items():
             if isinstance(error, SetupFlowError) and error.translation_key:
@@ -265,6 +278,7 @@ class SetupSession:
         step_id: str = "auth",
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
     ) -> _T:
         """
         Show an external "Open URL" step that completes when ``awaitable`` resolves.
@@ -281,6 +295,7 @@ class SetupSession:
             StepExpiredError is raised here (and the client countdown runs out).
         :param translation_params: Optional values for placeholders in the step
             translations, e.g. a device code the user has to read off the screen.
+        :param copy_text: Optional value the client may copy to the clipboard.
         """
         step = self._build_step(
             FlowStepType.EXTERNAL,
@@ -288,6 +303,7 @@ class SetupSession:
             url=url,
             expires_in=expires_in,
             translation_params=translation_params,
+            copy_text=copy_text,
         )
         self._publish_step(step)
         return await self._await_with_deadline(awaitable, expires_in)
@@ -429,6 +445,9 @@ class SetupSession:
                 continue
             raw_value = values.get(entry.key, entry.value)
             try:
+                # encrypted values are only ever created by the server, never submitted
+                if contains_encrypted_value(raw_value):
+                    raise ValueError("Encrypted values can not be submitted")  # noqa: TRY301 - handled by except below
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)
                 # an entry behind an unmet dependency renders disabled, so demanding a
@@ -478,6 +497,8 @@ class SetupSession:
                     params.update({key: str(val) for key, val in (await request.post()).items()})
             except Exception as err:
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
+        # encrypted config values are never accepted as callback params
+        params = {key: val for key, val in params.items() if not val.startswith(ENCRYPT_SUFFIX)}
         if self._callback_future is not None and not self._callback_future.done():
             # the values carry the authorization code/token, so only log the keys
             LOGGER.debug(
@@ -563,6 +584,7 @@ class SetupSession:
         result: dict[str, str] | None = None,
         reason: str | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
         expires_in: float | None = None,
     ) -> SetupFlowStep:
         """Build a SetupFlowStep for this flow, stamping owner and absolute deadline."""
@@ -583,6 +605,7 @@ class SetupSession:
             reason=reason,
             translation_owner=self._translation_owner,
             translation_params=translation_params,
+            copy_text=copy_text,
         )
 
     def _prepare_entries(self, entries: list[ConfigEntry]) -> list[ConfigEntry]:

@@ -18,15 +18,21 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.models.player import LinkedOutputProtocol
-from tests.common import MockPlayer, MockProvider, use_real_create_task
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
+from music_assistant.models.player import LinkedOutputProtocol, PlayerMedia
+from tests.common import MockPlayer, MockProvider, as_user, use_real_create_task
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -591,12 +597,14 @@ def _spy_on_lock_order(controller: PlayerController) -> list[str]:
     acquire_lock = controller.get_player_lock
 
     def _record(
-        player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        player_id: str,
+        purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK,
+        strict: bool = False,
     ) -> AbstractAsyncContextManager[None]:
         # this records the order the locks are requested in, which is the order they
         # are entered in as well here: nothing else holds them in these tests
         lock_keys.append(f"{purpose.value}_{player_id}")
-        return acquire_lock(player_id, purpose)
+        return acquire_lock(player_id, purpose, strict=strict)
 
     controller.get_player_lock = _record  # type: ignore[assignment]
     return lock_keys
@@ -791,6 +799,23 @@ class TestGroupAndMemberLockOrder:
 
         assert lock_keys[:2] == ["playback_g1", "playback_extra"]
 
+    async def test_redirect_lock_and_set_members_agree_on_the_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Commands, locks and member changes for a captured leader's follower reach its group."""
+        controller, group, member, _ = self._setup(mock_mass)
+        self._add_follower(controller, member)
+        lock_keys = _spy_on_lock_order(controller)
+        controller._handle_set_members = AsyncMock()  # type: ignore[method-assign]
+
+        assert controller._get_player_with_redirect("extra") is group
+        async with controller.get_group_and_player_lock("extra"):
+            pass
+        await controller.cmd_set_members("member", player_ids_to_remove=["extra"])
+
+        assert lock_keys[:2] == ["playback_g1", "playback_extra"]
+        controller._handle_set_members.assert_awaited_once_with(group, None, ["extra"])
+
     async def test_a_leader_power_off_leaves_its_followers_powered(
         self, mock_mass: MagicMock
     ) -> None:
@@ -942,6 +967,73 @@ class TestGroupAndMemberLockOrder:
 
         assert lock_keys[0] == "playback_g1"
         assert "playback_member" not in lock_keys
+
+    @pytest.mark.parametrize("command", ["play", "resume", "resume-with-media"])
+    async def test_a_command_that_waits_for_an_announcement_needs_access_to_the_group(
+        self, mock_mass: MagicMock, command: str
+    ) -> None:
+        """
+        A play or resume that waits for the member's announcement is refused on the group.
+
+        The announcement takes the member out of its group and joins it back under the
+        member's lock, so the command finds the group only once it holds that lock.
+        """
+        controller, group, member = self._setup_announcement(mock_mass)
+        group.release.set()
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        # the group holds a paused source of a plugin, which a play would unpause
+        source = MagicMock(can_play_pause=True, item_id="plugin-source")
+        plugin = MagicMock()
+        plugin.on_source_control = AsyncMock()
+        controller.get_player_audio_source = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda player_id: (source, plugin) if player_id == "g1" else None
+        )
+        announcing = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def _clip(_player_id: str, _media: PlayerMedia) -> None:
+            announcing.set()
+            await finish.wait()
+
+        controller._handle_play_media = AsyncMock(side_effect=_clip)  # type: ignore[method-assign]
+        device_calls = {
+            (player.player_id, method): AsyncMock()
+            for player in (group, member)
+            for method in ("play_media", "play")
+        }
+        for (player_id, method), mock in device_calls.items():
+            setattr(controller._players[player_id], method, mock)
+        media = PlayerMedia(uri="http://media.test/stream.mp3", title="Stream")
+        commands = {
+            "play": lambda: controller.cmd_play("member"),
+            "resume": lambda: controller.cmd_resume("member"),
+            "resume-with-media": lambda: controller.cmd_resume("member", "other", media),
+        }
+
+        with as_user(["member"]):
+            announcement = asyncio.create_task(
+                controller.play_announcement("member", "http://test/announce.mp3")
+            )
+            async with asyncio.timeout(5):
+                await announcing.wait()
+            # the member plays the clip on its own, so the command passes its first check
+            assert member.state.active_group != "g1"
+            task = asyncio.create_task(commands[command]())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not task.done()
+            finish.set()
+            async with asyncio.timeout(5):
+                await announcement
+                with pytest.raises(
+                    InsufficientPermissions, match=r"limited does not have access to player Group$"
+                ):
+                    await task
+
+        assert member.state.active_group == "g1"
+        device_calls["g1", "play_media"].assert_not_awaited()
+        device_calls["g1", "play"].assert_not_awaited()
+        plugin.on_source_control.assert_not_awaited()
 
 
 class TestPlayerBaseIsActiveSession:
@@ -1238,7 +1330,7 @@ class TestAdHocLeadershipTransfer:
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         # the dissolve removes the visualizer from the group and ends the leader's queue
         controller._handle_set_members_with_protocols.assert_awaited_once_with(
-            leader, [], ["visualizer"]
+            leader, [], ["visualizer"], new_content=False
         )
         queue_stop.assert_awaited_once_with("leader")
         controller._handle_cmd_stop.assert_not_awaited()
@@ -1314,7 +1406,8 @@ class TestAdHocLeadershipTransfer:
 
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         protocol_set_members = cast("AsyncMock", controller._handle_set_members_with_protocols)
-        protocol_set_members.assert_awaited_once_with(leader, [], ["member"])
+        # dissolving what is left publishes no new content, so no takeover is opened
+        protocol_set_members.assert_awaited_once_with(leader, [], ["member"], new_content=False)
         # the group's queue is not the leader's to end, so only the device is stopped
         device_stop.assert_awaited_once_with("leader")
         queue_stop.assert_not_awaited()
@@ -1468,6 +1561,36 @@ class TestSessionBoundLeaderJoinsAnotherGroup:
 
         assert leader.group_members == ["leader", "member"]
         assert member.synced_to == "leader"
+
+
+async def test_leadership_transfer_runs_as_the_server(mock_mass: MagicMock) -> None:
+    """The queue moves to the server's choice of leader, whatever players the acting user has."""
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test", instance_id="test", mass=mock_mass)
+    leader = MockPlayer(provider, "leader", "Leader")
+    member = MockPlayer(provider, "member", "Member")
+    controller._players = {"leader": leader, "member": member}
+    mock_mass.players = controller
+    controller.get_active_queue = MagicMock(return_value=_queue_stub("leader"))  # type: ignore[method-assign]
+    acting_users: list[User | None] = []
+
+    async def _transfer(*_args: Any, **_kwargs: Any) -> None:
+        acting_users.append(get_current_user())
+
+    mock_mass.player_queues.transfer_queue = AsyncMock(side_effect=_transfer)
+    mock_mass.player_queues.resume = AsyncMock(side_effect=_transfer)
+    user = User(user_id="u1", username="u1", role=UserRole.USER, player_filter=["leader"])
+    set_current_user(user)
+    try:
+        await controller._transfer_ad_hoc_leadership(leader, ["member"])
+        assert get_current_user() is user
+    finally:
+        set_current_user(None)
+
+    mock_mass.player_queues.transfer_queue.assert_awaited_once_with(
+        "leader", "member", auto_play=False
+    )
+    assert acting_users == [None, None]
 
 
 if __name__ == "__main__":

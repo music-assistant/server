@@ -294,6 +294,21 @@ def without_ipv6_host_services(cast_info: CastInfo) -> CastInfo:
     return replace(cast_info, services=reachable)
 
 
+def is_google_device(cast_info: ChromecastInfo) -> bool:
+    """
+    Check if a device is a Google device with native Cast support.
+
+    Google devices (Chromecast, Nest, Google Home) have native Cast support
+    and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
+    support should be exposed as PlayerType.PROTOCOL.
+    """
+    if not cast_info.manufacturer:
+        # If no manufacturer, check model name for Google devices
+        model = cast_info.model_name.lower() if cast_info.model_name else ""
+        return any(google in model for google in ("chromecast", "google", "nest", "home"))
+    return cast_info.manufacturer.lower() in ("google", "google inc.")
+
+
 class CastStatusListener:
     """
     Helper class to handle pychromecast status callbacks.

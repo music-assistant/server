@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +22,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
+from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.providers.musicbrainz.api_client import MusicBrainzAPIClient
 from music_assistant.providers.musicbrainz.constants import (
     RELEASE_BROWSE_MAX_PAGES,
@@ -46,6 +48,11 @@ from tests.common import use_real_create_task
 # ---------------------------------------------------------------------------
 
 
+async def _url_lookup_via(get_data: AsyncMock, **kwargs: Any) -> Any:
+    """Answer a url lookup through the faked get_data, so it is recorded with the others."""
+    return await get_data("url", **kwargs)
+
+
 def _provider(
     response: Any, release_group_response: Any = None
 ) -> tuple[MusicbrainzProvider, AsyncMock]:
@@ -64,12 +71,13 @@ def _provider(
     get_data = AsyncMock(side_effect=_answer)
     api_client = MagicMock()
     api_client.get_data = get_data
+    api_client.get_url_data = AsyncMock(side_effect=partial(_url_lookup_via, get_data))
     provider._api_client = api_client
     return provider, get_data
 
 
 def _recordings(*first_release_dates: str | None) -> dict[str, Any]:
-    """Return an isrc lookup response with a recording per given release date."""
+    """Return an isrc lookup or search response with a recording per given release date."""
     return {
         "isrc": "GBAYE8600477",
         "recordings": [
@@ -93,13 +101,20 @@ async def test_release_year_parses_all_date_precisions() -> None:
         assert await provider.get_release_year_by_isrc("GBAYE8600477") == 1986
 
 
-async def test_release_year_looks_up_the_normalized_isrc() -> None:
-    """Look the recording up on the isrc resource, with its credits and links."""
+async def test_release_year_searches_recordings_by_the_normalized_isrc() -> None:
+    """Search recordings by ISRC in a single request, which carries the first release date."""
     provider, get_data = _provider(_recordings("1986"))
 
     await provider.get_release_year_by_isrc("GB-AYE-86-00477")
 
-    get_data.assert_awaited_once_with("isrc/GBAYE8600477?inc=isrcs+artist-credits+url-rels")
+    get_data.assert_awaited_once_with("recording", query="isrc:GBAYE8600477", limit="100")
+
+
+async def test_release_year_is_none_for_a_truncated_search() -> None:
+    """Refuse to date a song when the search does not return every recording."""
+    response = {**_recordings("1986"), "count": 2}
+    provider, _ = _provider(response)
+    assert await provider.get_release_year_by_isrc("GBAYE8600477") is None
 
 
 async def test_release_year_returns_earliest_of_multiple_recordings() -> None:
@@ -671,6 +686,140 @@ async def test_release_year_by_track_name_escapes_lucene_specials() -> None:
 
 
 # ---------------------------------------------------------------------------
+# get_artist_by_track_titles
+# ---------------------------------------------------------------------------
+
+
+def _title_search_provider(*responses: Any) -> tuple[MusicbrainzProvider, AsyncMock]:
+    """Return a MusicbrainzProvider answering each successive request with the next response."""
+    provider, get_data = _provider(None)
+    get_data.side_effect = list(responses)
+    return provider, get_data
+
+
+def _credited_recording(title: str, artist: str, artist_id: str = "artist-1") -> dict[str, Any]:
+    """Return one searched recording of the given title, credited as MusicBrainz credits it."""
+    return {
+        "id": f"recording-{title}",
+        "title": title,
+        "artist-credit": [_credit(artist, artist_id)],
+    }
+
+
+async def test_artist_by_track_titles_returns_the_first_credited_recording() -> None:
+    """Search title by title until a recording of that title credits the artist."""
+    provider, get_data = _title_search_provider(
+        _search_result(_credited_recording("Under Pressure", "David Bowie")),
+        _search_result(_credited_recording("Bohemian Rhapsody", "Queen", "artist-queen")),
+    )
+
+    artist = await provider.get_artist_by_track_titles(
+        "Queen", ["Under Pressure", "Bohemian Rhapsody"]
+    )
+
+    assert artist is not None
+    assert artist.id == "artist-queen"
+    assert [call.kwargs for call in get_data.await_args_list] == [
+        {"query": '"Under Pressure" AND artist:"Queen"', "limit": "100"},
+        {"query": '"Bohemian Rhapsody" AND artist:"Queen"', "limit": "100"},
+    ]
+
+
+async def test_artist_by_track_titles_requires_the_searched_title() -> None:
+    """A recording of another title does not identify the artist."""
+    provider, _ = _title_search_provider(
+        _search_result(_credited_recording("Bohemian Rhapsody (Live Aid)", "Queen"))
+    )
+
+    assert await provider.get_artist_by_track_titles("Queen", ["Radio Ga Ga"]) is None
+
+
+async def test_artist_by_track_titles_prefers_an_exact_title() -> None:
+    """A recording of exactly the searched title wins over a near one listed before it."""
+    provider, _ = _title_search_provider(
+        _search_result(
+            _credited_recording("Creeps", "Radiohead", "artist-near"),
+            _credited_recording("Creep", "Radiohead", "artist-exact"),
+        )
+    )
+
+    artist = await provider.get_artist_by_track_titles("Radiohead", ["Creep"])
+
+    assert artist is not None
+    assert artist.id == "artist-exact"
+
+
+async def test_artist_by_track_titles_skips_a_title_namesakes_share() -> None:
+    """A title two artists of the name are credited with is passed over for the next one."""
+    provider, get_data = _title_search_provider(
+        _search_result(
+            _credited_recording("All My Loving", "Bella", "artist-trio"),
+            _credited_recording("All My Loving", "Bella", "artist-band"),
+        ),
+        _search_result(_credited_recording("Dance With Me", "Bella", "artist-trio")),
+    )
+
+    artist = await provider.get_artist_by_track_titles("Bella", ["All My Loving", "Dance With Me"])
+
+    assert artist is not None
+    assert artist.id == "artist-trio"
+    assert get_data.await_count == 2
+
+
+async def test_artist_by_track_titles_leaves_namesakes_unidentified() -> None:
+    """When every title is shared by namesakes, no artist is picked."""
+    provider, _ = _title_search_provider(
+        _search_result(
+            _credited_recording("Little Lies", "Aerosol", "artist-a"),
+            _credited_recording("Little Lies", "Aerosol", "artist-b"),
+        )
+    )
+
+    assert await provider.get_artist_by_track_titles("Aerosol", ["Little Lies"]) is None
+
+
+async def test_artist_by_track_titles_matches_an_alias() -> None:
+    """The artist is also recognised by one of its aliases."""
+    recording = {"id": "recording-creep", "title": "Creep", "artist-credit": [_radiohead_credit()]}
+    provider, _ = _title_search_provider(_search_result(recording))
+
+    artist = await provider.get_artist_by_track_titles("レディオヘッド", ["Creep"])
+
+    assert artist is not None
+    assert artist.id == RADIOHEAD_MBID
+
+
+async def test_artist_by_track_titles_stops_at_the_first_match() -> None:
+    """No further title is searched once one identifies the artist."""
+    provider, get_data = _title_search_provider(
+        _search_result(
+            _credited_recording("Bohemian Rhapsody", "Queen", "artist-first"),
+            {**_credited_recording("Bohemian Rhapsody", "Queen", "artist-first"), "id": "live"},
+        ),
+        _search_result(_credited_recording("Radio Ga Ga", "Queen")),
+    )
+
+    artist = await provider.get_artist_by_track_titles(
+        "Queen", ["Bohemian Rhapsody", "Radio Ga Ga"]
+    )
+
+    assert artist is not None
+    assert artist.id == "artist-first"
+    get_data.assert_awaited_once()
+
+
+async def test_artist_by_track_titles_escapes_lucene_specials() -> None:
+    """Escape characters that would otherwise change the meaning of the search query."""
+    provider, get_data = _title_search_provider(_search_result())
+
+    assert await provider.get_artist_by_track_titles("AC/DC", ["T.N.T. (live!)"]) is None
+
+    get_data.assert_awaited_once_with(
+        "recording", query='"T.N.T. \\(live\\!\\)" AND artist:"AC\\/DC"', limit="100"
+    )
+
+
+# ---------------------------------------------------------------------------
 # get_releases_by_barcode
 # ---------------------------------------------------------------------------
 
@@ -813,6 +962,7 @@ def _routed_provider(routes: dict[str, Any]) -> tuple[MusicbrainzProvider, Async
     get_data = AsyncMock(side_effect=_answer)
     api_client = MagicMock()
     api_client.get_data = get_data
+    api_client.get_url_data = AsyncMock(side_effect=partial(_url_lookup_via, get_data))
     provider._api_client = api_client
     return provider, get_data
 
@@ -1209,6 +1359,21 @@ async def test_mbid_by_url_is_none_for_an_unknown_or_ambiguous_url() -> None:
     assert await provider.get_mbid_by_url(SPOTIFY_ALBUM_URL, MediaType.ALBUM) == "rel-1"
 
 
+async def test_mbids_by_url_lists_every_linked_entity() -> None:
+    """All the entities a URL is linked to are listed, so an ambiguous link can be named."""
+    provider, _ = _routed_provider(
+        {SPOTIFY_ARTIST_URL: _url_lookup("artist", "artist-other", RADIOHEAD_MBID, RADIOHEAD_MBID)}
+    )
+
+    assert await provider.get_mbids_by_url(SPOTIFY_ARTIST_URL, MediaType.ARTIST) == sorted(
+        ["artist-other", RADIOHEAD_MBID]
+    )
+    assert (
+        await provider.get_mbids_by_url("https://open.spotify.com/artist/unknown", MediaType.ARTIST)
+        == []
+    )
+
+
 async def test_browse_releases_by_release_group_lists_every_edition() -> None:
     """Browse a release group's releases with their media and links in one request."""
     listing = {
@@ -1501,10 +1666,98 @@ async def test_resolve_release_tries_the_release_group_after_an_unknown_barcode(
 
 
 async def test_resolve_release_is_none_without_any_evidence() -> None:
-    """An album without ids, barcodes or streaming links is never searched by name."""
+    """An album without ids, barcodes, streaming links or a track count is never searched."""
     provider, get_data = _routed_provider({})
 
     assert await provider.resolve_release(_album_item()) is None
+    get_data.assert_not_awaited()
+
+
+async def test_resolve_release_by_name_as_the_last_resort() -> None:
+    """An album nothing else identifies is found by title, primary artist and track count."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-cd", media_format="CD", country="GB"),
+            _edition("rel-18", track_counts=(10, 8)),
+            _edition("rel-xw"),
+        ],
+    }
+    provider, get_data = _routed_provider(
+        {"release?query": candidates, "release/rel-xw": _release_lookup("rel-xw")}
+    )
+
+    release = await provider.resolve_release(_album_item(), library_track_count=10)
+
+    assert release is not None
+    assert release.id == "rel-xw"
+    assert _requested(get_data) == ["release?query", "release/rel-xw"]
+
+
+async def test_resolve_release_by_name_needs_title_artist_and_track_count() -> None:
+    """A hit with another title, primary artist or track count is not looked up."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-1", title="OK Computer"),
+            _edition("rel-2", credit=_credit("Muse", "artist-muse")),
+            _edition("rel-3", track_counts=(12,)),
+        ],
+    }
+    provider, get_data = _routed_provider({"release?query": candidates})
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_abstains_on_several_release_groups() -> None:
+    """Two albums of the same name by the same artist cannot be told apart by name."""
+    other_album = _edition("rel-2")
+    other_album["release-group"] = {"id": "rg-other", "title": "In Rainbows"}
+    provider, get_data = _routed_provider(
+        {"release?query": {"count": 2, "releases": [_edition("rel-1"), other_album]}}
+    )
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_abstains_on_an_incomplete_search() -> None:
+    """A truncated search or one with an unparsable hit may hide another album."""
+    for result in (
+        {"count": 101, "releases": [_edition("rel-1")]},
+        {"count": 2, "releases": [_edition("rel-1"), {"title": "In Rainbows"}]},
+    ):
+        provider, get_data = _routed_provider(
+            {"release?query": result, "release/rel-1": _release_lookup("rel-1")}
+        )
+
+        assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+        assert _requested(get_data) == ["release?query"]
+
+
+async def test_resolve_release_by_name_looks_up_two_editions_at_most() -> None:
+    """A name search spends one search and at most two release lookups."""
+    candidates = {"count": 3, "releases": [_edition(f"rel-{index}") for index in range(3)]}
+    provider, get_data = _routed_provider(
+        {
+            "release?query": candidates,
+            **{
+                f"release/rel-{index}": _release_lookup(f"rel-{index}", title="OK Computer")
+                for index in range(3)
+            },
+        }
+    )
+
+    assert await provider.resolve_release(_album_item(), library_track_count=10) is None
+    assert _requested(get_data) == ["release?query", "release/rel-0", "release/rel-1"]
+
+
+async def test_resolve_release_by_name_needs_an_artist() -> None:
+    """An album without artists is never searched by name."""
+    provider, get_data = _routed_provider({})
+
+    assert await provider.resolve_release(_album_item(artist=None), library_track_count=10) is None
     get_data.assert_not_awaited()
 
 
@@ -1588,6 +1841,29 @@ async def test_resolve_recording_by_isrc_needs_a_credit_for_a_named_artist() -> 
 
     assert recording is not None
     assert recording.id == "rec-cover"
+
+
+@pytest.mark.parametrize("named_artist", [True, False])
+async def test_resolve_recording_by_isrc_of_a_single_recording_needs_no_title(
+    named_artist: bool,
+) -> None:
+    """An ISRC naming one recording identifies a track titled otherwise, by its credited artist."""
+    isrc_lookup = {
+        "isrc": ISRC,
+        "recordings": [_recording_lookup("rec-1", title="15 Step (In Rainbows version)")],
+    }
+    provider, _ = _routed_provider(
+        {f"isrc/{ISRC}": isrc_lookup, "recording/rec-1": _recording_lookup("rec-1")}
+    )
+    track = _track_item(
+        artist="Radiohead" if named_artist else None,
+        album=None,
+        external_ids={(ExternalID.ISRC, ISRC)},
+    )
+
+    recording = await provider.resolve_recording(track)
+
+    assert (recording.id if recording else None) == ("rec-1" if named_artist else None)
 
 
 async def test_resolve_recording_falls_back_to_a_name_search() -> None:
@@ -1782,6 +2058,38 @@ async def test_resolve_artist_by_barcode_checks_every_release_of_the_barcode() -
     assert _requested(get_data) == ["release?query", f"artist/{RADIOHEAD_MBID}"]
 
 
+async def test_identify_artist_tells_a_name_search_apart() -> None:
+    """Only an artist that a name search alone identifies is reported as found by name."""
+    provider, _ = _routed_provider(
+        {
+            SPOTIFY_ARTIST_URL: _url_lookup("artist", RADIOHEAD_MBID),
+            "recording?query": {
+                "recordings": [
+                    {
+                        **_recording_lookup("rec-1"),
+                        "releases": [
+                            {
+                                "title": "In Rainbows",
+                                "release-group": {"id": "rg", "title": "In Rainbows"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    by_link = _artist_item(mappings={_mapping("spotify", "4Z8W4fKeB5YxbusRsdQVPb")})
+
+    linked = await provider.identify_artist(by_link, [], [])
+    searched = await provider.identify_artist(_artist_item(), [], [_track_item()])
+
+    assert linked is not None
+    assert (linked.artist.id, linked.by_name) == (RADIOHEAD_MBID, False)
+    assert searched is not None
+    assert (searched.artist.id, searched.by_name) == (RADIOHEAD_MBID, True)
+
+
 def test_reverse_lookup_urls_take_one_canonical_url_per_provider_first() -> None:
     """A provider's first mapping is looked up canonically; its other mappings come after."""
     artist = _artist_item(
@@ -1810,8 +2118,7 @@ def test_reverse_lookup_urls_include_the_mappings_own_public_links() -> None:
             _mapping("apple_music", "657515", "https://music.apple.com/gb/artist/radiohead/657515"),
             _mapping("soundcloud", "radiohead", "https://soundcloud.com/radiohead"),
             _mapping("bandcamp", "radiohead", "https://radiohead.bandcamp.com/"),
-            # a local server's URL, or one MusicBrainz stores differently, never goes out
-            _mapping("qobuz", "43840", "https://open.qobuz.com/artist/43840"),
+            # a local server's URL never goes out
             _mapping(
                 "plex", "1", "http://192.168.1.5:32400/library/metadata/1?X-Plex-Token=s3cret"
             ),
@@ -1824,6 +2131,49 @@ def test_reverse_lookup_urls_include_the_mappings_own_public_links() -> None:
         "https://radiohead.bandcamp.com/",
         "https://soundcloud.com/radiohead",
     ]
+
+
+def test_reverse_lookup_urls_include_qobuz_artists_only() -> None:
+    """Qobuz artists are looked up by their Qobuz page, albums and name-only performers never."""
+    artist = _artist_item(
+        mappings={_mapping("qobuz", "43840", "https://open.qobuz.com/artist/43840")}
+    )
+    album = _album_item(
+        mappings={_mapping("qobuz", "ftrty0qq43i3b", "https://open.qobuz.com/album/ftrty0qq43i3b")}
+    )
+
+    assert MusicbrainzProvider._reverse_lookup_urls(artist) == [
+        "https://open.qobuz.com/artist/43840"
+    ]
+    assert MusicbrainzProvider._reverse_lookup_urls(album) == []
+    assert (
+        MusicbrainzProvider._reverse_lookup_urls(
+            _artist_item(mappings={_mapping("qobuz", "Herbert von Karajan")})
+        )
+        == []
+    )
+    assert (
+        MusicbrainzProvider._reverse_lookup_urls(_artist_item(mappings={_mapping("qobuz", "311")}))
+        == []
+    )
+
+
+async def test_resolve_artist_by_qobuz_link() -> None:
+    """A Qobuz artist mapping is reverse-looked up through its Qobuz page."""
+    qobuz_url = "https://open.qobuz.com/artist/43840"
+    provider, get_data = _routed_provider(
+        {
+            qobuz_url: _url_lookup("artist", RADIOHEAD_MBID),
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    artist = _artist_item(mappings={_mapping("qobuz", "43840", qobuz_url)})
+
+    resolved = await provider.resolve_artist(artist, [], [])
+
+    assert resolved is not None
+    assert resolved.id == RADIOHEAD_MBID
+    assert _requested(get_data) == [qobuz_url, f"artist/{RADIOHEAD_MBID}"]
 
 
 def test_reverse_lookup_urls_are_capped_at_three() -> None:
@@ -2078,6 +2428,7 @@ def _browsing_provider(pages: dict[str, Any]) -> tuple[MusicbrainzProvider, Magi
 
     api_client = MagicMock()
     api_client.get_data = AsyncMock(return_value=None)
+    api_client.get_url_data = AsyncMock(return_value=None)
     api_client.get_browse_data = AsyncMock(side_effect=_answer)
     provider._api_client = api_client
     return provider, api_client
@@ -2203,6 +2554,7 @@ def _api_client(payload: Any) -> tuple[MusicBrainzAPIClient, MagicMock]:
     mass.version = "test"
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
+    mass.cache.delete = AsyncMock()
     response = MagicMock()
     response.status = 200
     response.json = AsyncMock(return_value=payload)
@@ -2237,3 +2589,88 @@ async def test_api_client_caches_a_browse_for_a_week_and_a_lookup_for_a_month() 
         f"get_browse_data.release-group.artist{RADIOHEAD_MBID}.offset0": 86400 * 7,
         f"get_data.artist/{RADIOHEAD_MBID}": 86400 * 30,
     }
+
+
+def _url_cache_stores(mass: MagicMock) -> dict[str, int]:
+    """Return the expiration of each cache entry a URL lookup stored, by key."""
+    return {
+        store.kwargs["key"]: store.kwargs["expiration"] for store in mass.cache.set.await_args_list
+    }
+
+
+async def test_api_client_caches_a_url_linked_to_one_entity_for_a_month() -> None:
+    """A settled link is kept for 30 days and served from that cache after the day is up."""
+    linked = _url_lookup("artist", RADIOHEAD_MBID)
+    client, mass = _api_client(linked)
+    mass.cache.get = AsyncMock(return_value=None)
+
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == linked
+    await asyncio.sleep(0)
+
+    assert _url_cache_stores(mass) == {
+        f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400,
+        f"settled_url_data.artist-rels.{SPOTIFY_ARTIST_URL}": 86400 * 30,
+    }
+
+    mass.cache.delete.assert_not_awaited()
+
+    client, mass = _api_client(None)
+    mass.cache.get = AsyncMock(return_value=linked)
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == linked
+    mass.http_session.get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, _url_lookup("artist", RADIOHEAD_MBID, "artist-other")],
+    ids=["unknown", "ambiguous"],
+)
+async def test_api_client_caches_an_unsettled_url_for_a_day(answer: dict[str, Any] | None) -> None:
+    """A URL linked to no entity or to several is asked again the next day, once it is fixed."""
+    client, mass = _api_client(answer)
+    mass.cache.get = AsyncMock(return_value=None)
+    if answer is None:
+        mass.http_session.get.return_value._response.status = 404
+
+    assert await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == answer
+    await asyncio.sleep(0)
+
+    assert _url_cache_stores(mass) == {
+        f"get_url_data.incartist-rels.resource{SPOTIFY_ARTIST_URL}": 86400
+    }
+    # an earlier settled answer for the URL no longer holds, so it is not served once the day is up
+    mass.cache.delete.assert_awaited_once_with(
+        f"settled_url_data.artist-rels.{SPOTIFY_ARTIST_URL}", provider="musicbrainz"
+    )
+
+
+async def test_api_client_drops_a_settled_url_a_refresh_finds_ambiguous() -> None:
+    """A URL once linked to one entity and refreshed as ambiguous no longer settles on it."""
+    client, mass = _api_client(_url_lookup("artist", RADIOHEAD_MBID))
+    settled: dict[str, Any] = {}
+
+    async def _set(key: str, data: Any, **_kwargs: Any) -> None:
+        settled[key] = data
+
+    async def _delete(key: str, **_kwargs: Any) -> None:
+        settled.pop(key, None)
+
+    mass.cache.set = AsyncMock(side_effect=_set)
+    mass.cache.delete = AsyncMock(side_effect=_delete)
+    # the settled entry is only ever skipped by a refresh that bypasses the cache
+    mass.cache.get = AsyncMock(return_value=None)
+    settled_key = f"settled_url_data.artist-rels.{SPOTIFY_ARTIST_URL}"
+
+    await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels")
+    assert settled_key in settled
+
+    ambiguous = _url_lookup("artist", RADIOHEAD_MBID, "artist-other")
+    mass.http_session.get.return_value._response.json = AsyncMock(return_value=ambiguous)
+    token = BYPASS_CACHE.set(True)
+    try:
+        assert (
+            await client.get_url_data(resource=SPOTIFY_ARTIST_URL, inc="artist-rels") == ambiguous
+        )
+    finally:
+        BYPASS_CACHE.reset(token)
+    assert settled_key not in settled

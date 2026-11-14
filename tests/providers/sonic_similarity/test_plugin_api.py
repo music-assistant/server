@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 from music_assistant.providers.sonic_similarity.constants import (
@@ -18,7 +20,7 @@ from music_assistant.providers.sonic_similarity.helpers import (
     format_text_query,
 )
 from music_assistant.providers.sonic_similarity.similarity import Candidate, ScoredCandidate
-from music_assistant.providers.sonic_similarity.vectors import FEATURE_GROUPS
+from music_assistant.providers.sonic_similarity.vectors import FEATURE_GROUPS, normalize_features
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -313,6 +315,54 @@ class TestHandleSimilarReason:
         assert result["analyzed"] is False
         assert result["reason"] == "seed_not_in_index"
         assert result["items"] == []
+
+
+class TestHandleSimilarSearch:
+    """_handle_similar runs the ANN search in a worker thread against one index snapshot."""
+
+    @pytest.mark.asyncio
+    async def test_search_survives_rebuild_swap(self, make_plugin: Callable[..., Any]) -> None:
+        """A rebuild swapping the index mid-search doesn't change what that search reads."""
+        rng = np.random.default_rng(3)
+        signatures = {("spotify", f"t{i}"): rng.standard_normal(18).tolist() for i in range(30)}
+        plugin = make_plugin(signatures=signatures)
+        index = plugin._make_empty_index()
+        for label, ((provider, item_id), vec) in enumerate(signatures.items(), start=1):
+            plugin._label_map[label] = (item_id, provider)
+            normalized = normalize_features(vec, plugin.corpus_means, plugin.corpus_stds)
+            index.add(label, np.array(normalized, dtype=np.float32))
+        plugin._search_index = index
+
+        loop_thread = threading.get_ident()
+        search_threads: list[int] = []
+        run_ann_search = plugin._run_ann_search
+
+        def _rebuild_lands_mid_search(ctx: Any) -> Any:
+            search_threads.append(threading.get_ident())
+            plugin._search_index = None
+            plugin._label_map = {}
+            plugin._signature_cache = {}
+            return run_ann_search(ctx)
+
+        plugin._run_ann_search = _rebuild_lands_mid_search
+        # zero genre/era weights skip the library metadata rerank
+        result = await plugin._handle_similar(
+            item_id="t0",
+            seed_provider="spotify",
+            limit=5,
+            include_group_distances=True,
+            genre_weight=0,
+            era_weight=0,
+        )
+
+        assert search_threads
+        assert search_threads[0] != loop_thread
+        assert result["analyzed"] is True
+        returned = [item["item_id"] for item in result["items"]]
+        assert len(returned) == 5
+        assert "t0" not in returned
+        assert all(item["provider"] == "spotify" for item in result["items"])
+        assert all("group_distances" in item for item in result["items"])
 
 
 def _track_with_metadata(

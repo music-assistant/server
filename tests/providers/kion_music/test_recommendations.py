@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import pathlib
 from datetime import UTC, datetime
@@ -184,6 +185,34 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
     assert _awaited_methods(client) == set()
 
 
+@pytest.mark.asyncio
+async def test_recommendation_fetch_is_shared_between_callers(
+    provider: KionMusicProvider,
+) -> None:
+    """Concurrent callers for one recommendation row share its backend fetch."""
+    _install_cache_mocks(provider)
+    client = cast("Mock", provider.client)
+    chart = client.get_chart.return_value
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    async def _get_chart() -> Any:
+        fetch_started.set()
+        await release_fetch.wait()
+        return chart
+
+    client.get_chart.side_effect = _get_chart
+    tasks = [asyncio.create_task(provider.get_recommendation_items("chart")) for _ in range(3)]
+    await asyncio.wait_for(fetch_started.wait(), timeout=1)
+    await asyncio.sleep(0.05)
+    release_fetch.set()
+
+    results = await asyncio.gather(*tasks)
+
+    assert all(result for result in results)
+    assert client.get_chart.await_count == 1
+
+
 def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, list[str]]) -> None:
     """Serve the validated-tag-list cache entries as warm hits, everything else as a miss."""
 
@@ -197,6 +226,48 @@ def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, 
         side_effect=_cache_get
     )
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_expired_tag_list_is_served_while_refreshing(
+    provider: KionMusicProvider,
+) -> None:
+    """An expired tag list remains available while its refresh runs in the background."""
+    stale_tags = ["chill", "focus"]
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(stale_tags, False, True)
+    )
+    refresh_gate = asyncio.Event()
+    refresh_started = asyncio.Event()
+
+    async def _blocked_landing_tags() -> list[Any]:
+        refresh_started.set()
+        await refresh_gate.wait()
+        return []
+
+    client = cast("Mock", provider.client)
+    client.get_landing_tags.side_effect = _blocked_landing_tags
+    background_tasks: set[asyncio.Task[Any]] = set()
+
+    def _create_task(target: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target)
+        background_tasks.add(task)
+        return task
+
+    provider.mass.create_task = Mock(side_effect=_create_task)  # type: ignore[method-assign]
+    request = asyncio.create_task(provider._get_valid_tags_for_category("mood"))
+    await asyncio.sleep(0)
+
+    try:
+        assert request.done()
+        assert await request == stale_tags
+        await asyncio.wait_for(refresh_started.wait(), timeout=1)
+        assert any(not task.done() for task in background_tasks)
+    finally:
+        request.cancel()
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(request, *background_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

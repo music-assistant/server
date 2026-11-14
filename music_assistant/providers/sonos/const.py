@@ -30,6 +30,8 @@ SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
 SOURCE_TV = "tv"
 SOURCE_RADIO = "radio"
+# a Music Assistant session this server did not start, such as another server's
+SOURCE_MUSIC_ASSISTANT = "music_assistant"
 
 PLAYER_SOURCE_MAP = {
     SOURCE_LINE_IN: PlayerSource(
@@ -72,23 +74,29 @@ PLAYER_SOURCE_MAP = {
         can_next_previous=True,
         can_seek=True,
     ),
+    SOURCE_MUSIC_ASSISTANT: PlayerSource(
+        id=SOURCE_MUSIC_ASSISTANT,
+        name="Music Assistant",
+        passive=True,
+        can_play_pause=True,
+        can_next_previous=True,
+        # a Music Assistant queue offers no seeking on Sonos
+        can_seek=False,
+    ),
 }
 
 DEVICE_FEATURE_WAKEABLE = "WAKEABLE"
 
 UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
-    "Play:1",
-    "Play:3",
-    "Connect",
     "Connect:Amp",
     "Table lamp",
 )
 
 # How much of the queue one itemWindow response describes. A speaker only asks for a new
 # window once it runs out, so a shallow one leaves it reloading at a track boundary, which
-# Sonos can fail. A track it cached before a queue edit is refused when it asks for it, so
-# it reads the queue again. The previous item keeps skip-back working. The speaker's own
-# sizes are never exceeded.
+# Sonos can fail. The items are addressed by queue position, so a track it cached before a
+# queue edit plays whatever the queue holds at that position by then. The previous item
+# keeps skip-back working. The speaker's own sizes are never exceeded.
 PREVIOUS_ITEMS = 1
 UPCOMING_ITEMS = 10

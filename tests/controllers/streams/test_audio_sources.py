@@ -243,7 +243,7 @@ class TestAudioSourceContract:
         """get_stream_details must not claim the lock — that lives in on_source_selected."""
         # This is the core invariant that lets queue preload fetch streamdetails
         # without blocking a later cross-queue handoff at the actual stream
-        # request. See PluginProvider.get_stream_details docstring.
+        # request. See the PluginProvider.get_audio_sources docstring.
         prov = _FakePluginProvider(_audio_source())
         sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE

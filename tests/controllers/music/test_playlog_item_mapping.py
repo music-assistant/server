@@ -21,7 +21,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
 )
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -113,7 +113,7 @@ def _minimized_episode() -> ItemMapping:
 async def _playlog_rows(mass: MusicAssistant) -> list[Mapping[str, Any]]:
     """Return every playlog row for the episode under test."""
     return await mass.music.database.get_rows(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {"media_type": MediaType.PODCAST_EPISODE.value, "item_id": EPISODE_ID},
     )
 
@@ -210,7 +210,7 @@ async def test_mark_played_keeps_the_provider_identity_of_a_library_backed_audio
     )
 
     rows = await mass.music.database.get_rows(
-        DB_TABLE_PLAYLOG, {"media_type": MediaType.AUDIOBOOK.value}
+        DB_TABLE_MEDIA_PROGRESS, {"media_type": MediaType.AUDIOBOOK.value}
     )
     assert [(row["item_id"], row["provider"]) for row in rows] == [
         (AUDIOBOOK_ID, AUDIOBOOK_PROVIDER)
@@ -239,7 +239,7 @@ async def test_mark_unplayed_clears_the_provider_identity_of_a_library_backed_au
     )
     # the row an 'In progress' tile is built from, written under the provider identity
     await mass.music.database.insert(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "item_id": AUDIOBOOK_ID,
             "provider": AUDIOBOOK_PROVIDER,
@@ -264,5 +264,5 @@ async def test_mark_unplayed_clears_the_provider_identity_of_a_library_backed_au
     )
 
     assert not await mass.music.database.get_rows(
-        DB_TABLE_PLAYLOG, {"media_type": MediaType.AUDIOBOOK.value}
+        DB_TABLE_MEDIA_PROGRESS, {"media_type": MediaType.AUDIOBOOK.value}
     )

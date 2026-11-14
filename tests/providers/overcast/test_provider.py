@@ -260,6 +260,7 @@ async def test_apply_playback_states_respects_watermark() -> None:
     provider._feed_watermarks = {FEED_A: watermark}
     provider.instance_id = "overcast--test"
     provider.domain = "overcast"
+    provider.mass.music.get_resume_position = AsyncMock(return_value=(True, 123000))
     provider.mass.music.mark_item_played = AsyncMock()
     result = await OvercastProvider._apply_playback_states(
         cast("OvercastProvider", provider),
@@ -288,6 +289,7 @@ async def test_apply_playback_states_ignores_other_feeds_watermark() -> None:
     provider._feed_watermarks = {FEED_B: datetime(2026, 3, 1, tzinfo=UTC)}
     provider.instance_id = "overcast--test"
     provider.domain = "overcast"
+    provider.mass.music.get_resume_position = AsyncMock(return_value=(True, 123000))
     provider.mass.music.mark_item_played = AsyncMock()
     result = await OvercastProvider._apply_playback_states(
         cast("OvercastProvider", provider),
@@ -299,53 +301,71 @@ async def test_apply_playback_states_ignores_other_feeds_watermark() -> None:
     provider.mass.music.mark_item_played.assert_awaited_once()
 
 
-def _in_progress_provider(local_position_ms: int) -> MagicMock:
-    """Build a provider stub whose playlog already holds the given local position."""
+def _in_progress_provider(resume_point: tuple[bool, int]) -> MagicMock:
+    """Build a provider stub for which the core picks the given resume point."""
     provider = MagicMock()
     provider._feed_watermarks = {}
     provider.instance_id = "overcast--test"
     provider.domain = "overcast"
-    provider.mass.music.get_resume_position = AsyncMock(return_value=(False, local_position_ms))
+    provider.mass.music.get_resume_position = AsyncMock(return_value=resume_point)
     provider.mass.music.mark_item_played = AsyncMock()
     return provider
 
 
-async def test_apply_playback_states_keeps_further_local_progress() -> None:
-    """An Overcast position behind the one MA recorded itself is not written to the playlog."""
+@pytest.mark.parametrize(
+    ("resume_point", "applied"),
+    [
+        ((False, 1200 * 1000), True),
+        # Music Assistant's own progress wins, also when it is behind Overcast's
+        ((False, 1800 * 1000), False),
+        ((False, 600 * 1000), False),
+    ],
+)
+async def test_apply_playback_states_only_writes_winning_progress(
+    resume_point: tuple[bool, int], applied: bool
+) -> None:
+    """An Overcast state is written to the playlog only where it wins over MA's own progress."""
     state = _episode_state(progress_s=1200)
     parsed_podcast = {
         "title": "Feed One",
         "cover_url": None,
         "episodes": [{"title": "A", "guid": "g-a", "enclosures": [{"url": state.enclosure_url}]}],
     }
-    provider = _in_progress_provider(local_position_ms=1800 * 1000)
+    provider = _in_progress_provider(resume_point)
     result = await OvercastProvider._apply_playback_states(
         cast("OvercastProvider", provider),
         FEED_A,
         _subscription(state),
         parsed_podcast,
     )
-    assert result is None
-    provider.mass.music.mark_item_played.assert_not_awaited()
+    assert (result == state.user_updated_at) is applied
+    assert provider.mass.music.mark_item_played.await_count == int(applied)
 
 
-async def test_apply_playback_states_applies_progress_ahead_of_the_playlog() -> None:
-    """An Overcast position ahead of MA's own record is applied as usual."""
-    state = _episode_state(progress_s=1200)
-    parsed_podcast = {
-        "title": "Feed One",
-        "cover_url": None,
-        "episodes": [{"title": "A", "guid": "g-a", "enclosures": [{"url": state.enclosure_url}]}],
-    }
-    provider = _in_progress_provider(local_position_ms=600 * 1000)
-    result = await OvercastProvider._apply_playback_states(
-        cast("OvercastProvider", provider),
-        FEED_A,
-        _subscription(state),
-        parsed_podcast,
+async def test_podcast_episodes_carry_the_overcast_timestamp() -> None:
+    """Listed episodes carry Overcast's progress together with when it was set."""
+    state = _episode_state()
+    provider = MagicMock()
+    provider.instance_id = "overcast--test"
+    provider.domain = "overcast"
+    provider._cache_get_podcast = AsyncMock(
+        return_value={
+            "title": "Feed One",
+            "episodes": [
+                {"title": "A", "guid": "g-a", "enclosures": [{"url": state.enclosure_url}]}
+            ],
+        }
     )
-    assert result == state.user_updated_at
-    assert provider.mass.music.mark_item_played.await_args.kwargs["seconds_played"] == 1200
+    provider._get_subscription = AsyncMock(return_value=_subscription(state))
+    episodes = [
+        episode
+        async for episode in OvercastProvider.get_podcast_episodes(
+            cast("OvercastProvider", provider), FEED_A
+        )
+    ]
+    assert [
+        (e.fully_played, e.resume_position_ms, e.resume_position_timestamp) for e in episodes
+    ] == [(False, 123000, state.user_updated_at)]
 
 
 def _sync_provider(applied: datetime, monkeypatch: pytest.MonkeyPatch) -> MagicMock:

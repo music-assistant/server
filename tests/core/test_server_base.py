@@ -2,15 +2,26 @@
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock, patch
 
 from music_assistant_models.enums import EventType
+from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.controllers.player_queues.constants import (
+    CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+)
+from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.storage import StorageController
 from music_assistant.mass import MusicAssistant
+from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
     import pytest
+    from aiohttp import ClientSession
+    from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.event import MassEvent
 
 
@@ -32,6 +43,30 @@ async def test_start_and_stop_server(mass: MusicAssistant) -> None:
     assert domains.issuperset(core_providers)
 
 
+async def test_core_controller_setup_can_use_the_http_sessions(tmp_path: Path) -> None:
+    """The core controllers can use the shared http sessions in their setup."""
+    sessions: list[ClientSession] = []
+    setup = StorageController.setup
+
+    async def setup_using_the_sessions(self: StorageController, config: CoreConfig) -> None:
+        sessions.extend((self.mass.http_session, self.mass.http_session_no_ssl))
+        await setup(self, config)
+
+    with patch.object(StorageController, "setup", setup_using_the_sessions):
+        async with full_mass_context(tmp_path) as mass:
+            assert len(sessions) == 2
+            assert sessions[0] is mass.http_session
+            assert sessions[1] is mass.http_session_no_ssl
+
+
+async def test_runtime_dir_lives_while_the_server_runs(tmp_path: Path) -> None:
+    """The runtime dir is created on start and removed on stop."""
+    async with full_mass_context(tmp_path) as mass:
+        runtime_path = Path(mass.runtime_path)
+        assert runtime_path.is_dir()
+    assert not runtime_path.exists()
+
+
 async def test_server_info(mass: MusicAssistant) -> None:
     """Test that the server info advertises the webserver details."""
     server_info = mass.get_server_info()
@@ -40,6 +75,15 @@ async def test_server_info(mass: MusicAssistant) -> None:
     assert server_info.internal_url == mass.webserver.base_url
     assert server_info.external_url is None
     assert server_info.has_remote_access is False
+    # the test environment is not the official release image
+    assert server_info.unsupported_install is True
+
+
+async def test_server_info_reports_official_build(mass: MusicAssistant) -> None:
+    """Test that the official release image is reported as a supported installation."""
+    mass.build_info = {"version": "2.11.0"}
+
+    assert mass.get_server_info().unsupported_install is False
 
 
 async def test_events(mass: MusicAssistant) -> None:
@@ -164,3 +208,103 @@ async def test_create_task_abort_existing_tracks_replacement(
     second.cancel()
     await asyncio.wait((second,))
     assert task_id not in mass_minimal._tracked_tasks
+
+
+async def test_stop_persists_a_recent_queue_change(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queue change still waiting out the save delay is persisted when the server stops."""
+    queue_id = "shutdown_queue"
+    queue = PlayerQueue(
+        queue_id=queue_id, active=False, display_name="Queue", available=True, items=0
+    )
+    mass.player_queues._queue_data[queue_id] = PlayerQueueData(queue=queue)
+    queue.current_index = 3
+    mass.player_queues.signal_update(queue_id)
+
+    unload_provider = mass.unload_provider
+
+    async def unload_provider_removing_the_player(instance_id: str) -> None:
+        # unloading a player provider unregisters its players, which removes their queues
+        mass.player_queues.on_player_remove(queue_id, permanent=False)
+        await unload_provider(instance_id)
+
+    saved: list[dict[str, Any]] = []
+    cache_set = mass.cache.set
+
+    async def record_cache_set(key: str, data: Any, **kwargs: Any) -> None:
+        if key == queue_id and kwargs.get("category") == CACHE_CATEGORY_PLAYER_QUEUE_STATE:
+            saved.append(data)
+        await cache_set(key, data, **kwargs)
+
+    monkeypatch.setattr(mass, "unload_provider", unload_provider_removing_the_player)
+    monkeypatch.setattr(mass.cache, "set", record_cache_set)
+
+    await mass.stop()
+
+    assert saved
+    assert saved[-1]["queue"]["current_index"] == 3
+
+
+async def test_stop_logs_a_failed_provider_unload(
+    mass_minimal: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A provider that fails to unload is logged and does not stop the others from unloading."""
+    mass_minimal._providers.update({"broken": MagicMock(), "healthy": MagicMock()})
+    unloaded: list[str] = []
+
+    async def unload_provider(instance_id: str) -> None:
+        mass_minimal._providers.pop(instance_id)
+        if instance_id == "broken":
+            raise RuntimeError("unload went wrong")
+        unloaded.append(instance_id)
+
+    with patch.object(mass_minimal, "unload_provider", unload_provider):
+        await mass_minimal.stop()
+
+    assert unloaded == ["healthy"]
+    assert [
+        record
+        for record in caplog.records
+        if "broken" in record.getMessage() and "unload went wrong" in record.getMessage()
+    ]
+
+
+async def test_stop_cancels_tracked_timers(mass_minimal: MusicAssistant) -> None:
+    """A timer scheduled through call_later, also during the shutdown, does not fire after a stop."""
+    callback = MagicMock()
+    mass_minimal.call_later(0.05, callback, task_id="before_stop")
+    config_close = mass_minimal.config.close
+
+    async def close_scheduling_a_timer() -> None:
+        mass_minimal.call_later(0.05, callback, task_id="during_stop")
+        await config_close()
+
+    with patch.object(mass_minimal.config, "close", close_scheduling_a_timer):
+        await mass_minimal.stop()
+    await asyncio.sleep(0.1)
+
+    callback.assert_not_called()
+    assert not mass_minimal._tracked_timers
+
+
+async def test_stop_closes_the_queues_while_tasks_and_timers_still_run(
+    mass: MusicAssistant,
+) -> None:
+    """Stopping the queues' playback still has the running tasks and pending timers."""
+    listener = mass.create_task(asyncio.Event().wait(), task_id="test_listener")
+    mass.call_later(60, MagicMock(), task_id="test_player_update")
+    alive_at_queue_close: list[bool] = []
+    queues_close = mass.player_queues.close
+
+    async def record_queues_close() -> None:
+        alive_at_queue_close.append(
+            not listener.done() and "test_player_update" in mass._tracked_timers
+        )
+        await queues_close()
+
+    with patch.object(mass.player_queues, "close", record_queues_close):
+        await mass.stop()
+
+    assert alive_at_queue_close == [True]
+    assert listener.cancelled()

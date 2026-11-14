@@ -5,9 +5,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..tags import Tag
-from ..tools._common import (
-    safe_active_queue,
+from ..capabilities import Capability
+from ..resource_helpers import (
     to_brief_player,
     to_brief_queue,
     to_resource_text,
@@ -20,17 +19,17 @@ if TYPE_CHECKING:
 def register_player_resources(mcp: Any, mass: MusicAssistant) -> None:
     """Register ``player://`` and ``queue://`` resources on the given FastMCP root."""
 
-    @mcp.resource("player://{player_id}", tags={Tag.QUERY_PLAYERS})  # type: ignore[untyped-decorator, unused-ignore]
+    @mcp.resource("player://{player_id}", tags={Capability.QUERY_PLAYERS})  # type: ignore[untyped-decorator, unused-ignore]
     async def player_resource(player_id: str) -> str | None:
         """Player snapshot by id."""
         player = mass.players.get_player(player_id)
         return to_resource_text(
-            to_brief_player(player, safe_active_queue(mass, player_id))
+            to_brief_player(player, mass.player_queues.get_active_queue(player_id))
             if player is not None
             else None
         )
 
-    @mcp.resource("queue://{queue_id}", tags={Tag.QUERY_QUEUE})  # type: ignore[untyped-decorator, unused-ignore]
+    @mcp.resource("queue://{queue_id}", tags={Capability.QUERY_QUEUE})  # type: ignore[untyped-decorator, unused-ignore]
     async def queue_resource(queue_id: str) -> str | None:
         """Queue snapshot by id (up to 500 items — MA's default page size)."""
         queue = mass.player_queues.get(queue_id)

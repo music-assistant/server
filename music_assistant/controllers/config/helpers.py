@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ProviderStatus
 from music_assistant_models.errors import (
     AuthenticationFailed,
     AuthenticationRequired,
+    InvalidDataError,
     LoginFailed,
     UnsupportedSystemError,
 )
 from music_assistant_models.errors import (
     InvalidToken as InvalidTokenError,
 )
+
+from music_assistant.constants import ENCRYPT_SUFFIX
+from music_assistant.helpers.security import contains_encrypted_value
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
@@ -64,3 +69,22 @@ def _provider_status(conf: ProviderConfig, is_loaded: bool) -> ProviderStatus:
         # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
         return ProviderStatus.LOADED
     return ProviderStatus.LOADING
+
+
+def _reject_encrypted_values(values: dict[str, Any]) -> None:
+    """Raise InvalidDataError when a submitted config value holds an encrypted string."""
+    for key, value in values.items():
+        if contains_encrypted_value(value):
+            raise InvalidDataError(f"Invalid value for {key}")
+
+
+def _mask_encrypted[T](value: T) -> T:
+    """Return a copy of the value with every encrypted string replaced by the placeholder."""
+    masked: Any = value
+    if isinstance(value, str) and value.startswith(ENCRYPT_SUFFIX):
+        masked = SECURE_STRING_SUBSTITUTE
+    elif isinstance(value, dict):
+        masked = {key: _mask_encrypted(item) for key, item in value.items()}
+    elif isinstance(value, list | tuple):
+        masked = type(value)(_mask_encrypted(item) for item in value)
+    return cast("T", masked)

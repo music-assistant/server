@@ -16,6 +16,7 @@ from music_assistant.providers.jellyfin.const import (
     ITEM_KEY_MEDIA_STREAM_TYPE,
     ITEM_KEY_MEDIA_STREAMS,
     ITEM_KEY_RUNTIME_TICKS,
+    ITEM_KEY_TYPE,
 )
 
 
@@ -23,8 +24,10 @@ from music_assistant.providers.jellyfin.const import (
 async def jellyfin_provider(mass: MusicAssistant) -> JellyfinProvider:
     """Load a Jellyfin provider with a mocked aiojellyfin client."""
     client = mock.Mock()
-    client.get_track = mock.AsyncMock()
+    client._session.get_json = mock.AsyncMock()
     client.audio_url = mock.Mock()
+    client._access_token = "CURRENT_TOKEN"
+    client.base_url = "https://jellyfin.example.com"
 
     with mock.patch(
         "music_assistant.providers.jellyfin.authenticate_by_name",
@@ -54,7 +57,7 @@ async def test_get_stream_details_normalizes_legacy_audio_url(
     """Return normalized stream details for legacy Jellyfin audio URLs."""
     client = cast("mock.Mock", jellyfin_provider._client)
     track = _track_payload("track-1")
-    client.get_track.return_value = track
+    client._session.get_json.return_value = track
     client.audio_url.return_value = (
         "https://jellyfin.example.com/emby/Items/track-1/stream.mp3"
         "?static=true&api_key=a%2Fb%3D&foo=bar#cover"
@@ -78,26 +81,30 @@ async def test_get_stream_details_normalizes_legacy_audio_url(
     [
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?api_key=a%2Fb%3D&x=1",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?apiKey=a%2Fb%3D&x=1",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1&apiKey=CURRENT_TOKEN",
         ),
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?foo&api_key=a%2Fb%3D&foo=bar&foo=",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?foo=&apiKey=a%2Fb%3D&foo=bar&foo=",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?foo=&foo=bar&foo=&apiKey=CURRENT_TOKEN",
         ),
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?apiKey=a%2Fb%3D&x=1",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?apiKey=a%2Fb%3D&x=1",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1&apiKey=CURRENT_TOKEN",
         ),
         (
             "https://jellyfin.example.com/Items/track-1/art.jpg?x=1",
-            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1",
+            "https://jellyfin.example.com/Items/track-1/art.jpg?x=1&apiKey=CURRENT_TOKEN",
+        ),
+        (
+            "https://jellyfin.example.com.evil.test/cover.png?api_key=a%2Fb%3D",
+            "https://jellyfin.example.com.evil.test/cover.png",
         ),
     ],
 )
 async def test_resolve_image_normalizes_legacy_urls(
     jellyfin_provider: JellyfinProvider, raw_url: str, expected_url: str
 ) -> None:
-    """Return artwork URLs with Jellyfin's supported auth parameter name."""
+    """Return artwork URLs authenticated with the provider's current access token."""
     assert await jellyfin_provider.resolve_image(raw_url) == expected_url
 
 
@@ -105,6 +112,7 @@ def _track_payload(track_id: str) -> dict[str, object]:
     """Build a minimal Jellyfin track payload."""
     return {
         ITEM_KEY_ID: track_id,
+        ITEM_KEY_TYPE: "Audio",
         ITEM_KEY_RUNTIME_TICKS: 1_800_000_000,
         ITEM_KEY_MEDIA_SOURCES: [{"Container": "mp3"}],
         ITEM_KEY_MEDIA_STREAMS: [

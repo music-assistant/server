@@ -109,7 +109,7 @@ _HEAD_TIMEOUT: Final[float] = 30.0
 
 # --version output is free-form text (the docs give no schema); fish out a
 # version token and a build timestamp defensively. Observed 1.3.7 output:
-# "soloist 1.3.7.345 build 1787077868 (20260818) (gb24005ef46) (linux/aarch64)"
+# "soloist 1.3.7.345 build 1787077868 (20260818) (gb24005ef46) (linux/aarch64)"  # noqa: ERA001
 # — the build timestamp is a unix epoch; an ISO-like date is kept as fallback.
 _VERSION_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"\bv?(\d+\.\d+(?:\.\d+)*)\b")
 _BUILD_EPOCH_RE: Final[re.Pattern[str]] = re.compile(r"\bbuild\s+(\d{9,11})\b")

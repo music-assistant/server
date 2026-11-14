@@ -1,23 +1,39 @@
 """Test YouTube Music Provider."""
 
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
-from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.errors import LoginFailed, RetriesExhausted, SetupFailedError
+from requests.exceptions import ReadTimeout
 from ytmusicapi import LikeStatus
+from ytmusicapi.exceptions import YTMusicServerError
 
+from music_assistant.constants import CONF_USERNAME
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.ytmusic import YoutubeMusicProvider
+from music_assistant.providers.ytmusic import (
+    CONF_COOKIE,
+    CONF_PO_TOKEN_SERVER_URL,
+    CONF_STREAM_PROFILE,
+    YoutubeMusicProvider,
+)
+from music_assistant.providers.ytmusic.helpers import rate_track
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
 def provider() -> YoutubeMusicProvider:
     """Return a YoutubeMusicProvider instance with mocked dependencies."""
     mass = AsyncMock()
+    # force a cache miss so the cached raw fetches always run
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    use_real_create_task(mass)
     mass.http_session = MagicMock()
     manifest = MagicMock()
     manifest.domain = "ytmusic"
@@ -100,6 +116,119 @@ async def test_init_unreachable_po_token_server_is_a_retried_setup_failure(
     assert exc_info.value.translation_owner == "provider.ytmusic"
 
 
+@pytest.mark.parametrize(
+    ("login_cleared", "expected_key", "expected_message"),
+    [
+        (True, "cookies_expired", "Your YouTube Music cookies have expired"),
+        (False, "login_failed", "User does not have Youtube Music Premium"),
+    ],
+)
+async def test_init_distinguishes_expired_cookies_from_missing_premium(
+    provider: YoutubeMusicProvider,
+    login_cleared: bool,
+    expected_key: str,
+    expected_message: str,
+) -> None:
+    """Cookies YouTube invalidated during the premium check are not reported as no Premium."""
+    cookiejar = [SimpleNamespace(name="LOGIN_INFO", value="xyz", domain=".youtube.com")]
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            self.cookiejar = cookiejar
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            cookiejar.append(SimpleNamespace(name="SIDCC", value="rotated", domain=".youtube.com"))
+            if login_cleared:
+                # YouTube clears LOGIN_INFO via Set-Cookie when it invalidates the session
+                cookiejar[:] = [c for c in cookiejar if c.name != "LOGIN_INFO"]
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "251"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    provider.mass.metadata = MagicMock(locale="en_US")
+    setup_values = {
+        CONF_COOKIE: "__Secure-3PAPISID=abc; LOGIN_INFO=xyz",
+        CONF_USERNAME: "",
+        CONF_PO_TOKEN_SERVER_URL: "",
+    }
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "_verify_po_token_url", AsyncMock(return_value=True)),
+        patch.object(provider, "get_setup_value", side_effect=setup_values.get),
+        patch.object(provider, "_update_setup_data") as update_setup_data,
+        patch("music_assistant.providers.ytmusic.get_visitor_id", AsyncMock(return_value="")),
+        pytest.raises(LoginFailed) as exc_info,
+    ):
+        await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == expected_key
+    assert expected_message in str(exc_info.value)
+    if login_cleared:
+        assert exc_info.value.translation_owner == "provider.ytmusic"
+        assert "Premium" not in str(exc_info.value)
+        # a signed-out jar must never replace the stored cookie
+        update_setup_data.assert_not_called()
+    else:
+        update_setup_data.assert_called_once_with(
+            CONF_COOKIE, "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; SIDCC=rotated"
+        )
+
+
+async def test_init_fetches_one_visitor_id_for_all_calls(provider: YoutubeMusicProvider) -> None:
+    """The visitor id fetched at setup spares every later call a page fetch of its own."""
+    page = MagicMock(text='ytcfg.set({"VISITOR_DATA": "visitor123"});')
+    api_response = MagicMock(status_code=200, text="{}")
+    provider.mass.metadata = MagicMock(locale="en_US")
+    setup_values = {
+        CONF_COOKIE: "__Secure-3PAPISID=abc",
+        CONF_USERNAME: "",
+        CONF_PO_TOKEN_SERVER_URL: "",
+    }
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "_verify_po_token_url", AsyncMock(return_value=True)),
+        patch.object(provider, "_user_has_ytm_premium", AsyncMock(return_value=True)),
+        patch.object(provider, "get_setup_value", side_effect=setup_values.get),
+        patch.object(requests.Session, "get", return_value=page) as page_fetch,
+        patch.object(requests.Session, "post", return_value=api_response) as api_call,
+    ):
+        await provider.handle_async_init()
+        for video_id in ("video1", "video2", "video3"):
+            await rate_track(provider._headers, video_id, LikeStatus.LIKE)
+
+    page_fetch.assert_called_once()
+    sent = [request.kwargs["headers"]["X-Goog-Visitor-Id"] for request in api_call.call_args_list]
+    assert sent == ["visitor123"] * 3
+
+
+async def test_init_unreachable_youtube_is_a_setup_failure(provider: YoutubeMusicProvider) -> None:
+    """YouTube being unreachable at load is a setup failure the core retries, not a login one."""
+    setup_values = {
+        CONF_COOKIE: "__Secure-3PAPISID=abc",
+        CONF_USERNAME: "",
+        CONF_PO_TOKEN_SERVER_URL: "",
+    }
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "_verify_po_token_url", AsyncMock(return_value=True)),
+        patch.object(provider, "get_setup_value", side_effect=setup_values.get),
+        patch.object(requests.Session, "get", side_effect=requests.ConnectionError("no route")),
+        pytest.raises(SetupFailedError),
+    ):
+        await provider.handle_async_init()
+
+
 async def test_sync_library_unloads_on_invalid_session(provider: YoutubeMusicProvider) -> None:
     """A library sync that hits an invalid session unloads the provider for re-auth."""
     provider.available = True
@@ -140,6 +269,26 @@ def test_parse_owned_playlist_is_editable_without_privacy(
     assert playlist.is_editable is True
 
 
+@pytest.mark.parametrize(
+    ("album_data", "expected_url"),
+    [
+        ({}, "https://music.youtube.com/browse/MPREb_test"),
+        ({"audioPlaylistId": None}, "https://music.youtube.com/browse/MPREb_test"),
+        ({"audioPlaylistId": ""}, "https://music.youtube.com/browse/MPREb_test"),
+        (
+            {"audioPlaylistId": "OLAK5uy_test"},
+            "https://music.youtube.com/playlist?list=OLAK5uy_test",
+        ),
+    ],
+)
+def test_album_public_link_without_playlist_id(
+    provider: YoutubeMusicProvider, album_data: dict[str, Any], expected_url: str
+) -> None:
+    """An album from a search or library listing still has a usable public link."""
+    album = provider._parse_album({"title": "Test album", **album_data}, "MPREb_test")
+    assert next(iter(album.provider_mappings)).url == expected_url
+
+
 async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     """A search must run in English, whatever language the server is set to."""
     # ytmusicapi matches the (translated) result shelf title against the English filter
@@ -152,6 +301,21 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
         await search(provider, "test", [MediaType.TRACK])
 
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
+
+
+async def test_search_does_not_use_account(provider: YoutubeMusicProvider) -> None:
+    """A search must not use the account, so MA lookups stay out of its search history."""
+    provider._headers = {"cookie": "abc"}
+    provider._yt_user = "123"
+    mock_ytm = MagicMock()
+    mock_ytm.search.return_value = []
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        await search(provider, "test", [MediaType.TRACK])
+
+    assert not mock_ytmusic.call_args.args
+    assert "auth" not in mock_ytmusic.call_args.kwargs
+    assert "user" not in mock_ytmusic.call_args.kwargs
 
 
 async def test_album_versions_with_versions(provider: YoutubeMusicProvider) -> None:
@@ -215,3 +379,1078 @@ async def test_set_favorite_ignores_other_media_types(provider: YoutubeMusicProv
     with patch("music_assistant.providers.ytmusic.rate_track", AsyncMock()) as mock_rate:
         await provider.set_favorite("album", MediaType.ALBUM, True)
     mock_rate.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("language", "type_label", "album_type"),
+    [
+        ("en", "Single", AlbumType.SINGLE),
+        ("en", "EP", AlbumType.EP),
+        ("en", "Album", AlbumType.ALBUM),
+        ("cs", "Singl", AlbumType.SINGLE),  # codespell:ignore
+        ("cs", "EP", AlbumType.EP),
+        ("nl", "Ep", AlbumType.EP),
+        ("es", "Álbum", AlbumType.UNKNOWN),
+        ("de", "Playlist", AlbumType.UNKNOWN),
+    ],
+)
+def test_parse_album_type_is_language_independent(
+    provider: YoutubeMusicProvider, language: str, type_label: str, album_type: AlbumType
+) -> None:
+    """The album type YouTube Music reports in the account's language maps to the same type."""
+    provider.language = language
+    album = provider._parse_album({"title": "Test", "type": type_label}, "MPREb_test")
+    assert album.album_type == album_type
+
+
+def test_parse_album_with_null_artists(provider: YoutubeMusicProvider) -> None:
+    """An album whose artists value is None parses without artists instead of crashing."""
+    album = provider._parse_album({"title": "Test", "artists": None}, "MPREb_test")
+    assert album.name == "Test"
+    assert not album.artists
+
+
+def test_parse_thumbnails_skips_zero_height(provider: YoutubeMusicProvider) -> None:
+    """A thumbnail reporting a zero height is skipped instead of crashing the parse."""
+    thumbnails = [
+        {"url": "https://lh3.googleusercontent.com/bad=w544-h544", "width": 544, "height": 0},
+        {"url": "https://lh3.googleusercontent.com/good=w544-h544", "width": 544, "height": 544},
+    ]
+    images = provider._parse_thumbnails(thumbnails)
+    assert [img.path for img in images] == ["https://lh3.googleusercontent.com/good=w600-h600-p"]
+
+
+async def test_get_artist_albums_includes_albums_and_singles(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums should return both albums and singles/EPs for an artist."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Test Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_album_1",
+                    "title": "Full Album",
+                    "year": "2023",
+                }
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_single_1",
+                    "title": "Hit Single",
+                    "type": "Single",
+                    "year": "2024",
+                },
+                {
+                    "browseId": "MPREb_ep_1",
+                    "title": "Summer EP",
+                    "type": "EP",
+                    "year": "2024",
+                },
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 3
+    assert albums[0].item_id == "MPREb_album_1"
+    assert albums[0].name == "Full Album"
+    # ytmusicapi doesn't return a type for items in the artist albums section.
+    assert albums[0].album_type == AlbumType.UNKNOWN
+
+    assert albums[1].item_id == "MPREb_single_1"
+    assert albums[1].name == "Hit Single"
+    assert albums[1].album_type == AlbumType.SINGLE
+
+    assert albums[2].item_id == "MPREb_ep_1"
+    assert albums[2].name == "Summer EP"
+    assert albums[2].album_type == AlbumType.EP
+
+
+async def test_get_artist_albums_handles_missing_and_empty_artists(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums falls back to the artist details when artists is missing or empty."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Fallback Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_empty_artists",
+                    "title": "Album with Empty Artists",
+                    "artists": [],
+                },
+                {
+                    "browseId": "MPREb_no_artists_key",
+                    "title": "Album with No Artists Key",
+                },
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_single_empty_artists",
+                    "title": "Single with Empty Artists",
+                    "artists": [],
+                },
+                {
+                    "browseId": "MPREb_single_no_artists_key",
+                    "title": "Single with No Artists Key",
+                },
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 4
+    for album in albums:
+        assert len(album.artists) == 1
+        assert album.artists[0].item_id == "UC_artist_123"
+        assert album.artists[0].name == "Fallback Artist"
+
+
+async def test_get_artist_albums_preserves_existing_artists(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """get_artist_albums preserves existing artists when present in album or single."""
+    artist_data = {
+        "channelId": "UC_artist_123",
+        "name": "Primary Artist",
+        "albums": {
+            "results": [
+                {
+                    "browseId": "MPREb_collab_album",
+                    "title": "Collaborative Album",
+                    "artists": [{"id": "UC_collab_456", "name": "Collaborator"}],
+                }
+            ]
+        },
+        "singles": {
+            "results": [
+                {
+                    "browseId": "MPREb_collab_single",
+                    "title": "Collaborative Single",
+                    "artists": [{"id": "UC_collab_456", "name": "Collaborator"}],
+                }
+            ]
+        },
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    assert len(albums) == 2
+    assert albums[0].artists[0].item_id == "UC_collab_456"
+    assert albums[0].artists[0].name == "Collaborator"
+    assert albums[1].artists[0].item_id == "UC_collab_456"
+    assert albums[1].artists[0].name == "Collaborator"
+
+
+@pytest.mark.parametrize(
+    "artist_data",
+    [
+        # Only albums, no singles section
+        {
+            "channelId": "UC_artist_123",
+            "name": "Only Albums Artist",
+            "albums": {"results": [{"browseId": "MPREb_only_album", "title": "Only Album"}]},
+        },
+        # Only singles, no albums section
+        {
+            "channelId": "UC_artist_123",
+            "name": "Only Singles Artist",
+            "singles": {"results": [{"browseId": "MPREb_only_single", "title": "Only Single"}]},
+        },
+        # Empty sections
+        {
+            "channelId": "UC_artist_123",
+            "name": "Empty Artist",
+            "albums": {"results": []},
+            "singles": {"results": []},
+        },
+        # Missing both keys completely
+        {
+            "channelId": "UC_artist_123",
+            "name": "No Keys Artist",
+        },
+    ],
+)
+async def test_get_artist_albums_handles_missing_or_empty_sections(
+    provider: YoutubeMusicProvider, artist_data: dict[str, Any]
+) -> None:
+    """get_artist_albums safely handles responses with missing or empty albums/singles sections."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_artist",
+        AsyncMock(return_value=artist_data),
+    ):
+        get_artist_albums = cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+        albums = await get_artist_albums(provider, "UC_artist_123")
+
+    expected_count = len(artist_data.get("albums", {}).get("results", [])) + len(
+        artist_data.get("singles", {}).get("results", [])
+    )
+    assert len(albums) == expected_count
+
+
+def _get_artist_albums_unwrapped() -> Any:
+    """Return get_artist_albums with its @use_cache decorator stripped."""
+    return cast("Any", YoutubeMusicProvider.get_artist_albums).__wrapped__
+
+
+async def test_get_artist_albums_gets_full_section_when_browse_pair_present(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A release section with browseId+params is fetched via the full call."""
+    provider._headers = {}
+    provider._yt_user = "test-brand-user"
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "shows": {
+            "results": [{"browseId": "MPREb_inline1", "title": "Inline Only Show"}],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.return_value = [
+        {"browseId": "MPREb_hydrated1", "title": "hydrated Show 1"},
+        {"browseId": "MPREb_hydrated2", "title": "hydrated Show 2"},
+    ]
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_hydrated1", "MPREb_hydrated2"]
+    mock_ytm.get_artist_albums.assert_called_once_with(
+        channelId="MPADUCtest", params="params-token", limit=100
+    )
+    assert mock_ytmusic.call_args.kwargs["user"] == "test-brand-user"
+
+
+async def test_get_artist_albums_keeps_every_section(provider: YoutubeMusicProvider) -> None:
+    """Each release section is capped on its own, so singles stay listed next to albums."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {"results": [], "browseId": "MPADalbums", "params": "albums-token"},
+        "singles": {"results": [], "browseId": "MPADsingles", "params": "singles-token"},
+    }
+    mock_ytm.get_artist_albums.side_effect = lambda **kwargs: [
+        {"browseId": f"{kwargs['channelId']}-{idx}", "title": f"Release {idx}"} for idx in range(80)
+    ]
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert len(albums) == 160
+    assert albums[79].item_id == "MPADalbums-79"
+    assert albums[-1].item_id == "MPADsingles-79"
+
+
+async def test_get_artist_albums_skips_hydration_without_browse_pair(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A section missing browseId or params is not hydrated - only its preview is used."""
+    provider._headers = {}
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "singles": {"results": [{"browseId": "MPREb_single1", "title": "A Single"}]},
+    }
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_single1"]
+    mock_ytm.get_artist_albums.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        KeyError(
+            "Unable to find 'musicCarouselShelfRenderer' using path "
+            "['musicCarouselShelfRenderer', 'contents'] on {'gridRenderer': {}}"
+        ),
+        IndexError("list index out of range"),
+        TypeError("'NoneType' object is not subscriptable"),
+    ],
+    ids=["key_error", "index_error", "type_error"],
+)
+async def test_get_artist_albums_falls_back_to_preview_on_parse_failure(
+    provider: YoutubeMusicProvider, error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A section whose hydration fails to parse degrades to its inline preview and is logged."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "shows": {
+            "results": [
+                {
+                    "browseId": "MPREb_show1",
+                    "title": "Folge 1",
+                    "artists": [{"id": "UCtest", "name": "Test Artist"}],
+                }
+            ],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.side_effect = error
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_show1"]
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelname == "WARNING"
+    assert "shows" in caplog.records[0].message
+    exc_info = caplog.records[0].exc_info
+    assert exc_info is not None
+    assert exc_info[1] is error
+
+
+async def test_get_artist_albums_propagates_server_error_instead_of_caching_truncated(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A genuine ytmusicapi server error should propagate, not degrade to the preview."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [{"browseId": "MPREb_1", "title": "A"}],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.side_effect = YTMusicServerError("backend returned 500")
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(YTMusicServerError),
+    ):
+        await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+
+async def test_get_artist_albums_signed_out_still_raises(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A signed-out session should still surface as LoginFailed, not be swallowed."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [{"browseId": "MPREb_1", "title": "A"}],
+            "browseId": "MPADUCtest",
+            "params": "params-token",
+        },
+    }
+    mock_ytm.get_artist_albums.side_effect = KeyError(
+        "Unable to find 'twoColumnBrowseResultsRenderer' using path [] on "
+        "{'singleColumnBrowseResultsRenderer': {'signInEndpoint': {'hack': True}}}"
+    )
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(LoginFailed),
+    ):
+        await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+
+async def test_get_artist_albums_signed_out_raises_even_if_another_section_succeeds(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """LoginFailed from one section should still propagate when sections are gathered concurrently."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [{"browseId": "MPREb_ok", "title": "Fine"}],
+            "browseId": "MPADUCtest-albums",
+            "params": "params-albums",
+        },
+        "singles": {
+            "results": [{"browseId": "MPREb_single", "title": "A Single"}],
+            "browseId": "MPADUCtest-singles",
+            "params": "params-singles",
+        },
+    }
+
+    def _get_artist_albums_side_effect(**kwargs: str) -> list[dict[str, Any]]:
+        if kwargs["channelId"] == "MPADUCtest-albums":
+            return [{"browseId": "MPREb_hydrated_ok", "title": "Fine, hydrated"}]
+        raise KeyError(
+            "Unable to find 'twoColumnBrowseResultsRenderer' using path [] on "
+            "{'singleColumnBrowseResultsRenderer': {'signInEndpoint': {'hack': True}}}"
+        )
+
+    mock_ytm.get_artist_albums.side_effect = _get_artist_albums_side_effect
+    with (
+        patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm),
+        pytest.raises(LoginFailed),
+    ):
+        await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+
+async def test_get_artist_albums_dedupes_across_sections(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Duplicates across albums/singles/shows are removed."""
+    provider._headers = {}
+    provider._yt_user = None
+    provider.language = "en"
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {
+            "results": [],
+            "browseId": "MPADUCtest-albums",
+            "params": "params-albums",
+        },
+        "singles": {
+            "results": [],
+            "browseId": "MPADUCtest-singles",
+            "params": "params-singles",
+        },
+    }
+
+    def _get_artist_albums_side_effect(**kwargs: str) -> list[dict[str, Any]]:
+        if kwargs["channelId"] == "MPADUCtest-albums":
+            return [
+                {"browseId": "MPREb_a2", "title": "Album 2"},
+                {"browseId": "MPREb_a1", "title": "Album 1"},
+            ]
+        return [
+            {"browseId": "MPREb_a2", "title": "Duplicate of Album 2"},  # cross-section dupe
+            {"browseId": "MPREb_s1", "title": "Single 1"},
+        ]
+
+    mock_ytm.get_artist_albums.side_effect = _get_artist_albums_side_effect
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_a2", "MPREb_a1", "MPREb_s1"]
+
+
+async def test_video_search_setting_defaults_off(provider: YoutubeMusicProvider) -> None:
+    """Existing installations retain song-only filtered searches."""
+    entries = await provider.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == "include_videos_in_search")
+    assert entry.default_value is False
+
+
+@pytest.mark.parametrize(
+    ("changed_key", "cleared"),
+    [("values/include_videos_in_search", True), ("values/log_level", False)],
+)
+async def test_video_search_setting_change_clears_search_caches(
+    provider: YoutubeMusicProvider, changed_key: str, cleared: bool
+) -> None:
+    """Toggling the video setting drops search results cached under the previous setting."""
+    provider.mass.music.domain = "music"
+    with patch.object(MusicProvider, "update_config", AsyncMock()):
+        await provider.update_config(MagicMock(), {changed_key})
+    delete = cast("AsyncMock", provider.mass.cache.delete)
+    deleted = {call.kwargs["provider"] for call in delete.await_args_list}
+    assert deleted == ({provider.instance_id, "music"} if cleared else set())
+
+
+def _search_track(item_id: str, result_type: str = "song") -> dict[str, Any]:
+    """Return a parseable YouTube Music search result."""
+    return {
+        "resultType": result_type,
+        "videoId": item_id,
+        "title": "Nightcore - Ocean Eyes (But it hits hard) (Lyrics)",
+        "artists": [{"id": "UC_artist", "name": "Eiden XII"}],
+    }
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_search_includes_videos_only_when_enabled(
+    provider: YoutubeMusicProvider, enabled: bool
+) -> None:
+    """An explicit video search finds items absent from the songs shelf."""
+
+    async def backend(**kwargs: Any) -> list[dict[str, Any]]:
+        return [_search_track("Om6ae_QDZgI", "video")] if kwargs["ytm_filter"] == "videos" else []
+
+    cast("MagicMock", provider.config.get_value).return_value = enabled
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch("music_assistant.providers.ytmusic.search", side_effect=backend) as backend_search:
+        results = await search(provider, "Ocean Eyes", [MediaType.TRACK], 5)
+    assert [track.item_id for track in results.tracks] == (["Om6ae_QDZgI"] if enabled else [])
+    assert backend_search.await_count == (2 if enabled else 1)
+    assert backend_search.call_args_list[0].kwargs["ytm_filter"] == "songs"
+
+
+async def test_video_search_interleaves_full_shelves(provider: YoutubeMusicProvider) -> None:
+    """Videos keep a place within the limit when the songs shelf is full."""
+
+    async def backend(**kwargs: Any) -> list[dict[str, Any]]:
+        prefix = "video" if kwargs["ytm_filter"] == "videos" else "song"
+        return [_search_track(f"{prefix}{index}", prefix) for index in range(1, 5)]
+
+    cast("MagicMock", provider.config.get_value).return_value = True
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch("music_assistant.providers.ytmusic.search", side_effect=backend):
+        results = await search(provider, "query", [MediaType.TRACK], 4)
+    assert [track.item_id for track in results.tracks] == ["song1", "video1", "song2", "video2"]
+
+
+@pytest.mark.parametrize(
+    ("media_types", "ytm_filter"),
+    [([MediaType.ARTIST], "artists"), ([MediaType.ARTIST, MediaType.TRACK], None)],
+)
+async def test_search_fetches_videos_only_for_song_searches(
+    provider: YoutubeMusicProvider, media_types: list[MediaType], ytm_filter: str | None
+) -> None:
+    """Other filtered searches skip videos and unfiltered searches already include them."""
+    cast("MagicMock", provider.config.get_value).return_value = True
+    search = cast("Any", YoutubeMusicProvider.search).__wrapped__
+    with patch("music_assistant.providers.ytmusic.search", AsyncMock(return_value=[])) as backend:
+        await search(provider, "query", media_types, 5)
+    backend.assert_awaited_once_with(query="query", ytm_filter=ytm_filter, limit=5)
+
+
+async def test_stream_from_signed_out_session_keeps_stored_cookie(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """A stream resolved after YouTube signed the session out does not overwrite the cookie."""
+    cookiejar = [SimpleNamespace(name="SIDCC", value="anonymous", domain=".youtube.com")]
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            self.cookiejar = cookiejar
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "251"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    provider._cookie = "__Secure-3PAPISID=abc; LOGIN_INFO=xyz"
+    provider._netscape_cookie = ""
+    with patch.object(provider, "_update_setup_data") as update_setup_data:
+        await provider._get_stream_format("dQw4w9WgXcQ")
+
+    update_setup_data.assert_not_called()
+
+
+async def test_stream_does_not_undo_cookies_another_stream_stored(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Cookies a stream left untouched never overwrite ones another stream stored meanwhile."""
+    provider._cookie = "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; YSC=old; SIDCC=old"
+    provider._netscape_cookie = ""
+    cookiejar = [
+        SimpleNamespace(name=name, value=value, domain=".youtube.com")
+        for name, value in (("LOGIN_INFO", "xyz"), ("YSC", "old"), ("SIDCC", "old"))
+    ]
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            self.cookiejar = cookiejar
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            # another stream stores its cookies while yt-dlp is still extracting
+            provider._cookie = provider._cookie.replace("YSC=old", "YSC=new")
+            cookiejar[2] = SimpleNamespace(name="SIDCC", value="fresh", domain=".youtube.com")
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "141"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    with (
+        # the other stream persisted its cookie, so storage holds what the instance has
+        patch.object(provider, "get_setup_value", side_effect=lambda *_: provider._cookie),
+        patch.object(provider, "_update_setup_data") as update_setup_data,
+    ):
+        await provider._get_stream_format("dQw4w9WgXcQ")
+
+    update_setup_data.assert_called_once_with(
+        CONF_COOKIE, "__Secure-3PAPISID=abc; LOGIN_INFO=xyz; YSC=new; SIDCC=fresh"
+    )
+
+
+@pytest.mark.parametrize("reconfigured", [True, False])
+async def test_late_stream_does_not_overwrite_reconfigured_cookie(
+    provider: YoutubeMusicProvider, reconfigured: bool
+) -> None:
+    """A stream finishing after a reconfigure or unload leaves the new cookie alone."""
+    provider._cookie = "__Secure-3PAPISID=abc; LOGIN_INFO=xyz"
+    provider._netscape_cookie = ""
+    cookiejar = [SimpleNamespace(name="LOGIN_INFO", value="xyz", domain=".youtube.com")]
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            self.cookiejar = cookiejar
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            cookiejar.append(SimpleNamespace(name="SIDCC", value="late", domain=".youtube.com"))
+            if not reconfigured:
+                provider.unloading = True
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "141"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    stored = "__Secure-3PAPISID=new; LOGIN_INFO=new" if reconfigured else provider._cookie
+    with (
+        patch.object(provider, "get_setup_value", return_value=stored),
+        patch.object(provider, "_update_setup_data") as update_setup_data,
+    ):
+        await provider._get_stream_format("dQw4w9WgXcQ")
+
+    update_setup_data.assert_not_called()
+
+
+FAST_ARGS = {
+    "player_skip": ["webpage", "configs", "initial_data"],
+    "fetch_pot": ["never"],
+    "formats": ["missing_pot"],
+}
+
+
+@pytest.mark.parametrize(
+    ("profile", "require_login", "yt_user", "extra_args"),
+    [
+        ("stable", False, None, {}),
+        ("fast", False, None, FAST_ARGS),
+        # the login check and brand accounts need the webpage the fast profile skips
+        ("fast", True, None, {}),
+        ("fast", False, "test-brand-user", {}),
+    ],
+)
+async def test_stream_profile_sets_youtube_extractor_args(
+    provider: YoutubeMusicProvider,
+    profile: str,
+    require_login: bool,
+    yt_user: str | None,
+    extra_args: dict[str, list[str]],
+) -> None:
+    """The stream profile decides which youtube extractor args yt-dlp receives."""
+    provider._netscape_cookie = ""
+    provider._yt_user = yt_user
+    received: list[dict[str, Any]] = []
+
+    class _FakeYoutubeDL:
+        def __init__(self, opts: dict[str, Any]) -> None:
+            received.append(opts["extractor_args"]["youtube"])
+            self.cookiejar: list[SimpleNamespace] = []
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, Any]:
+            return {"formats": []}
+
+        def build_format_selector(self, spec: str) -> Any:
+            return lambda _ctx: iter([{"format_id": "141"}])
+
+    provider._yt_dlp_module = SimpleNamespace(  # type: ignore[assignment]
+        YoutubeDL=_FakeYoutubeDL,
+        utils=SimpleNamespace(DownloadError=type("DownloadError", (Exception,), {})),
+    )
+    cast("MagicMock", provider.config.get_value).side_effect = lambda key: (
+        profile if key == CONF_STREAM_PROFILE else "GLOBAL"
+    )
+    await provider._get_stream_format("dQw4w9WgXcQ", require_login=require_login)
+
+    assert received == [
+        {"skip": ["translated_subs", "dash"], "player_client": ["web_music"], **extra_args}
+    ]
+
+
+def _tracking() -> dict[str, Any]:
+    """Return the playback tracking addresses YouTube hands out for a video."""
+    return {
+        "videostatsPlaybackUrl": {"baseUrl": "https://s.youtube.com/api/stats/playback?docid=v1"},
+        "videostatsWatchtimeUrl": {
+            "baseUrl": "https://s.youtube.com/api/stats/watchtime?docid=v1&len=3600"
+        },
+    }
+
+
+def _reported(provider: YoutubeMusicProvider) -> list[dict[str, list[str]]]:
+    """Return the query of every playback report sent, with its address under 'url'."""
+    reports = []
+    for call in cast("MagicMock", provider.mass.http_session.get).call_args_list:
+        url = call.args[0]
+        reports.append({"url": [url.split("?")[0]], **parse_qs(urlparse(url).query)})
+    return reports
+
+
+@pytest.fixture
+def reporting_provider(provider: YoutubeMusicProvider) -> YoutubeMusicProvider:
+    """Return a provider whose playback reports are accepted by YouTube."""
+    provider._cookies = {}
+    provider._episode_playbacks = {}
+    response = MagicMock()
+    provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda *_args, **_kwargs: _ping_context_manager(response=response)
+    )
+    return provider
+
+
+async def _played(
+    provider: YoutubeMusicProvider,
+    position: int,
+    is_playing: bool,
+    media_type: MediaType = MediaType.PODCAST_EPISODE,
+) -> None:
+    """Send a playback report of episode v1 to the provider."""
+    await provider.on_played(
+        media_type=media_type,
+        prov_item_id="pod1|v1",
+        fully_played=False,
+        position=position,
+        media_item=MagicMock(),
+        is_playing=is_playing,
+    )
+
+
+async def _started(
+    provider: YoutubeMusicProvider,
+    position: int = 0,
+    media_type: MediaType = MediaType.PODCAST_EPISODE,
+) -> None:
+    """Tell the provider that episode v1 started streaming."""
+    await provider.on_stream_started(
+        SimpleNamespace(media_type=media_type, item_id="v1", seek_position=position)  # type: ignore[arg-type]
+    )
+
+
+async def test_on_played_reports_episode_playback(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A started episode is announced once, its position is throttled and its stop is sent."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ) as mock_tracking:
+        await _started(reporting_provider, 100)
+        await _played(reporting_provider, 100, is_playing=True)
+        await _played(reporting_provider, 130, is_playing=True)
+        await _played(reporting_provider, 400, is_playing=False)
+
+    mock_tracking.assert_awaited_once()
+    start, first, stop = _reported(reporting_provider)
+    assert start["url"] == ["https://s.youtube.com/api/stats/playback"]
+    assert start["cmt"] == ["100"]
+    assert first["url"] == stop["url"] == ["https://s.youtube.com/api/stats/watchtime"]
+    assert (first["st"], first["et"]) == (["100"], ["100"])
+    assert (stop["st"], stop["et"]) == (["100"], ["400"])
+    assert start["cpn"] == first["cpn"] == stop["cpn"]
+    # the values YouTube put in the address itself stay as they are
+    assert stop["docid"] == ["v1"]
+    assert stop["len"] == ["3600"]
+    assert stop["cmt"] == ["400"]
+    assert not reporting_provider._episode_playbacks
+
+
+async def test_on_played_reports_a_stop_before_the_first_progress_report(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """An episode paused right after it started still has its position sent."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ):
+        await _started(reporting_provider, 1516)
+        await _played(reporting_provider, 1523, is_playing=False)
+
+    _, stop = _reported(reporting_provider)
+    assert (stop["st"], stop["et"]) == (["1516"], ["1523"])
+
+
+async def test_on_played_reports_after_a_resume_without_a_new_stream(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A paused episode that resumes on the same stream is announced again and its stop sent."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ) as mock_tracking:
+        await _started(reporting_provider, 100)
+        await _played(reporting_provider, 130, is_playing=False)
+        await _played(reporting_provider, 130, is_playing=True)
+        await _played(reporting_provider, 160, is_playing=False)
+
+    assert mock_tracking.await_count == 2
+    reports = _reported(reporting_provider)
+    announcements = [r for r in reports if r["url"] == ["https://s.youtube.com/api/stats/playback"]]
+    assert [a["cmt"] for a in announcements] == [["100"], ["130"]]
+    assert (reports[-1]["st"], reports[-1]["et"]) == (["130"], ["160"])
+
+
+async def test_get_stream_details_marks_an_episode_as_a_podcast_episode(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """The stream details of an episode name its media type, so its playback is reported."""
+    stream_format = {"url": "https://example.com/a", "audio_ext": "m4a", "format": "140"}
+    with (
+        patch.object(
+            reporting_provider, "_get_stream_format", AsyncMock(return_value=stream_format)
+        ),
+        patch(
+            "music_assistant.providers.ytmusic.get_playback_tracking",
+            AsyncMock(return_value=_tracking()),
+        ),
+    ):
+        details = await reporting_provider.get_stream_details("pod1|v1", MediaType.PODCAST_EPISODE)
+        await reporting_provider.on_stream_started(details)
+
+    assert details.media_type == MediaType.PODCAST_EPISODE
+    assert "v1" in reporting_provider._episode_playbacks
+
+
+async def test_on_played_reports_position_after_interval(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A playing episode reports its position again once the interval has passed."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ):
+        await _started(reporting_provider, 100)
+        await _played(reporting_provider, 100, is_playing=True)
+        reporting_provider._episode_playbacks["v1"].reported_at -= 300
+        await _played(reporting_provider, 400, is_playing=True)
+
+    assert len(_reported(reporting_provider)) == 3
+
+
+async def test_on_stream_started_ignores_tracks_and_untracked_episodes(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """Tracks are never reported, and nor is an episode YouTube offers no tracking for."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking", AsyncMock(return_value=None)
+    ) as mock_tracking:
+        await _started(reporting_provider, media_type=MediaType.TRACK)
+        mock_tracking.assert_not_awaited()
+        await _started(reporting_provider, 100)
+        await _played(reporting_provider, 100, is_playing=True)
+        await _played(reporting_provider, 130, is_playing=True)
+
+    # an episode without tracking is not asked about again on every tick
+    mock_tracking.assert_awaited_once()
+
+    cast("MagicMock", reporting_provider.mass.http_session.get).assert_not_called()
+
+
+async def test_on_played_ignores_marking_an_episode_played(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """Marking an episode (un)played without a playback here sends YouTube nothing."""
+    with patch(
+        "music_assistant.providers.ytmusic.get_playback_tracking",
+        AsyncMock(return_value=_tracking()),
+    ) as mock_tracking:
+        await _played(reporting_provider, 0, is_playing=False)
+
+    mock_tracking.assert_not_awaited()
+    cast("MagicMock", reporting_provider.mass.http_session.get).assert_not_called()
+
+
+async def test_on_played_announces_again_after_a_failed_announcement(
+    reporting_provider: YoutubeMusicProvider,
+) -> None:
+    """A playback whose announcement failed is announced with its next report, and its stop sent."""
+    tracking = AsyncMock(side_effect=[ReadTimeout("timed out"), _tracking()])
+    with patch("music_assistant.providers.ytmusic.get_playback_tracking", tracking):
+        with pytest.raises(ReadTimeout):
+            await _started(reporting_provider, 100)
+        await _played(reporting_provider, 130, is_playing=True)
+        await _played(reporting_provider, 400, is_playing=False)
+
+    assert tracking.await_count == 2
+    start, first, stop = _reported(reporting_provider)
+    assert start["url"] == ["https://s.youtube.com/api/stats/playback"]
+    assert (first["st"], first["et"]) == (["100"], ["130"])
+    assert (stop["st"], stop["et"]) == (["130"], ["400"])
+
+
+@pytest.mark.parametrize(
+    ("percentage", "start_seconds", "expected"),
+    [
+        (0, 0, (False, 0, None)),
+        # YouTube updates the percentage later than the resume point, which is what counts
+        (0, 1007, (False, 1_007_000, None)),
+        (37, 1007, (False, 1_007_000, None)),
+        (100, 0, (True, 3_600_000, None)),
+    ],
+)
+async def test_get_resume_position_from_progress(
+    provider: YoutubeMusicProvider,
+    percentage: int,
+    start_seconds: int,
+    expected: tuple[bool, int, None],
+) -> None:
+    """The resume point is the second YouTube resumes from, or the end for a finished episode."""
+    with (
+        patch.object(provider, "get_track", AsyncMock(return_value=SimpleNamespace(duration=3600))),
+        patch(
+            "music_assistant.providers.ytmusic.get_podcast_episode",
+            AsyncMock(return_value={"progressPercentage": percentage}),
+        ),
+        patch(
+            "music_assistant.providers.ytmusic.get_episode_start_seconds",
+            AsyncMock(return_value=start_seconds),
+        ),
+    ):
+        result = await provider.get_resume_position("pod1|v1", MediaType.PODCAST_EPISODE)
+
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        YTMusicServerError("Server returned HTTP 500"),
+        ReadTimeout("timed out"),
+        KeyError("progress"),
+        RetriesExhausted("rate limited"),
+    ],
+)
+async def test_get_resume_position_unavailable(
+    provider: YoutubeMusicProvider, error: Exception
+) -> None:
+    """When YouTube's progress cannot be read, the episode resumes from MA's own position."""
+    with (
+        patch(
+            "music_assistant.providers.ytmusic.get_podcast_episode", AsyncMock(side_effect=error)
+        ),
+        pytest.raises(NotImplementedError),
+    ):
+        await provider.get_resume_position("pod1|v1", MediaType.PODCAST_EPISODE)
+
+
+def _listing(*set_video_ids: str) -> dict[str, Any]:
+    """Build a get_playlist result holding entries with the given setVideoIds."""
+    return {"tracks": [{"videoId": f"v{svid}", "setVideoId": svid} for svid in set_video_ids]}
+
+
+async def test_remove_playlist_tracks_removes_the_selected_position(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Removing position 2 deletes the second entry, read as the brand account."""
+    provider._yt_user = "123456789012345678901"
+    get_playlist = AsyncMock(return_value=_listing("A", "B", "C"))
+    with (
+        patch("music_assistant.providers.ytmusic.get_playlist", get_playlist),
+        patch(
+            "music_assistant.providers.ytmusic.add_remove_playlist_tracks", AsyncMock()
+        ) as mock_remove,
+    ):
+        await provider.remove_playlist_tracks("PL1", (2,))
+
+    assert mock_remove.call_args.kwargs["prov_track_ids"] == [{"videoId": "vB", "setVideoId": "B"}]
+    assert get_playlist.call_args.kwargs["user"] == "123456789012345678901"
+
+
+@pytest.mark.parametrize(
+    ("positions", "to_position", "moved", "successor"),
+    [
+        ([1], 3, ["A"], "D"),
+        ([4], 1, ["D"], "A"),
+        ([2], None, ["B"], None),
+        ([1, 3], 2, ["A", "C"], "D"),
+    ],
+)
+async def test_move_playlist_tracks_moves_the_block_before_its_successor(
+    provider: YoutubeMusicProvider,
+    positions: list[int],
+    to_position: int | None,
+    moved: list[str],
+    successor: str | None,
+) -> None:
+    """The selected entries move in order in front of the entry that ends up after them."""
+    get_playlist = AsyncMock(return_value=_listing("A", "B", "C", "D"))
+    with (
+        patch("music_assistant.providers.ytmusic.get_playlist", get_playlist),
+        patch("music_assistant.providers.ytmusic.move_playlist_entries", AsyncMock()) as mock_move,
+    ):
+        await provider.move_playlist_tracks("PL1", positions, to_position)
+
+    assert mock_move.call_args.kwargs["set_video_ids"] == moved
+    assert mock_move.call_args.kwargs["successor"] == successor
+
+
+async def test_move_playlist_tracks_leaves_a_block_already_in_place(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """Moving the last entries to the end does not touch the playlist."""
+    get_playlist = AsyncMock(return_value=_listing("A", "B", "C", "D"))
+    with (
+        patch("music_assistant.providers.ytmusic.get_playlist", get_playlist),
+        patch("music_assistant.providers.ytmusic.move_playlist_entries", AsyncMock()) as mock_move,
+    ):
+        await provider.move_playlist_tracks("PL1", [3, 4])
+
+    mock_move.assert_not_called()

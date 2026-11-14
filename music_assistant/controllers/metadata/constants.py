@@ -66,6 +66,9 @@ AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "pro
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 
+# a refresh that a metadata provider failed temporarily is due again after this
+REFRESH_RETRY_INTERVAL = 60 * 60 * 24 * 7  # 7 days
+
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 
 CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"
@@ -77,6 +80,10 @@ CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ = "link_providers_via_musicbrainz"
 # core config key holding, per music provider MusicBrainz links to, since when it is loaded;
 # items looked up on MusicBrainz before that still lack its links
 CONF_MUSICBRAINZ_LINKED_DOMAINS = "musicbrainz_linked_domains"
+
+# core config key holding when the preferred metadata language last changed; an item
+# refreshed before then with a description in another language is due once more
+CONF_LANGUAGE_CHANGED = "language_changed"
 
 # keeps its historical artist-only id (and task domain) so existing schedules survive
 MISSING_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"

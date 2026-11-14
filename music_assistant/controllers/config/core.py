@@ -20,7 +20,11 @@ from music_assistant.constants import (
     DEFAULT_CORE_CONFIG_ENTRIES,
 )
 from music_assistant.controllers.config.constants import _ConfigValueT
-from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.config.helpers import (
+    _mask_encrypted,
+    _reject_encrypted_values,
+    _with_translation_owner,
+)
 from music_assistant.controllers.player_queues.constants import CONF_AUTOPLAY_PLAYLIST
 from music_assistant.helpers.api import api_command
 
@@ -117,14 +121,14 @@ class CoreConfigMixin:
         """
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_core_config_value(domain, key)) is not None:
-            return raw_value
+            return _mask_encrypted(raw_value)
         conf = await self.get_core_config(domain)
         if key not in conf.values:
             if default is not None:
                 return default
             msg = f"Config key {key} not found for core controller {domain}"
             raise KeyError(msg)
-        return (
+        return _mask_encrypted(
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
@@ -171,6 +175,7 @@ class CoreConfigMixin:
         values: dict[str, ConfigValueType],
     ) -> CoreConfig:
         """Save CoreController Config values."""
+        _reject_encrypted_values(values)
         config = await self.get_core_config(domain)
         prev_config = config.to_raw()
         changed_keys = config.update(values)

@@ -13,12 +13,11 @@ import pytest
 from music_assistant_models.auth import Scope
 from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 
-from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_VERIFY_SSL
 from music_assistant.helpers.api import APICommandHandler
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
     CONF_URL,
-    CONF_VERIFY_SSL,
     SEARCH_CONTROL_ENTITIES_COMMAND,
     HomeAssistantProvider,
     setup,

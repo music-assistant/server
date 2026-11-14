@@ -6,9 +6,9 @@
   "description": "Connects Music Assistant with Home Assistant for automation, integration, and enhanced smart-home control.",
   "codeowners": ["@music-assistant"],
   "credits": ["[hass-client](https://github.com/music-assistant/python-hass-client)"],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/ha-plugin/",
   "multi_instance": false,
   "builtin": false,
   "icon": "md:webhook",
-  "requirements": ["hass-client==1.3.1"]
+  "requirements": ["hass-client==1.4.1"]
 }

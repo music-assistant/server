@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 from music_assistant_models.media_items import AudioFormat
 
@@ -98,6 +98,7 @@ def _make_streamdetails(item_id: str = "track-1", duration: float | None = 60.0)
     sd = MagicMock()
     sd.item_id = item_id
     sd.provider = "test_provider"
+    sd.media_type = MediaType.TRACK
     sd.duration = duration
     return sd
 
@@ -316,6 +317,25 @@ async def test_start_analysis_declines_without_duration(duration: float | None) 
 
     result = await provider._start_analysis(
         "session-no-duration", _make_streamdetails("no-duration", duration), _make_audio_format()
+    )
+
+    assert result is False
+    assert provider._sessions == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "media_type", [MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE, MediaType.RADIO]
+)
+async def test_start_analysis_declines_non_music(media_type: MediaType) -> None:
+    """``_start_analysis`` must decline anything that is not a music track."""
+    provider = _make_provider()
+    provider._clap_model = MagicMock(name="clap_model")
+    streamdetails = _make_streamdetails("not-music")
+    streamdetails.media_type = media_type
+
+    result = await provider._start_analysis(
+        "session-not-music", streamdetails, _make_audio_format()
     )
 
     assert result is False

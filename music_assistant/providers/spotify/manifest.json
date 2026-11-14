@@ -9,7 +9,7 @@
     "[Spotify Soloist (by Spotify)](https://developer.spotify.com/documentation/soloist)",
     "[librespot (by librespot-org)](https://github.com/librespot-org/librespot)"
   ],
-  "requirements": ["pkce==1.0.3"],
+  "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/spotify/",
   "multi_instance": true
 }

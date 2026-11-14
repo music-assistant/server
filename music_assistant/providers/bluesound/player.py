@@ -15,8 +15,8 @@ from pyblu.entities import Input, PairedPlayer, Preset
 from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_FORCED_3,
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
+    CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.util import is_valid_mac_address
@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 
 class BluesoundPlayer(Player):
     """Holds the details of the (discovered) BluOS player."""
+
+    _attr_trusts_reported_source = True
 
     def __init__(
         self,
@@ -94,9 +96,9 @@ class BluesoundPlayer(Player):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            # BluOS keeps looping the audio on the other HTTP profiles,
+            # BluOS keeps looping the audio without a fixed content length,
             # so this is not a choice we can leave to the user.
-            CONF_ENTRY_HTTP_PROFILE_FORCED_3,
+            CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED,
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
                 safe_max_sample_rate=192000,
@@ -300,12 +302,14 @@ class BluesoundPlayer(Player):
             self._attr_active_source = name
             self._attr_source_list.append(player_source)
         else:
-            self._attr_active_source = self.status.input_id
+            # Library and service playback may omit input_id in a valid BluOS status.
+            source_id = self.status.input_id or self.status.service or "bluos_external"
+            self._attr_active_source = source_id
             self.logger.debug("Appending new PlayerSource")
             self._attr_source_list.append(
                 PlayerSource(
-                    id=cast("str", self.status.input_id),
-                    name=cast("str", self.status.input_id),
+                    id=source_id,
+                    name=source_id,
                     passive=True,
                     can_play_pause=True,
                     can_seek=self.status.can_seek,

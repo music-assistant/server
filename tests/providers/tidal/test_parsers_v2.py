@@ -12,6 +12,7 @@ from music_assistant_models.media_items import ItemMapping
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.parsers_v2 import (
     _map_album_type,
+    _parse_camelot_key,
     _parse_iso_duration,
     _select_image_url,
     _split_title_version,
@@ -61,6 +62,7 @@ def test_parse_track(provider_mock: Mock) -> None:
     assert track.audio_metadata is not None
     assert track.audio_metadata.bpm == 120.0
     assert track.audio_metadata.musical_key == "Eb major"
+    assert track.audio_metadata.camelot_key == "5B"
     assert [a.name for a in track.artists] == ["Lukas Graham"]
     assert track.album is not None
     assert track.album.item_id == "58756127"
@@ -125,6 +127,22 @@ def test_parse_artist(provider_mock: Mock) -> None:
     link_types = {link.type for link in (artist.metadata.links or [])}
     assert LinkType.FACEBOOK in link_types
     assert LinkType.TWITTER in link_types
+
+
+def test_parse_artist_skips_an_album_cover_as_profile_art(provider_mock: Mock) -> None:
+    """Test an artist whose profile art comes in album cover sizes gets no image."""
+    raw = json.loads((FIXTURES_DIR / "artist.json").read_text())
+    artwork = next(x for x in raw["included"] if x["type"] == "artworks")
+    href = artwork["attributes"]["files"][0]["href"]
+    artwork["attributes"]["files"] = [
+        {"href": href, "meta": {"width": width, "height": width}}
+        for width in (1280, 1080, 750, 640, 320, 160, 80)
+    ]
+    doc = JsonApiDocument(raw)
+
+    artist = parse_artist(provider_mock, doc, doc.data)
+
+    assert not artist.metadata.images
 
 
 def test_parse_artist_strips_wimplink_markup(provider_mock: Mock) -> None:
@@ -377,3 +395,22 @@ def test_select_image_url_empty() -> None:
 def test_parse_iso_duration(value: str, expected: int) -> None:
     """Test ISO-8601 duration parsing including the hours component."""
     assert _parse_iso_duration(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("key", "scale", "expected"),
+    [
+        ("A", "MINOR", "8A"),
+        ("A", "AEOLIAN", "8A"),
+        ("A", "HARMONIC_MINOR", "8A"),
+        ("A", "MELODIC_MINOR", "8A"),
+        ("A", "PENTATONIC_MINOR", "8A"),
+        ("FSharp", "PENTATONIC_MAJOR", "2B"),
+        ("A", "DORIAN", None),
+        ("A", "UNKNOWN", None),
+        (None, "MAJOR", None),
+    ],
+)
+def test_parse_camelot_key(key: str | None, scale: str | None, expected: str | None) -> None:
+    """Test Camelot mapping of Tidal's key and scale enums."""
+    assert _parse_camelot_key(key, scale) == expected

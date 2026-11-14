@@ -15,7 +15,7 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_L
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_AUTO_DISCOVER, CONF_ROKU_APP_ID
+from .constants import CONF_AUTO_DISCOVER, CONF_ROKU_APP_ID, DEFAULT_ROKU_APP_IDS
 from .player import MediaAssistantPlayer
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ class MediaAssistantprovider(PlayerProvider):
             ConfigEntry(
                 key=CONF_ROKU_APP_ID,
                 type=ConfigEntryType.STRING,
-                default_value="782875",
+                default_value=DEFAULT_ROKU_APP_IDS,
                 required=False,
                 advanced=True,
             ),

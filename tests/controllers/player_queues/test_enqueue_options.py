@@ -85,13 +85,14 @@ def _podcast(item_id: str) -> Podcast:
     )
 
 
-def _radio(item_id: str, *, is_dynamic: bool = False) -> Radio:
-    """Build a Radio on the 'test' provider (an individual item, omitted from the wire `sources`)."""
+def _radio(item_id: str, *, is_dynamic: bool = False, is_endless: bool = True) -> Radio:
+    """Build a Radio on the 'test' provider (a live stream by default, omitted from `sources`)."""
     return Radio(
         item_id=item_id,
         provider="test",
         name=f"Radio {item_id}",
         is_dynamic=is_dynamic,
+        is_endless=is_endless,
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
@@ -140,6 +141,38 @@ async def test_play_on_active_queue_inserts_after_current() -> None:
     # inserted right after the current/buffered index (2) and playback jumps there
     assert ctrl._queue_data["q1"].items[3] is new_items[0]
     play_index.assert_awaited_once_with("q1", 3)
+
+
+async def test_replace_next_on_active_queue_keeps_the_buffered_item() -> None:
+    """REPLACE_NEXT leaves the track the player already fetched in place and replaces the rest."""
+    ctrl = _controller()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
+    existing = _items("q1", ["e0", "e1", "e2", "e3", "e4"])
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=2,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
+    new_items = _items("q1", ["n0", "n1"])
+
+    await ctrl._enqueue_with_option("q1", new_items, QueueOption.REPLACE_NEXT)
+
+    # the player plays e1 and has e2 fetched: both stay, the new items follow e2
+    assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == [
+        "e0",
+        "e1",
+        "e2",
+        "n0",
+        "n1",
+    ]
+    ctrl.play_index.assert_not_awaited()
 
 
 async def test_next_shuffle_pins_first_item_and_shuffles_rest() -> None:
@@ -499,6 +532,20 @@ def test_store_sources_keeps_a_dynamic_station_on_wire() -> None:
     ctrl.store_sources(queue, [station, live_stream])
 
     assert [mapping.uri for mapping in queue.sources] == [station.uri]
+
+
+def test_store_sources_keeps_a_finite_radio_on_wire() -> None:
+    """A finite show is a source too: its wire uri is how the AI Radio DJ recognizes it."""
+    ctrl = _controller()
+    ctrl._managed_pool = Mock()
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    show = _radio("show", is_dynamic=False, is_endless=False)
+    live_stream = _radio("live")
+
+    ctrl.store_sources(queue, [show, live_stream])
+
+    assert [mapping.uri for mapping in queue.sources] == [show.uri]
 
 
 def _shuffled_queue(ctrl: PlayerQueuesController) -> PlayerQueue:

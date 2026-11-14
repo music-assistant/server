@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import ClientTimeout
 
+from music_assistant.providers.bose_soundtouch.client.const import HTTP_PORT, REQUEST_TIMEOUT
+
 if TYPE_CHECKING:
     from aiohttp.client import ClientSession
 
@@ -16,6 +18,6 @@ class SessionConfiguration:
 
     session: ClientSession
     ip: str
-    http_port: int = 8090
-    timeout: ClientTimeout = field(default_factory=lambda: ClientTimeout(total=10))
+    http_port: int = HTTP_PORT
+    timeout: ClientTimeout = field(default_factory=lambda: ClientTimeout(total=REQUEST_TIMEOUT))
     logger: logging.Logger | None = None

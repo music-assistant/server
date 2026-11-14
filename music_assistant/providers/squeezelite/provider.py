@@ -91,6 +91,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         assert self.slimproto is not None  # for type checker
+        self.slimproto.cli.display_name_lookup = self._lookup_display_name
         # subscribe before starting the socket server: aioslimproto does not buffer
         # events, so a client connecting before we subscribe would be missed entirely
         self.slimproto.subscribe(self._handle_slimproto_event)
@@ -117,6 +118,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
         await self._cleanup_server()
         self.mass.streams.unregister_dynamic_route("/slimproto/multi")
         self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
+
+    def _lookup_display_name(self, player_id: str) -> str | None:
+        """Return Music Assistant's display name for a player, or None if it does not know it."""
+        mass_player = self.mass.players.get_player(player_id)
+        return mass_player.display_name if mass_player else None
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None
@@ -168,6 +174,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
             slimclient = self.slimproto.get_player(event.player_id)
             if not slimclient:
                 return  # should not happen, but guard anyways
+            # a reconnect before the old socket closed is not reported as a disconnect
+            self._release_from_sync_leader(event.player_id)
             player = SqueezelitePlayer(self, event.player_id, slimclient)
             self.mass.create_task(player.setup())
             return
@@ -178,6 +186,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
+            self._release_from_sync_leader(player.player_id)
             self.mass.create_task(self.mass.players.unregister(player.player_id))
             return
 
@@ -207,11 +216,19 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if not (stream := sync_parent.multi_client_stream) or stream.done:
             raise web.HTTPNotFound(reason=f"There is no active stream for {player_id}!")
 
+        output_format = await self.mass.streams.audio.get_output_format(
+            output_format_str=fmt,
+            player=child_player,
+            content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
+            content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
+            media_type=MediaType.FLOW_STREAM,
+        )
+        # squeezelite takes the PCM params from the Content-Type, not from the WAV header
         resp = web.StreamResponse(
             status=200,
             reason="OK",
             headers={
-                "Content-Type": get_mime_type(fmt),
+                "Content-Type": get_mime_type(output_format.output_format_str),
             },
         )
         await resp.prepare(request)
@@ -226,13 +243,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
             child_player.display_name,
         )
 
-        output_format = await self.mass.streams.audio.get_output_format(
-            output_format_str=fmt,
-            player=child_player,
-            content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
-            content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
-            media_type=MediaType.FLOW_STREAM,
-        )
         output_plan = self.mass.streams.audio.get_player_output_plan(
             child_player_id,
             stream.audio_format,
@@ -251,3 +261,14 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 # race condition
                 break
         return resp
+
+    def _release_from_sync_leader(self, player_id: str) -> None:
+        """Drop a player whose connection ended from the group of its sync leader."""
+        # a reconnect registers a fresh player, so the leader must let go of the old
+        # one or it keeps listing a member that is no longer part of its stream
+        if (
+            (player := self.mass.players.get_player(player_id))
+            and (leader_id := player.synced_to)
+            and (leader := self.mass.players.get_player(leader_id))
+        ):
+            cast("SqueezelitePlayer", leader).remove_disconnected_member(player_id)

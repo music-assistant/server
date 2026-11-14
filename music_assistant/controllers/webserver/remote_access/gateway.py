@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Final, NamedTuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -52,6 +52,10 @@ DATA_CHANNEL_CHUNK_SIZE = 64 * 1024
 # plus the group, sequence and count numbers.
 DATA_CHANNEL_CHUNK_OVERHEAD = 128
 
+# aiohttp's default limit on the local WebSocket. It rejects a message of exactly this size,
+# so the cap is exclusive.
+DATA_CHANNEL_INBOUND_MAX_BYTES = 4 * 1024 * 1024
+
 # Preferred body chunk size on the dedicated http proxy channel. Raw binary needs no escaping,
 # so this sits close to libdatachannel's 256 KiB cap; the channel's negotiated limit still wins.
 HTTP_PROXY_BODY_CHUNK_SIZE = 192 * 1024
@@ -66,6 +70,23 @@ HTTP_PROXY_SEND_TIMEOUT = 10
 # Both budgets sit inside the 30 seconds a client waits before it abandons a proxied request,
 # so neither works on (or answers) a request nobody is listening for any more.
 HTTP_PROXY_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+# Lowercased request headers a remote peer may not set on the local request: hop-by-hop
+# headers, the target host, and the body length aiohttp derives itself.
+HTTP_PROXY_DROPPED_HEADERS: Final = frozenset(
+    {
+        "host",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",  # codespell:ignore te
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+    }
+)
 
 DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
@@ -92,6 +113,20 @@ class _ServedChannel:
 
 
 @dataclass
+class _InboundChunkGroup:
+    """A client message still being reassembled from its chunk frames."""
+
+    group_id: int
+    count: int
+    data: bytearray = field(default_factory=bytearray)
+    next_seq: int = 0
+
+
+class _ChunkProtocolError(Exception):
+    """A client chunk frame broke the framing rules, so the session must end."""
+
+
+@dataclass
 class WebRTCSession:
     """Represents an active WebRTC session with a remote client."""
 
@@ -103,6 +138,8 @@ class WebRTCSession:
     # Channels served by label (sendspin, live announcements, http proxy)
     channels: dict[str, _ServedChannel] = field(default_factory=dict)
     sendspin_player_id: str | None = None  # Extracted from first sendspin auth message
+    # Client message being reassembled from __chunk__ frames (one at a time, in order)
+    chunk_group: _InboundChunkGroup | None = None
 
 
 # Serves one incoming data channel for a session until that channel goes away.
@@ -334,7 +371,6 @@ class WebRTCGateway:
             self.logger.debug("WebSocket connection established, id=%s", id(self._signaling_ws))
             self.logger.debug("Sending registration")
             await self._register()
-            self._current_reconnect_delay = self._reconnect_delay
             self.logger.debug("Registration sent, waiting for confirmation...")
 
             # Run message loop and get close code
@@ -372,7 +408,8 @@ class WebRTCGateway:
         """Process messages from the signaling WebSocket."""
         close_code: int | None = None
         self.logger.debug("Entering message loop")
-        async for msg in ws:
+        while True:
+            msg = await ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     await self._handle_signaling_message(json.loads(msg.data))
@@ -389,6 +426,9 @@ class WebRTCGateway:
                     msg.data,
                     msg.extra,
                 )
+                break
+            elif msg.type == aiohttp.WSMsgType.CLOSING:
+                # Our own close() is in progress
                 break
             elif msg.type == aiohttp.WSMsgType.CLOSED:
                 self.logger.warning("Signaling server closed connection")
@@ -421,6 +461,7 @@ class WebRTCGateway:
             pass
         elif msg_type == "registered":
             self._is_connected = True
+            self._current_reconnect_delay = self._reconnect_delay
             self.logger.info("Registered with signaling server")
         elif msg_type == "error":
             error_msg = message.get("error") or message.get("message", "Unknown error")
@@ -574,13 +615,23 @@ class WebRTCGateway:
 
         async with self._http_proxy_semaphore:
             try:
+                # a Connection header may nominate more hop-by-hop headers to drop
+                dropped = HTTP_PROXY_DROPPED_HEADERS | {
+                    token.strip().lower()
+                    for name, value in headers.items()
+                    if name.lower() == "connection"
+                    for token in str(value).split(",")
+                }
+                forwarded_headers = {
+                    name: value for name, value in headers.items() if name.lower() not in dropped
+                }
                 # Use shared HTTP session for this request
                 # this dial never leaves the host: TLS verification would fail on the bind
                 # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
                     method,
                     local_http_url,
-                    headers=headers,
+                    headers=forwarded_headers,
                     ssl=False,
                     allow_redirects=False,
                     timeout=HTTP_PROXY_FETCH_TIMEOUT,
@@ -604,14 +655,14 @@ class WebRTCGateway:
                     b"Gateway Timeout",
                     send_lock,
                 )
-            except Exception as err:
+            except Exception:
                 self.logger.exception("Error handling HTTP proxy request")
                 await self._send_http_proxy_response(
                     channel,
                     request_id,
                     500,
                     {"Content-Type": "text/plain"},
-                    str(err).encode(),
+                    b"Internal server error",
                     send_lock,
                 )
 
@@ -835,11 +886,12 @@ class WebRTCGateway:
     async def _ma_api_to_local(self, session: WebRTCSession, channel: DataChannel) -> None:
         """Forward messages from the ma-api data channel to the local WebSocket."""
         try:
-            async for message in channel:
-                if isinstance(message, str):
+            async for received in channel:
+                message = received
+                if isinstance(received, str):
                     # Check if this is an HTTP proxy request
                     try:
-                        msg_data = json.loads(message)
+                        msg_data = json.loads(received)
                         if (
                             isinstance(msg_data, dict)
                             and msg_data.get("type") == "http-proxy-request"
@@ -852,7 +904,12 @@ class WebRTCGateway:
                             )
                             continue
                     except json.JSONDecodeError, ValueError:
-                        pass
+                        msg_data = None
+                    if isinstance(msg_data, dict) and msg_data.get("type") == "__chunk__":
+                        assembled = self._reassemble_chunk(session, msg_data)
+                        if assembled is None:
+                            continue
+                        message = assembled
 
                 if session.local_ws and not session.local_ws.closed:
                     if isinstance(message, bytes):
@@ -861,10 +918,67 @@ class WebRTCGateway:
                         await session.local_ws.send_str(message)
         except ConnectionClosedError:
             self.logger.debug("ma-api channel closed for session %s", session.session_id)
+        except _ChunkProtocolError as err:
+            self.logger.warning("Closing session %s: %s", session.session_id, err)
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger.exception("Error forwarding to local WebSocket")
+
+    def _reassemble_chunk(self, session: WebRTCSession, frame: dict[str, Any]) -> str | None:
+        """
+        Collect one client chunk frame and return the full message once its group completes.
+
+        :param session: The session the frame arrived on.
+        :param frame: The decoded `__chunk__` frame.
+        :return: The reassembled text, or None while the message is incomplete.
+        :raises _ChunkProtocolError: If the frame breaks the framing rules.
+        """
+        group = session.chunk_group
+        session.chunk_group = None
+        group_id = frame.get("id")
+        seq = frame.get("seq")
+        count = frame.get("count")
+        b64 = frame.get("b64")
+        if (
+            not isinstance(group_id, int)
+            or not isinstance(seq, int)
+            or not isinstance(count, int)
+            or not isinstance(b64, str)
+        ):
+            raise _ChunkProtocolError("malformed chunk frame")
+        if count < 1:
+            raise _ChunkProtocolError("chunk count below 1")
+        if seq == 0:
+            if group is not None:
+                raise _ChunkProtocolError("chunk group opened while another is open")
+            group = _InboundChunkGroup(group_id, count)
+        elif group is None:
+            raise _ChunkProtocolError("chunk frame without an open group")
+        elif (group_id, count, seq) != (group.group_id, group.count, group.next_seq):
+            raise _ChunkProtocolError("chunk frame out of sequence")
+        try:
+            piece = base64.b64decode(b64, validate=True)
+        except ValueError as err:
+            raise _ChunkProtocolError("chunk payload is not valid base64") from err
+        if len(group.data) + len(piece) >= DATA_CHANNEL_INBOUND_MAX_BYTES:
+            raise _ChunkProtocolError("chunked message exceeds the size limit")
+        group.data += piece
+        group.next_seq += 1
+        if group.next_seq < group.count:
+            session.chunk_group = group
+            return None
+        try:
+            text = group.data.decode()
+        except UnicodeDecodeError as err:
+            raise _ChunkProtocolError("chunked message is not valid UTF-8") from err
+        self.logger.debug(
+            "Reassembled %d byte client message from %d frames on session %s",
+            len(group.data),
+            group.count,
+            session.session_id,
+        )
+        return text
 
     async def _ma_api_from_local(self, session: WebRTCSession, channel: DataChannel) -> None:
         """Forward messages from the local WebSocket to the ma-api data channel."""

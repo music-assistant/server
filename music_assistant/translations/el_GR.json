@@ -118,5 +118,13 @@
   "provider.webdav.config_entries.password.label": "Κωδικός πρόσβασης",
   "provider.webdav.config_entries.username.label": "Ονομα χρήστη",
   "provider.yandex_music.config_entries.delete_wave_preset.action_label": "Διαγραφή",
-  "provider.ytmusic.config_entries.username.label": "Ονομα χρήστη"
+  "provider.ytmusic.config_entries.username.label": "Ονομα χρήστη",
+  "provider.abc_radio_network.config_entries.state.label": "Η πολιτεία σας",
+  "provider.abc_radio_network.config_entries.state.options.nsw": "Νέα Νότια Ουαλία \/ Επικράτεια Αυστραλιανής Πρωτεύουσας",
+  "provider.abc_radio_network.config_entries.state.options.nt": "Βόρεια Επικράτεια",
+  "provider.abc_radio_network.config_entries.state.options.qld": "Κουίνσλαντ",
+  "provider.abc_radio_network.config_entries.state.options.sa": "Νότια Αυστραλία",
+  "provider.abc_radio_network.config_entries.state.options.tas": "Τασμανία",
+  "provider.abc_radio_network.config_entries.state.options.vic": "Βικτώρια",
+  "provider.abc_radio_network.config_entries.state.options.wa": "Δυτική Αυστραλία"
 }

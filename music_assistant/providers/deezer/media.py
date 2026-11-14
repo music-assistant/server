@@ -42,6 +42,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import (
     AUDIOBOOK_CHAPTERS_PAGE_SIZE,
@@ -58,6 +59,7 @@ from .parsers import (
     parse_audiobook,
     parse_audiobook_chapters,
     parse_audiobook_from_album,
+    parse_bookmark_time,
     parse_date,
     parse_gw_track,
     parse_playlist,
@@ -166,6 +168,58 @@ class DeezerMediaManager:
             raise MediaNotFoundError(f"Deezer returned album {album.item_id} instead of {album_id}")
         album.external_ids.add((ExternalID.BARCODE, normalize_external_id(ExternalID.BARCODE, upc)))
         return album
+
+    # -- Recommendation bans --
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Ban or unban a track or artist from the user's Deezer recommendations.
+
+        A like only lifts an earlier ban, adding the item to the Deezer favorites is
+        library_add's job. Deezer can't ban albums.
+
+        :param prov_item_id: The Deezer id of the track or artist.
+        :param media_type: Media type of the item.
+        :param favorite: False to ban, True or None to unban.
+        """
+        if media_type == MediaType.TRACK and favorite is False:
+            await self.provider.gql_client.ban_track_from_recommendation(track_id=prov_item_id)
+        elif media_type == MediaType.TRACK:
+            await self.provider.gql_client.unban_track_from_recommendation(track_id=prov_item_id)
+        elif media_type == MediaType.ARTIST and favorite is False:
+            await self.provider.gql_client.ban_artist_from_recommendation(artist_id=prov_item_id)
+        elif media_type == MediaType.ARTIST:
+            await self.provider.gql_client.unban_artist_from_recommendation(artist_id=prov_item_id)
+
+    # -- Playlist reorder --
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """Move one track of a playlist to another position (both 1-based)."""
+        playlist_tracks = await self.provider.browse_manager.get_playlist_tracks(
+            prov_playlist_id, 0
+        )
+        positions = [track.position for track in playlist_tracks]
+        if from_position not in positions or to_position not in positions:
+            msg = f"Position out of range for a playlist of {len(positions)} track(s)"
+            raise InvalidDataError(msg)
+        track_ids = [track.item_id for track in playlist_tracks]
+        to_index = positions.index(to_position)
+        track_id = track_ids.pop(positions.index(from_position))
+        track_ids.insert(to_index, track_id)
+        # Deezer places the track behind another one, or at the top without one
+        result = await self.provider.gql_client.move_track_in_playlist(
+            playlist_id=prov_playlist_id,
+            track_id=track_id,
+            after_track_id=track_ids[to_index - 1] if to_index else None,
+        )
+        if not result.move_status:
+            msg = f"Deezer did not move track {track_id} in playlist {prov_playlist_id}"
+            raise InvalidDataError(msg)
+        await self.provider.browse_manager.invalidate_playlist_cache(prov_playlist_id)
 
     # -- Pagination helper --
 
@@ -617,8 +671,10 @@ class DeezerMediaManager:
         for ep in episodes:
             ep.fully_played = False
             ep.resume_position_ms = 0
+            ep.resume_position_timestamp = None
             if ep.item_id in bookmarks:
-                ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
+                ep.fully_played, ep.resume_position_ms, bookmarked_at = bookmarks[ep.item_id]
+                ep.resume_position_timestamp = parse_bookmark_time(bookmarked_at)
             yield ep
 
     @use_cache(3600)
@@ -700,7 +756,7 @@ class DeezerMediaManager:
         if result is None:
             return []
         all_edges = list(result.albums.edges)
-        while result.albums.page_info.has_next_page:
+        while result.albums.page_info.has_next_page and len(all_edges) < ARTIST_ALBUMS_LIMIT:
             result = await self.provider.gql_client.get_artist(
                 artist_id=prov_artist_id,
                 albums_after=result.albums.page_info.end_cursor,
@@ -709,7 +765,9 @@ class DeezerMediaManager:
                 break
             all_edges.extend(result.albums.edges)
         return [
-            parse_album(self.provider, edge.node) for edge in all_edges if edge.node is not None
+            parse_album(self.provider, edge.node)
+            for edge in all_edges[:ARTIST_ALBUMS_LIMIT]
+            if edge.node is not None
         ]
 
     async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:

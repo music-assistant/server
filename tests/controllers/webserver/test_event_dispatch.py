@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import User, UserRole
@@ -18,8 +19,6 @@ from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
-    import pytest
-
     from music_assistant.mass import MusicAssistant
 
 
@@ -248,11 +247,30 @@ async def test_full_access_user_receives_events_outside_their_filter(
     assert "living_room" in get_written_message(admin)
 
 
+@pytest.mark.parametrize(
+    ("event", "update"),
+    [
+        (
+            EventType.FAVORITE_UPDATED,
+            FavoriteUpdate(
+                uri="library://track/1",
+                media_type=MediaType.TRACK,
+                item_id="1",
+                favorite=False,
+                user_id="user1",
+            ),
+        ),
+        # a bookmark event carries the user id as its data
+        (EventType.BOOKMARKS_UPDATED, "user1"),
+    ],
+)
 async def test_favorite_update_reaches_its_own_user_only(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
+    event: EventType,
+    update: FavoriteUpdate | str,
 ) -> None:
-    """A like or dislike is announced to the connection of its user and to nobody else."""
+    """A like, dislike or bookmark change is announced to its user's connection only."""
     client1 = create_ws_client(webserver, "user1")
     client2 = create_ws_client(webserver, "user2")
     anonymous = WebsocketClientHandler(
@@ -260,20 +278,11 @@ async def test_favorite_update_reaches_its_own_user_only(
     )
     anonymous._subscribe_to_events()
 
-    mass_minimal.signal_event(
-        EventType.FAVORITE_UPDATED,
-        "library://track/1",
-        FavoriteUpdate(
-            uri="library://track/1",
-            media_type=MediaType.TRACK,
-            item_id="1",
-            favorite=False,
-            user_id="user1",
-        ),
-    )
+    mass_minimal.signal_event(event, "library://track/1", update)
     await drain_event_callbacks()
 
-    assert json.loads(get_written_message(client1))["data"]["user_id"] == "user1"
+    sent = json.loads(get_written_message(client1))["data"]
+    assert sent == "user1" or sent["user_id"] == "user1"
     assert client2._to_write.empty()
     assert anonymous._to_write.empty()
 

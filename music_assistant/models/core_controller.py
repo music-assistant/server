@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
+CORE_DOCS_URL = "https://music-assistant.io/settings/core/"
+
 
 class CoreController:
     """Base representation of a Core controller within Music Assistant."""
@@ -46,6 +48,7 @@ class CoreController:
             codeowners=["@music-assistant"],
             stage=ProviderStage.STABLE,
             icon="puzzle-outline",
+            documentation=f"{CORE_DOCS_URL}#{self.domain.replace('_', '-')}",
             builtin=True,
             allow_disable=False,
         )

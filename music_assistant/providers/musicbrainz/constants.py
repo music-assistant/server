@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from music_assistant_models.enums import AlbumType, LinkType, MediaType, ProviderFeature
 
+# the public MusicBrainz website, for links shown to users; lookups go to our mirror instead
+MUSICBRAINZ_WEB_URL = "https://musicbrainz.org"
+
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
 # A recording search lists only a few of the releases a song appeared on, and for a much
@@ -50,7 +53,14 @@ URL_RELATION_ENTITY: dict[MediaType, str] = {
 
 # Provider domains whose items MusicBrainz links to by a canonical share URL, in the
 # order they are reverse-looked up: the most widely linked services first.
-REVERSE_URL_DOMAINS: tuple[str, ...] = ("spotify", "deezer", "tidal", "apple_music", "ytmusic")
+REVERSE_URL_DOMAINS: tuple[str, ...] = (
+    "spotify",
+    "deezer",
+    "tidal",
+    "apple_music",
+    "ytmusic",
+    "qobuz",
+)
 
 # Public catalog hosts whose item URLs MusicBrainz stores as the provider hands them out, so
 # a mapping's own URL can be reverse-looked up. A local server's URL never leaves the house.
@@ -68,6 +78,7 @@ REVERSE_URL_HOSTS: tuple[str, ...] = (
 MAX_REVERSE_URL_LOOKUPS = 3
 MAX_REF_ITEMS = 3
 MAX_BARCODE_DETAIL_FETCHES = 2
+MAX_NAME_SEARCH_DETAIL_FETCHES = 2
 # MusicBrainz' per-request maximum. A release group with more editions than fit on one
 # page is not identified at all, and an artist's discography is browsed in pages of this
 # size, so the page is as large as it can be.

@@ -5,7 +5,7 @@
   "documentation": "https://music-assistant.io/music-providers/local-files/",
   "type": "music",
   "requirements": ["onedrive-personal-sdk==0.1.7"],
-  "codeowners": ["@ozgav"],
+  "codeowners": ["@OzGav"],
   "multi_instance": true,
   "stage": "beta"
 }

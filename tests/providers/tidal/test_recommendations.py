@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import (
     ItemMapping,
     RecommendationFolder,
     UniqueList,
 )
 
+from music_assistant.providers.tidal.constants import MAX_PAGE_MODULE_ITEMS
 from music_assistant.providers.tidal.provider import TidalProvider
 from music_assistant.providers.tidal.recommendations import TidalRecommendationManager
 
 INSTANCE_ID = "tidal_test"
+
+DataHandler = Callable[..., Awaitable[dict[str, Any]]]
 
 
 @pytest.fixture
@@ -316,3 +320,138 @@ async def test_get_page_content_propagates_api_errors(
             await recommendation_manager.get_page_content("pages/home")
 
         provider_mock.mass.cache.set.assert_not_called()
+
+
+def _paged_module(embedded: int, total: int) -> dict[str, Any]:
+    """Build a page module whose pagedList embeds only part of its items."""
+    return {
+        "title": "Custom mixes",
+        "type": "MIX_LIST",
+        "pagedList": {
+            "dataApiPath": "pages/data/abc",
+            "limit": embedded,
+            "offset": 0,
+            "totalNumberOfItems": total,
+            "items": [{"id": f"m{i}"} for i in range(embedded)],
+        },
+    }
+
+
+async def _fetch_module(
+    manager: TidalRecommendationManager,
+    provider_mock: Mock,
+    module: dict[str, Any],
+    data_handler: DataHandler,
+) -> list[dict[str, Any]]:
+    """Fetch a one-module page, serving pages/data calls from data_handler."""
+    page = {"rows": [{"modules": [module]}]}
+
+    async def _get(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        if endpoint.startswith("pages/data"):
+            result: dict[str, Any] = await data_handler(endpoint, **kwargs)
+            return result
+        return page
+
+    provider_mock.api.get.side_effect = _get
+    with patch(
+        "music_assistant.providers.tidal.recommendations.TidalPageParser.from_cache",
+        new=AsyncMock(return_value=None),
+    ):
+        parser = await manager.get_page_content("pages/for_you")
+    items: list[dict[str, Any]] = parser.modules[0]["raw_data"]["pagedList"]["items"]
+    return items
+
+
+def _slicing_handler(calls: list[dict[str, Any]], max_per_call: int = 1000) -> DataHandler:
+    """Return a pages/data handler serving offset/limit slices of numbered items."""
+
+    async def _handler(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        params = kwargs["params"]
+        calls.append({"endpoint": endpoint, **params})
+        offset, limit = params["offset"], min(params["limit"], max_per_call)
+        return {"items": [{"id": f"m{i}"} for i in range(offset, offset + limit)]}
+
+    return _handler
+
+
+async def test_get_page_content_extends_truncated_module(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """A module embedding 6 of 8 items gets the missing 2 from its dataApiPath."""
+    calls: list[dict[str, Any]] = []
+    items = await _fetch_module(
+        recommendation_manager, provider_mock, _paged_module(6, 8), _slicing_handler(calls)
+    )
+
+    assert [i["id"] for i in items] == [f"m{i}" for i in range(8)]
+    assert len(calls) == 1
+    assert calls[0]["endpoint"] == "pages/data/abc"
+    assert (calls[0]["offset"], calls[0]["limit"]) == (6, 2)
+
+
+async def test_get_page_content_respects_module_item_cap(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """Extension stops at MAX_PAGE_MODULE_ITEMS and loops over short pages."""
+    calls: list[dict[str, Any]] = []
+    items = await _fetch_module(
+        recommendation_manager,
+        provider_mock,
+        _paged_module(20, 209),
+        _slicing_handler(calls, max_per_call=20),
+    )
+
+    assert len(items) == MAX_PAGE_MODULE_ITEMS
+    assert len(calls) == 2
+    assert all(call["offset"] + call["limit"] <= MAX_PAGE_MODULE_ITEMS for call in calls)
+
+
+async def test_get_page_content_keeps_embedded_items_on_extend_failure(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """A 404 on pages/data keeps the embedded items and still caches the page."""
+
+    async def _not_found(_endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        raise MediaNotFoundError("Not found")
+
+    items = await _fetch_module(
+        recommendation_manager, provider_mock, _paged_module(6, 8), _not_found
+    )
+
+    assert len(items) == 6
+    provider_mock.mass.cache.set.assert_called()
+
+
+async def test_get_page_content_propagates_extend_errors(
+    recommendation_manager: TidalRecommendationManager, provider_mock: Mock
+) -> None:
+    """Non-404 pages/data failures propagate so a degraded page is never cached."""
+
+    async def _fail(_endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        raise ResourceTemporarilyUnavailable("API error")
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await _fetch_module(recommendation_manager, provider_mock, _paged_module(6, 8), _fail)
+
+    provider_mock.mass.cache.set.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("title", "module_type"),
+    [("Music videos", "VIDEO_LIST"), ("Video Playlists", "PLAYLIST_LIST"), ("", "MIX_LIST")],
+)
+async def test_get_page_content_skips_extending_discarded_modules(
+    recommendation_manager: TidalRecommendationManager,
+    provider_mock: Mock,
+    title: str,
+    module_type: str,
+) -> None:
+    """Video and untitled modules are dropped later, so no pages/data call is made."""
+    calls: list[dict[str, Any]] = []
+    module = {**_paged_module(6, 8), "title": title, "type": module_type}
+    items = await _fetch_module(
+        recommendation_manager, provider_mock, module, _slicing_handler(calls)
+    )
+
+    assert len(items) == 6
+    assert calls == []

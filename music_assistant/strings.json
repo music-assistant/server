@@ -60,6 +60,10 @@
       "label": "Automatically play (resume on power on)",
       "description": "When this player is turned ON, automatically start playing (if there are items in the queue)."
     },
+    "idle_power_off": {
+      "label": "Power off when idle (minutes)",
+      "description": "Turn this player off once it has been stopped for this many minutes. Set to 0 to never turn it off automatically.\n\nMusic Assistant only sees playback it knows about, so a device that is in use in another way, such as a TV or receiver on another input, may be turned off while in use."
+    },
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
@@ -98,20 +102,6 @@
         "48000": "Resamples everything to a fixed 48 kHz (or the closest rate the player supports). A good compromise of quality and bandwidth.",
         "96000": "Resamples everything to a fixed 96 kHz (or the closest rate the player supports).",
         "highest": "Resamples everything to the highest rate the player supports. Best quality, but can waste a lot of bandwidth."
-      }
-    },
-    "http_profile": {
-      "label": "HTTP Profile used for sending audio",
-      "description": "This is considered to be a very advanced setting, only adjust this if needed, for example if your player stops playing halfway streams or if you experience other playback related issues. In most cases the default setting is fine.",
-      "options": {
-        "chunked": "Profile 1 - chunked",
-        "no_content_length": "Profile 2 - no content length",
-        "forced_content_length": "Profile 3 - forced content length"
-      },
-      "option_descriptions": {
-        "chunked": "Send audio using chunked transfer encoding, without a fixed length up front.",
-        "no_content_length": "Stream without a Content-Length header. Works for most players (the default).",
-        "forced_content_length": "Send an estimated Content-Length header. Some players need this to start playback or to seek."
       }
     },
     "icon": {
@@ -245,6 +235,10 @@
     "preview_note": {
       "label": "Please note that this feature/provider is still in early stages. \n\nFunctionality may still be limited and/or bugs may occur!"
     },
+    "requires_fixed_content_length": {
+      "label": "Requires a fixed content length",
+      "description": "Only enable this if the player stops or loops during playback. Most players play fine without it."
+    },
     "sample_rates": {
       "label": "Sample rates supported by this player",
       "description": "The sample rates (and bit depths) supported by this player.\nContent with unsupported sample rates will be automatically resampled.",
@@ -284,7 +278,7 @@
     },
     "zeroconf_interfaces": {
       "label": "Mdns/Zeroconf discovery interface(s)",
-      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nBy default, Music Assistant will only listen on the default interface. If you have multiple network interfaces and you want to discover players on all interfaces, you can change this setting to 'All interfaces'.",
+      "description": "In normal circumstances, Music Assistant will automatically discover all players on the network using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\nBy default, Music Assistant will only listen on the default interface. If you have multiple network interfaces and you want to discover players on all interfaces, you can change this setting to 'All interfaces'.\n\nA change takes effect after restarting Music Assistant.",
       "options": {
         "default": "Default interface",
         "all": "All interfaces"
@@ -324,6 +318,7 @@
     },
     "power_control": {
       "label": "Power Control",
+      "description": "A Home Assistant entity chosen here, such as a smart plug, is also used to turn on this player when it is offline.",
       "options": {
         "native": "Native power control",
         "none": "None",
@@ -451,6 +446,13 @@
     },
     "tts_engine_unavailable": {
       "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
+    },
+    "image_engine": {
+      "label": "Image engine",
+      "description": "The image generation engine used for this feature."
+    },
+    "image_engine_unavailable": {
+      "label": "No image engine is available. Set up a plugin that can generate images, for example the Home Assistant plugin with an AI task entity that supports images, or the OpenAI Compatible plugin with an image model selected."
     }
   },
   "config_categories": {
@@ -462,6 +464,7 @@
     "builtin_playlists": "Builtin Playlists",
     "web_player": "Web Player",
     "playback": "Queue Playback",
+    "source_selection": "Source selection",
     "items_to_select": "Items to select",
     "default_enqueue_option": "Default enqueue option",
     "click_actions": "Click actions",
@@ -1074,6 +1077,9 @@
       "in_progress_items": {
         "name": "In progress"
       },
+      "latest_episodes": {
+        "name": "Latest podcast episodes"
+      },
       "random_albums": {
         "name": "Random albums"
       },
@@ -1207,9 +1213,19 @@
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
+    "invalid_config_value": "The value for {0} is not valid.",
+    "config_value_required": "{0} is required.",
+    "invalid_value": "This value is not valid.",
+    "required": "This field is required.",
     "role_can_not_own_music_sources": "This role can not own a music source.",
     "system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
     "last_admin": "This is the last administrator. Make another user an administrator first.",
+    "username_taken": "This username is already in use.",
+    "username_too_short": "Username must be at least {0} characters.",
+    "sign_in_expired": "This sign-in has expired or was already used. Please sign in again.",
+    "self_registration_disabled": "Self-registration is disabled. Please contact an administrator.",
+    "user_account_disabled": "This user account is disabled.",
+    "join_code_invalid": "This code is invalid or has expired.",
     "builtin_role_readonly": "A builtin role can not be changed or removed.",
     "role_not_found": "This role does not exist.",
     "role_name_invalid": "A role name must be between 1 and {0} characters long.",
@@ -1217,19 +1233,23 @@
     "role_in_use": "This role is still assigned to one or more users. Give them another role first.",
     "role_scope_not_allowed": "A custom role can not be granted this permission.",
     "playlist_not_owned": "Only the owner of this playlist may change it.",
+    "playlist_changed": "The playlist changed in the meantime. Please try again.",
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
     "playlist_owner_must_be_member": "Only a member can own a playlist",
     "source_available_to_everyone": "{0} is always available to everyone",
+    "provider_can_not_be_disabled": "{0} cannot be disabled",
     "source_sharing_owner_only": "Only the owner of a music source may share it",
     "source_owner_change_admin_only": "Only an administrator can change who owns a music source",
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",
     "source_no_owner_must_be_shared": "A music source without an owner must be shared with someone",
     "unknown_or_disabled_user": "Unknown or disabled user: {0}",
+    "guest_account_disabled": "Guest access is unavailable because the {0} account is disabled.",
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
     "login_failed": "Login failed. Please check your credentials and try again.",
     "audio_error": "An error occurred while processing audio.",
     "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
+    "provider_stream_held": "{0} is already playing on {1}. Stop playback there first.",
     "queue_empty": "The queue is empty.",
     "unsupported_feature": "This feature is not supported.",
     "unsupported_system": "This is not supported on this system.",

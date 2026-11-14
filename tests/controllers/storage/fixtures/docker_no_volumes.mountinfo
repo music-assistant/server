@@ -1,0 +1,12 @@
+802 734 0:98 / / rw,relatime master:1 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/MNOPQR:/var/lib/docker/overlay2/l/STUVWX,upperdir=/var/lib/docker/overlay2/456def/diff,workdir=/var/lib/docker/overlay2/456def/work
+803 802 0:101 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+804 802 0:102 / /dev rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755
+805 804 0:103 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+806 802 0:104 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro
+807 806 0:26 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw,nsdelegate,memory_recursiveprot
+808 804 0:100 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+809 804 0:105 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k
+810 802 8:1 /var/lib/docker/volumes/2f9c4e1b7a/_data /data rw,relatime - ext4 /dev/sda1 rw,errors=remount-ro
+811 802 8:1 /var/lib/docker/containers/1a2b3c/resolv.conf /etc/resolv.conf rw,relatime - ext4 /dev/sda1 rw,errors=remount-ro
+812 802 8:1 /var/lib/docker/containers/1a2b3c/hostname /etc/hostname rw,relatime - ext4 /dev/sda1 rw,errors=remount-ro
+813 802 8:1 /var/lib/docker/containers/1a2b3c/hosts /etc/hosts rw,relatime - ext4 /dev/sda1 rw,errors=remount-ro

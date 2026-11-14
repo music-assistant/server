@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 from music_assistant_models.enums import CrossfadeMode, MediaType
 from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 
@@ -35,10 +35,25 @@ LIBRARY_ALBUM = Album(
         )
     },
 )
+# played from the library album, or from the folder that holds it
+ALBUM_ORIGIN = QueueItemOrigin(container=ItemMapping.from_item(LIBRARY_ALBUM))
+OTHER_ALBUM_ORIGIN = QueueItemOrigin(
+    container=ItemMapping(
+        media_type=MediaType.ALBUM, item_id="8", provider="library", name="Sketches of Spain"
+    )
+)
+# the library numbers each media type from one, so a playlist can share the album's id
+PLAYLIST_ORIGIN = QueueItemOrigin(
+    container=ItemMapping(
+        media_type=MediaType.PLAYLIST, item_id="7", provider="library", name="Jazz essentials"
+    )
+)
 
 
-def _queue_item(item_id: str, album: Album | ItemMapping) -> QueueItem:
-    """Build a queue item holding a track on the given album."""
+def _queue_item(
+    item_id: str, album: Album | ItemMapping | None, origin: QueueItemOrigin | None = None
+) -> QueueItem:
+    """Build a queue item holding a track on the given album, played from the given origin."""
     return QueueItem(
         queue_id="queue-1",
         queue_item_id=item_id,
@@ -57,6 +72,7 @@ def _queue_item(item_id: str, album: Album | ItemMapping) -> QueueItem:
             },
             album=album,
         ),
+        origin=origin,
     )
 
 
@@ -110,5 +126,62 @@ def test_same_album_is_crossfaded_when_the_user_allows_it() -> None:
     assert _crossfade_allowed(
         _queue_item("track-1", LIBRARY_ALBUM),
         _queue_item("track-2", PROVIDER_ALBUM),
+        allow_same_album=True,
+    )
+
+
+def test_tracks_played_from_one_album_are_not_crossfaded() -> None:
+    """Tracks played from one album, or its folder, stay gapless whatever album they carry."""
+    assert not _crossfade_allowed(
+        _queue_item("track-1", PROVIDER_ALBUM, origin=ALBUM_ORIGIN),
+        _queue_item("track-2", None, origin=ALBUM_ORIGIN),
+    )
+
+
+def test_tracks_played_from_different_albums_are_crossfaded() -> None:
+    """The boundary between two album plays still gets its crossfade."""
+    assert _crossfade_allowed(
+        _queue_item("track-1", None, origin=ALBUM_ORIGIN),
+        _queue_item("track-2", None, origin=OTHER_ALBUM_ORIGIN),
+    )
+
+
+def test_album_and_playlist_sharing_a_library_id_are_crossfaded() -> None:
+    """An album play followed by a playlist play is crossfaded, even when their ids match."""
+    assert _crossfade_allowed(
+        _queue_item("track-1", None, origin=ALBUM_ORIGIN),
+        _queue_item("track-2", None, origin=PLAYLIST_ORIGIN),
+    )
+
+
+def test_tracks_of_one_album_in_a_playlist_are_not_crossfaded() -> None:
+    """A playlist that plays an album's tracks in a row keeps them gapless."""
+    assert not _crossfade_allowed(
+        _queue_item("track-1", LIBRARY_ALBUM, origin=PLAYLIST_ORIGIN),
+        _queue_item("track-2", PROVIDER_ALBUM, origin=PLAYLIST_ORIGIN),
+    )
+
+
+def test_playlist_moving_on_to_another_album_is_crossfaded() -> None:
+    """Only an album play keeps its tracks gapless, not any container that holds them."""
+    assert _crossfade_allowed(
+        _queue_item("track-1", LIBRARY_ALBUM, origin=PLAYLIST_ORIGIN),
+        _queue_item("track-2", OTHER_PROVIDER_ALBUM, origin=PLAYLIST_ORIGIN),
+    )
+
+
+def test_item_without_an_origin_is_compared_on_its_album() -> None:
+    """A track played on its own after the album it belongs to stays gapless."""
+    assert not _crossfade_allowed(
+        _queue_item("track-1", LIBRARY_ALBUM, origin=ALBUM_ORIGIN),
+        _queue_item("track-2", PROVIDER_ALBUM),
+    )
+
+
+def test_album_play_is_crossfaded_when_the_user_allows_it() -> None:
+    """The streams config option also overrides the guard for tracks played from one album."""
+    assert _crossfade_allowed(
+        _queue_item("track-1", None, origin=ALBUM_ORIGIN),
+        _queue_item("track-2", None, origin=ALBUM_ORIGIN),
         allow_same_album=True,
     )

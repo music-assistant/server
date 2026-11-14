@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 # Configuration Keys
-CONF_TOKEN = "token"
+CONF_TOKEN = "token"  # noqa: S105 - config key
 CONF_QUALITY = "quality"
 CONF_BASE_URL = "base_url"
 

@@ -120,7 +120,7 @@ def test_parse_artist_with_about(provider_stub: ProviderStub) -> None:
     assert result.metadata.description == "Singer-songwriter from somewhere."
     # English bio: detector can't be confident — leave language unset.
     assert result.metadata.description_language is None
-    # 250000 // 10000 == 25
+    # 250000 divided by 10000
     assert result.metadata.popularity == 25
 
 

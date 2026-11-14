@@ -21,7 +21,14 @@ import unicodedata
 import urllib.error
 import urllib.request
 import weakref
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+)
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from importlib.metadata import PackageNotFoundError
@@ -31,11 +38,11 @@ from itertools import islice
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import ifaddr
 from markdownify import markdownify
-from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.enums import AlbumType, IdentifierType, ProviderTier
 from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
@@ -46,12 +53,13 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
-from music_assistant.helpers.process import check_output
+from music_assistant.helpers.process import check_output, get_subprocess_env
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models.player import DeviceInfo
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -61,6 +69,12 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 CALLBACK_TYPE = Callable[[], None]
+
+# getmac has no timeout of its own and can hang on some addresses
+MAC_LOOKUP_TIMEOUT = 3.0
+# A timed out lookup keeps its executor thread until getmac returns, so later
+# callers for the same address share it instead of starting another one.
+_PENDING_MAC_LOOKUPS: dict[str, asyncio.Future[str | None]] = {}
 
 
 async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
@@ -308,6 +322,18 @@ def cap_native_thread_pools() -> int:
     return budget
 
 
+def set_model_cache_dirs(cache_dir: str) -> None:
+    """
+    Point the torch and Hugging Face model caches into the Music Assistant cache dir.
+
+    Must be called before huggingface_hub is imported, as it reads HF_HOME at import time.
+    Operator-supplied values are kept.
+    """
+    # The default ~/.cache is unwritable when the container runs as a non-root user.
+    os.environ.setdefault("TORCH_HOME", os.path.join(cache_dir, "torch"))
+    os.environ.setdefault("HF_HOME", os.path.join(cache_dir, "huggingface"))
+
+
 async def verify_system_meets_requirements(
     *,
     feature_name: str,
@@ -480,6 +506,7 @@ async def _run_ml_inference_probe() -> int | None:
             _ml_inference_probe.__name__,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env=get_subprocess_env(),
         )
     except OSError as err:
         LOGGER.warning("Could not start the ML inference capability probe: %s", err)
@@ -851,6 +878,14 @@ def infer_album_type(title: str, version: str) -> AlbumType:
     return AlbumType.UNKNOWN
 
 
+_DISC_DIR_RE = re.compile(r"^(?:disc|disk|cd|dvd|vol(?:ume)?)[\s._-]*\d+\b", re.IGNORECASE)
+
+
+def is_disc_dir(name: str) -> bool:
+    """Return True when a folder name looks like a disc subfolder (e.g. ``Disc 1``, ``CD2``)."""
+    return bool(_DISC_DIR_RE.match(name.strip()))
+
+
 def strip_ads(line: str) -> str:
     """Strip Ads from line."""
     if ad_pattern.search(line):
@@ -904,12 +939,13 @@ def multi_strip(line: str) -> str:
     ).rstrip()
 
 
-def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
+def parse_station_stream_title(line: str) -> tuple[str, str, str | None] | None:
     """
-    Parse stream titles that name the track in natural language with a quoted title.
+    Parse stream titles that name the track in a known station format.
 
-    Recognises '"Track" by Artist from "Album"' (album optional) and the German
-    '"Track" von Artist'.
+    Recognises '"Track" by Artist from "Album"' (album optional), the German
+    '"Track" von Artist' and the "Artist~Track~Album~Year~..." fields of the Italian
+    RadioMediaset stations.
 
     :param line: Raw (uncleaned) stream title.
     :returns: Tuple of (title, artist, album), or None when the line is not in one of
@@ -928,6 +964,11 @@ def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
         artist = multi_strip(match.group("artist")).strip('"')
         if title and artist:
             return title, artist, None
+    # at least four fields, so an ordinary title holding a "~" is left alone
+    if len(fields := stripped.split("~")) >= 4:
+        artist, title, album = (multi_strip(x) for x in fields[:3])
+        if title and artist:
+            return title, artist, album or None
     return None
 
 
@@ -937,7 +978,7 @@ def clean_stream_title(line: str) -> str:
     artist: str = ""
 
     if not keyword_pattern.search(line):
-        if parsed := parse_quoted_stream_title(line):
+        if parsed := parse_station_stream_title(line):
             track_name, artist_name, _ = parsed
             return f"{artist_name} - {track_name}"
         return multi_strip(line)
@@ -1181,7 +1222,7 @@ async def is_port_in_use(port: int, host: str | None = None) -> bool:
         else:
             # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
             # A port is considered free if it can be bound on at least one address family.
-            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))
+            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))  # noqa: S104 - probe whether the port is free
         for family, addr in candidates:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as _sock:
@@ -1300,15 +1341,53 @@ def format_ip_for_url(ip_address: str) -> str:
     return ip_address
 
 
-async def get_folder_size(folderpath: str) -> float:
-    """Return folder size in gb."""
+# mDNS, special-use (RFC 6761, RFC 8375, ICANN .internal) and common home router suffixes
+_LOCAL_NETWORK_SUFFIXES = (".local", ".localhost", ".home.arpa", ".internal", ".lan", ".home")
+
+
+def is_public_url(url: str) -> bool:
+    """
+    Return whether a URL is an http(s) URL on a host that is reachable from the internet.
+
+    A URL with a query or fragment is refused, so paths can be appended to it.
+
+    :param url: The URL to check.
+    """
+    try:
+        parts = urlsplit(url)
+        # reading the port raises on a malformed one (e.g. :notaport)
+        _ = parts.port
+        host = (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host or parts.query or parts.fragment:
+        return False
+    try:
+        return ip_address(host).is_global
+    except ValueError:
+        pass
+    # single-label names (e.g. localhost), mDNS names, special-use names and common home
+    # network suffixes only resolve on the local network
+    return "." in host and not host.lower().endswith(_LOCAL_NETWORK_SUFFIXES)
+
+
+async def get_folder_size(folderpath: str, exclude: Iterable[str] = ()) -> float:
+    """
+    Return folder size in gb, without following symlinks.
+
+    :param folderpath: The folder to measure.
+    :param exclude: Folders inside it to leave out.
+    """
+    excluded = {os.path.normpath(path) for path in exclude}
 
     def _get_folder_size(folderpath: str) -> float:
         total_size = 0
-        for dirpath, _dirnames, filenames in os.walk(folderpath):
+        for dirpath, dirnames, filenames in os.walk(os.path.normpath(folderpath)):
+            dirnames[:] = [name for name in dirnames if os.path.join(dirpath, name) not in excluded]
             for _file in filenames:
-                _fp = os.path.join(dirpath, _file)
-                total_size += Path(_fp).stat().st_size
+                # a file can vanish while the folder is walked (e.g. a database journal)
+                with suppress(OSError):
+                    total_size += os.lstat(os.path.join(dirpath, _file)).st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)
@@ -1322,7 +1401,6 @@ def get_changed_keys(
     """Compare 2 dicts and return set of changed keys."""
     # TODO: Check with Marcel whether we should calculate new dicts based on ignore_keys
     return set(get_changed_dict_values(dict1, dict2, recursive).keys())
-    # return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
 
 
 def get_changed_dict_values(
@@ -1442,13 +1520,24 @@ async def import_module_in_thread(name: str, package: str | None = None) -> Modu
         return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
 
 
-async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
-    """Return module for given provider domain and make sure the requirements are met."""
+async def load_provider_module(manifest: ProviderManifest) -> ProviderModuleType:
+    """
+    Return the module of a provider and make sure its requirements are met.
+
+    The requirements of a community provider are not installed here.
+
+    :param manifest: Manifest of the provider to import.
+    """
 
     async def _get_provider_module() -> ProviderModuleType:
-        module = await import_module_in_thread(f".{domain}", "music_assistant.providers")
+        module = await import_module_in_thread(f".{manifest.domain}", "music_assistant.providers")
         return cast("ProviderModuleType", module)
 
+    if manifest.tier == ProviderTier.COMMUNITY:
+        # nothing a community provider asks for may end up in the server environment
+        return await _get_provider_module()
+
+    requirements = manifest.requirements
     # ensure module requirements are met
     for requirement in requirements:
         if requirement in _checked_requirements:
@@ -1478,6 +1567,22 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
     # try loading the provider again to be safe
     # this will fail if something else is wrong (as it should)
     return await _get_provider_module()
+
+
+def purge_provider_modules(domain: str) -> None:
+    """
+    Forget the imported code of a provider, so its next import reads the files again.
+
+    :param domain: Domain of the provider.
+    """
+    package = "music_assistant.providers"
+    module_name = f"{package}.{domain}"
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            del sys.modules[name]
+    # the package keeps an imported provider as attribute, which a from-import would return
+    vars(importlib.import_module(package)).pop(domain, None)
+    importlib.invalidate_caches()
 
 
 async def has_tmpfs_mount() -> bool:
@@ -1788,9 +1893,16 @@ async def get_mac_address(ip_address: str) -> str | None:
     try:
         from getmac import get_mac_address as getmac_lookup  # noqa: PLC0415
 
-        return await asyncio.to_thread(getmac_lookup, ip=ip_address)
+        if (lookup := _PENDING_MAC_LOOKUPS.get(ip_address)) is None:
+            lookup = asyncio.ensure_future(asyncio.to_thread(getmac_lookup, ip=ip_address))
+            _PENDING_MAC_LOOKUPS[ip_address] = lookup
+            lookup.add_done_callback(functools.partial(_on_mac_lookup_done, ip_address))
+        return await asyncio.wait_for(asyncio.shield(lookup), timeout=MAC_LOOKUP_TIMEOUT)
     except ImportError:
         LOGGER.debug("getmac module not available, cannot resolve MAC from IP")
+        return None
+    except TimeoutError:
+        LOGGER.debug("Timed out resolving MAC address for %s", ip_address)
         return None
     except Exception as err:
         LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
@@ -2014,14 +2126,28 @@ class TaskManager:
         self._tasks: list[asyncio.Task[None]] = []
         self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[None]:
-        """Create a new task and add it to the manager."""
-        task = self.mass.create_task(coro)
+    def create_task(
+        self, coro: Coroutine[Any, Any, Any], task_name: str | None = None
+    ) -> asyncio.Task[None]:
+        """
+        Create a new task and add it to the manager.
+
+        :param coro: The coroutine to run as a task.
+        :param task_name: Optional name identifying the task in log messages.
+        """
+        task = self.mass.create_task(coro, task_name=task_name)
         self._tasks.append(task)
         return task
 
-    async def create_task_with_limit(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Create a new task with semaphore limit."""
+    async def create_task_with_limit(
+        self, coro: Coroutine[Any, Any, Any], task_name: str | None = None
+    ) -> None:
+        """
+        Create a new task with semaphore limit.
+
+        :param coro: The coroutine to run as a task.
+        :param task_name: Optional name identifying the task in log messages.
+        """
         assert self._semaphore is not None
 
         def task_done_callback(_task: asyncio.Task[None]) -> None:
@@ -2030,7 +2156,7 @@ class TaskManager:
             self._semaphore.release()
 
         await self._semaphore.acquire()
-        task: asyncio.Task[None] = self.create_task(coro)
+        task: asyncio.Task[None] = self.create_task(coro, task_name)
         task.add_done_callback(task_done_callback)
 
     async def __aenter__(self) -> Self:
@@ -2168,9 +2294,10 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
-    unaffected. Calls count as identical when they are made on the same object with equal
-    arguments, no matter whether those were passed positionally or by keyword; the request
-    runs with the arguments of the caller that started it.
+    unaffected. Calls count as identical when they are made on the same object, by the same
+    user in the same role (or no user), with equal arguments, no matter whether those were
+    passed positionally or by keyword; the request runs with the arguments of the caller that
+    started it.
 
     Every argument must be a scalar or an object identified by its ``uri``, so that equal
     arguments are guaranteed to produce an equal key.
@@ -2180,9 +2307,15 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
     signature = inspect.signature(func)
 
     @functools.wraps(func)
-    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            get_current_user,
+        )
+
         mass = self.mass
-        # create a task_id dynamically based on the bound method and args/kwargs.
+        # create a task_id dynamically based on the bound method, the user and args/kwargs.
+        # a request may resolve differently per user and role (which music sources it may
+        # use), so two identities never join the same flight.
         # the instance is part of the key because a decorated method may be inherited by
         # multiple subclasses (all media controllers share
         # MediaControllerBase.get_provider_item) and a class may have multiple instances
@@ -2199,6 +2332,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
                 type(self).__name__,
                 id(self),
                 func.__qualname__,
+                (user.user_id, user.role) if (user := get_current_user()) else None,
                 # skip the instance: it is the first parameter and is keyed by id() above
                 *(
                     (name, _canonical_key_part(value))
@@ -2232,3 +2366,10 @@ def _canonical_key_part(value: Any) -> Any:
         # full item and an ItemMapping for that same item are not handled the same.
         return (type(value).__name__, uri)
     return value
+
+
+def _on_mac_lookup_done(ip_address: str, lookup: asyncio.Future[str | None]) -> None:
+    """Forget a finished MAC lookup, retrieving its outcome so nothing is left unread."""
+    _PENDING_MAC_LOOKUPS.pop(ip_address, None)
+    if not lookup.cancelled():
+        lookup.exception()

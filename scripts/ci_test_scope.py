@@ -21,13 +21,15 @@ import sys
 from pathlib import Path
 
 # A change to any of these forces the full suite: dependencies and the runtime
-# pin (everything is reinstalled/retested) plus the selector and workflow itself.
+# pins (everything is reinstalled/retested; release.yml pins the test container's
+# base image) plus the selector and workflow itself.
 FULL_TRIGGER_FILES = {
     "pyproject.toml",
     "requirements_all.txt",
     "uv.lock",
     ".python-version",
     ".github/workflows/test.yml",
+    ".github/workflows/release.yml",
     "scripts/ci_test_scope.py",
 }
 

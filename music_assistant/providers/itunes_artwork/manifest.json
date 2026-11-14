@@ -7,7 +7,7 @@
   "codeowners": ["@music-assistant"],
   "credits": ["[Apple iTunes](https://itunes.apple.com)"],
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/metadata/artwork/",
   "multi_instance": false,
   "builtin": true
 }

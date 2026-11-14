@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 import aiohttp
 from aiohttp import BasicAuth
 from alexapy import AlexaAPI, AlexaLogin
+from alexapy.errors import AlexapyError
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -40,9 +42,9 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CONF_URL = "url"
-CONF_AUTH_SECRET = "secret"
+CONF_AUTH_SECRET = "secret"  # noqa: S105 - config key
 CONF_API_BASIC_AUTH_USERNAME = "api_username"
-CONF_API_BASIC_AUTH_PASSWORD = "api_password"
+CONF_API_BASIC_AUTH_PASSWORD = "api_password"  # noqa: S105 - config key
 CONF_API_URL = "api_url"
 CONF_ALEXA_LANGUAGE = "alexa_language"
 
@@ -60,6 +62,15 @@ ALEXA_LANGUAGE_COMMANDS = {
 }
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()  # no special features supported (yet)
+
+# Volume timings, in seconds.
+VOLUME_SEND_DELAY = 0.5
+VOLUME_POLL_INTERVAL_PLAYING = 5
+VOLUME_POLL_INTERVAL_IDLE = 30
+VOLUME_POLL_HOLD = 2
+VOLUME_READ_MAX_AGE = 2
+VOLUME_READ_TIMEOUT = 5
+VOLUME_STEP_TIMEOUT = 10
 
 
 async def setup(
@@ -202,6 +213,15 @@ async def api_request(
     )
 
 
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Return text parsed as a JSON object, or an empty dict if it isn't one."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 class AlexaDevice:
     """Representation of an Alexa Device."""
 
@@ -233,10 +253,20 @@ class AlexaPlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._attr_powered = False
         self._attr_available = True
+        self._attr_needs_poll = True
+        self._echo_volume: int | None = None
+        self._volume_set_at = -math.inf
+        self._volume_sending = False
+        self._volume_retried = False
+        self._volume_task: asyncio.Task[None] | None = None
         # Keep track of the last metadata we pushed to avoid unnecessary uploads
         self._last_meta_checksum: str | None = None
         # Keep last stream url pushed (set in play_media)
         self._last_stream_url: str | None = None
+        # Set once the skill shows it keeps its player screen open across commands.
+        self._skill_keeps_screen_open = False
+        # Requests to the skill go out one at a time, so it gets them in the order of the commands.
+        self._skill_request_lock = asyncio.Lock()
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -264,8 +294,9 @@ class AlexaPlayer(Player):
         """Handle PLAY command on the player."""
         provider = cast("AlexaProvider", self.provider)
 
-        utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
-        await self.api.run_custom(utter)
+        if not await self._send_to_open_screen("resume"):
+            utter = await provider.get_intent_utterance("AMAZON.ResumeIntent", "resume")
+            await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -274,17 +305,55 @@ class AlexaPlayer(Player):
         """Handle PAUSE command on the player."""
         provider = cast("AlexaProvider", self.provider)
 
-        utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
-        await self.api.run_custom(utter)
+        if not await self._send_to_open_screen("pause"):
+            utter = await provider.get_intent_utterance("AMAZON.PauseIntent", "pause")
+            await self.api.run_custom(utter)
 
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        await self.api.set_volume(volume_level / 100)
         self._attr_volume_level = volume_level
+        self._schedule_volume_send()
+
+    @property
+    def poll_interval(self) -> int:
+        """Poll often while playing, when the volume is most likely to change on the Echo."""
+        if self.playback_state == PlaybackState.PLAYING:
+            return VOLUME_POLL_INTERVAL_PLAYING
+        return VOLUME_POLL_INTERVAL_IDLE
+
+    async def poll(self) -> None:
+        """Read the Echo's volume back from Amazon."""
+        set_at = self._volume_set_at
+        if self._volume_sending or self.mass.loop.time() - set_at < VOLUME_POLL_HOLD:
+            return
+        provider = cast("AlexaProvider", self.provider)
+        if provider._volumes_lock.locked():
+            return
+        try:
+            volumes = await provider.get_volumes()
+        except (AlexapyError, aiohttp.ClientError, TimeoutError, ValueError) as err:
+            self.logger.debug("Could not read the volume of %s: %s", self.display_name, err)
+            return
+        if self._volume_sending or self._volume_set_at != set_at:
+            return
+        if (volume := volumes.get(self.device.device_serial_number)) is None:
+            return
+        self._echo_volume = volume
+        if volume == self._attr_volume_level:
+            return
+        self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
+        self._attr_volume_level = volume
         self.update_state()
+
+    async def on_unload(self) -> None:
+        """Drop a volume change still waiting or being sent."""
+        self.mass.cancel_timer(f"alexa_volume_{self.player_id}")
+        if self._volume_task is not None:
+            self._volume_task.cancel()
+        await super().on_unload()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
@@ -298,13 +367,20 @@ class AlexaPlayer(Player):
             "imageUrl": media.image_url,
         }
 
-        await api_request(
-            self.provider,
-            "/ma/push-url",
-            method="POST",
-            json_data=payload,
-            timeout=10,
-        )
+        async with self._skill_request_lock:
+            answer = _parse_json_object(
+                await api_request(
+                    self.provider,
+                    "/ma/push-url",
+                    method="POST",
+                    json_data={**payload, "playerId": self.player_id, "canSkipSpeech": True},
+                    timeout=10,
+                )
+            )
+        # Only a skill that keeps its screen open answers with pageLive (true or false).
+        if "pageLive" in answer:
+            self._skill_keeps_screen_open = True
+        screen_handled = bool(answer.get("pageLive"))
 
         # Save last pushed stream url so metadata updates can reuse it
         self._last_stream_url = stream_url
@@ -326,7 +402,8 @@ class AlexaPlayer(Player):
             ALEXA_LANGUAGE_COMMANDS[ask_command_key],
         )
 
-        await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
+        if not screen_handled:
+            await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
@@ -375,7 +452,92 @@ class AlexaPlayer(Player):
             # store last pushed values
             self._last_meta_checksum = meta_checksum
 
-        self.mass.create_task(_upload_metadata())
+        self.mass.create_task(
+            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.player_id}"
+        )
+
+    def _schedule_volume_send(self, delay: float = VOLUME_SEND_DELAY, retry: bool = False) -> None:
+        """Show the change, and send it once a slider's burst of values stops."""
+        self._volume_set_at = self.mass.loop.time()
+        self._volume_retried = retry
+        self.update_state()
+
+        def _start_send() -> None:
+            if self._volume_task is None or self._volume_task.done():
+                self._volume_task = self.mass.create_task(self._send_volume())
+
+        self.mass.call_later(delay, _start_send, task_id=f"alexa_volume_{self.player_id}")
+
+    async def _send_volume(self) -> None:
+        """Step the Echo to MA's volume, again if that changed while a step was sent."""
+        if self._volume_sending:
+            return
+        provider = cast("AlexaProvider", self.provider)
+        self._volume_sending = True
+        sent = None
+        corrected = False
+        try:
+            volumes = await provider.get_volumes()
+            self._echo_volume = volumes.get(self.device.device_serial_number)
+            while (target := self._attr_volume_level) is not None and target != sent:
+                sent = target
+                if self._echo_volume is None:
+                    await self.api.set_volume(target / 100)
+                elif target == 0 or target != self._echo_volume:
+                    amount = -100 if target == 0 else target - self._echo_volume
+                    self._echo_volume = await provider.step_volume(self.device, amount)
+                    self.logger.debug(
+                        "%s volume: step %+d to %s, now %s",
+                        self.display_name,
+                        amount,
+                        target,
+                        self._echo_volume,
+                    )
+                    if abs(self._echo_volume - target) > 1 and not corrected:
+                        sent, corrected = None, True
+        except (AlexapyError, aiohttp.ClientError, TimeoutError, ValueError) as err:
+            self.logger.warning("Could not set the volume of %s: %s", self.display_name, err)
+            self._echo_volume = None
+            failed = True
+        else:
+            failed = False
+        finally:
+            self._volume_sending = False
+        if failed:
+            if not self._volume_retried:
+                self._schedule_volume_send(VOLUME_READ_MAX_AGE, retry=True)
+            return
+        if self._echo_volume is not None:
+            self._attr_volume_level = self._echo_volume
+        self._volume_set_at = self.mass.loop.time()
+        self.update_state()
+
+    async def _send_to_open_screen(self, command: str) -> bool:
+        """Send pause/resume to the skill's open screen; return True if the screen handled it."""
+        # Waits for a new track still being sent, so the skill gets the track first.
+        async with self._skill_request_lock:
+            # An older skill has no /ma/control: only try once it has shown it keeps its screen open.
+            if not self._skill_keeps_screen_open:
+                return False
+            try:
+                resp = await api_request(
+                    self.provider,
+                    "/ma/control",
+                    method="POST",
+                    json_data={
+                        "playerId": self.player_id,
+                        "command": command,
+                        "canSkipSpeech": True,
+                    },
+                    timeout=5,
+                )
+            except ActionUnavailable, aiohttp.ClientError, TimeoutError:
+                # Don't try again until the skill confirms with its next pageLive answer.
+                self._skill_keeps_screen_open = False
+                return False
+        # pageLive: true means the skill has taken the command over. The skill must apply these
+        # in the order it got them, e.g. a pause right after a new track pauses the new track.
+        return bool(_parse_json_object(resp).get("pageLive"))
 
 
 class AlexaProvider(PlayerProvider):
@@ -415,6 +577,9 @@ class AlexaProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.devices = {}
+        self._volumes: dict[str, int] | None = None
+        self._volumes_read_at = -math.inf
+        self._volumes_lock = asyncio.Lock()
         self._intents: list[dict[str, Any]] | None = None
         self._invocation_name: str | None = None
 
@@ -460,19 +625,59 @@ class AlexaProvider(PlayerProvider):
                 player = AlexaPlayer(self, player_id, device_object)
                 await self.mass.players.register_or_update(player)
 
+        if self.devices:
+            # builds the csrf header the volume calls need
+            AlexaAPI(next(iter(self.devices.values())), self.login)
         await self._load_intents()
 
-    @lock
-    async def _load_intents(self) -> None:
-        """Load intents from the configured API and cache them on the provider."""
-        resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
-        data = json.loads(resp)
-        if isinstance(data, dict):
-            # cache invocationName if present
-            self._invocation_name = data.get("invocationName")
-            self._intents = data.get("intents", []) or []
-        else:
-            self._intents = []
+    async def get_volumes(self) -> dict[str, int]:
+        """Return each Echo's volume by serial number, read once per poll round."""
+        async with self._volumes_lock:
+            if self.mass.loop.time() - self._volumes_read_at < VOLUME_READ_MAX_AGE:
+                if self._volumes is None:
+                    raise AlexapyError("volume read failed moments ago")
+                return self._volumes
+            self._volumes = None
+            try:
+                async with asyncio.timeout(VOLUME_READ_TIMEOUT):
+                    # Amazon updates this a few seconds after a change made on the Echo
+                    response = await AlexaAPI._static_request(
+                        "get", self.login, "/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes"
+                    )
+                    if not response:
+                        raise AlexapyError("no volume readback")
+                    body = await response.json(content_type=None)
+                self._volumes = volumes = {
+                    item["dsn"]: item["speakerVolume"]
+                    for item in body.get("volumes", [])
+                    if item.get("dsn") and item.get("speakerVolume") is not None
+                }
+            finally:
+                self._volumes_read_at = self.mass.loop.time()
+            return volumes
+
+    async def step_volume(self, device: AlexaDevice, amount: int) -> int:
+        """Change an Echo's volume by a step and return its new volume."""
+        uri = (
+            f"/api/devices/{device._device_type}/{device.device_serial_number}"
+            "/audio/v2/speakerVolume"
+        )
+        data = {
+            "dsn": device.device_serial_number,
+            "deviceType": device._device_type,
+            "amount": amount,
+            "muted": False,
+            "synchronous": True,
+        }
+        async with self._volumes_lock:
+            async with asyncio.timeout(VOLUME_STEP_TIMEOUT):
+                response = await AlexaAPI._static_request("put", self.login, uri, data=data)
+                body = await response.json(content_type=None) if response else {}
+            if (volume := body.get("speakerVolume")) is None:
+                raise AlexapyError(f"volume step failed: {body.get('error')}")
+            if self._volumes and device.device_serial_number in self._volumes:
+                self._volumes[device.device_serial_number] = int(volume)
+        return int(volume)
 
     async def get_intent_utterance(self, intent_name: str, default: str) -> str:
         """
@@ -493,3 +698,15 @@ class AlexaProvider(PlayerProvider):
                         return f"{inv} {utter}".strip()
                     return utter
         return default
+
+    @lock
+    async def _load_intents(self) -> None:
+        """Load intents from the configured API and cache them on the provider."""
+        resp = await api_request(self, "/alexa/intents", method="GET", timeout=5)
+        data = json.loads(resp)
+        if isinstance(data, dict):
+            # cache invocationName if present
+            self._invocation_name = data.get("invocationName")
+            self._intents = data.get("intents", []) or []
+        else:
+            self._intents = []

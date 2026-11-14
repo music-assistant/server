@@ -8,9 +8,10 @@
     },
     "bitrate": {
       "label": "Stream quality",
-      "description": "Preferred bitrate. Channels that do not offer it fall back to the closest available.",
+      "description": "Preferred bitrate. Channels that do not offer it fall back to the highest available.",
       "options": {
         "256k": "256 kbps",
+        "128k": "128 kbps",
         "96k": "96 kbps",
         "64k": "64 kbps",
         "32k": "32 kbps"

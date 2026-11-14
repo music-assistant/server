@@ -5,6 +5,8 @@ import os
 import pathlib
 import re
 from copy import deepcopy
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from typing import Any, Final, cast
 
 from music_assistant_models.config_entries import (
@@ -31,6 +33,20 @@ from music_assistant_models.media_items import (
 
 APPLICATION_NAME: Final = "Music Assistant"
 
+
+def _get_own_version() -> str:
+    """Return the installed version of Music Assistant."""
+    try:
+        return pkg_version("music_assistant")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
+MASS_VERSION: Final[str] = _get_own_version()
+
+# User agent that identifies Music Assistant on outgoing HTTP requests
+MASS_USER_AGENT: Final[str] = f"{APPLICATION_NAME}/{MASS_VERSION} (https://music-assistant.io)"
+
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook | SoundEffect
 
@@ -46,9 +62,15 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.SOUND_EFFECT,
 )
 
-# API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
-# or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 80
+# API_SCHEMA_VERSION: bump this when a client that is not bundled with the server (the Home
+# Assistant integration, the companion apps, third-party API consumers) gets something new to
+# gate on: a new API command, a new or changed parameter on an existing command, a new model
+# field the server now sends to clients, or a new remote-access channel label. Do not bump it
+# for a model field that nothing sends to clients yet (a models pin bump on its own included),
+# a new enum value or error code, a change in what an existing field holds, or a command that
+# only the bundled frontend uses: the frontend ships in lockstep with the server and never
+# gates on this.
+API_SCHEMA_VERSION: Final[int] = 108
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -65,6 +87,10 @@ MASS_LOGGER_NAME: Final[str] = "music_assistant"
 HOMEASSISTANT_SYSTEM_USER: Final[str] = "homeassistant_system"
 # Port used by the internal ingress webserver for the HA integration
 INGRESS_SERVER_PORT: Final[int] = 8094
+# Fixed address of the HA Supervisor on the hassio network, the only legitimate ingress peer
+HASSIO_SUPERVISOR_IP: Final[str] = "172.30.32.2"
+# Origin of the hosted Music Assistant web app, used for Remote Access
+APP_MA_HOST: Final[str] = "https://app.music-assistant.io"
 
 UNKNOWN_ARTIST: Final[str] = "[unknown]"
 UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
@@ -87,7 +113,6 @@ AUDIOBOOK_GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
 )
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
-SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
 SILENCE_FILE_LONG: Final[str] = str(RESOURCES_DIR.joinpath("silence_long.ogg"))
 VARIOUS_ARTISTS_FANART: Final[str] = str(RESOURCES_DIR.joinpath("fallback_fanart.jpeg"))
 MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
@@ -98,9 +123,16 @@ CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 CONF_SERVER_ID: Final[str] = "server_id"
 CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
 CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
-CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
+CONF_APPLE_MUSIC_SYNC_SCHEDULE_MIGRATED: Final[str] = "apple_music_sync_schedule_migrated"
+CONF_EMBY_ALBUM_ARTISTS_HEAL_MIGRATED: Final[str] = "emby_album_artists_heal_migrated"
+CONF_RAUMFELD_ICY_BASIC_MIGRATED: Final[str] = "raumfeld_icy_basic_migrated"
+CONF_EMBY_ALBUM_ARTISTS_HEAL_PENDING: Final[str] = "emby_album_artists_heal_pending"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
+# the registered folders that were a mountpoint when they were registered
+CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"
+CONF_STORAGE_SHARES: Final[str] = "storage_shares"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
@@ -110,7 +142,7 @@ CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
 CONF_USERNAME: Final[str] = "username"
-CONF_PASSWORD: Final[str] = "password"
+CONF_PASSWORD: Final[str] = "password"  # noqa: S105 - config key
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
@@ -130,10 +162,11 @@ CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
 CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
-WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
+WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")  # noqa: S104 - the wildcard addresses themselves
 # Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
 SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_IDLE_POWER_OFF: Final[str] = "idle_power_off"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
@@ -150,7 +183,7 @@ CONF_ANNOUNCE_TTS_ENGINE: Final[str] = "announce_tts_engine"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
-CONF_HTTP_PROFILE: Final[str] = "http_profile"
+CONF_REQUIRES_FIXED_CONTENT_LENGTH: Final[str] = "requires_fixed_content_length"
 CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
 CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
@@ -218,12 +251,14 @@ def _default_background_scan_concurrency() -> int:
 
 
 # config default values
-DEFAULT_HOST: Final[str] = "0.0.0.0"
+DEFAULT_HOST: Final[str] = "0.0.0.0"  # noqa: S104 - listen on all interfaces by default
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
 # common db tables
-DB_TABLE_PLAYLOG: Final[str] = "playlog"
+DB_TABLE_MEDIA_PROGRESS: Final[str] = "media_progress"
+DB_TABLE_PLAY_HISTORY: Final[str] = "play_history"
+DB_TABLE_LEGACY_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
 DB_TABLE_TRACKS: Final[str] = "tracks"
@@ -240,6 +275,7 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_AUDIOBOOK_ARTISTS: Final[str] = "audiobook_artists"
+DB_TABLE_BOOKMARKS: Final[str] = "bookmarks"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"
@@ -335,9 +371,14 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "music",
     "player_queues",
     "tasks",
+    "statistics",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
+# The music sources that read the user's own files. Background audio analysis is deliberately
+# limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is
+# not something we do. Keep it that way.
+FILESYSTEM_PROVIDER_DOMAINS: Final[tuple[str, ...]] = ("filesystem_local",)
 
 
 ####### REUSABLE CONFIG ENTRIES #######
@@ -411,6 +452,16 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
     default_value=False,
+    depends_on=CONF_POWER_CONTROL,
+    depends_on_value_not="none",
+    category="player_controls",
+)
+
+CONF_ENTRY_IDLE_POWER_OFF = ConfigEntry(
+    key=CONF_IDLE_POWER_OFF,
+    type=ConfigEntryType.INTEGER,
+    default_value=0,
+    range=(0, 1440),
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
@@ -625,50 +676,19 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
 )
 
 
-CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
-    key=CONF_HTTP_PROFILE,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("chunked"),
-        ConfigValueOption("no_content_length"),
-        ConfigValueOption("forced_content_length"),
-    ],
-    default_value="no_content_length",
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH = ConfigEntry(
+    key=CONF_REQUIRES_FIXED_CONTENT_LENGTH,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
 )
-
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked"}
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True}
 )
-
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
-)
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_3 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "forced_content_length"}
-)
-
-CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_1.to_dict(), "hidden": True}
-)
-CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
-        "default_value": "no_content_length",
-        "hidden": True,
-    }
-)
-CONF_ENTRY_HTTP_PROFILE_FORCED_3 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
-        "default_value": "forced_content_length",
-        "hidden": True,
-    }
-)
-CONF_ENTRY_HTTP_PROFILE_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "hidden": True}
+CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_ENFORCED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH.to_dict(), "default_value": True, "hidden": True}
 )
 
 
@@ -757,7 +777,7 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
     ],
     default_value="default",
     advanced=True,
-    requires_reload=True,
+    requires_reload=False,
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
@@ -945,6 +965,7 @@ ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_VOLUME_TARGET: Final[str] = "volume_target"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
+ATTR_REACHABLE: Final[str] = "reachable"
 ATTR_POWERED: Final[str] = "powered"
 ATTR_MUTE_LOCK: Final[str] = "mute_lock"
 ATTR_ACTIVE_SOURCE: Final[str] = "active_source"
@@ -954,6 +975,8 @@ ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
 ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
+ATTR_POWER_ON_IN_PROGRESS: Final[str] = "power_on_in_progress"
+ATTR_IDLE_SINCE: Final[str] = "idle_since"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -1007,6 +1030,14 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PAUSE,
 }
 
+FOREIGN_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
+    # Player features that may be copied from the protocol player that plays an app
+    # Music Assistant did not start
+    PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.PAUSE,
+    PlayerFeature.SEEK,
+}
+
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
 DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once
@@ -1020,8 +1051,8 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("heos", True),
     ("wiim", True),
     ("party", False),
-    # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
-    # under-spec host has the auto-created config removed again at load time.
+    # smart_fades refuses an automatic setup below its recommended hardware (see its
+    # setup()); the auto-created config is then removed again at load time.
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),
@@ -1069,7 +1100,7 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "radio",
     "airplay",
     "chromecast",
-    # bluetooth (bluesound, musiccast)
+    # bluetooth, used by bluesound and musiccast
     "bluetooth",
     "bluetooth audio",
     "bluetooth_audio",
@@ -1080,13 +1111,13 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     "line_in",
     "aux",
     "tuner",
-    # tv / hdmi (sonos, bluesound)
+    # tv / hdmi, used by sonos and bluesound
     "tv",
     "tv input",
     "hdmi arc",
     # local/usb playback on device (musiccast)
     "usb",
-    # external (hass_players)
+    # external, used by hass_players
     "external",
 }
 

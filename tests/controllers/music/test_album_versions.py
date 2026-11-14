@@ -43,12 +43,16 @@ def _make_controller(providers: list[MusicProvider]) -> AlbumsController:
     :param providers: List of music providers to register.
     """
     mass = Mock()
+    # the versions listing reads the (empty) cache first
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
     mass.music.get_unique_providers = Mock(return_value=[p.instance_id for p in providers])
     mass.get_provider = Mock(
         side_effect=lambda prov_id, **_kwargs: next(
             (p for p in providers if p.instance_id == prov_id), None
         )
     )
+    mass.music.get_visible_provider = mass.get_provider
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.mass = mass
     return ctrl

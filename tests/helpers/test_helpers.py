@@ -1,10 +1,12 @@
 """Tests for utility/helper functions."""
 
+import asyncio
 import logging
 import os
 import signal
 import subprocess
 import sys
+import threading
 from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -312,11 +314,11 @@ async def test_uri_parsing() -> None:
 
 async def test_apple_music_uri_parsing() -> None:
     """Test parsing of Apple Music share URLs."""
-    # station — should resolve as PLAYLIST (is_dynamic)
+    # station — should resolve as RADIO (is_dynamic)
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/station/dead-sara-essentials/ra.331701075"
     )
-    assert media_type == MediaType.PLAYLIST
+    assert media_type == MediaType.RADIO
     assert provider == "apple_music"
     assert item_id == "ra.331701075"
     # playlist
@@ -351,7 +353,7 @@ async def test_apple_music_uri_parsing() -> None:
     media_type, provider, item_id = await uri.parse_uri(
         "https://music.apple.com/de/station/some-station/ra.111222333/"
     )
-    assert media_type == MediaType.PLAYLIST
+    assert media_type == MediaType.RADIO
     assert item_id == "ra.111222333"
     # query string stripped (non-track query params)
     media_type, provider, item_id = await uri.parse_uri(
@@ -911,6 +913,18 @@ def test_cap_native_thread_pools_sets_env() -> None:
             assert os.environ[env_var] == "2"
 
 
+def test_set_model_cache_dirs_points_torch_hub_into_cache_dir(tmp_path: Path) -> None:
+    """Model downloads land in the MA cache dir instead of the possibly unwritable ~/.cache."""
+    import torch  # noqa: PLC0415
+
+    with patch.dict(os.environ):
+        os.environ.pop("TORCH_HOME", None)
+        os.environ.pop("HF_HOME", None)
+        util.set_model_cache_dirs(str(tmp_path))
+        assert torch.hub.get_dir() == str(tmp_path / "torch" / "hub")
+        assert os.environ["HF_HOME"] == str(tmp_path / "huggingface")
+
+
 def test_cap_native_thread_pools_respects_operator_value() -> None:
     """An operator-supplied cap is kept, reported back, and applied to the other pools."""
     with (
@@ -1048,3 +1062,31 @@ def test_encoded_request_url(url: str, expected: str | URL) -> None:
     assert type(result) is type(expected)
     # the percent-escapes must survive intact for auth-bearing stream URLs
     assert str(result) == url
+
+
+async def test_get_mac_address_gives_up_on_a_hanging_lookup() -> None:
+    """A hanging getmac lookup must not block callers, nor tie up a thread per call."""
+    release = threading.Event()
+    calls: list[str] = []
+
+    def hanging_lookup(ip: str) -> str:
+        calls.append(ip)
+        release.wait(5)
+        return "aa:bb:cc:dd:ee:ff"
+
+    try:
+        with (
+            patch("getmac.get_mac_address", new=hanging_lookup),
+            patch.object(util, "MAC_LOOKUP_TIMEOUT", 0.1),
+        ):
+            assert await util.get_mac_address("192.168.1.10") is None
+            assert await util.get_mac_address("192.168.1.10") is None
+            assert calls == ["192.168.1.10"]
+            release.set()
+            async with asyncio.timeout(2):
+                while util._PENDING_MAC_LOOKUPS:
+                    await asyncio.sleep(0.01)
+            assert await util.get_mac_address("192.168.1.10") == "aa:bb:cc:dd:ee:ff"
+            assert len(calls) == 2
+    finally:
+        release.set()

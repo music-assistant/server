@@ -3,18 +3,45 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID, ProviderFeature
-from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
-from music_assistant_models.media_items.metadata import MediaItemMetadata
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistEntityType,
+    ExternalID,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+)
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    MediaItemImage,
+    ProviderMapping,
+    Track,
+)
+from music_assistant_models.media_items.metadata import LifeSpan, MediaItemMetadata
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
-from music_assistant.controllers.metadata.constants import CONF_ENABLE_ONLINE_METADATA
+from music_assistant.controllers.metadata.constants import (
+    CONF_ENABLE_ONLINE_METADATA,
+    REFRESH_INTERVAL,
+    REFRESH_RETRY_INTERVAL,
+)
 from music_assistant.controllers.metadata.enrichment import MetadataEnrichmentMixin
 from music_assistant.controllers.music.helpers import fill_track_from_recording
+from music_assistant.controllers.music.listing_cache import Listing
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzRecording,
@@ -23,6 +50,16 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzReleaseGroup,
     MusicBrainzUrl,
 )
+from music_assistant.providers.musicbrainz.provider import IdentifiedArtist
+
+_ENRICHMENT_TIME = "music_assistant.controllers.metadata.enrichment.time"
+NOW = 1_700_000_000
+# the provider method and metadata feature each refreshed media type is enriched through
+_REFRESHES = {
+    MediaType.ARTIST: (ProviderFeature.ARTIST_METADATA, "get_artist_metadata"),
+    MediaType.ALBUM: (ProviderFeature.ALBUM_METADATA, "get_album_metadata"),
+    MediaType.TRACK: (ProviderFeature.TRACK_METADATA, "get_track_metadata"),
+}
 
 
 def _online_metadata_only(key: str, *_args: Any, **_kwargs: Any) -> bool:
@@ -36,7 +73,11 @@ def _metadata_provider(name: str, feature: ProviderFeature) -> MagicMock:
     provider.name = name
     provider.priority = 0
     provider.supported_features = {feature}
+    provider.is_local = False
     return provider
+
+
+DISCOGS_ID = (ExternalID.DISCOGS, "4321")
 
 
 def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin:
@@ -51,6 +92,7 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
     enrichment.config = MagicMock()
     enrichment.config.get_value = _online_metadata_only
     enrichment.preferred_language = "en"  # type: ignore[misc]
+    enrichment.language_changed = 0  # type: ignore[misc]
     enrichment.providers = []  # type: ignore[misc]
     enrichment.link_providers_via_musicbrainz = True  # type: ignore[misc]
     # every music provider resolves to a stub, MusicBrainz only when it is loaded
@@ -62,7 +104,10 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
     music = enrichment.mass.music
     for controller in (music.artists, music.albums, music.tracks):
         controller.update_item_in_library = AsyncMock()
+        controller.replace_metadata = AsyncMock()
         controller.link_musicbrainz_mappings = AsyncMock(return_value=[])
+    music.get_controller.return_value.set_external_ids = AsyncMock()
+    music.artists.merge_library_artists_by_mbid = AsyncMock(return_value=1)
     music.albums.get_library_album_tracks = AsyncMock(return_value=[])
     music.albums.link_album_tracks = AsyncMock()
     return enrichment
@@ -71,6 +116,18 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
 def _mass(enrichment: MetadataEnrichmentMixin) -> MagicMock:
     """Return the stubbed MusicAssistant instance of an enrichment mixin."""
     return cast("MagicMock", enrichment.mass)
+
+
+def _stored_ids(enrichment: MetadataEnrichmentMixin) -> AsyncMock:
+    """Return the stub that stores a library item's external ids in place of its old ones."""
+    return cast("AsyncMock", _mass(enrichment).music.get_controller.return_value.set_external_ids)
+
+
+def _stored_item(enrichment: MetadataEnrichmentMixin, item: Album | Artist) -> None:
+    """Let the library hold the given item, as stored now."""
+    _mass(enrichment).music.get_controller.return_value.get_library_item = AsyncMock(
+        return_value=item
+    )
 
 
 def _logger(enrichment: MetadataEnrichmentMixin) -> MagicMock:
@@ -84,7 +141,7 @@ async def test_album_enrichment_survives_provider_error() -> None:
     enrichment = _enrichment()
 
     boom = _metadata_provider("boom", ProviderFeature.ALBUM_METADATA)
-    boom.get_album_metadata = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+    boom.get_album_metadata = AsyncMock(side_effect=ValueError("bad payload"))
     good = _metadata_provider("good", ProviderFeature.ALBUM_METADATA)
     good.get_album_metadata = AsyncMock(return_value=None)
     enrichment.providers = [boom, good]  # type: ignore[misc]
@@ -97,13 +154,15 @@ async def test_album_enrichment_survives_provider_error() -> None:
         metadata=MediaItemMetadata(),
     )
 
-    # a transient provider error must not abort enrichment
-    await enrichment._update_album_metadata(album, force_refresh=True)
+    # an unexpected provider error must not abort enrichment
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
 
     boom.get_album_metadata.assert_awaited_once()
     good.get_album_metadata.assert_awaited_once()  # loop continued past the failing provider
     _logger(enrichment).warning.assert_called_once()
     _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once()
+    assert album.metadata.last_refresh == NOW
 
 
 @pytest.mark.asyncio
@@ -144,7 +203,7 @@ async def test_track_enrichment_survives_provider_error() -> None:
     enrichment = _enrichment()
 
     boom = _metadata_provider("boom", ProviderFeature.TRACK_METADATA)
-    boom.get_track_metadata = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+    boom.get_track_metadata = AsyncMock(side_effect=ValueError("bad payload"))
     good = _metadata_provider("good", ProviderFeature.TRACK_METADATA)
     good.get_track_metadata = AsyncMock(return_value=None)
     enrichment.providers = [boom, good]  # type: ignore[misc]
@@ -157,11 +216,143 @@ async def test_track_enrichment_survives_provider_error() -> None:
         metadata=MediaItemMetadata(),
     )
 
-    await enrichment._update_track_metadata(track, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=True)
 
     boom.get_track_metadata.assert_awaited_once()
     good.get_track_metadata.assert_awaited_once()
     _logger(enrichment).warning.assert_called_once()
+    _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once()
+    assert track.metadata.last_refresh == NOW
+
+
+def _lyrics_provider(lyrics: MediaItemMetadata | Exception | None) -> MagicMock:
+    """Return a mock metadata provider that looks up lyrics, such as LRCLIB."""
+    provider = _metadata_provider("lyrics", ProviderFeature.TRACK_METADATA)
+    provider.supported_features.add(ProviderFeature.LYRICS)
+    if isinstance(lyrics, Exception):
+        provider.get_track_metadata = AsyncMock(side_effect=lyrics)
+    else:
+        # like LRCLIB, a track that already has lyrics is not looked up
+        provider.get_track_metadata = AsyncMock(
+            side_effect=lambda track: (
+                None if track.metadata.lyrics or track.metadata.lrc_lyrics else lyrics
+            )
+        )
+    return provider
+
+
+def _track_with_lyrics(
+    lyrics: str | None, lrc_lyrics: str | None, *mappings: ProviderMapping
+) -> Track:
+    """Return a library track with the given stored lyrics and provider mappings."""
+    return Track(
+        item_id="1",
+        provider="library",
+        name="Test Track",
+        provider_mappings=set(mappings),
+        metadata=MediaItemMetadata(lyrics=lyrics, lrc_lyrics=lrc_lyrics),
+    )
+
+
+def _replaced_lyrics(enrichment: MetadataEnrichmentMixin) -> AsyncMock:
+    """Return the stub that writes lyrics over the stored ones."""
+    return cast("AsyncMock", _mass(enrichment).music.tracks.replace_metadata)
+
+
+@pytest.mark.asyncio
+async def test_forced_track_refresh_looks_up_the_lyrics_again() -> None:
+    """A forced refresh drops the stored lyrics and stores the ones looked up uncached."""
+    enrichment = _enrichment()
+    enrichment.providers = [  # type: ignore[misc]
+        _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]fixed"))
+    ]
+    track = _track_with_lyrics("wrong", "[00:01.00]wrong")
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _mass(enrichment).cache.handle_refresh.assert_any_call(True)
+    _replaced_lyrics(enrichment).assert_awaited_once_with(
+        "1", {"lyrics": None, "lrc_lyrics": "[00:01.00]fixed"}
+    )
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (None, "[00:01.00]fixed")
+
+
+@pytest.mark.asyncio
+async def test_track_refresh_that_is_not_forced_keeps_the_stored_lyrics() -> None:
+    """A refresh that is due keeps the stored lyrics and reads the lookup cache."""
+    enrichment = _enrichment()
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="other"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("stored", None)
+
+    await enrichment._update_track_metadata(track, force_refresh=False)
+
+    _mass(enrichment).cache.handle_refresh.assert_called_once_with(False)
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored", None)
+
+
+@pytest.mark.asyncio
+async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -> None:
+    """The lyrics are read again from the music providers, a local file first."""
+    enrichment = _enrichment()
+    local = ProviderMapping(
+        item_id="local", provider_domain="filesystem_local", provider_instance="local_1"
+    )
+    streaming = ProviderMapping(item_id="tidal", provider_domain="tidal", provider_instance="t_1")
+    prov_items = {
+        "local": _track_with_lyrics("local plain", None),
+        "tidal": _track_with_lyrics("tidal plain", None),
+    }
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
+        side_effect=lambda item_id, _instance, **_kwargs: prov_items[item_id]
+    )
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="lrclib"))
+    enrichment.providers = [lyrics_provider]  # type: ignore[misc]
+    track = _track_with_lyrics("wrong", None, streaming, local)
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _replaced_lyrics(enrichment).assert_awaited_once_with(
+        "1", {"lyrics": "local plain", "lrc_lyrics": None}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lookup", "online_metadata"),
+    [
+        (RetriesExhausted("retries exhausted"), True),
+        (ValueError("unexpected answer"), True),
+        (None, True),
+        ("no lyrics provider", True),
+        (MediaItemMetadata(lyrics="lrclib"), False),
+    ],
+    ids=[
+        "lookup_failed",
+        "provider_error",
+        "nothing_found",
+        "no_lyrics_provider",
+        "online_metadata_disabled",
+    ],
+)
+async def test_forced_track_refresh_that_finds_no_lyrics_keeps_the_stored_lyrics(
+    lookup: MediaItemMetadata | Exception | str | None, online_metadata: bool
+) -> None:
+    """Stored lyrics are only replaced by lyrics the refresh finds."""
+    enrichment = _enrichment()
+    if not online_metadata:
+        enrichment.config.get_value = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+    enrichment.providers = (  # type: ignore[misc]
+        [] if isinstance(lookup, str) else [_lyrics_provider(lookup)]
+    )
+    track = _track_with_lyrics("stored", "[00:01.00]stored")
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _replaced_lyrics(enrichment).assert_not_awaited()
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored", "[00:01.00]stored")
 
 
 @pytest.mark.asyncio
@@ -170,7 +361,7 @@ async def test_artist_enrichment_survives_provider_error() -> None:
     enrichment = _enrichment()
 
     boom = _metadata_provider("boom", ProviderFeature.ARTIST_METADATA)
-    boom.get_artist_metadata = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+    boom.get_artist_metadata = AsyncMock(side_effect=ValueError("bad payload"))
     good = _metadata_provider("good", ProviderFeature.ARTIST_METADATA)
     good.get_artist_metadata = AsyncMock(return_value=None)
     enrichment.providers = [boom, good]  # type: ignore[misc]
@@ -184,11 +375,819 @@ async def test_artist_enrichment_survives_provider_error() -> None:
         metadata=MediaItemMetadata(),
     )
 
-    await enrichment._update_artist_metadata(artist, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
 
     boom.get_artist_metadata.assert_awaited_once()
     good.get_artist_metadata.assert_awaited_once()
     _logger(enrichment).warning.assert_called_once()
+    _mass(enrichment).music.artists.update_item_in_library.assert_awaited_once()
+    assert artist.metadata.last_refresh == NOW
+
+
+@pytest.mark.asyncio
+async def test_local_artist_provider_runs_without_online_metadata_or_mbid() -> None:
+    """A local provider is asked about an artist without mbid while online metadata is off."""
+    enrichment = _enrichment()
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(return_value=None)
+    local = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    local.is_local = True
+    local.get_artist_metadata = AsyncMock(return_value=None)
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = Artist(item_id="1", provider="library", name="Test Artist", provider_mappings=set())
+
+    with (
+        patch.object(enrichment.config, "get_value", return_value=False),
+        patch.object(enrichment, "_get_artist_mbid", AsyncMock(return_value=None)),
+    ):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    local.get_artist_metadata.assert_awaited_once_with(artist)
+    online.get_artist_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_local_artist_provider_runs_when_musicbrainz_is_unavailable() -> None:
+    """Local providers still run when identifying an artist on MusicBrainz fails for now."""
+    enrichment = _enrichment()
+    local = _local_provider(MediaItemMetadata(style="Grunge"))
+    enrichment.providers = [local]  # type: ignore[misc]
+    artist = Artist(item_id="1", provider="library", name="Test Artist", provider_mappings=set())
+    identify = AsyncMock(side_effect=aiohttp.ClientError("network down"))
+
+    with (
+        patch.object(enrichment.config, "get_value", return_value=False),
+        patch.object(enrichment, "_get_artist_mbid", identify),
+        patch(_ENRICHMENT_TIME, return_value=NOW),
+    ):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    identify.assert_awaited_once_with(artist)
+    local.get_artist_metadata.assert_awaited_once_with(artist)
+    assert artist.metadata.style == "Grunge"
+    assert artist.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+    assert artist.metadata.last_musicbrainz_lookup is None
+    _logger(enrichment).warning.assert_not_called()
+
+
+def _bio_provider(name: str, description: str, language: str, is_local: bool) -> MagicMock:
+    """Return an artist metadata provider supplying a bio."""
+    provider = _metadata_provider(name, ProviderFeature.ARTIST_METADATA)
+    provider.is_local = is_local
+    provider.get_artist_metadata = AsyncMock(
+        return_value=MediaItemMetadata(description=description, description_language=language)
+    )
+    return provider
+
+
+def _artist_with_bio(description: str, language: str) -> Artist:
+    """Return a library artist with an mbid and a stored bio."""
+    return Artist(
+        item_id="1",
+        provider="library",
+        name="Test Artist",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+        metadata=MediaItemMetadata(description=description, description_language=language),
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_artist_bio_is_picked_first_and_replaces_the_stored_bio() -> None:
+    """A local bio comes first and is written over a stored bio in the same language."""
+    enrichment = _enrichment()
+    online = _bio_provider("online", "Online bio", "en", is_local=False)
+    local = _bio_provider("local", "Own bio", "en", is_local=True)
+    enrichment.providers = [online, local]  # type: ignore[misc]
+    artist = _artist_with_bio("Stored bio", "en")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert (artist.metadata.description, artist.metadata.description_language) == ("Own bio", "en")
+    _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
+        "1", {"description": "Own bio", "description_language": "en"}, {local.instance_id: []}
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_artist_bio_follows_the_language_rules() -> None:
+    """A local bio outside the preferred language loses to one in it."""
+    enrichment = _enrichment()
+    online = _bio_provider("online", "Online bio", "en", is_local=False)
+    local = _bio_provider("local", "Eigen bio", "nl", is_local=True)
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = _artist_with_bio("Stored bio", "de")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.description == "Online bio"
+    _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
+        "1", {"description": "Online bio", "description_language": "en"}, {local.instance_id: []}
+    )
+
+
+@pytest.mark.asyncio
+async def test_online_artist_bio_replaces_a_stored_bio_on_a_forced_update() -> None:
+    """A forced update writes a new online bio over the stored one."""
+    enrichment = _enrichment()
+    enrichment.providers = [  # type: ignore[misc]
+        _bio_provider("online", "New Wikipedia bio", "en", is_local=False)
+    ]
+    artist = _artist_with_bio("Wikipedia bio", "en")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
+        "1", {"description": "New Wikipedia bio", "description_language": "en"}, {}
+    )
+
+
+@pytest.mark.asyncio
+async def test_forced_update_with_an_unreachable_source_replaces_nothing() -> None:
+    """A forced update while the local folder is unreachable keeps the stored bio and style."""
+    enrichment = _enrichment()
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(
+        return_value=MediaItemMetadata(
+            description="Online bio", description_language="en", style="Online style"
+        )
+    )
+    local = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    local.is_local = True
+    local.get_artist_metadata = AsyncMock(side_effect=ProviderUnavailableError("NAS off"))
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = _artist_with_bio("Own bio", "en")
+    artist.metadata.style = "Own style"
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    # the library update that follows only fills empty fields
+    assert artist.metadata.style == "Own style"
+    _mass(enrichment).music.artists.replace_metadata.assert_not_awaited()
+    _logger(enrichment).info.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("enabled", "replaced"), [(True, False), (False, True)])
+async def test_forced_update_with_a_music_source_that_is_not_loaded(
+    enabled: bool, replaced: bool
+) -> None:
+    """An unreachable music source keeps the stored bio, a switched off one does not."""
+    enrichment = _enrichment()
+    enrichment.providers = [  # type: ignore[misc]
+        _bio_provider("online", "Online bio", "en", is_local=False)
+    ]
+    # the music folder is not loaded, as when its storage was offline at startup
+    _mass(enrichment).get_provider = MagicMock(return_value=None)
+    _mass(enrichment).config.get_raw_provider_config_value = MagicMock(return_value=enabled)
+    artist = _artist_with_bio("Own bio", "en")
+    artist.provider_mappings = {
+        ProviderMapping(
+            item_id="Artist", provider_domain="filesystem_local", provider_instance="local_files"
+        )
+    }
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert _mass(enrichment).music.artists.replace_metadata.await_count == int(replaced)
+
+
+@pytest.mark.asyncio
+async def test_forced_update_ignores_the_stored_copy_a_provider_miss_returns() -> None:
+    """The stored item a music source hands back after a miss does not count as fresh."""
+    enrichment = _enrichment()
+    mappings = _sources(enrichment, MediaType.ALBUM, online=MediaItemMetadata(label="New label"))
+    album = _item(MediaType.ALBUM, MediaItemMetadata(label="Old label"), *mappings, _FOLDER)
+    # the music folder no longer finds the album and hands back the stored copy
+    _mass(enrichment).music.albums.get_provider_item = AsyncMock(return_value=album)
+
+    written = await _update(enrichment, album, force_refresh=True)
+
+    assert written == {"label": "New label"}
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_only_fills_gaps_keeps_a_stored_description() -> None:
+    """A forced update with an unreachable source keeps a stored text in another language."""
+    enrichment = _enrichment()
+    enrichment.preferred_language = "nl"  # type: ignore[misc]
+    online = _bio_provider("online", "Nederlandse bio", "nl", is_local=False)
+    failing = _metadata_provider("failing", ProviderFeature.ARTIST_METADATA)
+    failing.get_artist_metadata = AsyncMock(side_effect=ProviderUnavailableError("offline"))
+    enrichment.providers = [failing, online]  # type: ignore[misc]
+    artist = _artist_with_bio("English bio", "en")
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert (artist.metadata.description, artist.metadata.description_language) == (
+        "English bio",
+        "en",
+    )
+    _mass(enrichment).music.artists.replace_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_local_artist_genres_are_kept_when_local_genres_are_preferred() -> None:
+    """Preferring local genres drops online genres but keeps those of a local provider."""
+    enrichment = _enrichment()
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(genres={"Pop"}))
+    local = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    local.is_local = True
+    local.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(genres={"Rock"}))
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Test Artist",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+        metadata=MediaItemMetadata(genres={"Jazz"}),
+    )
+
+    with patch.object(enrichment.config, "get_value", return_value=True):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.genres == {"Jazz", "Rock"}
+
+
+@pytest.mark.asyncio
+async def test_local_artist_genres_keep_online_genres_out_of_an_artist_without_genres() -> None:
+    """Genres from a local provider count as local genres for the providers after it."""
+    enrichment = _enrichment()
+    _mass(enrichment).music.genres.has_derived_genre_mappings = AsyncMock(return_value=False)
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(genres={"Pop"}))
+    local = _local_provider(MediaItemMetadata(genres={"Rock"}))
+    enrichment.providers = [local, online]  # type: ignore[misc]
+    artist = _library_artist(MediaItemMetadata())
+
+    with patch.object(enrichment.config, "get_value", return_value=True):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.genres == {"Rock"}
+
+
+def _local_provider(
+    metadata: MediaItemMetadata | None = None, error: Exception | None = None
+) -> MagicMock:
+    """
+    Return a local artist metadata provider answering with metadata or raising an error.
+
+    :param metadata: The metadata the provider returns.
+    :param error: The error the provider raises instead.
+    """
+    provider = _metadata_provider("local", ProviderFeature.ARTIST_METADATA)
+    provider.is_local = True
+    provider.instance_id = "local_1"
+    provider.get_artist_metadata = AsyncMock(return_value=metadata, side_effect=error)
+    return provider
+
+
+def _image(path: str, provider: str) -> MediaItemImage:
+    """Return a thumb image of a provider."""
+    return MediaItemImage(type=ImageType.THUMB, path=path, provider=provider)
+
+
+def _library_artist(metadata: MediaItemMetadata) -> Artist:
+    """Return a library artist with an mbid and the given stored metadata."""
+    return Artist(
+        item_id="1",
+        provider="library",
+        name="Test Artist",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+        metadata=metadata,
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_artist_values_replace_the_stored_ones() -> None:
+    """Style, mood, entity type and life span of a local provider win over other sources."""
+    enrichment = _enrichment()
+    online = _metadata_provider("online", ProviderFeature.ARTIST_METADATA)
+    online.get_artist_metadata = AsyncMock(return_value=MediaItemMetadata(style="Online style"))
+    local = _local_provider(
+        MediaItemMetadata(
+            style="Own style",
+            mood="Own mood",
+            artist_entity_type=ArtistEntityType.CHARACTER,
+            life_span=LifeSpan(begin="1958-08-29"),
+        )
+    )
+    enrichment.providers = [online, local]  # type: ignore[misc]
+    artist = _library_artist(
+        MediaItemMetadata(
+            mood="Stored mood",
+            artist_entity_type=ArtistEntityType.PERSON,
+            life_span=LifeSpan(begin="1958", end="2009", ended=True),
+        )
+    )
+    expected = {
+        "style": "Own style",
+        "mood": "Own mood",
+        "artist_entity_type": ArtistEntityType.CHARACTER,
+        "life_span": LifeSpan(begin="1958-08-29", end="2009", ended=True),
+    }
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert {name: getattr(artist.metadata, name) for name in expected} == expected
+    _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
+        "1", expected, {"local_1": []}
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_artist_images_replace_its_stale_images() -> None:
+    """The images a local provider returns replace those it added before."""
+    enrichment = _enrichment()
+    current = _image("Artist/folder.jpg", "local_1")
+    enrichment.providers = [  # type: ignore[misc]
+        _local_provider(MediaItemMetadata(images=UniqueList([current])))
+    ]
+    online = _image("online.jpg", "fanarttv")
+    stale = [_image("folder.jpg", "local_1"), _image("Old name/folder.jpg", "local_1")]
+    artist = _library_artist(MediaItemMetadata(images=UniqueList([stale[0], online, stale[1]])))
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.images == [online, current]
+    _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
+        "1", {}, {"local_1": [current]}
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_artist_without_folder_drops_only_its_own_images() -> None:
+    """A local provider returning nothing removes its images and keeps those of others."""
+    enrichment = _enrichment()
+    enrichment.providers = [_local_provider()]  # type: ignore[misc]
+    online = _image("online.jpg", "fanarttv")
+    artist = _library_artist(
+        MediaItemMetadata(images=UniqueList([_image("folder.jpg", "local_1"), online]))
+    )
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.images == [online]
+    _mass(enrichment).music.artists.replace_metadata.assert_awaited_once_with(
+        "1", {}, {"local_1": []}
+    )
+
+
+@pytest.mark.asyncio
+async def test_unavailable_local_artist_provider_keeps_its_images() -> None:
+    """A local provider that raises leaves the images it added before untouched."""
+    enrichment = _enrichment()
+    enrichment.providers = [  # type: ignore[misc]
+        _local_provider(error=ProviderUnavailableError("share is down"))
+    ]
+    stored = _image("folder.jpg", "local_1")
+    artist = _library_artist(MediaItemMetadata(images=UniqueList([stored])))
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.metadata.images == [stored]
+    _mass(enrichment).music.artists.replace_metadata.assert_not_awaited()
+
+
+async def _refresh(
+    enrichment: MetadataEnrichmentMixin, media_type: MediaType
+) -> Artist | Album | Track:
+    """
+    Refresh the metadata of a new library item of the given media type and return the item.
+
+    :param enrichment: The enrichment mixin to refresh the item with.
+    :param media_type: Artist, album or track.
+    """
+    if media_type == MediaType.ARTIST:
+        # the metadata providers are only asked about an artist with a MusicBrainz id
+        artist = Artist(
+            item_id="1",
+            provider="library",
+            name="Test Artist",
+            provider_mappings=set(),
+            external_ids={(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")},
+        )
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
+        return artist
+    if media_type == MediaType.ALBUM:
+        album = Album(item_id="1", provider="library", name="Test Album", provider_mappings=set())
+        await enrichment._update_album_metadata(album, force_refresh=True)
+        return album
+    track = Track(item_id="1", provider="library", name="Test Track", provider_mappings=set())
+    await enrichment._update_track_metadata(track, force_refresh=True)
+    return track
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_REFRESHES))
+@pytest.mark.parametrize(
+    "error",
+    [
+        RetriesExhausted("retries exhausted"),
+        RateLimited("rate limited", backoff_time=120),
+        ResourceTemporarilyUnavailable("backend overloaded"),
+        ProviderUnavailableError("provider unavailable"),
+        aiohttp.ClientError("network down"),
+        TimeoutError(),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+async def test_enrichment_is_due_again_soon_after_a_temporary_provider_error(
+    media_type: MediaType, error: Exception
+) -> None:
+    """A provider failing temporarily is skipped quietly and the item is due again soon."""
+    enrichment = _enrichment()
+    feature, method = _REFRESHES[media_type]
+    failing = _metadata_provider("failing", feature)
+    setattr(failing, method, AsyncMock(side_effect=error))
+    good = _metadata_provider("good", feature)
+    setattr(good, method, AsyncMock(return_value=None))
+    enrichment.providers = [failing, good]  # type: ignore[misc]
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        item = await _refresh(enrichment, media_type)
+
+    getattr(good, method).assert_awaited_once()  # loop continued past the failing provider
+    logger = _logger(enrichment)
+    logger.warning.assert_not_called()
+    assert any(
+        "not available from provider" in call.args[0] for call in logger.debug.call_args_list
+    )
+    library = getattr(_mass(enrichment).music, f"{media_type.value}s")
+    library.update_item_in_library.assert_awaited_once()
+    assert item.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_REFRESHES))
+async def test_enrichment_without_provider_errors_is_due_after_the_refresh_interval(
+    media_type: MediaType,
+) -> None:
+    """A refresh no provider failed is stamped with the current time."""
+    enrichment = _enrichment()
+    feature, method = _REFRESHES[media_type]
+    good = _metadata_provider("good", feature)
+    setattr(good, method, AsyncMock(return_value=None))
+    enrichment.providers = [good]  # type: ignore[misc]
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        item = await _refresh(enrichment, media_type)
+
+    getattr(good, method).assert_awaited_once()
+    assert item.metadata.last_refresh == NOW
+
+
+_ITEM_TYPES: dict[MediaType, type[Artist | Album | Track]] = {
+    MediaType.ARTIST: Artist,
+    MediaType.ALBUM: Album,
+    MediaType.TRACK: Track,
+}
+# the music folder and a music service, the item's music sources
+_FOLDER = ProviderMapping(
+    item_id="folder", provider_domain="filesystem_local", provider_instance="folder_1"
+)
+_SERVICE = ProviderMapping(item_id="service", provider_domain="tidal", provider_instance="tidal_1")
+
+
+def _item(
+    media_type: MediaType, metadata: MediaItemMetadata, *mappings: ProviderMapping
+) -> Artist | Album | Track:
+    """Return a library item of the given media type with the given stored metadata."""
+    return _ITEM_TYPES[media_type](
+        item_id="1",
+        provider="library",
+        name="Test Item",
+        provider_mappings=set(mappings),
+        # the metadata providers are only asked about an artist with a MusicBrainz id
+        external_ids=(
+            {(ExternalID.MB_ARTIST, "11111111-1111-1111-1111-111111111111")}
+            if media_type == MediaType.ARTIST
+            else set()
+        ),
+        metadata=metadata,
+    )
+
+
+def _provider_item(
+    media_type: MediaType, metadata: MediaItemMetadata, provider_instance: str
+) -> Artist | Album | Track:
+    """Return an item as a music source supplies it."""
+    item = _item(media_type, metadata)
+    item.provider = provider_instance
+    return item
+
+
+def _sources(
+    enrichment: MetadataEnrichmentMixin,
+    media_type: MediaType,
+    folder: MediaItemMetadata | None = None,
+    service: MediaItemMetadata | None = None,
+    online: MediaItemMetadata | None = None,
+) -> list[ProviderMapping]:
+    """
+    Let the music folder, a music service and an online metadata provider supply metadata.
+
+    :param enrichment: The enrichment mixin to set the sources up on.
+    :param media_type: Artist, album or track.
+    :param folder: What the music folder supplies, None for an item not in it.
+    :param service: What the music service supplies, None for an item not on it.
+    :param online: What the online metadata provider supplies.
+    :return: The provider mappings of the item on its music sources.
+    """
+    mass = _mass(enrichment)
+    mass.get_provider = MagicMock(
+        side_effect=lambda instance_id, **_kwargs: (
+            None
+            if instance_id == "musicbrainz"
+            else MagicMock(domain=instance_id, is_streaming_provider=instance_id == "tidal_1")
+        )
+    )
+    supplied = {"folder": folder, "service": service}
+    getattr(mass.music, f"{media_type.value}s").get_provider_item = AsyncMock(
+        side_effect=lambda item_id, instance, **_kwargs: _provider_item(
+            media_type, supplied[item_id] or MediaItemMetadata(), instance
+        )
+    )
+    feature, method = _REFRESHES[media_type]
+    provider = _metadata_provider("online", feature)
+    setattr(provider, method, AsyncMock(return_value=online))
+    enrichment.providers = [provider]  # type: ignore[misc]
+    return [
+        mapping
+        for mapping, metadata in ((_FOLDER, folder), (_SERVICE, service))
+        if metadata is not None
+    ]
+
+
+async def _update(
+    enrichment: MetadataEnrichmentMixin, item: Artist | Album | Track, force_refresh: bool
+) -> dict[str, Any]:
+    """
+    Refresh the metadata of a library item and return the values written over the stored ones.
+
+    :param enrichment: The enrichment mixin to refresh the item with.
+    :param item: The library item, due for a refresh.
+    :param force_refresh: Whether the refresh is forced, as by the Update metadata button.
+    """
+    if isinstance(item, Artist):
+        await enrichment._update_artist_metadata(item, force_refresh=force_refresh)
+    elif isinstance(item, Album):
+        await enrichment._update_album_metadata(item, force_refresh=force_refresh)
+    else:
+        await enrichment._update_track_metadata(item, force_refresh=force_refresh)
+    replace_metadata = getattr(
+        _mass(enrichment).music, f"{item.media_type.value}s"
+    ).replace_metadata
+    return {
+        name: value
+        for call in replace_metadata.await_args_list
+        for name, value in call.args[1].items()
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_replaces_stale_values(media_type: MediaType) -> None:
+    """A forced update writes the values the sources supply over the stored ones."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="New style"),
+        online=MediaItemMetadata(mood="New mood"),
+    )
+    item = _item(media_type, MediaItemMetadata(style="Old style", mood="Old mood"), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "New style", "mood": "New mood"}
+    assert (item.metadata.style, item.metadata.mood) == ("New style", "New mood")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_automatic_refresh_keeps_stored_values(media_type: MediaType) -> None:
+    """A refresh that is not forced only fills in what is missing."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="New style", description="New text"),
+        online=MediaItemMetadata(mood="New mood"),
+    )
+    item = _item(
+        media_type,
+        MediaItemMetadata(style="Old style", description="Old text", description_language="en"),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=False)
+
+    assert written == {}
+    assert (item.metadata.style, item.metadata.mood) == ("Old style", "New mood")
+    assert item.metadata.description == "Old text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_keeps_values_no_source_supplies(media_type: MediaType) -> None:
+    """A field no source has a value for keeps its stored value."""
+    enrichment = _enrichment()
+    mappings = _sources(enrichment, media_type, service=MediaItemMetadata(style="New style"))
+    stored = MediaItemMetadata(
+        style="Old style",
+        mood="Stored mood",
+        label="Stored label",
+        description="Stored text",
+        description_language="en",
+    )
+    item = _item(media_type, stored, *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "New style"}
+    assert (item.metadata.mood, item.metadata.label) == ("Stored mood", "Stored label")
+    assert item.metadata.description == "Stored text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_takes_the_music_folder_value_first(media_type: MediaType) -> None:
+    """The music folder wins over a music service, and a music service over online sources."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        folder=MediaItemMetadata(style="Folder style"),
+        service=MediaItemMetadata(style="Service style", mood="Service mood"),
+        online=MediaItemMetadata(style="Online style", mood="Online mood"),
+    )
+    item = _item(media_type, MediaItemMetadata(style="Old style", mood="Old mood"), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "Folder style", "mood": "Service mood"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_skips_an_empty_text(media_type: MediaType) -> None:
+    """An empty text from a source neither clears the stored value nor blocks a later source."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="", mood=""),
+        online=MediaItemMetadata(style="Online style"),
+    )
+    item = _item(media_type, MediaItemMetadata(style="Old style", mood="Old mood"), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"style": "Online style"}
+    assert item.metadata.mood == "Old mood"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+@pytest.mark.parametrize("force_refresh", [True, False])
+async def test_only_a_forced_update_asks_every_source_again(
+    media_type: MediaType, force_refresh: bool
+) -> None:
+    """A forced update looks past cached results of the music sources and metadata providers."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        service=MediaItemMetadata(style="New style"),
+        online=MediaItemMetadata(mood="New mood"),
+    )
+    item = _item(media_type, MediaItemMetadata(), *mappings)
+
+    await _update(enrichment, item, force_refresh=force_refresh)
+
+    get_provider_item = getattr(_mass(enrichment).music, f"{media_type.value}s").get_provider_item
+    get_provider_item.assert_awaited_once_with(
+        "service", _SERVICE.provider_instance, force_refresh=force_refresh
+    )
+    _mass(enrichment).cache.handle_refresh.assert_called_once_with(force_refresh)
+
+
+@pytest.mark.asyncio
+async def test_forced_artist_update_takes_values_in_source_order() -> None:
+    """Local metadata, the music folder, a music service, then online sources; dates complete."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        MediaType.ARTIST,
+        folder=MediaItemMetadata(
+            style="Folder style", mood="Folder mood", life_span=LifeSpan(begin="1958-08-29")
+        ),
+        service=MediaItemMetadata(mood="Service mood", label="Service label"),
+        online=MediaItemMetadata(
+            label="Online label",
+            artist_entity_type=ArtistEntityType.PERSON,
+            life_span=LifeSpan(begin="1958", end="2009-06-25", ended=True),
+        ),
+    )
+    # the Local metadata provider is asked after the online provider, yet wins
+    enrichment.providers.append(_local_provider(MediaItemMetadata(style="Own style")))
+    item = _item(
+        MediaType.ARTIST,
+        MediaItemMetadata(
+            style="Old style",
+            mood="Old mood",
+            label="Old label",
+            artist_entity_type=ArtistEntityType.GROUP,
+            life_span=LifeSpan(begin="1958", end="2009", ended=True),
+        ),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {
+        "style": "Own style",
+        "mood": "Folder mood",
+        "label": "Service label",
+        "artist_entity_type": ArtistEntityType.PERSON,
+        "life_span": LifeSpan(begin="1958-08-29", end="2009-06-25", ended=True),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_only_adds_genres(media_type: MediaType) -> None:
+    """Genres are added to the stored ones, never written over them."""
+    enrichment = _enrichment()
+    mappings = _sources(enrichment, media_type, online=MediaItemMetadata(genres={"Pop"}))
+    item = _item(media_type, MediaItemMetadata(genres={"Jazz"}), *mappings)
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert "genres" not in written
+    assert item.metadata.genres == {"Jazz", "Pop"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+async def test_forced_update_prefers_local_text_without_language(media_type: MediaType) -> None:
+    """Music folder text without a language counts as the preferred language and wins."""
+    enrichment = _enrichment()
+    mappings = _sources(
+        enrichment,
+        media_type,
+        folder=MediaItemMetadata(description="Folder text"),
+        online=MediaItemMetadata(description="Online text", description_language="en"),
+    )
+    item = _item(
+        media_type,
+        MediaItemMetadata(description="Old text", description_language="en"),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == {"description": "Folder text", "description_language": "en"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", list(_ITEM_TYPES))
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        # a text in the preferred language wins over one higher in the source order
+        (("Stored text", "de"), {"description": "Online nl", "description_language": "nl"}),
+        # a stored text in the preferred language is kept over a fresh one in English
+        (("Opgeslagen", "nl"), {}),
+    ],
+    ids=["preferred_language_wins", "stored_preferred_language_kept"],
+)
+async def test_forced_update_follows_the_description_language_rule(
+    media_type: MediaType, stored: tuple[str, str], expected: dict[str, str]
+) -> None:
+    """The description follows the language rules of the artist bio for every media type."""
+    enrichment = _enrichment()
+    enrichment.preferred_language = "nl"  # type: ignore[misc]
+    service = MediaItemMetadata(description="Service en", description_language="en")
+    online = MediaItemMetadata(
+        description="Online nl" if stored[1] == "de" else "Online de",
+        description_language="nl" if stored[1] == "de" else "de",
+    )
+    mappings = _sources(enrichment, media_type, service=service, online=online)
+    item = _item(
+        media_type,
+        MediaItemMetadata(description=stored[0], description_language=stored[1]),
+        *mappings,
+    )
+
+    written = await _update(enrichment, item, force_refresh=True)
+
+    assert written == expected
 
 
 MBID = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
@@ -229,18 +1228,57 @@ def _enrichment_with_musicbrainz(
     :param albums: Library albums of the artist.
     :param tracks: Library tracks of the artist.
     :param top_tracks: Top tracks the providers list for the artist.
-    :param resolutions: What MusicBrainz answers each successive resolve_artist call with.
-    :return: The mixin and the resolve_artist mock.
+    :param resolutions: The artist MusicBrainz identifies through a streaming link on each
+        successive identify_artist call.
+    :return: The mixin and the identify_artist mock.
     """
     enrichment = MetadataEnrichmentMixin()
     enrichment.logger = MagicMock()
     enrichment.mass = MagicMock()
     enrichment.mass.music.artists.albums = AsyncMock(return_value=albums)
     enrichment.mass.music.artists.tracks = AsyncMock(return_value=tracks)
-    enrichment.mass.music.artists.top_tracks = AsyncMock(return_value=top_tracks)
-    resolve_artist = AsyncMock(side_effect=list(resolutions))
-    enrichment.mass.get_provider.return_value.resolve_artist = resolve_artist
-    return enrichment, resolve_artist
+    enrichment.mass.music.artists.get_library_artist_toptracks = AsyncMock(
+        return_value=Listing(top_tracks)
+    )
+    enrichment.mass.get_providers_supporting_feature.return_value = []
+    musicbrainz = MagicMock()
+    identify_artist = AsyncMock(
+        side_effect=[IdentifiedArtist(r, False) if r else None for r in resolutions]
+    )
+    musicbrainz.identify_artist = identify_artist
+    musicbrainz.get_artist_by_track_titles = AsyncMock(return_value=None)
+    # every music provider the artist is mapped to ranks its top tracks, except local files
+    ranking_provider = MagicMock(supported_features={ProviderFeature.ARTIST_TOPTRACKS})
+    local_provider = MagicMock(supported_features=set())
+    enrichment.mass.get_provider = MagicMock(
+        side_effect=lambda domain, **_kwargs: (
+            musicbrainz
+            if domain == "musicbrainz"
+            else local_provider
+            if domain.startswith("filesystem")
+            else ranking_provider
+        )
+    )
+    return enrichment, identify_artist
+
+
+def _musicbrainz_of(enrichment: MetadataEnrichmentMixin) -> MagicMock:
+    """Return the stubbed MusicBrainz provider of an enrichment mixin."""
+    return cast("MagicMock", enrichment.mass.get_provider("musicbrainz"))
+
+
+def _with_title_providers(enrichment: MetadataEnrichmentMixin, *providers: MagicMock) -> None:
+    """Make the given providers the ones that list the artist's top track titles."""
+    _mass(enrichment).get_providers_supporting_feature.return_value = list(providers)
+
+
+def _title_provider(titles: list[str] | Exception) -> MagicMock:
+    """Return a metadata provider stub that lists the given top track titles, or raises."""
+    provider = MagicMock()
+    provider.get_artist_toptrack_titles = AsyncMock(
+        side_effect=titles if isinstance(titles, Exception) else None, return_value=titles
+    )
+    return provider
 
 
 def _library(enrichment: MetadataEnrichmentMixin) -> MagicMock:
@@ -248,25 +1286,41 @@ def _library(enrichment: MetadataEnrichmentMixin) -> MagicMock:
     return cast("MagicMock", enrichment.mass.music.artists)
 
 
-def _artist(name: str = "Radiohead") -> Artist:
-    """Return a library artist without a MusicBrainz id."""
-    return Artist(item_id="1", provider="library", name=name, provider_mappings=set())
+def _artist(name: str = "Radiohead", ranked: bool = False) -> Artist:
+    """
+    Return a library artist without a MusicBrainz id.
+
+    :param name: Name of the artist.
+    :param ranked: Whether the artist is mapped to a music provider that ranks its top tracks.
+    """
+    mappings = (
+        {
+            ProviderMapping(
+                item_id="4Z8W4fKeB5YxbusRsdQVPb",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+            )
+        }
+        if ranked
+        else set()
+    )
+    return Artist(item_id="1", provider="library", name=name, provider_mappings=mappings)
 
 
 @pytest.mark.asyncio
 async def test_artist_mbid_by_streaming_link_reads_nothing_else() -> None:
     """An artist MusicBrainz knows by its streaming links costs no library or provider read."""
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
         [_library_album("a")], [_library_track("t")], [], MB_ARTIST
     )
     artist = _artist()
 
-    assert await enrichment._get_artist_mbid(artist) == MBID
+    assert await enrichment._get_artist_mbid(artist) == (MBID, False)
 
-    resolve_artist.assert_awaited_once_with(artist, [], [])
+    identify_artist.assert_awaited_once_with(artist, [], [])
     _library(enrichment).albums.assert_not_awaited()
     _library(enrichment).tracks.assert_not_awaited()
-    _library(enrichment).top_tracks.assert_not_awaited()
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -287,17 +1341,17 @@ async def test_artist_mbid_is_resolved_through_the_best_library_items() -> None:
         _library_track("recording", {(ExternalID.MB_RECORDING, MBID)}),
         _library_track("plain-2"),
     ]
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(albums, tracks, [], None, MB_ARTIST)
+    enrichment, identify_artist = _enrichment_with_musicbrainz(albums, tracks, [], None, MB_ARTIST)
     artist = _artist()
 
-    assert await enrichment._get_artist_mbid(artist) == MBID
+    assert await enrichment._get_artist_mbid(artist) == (MBID, False)
 
-    assert resolve_artist.await_count == 2
-    called_artist, ref_albums, ref_tracks = resolve_artist.await_args_list[1].args
+    assert identify_artist.await_count == 2
+    called_artist, ref_albums, ref_tracks = identify_artist.await_args_list[1].args
     assert called_artist is artist
     assert [album.item_id for album in ref_albums] == ["rg", "barcode-1", "barcode-2"]
     assert [track.item_id for track in ref_tracks] == ["recording", "isrc", "plain"]
-    _library(enrichment).top_tracks.assert_not_awaited()
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -305,43 +1359,214 @@ async def test_artist_mbid_falls_back_to_the_providers_top_tracks() -> None:
     """Only once the library items fail are the providers asked for top tracks, untried ones."""
     tracks = [_library_track("plain")]
     top = [_library_track("plain"), *(_library_track(f"top-{i}") for i in range(4))]
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
         [], tracks, top, None, None, MB_ARTIST
     )
 
-    assert await enrichment._get_artist_mbid(_artist()) == MBID
+    assert await enrichment._get_artist_mbid(_artist(ranked=True)) == (MBID, False)
 
-    _library(enrichment).top_tracks.assert_awaited_once()
-    assert resolve_artist.await_count == 3
-    _, ref_albums, ref_tracks = resolve_artist.await_args_list[2].args
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once_with(
+        "1", provider_filter=["spotify_1"]
+    )
+    assert identify_artist.await_count == 3
+    _, ref_albums, ref_tracks = identify_artist.await_args_list[2].args
     assert ref_albums == []
     assert [track.item_id for track in ref_tracks] == ["top-0", "top-1", "top-2"]
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_moves_on_to_titles_after_an_empty_ranking() -> None:
+    """An empty ranking from the artist's own provider is followed by the title search."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [_library_track("plain")], [], None, None)
+    _with_title_providers(enrichment, _title_provider(["Creep"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    assert await enrichment._get_artist_mbid(_artist(ranked=True)) == (MBID, True)
+
+    # the listing is narrowed to the artist's provider, so it cannot fall back to Last.fm
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once_with(
+        "1", provider_filter=["spotify_1"]
+    )
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_awaited_once_with(
+        "Radiohead", ["Creep"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_asks_its_ranking_providers_in_one_listing() -> None:
+    """All ranking providers are asked together, so the listing removes their duplicates."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None, None)
+    artist = _artist(ranked=True)
+    artist.provider_mappings.add(
+        ProviderMapping(item_id="3106", provider_domain="tidal", provider_instance="tidal_1")
+    )
+
+    await enrichment._get_artist_mbid(artist)
+
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once()
+    call = _library(enrichment).get_library_artist_toptracks.await_args
+    assert sorted(call.kwargs["provider_filter"]) == ["spotify_1", "tidal_1"]
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_only_asks_ranking_providers_the_user_may_see() -> None:
+    """A source the user may not see is left out, and none visible moves on to the titles."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None, None)
+    _with_title_providers(enrichment, _title_provider(["Creep"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    with (
+        patch(
+            "music_assistant.controllers.metadata.enrichment.get_current_user",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "music_assistant.controllers.metadata.enrichment.visible_music_sources",
+            return_value=["tidal_1"],
+        ),
+    ):
+        assert await enrichment._get_artist_mbid(_artist(ranked=True)) == (MBID, True)
+
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_asks_every_ranking_provider_without_a_user() -> None:
+    """A background refresh, which runs without a user, also asks private sources."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None, None)
+
+    with (
+        patch(
+            "music_assistant.controllers.metadata.enrichment.get_current_user", return_value=None
+        ),
+        patch(
+            "music_assistant.controllers.metadata.enrichment.visible_music_sources",
+            return_value=[],
+        ) as visible,
+    ):
+        await enrichment._get_artist_mbid(_artist(ranked=True))
+
+    visible.assert_not_called()
+    _library(enrichment).get_library_artist_toptracks.assert_awaited_once_with(
+        "1", provider_filter=["spotify_1"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_skips_top_tracks_no_music_provider_ranks() -> None:
+    """Top tracks no music provider ranks are not resolved, so cost no streaming searches."""
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
+        [], [_library_track("plain")], [_library_track("top")], None, None
+    )
+
+    assert await enrichment._get_artist_mbid(_artist()) is None
+
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
+    assert identify_artist.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_skips_top_tracks_of_an_artist_only_on_local_files() -> None:
+    """A music provider that does not rank top tracks leaves them unresolved too."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [_library_track("plain")], [], None, None)
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Radiohead",
+        provider_mappings={
+            ProviderMapping(
+                item_id="radiohead",
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local_1",
+            )
+        },
+    )
+
+    assert await enrichment._get_artist_mbid(artist) is None
+
+    _library(enrichment).get_library_artist_toptracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_tries_library_tracks_named_like_top_tracks_first() -> None:
+    """Library tracks named like the artist's top tracks are tried, in the ranking's order."""
+    tracks = [_library_track(name) for name in ("plain-1", "plain-2", "Creep", "Airbag", "Nude")]
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
+        [], tracks, [], None, None, MB_ARTIST
+    )
+    titles = _title_provider(["Track nude", "Unknown", "track creep", "Track airbag"])
+    _with_title_providers(enrichment, titles)
+    artist = _artist()
+
+    assert await enrichment._get_artist_mbid(artist) == (MBID, False)
+
+    titles.get_artist_toptrack_titles.assert_awaited_once_with(artist, 25)
+    _, _, ref_tracks = identify_artist.await_args_list[2].args
+    # the first three library tracks were already tried
+    assert [track.item_id for track in ref_tracks] == ["Nude", "Airbag"]
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_searches_musicbrainz_by_top_track_titles() -> None:
+    """Without a library track of that name, MusicBrainz is searched by the titles."""
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
+        [], [_library_track("plain")], [], None, None
+    )
+    _with_title_providers(enrichment, _title_provider(["Creep", "Karma Police"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    assert await enrichment._get_artist_mbid(_artist()) == (MBID, True)
+
+    assert identify_artist.await_count == 2
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_awaited_once_with(
+        "Radiohead", ["Creep", "Karma Police"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_mbid_survives_a_failing_title_provider() -> None:
+    """A title provider that fails is logged and skipped for the next one."""
+    enrichment, _ = _enrichment_with_musicbrainz([], [], [], None, None)
+    failing = _title_provider(ResourceTemporarilyUnavailable("rate limited"))
+    _with_title_providers(enrichment, failing, _title_provider(["Creep"]))
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.return_value = MB_ARTIST
+
+    assert await enrichment._get_artist_mbid(_artist()) == (MBID, True)
+
+    failing.get_artist_toptrack_titles.assert_awaited_once()
+    _musicbrainz_of(enrichment).get_artist_by_track_titles.assert_awaited_once_with(
+        "Radiohead", ["Creep"]
+    )
 
 
 @pytest.mark.asyncio
 async def test_artist_mbid_is_none_when_musicbrainz_does_not_know_the_artist() -> None:
     """An unresolved artist yields no id and is logged; tracks already tried are not resent."""
     track = _library_track("t")
-    enrichment, resolve_artist = _enrichment_with_musicbrainz(
+    enrichment, identify_artist = _enrichment_with_musicbrainz(
         [_library_album("a")], [track], [track], None, None
     )
 
     assert await enrichment._get_artist_mbid(_artist()) is None
 
-    assert resolve_artist.await_count == 2
+    assert identify_artist.await_count == 2
     cast("MagicMock", enrichment.logger).debug.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_artist_mbid_shortcuts_skip_musicbrainz() -> None:
     """A known id or the Various Artists name never reaches MusicBrainz."""
-    enrichment, resolve_artist = _enrichment_with_musicbrainz([], [], [])
+    enrichment, identify_artist = _enrichment_with_musicbrainz([], [], [])
     known = _artist()
     known.mbid = MBID
 
-    assert await enrichment._get_artist_mbid(known) == MBID
-    assert await enrichment._get_artist_mbid(_artist("Various Artists")) == VARIOUS_ARTISTS_MBID
-    resolve_artist.assert_not_awaited()
+    assert await enrichment._get_artist_mbid(known) == (MBID, False)
+    assert await enrichment._get_artist_mbid(_artist("Various Artists")) == (
+        VARIOUS_ARTISTS_MBID,
+        True,
+    )
+    identify_artist.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -399,9 +1624,17 @@ def _musicbrainz(
     musicbrainz = MagicMock()
     musicbrainz.resolve_release = AsyncMock(return_value=release)
     musicbrainz.resolve_recording = AsyncMock(return_value=recording)
-    musicbrainz.resolve_artist = AsyncMock(return_value=None)
+    musicbrainz.identify_artist = AsyncMock(return_value=None)
     musicbrainz.get_artist_details = AsyncMock(return_value=artist)
     return musicbrainz
+
+
+def _logged_musicbrainz_unavailable(enrichment: MetadataEnrichmentMixin) -> bool:
+    """Return whether the enrichment logged a lookup MusicBrainz could not answer right now."""
+    return any(
+        "could not be looked up on MusicBrainz right now" in call.args[0]
+        for call in _logger(enrichment).debug.call_args_list
+    )
 
 
 def _album(external_ids: set[tuple[ExternalID, str]] | None = None, **kwargs: Any) -> Album:
@@ -421,14 +1654,14 @@ async def test_album_identity_fills_the_blanks_and_keeps_existing_values() -> No
     """MusicBrainz fills in what the album lacks; ids, year and type it has are kept."""
     enrichment = _enrichment(_musicbrainz(release=_release()))
     album = _album(
-        {(ExternalID.MB_ALBUM, OTHER_MBID), (ExternalID.BARCODE, "0000000000000")},
+        {(ExternalID.MB_ALBUM, RELEASE_ID), (ExternalID.BARCODE, "0000000000000")},
         year=2001,
         album_type=AlbumType.EP,
     )
 
     await enrichment._update_album_metadata(album, force_refresh=True)
 
-    assert album.mbid == OTHER_MBID
+    assert album.mbid == RELEASE_ID
     assert album.get_external_id(ExternalID.BARCODE) == "0000000000000"
     assert (album.year, album.album_type) == (2001, AlbumType.EP)
     assert album.get_external_id(ExternalID.MB_RELEASEGROUP) == RELEASE_GROUP_ID
@@ -473,6 +1706,55 @@ async def test_album_identity_links_the_album_and_its_tracks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_album_identity_follows_a_release_merged_into_another() -> None:
+    """An album whose release MusicBrainz merged into another takes the other's id in place."""
+    musicbrainz = _musicbrainz(release=_release())
+    musicbrainz.get_release_details = AsyncMock(return_value=_release())
+    enrichment = _enrichment(musicbrainz)
+    album = _album({(ExternalID.MB_ALBUM, OTHER_MBID)})
+    # a sync stored a Discogs id on the album while it was looked up
+    _stored_item(enrichment, _album({(ExternalID.MB_ALBUM, OTHER_MBID), DISCOGS_ID}))
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert album.mbid == RELEASE_ID
+    assert (ExternalID.MB_ALBUM, OTHER_MBID) not in album.external_ids
+    musicbrainz.get_release_details.assert_awaited_once_with(OTHER_MBID)
+    _stored_ids(enrichment).assert_awaited_once_with(
+        "1", {(ExternalID.MB_ALBUM, RELEASE_ID), DISCOGS_ID}
+    )
+
+
+@pytest.mark.asyncio
+async def test_album_identity_keeps_a_release_musicbrainz_does_not_answer_for() -> None:
+    """An album keeps a release id MusicBrainz does not answer for, which its mirror may lack."""
+    musicbrainz = _musicbrainz(release=_release())
+    musicbrainz.get_release_details = AsyncMock(side_effect=InvalidDataError("not found"))
+    enrichment = _enrichment(musicbrainz)
+    album = _album({(ExternalID.MB_ALBUM, OTHER_MBID)})
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert album.mbid == OTHER_MBID
+    _stored_ids(enrichment).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_album_identity_keeps_a_release_id_musicbrainz_answers_with() -> None:
+    """An album whose release id MusicBrainz answers with unchanged keeps it as it is."""
+    musicbrainz = _musicbrainz(release=_release())
+    musicbrainz.get_release_details = AsyncMock(return_value=_release())
+    enrichment = _enrichment(musicbrainz)
+    album = _album({(ExternalID.MB_ALBUM, RELEASE_ID)})
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert album.mbid == RELEASE_ID
+    musicbrainz.get_release_details.assert_not_awaited()
+    _stored_ids(enrichment).assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_album_identity_with_linking_disabled_fills_ids_but_links_nothing() -> None:
     """With provider linking off the album still gets its ids; no provider is linked."""
     release = _release()
@@ -483,7 +1765,7 @@ async def test_album_identity_with_linking_disabled_fills_ids_but_links_nothing(
     albums.get_library_album_tracks = AsyncMock(return_value=db_tracks)
     album = _album()
 
-    await enrichment._link_album_to_musicbrainz(album)
+    assert await enrichment._link_album_to_musicbrainz(album) is False
 
     assert album.mbid == RELEASE_ID
     assert album.metadata.last_musicbrainz_lookup is not None
@@ -552,17 +1834,62 @@ async def test_album_identity_is_skipped_without_a_musicbrainz_provider() -> Non
 
 @pytest.mark.asyncio
 async def test_album_identity_failure_is_logged_and_left_for_the_next_run() -> None:
-    """A failing lookup is a warning, not the end of the enrichment, and is not marked done."""
+    """A temporarily failing lookup is logged quietly, not marked done and due again soon."""
     musicbrainz = _musicbrainz()
     musicbrainz.resolve_release = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
     enrichment = _enrichment(musicbrainz)
     album = _album()
 
-    await enrichment._update_album_metadata(album, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
+
+    _logger(enrichment).warning.assert_not_called()
+    assert _logged_musicbrainz_unavailable(enrichment)
+    assert album.metadata.last_musicbrainz_lookup is None
+    _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once()
+    assert album.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_album_identity_unexpected_failure_is_a_warning() -> None:
+    """An unexpected lookup failure is a warning, not marked done and due at the usual time."""
+    musicbrainz = _musicbrainz()
+    musicbrainz.resolve_release = AsyncMock(side_effect=ValueError("bad payload"))
+    enrichment = _enrichment(musicbrainz)
+    album = _album()
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
 
     _logger(enrichment).warning.assert_called_once()
     assert album.metadata.last_musicbrainz_lookup is None
     _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once()
+    assert album.metadata.last_refresh == NOW
+
+
+@pytest.mark.asyncio
+async def test_album_without_musicbrainz_ids_is_due_again_soon_while_musicbrainz_is_down() -> None:
+    """
+    An album MusicBrainz cannot identify right now is due again soon.
+
+    Without the MusicBrainz ids an album metadata provider such as the Cover Art Archive
+    has nothing to look up and returns nothing instead of failing.
+    """
+    musicbrainz = _musicbrainz()
+    musicbrainz.resolve_release = AsyncMock(side_effect=RetriesExhausted("x"))
+    enrichment = _enrichment(musicbrainz)
+    cover_art = _metadata_provider("Cover Art Archive", ProviderFeature.ALBUM_METADATA)
+    cover_art.get_album_metadata = AsyncMock(return_value=None)
+    enrichment.providers = [cover_art]  # type: ignore[misc]
+    album = _album()
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_album_metadata(album, force_refresh=True)
+
+    cover_art.get_album_metadata.assert_awaited_once_with(album)
+    assert album.mbid is None
+    _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once_with("1", album)
+    assert album.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
 
 
 def _track(external_ids: set[tuple[ExternalID, str]] | None = None) -> Track:
@@ -604,6 +1931,29 @@ async def test_track_identity_fills_recording_id_and_isrcs_and_links() -> None:
 
 
 @pytest.mark.asyncio
+async def test_track_refresh_keeps_the_provider_tracks_isrcs() -> None:
+    """The ISRCs of the provider's full track are added to the library track's own."""
+    enrichment = _enrichment()
+    track = _track({(ExternalID.ISRC, "GBSTK0700001")})
+    track.provider_mappings = {
+        ProviderMapping(item_id="sp-1", provider_domain="spotify", provider_instance="spotify_1")
+    }
+    prov_track = _track({(ExternalID.ISRC, "USRC17607839"), (ExternalID.ISRC, "not-an-isrc")})
+    _mass(enrichment).music.tracks.get_provider_item = AsyncMock(return_value=prov_track)
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    assert {value for kind, value in track.external_ids if kind == ExternalID.ISRC} == {
+        "GBSTK0700001",
+        "USRC17607839",
+    }
+    _mass(enrichment).music.tracks.get_provider_item.assert_awaited_once_with(
+        "sp-1", "spotify_1", force_refresh=True
+    )
+    _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
+
+
+@pytest.mark.asyncio
 async def test_track_identity_keeps_an_existing_recording_id_and_marks_a_miss() -> None:
     """A recording id the track carries wins; a track MusicBrainz does not know is marked."""
     recording = MusicBrainzRecording(id=RECORDING_ID, title="15 Step")
@@ -622,17 +1972,37 @@ async def test_track_identity_keeps_an_existing_recording_id_and_marks_a_miss() 
 
 @pytest.mark.asyncio
 async def test_track_identity_failure_is_left_for_the_next_run() -> None:
-    """A track whose lookup fails is not marked as looked up, unlike an authoritative miss."""
+    """A track whose lookup fails temporarily is not marked as looked up and is due again soon."""
     musicbrainz = _musicbrainz()
     musicbrainz.resolve_recording = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
     enrichment = _enrichment(musicbrainz)
     track = _track()
 
-    await enrichment._update_track_metadata(track, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _logger(enrichment).warning.assert_not_called()
+    assert _logged_musicbrainz_unavailable(enrichment)
+    assert track.metadata.last_musicbrainz_lookup is None
+    _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
+    assert track.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_track_identity_unexpected_failure_is_a_warning() -> None:
+    """An unexpected lookup failure is a warning, not marked done and due at the usual time."""
+    musicbrainz = _musicbrainz()
+    musicbrainz.resolve_recording = AsyncMock(side_effect=ValueError("bad payload"))
+    enrichment = _enrichment(musicbrainz)
+    track = _track()
+
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_track_metadata(track, force_refresh=True)
 
     _logger(enrichment).warning.assert_called_once()
     assert track.metadata.last_musicbrainz_lookup is None
     _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
+    assert track.metadata.last_refresh == NOW
 
 
 def test_fill_track_from_recording_reports_whether_the_track_gained_an_id() -> None:
@@ -688,7 +2058,7 @@ async def test_artist_identity_fills_discogs_and_links() -> None:
 
 @pytest.mark.asyncio
 async def test_artist_identity_failure_is_left_for_the_next_run() -> None:
-    """An artist whose MusicBrainz details cannot be fetched is not marked as looked up."""
+    """An artist whose MusicBrainz details cannot be fetched now is left unmarked and due soon."""
     musicbrainz = _musicbrainz()
     musicbrainz.get_artist_details = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
     enrichment = _enrichment(musicbrainz)
@@ -700,11 +2070,92 @@ async def test_artist_identity_failure_is_left_for_the_next_run() -> None:
         external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
     )
 
-    await enrichment._update_artist_metadata(artist, force_refresh=True)
+    with patch(_ENRICHMENT_TIME, return_value=NOW):
+        await enrichment._update_artist_metadata(artist, force_refresh=True)
 
-    _logger(enrichment).warning.assert_called_once()
+    _logger(enrichment).warning.assert_not_called()
+    assert _logged_musicbrainz_unavailable(enrichment)
     assert artist.metadata.last_musicbrainz_lookup is None
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+    assert artist.metadata.last_refresh == NOW - REFRESH_INTERVAL + REFRESH_RETRY_INTERVAL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK])
+@pytest.mark.parametrize(
+    ("error", "temporary"),
+    [(RetriesExhausted("x"), True), (ValueError("bad payload"), False)],
+    ids=["temporary", "unexpected"],
+)
+async def test_identity_step_reports_whether_its_lookup_failed_temporarily(
+    media_type: MediaType, error: Exception, temporary: bool
+) -> None:
+    """A failed lookup is never marked done; only a temporary failure is logged quietly."""
+    musicbrainz = _musicbrainz()
+    item: Artist | Album | Track
+    if media_type == MediaType.ARTIST:
+        musicbrainz.get_artist_details = AsyncMock(side_effect=error)
+        item = _artist()
+        item.mbid = OTHER_MBID
+    elif media_type == MediaType.ALBUM:
+        musicbrainz.resolve_release = AsyncMock(side_effect=error)
+        item = _album()
+    else:
+        musicbrainz.resolve_recording = AsyncMock(side_effect=error)
+        item = _track()
+    enrichment = _enrichment(musicbrainz)
+
+    link = getattr(enrichment, f"_link_{media_type.value}_to_musicbrainz")
+    assert await link(item) is temporary
+
+    assert item.metadata.last_musicbrainz_lookup is None
+    assert _logged_musicbrainz_unavailable(enrichment) is temporary
+    assert _logger(enrichment).warning.called is not temporary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK])
+async def test_identity_step_passes_on_an_item_removed_from_the_library(
+    media_type: MediaType,
+) -> None:
+    """An item removed from the library while it is linked ends the update, not as a warning."""
+    recording = MusicBrainzRecording(id=RECORDING_ID, title="15 Step", isrcs=[], relations=[])
+    details = MusicBrainzArtist(id=OTHER_MBID, name="Radiohead", sort_name="Radiohead")
+    enrichment = _enrichment(_musicbrainz(release=_release(), recording=recording, artist=details))
+    item: Artist | Album | Track
+    if media_type == MediaType.ARTIST:
+        item = _artist()
+        item.mbid = OTHER_MBID
+    elif media_type == MediaType.ALBUM:
+        item = _album()
+    else:
+        item = _track()
+    music = _mass(enrichment).music
+    getattr(music, f"{media_type.value}s").link_musicbrainz_mappings = AsyncMock(
+        side_effect=MediaNotFoundError("removed")
+    )
+    music.get_controller.return_value.get_library_item = AsyncMock(
+        side_effect=MediaNotFoundError("removed")
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        await getattr(enrichment, f"_link_{media_type.value}_to_musicbrainz")(item)
+
+    _logger(enrichment).warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_album_identity_step_warns_on_a_track_removed_from_the_library() -> None:
+    """A track of the album merged away while it is linked is a link error of an album still there."""
+    enrichment = _enrichment(_musicbrainz(release=_release()))
+    album = _album()
+    music = _mass(enrichment).music
+    music.albums.link_album_tracks = AsyncMock(side_effect=MediaNotFoundError("track merged"))
+    music.get_controller.return_value.get_library_item = AsyncMock(return_value=album)
+
+    assert await enrichment._link_album_to_musicbrainz(album) is False
+
+    _logger(enrichment).warning.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -729,7 +2180,7 @@ async def test_artist_identity_marks_an_artist_musicbrainz_does_not_know() -> No
     """An artist that stays without an id is marked as looked up and not linked."""
     musicbrainz = _musicbrainz()
     enrichment = _enrichment(musicbrainz)
-    for listing in ("albums", "tracks", "top_tracks"):
+    for listing in ("albums", "tracks", "get_library_artist_toptracks"):
         setattr(_mass(enrichment).music.artists, listing, AsyncMock(return_value=[]))
     artist = Artist(item_id="1", provider="library", name="Nobody", provider_mappings=set())
 
@@ -760,11 +2211,89 @@ async def test_artist_identity_with_linking_disabled_fills_discogs_but_links_not
         external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
     )
 
-    await enrichment._link_artist_to_musicbrainz(artist)
+    assert await enrichment._link_artist_to_musicbrainz(artist) is False
 
     assert artist.get_external_id(ExternalID.DISCOGS) == "3840"
     assert artist.metadata.last_musicbrainz_lookup is not None
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+
+
+def _merged_artist(external_ids: set[tuple[ExternalID, str]] | None = None) -> Artist:
+    """Return a library artist whose MusicBrainz details answer with the id MBID."""
+    return Artist(
+        item_id="1",
+        provider="library",
+        name="Radiohead",
+        provider_mappings=set(),
+        external_ids=external_ids or set(),
+    )
+
+
+def _musicbrainz_answering_with(mbid: str) -> MagicMock:
+    """Return a MusicBrainz provider stub whose artist details carry the given id."""
+    return _musicbrainz(artist=MusicBrainzArtist(id=mbid, name="Radiohead", sort_name="Radiohead"))
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_follows_an_artist_merged_into_another() -> None:
+    """An artist MusicBrainz merged into another takes the other's id in place of its own."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+    # a sync stored a Discogs id on the artist while it was looked up
+    _stored_item(enrichment, _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID), DISCOGS_ID}))
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.mbid == MBID
+    assert (ExternalID.MB_ARTIST, OTHER_MBID) not in artist.external_ids
+    _stored_ids(enrichment).assert_awaited_once_with(
+        "1", {(ExternalID.MB_ARTIST, MBID), DISCOGS_ID}
+    )
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_merges_the_library_artists_sharing_a_followed_id() -> None:
+    """An artist that followed a merge is merged with the library artists holding the new id."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    artist = _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)})
+    _stored_item(enrichment, _merged_artist({(ExternalID.MB_ARTIST, OTHER_MBID)}))
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    _stored_ids(enrichment).assert_awaited_once_with("1", {(ExternalID.MB_ARTIST, MBID)})
+    _logger(enrichment).warning.assert_not_called()
+
+    artists = _mass(enrichment).music.artists
+    artists.merge_library_artists_by_mbid.assert_awaited_once_with(1, MBID)
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_does_not_follow_an_id_a_name_search_found() -> None:
+    """An id only a name search found may be a namesake's, so a merge it leads to is not followed."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    enrichment._get_artist_mbid = AsyncMock(return_value=(OTHER_MBID, True))  # type: ignore[method-assign]
+    artist = _merged_artist()
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.mbid == OTHER_MBID
+    artists = _mass(enrichment).music.artists
+    _stored_ids(enrichment).assert_not_awaited()
+    artists.merge_library_artists_by_mbid.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_keeps_an_id_musicbrainz_answers_with() -> None:
+    """An artist whose id MusicBrainz answers with unchanged keeps it and merges nothing."""
+    enrichment = _enrichment(_musicbrainz_answering_with(MBID))
+    artist = _merged_artist({(ExternalID.MB_ARTIST, MBID)})
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    assert artist.mbid == MBID
+    artists = _mass(enrichment).music.artists
+    _stored_ids(enrichment).assert_not_awaited()
+    artists.merge_library_artists_by_mbid.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -780,7 +2309,7 @@ async def test_track_identity_with_linking_disabled_fills_ids_but_links_nothing(
     enrichment.link_providers_via_musicbrainz = False  # type: ignore[misc]
     track = _track()
 
-    await enrichment._link_track_to_musicbrainz(track)
+    assert await enrichment._link_track_to_musicbrainz(track) is False
 
     assert track.mbid == RECORDING_ID
     assert (ExternalID.ISRC, "GBSTK0700001") in track.external_ids

@@ -63,20 +63,28 @@ BUILTIN_PLAYLISTS_ENTRIES = [
     for key, name in BUILTIN_PLAYLISTS.items()
 ]
 
-COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, RANDOM_TRACKS)
+BUILTIN_PLAYLIST_IMAGES_DIR_NAME = "playlists"
 
-DEFAULT_THUMB = MediaItemImage(
-    type=ImageType.THUMB,
-    path="logo.png",
+# the image caches keep a bundled file by its path, so changed artwork needs a new file name
+BUILTIN_PLAYLIST_THUMBS = {
+    playlist_id: MediaItemImage(
+        type=ImageType.THUMB,
+        path=f"{BUILTIN_PLAYLIST_IMAGES_DIR_NAME}/{playlist_id}.png",
+        provider="builtin",
+        remotely_accessible=False,
+    )
+    for playlist_id in BUILTIN_PLAYLISTS
+}
+
+BUILTIN_PLAYLIST_FANART = MediaItemImage(
+    type=ImageType.FANART,
+    path=f"{BUILTIN_PLAYLIST_IMAGES_DIR_NAME}/fanart.jpg",
     provider="builtin",
     remotely_accessible=False,
 )
 
-DEFAULT_FANART = MediaItemImage(
-    type=ImageType.FANART,
-    path="fanart.jpg",
-    provider="builtin",
-    remotely_accessible=False,
+BUILTIN_PLAYLIST_IMAGE_PATHS = frozenset(
+    {*(img.path for img in BUILTIN_PLAYLIST_THUMBS.values()), BUILTIN_PLAYLIST_FANART.path}
 )
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN = ConfigEntry.from_dict(

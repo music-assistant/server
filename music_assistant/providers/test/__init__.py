@@ -193,12 +193,12 @@ class TestProvider(MusicProvider):
             seed = item_id
         else:
             return set()
-        return {random.Random(seed).choice(DEFAULT_GENRES)}
+        return {random.Random(seed).choice(DEFAULT_GENRES)}  # noqa: S311 - fake test data
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         artist_idx, album_idx, track_idx = prov_track_id.split("_", 3)
-        genre = random.Random(artist_idx).choice(DEFAULT_GENRES)
+        genre = random.Random(artist_idx).choice(DEFAULT_GENRES)  # noqa: S311 - fake test data
         return Track(
             item_id=prov_track_id,
             provider=self.instance_id,
@@ -248,7 +248,7 @@ class TestProvider(MusicProvider):
         """Get full artist details by id."""
         if prov_artist_id.startswith((f"{AUTHOR_ID_PREFIX}_", f"{NARRATOR_ID_PREFIX}_")):
             return self._get_audiobook_artist(prov_artist_id)
-        genre = random.Random(prov_artist_id).choice(DEFAULT_GENRES)
+        genre = random.Random(prov_artist_id).choice(DEFAULT_GENRES)  # noqa: S311 - fake test data
         return Artist(
             item_id=prov_artist_id,
             provider=self.instance_id,
@@ -269,7 +269,7 @@ class TestProvider(MusicProvider):
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full artist details by id."""
         artist_idx, album_idx = prov_album_id.split("_", 2)
-        genre = random.Random(artist_idx).choice(DEFAULT_GENRES)
+        genre = random.Random(artist_idx).choice(DEFAULT_GENRES)  # noqa: S311 - fake test data
         return Album(
             item_id=prov_album_id,
             provider=self.instance_id,
@@ -297,7 +297,7 @@ class TestProvider(MusicProvider):
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
-        genre = random.Random(prov_podcast_id).choice(DEFAULT_GENRES)
+        genre = random.Random(prov_podcast_id).choice(DEFAULT_GENRES)  # noqa: S311 - fake test data
         return Podcast(
             item_id=prov_podcast_id,
             provider=self.instance_id,
@@ -315,7 +315,7 @@ class TestProvider(MusicProvider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
-        genre = random.Random(prov_audiobook_id).choice(DEFAULT_GENRES)
+        genre = random.Random(prov_audiobook_id).choice(DEFAULT_GENRES)  # noqa: S311 - fake test data
         authors: UniqueList[Artist | ItemMapping | str]
         narrators: UniqueList[Artist | ItemMapping | str]
         if self.config.get_value(CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS):
@@ -422,7 +422,7 @@ class TestProvider(MusicProvider):
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         podcast_id, episode_idx = prov_episode_id.split("_", 2)
-        genre = random.Random(podcast_id).choice(DEFAULT_GENRES)
+        genre = random.Random(podcast_id).choice(DEFAULT_GENRES)  # noqa: S311 - fake test data
         return PodcastEpisode(
             item_id=prov_episode_id,
             provider=self.instance_id,

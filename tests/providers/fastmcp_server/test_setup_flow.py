@@ -7,8 +7,10 @@ import time
 from typing import Any
 from unittest import mock
 
+import pytest
 from aiohttp.test_utils import make_mocked_request
-from music_assistant_models.enums import FlowStepType
+
+pytest.importorskip("music_assistant.models.setup_flow")
 
 from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
 from music_assistant.providers.fastmcp_server import setup_flow
@@ -67,7 +69,9 @@ async def test_setup_mounts_wizard_and_finishes_after_callback() -> None:
         step = await _wait_for(
             lambda: (
                 session.current_step
-                if session.current_step and session.current_step.type == FlowStepType.EXTERNAL
+                if session.current_step
+                and getattr(session.current_step.type, "value", session.current_step.type)
+                == "external"
                 else None
             )
         )

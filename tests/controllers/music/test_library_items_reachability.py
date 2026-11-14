@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing
@@ -13,8 +13,11 @@ from music_assistant_models.media_items import Artist, ProviderMapping, Track, U
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
-if TYPE_CHECKING:
-    import pytest
+
+@pytest.fixture(name="mass")
+def mass_fixture(music_mass: MusicAssistant) -> MusicAssistant:
+    """Run on a library-only instance: these tests only touch the library."""
+    return music_mass
 
 
 def _mapping(

@@ -198,7 +198,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
 
-        self.http_site = web.TCPSite(self.runner, "0.0.0.0", self.port)
+        self.http_site = web.TCPSite(self.runner, "0.0.0.0", self.port)  # noqa: S104 - serves Plex clients on the LAN
         await self.http_site.start()
         LOGGER.info(f"Plex remote control server started on HTTP port {self.port}")
 

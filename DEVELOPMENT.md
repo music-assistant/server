@@ -2,7 +2,7 @@ Developer docs
 ==================================
 
 ## 📝 Prerequisites
-* ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
+* ffmpeg (minimum version 8.0), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
 * libchromaprint, also at OS level. Install it if you want to run the `acoustid_lookup` provider: without libchromaprint AcoustID refuses to load. The test suite does not need it: the AcoustID tests drive a fake fingerprinter.
@@ -85,6 +85,23 @@ In most cases, you won't need to modify the models. However, if you do need to m
 
 **Note:** You must rerun this command whenever you add or remove files from the `models` repository to ensure the changes are picked up.
 
+## Listing random order
+
+Server listing commands accept an optional integer `random_seed`. With `sort_field=random`,
+reuse the same seed for every page of one listing load; with unchanged items and filters,
+this avoids repeated or skipped items across pages. SQL listings also accept the seed for
+`random_play_count`, which keeps play count as the primary order and randomizes ties.
+Start a new seed when requesting a new random order. Seed `0` is valid. Without a seed,
+random sorts continue to draw a new order for each request.
+
+The seed is a request parameter, not stored state or a frozen snapshot: library edits,
+provider changes and updated play counts can change the result. It has no effect on other
+sort fields. `music/sort_options` remains the authority for the sorts each listing supports;
+accepting a seed does not add Random to a listing's offered options. Provider methods are
+unchanged; the server applies search, sort and paging to their listings.
+
+For the shared API parameters and client migration notes, see the [listing contract](https://developers.music-assistant.io/listing-contract/).
+
 ## Note on async Python
 The Music Assistant server is fully built in Python. The Python language has no real supported for multi-threading. This is why Music Assistant heavily relies on asyncio to handle blocking IO. It is important to get a good understanding of asynchronous programming before building your first provider. [This](https://www.youtube.com/watch?v=M-UcUs7IMIM) video is an excellent first step in the world of asyncio.
 
@@ -93,7 +110,7 @@ The Music Assistant server is fully built in Python. The Python language has no 
 
 
 ## Building a new Music Provider
-A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
+A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Local files can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
 
@@ -140,6 +157,15 @@ A provider that talks to a music service must therefore:
   service's API and set it to what that service actually tolerates, and put
   [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
   instead of asking again. Back off on a 429 rather than retrying into it.
+  One user action or background job never walks the service's catalogue: no requests per album,
+  track or page of an artist's discography or a service listing, and never build what the
+  service has no endpoint for that way. Paging through the user's own library, through the
+  throttler, is fine. A provider without an artist tracks endpoint does not offer
+  `ProviderFeature.ARTIST_TRACKS`; artist top tracks (`ARTIST_TOPTRACKS`) is a feature of its own.
+  The throttler serves playback first, user actions second and background work last. Background
+  work may use only half of the rate limit and is spread evenly over time, which keeps room free
+  for the user. Music Assistant sets the priority where a request starts, so a provider normally
+  does not have to.
   A provider that hammers a service puts every Music Assistant user's account at risk, not just
   the developer's.
 * **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which
@@ -174,6 +200,7 @@ The manifest file contains metadata and configuration about a provider. The supp
 | name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
 | description  | The full description of the provider  | string  |
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
+| support_url | Optional https URL where the maintainer takes bug reports and questions, when not the project's support repository. | string |
 | stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
 | requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
 | documentation | URL to the provider's documentation page. | string |
@@ -184,9 +211,33 @@ The manifest file contains metadata and configuration about a provider. The supp
 | icon | Name of the [Material Design Icon](https://pictogrammers.com/library/mdi) to use for the provider | string |
 | mdns_discovery | List of Zeroconf service types the provider wants to subscribe to. | array[string] |
 | upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
-| self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. Set it to `false` when the setup reaches into the server itself, like a folder on its local disk | boolean |
+| self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. A provider whose setup reaches into the server itself, like a folder on its disk, may only keep it `true` when its setup flow checks what a member picks against what that member may use (the Local files flow checks every folder against `mass.storage.can_hold_music_source`); otherwise set it to `false` | boolean |
 | credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
-Two more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG) and `has_setup_flow` (set when the provider folder contains a `setup_flow.py`).
+Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
+
+## 🤝 Community providers
+Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
+
+**Getting your changes merged**
+
+Bot-MArley, the maintainers' review bot, reviews every PR that is ready for review within about an hour of its last push, and approves it when the review is clean and the change stays inside one provider. An approval does not merge the PR. As a codeowner of that provider, comment `@Bot-MArley merge` on a line of its own, and the bot adds the PR to the merge queue once its current commit is approved and `lint` and `test` are green. This works on PRs into `dev` that only change your provider's folders (`music_assistant/providers/<domain>/` and `tests/providers/<domain>/`), whoever opened them. After a new push, ask again.
+
+A maintainer still approves or merges:
+* a new provider, after checking it against the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md);
+* a change to your provider's `codeowners` or `support_url`;
+* a change to `requirements`, or to anything outside your provider's folders;
+* a PR of 1,000 changed lines or more;
+* a change to a player provider, or other code that talks to a device, until you say in the PR which real device you tested it on.
+
+Comment `@Bot-MArley help` on a PR for all of the bot's commands.
+
+**Keeping your provider working**
+
+Changes to the provider base classes land several times a month, and the core team updates every provider in the PR that makes them. When a change in Music Assistant still breaks your provider, you are expected to fix it.
+
+**Backports**
+
+A bugfix that also affects the current stable release can be backported. Ask for it in your PR: a maintainer adds the `backport-to-stable` label, and the fix is cherry-picked onto the stable branch once it merges into `dev`.

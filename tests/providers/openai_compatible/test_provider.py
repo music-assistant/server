@@ -1,5 +1,6 @@
 """Tests for the OpenAI Compatible plugin provider."""
 
+import base64
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -23,6 +24,7 @@ from music_assistant.providers.openai_compatible import (
     setup_flow,
 )
 from music_assistant.providers.openai_compatible.constants import (
+    CONF_IMAGE_MODELS,
     CONF_MODELS,
     SERVICE_BASE_URLS,
     SERVICE_CUSTOM,
@@ -602,6 +604,454 @@ async def test_get_config_entries_reaches_the_endpoint_without_async_init(
     assert [option.value for option in models_entry.options] == ["fresh-model"]
 
 
+async def test_image_generation_decodes_an_openrouter_style_inline_image(mass: AsyncMock) -> None:
+    """OpenRouter returns the image as a data URL on the chat completion message."""
+    encoded = base64.b64encode(b"png-bytes").decode()
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "images": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, payload))
+    )
+
+    image, used_images_endpoint = await helpers.image_generation(
+        mass, BASE_URL, "key", model="google/gemini-2.5-flash-image", prompt="A cat", timeout=10
+    )
+
+    assert image == b"png-bytes"
+    assert used_images_endpoint is False
+    method, url = mass.http_session.request.call_args.args
+    assert (method, url) == ("post", f"{BASE_URL}/chat/completions")
+    assert mass.http_session.request.call_args.kwargs["json"]["modalities"] == ["image", "text"]
+
+
+async def test_image_generation_falls_back_to_the_images_endpoint(mass: AsyncMock) -> None:
+    """A service rejecting image output on chat completions is asked on /images/generations."""
+    encoded = base64.b64encode(b"jpeg-bytes").decode()
+    mass.http_session.request = MagicMock(
+        side_effect=[
+            _response_cm(response=_json_response(400, {"error": {"message": "bad modalities"}})),
+            _response_cm(response=_json_response(200, {"data": [{"b64_json": encoded}]})),
+        ]
+    )
+
+    image, used_images_endpoint = await helpers.image_generation(
+        mass, BASE_URL, "key", model="gpt-image-1", prompt="A cat", timeout=10
+    )
+
+    assert image == b"jpeg-bytes"
+    assert used_images_endpoint is True
+    method, url = mass.http_session.request.call_args.args
+    assert (method, url) == ("post", f"{BASE_URL}/images/generations")
+    assert mass.http_session.request.call_args.kwargs["json"]["prompt"] == "A cat"
+
+
+async def test_image_generation_goes_straight_to_a_known_images_endpoint(mass: AsyncMock) -> None:
+    """A model known to need the images endpoint skips the chat completion attempt."""
+    encoded = base64.b64encode(b"jpeg-bytes").decode()
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {"data": [{"b64_json": encoded}]}))
+    )
+
+    await helpers.image_generation(
+        mass,
+        BASE_URL,
+        "",
+        model="gpt-image-1",
+        prompt="A cat",
+        timeout=10,
+        use_images_endpoint=True,
+    )
+
+    assert mass.http_session.request.call_count == 1
+    assert mass.http_session.request.call_args.args[1] == f"{BASE_URL}/images/generations"
+
+
+def _download_response(
+    chunks: list[bytes],
+    content_length: int | None = None,
+    *,
+    status: int = 200,
+    retry_after: str = "",
+) -> MagicMock:
+    """Build a fake aiohttp response streaming a downloaded image in the given chunks."""
+    response = MagicMock()
+    response.status = status
+    response.headers = {"Retry-After": retry_after} if retry_after else {}
+    response.content_length = content_length
+    response.content.read = AsyncMock(side_effect=[*chunks, b""])
+    return response
+
+
+LOCAL_BASE_URL = "http://192.168.1.20:8080/v1"
+
+
+async def _generate_by_url(mass: AsyncMock, url: str, base_url: str = LOCAL_BASE_URL) -> bytes:
+    """Run an images endpoint generation whose reply hands out the image by URL."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {"data": [{"url": url}]}))
+    )
+    image, _ = await helpers.image_generation(
+        mass, base_url, "", model="dall-e-3", prompt="A cat", timeout=10, use_images_endpoint=True
+    )
+    return image
+
+
+async def test_the_images_endpoint_is_asked_for_an_inline_image(mass: AsyncMock) -> None:
+    """The image is asked for inline, so there is nothing to download."""
+    encoded = base64.b64encode(b"png").decode()
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {"data": [{"b64_json": encoded}]}))
+    )
+
+    image, _ = await helpers.image_generation(
+        mass, BASE_URL, "", model="dall-e-3", prompt="A cat", timeout=10, use_images_endpoint=True
+    )
+
+    assert image == b"png"
+    assert mass.http_session.request.call_args.kwargs["json"]["response_format"] == "b64_json"
+
+
+async def test_a_service_rejecting_the_format_is_asked_again_without_it(mass: AsyncMock) -> None:
+    """A service that does not take response_format still gets to answer."""
+    encoded = base64.b64encode(b"png").decode()
+    mass.http_session.request = MagicMock(
+        side_effect=[
+            _response_cm(
+                response=_json_response(
+                    400, {"error": {"message": "Unknown parameter: 'response_format'."}}
+                )
+            ),
+            _response_cm(response=_json_response(200, {"data": [{"b64_json": encoded}]})),
+        ]
+    )
+
+    image, _ = await helpers.image_generation(
+        mass,
+        BASE_URL,
+        "",
+        model="gpt-image-1",
+        prompt="A cat",
+        timeout=10,
+        use_images_endpoint=True,
+    )
+
+    assert image == b"png"
+    assert "response_format" not in mass.http_session.request.call_args.kwargs["json"]
+
+
+async def test_a_model_refusing_the_format_is_asked_plainly_from_then_on(
+    mass: AsyncMock,
+) -> None:
+    """Once a model refused response_format, later requests skip it without trying first."""
+    encoded = base64.b64encode(b"png").decode()
+    refused = {"error": {"message": "Unknown parameter: 'response_format'."}}
+    ok = {"data": [{"b64_json": encoded}]}
+    mass.http_session.request = MagicMock(
+        side_effect=[
+            _response_cm(response=_json_response(400, refused)),
+            _response_cm(response=_json_response(200, ok)),
+            _response_cm(response=_json_response(200, ok)),
+        ]
+    )
+    no_format_models: set[str] = set()
+
+    for _ in range(2):
+        await helpers.image_generation(
+            mass,
+            BASE_URL,
+            "",
+            model="gpt-image-1",
+            prompt="A cat",
+            timeout=10,
+            use_images_endpoint=True,
+            no_format_models=no_format_models,
+        )
+
+    assert no_format_models == {"gpt-image-1"}
+    # the refused request once, then plain requests only
+    assert mass.http_session.request.call_count == 3
+    assert "response_format" not in mass.http_session.request.call_args.kwargs["json"]
+
+
+async def test_another_rejection_is_not_retried(mass: AsyncMock) -> None:
+    """Only a rejected response_format is asked again, not any refused request."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(
+            response=_json_response(400, {"error": {"message": "content policy violation"}})
+        )
+    )
+
+    with pytest.raises(InvalidDataError, match="content policy"):
+        await helpers.image_generation(
+            mass, BASE_URL, "", model="m", prompt="A cat", timeout=10, use_images_endpoint=True
+        )
+
+    assert mass.http_session.request.call_count == 1
+
+
+async def test_a_link_to_the_endpoint_itself_is_downloaded(mass: AsyncMock) -> None:
+    """A self-hosted server linking to itself is downloaded through the shared session."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png-", b"bytes"]))
+    )
+
+    assert await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png") == b"png-bytes"
+    assert mass.http_session.get.call_args.args[0] == "http://192.168.1.20:8080/generated/x.png"
+    assert mass.http_session.get.call_args.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # another host
+        "https://cdn.example.com/x.png",
+        # another service on the endpoint's host
+        "http://192.168.1.20:8123/api/states",
+        # another scheme
+        "https://192.168.1.20:8080/x.png",
+        "file:///etc/passwd",
+    ],
+)
+async def test_links_outside_the_endpoint_are_refused(mass: AsyncMock, url: str) -> None:
+    """The service picks the link, so only one to the endpoint itself is followed."""
+    mass.http_session.get = MagicMock()
+
+    with pytest.raises(InvalidDataError):
+        await _generate_by_url(mass, url)
+
+    mass.http_session.get.assert_not_called()
+
+
+async def test_a_redirect_of_an_image_link_is_not_followed(mass: AsyncMock) -> None:
+    """A redirect could lead anywhere, so it fails instead of being followed."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([], status=302))
+    )
+
+    with pytest.raises(InvalidDataError, match="302"):
+        await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png")
+
+
+@pytest.mark.parametrize("status", [408, 500, 503])
+async def test_a_failing_image_download_is_reported_as_unavailable(
+    mass: AsyncMock, status: int
+) -> None:
+    """The endpoint failing to hand out the image is an outage, not a failed generation."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"busy"], status=status))
+    )
+
+    with pytest.raises(ProviderUnavailableError, match=str(status)):
+        await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png")
+
+
+async def test_a_rate_limited_image_download_asks_for_the_backoff(mass: AsyncMock) -> None:
+    """A 429 on the image download is a rate limit, for as long as the endpoint asks."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(
+            response=_download_response([b"slow down"], status=429, retry_after="120")
+        )
+    )
+
+    with pytest.raises(RateLimited) as limited:
+        await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png")
+
+    assert limited.value.backoff_time == 120
+
+
+async def test_an_ipv6_endpoint_links_to_itself(mass: AsyncMock) -> None:
+    """An endpoint by IPv6 address is matched to its own links."""
+    mass.http_session.get = MagicMock(
+        return_value=_response_cm(response=_download_response([b"png"]))
+    )
+
+    assert (
+        await _generate_by_url(
+            mass, "http://[fd00::5]:8080/x.png", base_url="http://[fd00::5]:8080/v1"
+        )
+        == b"png"
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # declared too large up front
+        _download_response([b"x"], content_length=helpers.MAX_IMAGE_BYTES + 1),
+        # no declared length, but more arrives than the limit
+        _download_response([b"x" * helpers.MAX_IMAGE_BYTES, b"x"]),
+    ],
+)
+async def test_image_generation_refuses_an_oversized_download(
+    mass: AsyncMock, response: MagicMock
+) -> None:
+    """A downloaded image over the size limit is refused instead of read into memory."""
+    mass.http_session.get = MagicMock(return_value=_response_cm(response=response))
+
+    with pytest.raises(InvalidDataError, match="larger than the download limit"):
+        await _generate_by_url(mass, "http://192.168.1.20:8080/generated/x.png")
+
+
+async def test_a_malformed_inline_image_falls_back_to_the_images_endpoint(
+    mass: AsyncMock,
+) -> None:
+    """An inline image that does not decode is no image, so the images endpoint is asked."""
+    encoded = base64.b64encode(b"jpeg-bytes").decode()
+    chat_payload = {
+        "choices": [
+            {
+                "message": {
+                    "images": [{"image_url": {"url": "data:image/png;base64,!!!!"}}],
+                }
+            }
+        ]
+    }
+    mass.http_session.request = MagicMock(
+        side_effect=[
+            _response_cm(response=_json_response(200, chat_payload)),
+            _response_cm(response=_json_response(200, {"data": [{"b64_json": encoded}]})),
+        ]
+    )
+
+    image, used_images_endpoint = await helpers.image_generation(
+        mass, BASE_URL, "", model="gpt-image-1", prompt="A cat", timeout=10
+    )
+
+    assert (image, used_images_endpoint) == (b"jpeg-bytes", True)
+
+
+@pytest.mark.parametrize("status", [408, 500, 502, 503])
+async def test_an_unavailable_service_is_reported_as_unavailable(
+    mass: AsyncMock, status: int
+) -> None:
+    """A service that is down answers with an outage, not with a refused request."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(status, {"error": {"message": "down"}}))
+    )
+
+    with pytest.raises(ProviderUnavailableError, match="unavailable"):
+        await helpers.image_generation(mass, BASE_URL, "", model="m", prompt="A cat", timeout=10)
+
+    # the images endpoint is not asked as well, the service is down
+    assert mass.http_session.request.call_count == 1
+
+
+async def test_an_oversized_api_reply_is_refused(mass: AsyncMock) -> None:
+    """A reply over the size limit is refused instead of read into memory."""
+    response = _json_response(200, _CHAT_PAYLOAD)
+    response.content_length = helpers.MAX_RESPONSE_BYTES + 1
+    mass.http_session.request = MagicMock(return_value=_response_cm(response=response))
+
+    with pytest.raises(InvalidDataError, match="larger than the download limit"):
+        await helpers.chat_completion(mass, BASE_URL, "", model="m", prompt="Hi", timeout=10)
+
+
+async def test_an_inline_image_wrapped_over_lines_decodes() -> None:
+    """Line breaks in a base64 payload are allowed."""
+    encoded = base64.encodebytes(b"x" * 100).decode()
+    assert "\n" in encoded
+
+    assert helpers._decode_base64(encoded) == b"x" * 100
+
+
+async def test_image_generation_raises_when_neither_endpoint_returns_an_image(
+    mass: AsyncMock,
+) -> None:
+    """A text-only answer on both endpoints is an error naming both failures."""
+    mass.http_session.request = MagicMock(
+        side_effect=[
+            _response_cm(response=_json_response(200, _CHAT_PAYLOAD)),
+            _response_cm(response=_json_response(404, {"error": {"message": "no such route"}})),
+        ]
+    )
+
+    with pytest.raises(InvalidDataError, match="no such route"):
+        await helpers.image_generation(
+            mass, BASE_URL, "", model="text-model", prompt="A cat", timeout=10
+        )
+
+
+async def test_image_generation_does_not_retry_a_rejected_api_key(mass: AsyncMock) -> None:
+    """Bad credentials fail at once instead of trying the second endpoint."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(401, {}))
+    )
+
+    with pytest.raises(LoginFailed):
+        await helpers.image_generation(mass, BASE_URL, "bad", model="m", prompt="A cat", timeout=10)
+    assert mass.http_session.request.call_count == 1
+
+
+async def test_get_image_engines_returns_the_configured_image_models(
+    provider: OpenAICompatibleProvider,
+) -> None:
+    """Image models are configured apart from the text models."""
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key, default=None: {
+            CONF_MODELS: ["text-model"],
+            CONF_IMAGE_MODELS: ["image-b", "image-a"],
+        }.get(key, default)
+    )
+
+    assert [engine.id for engine in await provider.get_image_engines()] == ["image-a", "image-b"]
+    assert [engine.id for engine in await provider.get_ai_engines()] == ["text-model"]
+
+
+async def test_ai_generate_image_remembers_a_model_that_needs_the_images_endpoint(
+    provider: OpenAICompatibleProvider,
+) -> None:
+    """After one fallback, later requests for that model go to the images endpoint directly."""
+    await provider.handle_async_init()
+    with patch(
+        "music_assistant.providers.openai_compatible.image_generation",
+        AsyncMock(return_value=(b"img", True)),
+    ) as generate:
+        assert await provider.ai_generate_image("A cat", engine_id="gpt-image-1") == b"img"
+        await provider.ai_generate_image("A dog", engine_id="gpt-image-1")
+
+    assert generate.call_args_list[0].kwargs["use_images_endpoint"] is False
+    assert generate.call_args_list[1].kwargs["use_images_endpoint"] is True
+
+
+async def test_ai_generate_image_raises_without_image_models(
+    provider: OpenAICompatibleProvider,
+) -> None:
+    """Refuse to generate when no image model is selected."""
+    await provider.handle_async_init()
+
+    with pytest.raises(UnsupportedFeaturedException):
+        await provider.ai_generate_image("A cat")
+
+
+async def test_get_config_entries_offers_the_listing_for_image_models(
+    provider: OpenAICompatibleProvider, mass: AsyncMock
+) -> None:
+    """The image model picker is filled from the same listing as the text models."""
+    _configure_models(provider, [])
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {"data": [{"id": "flux"}]}))
+    )
+
+    entries = await provider.get_config_entries()
+
+    image_entry = next(entry for entry in entries if entry.key == CONF_IMAGE_MODELS)
+    assert image_entry.multi_value is True
+    assert [option.value for option in image_entry.options] == ["flux"]
+
+
 def _response_cm(*, response: MagicMock | None = None, exc: Exception | None = None) -> MagicMock:
     """Build a fake async context manager mimicking aiohttp's session.request()."""
     cm = MagicMock()
@@ -615,7 +1065,19 @@ def _json_response(status: int, payload: dict[str, Any], *, retry_after: str = "
     response = MagicMock()
     response.status = status
     response.headers = {"Retry-After": retry_after} if retry_after else {}
-    response.read = AsyncMock(return_value=json.dumps(payload).encode())
+    response.content_length = None
+    body = json.dumps(payload).encode()
+    sent = False
+
+    async def read(_size: int = -1) -> bytes:
+        # the body once, then the end of it from then on, as an exhausted stream does
+        nonlocal sent
+        if sent:
+            return b""
+        sent = True
+        return body
+
+    response.content.read = read
     return response
 
 

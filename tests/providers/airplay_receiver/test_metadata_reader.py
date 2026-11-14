@@ -31,13 +31,14 @@ async def _write_marker(pipe_path: str, marker: str, timeout: float = 5.0) -> No
         while True:
             try:
                 fd = os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK)
-                break
             except OSError:
                 await asyncio.sleep(0.05)
-    try:
-        os.write(fd, f"{marker}\n".encode())
-    finally:
-        os.close(fd)
+                continue
+            try:
+                os.write(fd, f"{marker}\n".encode())
+            finally:
+                os.close(fd)
+            return
 
 
 async def _wait_for(condition: Callable[[], bool], timeout: float = 2.0) -> None:

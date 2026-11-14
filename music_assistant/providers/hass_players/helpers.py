@@ -125,12 +125,12 @@ async def get_esphome_supported_audio_formats(
         }
         async with hass_prov.mass.http_session.get(url, headers=headers) as response:
             if response.status != 200:
-                raise LoginFailed("Unable to contact Home Assistant to retrieve diagnostics")
+                raise LoginFailed("Unable to contact Home Assistant to retrieve diagnostics")  # noqa: TRY301 - logged by except below
             data = await response.json()
             if "data" not in data or "storage_data" not in data["data"]:
                 return result
             if "media_player" not in data["data"]["storage_data"]:
-                raise InvalidDataError("Media player info not found in ESPHome diagnostics")
+                raise InvalidDataError("Media player info not found in ESPHome diagnostics")  # noqa: TRY301 - logged by except below
             for media_player_obj in data["data"]["storage_data"]["media_player"]:
                 if "supported_formats" not in media_player_obj:
                     continue

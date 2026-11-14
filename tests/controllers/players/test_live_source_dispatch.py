@@ -76,6 +76,7 @@ def _controller(source: AudioSource | None) -> tuple[Any, MagicMock]:
     player.player_id = PLAYER_ID
     player.display_name = "Player 1"
     player.available = True
+    player.offline_by_power_control = False
     player.state.synced_to = None
     player.state.active_group = None
     player.protocol_parent_id = None

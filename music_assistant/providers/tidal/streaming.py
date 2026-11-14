@@ -184,17 +184,16 @@ class TidalStreamingManager:
 
     async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
         """Fetch the (unofficial) playback info for a track."""
-        async with self.api.throttler.bypass():
-            stream_data = await self.api.get(
-                f"tracks/{track_id}/playbackinfopostpaywall",
-                params={
-                    "playbackmode": "STREAM",
-                    "assetpresentation": "FULL",
-                    "audioquality": quality,
-                    # MA has no surround pipeline, so never ask for the Atmos asset.
-                    "immersiveaudio": "false",
-                },
-            )
+        stream_data = await self.api.get(
+            f"tracks/{track_id}/playbackinfopostpaywall",
+            params={
+                "playbackmode": "STREAM",
+                "assetpresentation": "FULL",
+                "audioquality": quality,
+                # MA has no surround pipeline, so never ask for the Atmos asset.
+                "immersiveaudio": "false",
+            },
+        )
         self.provider.logger.debug(
             "Playback info for track %s: audioQuality=%s, audioMode=%s, manifestMimeType=%s",
             track_id,

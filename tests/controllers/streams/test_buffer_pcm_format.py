@@ -99,6 +99,27 @@ def test_the_buffer_normalizes_ffmpegs_dsd_decoder_output() -> None:
     assert pcm.channels == 2
 
 
+def test_the_buffer_sizes_an_odd_source_depth_by_its_pcm_container() -> None:
+    """DSD inside WavPack probes as 8-bit but ffmpeg emits 32-bit PCM for it."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.WAVPACK,
+        codec_type=ContentType.WAVPACK,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+
+    pcm = _buffer_pcm_format(_streamdetails(advertised, None))
+
+    assert pcm.content_type == ContentType.PCM_S32LE
+    assert pcm.bit_depth == 32
+    assert pcm.pcm_sample_size == 352800 * 4 * 2
+
+
 def test_the_buffer_recognizes_dst_compressed_dff_by_path() -> None:
     """DFF/DST needs path-based detection until the shared models expose those types."""
     from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415

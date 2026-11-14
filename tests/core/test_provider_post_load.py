@@ -111,6 +111,30 @@ async def test_cancelled_post_load_reports_nothing() -> None:
     cast("MagicMock", mass.config).set.assert_any_call(f"{CONF_PROVIDERS}/test--1/last_error", None)
 
 
+async def test_provider_unloaded_while_registering_skips_post_load() -> None:
+    """An unload during the finish-loading hooks has no task to cancel, so nothing may run."""
+    mass = _mass()
+    provider = _provider(mass)
+
+    async def _unload_during_hook() -> None:
+        provider.unloading = True
+
+    mass._update_available_providers_cache = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_unload_during_hook
+    )
+
+    await mass._register_loaded_provider(provider, provider.config)
+    await asyncio.sleep(0)
+
+    assert not provider.loaded_in_mass_done
+    assert not provider.initialized.is_set()
+    assert not mass.get_provider_ready_event("test").is_set()
+    cast("AsyncMock", mass.run_provider_discovery).assert_not_awaited()
+    cast("MagicMock", mass.signal_event).assert_not_called()
+    # a failure recorded by the unload must survive
+    cast("MagicMock", mass.config).set.assert_not_called()
+
+
 async def test_providers_updated_announced_only_after_post_load() -> None:
     """
     The PROVIDERS_UPDATED event must wait until loaded_in_mass has finished.
@@ -151,6 +175,36 @@ async def test_providers_updated_announced_even_when_post_load_fails() -> None:
     cast("MagicMock", mass.signal_event).assert_called_once_with(
         EventType.PROVIDERS_UPDATED, data=[provider]
     )
+
+
+async def test_post_load_of_a_removed_provider_stores_no_name(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """
+    A provider removed while its post load step runs does not come back through its name.
+
+    Removing a provider drops its config before the unload cancels the post load task, so
+    that task can still reach the step that stores the default name.
+    """
+    mass = mass_minimal
+    mass.signal_event = MagicMock()  # type: ignore[method-assign]
+    mass._update_available_providers_cache = AsyncMock()  # type: ignore[method-assign]
+    discovery = AsyncMock()
+    mass.run_provider_discovery = discovery  # type: ignore[method-assign]
+    conf_key = f"{CONF_PROVIDERS}/test--1"
+    mass.config.set(conf_key, {"domain": "test", "type": "plugin", "instance_id": "test--1"})
+    provider = _provider(mass)
+    provider.load_gate = asyncio.Event()
+
+    await mass._register_loaded_provider(provider, provider.config)
+    post_load = mass._tracked_tasks["post_load_provider_test--1"]
+    await asyncio.sleep(0)  # let the post load task reach the gate
+    mass.config.remove(conf_key)
+    provider.load_gate.set()
+    await post_load
+
+    discovery.assert_awaited_once_with("test--1")
+    assert mass.config.get(conf_key) is None
 
 
 async def test_provider_withheld_from_clients_until_initialized() -> None:

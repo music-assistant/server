@@ -430,7 +430,7 @@ class AudibleHelper:
             content_license = playback_info.get("content_license", {})
             if not content_license:
                 self.logger.error(f"No content_license in playback_info for ASIN {asin}")
-                raise ValueError(f"Missing content_license for ASIN {asin}")
+                raise ValueError(f"Missing content_license for ASIN {asin}")  # noqa: TRY301 - converted to ValueError below
 
             content_metadata = content_license.get("content_metadata", {})
             content_reference = content_metadata.get("content_reference", {})
@@ -439,7 +439,7 @@ class AudibleHelper:
             stream_url = content_license.get("license_response")
             if not stream_url:
                 self.logger.error(f"No license_response (stream URL) for ASIN {asin}")
-                raise ValueError(f"Missing stream URL for ASIN {asin}")
+                raise ValueError(f"Missing stream URL for ASIN {asin}")  # noqa: TRY301 - converted to ValueError below
 
             acr = content_license.get("acr", "")
             if acr:

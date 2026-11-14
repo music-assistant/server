@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
@@ -17,11 +18,12 @@ from music_assistant_models.media_items import ItemMapping, RecommendationFolder
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.recommendations import LibraryRecommendationsProvider
 from tests.common import set_music_source_access
+from tests.controllers.music.helpers import create_track
 
 if TYPE_CHECKING:
-    import pytest
     from music_assistant_models.media_items import BrowseFolder, MediaItemType
 
 
@@ -165,13 +167,14 @@ async def test_rows_interleave_uneven_provider_lengths_no_tail_dropped(
     assert len(folders) == len(builtin_ids) + 4 + 1
 
 
+@pytest.mark.parametrize("row_provider", ["fake_instance", "fake"])
 async def test_items_routed_to_provider(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, row_provider: str
 ) -> None:
-    """Items for a provider row are fetched from that provider."""
+    """Items for a provider row are fetched from that provider, named by instance or domain."""
     provider = _build(_RowsProvider)
     monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
-    items = await mass.music.recommendations.get_recommendation_items("fake_instance", "row1")
+    items = await mass.music.recommendations.get_recommendation_items(row_provider, "row1")
     assert [item.item_id for item in items] == ["prov-item"]
 
 
@@ -208,15 +211,34 @@ async def test_items_restricted_provider_returns_empty(
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_items_of_a_restricted_row_are_not_served_by_another_account(
+    mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row of a hidden account is not answered by the user's own account of that service."""
+    mock_get_user.return_value = _restricted_user(mass)
+    mine = _build(_RowsProvider, instance_id="mine_instance")
+    mine.get_recommendation_items = AsyncMock()  # type: ignore[method-assign]
+    # the server would widen the hidden instance to the user's own account of the service
+    monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: mine)
+    items = await mass.music.recommendations.get_recommendation_items("restricted_instance", "row1")
+    assert items == []
+    mine.get_recommendation_items.assert_not_awaited()
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_rows_restricted_provider_returns_no_rows(
     mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A music source the user may not use keeps its rows out of the listing."""
     mock_get_user.return_value = _restricted_user(mass)
+    set_music_source_access(mass, {"allowed_instance": None})
     restricted = _build(_RowsProvider, instance_id="restricted_instance")
-    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [restricted])
+    allowed = _build(_RowsProvider, instance_id="allowed_instance")
+    monkeypatch.setattr(
+        mass, "get_providers_supporting_feature", lambda *_a, **_k: [restricted, allowed]
+    )
     folders = await mass.music.recommendations.get_recommendations()
-    assert not any(f.provider == "restricted_instance" for f in folders)
+    assert [(f.provider, f.item_id) for f in folders] == [("allowed_instance", "row1")]
 
 
 async def test_items_providers_forwarded_to_builtin_provider(
@@ -248,3 +270,44 @@ async def test_items_providers_ignored_for_external_provider(
     )
 
     assert [item.item_id for item in items] == ["prov-item"]
+
+
+class _SimilarTracksRow(PluginProvider):
+    """A fake plugin whose row lists a track on a shared and on a private music source."""
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        return UniqueList([create_track("open_1", "t1"), create_track("hidden_1", "t2")])
+
+
+@patch("music_assistant.controllers.music.recommendations.controller.get_current_user")
+async def test_items_of_a_plugin_row_leave_out_hidden_sources(
+    mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plugin row never lists a track on a music source the user may not see."""
+    mock_get_user.return_value = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    set_music_source_access(
+        mass,
+        {
+            "open_1": None,
+            "hidden_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    manifest = MagicMock(type=ProviderType.PLUGIN, domain="fake_plugin")
+    config = MagicMock(instance_id="plugin_1", get_value=MagicMock(return_value="GLOBAL"))
+    plugin = _SimilarTracksRow(
+        MagicMock(), manifest, config, supported_features={ProviderFeature.RECOMMENDATIONS}
+    )
+    providers = {
+        "plugin_1": plugin,
+        "open_1": Mock(instance_id="open_1", type=ProviderType.MUSIC),
+        "hidden_1": Mock(instance_id="hidden_1", type=ProviderType.MUSIC),
+    }
+    monkeypatch.setattr(
+        mass, "get_provider", lambda instance_id, *_a, **_k: providers.get(instance_id)
+    )
+
+    items = await mass.music.recommendations.get_recommendation_items("plugin_1", "row1")
+
+    assert [item.item_id for item in items] == ["t1"]

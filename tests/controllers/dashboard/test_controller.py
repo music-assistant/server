@@ -34,6 +34,7 @@ def _make_controller() -> DashboardController:
     controller._sessions = {}
     # neither casting mechanism configured by default: individual tests opt in
     controller.mass.webserver.base_url = ""
+    controller.mass.webserver.external_url = None
     controller.mass.webserver.remote_access.is_enabled = False
     controller.mass.webserver.remote_access.remote_id = ""
     controller.mass.version = "0.0.0"
@@ -78,6 +79,33 @@ async def test_resolve_dashboard_url_uses_remote_access_when_no_https_base() -> 
     assert url.startswith("https://app.music-assistant.io/stable/?")
     query = _query(url)
     assert query == {"remote_id": "remote123", "dashboard": "code456", "path": "/party"}
+
+
+async def test_resolve_dashboard_url_uses_https_external_url_when_base_is_http() -> None:
+    """An https external url is used same origin when the base url is plain http."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "http://192.168.1.10:8095"  # type: ignore[misc]
+    controller.mass.webserver.external_url = "https://ma.example.com/music"  # type: ignore[misc]
+    controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
+    controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
+
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller.resolve_dashboard_url(DashboardType.PARTY, None)
+
+    assert url.startswith("https://ma.example.com/music?")
+    assert _query(url) == {"dashboard": "code456", "path": "/party"}
+
+
+async def test_resolve_dashboard_url_ignores_http_external_url() -> None:
+    """A plain http external url does not qualify for casting."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "http://192.168.1.10:8095"  # type: ignore[misc]
+    controller.mass.webserver.external_url = "http://ma.example.com"  # type: ignore[misc]
+
+    with pytest.raises(ActionUnavailable):
+        await controller.resolve_dashboard_url(DashboardType.PARTY, None)
 
 
 async def test_resolve_dashboard_url_raises_when_neither_configured() -> None:
@@ -905,6 +933,7 @@ async def test_get_dashboard_code_creates_viewer_user_and_code(mass: MusicAssist
     assert code
     result = await mass.webserver.auth.exchange_join_code(code)
 
+    assert isinstance(result, dict)
     assert result["success"] is True
     user = await mass.webserver.auth.authenticate_with_token(result["access_token"])
     assert user is not None
@@ -921,5 +950,7 @@ async def test_get_dashboard_code_mints_fresh_code_each_call(mass: MusicAssistan
     result1 = await mass.webserver.auth.exchange_join_code(code1)
     result2 = await mass.webserver.auth.exchange_join_code(code2)
 
+    assert isinstance(result1, dict)
+    assert isinstance(result2, dict)
     assert result1["success"] is True
     assert result2["success"] is True

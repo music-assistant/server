@@ -38,7 +38,7 @@ def _controller(
             return queue_data.items[index]
         return None
 
-    def _next_index(_queue_id: str, index: int, allow_repeat: bool = True) -> int | None:  # noqa: ARG001
+    def _next_index(_queue_id: str, index: int, **_kwargs: bool) -> int | None:
         """Report the next index against the live item list, so a refill changes the answer."""
         return index + 1 if index + 1 < len(queue_data.items) else None
 
@@ -65,6 +65,9 @@ def _controller(
     ctrl.stop = stop_mock  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
+    # the queue's player is not in a group
+    ctrl.mass.players._resolve_playback_owner = Mock(side_effect=lambda player: player)
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.logger = MagicMock()
     return ctrl, queue_data, fill_mock, stop_mock

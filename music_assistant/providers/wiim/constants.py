@@ -94,6 +94,14 @@ INPUT_MODE_SOURCES: dict[str, PlayerSource] = {
         can_next_previous=False,
         can_seek=False,
     ),
+    "Aux In": PlayerSource(
+        id="aux_in",
+        name="Aux In",
+        passive=False,
+        can_play_pause=False,
+        can_next_previous=False,
+        can_seek=False,
+    ),
 }
 
 # Reverse lookup: source ID -> SDK display name for select_source commands

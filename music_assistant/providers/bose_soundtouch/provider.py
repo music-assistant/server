@@ -173,9 +173,6 @@ class BoseSoundTouchProvider(PlayerProvider):
     def _get_player_by_ip(self, ip_address: str) -> BoseSoundTouchPlayer | None:
         """Return an existing SoundTouch player with the given IP address (if any)."""
         for player in self.players:
-            if (
-                isinstance(player, BoseSoundTouchPlayer)
-                and player.device_info.ip_address == ip_address
-            ):
+            if isinstance(player, BoseSoundTouchPlayer) and player.ip_address == ip_address:
                 return player
         return None

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -17,11 +18,14 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from .constants import CACHE_CATEGORY_RECOMMENDATIONS, WEB_BASE_URL
+from .constants import CACHE_CATEGORY_RECOMMENDATIONS, MAX_PAGE_MODULE_ITEMS, WEB_BASE_URL
 from .tidal_page_parser import TidalPageParser
 
 if TYPE_CHECKING:
     from .provider import TidalProvider
+
+UNKNOWN_MODULE_TITLE = "Unknown"
+VIDEO_LIST_MODULE_TYPE = "VIDEO_LIST"
 
 
 class TidalRecommendationManager:
@@ -62,17 +66,9 @@ class TidalRecommendationManager:
             page_name = page_path.split("/")[-1].replace("_", " ").title()
 
             for module_info in parser.modules:
-                title = module_info.get("title", "Unknown")
-                # Drop video content: VIDEO_LIST modules outright, plus any module whose
-                # title mentions video (e.g. "Video Playlists", which is a PLAYLIST_LIST
-                # the old "Videos"-substring check missed).
-                if (
-                    not title
-                    or title == "Unknown"
-                    or module_info.get("type") == "VIDEO_LIST"
-                    or "video" in title.lower()
-                ):
+                if not _is_music_module(module_info):
                     continue
+                title = module_info["title"]
 
                 items, content_type = parser.get_module_items(module_info)
                 if not items:
@@ -130,18 +126,19 @@ class TidalRecommendationManager:
         # recommendations() succeed with an empty result, which the caching
         # wrapper would then store for the full TTL.
         locale = self.mass.metadata.locale.replace("_", "-")
-        data = await self.api.get(
-            page_path,
-            base_url=WEB_BASE_URL,
-            params={
-                "locale": locale,
-                "deviceType": "BROWSER",
-                "countryCode": self.auth.country_code or "US",
-            },
-        )
+        params = {
+            "locale": locale,
+            "deviceType": "BROWSER",
+            "countryCode": self.auth.country_code or "US",
+        }
+        data = await self.api.get(page_path, base_url=WEB_BASE_URL, params=params) or {}
+        for row in data.get("rows", []):
+            for module in row.get("modules", []):
+                if _is_music_module(module):
+                    await self._extend_truncated_module(module, params)
 
         parser = TidalPageParser(self.provider)
-        parser.parse_page_structure(data or {}, page_path)
+        parser.parse_page_structure(data, page_path)
 
         await self.mass.cache.set(
             key=page_path,
@@ -151,3 +148,52 @@ class TidalRecommendationManager:
             expiration=self.page_cache_ttl,
         )
         return parser
+
+    async def _extend_truncated_module(
+        self, module: dict[str, Any], params: dict[str, str]
+    ) -> None:
+        """
+        Fetch the items a page module did not embed, up to MAX_PAGE_MODULE_ITEMS.
+
+        :param module: Raw page module, its pagedList is extended in place.
+        :param params: Locale/device params shared with the page request.
+        """
+        paged_list = module.get("pagedList")
+        if not isinstance(paged_list, dict):
+            return
+        data_api_path = paged_list.get("dataApiPath")
+        items: list[dict[str, Any]] | None = paged_list.get("items")
+        if not data_api_path or items is None:
+            return
+        target = min(paged_list.get("totalNumberOfItems") or 0, MAX_PAGE_MODULE_ITEMS)
+        try:
+            while len(items) < target:
+                response = await self.api.get(
+                    data_api_path,
+                    base_url=WEB_BASE_URL,
+                    params={**params, "offset": len(items), "limit": target - len(items)},
+                )
+                new_items = (response or {}).get("items") or []
+                if not new_items:
+                    break
+                items.extend(new_items[: target - len(items)])
+        # The error text carries the request URL, sessionId included, so it is not logged
+        except MediaNotFoundError:
+            self.logger.warning(
+                "Extra items for Tidal module %s not found, keeping the embedded ones",
+                module.get("title"),
+            )
+
+
+def _is_music_module(module: dict[str, Any]) -> bool:
+    """Return False for untitled and video modules, which are never shown."""
+    title = module.get("title", UNKNOWN_MODULE_TITLE)
+    # Drop video content: VIDEO_LIST modules outright, plus any module whose
+    # title mentions video (e.g. "Video Playlists", which is a PLAYLIST_LIST
+    # the old "Videos"-substring check missed).
+    return (
+        bool(title)
+        and title != UNKNOWN_MODULE_TITLE
+        and module.get("type") != VIDEO_LIST_MODULE_TYPE
+        and "video" not in title.lower()
+    )

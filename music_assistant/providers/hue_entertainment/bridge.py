@@ -1,11 +1,11 @@
 """
 Hue Entertainment bridge — in-process Sendspin visualizer client.
 
-Each entertainment area registers as an external Sendspin client whose
+Each light target registers as an external Sendspin client whose
 bridge roles run the server's visualizer feature extraction on the group's
 audio and receive color palette updates directly — no WebSocket involved.
 The analyzer queues features by playback timestamp, converts them to light
-colors at render time, and streams to the Hue bridge over DTLS.
+colors at render time, and streams them to the target's lights.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from aiosendspin.models.types import UndefinedField
 from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSpectrum,
     ClientHelloVisualizerSupport,
+    VisualizerStatePayload,
 )
-from hue_entertainment import EntertainmentSession
 from music_assistant_models.enums import PlayerType
 
 from music_assistant.providers.sendspin.bridge_role import (
@@ -34,14 +34,13 @@ from music_assistant.providers.sendspin.bridge_role import (
 
 from .analyzer import HueAudioAnalyzer
 from .constants import (
-    CONF_CLIENTKEY,
-    CONF_USERNAME,
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
     SPECTRUM_F_MIN,
     SPECTRUM_SCALE,
 )
 from .settings import get_brightness, get_color_mode, get_hue_latency_ms
+from .targets import TargetUnavailableError
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import ServerStatePayload
@@ -52,12 +51,11 @@ if TYPE_CHECKING:
         SendspinServer,
     )
     from aiosendspin.server.roles.visualizer.features import ExtractedFrame
-    from hue_entertainment import EntertainmentArea
-    from hue_entertainment.api import HueEntertainmentAPI
 
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .provider import HueEntertainmentProvider
+    from .targets import LightTarget
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,33 +70,30 @@ _VISUALIZER_RATE_HZ = 20
 # Session start retries when the bridge is slow to complete the DTLS handshake.
 _ENTERTAINMENT_START_ATTEMPTS = 6
 _ENTERTAINMENT_START_BACKOFF_S = 1.5
-_ENTERTAINMENT_STALE_COOLDOWN_S = 1.0
 
 
 class HueEntertainmentBridge:
     """
-    Manages the Hue Entertainment bridge for a single entertainment area.
+    Manages the Hue Entertainment bridge for a single light target.
 
     Registers with the local Sendspin server as an external visualizer
     client, receives extracted visualization features keyed to playback
-    time, converts them to light colors, and streams to the Hue bridge
-    over DTLS.
+    time, converts them to light colors, and streams them to the target.
     """
 
     def __init__(
         self,
         provider: HueEntertainmentProvider,
-        area: EntertainmentArea,
+        target: LightTarget,
         sendspin_server: SendspinServer,
     ) -> None:
         """Initialize the bridge."""
         self.provider = provider
         self.mass = provider.mass
-        self.area = area
+        self.target = target
         self.sendspin_server = sendspin_server
-        self.logger = LOGGER.getChild(f"bridge.{area.name}")
+        self.logger = LOGGER.getChild(f"bridge.{target.name}")
 
-        self._session: EntertainmentSession | None = None
         self._analyzer: HueAudioAnalyzer | None = None
         self._sendspin_client: SendspinClient | None = None
         self._is_streaming = False
@@ -111,12 +106,12 @@ class HueEntertainmentBridge:
     async def start(self) -> None:
         """Start the bridge — register as an in-process Sendspin visualizer client."""
         self._analyzer = HueAudioAnalyzer(
-            channels=self.area.channels,
+            channels=self.target.channels,
             color_mode=get_color_mode(self.provider.config),
             brightness=get_brightness(self.provider.config),
         )
 
-        client_id = f"hue-{self.area.id.replace('-', '')[:16]}"
+        client_id = self.target.client_id
 
         # Register this client as a LIGHT player type with the Sendspin provider
         # so the resulting player shows up correctly in the UI
@@ -124,11 +119,11 @@ class HueEntertainmentBridge:
         if sendspin_prov:
             sendspin_prov.register_bridge_player_type(client_id, PlayerType.LIGHT)
 
-        support = ClientHelloVisualizerSupport(
-            # Beat + small bundle of periodic features. Each periodic frame
-            # is ~20-30 bytes; one second's worth fits comfortably under
-            # the buffer cap below.
-            buffer_capacity=2048,
+        # Beat + small bundle of periodic features. Each periodic frame
+        # is ~20-30 bytes; one second's worth fits comfortably under
+        # the buffer cap below.
+        support = ClientHelloVisualizerSupport(buffer_capacity=2048)
+        request = VisualizerStatePayload(
             rate_max=_VISUALIZER_RATE_HZ,
             # Peaks requested as a fallback for when beats aren't computed yet.
             types=["beat", "peak", "spectrum"],
@@ -141,12 +136,12 @@ class HueEntertainmentBridge:
         )
         hello = ClientHelloPayload(
             client_id=client_id,
-            name=f"Hue: {self.area.name}",
+            name=f"Hue: {self.target.name}",
             version=1,
             supported_roles=[VISUALIZER_BRIDGE_ROLE_ID, COLOR_BRIDGE_ROLE_ID],
             device_info=SendspinDeviceInfo(
                 manufacturer="Signify",
-                product_name="Hue Entertainment Area",
+                product_name=self.target.product_name,
             ),
             visualizer_support=support,
         )
@@ -164,7 +159,7 @@ class HueEntertainmentBridge:
                 on_stream_clear=self._on_stream_clear,
                 on_stream_end=self._on_stream_end,
             )
-            viz_role.setup_visualizer(support)
+            viz_role.setup_visualizer(request)
         if color_roles := self._sendspin_client.roles_by_family("color"):
             color_role = cast("BridgeColorRole", color_roles[0])
             color_role.set_callbacks(on_color=self._on_color)
@@ -173,16 +168,16 @@ class HueEntertainmentBridge:
         self._sendspin_client.attach_preinitialized_roles()
 
         self.logger.info(
-            "Hue bridge started for area '%s' (%d channels)",
-            self.area.name,
-            len(self.area.channels),
+            "Hue bridge started for '%s' (%d channels)",
+            self.target.name,
+            len(self.target.channels),
         )
         self.logger.debug(
-            "Hue bridge channels for area '%s': %s",
-            self.area.name,
+            "Hue bridge channels for '%s': %s",
+            self.target.name,
             [
                 f"id={c.channel_id} svc={c.service_id} name={c.name} pos={c.position}"
-                for c in self.area.channels
+                for c in self.target.channels
             ],
         )
 
@@ -207,7 +202,7 @@ class HueEntertainmentBridge:
         self._start_task = None
 
         await self._stop_entertainment()
-        self.logger.debug("Hue bridge stopped for area '%s'", self.area.name)
+        self.logger.debug("Hue bridge stopped for '%s'", self.target.name)
 
     def update_settings(
         self,
@@ -225,42 +220,30 @@ class HueEntertainmentBridge:
             self._hue_latency_us = hue_latency_ms * 1000
 
     async def _start_entertainment(self) -> None:
-        """Activate entertainment mode and open the Hue stream, with retry."""
-        hue_api = self.provider.hue_api
-        if hue_api is None:
-            self._entertainment_starting = False
-            return
-
-        # idle_timeout=0: teardown is driven by the Sendspin stream start/end
-        # events below, not by the session's own inactivity monitor. The session
-        # stops any other active area on start (the bridge only allows one).
-        session = EntertainmentSession(
-            hue_api.host,
-            str(self.provider.get_setup_value(CONF_USERNAME) or ""),
-            str(self.provider.get_setup_value(CONF_CLIENTKEY) or ""),
-            idle_timeout=0,
-        )
-        # The session is only handed off to self._session once it is streaming;
-        # until then it is closed in the finally so a failed - or cancelled -
-        # start never leaks the DTLS sender thread or leaves the bridge's
-        # entertainment stream active.
+        """Open the target's stream, with retry."""
+        # The target is only treated as streaming once its start succeeded; until
+        # then it is closed in the finally so a failed - or cancelled - start never
+        # leaks the stream or leaves the lights in entertainment mode.
         adopted = False
         try:
-            await self._clear_stale_entertainment(hue_api)
             for attempt in range(_ENTERTAINMENT_START_ATTEMPTS):
                 try:
-                    await session.start(self.area.id)
-                    self._session = session
+                    await self.target.start()
                     adopted = True
                     self._is_streaming = True
                     self._start_render_loop()
-                    self.logger.info("Entertainment streaming active for area '%s'", self.area.name)
+                    self.logger.info("Entertainment streaming active for '%s'", self.target.name)
+                    return
+                except TargetUnavailableError as err:
+                    self.logger.error(
+                        "Cannot start entertainment for '%s': %s", self.target.name, err
+                    )
                     return
                 except Exception as err:
                     self.logger.warning(
                         "Entertainment start attempt %d failed for '%s': %s",
                         attempt + 1,
-                        self.area.name,
+                        self.target.name,
                         err,
                     )
                     if attempt + 1 < _ENTERTAINMENT_START_ATTEMPTS:
@@ -268,31 +251,28 @@ class HueEntertainmentBridge:
 
             self.logger.error(
                 "Failed to start entertainment for '%s' after %d attempts",
-                self.area.name,
+                self.target.name,
                 _ENTERTAINMENT_START_ATTEMPTS,
             )
         finally:
             self._entertainment_starting = False
             if not adopted:
-                await session.aclose()
+                await self.target.aclose()
 
     async def _stop_entertainment(self) -> None:
-        """Stop the Hue stream and deactivate entertainment mode."""
+        """Stop the target's stream and restore its lights."""
         self._is_streaming = False
         self._entertainment_starting = False
         self._cancel_render_loop()
         if self._analyzer is not None:
             self._analyzer.clear_beats()
-        if self._session is not None:
-            with suppress(Exception):
-                await self._session.aclose()
-            self._session = None
+        await self.target.aclose()
 
     def _on_external_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle playback dialing this client."""
         self.logger.debug(
-            "Sendspin stream start request for area '%s' (reason=%s)",
-            self.area.name,
+            "Sendspin stream start request for '%s' (reason=%s)",
+            self.target.name,
             request.connection_reason,
         )
 
@@ -304,14 +284,14 @@ class HueEntertainmentBridge:
             self._stop_debounce_task = None
         if not self._is_streaming and not self._entertainment_starting:
             self._entertainment_starting = True
-            self.logger.info("Stream starting for area '%s', connecting DTLS...", self.area.name)
+            self.logger.info("Stream starting for '%s', connecting...", self.target.name)
             self._start_task = self.mass.create_task(self._start_entertainment())
 
     def _on_stream_end(self) -> None:
         """Handle stream end — debounce to survive track transitions."""
         # Also act while a start is still in flight: the stream can end before
-        # session.start() completes, and that late start would otherwise adopt a
-        # session that streams forever (idle_timeout=0).
+        # the target's start() completes, and that late start would otherwise leave
+        # a stream that runs forever.
         starting = self._start_task is not None and not self._start_task.done()
         if self._is_streaming or starting:
             if self._stop_debounce_task and not self._stop_debounce_task.done():
@@ -327,21 +307,22 @@ class HueEntertainmentBridge:
         """Wait briefly before stopping — a new stream may start (track change)."""
         await asyncio.sleep(2.0)
         # Cancel a still-running start first (its finally closes the not-yet-adopted
-        # session); if the start already completed, tear the live session down.
+        # target); if the start already completed, tear the live stream down.
         if self._start_task is not None and not self._start_task.done():
             self._start_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._start_task
         if self._is_streaming:
-            self.logger.info("Visualizer stream ended for area '%s'", self.area.name)
+            self.logger.info("Visualizer stream ended for '%s'", self.target.name)
             await self._stop_entertainment()
 
     def _on_visualizer_frame(self, frame: ExtractedFrame) -> None:
         """Queue spectrum and onset-peak features for the renderer."""
         # Frames arrive ahead of the playhead (in-process delivery follows the audio push);
         # the analyzer queues them by timestamp and drains at render time. Gated so the
-        # queues only fill while the lights are up or coming up.
-        if self._analyzer is None or not (self._is_streaming or self._entertainment_starting):
+        # queues only fill while the lights are up or coming up: a lost stream or a parked
+        # Zigbee target skips the render that drains them.
+        if self._analyzer is None or not (self.target.is_streaming or self._entertainment_starting):
             return
         if frame.spectrum is not None:
             self._analyzer.apply_spectrum(frame.spectrum.tolist(), frame.timestamp_us)
@@ -401,47 +382,24 @@ class HueEntertainmentBridge:
         if not self._is_streaming:
             return
         try:
-            # Skip this tick when not ready (DTLS down) but keep the loop
+            # Skip this tick when not ready (stream down) but keep the loop
             # alive so it recovers once the connection is back.
-            if (
-                self._analyzer is not None
-                and self._session is not None
-                and self._session.is_streaming
-            ):
-                # Render slightly ahead of the playhead to compensate for Hue+DTLS lag.
+            if self._analyzer is not None and self.target.is_streaming:
+                # Render slightly ahead of the playhead to compensate for the light lag.
                 server_now = self.sendspin_server.clock.now_us() + self._hue_latency_us
                 commands = self._analyzer.render(server_now)
                 if commands:
-                    self._session.send(commands)
+                    self.target.send(commands)
         except Exception:
             # One bad tick must not kill the loop: log and reschedule below.
-            self.logger.exception("Hue render tick failed for area '%s'", self.area.name)
+            self.logger.exception("Hue render tick failed for '%s'", self.target.name)
         finally:
             if self._is_streaming:
                 self._render_handle = self.mass.loop.call_later(_RENDER_PERIOD_S, self._render_tick)
 
-    async def _clear_stale_entertainment(self, hue_api: HueEntertainmentAPI) -> None:
-        """
-        Stop entertainment left active on the bridge from a prior failed handshake.
-
-        :param hue_api: Authenticated Hue REST client for this bridge.
-        """
-        try:
-            status, _rid = await hue_api.get_entertainment_status(self.area.id)
-        except Exception:
-            return
-        if status != "active":
-            return
-        self.logger.info(
-            "Entertainment area '%s' still active on bridge, clearing before DTLS",
-            self.area.name,
-        )
-        await hue_api.stop_entertainment(self.area.id)
-        await asyncio.sleep(_ENTERTAINMENT_STALE_COOLDOWN_S)
-
 
 class HueEntertainmentBridgeManager:
-    """Manages Hue Entertainment bridges for all entertainment areas."""
+    """Manages Hue Entertainment bridges for all light targets."""
 
     def __init__(self, provider: HueEntertainmentProvider) -> None:
         """Initialize the bridge manager."""
@@ -458,38 +416,38 @@ class HueEntertainmentBridgeManager:
             return provider.server_api
         return None
 
-    async def setup_bridges(self, areas: list[EntertainmentArea]) -> None:
-        """Set up bridges for all entertainment areas."""
+    async def setup_bridges(self, targets: list[LightTarget]) -> None:
+        """Set up bridges for all light targets."""
         sendspin_server = self.sendspin_server
         if sendspin_server is None:
             self.logger.warning("Sendspin provider not available, cannot set up Hue bridges")
             return
 
-        # Remove bridges for areas that no longer exist
-        current_ids = {area.id for area in areas}
-        for area_id in list(self._bridges.keys()):
-            if area_id not in current_ids:
-                bridge = self._bridges.pop(area_id)
+        # Remove bridges for targets that no longer exist
+        current_ids = {target.client_id for target in targets}
+        for client_id in list(self._bridges.keys()):
+            if client_id not in current_ids:
+                bridge = self._bridges.pop(client_id)
                 with suppress(Exception):
                     await bridge.stop()
 
-        for area in areas:
-            if area.id in self._bridges:
+        for target in targets:
+            if target.client_id in self._bridges:
                 continue
-            if not area.channels:
+            if not target.channels:
                 continue
 
-            bridge = HueEntertainmentBridge(self.provider, area, sendspin_server)
+            bridge = HueEntertainmentBridge(self.provider, target, sendspin_server)
             try:
                 await bridge.start()
             except Exception:
-                self.logger.warning("Failed to start bridge for area '%s'", area.name)
+                self.logger.warning("Failed to start bridge for '%s'", target.name)
                 with suppress(Exception):
                     await bridge.stop()
                 continue
 
-            self._bridges[area.id] = bridge
-            self.logger.info("Bridge created for Hue area '%s'", area.name)
+            self._bridges[target.client_id] = bridge
+            self.logger.info("Bridge created for '%s'", target.name)
 
     def update_settings(
         self,

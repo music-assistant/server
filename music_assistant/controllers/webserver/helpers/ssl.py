@@ -13,6 +13,8 @@ from pathlib import Path
 
 import aiofiles
 
+from music_assistant.helpers.process import get_subprocess_env
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -68,6 +70,7 @@ def _run_openssl_command(args: list[str]) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=10,
         check=False,
+        env=get_subprocess_env(),
     )
 
 

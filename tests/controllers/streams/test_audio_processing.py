@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from copy import deepcopy
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from music_assistant_models.audio_processing import (
     ActiveSourceAudioDetails,
     AudioDSPDetails,
@@ -32,8 +34,15 @@ from music_assistant_models.enums import (
     MediaType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    QueueEmpty,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
@@ -1240,6 +1249,124 @@ async def test_flow_stream_handler_shares_native_group_members(
     )
 
 
+@pytest.mark.parametrize(
+    ("flow_log", "current_item_id", "expected_item_id"),
+    [
+        ([], "item-2", "item-1"),
+        ([PlayLogEntry("item-1")], "item-2", "item-2"),
+        ([PlayLogEntry("item-1")], None, "item-1"),
+    ],
+    ids=["first_request", "repeat_request", "repeat_request_without_current_item"],
+)
+@pytest.mark.asyncio
+async def test_flow_stream_handler_continues_a_repeat_request_at_the_current_item(
+    monkeypatch: pytest.MonkeyPatch,
+    flow_log: list[PlayLogEntry],
+    current_item_id: str | None,
+    expected_item_id: str,
+) -> None:
+    """A repeat flow request starts at the item that plays now instead of the url item."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.get.return_value.current_item = (
+        SimpleNamespace(queue_item_id=current_item_id) if current_item_id else None
+    )
+    controller.mass.player_queues.queue_data.return_value.flow_mode_stream_log = flow_log
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_flow_stream(request)
+
+    controller.mass.player_queues.get_item.assert_called_once_with("queue-1", expected_item_id)
+
+
+@pytest.mark.parametrize(
+    ("error", "available"),
+    [
+        (RetriesExhausted("Not retrying, asked to wait 3600 seconds"), True),
+        (MediaNotFoundError("gone"), False),
+    ],
+    ids=["provider_backs_off", "item_not_found"],
+)
+@pytest.mark.asyncio
+async def test_item_stream_handler_keeps_an_item_whose_provider_backs_off(
+    monkeypatch: pytest.MonkeyPatch, error: MusicAssistantError, available: bool
+) -> None:
+    """A provider asking to back off fails the request but leaves the item available."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails = None
+    queue_item.available = True
+    controller.audio.get_stream_details = AsyncMock(side_effect=error)
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_item_stream(request)
+
+    assert queue_item.available is available
+
+
+@pytest.mark.asyncio
+async def test_flow_stream_handler_refuses_a_session_that_streamed_to_its_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flow request for a session whose stream already ended gets a 404 instead of audio."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.flow_stream_finished.return_value = True
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_flow_stream(request)
+
+    controller.mass.player_queues.flow_stream_finished.assert_called_once_with("queue-1")
+    controller.audio.select_flow_pcm_format.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flow_stream_handler_ends_a_range_continuation_of_a_finished_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A player resuming a finished flow stream with a Range request is told the stream ends there.
+
+    Cast receivers reconnect with a Range request when the stream closes short of its
+    declared length; a 404 makes them drop their buffer, a 416 lets them play it out.
+    """
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.flow_stream_finished.return_value = True
+    request.headers = {"Range": "bytes=2401175-"}
+    request.http_range = slice(2401175, None)
+
+    with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as exc_info:
+        await controller.serve_queue_flow_stream(request)
+
+    assert exc_info.value.headers["Content-Range"] == "bytes */2401175"
+    controller.audio.select_flow_pcm_format.assert_not_awaited()
+
+
+def test_flow_get_stream_continues_a_repeat_call_at_the_current_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repeat raw flow stream of a session starts at the item that plays now."""
+    controller, _, _ = _native_stream_handler_context(monkeypatch)
+    controller.mass.player_queues.get.return_value.current_item = SimpleNamespace(
+        queue_item_id="item-2"
+    )
+    controller.mass.player_queues.queue_data.return_value.flow_mode_stream_log = [
+        PlayLogEntry("item-1")
+    ]
+
+    controller.get_stream(
+        PlayerMedia(
+            uri="library://track/1",
+            media_type=MediaType.TRACK,
+            source_id="queue-1",
+            queue_item_id="item-1",
+            queue_session_id="session-1",
+        ),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        force_flow_mode=True,
+    )
+
+    controller.mass.player_queues.get_item.assert_called_once_with("queue-1", "item-2")
+
+
 def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Protocol output details use the user-facing parent configuration."""
     mass = MagicMock()
@@ -1382,6 +1509,7 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
             streamdetails=SimpleNamespace(
                 fade_in=False,
                 stream_error=False,
+                tail_overlap=None,
                 uri=f"test://{item_id}",
                 seek_position=0,
                 duration=300,
@@ -1443,13 +1571,127 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
     await second.aclose()
 
 
+@pytest.mark.parametrize("produces_audio", [True, False], ids=["audio", "no_audio"])
+@pytest.mark.asyncio
+async def test_flow_producer_ends_once_its_consumer_left(produces_audio: bool) -> None:
+    """A producer whose consumer left ends before its next item instead of walking the queue."""
+    items = [_flow_queue_item(f"item-{index}") for index in range(1, 9)]
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=[*items[1:], QueueEmpty])
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    mass.player_queues.get_active_queue.return_value = None
+    audio = StreamsAudio(cast("Any", mass))
+    connected = True
+    streamed_item_ids: list[str] = []
+
+    async def _item_stream(
+        queue_item: Any, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        nonlocal connected
+        streamed_item_ids.append(queue_item.queue_item_id)
+        if produces_audio:
+            yield b"\x00" * 16
+        # the player drops the connection while this item plays
+        connected = False
+
+    audio.get_queue_item_stream = _item_stream  # type: ignore[method-assign]
+    queue = cast(
+        "Any",
+        SimpleNamespace(
+            queue_id="queue-1",
+            display_name="Queue",
+            flow_mode=False,
+            overlay_enabled=False,
+            overlay_source=None,
+        ),
+    )
+    stream = audio.get_queue_flow_stream(
+        queue,
+        items[0],
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+        consumer_connected=lambda: connected,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == (1 if produces_audio else 0)
+    assert streamed_item_ids == ["item-1"]
+    mass.player_queues.load_next_queue_item.assert_not_awaited()
+    mass.player_queues.queue_buffer_completed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flow_producer_without_a_consumer_leaves_the_play_log_alone() -> None:
+    """A producer whose consumer is gone at its start keeps the session's published play log."""
+    audio, mass, queue, streamed_item_ids = _consumer_flow_context()
+    played_entry = PlayLogEntry("item-1")
+    published_log = [played_entry]
+    queue_data = mass.player_queues.queue_data.return_value
+    queue_data.flow_mode_stream_log = published_log
+    stream = audio.get_queue_flow_stream(
+        queue,
+        _flow_queue_item("item-1"),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+        consumer_connected=lambda: False,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert chunks == []
+    assert streamed_item_ids == []
+    assert queue_data.flow_mode_stream_log is published_log
+    assert published_log == [played_entry]
+    mass.player_queues.queue_buffer_completed.assert_not_called()
+
+
+@pytest.mark.parametrize("next_item_loads", [True, False], ids=["next_item", "queue_empty"])
+@pytest.mark.asyncio
+async def test_flow_producer_ends_when_its_consumer_leaves_during_the_next_item_load(
+    next_item_loads: bool,
+) -> None:
+    """A consumer that leaves while the next item loads gets no more items or queue completion."""
+    audio, mass, queue, streamed_item_ids = _consumer_flow_context()
+    connected = True
+
+    async def _load_next(*_args: object) -> Any:
+        nonlocal connected
+        # the player drops the connection while the next item loads
+        connected = False
+        if next_item_loads:
+            return _flow_queue_item("item-2")
+        raise QueueEmpty
+
+    mass.player_queues.load_next_queue_item = _load_next
+    stream = audio.get_queue_flow_stream(
+        queue,
+        _flow_queue_item("item-1"),
+        _format(ContentType.PCM_F32LE, 48000, 32),
+        session_id="session-1",
+        consumer_connected=lambda: connected,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == 1
+    assert streamed_item_ids == ["item-1"]
+    mass.player_queues.queue_buffer_completed.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_flow_source_error_skips_item_without_completing_it() -> None:
     """An item-stream error skips to the next queue item; the flow itself continues."""
     mass = MagicMock()
     streamdetails = SimpleNamespace(
+        buffer=None,
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="audiobookshelf://book",
         seek_position=0,
         duration=3600,
@@ -1517,6 +1759,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         audio_format=pcm_format,
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://first",
         seek_position=0,
         seconds_streamed=0,
@@ -1534,6 +1777,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         extra_attributes={},
     )
     raw_seek_position = 12
+    skipped_ready = asyncio.Event()
+    skipped_ready.set()
     skipped_streamdetails = SimpleNamespace(
         audio_format=pcm_format,
         buffer=SimpleNamespace(
@@ -1541,10 +1786,11 @@ async def test_flow_zero_audio_skip_restores_seek_position(
             is_valid=lambda *_args: True,
             duration_available=16,
             eof=False,
-            ready=SimpleNamespace(is_set=lambda: True),
+            ready=skipped_ready,
         ),
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://skipped",
         seek_position=raw_seek_position,
         seconds_streamed=0,
@@ -1628,22 +1874,23 @@ async def test_flow_zero_audio_skip_restores_seek_position(
 
 
 @pytest.mark.parametrize(
-    ("source_cancelled", "expected_duration"),
-    [(True, 300), (False, 3)],
-    ids=["aborted_source", "clean_source"],
+    ("source_cancelled", "detached", "session_ended"),
+    [(False, False, False), (True, False, False), (True, True, False), (True, True, True)],
+    ids=["clean_source", "aborted_source", "source_detached", "source_released_by_a_stop"],
 )
 @pytest.mark.asyncio
-async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
-    monkeypatch: pytest.MonkeyPatch, source_cancelled: bool, expected_duration: int
+async def test_flow_ends_unfinished_when_its_source_is_released(
+    monkeypatch: pytest.MonkeyPatch, source_cancelled: bool, detached: bool, session_ended: bool
 ) -> None:
-    """An externally cancelled buffer ends in a clean EOF that must not shorten the item."""
+    """A released buffer ends in a clean EOF that must not book the item as finished."""
     mass = MagicMock()
     pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
     streamdetails = SimpleNamespace(
         audio_format=pcm_format,
-        buffer=SimpleNamespace(cancelled=source_cancelled),
+        buffer=SimpleNamespace(cancelled=source_cancelled and not detached),
         fade_in=False,
         stream_error=False,
+        tail_overlap=None,
         uri="test://track",
         seek_position=0,
         seconds_streamed=0,
@@ -1686,6 +1933,13 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
         # a cancelled buffer stops yielding without an error, exactly like a real EOF
         for _ in range(3):
             yield bytes(pcm_format.pcm_sample_size)
+        if session_ended:
+            queue_data.session_id = None
+        if detached:
+            # a stop detaches the buffer from the streamdetails before it releases it
+            source_buffer = streamdetails.buffer
+            streamdetails.buffer = None
+            source_buffer.cancelled = True
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_flow_stream(
@@ -1695,13 +1949,85 @@ async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
     chunks = [chunk async for chunk in stream]
 
     assert len(chunks) == 3
+    entry = queue_data.flow_mode_stream_log[0]
+    if session_ended:
+        # the stopped item did not play out: no finished entry, so no end of queue
+        assert entry.seconds_streamed is None
+        mass.player_queues.queue_buffer_completed.assert_not_called()
+    else:
+        # the honest streamed amount is always recorded, only the duration is protected
+        assert streamdetails.seconds_streamed == 3
+        assert entry.seconds_streamed == 3
+        mass.player_queues.queue_buffer_completed.assert_called_once()
+    expected_duration = 300 if source_cancelled else 3
     assert streamdetails.duration == expected_duration
     assert queue_track.duration == expected_duration
-    # the honest streamed amount is always recorded, only the duration is protected
-    assert streamdetails.seconds_streamed == 3
-    entry = queue_data.flow_mode_stream_log[0]
-    assert entry.seconds_streamed == 3
     assert entry.duration == (None if source_cancelled else 3)
+
+
+@pytest.mark.parametrize(
+    ("released_by_stop", "expected_duration"),
+    [(False, 3), (True, 180)],
+    ids=["clean_source", "source_released_by_a_stop"],
+)
+@pytest.mark.asyncio
+async def test_item_stream_does_not_write_back_a_duration_for_a_released_source(
+    monkeypatch: pytest.MonkeyPatch, released_by_stop: bool, expected_duration: int
+) -> None:
+    """A single item whose buffer a stop released keeps its length, as in the flow."""
+    mass = MagicMock()
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    streamdetails = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=SimpleNamespace(cancelled=False, eof=False),
+        fade_in=False,
+        stream_error=False,
+        tail_overlap=None,
+        uri="test://track",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=180,
+        is_realtime=False,
+    )
+    queue_item = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="track",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=streamdetails,
+        duration=180,
+        extra_attributes={},
+    )
+    mass.player_queues.get.return_value = SimpleNamespace(
+        queue_id="queue-1", display_name="Queue", index_in_buffer=0
+    )
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+
+    async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        for _ in range(3):
+            yield bytes(pcm_format.pcm_sample_size)
+        if released_by_stop:
+            # a stop detaches the buffer from the details before it releases it
+            source_buffer = streamdetails.buffer
+            streamdetails.buffer = None
+            source_buffer.cancelled = True
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_item_stream_with_smartfade(
+        MagicMock(),
+        cast("Any", queue_item),
+        pcm_format,
+        crossfade_mode=CrossfadeMode.DISABLED,
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == 3
+    assert streamdetails.seconds_streamed == 3
+    assert streamdetails.duration == expected_duration
+    assert queue_item.duration == expected_duration
 
 
 def _manager_context(
@@ -1882,9 +2208,14 @@ def _native_stream_handler_context(
         overlay_enabled=False,
         overlay_source=None,
     )
-    queue_data = SimpleNamespace(session_id="session-1")
+    queue_data = SimpleNamespace(
+        session_id="session-1",
+        flow_mode_stream_log=[],
+        last_served_item_id=None,
+    )
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.flow_stream_finished.return_value = False
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
     mass.config.get_raw_player_config_value.return_value = "disabled"
@@ -1894,7 +2225,7 @@ def _native_stream_handler_context(
     player.state.group_members = group_members
     player.state.supported_features = set()
     player.state.name = "Player"
-    player.get_config_value.return_value = "default"
+    player.get_config_value.return_value = False
     mass.players.get_player.return_value = player
 
     pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
@@ -1907,12 +2238,15 @@ def _native_stream_handler_context(
 
     controller = cast("Any", object.__new__(StreamsController))
     controller._open_item_streams = {}
+    controller._ended_item_streams = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller._update_audio_processing_context = MagicMock()
     controller._active_output_streams = 0
+    controller._flow_mode_owners = {}
+    controller._boundary_mix_owners = {}
 
     response = MagicMock()
     response.prepare = AsyncMock()
@@ -1931,3 +2265,55 @@ def _native_stream_handler_context(
         "fmt": "flac",
     }
     return controller, request, group_members
+
+
+def _flow_queue_item(item_id: str) -> Any:
+    """Return a queue item a flow stream can play."""
+    return SimpleNamespace(
+        queue_item_id=item_id,
+        name=item_id,
+        media_type=MediaType.TRACK,
+        duration=300,
+        extra_attributes={},
+        streamdetails=SimpleNamespace(
+            fade_in=False,
+            stream_error=False,
+            tail_overlap=None,
+            uri=f"test://{item_id}",
+            seek_position=0,
+            duration=300,
+            buffer=None,
+            seconds_streamed=None,
+            is_realtime=False,
+            audio_format=_format(ContentType.PCM_F32LE, 48000, 32),
+        ),
+    )
+
+
+def _consumer_flow_context() -> tuple[StreamsAudio, MagicMock, Any, list[str]]:
+    """Return a flow stream setup whose item streams record the queue items they open."""
+    mass = MagicMock()
+    mass.player_queues.queue_data.return_value = SimpleNamespace(
+        session_id="session-1", flow_mode_stream_log=[]
+    )
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    mass.player_queues.get_active_queue.return_value = None
+    audio = StreamsAudio(cast("Any", mass))
+    streamed_item_ids: list[str] = []
+
+    async def _item_stream(
+        queue_item: Any, *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[bytes]:
+        streamed_item_ids.append(queue_item.queue_item_id)
+        yield b"\x00" * 16
+
+    audio.get_queue_item_stream = _item_stream  # type: ignore[method-assign]
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    return audio, mass, queue, streamed_item_ids

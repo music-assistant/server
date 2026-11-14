@@ -4,8 +4,8 @@ ARG BASE_IMAGE_VERSION=latest
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
-ARG CLIAIRPLAY_VERSION=v0.5.4
-ARG CLIAIRPLAY_CHECKSUMS_SHA256=0df2ba3ac02f5c8f48fcd05f219480968aeb19566be5d3a26d6e7480fb29f235
+ARG CLIAIRPLAY_VERSION=v0.5.10
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=b0d096fb6ca93cf61bc4a9a6d44492dcb9a97b27c6f5e44b7a04fb8558f23c37
 ARG TARGETARCH
 
 # Download the cliairplay release asset for this image architecture.
@@ -102,6 +102,12 @@ RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \
 # Pre-compile Python bytecode for faster startup
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
 
+# Identifies the official release image, see music_assistant/helpers/build_info.py
+ARG MASS_REVISION
+ARG MASS_WHEEL_SHA256
+RUN printf '{"version": "%s", "revision": "%s", "wheel_sha256": "%s"}\n' \
+    "$MASS_VERSION" "$MASS_REVISION" "$MASS_WHEEL_SHA256" > /app/build_info.json
+
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root
 # IMPORTANT: chmod here, NOT on the final image, to avoid creating extra layers and increase size!
@@ -118,6 +124,11 @@ FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# tini as PID 1 reaps orphaned subprocesses; -s keeps that working under docker --init.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
 
 # copy the already built /app dir
 COPY --from=builder /app /app
@@ -158,4 +169,4 @@ for path in /usr/lib/*/libjemalloc.so.2; do\n\
 done\n\
 exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]

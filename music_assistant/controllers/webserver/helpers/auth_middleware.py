@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self, cast
@@ -15,9 +16,13 @@ from music_assistant_models.errors import (
     UserNotFoundError,
 )
 
-from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    HASSIO_SUPERVISOR_IP,
+    HOMEASSISTANT_SYSTEM_USER,
+    MASS_LOGGER_NAME,
+)
 
-from .auth_providers import get_ha_user_details, get_ha_user_role
+from .auth_providers import get_ha_user_details, get_or_create_ha_user
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -29,6 +34,9 @@ if TYPE_CHECKING:
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
+# API websocket query parameter and Sendspin auth message field with which a browser
+# identifies itself over Home Assistant Ingress
+INGRESS_CLIENT_KEY: Final = "ingress_client_key"
 
 _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
     {
@@ -117,67 +125,8 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     mass: MusicAssistant = request.app["mass"]
 
     # Check for Home Assistant Ingress connections
-    if is_request_from_ingress(request):
-        ingress_user_id = request.headers.get("X-Remote-User-ID")
-        ingress_username = request.headers.get("X-Remote-User-Name")
-        ingress_display_name = request.headers.get("X-Remote-User-Display-Name")
-
-        # Require all Ingress headers to be present for security
-        if not (ingress_user_id and ingress_username):
-            return None
-
-        # Try to find existing user linked to this HA user ID
-        user = await mass.webserver.auth.get_user_by_provider_link(
-            AuthProviderType.HOME_ASSISTANT, ingress_user_id
-        )
-        if not user:
-            user = await mass.webserver.auth.get_user_by_username(ingress_username)
-            if not user:
-                # New user - fetch details from HA
-                ha_username, ha_display_name, avatar_url = await get_ha_user_details(
-                    mass, ingress_user_id
-                )
-                role = await get_ha_user_role(mass, ingress_user_id)
-                user = await mass.webserver.auth.create_user(
-                    username=ha_username or ingress_username,
-                    role=role,
-                    display_name=ha_display_name or ingress_display_name,
-                    avatar_url=avatar_url,
-                )
-
-            # Link to Home Assistant provider (or create the link if user already existed)
-            await mass.webserver.auth.link_user_to_provider(
-                user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-            )
-
-        # Update user with HA details if available (HA is source of truth)
-        # Fall back to ingress headers if API lookup doesn't return values
-        _, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
-        final_display_name = ha_display_name or ingress_display_name
-        LOGGER.log(
-            VERBOSE_LOG_LEVEL,
-            "Ingress auth for user %s: ha_display_name=%s, ingress_display_name=%s, "
-            "final_display_name=%s, avatar_url=%s",
-            user.username,
-            ha_display_name,
-            ingress_display_name,
-            final_display_name,
-            avatar_url,
-        )
-        if final_display_name or avatar_url:
-            user = await mass.webserver.auth.update_user(
-                user,
-                display_name=final_display_name,
-                avatar_url=avatar_url,
-            )
-            LOGGER.log(
-                VERBOSE_LOG_LEVEL,
-                "Updated user %s: display_name=%s, avatar_url=%s",
-                user.username,
-                user.display_name,
-                user.avatar_url,
-            )
-
+    if is_request_from_ingress_proxy(request):
+        user = await resolve_ingress_user(mass, request.headers)
         # Store in request context
         request[USER_CONTEXT_KEY] = user
         return user
@@ -205,6 +154,55 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         # Store in request context
         request[USER_CONTEXT_KEY] = user
 
+    return user
+
+
+async def resolve_ingress_user(mass: MusicAssistant, headers: Mapping[str, str]) -> User | None:
+    """
+    Resolve the user of a Home Assistant Ingress request, creating it on a first sign-in.
+
+    :param mass: The MusicAssistant instance.
+    :param headers: The request headers Home Assistant Ingress sets.
+    :return: The user, or None when the headers name no Home Assistant user, the user is not
+        linked yet and Home Assistant can not confirm it, or its account is disabled.
+    """
+    ingress_user_id = headers.get("X-Remote-User-ID")
+    ingress_username = headers.get("X-Remote-User-Name")
+    ingress_display_name = headers.get("X-Remote-User-Display-Name")
+
+    # Require all Ingress headers to be present for security
+    if not (ingress_user_id and ingress_username):
+        return None
+
+    ha_username, ha_display_name, avatar_url = await get_ha_user_details(mass, ingress_user_id)
+    linked_user = await mass.webserver.auth.get_user_by_provider_link(
+        AuthProviderType.HOME_ASSISTANT, ingress_user_id, include_disabled=True
+    )
+    # an account not linked yet may only be matched or created under a username HA confirms
+    if linked_user is None and ha_username is None:
+        LOGGER.warning(
+            "Refused Home Assistant Ingress sign-in for %s: "
+            "Home Assistant could not confirm the user",
+            ingress_username,
+        )
+        return None
+    # Ingress users are created on first sign-in, as HA already authenticated them
+    user = await get_or_create_ha_user(
+        mass,
+        ingress_user_id,
+        ha_username or ingress_username,
+        ha_display_name or ingress_display_name,
+        avatar_url,
+        allow_create=True,
+    )
+    if user and not user.enabled:
+        LOGGER.warning(
+            "Refused Home Assistant Ingress sign-in for %s: "
+            "the Music Assistant account %s is disabled",
+            ingress_username,
+            user.username,
+        )
+        return None
     return user
 
 
@@ -263,19 +261,22 @@ async def resolve_impersonated_user(
     provider_type: AuthProviderType,
     provider_user_id: str,
     required: bool = True,
+    required_scope: Scope | tuple[Scope, ...] | None = None,
 ) -> User | None:
     """
     Resolve and validate the user to impersonate for the current call.
 
     A builtin user is looked up by user_id or username, users of other auth providers
     by their provider link. The authenticated caller may always impersonate itself,
-    impersonating another user requires the users.impersonate scope.
+    impersonating another user requires the users.impersonate scope. The target must hold
+    the command's required scope itself, so impersonation never grants more than its role.
 
     :param mass: The MusicAssistant instance.
     :param provider_type: The auth provider the user reference belongs to.
     :param provider_user_id: The user's id at that provider.
     :param required: Raise if the user cannot be found, instead of
         resolving to None (no impersonation).
+    :param required_scope: The scope(s) the command requires, None for no check.
     """
     authenticated_user = current_user.get()
     if authenticated_user is None:
@@ -308,10 +309,19 @@ async def resolve_impersonated_user(
         raise InsufficientPermissions(
             "The users.impersonate scope is required to impersonate another user."
         )
+    if required_scope and not has_scope(target_user, required_scope):
+        scopes = required_scope if isinstance(required_scope, tuple) else (required_scope,)
+        raise InsufficientPermissions(
+            f"The impersonated user lacks the {' or '.join(map(str, scopes))} scope"
+        )
     return target_user
 
 
-async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, Any]) -> User | None:
+async def resolve_command_impersonation(
+    mass: MusicAssistant,
+    args: dict[str, Any],
+    required_scope: Scope | tuple[Scope, ...] | None = None,
+) -> User | None:
     """
     Pop and resolve the optional impersonation argument for an API command invocation.
 
@@ -323,6 +333,8 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
 
     :param mass: The MusicAssistant instance.
     :param args: The (mutable) arguments dict of the incoming command.
+    :param required_scope: The scope(s) the command requires; the impersonated user
+        must hold it as well, so impersonation never grants more than its own role.
     """
     user_arg = args.pop("user", None)
     # username is accepted as (deprecated) alias for user
@@ -333,8 +345,12 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
     if not target:
         return None
     if isinstance(target, Mapping):
-        return await resolve_impersonated_user(mass, *_parse_provider_user_arg(target))
-    return await resolve_impersonated_user(mass, AuthProviderType.BUILTIN, str(target))
+        return await resolve_impersonated_user(
+            mass, *_parse_provider_user_arg(target), required_scope=required_scope
+        )
+    return await resolve_impersonated_user(
+        mass, AuthProviderType.BUILTIN, str(target), required_scope=required_scope
+    )
 
 
 def _parse_provider_user_arg(value: Mapping[str, Any]) -> tuple[AuthProviderType, str, bool]:
@@ -370,11 +386,18 @@ def is_own_client_player(player: Player | None) -> bool:
     A private client player (browser session, desktop or mobile app) is bound to the
     connection that announced it, so its owner may always use it regardless of their
     player filter. Only private players qualify, so a shared speaker cannot be claimed
-    by announcing its id.
+    by announcing its id. Another user the caller acts as never connected on it, so it does
+    not count for them.
 
     :param player: The player to check, or None.
     """
-    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+    if player is None or not player.private or player.player_id != get_sendspin_player_id():
+        return False
+    acting_user = get_impersonated_user()
+    authenticated_user = current_user.get()
+    return acting_user is None or (
+        authenticated_user is not None and acting_user.user_id == authenticated_user.user_id
+    )
 
 
 def player_access_filter(user: User | None) -> list[str] | None:
@@ -433,6 +456,18 @@ def set_impersonated_user(user: User | None) -> None:
     :param user: The user to set as impersonated.
     """
     impersonated_user.set(user)
+
+
+@contextmanager
+def system_auth_context() -> Iterator[None]:
+    """Run the enclosed block as the server itself, without the requesting user."""
+    current_user_token = current_user.set(None)
+    impersonated_user_token = impersonated_user.set(None)
+    try:
+        yield
+    finally:
+        impersonated_user.reset(impersonated_user_token)
+        current_user.reset(current_user_token)
 
 
 def get_current_token() -> str | None:
@@ -507,12 +542,27 @@ def set_current_peer_address(peer_address: str | None) -> None:
     current_peer_address.set(peer_address)
 
 
+def is_request_from_ingress_proxy(request: web.Request) -> bool:
+    """
+    Check if request was relayed by the Home Assistant Ingress proxy.
+
+    Only such a request may carry trusted X-Remote-User headers: it must arrive on the
+    internal ingress TCP site from the Supervisor's address.
+
+    :param request: The aiohttp request.
+    """
+    if not is_request_from_ingress(request):
+        return False
+    peername = request.transport.get_extra_info("peername") if request.transport else None
+    return bool(peername and peername[0] == HASSIO_SUPERVISOR_IP)
+
+
 def is_request_from_ingress(request: web.Request) -> bool:
     """
-    Check if request is coming from Home Assistant Ingress (internal network).
+    Check if request arrived on the internal ingress TCP site (172.30.32.x:8094).
 
-    Security is enforced by socket-level verification (IP/port binding), not headers.
-    Only requests on the internal ingress TCP site (172.30.32.x:8094) are accepted.
+    The site is only reachable from the host network, which is where the Home Assistant
+    integration connects with the system user token.
 
     :param request: The aiohttp request.
     """

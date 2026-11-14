@@ -14,6 +14,10 @@ from music_assistant_models.favorite_update import FavoriteUpdate
 
 from music_assistant.constants import DB_TABLE_FAVORITES
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
+    impersonated_user,
+)
 from tests.common import set_music_source_access
 
 from .helpers import create_track
@@ -38,6 +42,10 @@ async def favorites_mass(
 ) -> MusicAssistant:
     """Return the library-only instance with a stand-in for the (unset up) cache."""
     monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    streams = MagicMock()
+    streams.audio_analysis.delete_audio_analysis = AsyncMock()
+    monkeypatch.setattr(music_mass_module, "streams", streams, raising=False)
     # the store remembers the users of a sync burst; every test names its own
     music_mass_module.music.favorites._users = None
     return music_mass_module
@@ -104,6 +112,32 @@ async def test_favorites_are_personal(favorites_mass: MusicAssistant) -> None:
         assert [x.favorite for x in summary] == [None]
 
 
+async def test_favorites_follow_the_impersonated_user(favorites_mass: MusicAssistant) -> None:
+    """A listing on behalf of another user serves that user's favorites, not the session's."""
+    mass = favorites_mass
+    liked_by_a = await _add_track(mass, "Impersonation Liked By A")
+    liked_by_b = await _add_track(mass, "Impersonation Liked By B")
+    await mass.music.tracks.set_favorite(liked_by_a.item_id, True, [USER_A])
+    await mass.music.tracks.set_favorite(liked_by_b.item_id, True, [USER_B])
+
+    # the context vars themselves: patching get_current_user would bypass the lookup under test
+    session_token = current_user.set(_user(USER_A))
+    impersonation_token = impersonated_user.set(_user(USER_B))
+    try:
+        likes = await mass.music.tracks.library_items(favorite=True, search="Impersonation")
+        # a favorite filter binds the user of the favorite field too, so check that unfiltered
+        listed = await mass.music.tracks.library_items(search="Impersonation")
+    finally:
+        impersonated_user.reset(impersonation_token)
+        current_user.reset(session_token)
+
+    assert [x.item_id for x in likes] == [liked_by_b.item_id]
+    assert {x.item_id: x.favorite for x in listed} == {
+        liked_by_a.item_id: None,
+        liked_by_b.item_id: True,
+    }
+
+
 async def test_unset_favorite_keeps_a_row_and_announces_it(
     favorites_mass: MusicAssistant,
 ) -> None:
@@ -118,8 +152,9 @@ async def test_unset_favorite_keeps_a_row_and_announces_it(
     rows = {row["user_id"]: row["favorite"] for row in await _favorite_rows(mass, track.item_id)}
     # the row stays, so a provider sync can not re-like what the user just removed
     assert rows == {USER_A: None, USER_B: 1}
-    assert signal_event.call_count == 1
-    event_type, object_id, payload = signal_event.call_args.args
+    calls = [c for c in signal_event.call_args_list if c.args[0] != EventType.TASKS_UPDATED]
+    assert len(calls) == 1
+    event_type, object_id, payload = calls[0].args
     assert event_type == EventType.FAVORITE_UPDATED
     assert object_id == track.uri
     assert payload == FavoriteUpdate(

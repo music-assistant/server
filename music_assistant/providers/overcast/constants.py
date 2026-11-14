@@ -17,7 +17,7 @@ SESSION_COOKIE_NAME = "o"
 CONF_SESSION_COOKIE = "session_cookie"
 CONF_METHOD = "method"
 METHOD_QR = "qr"
-METHOD_PASSWORD = "password"
+METHOD_PASSWORD = "password"  # noqa: S105 - auth method name
 
 # deep link the Overcast iPhone app registers, carrying the token to approve
 QR_AUTH_URL = "overcast:///auth?t={token}&l=browser"

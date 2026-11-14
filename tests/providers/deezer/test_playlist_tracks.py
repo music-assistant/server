@@ -1,4 +1,4 @@
-"""Test that Deezer playlist tracks carry when each was added to the playlist."""
+"""Test the tracks of a Deezer playlist: when each was added and how they are numbered."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.providers.deezer import browse
+from music_assistant.providers.deezer.media import DeezerMediaManager
 from music_assistant.providers.deezer.provider import DeezerProvider
 from tests.common import use_real_create_task
 
@@ -76,9 +77,27 @@ async def test_playlist_tracks_carry_date_added(
 
     tracks = await provider.browse_manager.get_playlist_tracks("123")
 
-    assert [(t.item_id, t.position) for t in tracks] == [("1", 1), ("3", 3), ("4", 4)]
+    assert [(t.item_id, t.position) for t in tracks] == [("1", 1), ("3", 2), ("4", 3)]
     assert [t.date_added for t in tracks] == [
         datetime(2024, 3, 1, 12, 0, 0, tzinfo=UTC),
         datetime(2024, 5, 10, 8, 30, 0, tzinfo=UTC),
         None,
     ]
+
+
+@pytest.mark.asyncio
+async def test_move_to_top_past_an_unavailable_track(
+    provider: DeezerProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unavailable first track leaves no gap that a block move could pick as its target."""
+    page = _page([_edge(None, None), _edge("1", None), _edge("2", None)])
+    # the playlist is read once to plan the block move and once for the move itself
+    _serve_pages(provider, monkeypatch, [page, page])
+    provider.mass.cache.delete = AsyncMock()  # type: ignore[method-assign]
+    provider.media_manager = DeezerMediaManager(provider)
+    move = AsyncMock(return_value=SimpleNamespace(move_status=True))
+    provider.gql_client.move_track_in_playlist = move  # type: ignore[method-assign]
+
+    await provider.move_playlist_tracks("123", [2], 1)
+
+    move.assert_awaited_once_with(playlist_id="123", track_id="2", after_track_id=None)

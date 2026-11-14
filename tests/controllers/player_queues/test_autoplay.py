@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
+from music_assistant_models.enums import SortField
 from music_assistant_models.media_items import Playlist, Track
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 
@@ -65,10 +66,12 @@ def _helper() -> tuple[Autoplay, MagicMock]:
     return Autoplay(queues), queues
 
 
-def _queue(queues: MagicMock, *seeds: Track, queue_id: str = "q1") -> PlayerQueue:
+def _queue(
+    queues: MagicMock, *seeds: Track, queue_id: str = "q1", userid: str | None = None
+) -> PlayerQueue:
     """Build a queue stand-in with the given enqueued items, wired into the mock controller."""
     queue = SimpleNamespace(
-        queue_id=queue_id, display_name="Queue", enqueued_media_items=list(seeds)
+        queue_id=queue_id, display_name="Queue", enqueued_media_items=list(seeds), userid=userid
     )
     # enqueued items are server-side state; the helper reads them via queue_data()
     queues.queue_data = MagicMock(return_value=queue)
@@ -110,7 +113,7 @@ async def test_get_library_tracks_genre_then_topup() -> None:
 
     # genre query used random_play_count ordering and the genre id we collected
     first_call = queues.mass.music.tracks.library_items.await_args_list[0]
-    assert first_call.kwargs["order_by"] == "random_play_count"
+    assert first_call.kwargs["sort_field"] == SortField.RANDOM_PLAY_COUNT
     assert first_call.kwargs["genre"] == [10]
     # genre matches lead, batch size is respected
     assert result[:2] == genre_tracks
@@ -161,6 +164,38 @@ async def test_get_library_tracks_tops_up_past_unavailable_genre_matches() -> No
     assert queues.mass.music.tracks.library_items.await_count == 2
     assert len(result) == AUTOPLAY_BATCH_SIZE
     assert all(track.available for track in result)
+
+
+async def test_get_library_tracks_leaves_out_the_users_disliked_genres() -> None:
+    """The mix leans on the seed genres the playback user did not dislike."""
+    helper, queues = _helper()
+    queues.mass.music.genres.get_genres_for_media_item = AsyncMock(
+        return_value=[SimpleNamespace(item_id="10"), SimpleNamespace(item_id="11")]
+    )
+    queues.mass.music.favorites.disliked_genre_ids = AsyncMock(return_value={10})
+    queues.mass.music.tracks.library_items = AsyncMock(return_value=[_track("g1")])
+
+    queue = _queue(queues, _track("seed"), userid="user-a")
+    await helper.get_library_tracks(queue, exclude=set())
+
+    queues.mass.music.favorites.disliked_genre_ids.assert_awaited_once_with("user-a")
+    assert queues.mass.music.tracks.library_items.await_args_list[0].kwargs["genre"] == [11]
+
+
+async def test_get_library_tracks_with_only_disliked_genres_uses_random_mix() -> None:
+    """With every seed genre disliked, only the whole-library random mix is queried."""
+    helper, queues = _helper()
+    queues.mass.music.genres.get_genres_for_media_item = AsyncMock(
+        return_value=[SimpleNamespace(item_id="10")]
+    )
+    queues.mass.music.favorites.disliked_genre_ids = AsyncMock(return_value={10})
+    queues.mass.music.tracks.library_items = AsyncMock(return_value=[_track("r1")])
+
+    queue = _queue(queues, _track("seed"), userid="user-a")
+    await helper.get_library_tracks(queue, exclude=set())
+
+    queues.mass.music.tracks.library_items.assert_awaited_once()
+    assert "genre" not in queues.mass.music.tracks.library_items.await_args.kwargs
 
 
 # --- get_playlist_tracks ---

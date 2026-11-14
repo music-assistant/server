@@ -1,0 +1,276 @@
+"""Tests for the iHeartRadio provider."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+    UnplayableMediaError,
+)
+
+from music_assistant.controllers.streams.constants import (
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
+)
+from music_assistant.providers.iheartradio import streaming
+from music_assistant.providers.iheartradio.constants import (
+    MAX_EPISODE_PAGES,
+    PATH_CATALOG_ALBUM,
+    PATH_LIVE_STATION,
+    PATH_NOW_PLAYING,
+    PATH_PODCAST,
+    PATH_PODCAST_CATEGORIES,
+    PATH_PODCAST_EPISODE,
+    PATH_PODCAST_EPISODES,
+    PATH_SEARCH,
+)
+from music_assistant.providers.iheartradio.provider import IHeartRadioProvider
+
+from .conftest import EPISODE, NOW_PLAYING, PODCAST, STATION, FakeApi
+
+STATION_ID = str(STATION["id"])
+PODCAST_ID = str(PODCAST["id"])
+EPISODE_ITEM_ID = f"{PODCAST_ID}:{EPISODE['id']}"
+EPISODE_URL = "https://chrt.fm/track/ihr/episode.mp3"
+
+
+async def test_search(provider: IHeartRadioProvider, api: FakeApi) -> None:
+    """Search asks only for the requested types, drops unrelated stations and caps the rest."""
+    api.responses[PATH_SEARCH] = {
+        "results": {
+            "stations": [
+                {"id": 1, "name": "NewsRadio 630", "description": "News and talk"},
+                {"id": 2, "name": "KIIS 1065"},
+                {"id": 3, "name": "Love KIIS", "description": "Brisbane's Greatest Variety"},
+            ],
+            "artists": [{"id": 5, "artistName": "KIIS"}],
+            "podcasts": [{"id": 4, "title": "Four"}],
+        }
+    }
+    results = await provider.search("kiis", [MediaType.RADIO], limit=1)
+    assert [radio.name for radio in results.radio] == ["KIIS 1065"]
+    assert results.podcasts == []
+    _, params = api.calls[-1]
+    assert params["station"] == "true"
+    assert params["podcast"] == "false"
+    assert (await provider.search("kiis", [MediaType.TRACK])).radio == []
+
+
+async def test_podcast_episodes_newest_has_highest_position(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """Episodes are fetched across pages and ranked so the newest holds the highest position."""
+    path = PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)
+    newest = {**EPISODE, "id": 3, "startDate": 3000}
+    middle = {**EPISODE, "id": 2, "startDate": 2000}
+    oldest = {**EPISODE, "id": 1, "startDate": 1000}
+    api.pages[path] = [
+        {"data": [newest, middle], "links": {"next": "cursor-2"}},
+        {"data": [oldest], "links": {}},
+    ]
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    episodes = [episode async for episode in provider.get_podcast_episodes(PODCAST_ID)]
+    assert [(episode.item_id, episode.position) for episode in episodes] == [
+        (f"{PODCAST_ID}:3", 3),
+        (f"{PODCAST_ID}:2", 2),
+        (f"{PODCAST_ID}:1", 1),
+    ]
+    assert api.calls[-1][1]["pageKey"] == "cursor-2"
+
+
+async def test_search_without_words_keeps_no_stations(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A query of only punctuation matches no station rather than every padded one."""
+    api.responses[PATH_SEARCH] = {"results": {"stations": [{"id": 1, "name": "KIIS 1065"}]}}
+    assert (await provider.search("!!!", [MediaType.RADIO])).radio == []
+
+
+async def test_podcast_episodes_reject_a_broken_later_page(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A malformed page after the first raises instead of returning a truncated listing."""
+    path = PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)
+    api.pages[path] = [{"data": [EPISODE], "links": {"next": "cursor-2"}}, {"data": {}}]
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    with pytest.raises(InvalidDataError):
+        [episode async for episode in provider.get_podcast_episodes(PODCAST_ID)]
+
+
+async def test_podcast_episodes_stop_at_the_page_cap(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """The listing stops after the page cap even when the API offers more pages."""
+    path = PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)
+    api.pages[path] = [
+        {"data": [{**EPISODE, "id": page, "startDate": 1000 - page}], "links": {"next": "more"}}
+        for page in range(MAX_EPISODE_PAGES + 1)
+    ]
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    episodes = [episode async for episode in provider.get_podcast_episodes(PODCAST_ID)]
+    assert len(episodes) == MAX_EPISODE_PAGES
+    assert len(api.pages[path]) == 1
+
+
+async def test_station_stream_with_now_playing(provider: IHeartRadioProvider, api: FakeApi) -> None:
+    """A station that reports track metadata owns the stream metadata and refreshes it."""
+    api.responses[PATH_LIVE_STATION.format(station_id=STATION_ID)] = {"hits": [STATION]}
+    api.responses[PATH_NOW_PLAYING.format(station_id=STATION_ID)] = NOW_PLAYING
+    details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
+    assert details.stream_type == StreamType.HTTP
+    assert details.path == "https://example.com/kiis.m3u8"
+    assert details.stream_metadata_update_callback is not None
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "Red Rocks"
+    # between tracks the station answers with an empty body, the in-band title takes over
+    api.responses[PATH_NOW_PLAYING.format(station_id=STATION_ID)] = None
+    details.data[STREAMDETAILS_INBAND_TITLE_KEY] = "KIIS - Ad break"
+    await details.stream_metadata_update_callback(details, 30)
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "KIIS - Ad break"
+    assert details.stream_metadata.image_url == STATION["logo"]
+
+
+async def test_station_stream_without_now_playing(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A station that publishes no track metadata leaves the metadata to the stream itself."""
+    api.responses[PATH_LIVE_STATION.format(station_id=STATION_ID)] = {"hits": [STATION]}
+    api.responses[PATH_NOW_PLAYING.format(station_id=STATION_ID)] = MediaNotFoundError(
+        "No meta data"
+    )
+    details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
+    assert details.stream_metadata_update_callback is None
+    assert details.stream_metadata is None
+
+
+async def test_station_stream_starts_without_slow_now_playing(
+    provider: IHeartRadioProvider, api: FakeApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A now-playing lookup that does not answer in time leaves the start to the in-band title."""
+    api.responses[PATH_LIVE_STATION.format(station_id=STATION_ID)] = {"hits": [STATION]}
+
+    async def never_answers(_station_id: str) -> dict[str, Any] | None:
+        await asyncio.Event().wait()
+        return None
+
+    monkeypatch.setattr(streaming, "NOW_PLAYING_TIMEOUT", 0.01)
+    monkeypatch.setattr(provider.api, "get_now_playing", never_answers)
+    details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
+    assert details.path == "https://example.com/kiis.m3u8"
+    assert details.stream_metadata is None
+    assert details.data[STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY] is True
+    assert details.stream_metadata_update_callback is not None
+
+
+async def test_station_metadata_survives_a_failed_refresh(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A refresh the API fails keeps the metadata shown so far."""
+    api.responses[PATH_LIVE_STATION.format(station_id=STATION_ID)] = {"hits": [STATION]}
+    api.responses[PATH_NOW_PLAYING.format(station_id=STATION_ID)] = NOW_PLAYING
+    details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
+    shown = details.stream_metadata
+    assert shown is not None
+    api.responses[PATH_NOW_PLAYING.format(station_id=STATION_ID)] = ResourceTemporarilyUnavailable(
+        "timeout"
+    )
+    assert details.stream_metadata_update_callback is not None
+    await details.stream_metadata_update_callback(details, 30)
+    assert details.stream_metadata is shown
+
+
+@pytest.mark.parametrize(
+    ("mime_types", "content_type"),
+    [(["audio/aac"], ContentType.AAC), ([], ContentType.MP3)],
+)
+async def test_episode_stream(
+    provider: IHeartRadioProvider,
+    api: FakeApi,
+    mime_types: list[str],
+    content_type: ContentType,
+) -> None:
+    """An episode streams its media url, typed by its mime type or else its url, and seeks."""
+    api.responses[PATH_PODCAST_EPISODE.format(episode_id=EPISODE["id"])] = {
+        "episode": {**EPISODE, "mimeTypes": mime_types, "mediaUrl": EPISODE_URL}
+    }
+    details = await provider.get_stream_details(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+    assert details.stream_type == StreamType.HTTP
+    assert details.path == EPISODE_URL
+    assert details.audio_format.content_type == content_type
+    assert details.duration == EPISODE["duration"]
+    assert details.can_seek
+    assert details.allow_seek
+
+
+async def test_episode_without_media_url_is_unplayable(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """An episode that offers no media url raises UnplayableMediaError."""
+    api.responses[PATH_PODCAST_EPISODE.format(episode_id=EPISODE["id"])] = {"episode": EPISODE}
+    with pytest.raises(UnplayableMediaError):
+        await provider.get_stream_details(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+
+
+async def test_unknown_station(provider: IHeartRadioProvider, api: FakeApi) -> None:
+    """A station the API does not know raises MediaNotFoundError."""
+    api.responses[PATH_LIVE_STATION.format(station_id="1")] = {"hits": []}
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_radio("1")
+
+
+async def test_podcast_categories_skip_placeholder_artwork(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A category whose artwork encodes a bare host gets no image, a real one keeps it."""
+    api.responses[PATH_PODCAST_CATEGORIES] = {
+        "categories": [
+            {
+                "id": 76,
+                "name": "Featured",
+                "image": "https://i.iheart.com/v3/url/aHR0cDovL2NvbnRlbnQuaWhlYXJ0LmNvbQ",
+            },
+            {
+                "id": 2,
+                "name": "Business",
+                "image": "https://i.iheart.com/v3/url/aHR0cDovL2NvbnRlbnQuaWhlYXJ0LmNvbS90YWxrL2pwZy8yLmpwZw",
+            },
+        ]
+    }
+    folders = await provider.browse("iheartradio--test123://podcasts")
+    assert [(folder.name, folder.image is not None) for folder in folders] == [
+        ("Featured", False),
+        ("Business", True),
+    ]
+
+
+async def test_album_tracks_are_listed_but_unavailable(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """An album lists its tracks with the album's artwork, none of them playable."""
+    api.responses[PATH_CATALOG_ALBUM.format(album_id="607279")] = {
+        "albumId": 607279,
+        "title": "Full Moon Fever",
+        "artistId": 1805,
+        "artistName": "Tom Petty",
+        "image": "http://image.iheart.com/full-moon-fever.jpg",
+        "tracks": [
+            {"id": 607283, "title": "Free Fallin'", "trackNumber": 1, "volume": 1, "duration": 254}
+        ],
+    }
+    tracks = await provider.get_album_tracks("607279")
+    assert [
+        (track.item_id, track.name, track.disc_number, track.track_number, track.available)
+        for track in tracks
+    ] == [("catalog:607283", "Free Fallin'", 1, 1, False)]
+    assert tracks[0].album is not None
+    assert tracks[0].album.item_id == "607279"
+    assert tracks[0].artist_str == "Tom Petty"
+    assert tracks[0].image is not None
+    assert tracks[0].image.path == "https://image.iheart.com/full-moon-fever.jpg"

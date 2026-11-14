@@ -6,7 +6,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import soxr
@@ -25,6 +25,7 @@ from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
 )
 
+from . import RECOMMENDED_CPU_CORES, RECOMMENDED_RAM_GB
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
 from .helpers import (
@@ -55,10 +56,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 ANALYSIS_SAMPLE_RATE = 22050
-# Below the recommended thresholds the provider still runs, but we surface an
-# informational notice (see get_config_entries) as it may be tight under load.
-RECOMMENDED_RAM_GB = 6.0
-RECOMMENDED_CPU_CORES = 4
 # Beat This predicts a long track as fixed windows. These are the values the model was trained
 # and released with (30s at 50 fps, plus the loss-border frames its predictions are unreliable
 # on), so a windowed prediction is identical to a whole-track one. Do not tune them: a window
@@ -394,9 +391,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
             if vocal_activity.size
             else np.zeros(1800, dtype=np.float32)
         )
-        extra_data: dict[str, Any] = {"vocal_activity": vocal_activity_bins.tolist()}
+        band_rms: dict[str, list[float]] = {}
         if energy_peak > 0 and data.frequency_band_chunks:
-            extra_data["band_rms"] = {
+            band_rms = {
                 name: (
                     aggregate_series_to_bins(np.concatenate(chunks), 1800, power=True) / energy_peak
                 ).tolist()
@@ -415,8 +412,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
             ),
             key=key,
             mode=mode,
-            extra_data=extra_data,
             beats_per_bar=beats_per_bar or None,
+            vocal_activity=vocal_activity_bins.tolist(),
+            band_rms_low=band_rms.get("low"),
+            band_rms_low_mid=band_rms.get("low_mid"),
+            band_rms_mid=band_rms.get("mid"),
+            band_rms_high=band_rms.get("high"),
         )
         self.logger.debug(
             "Beat analysis for %s: BPM=%.1f, %d beats, %d downbeats, key=%s",
@@ -528,6 +529,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         duration: float,
     ) -> tuple[tuple[np.ndarray, np.ndarray, int, str | None, str | None], np.ndarray]:
         """Run beat/key and vocal inference branches; the first failure cancels the other."""
+        beat_key_task = None
         try:
             async with asyncio.TaskGroup() as task_group:
                 beat_key_task = task_group.create_task(
@@ -539,7 +541,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
         except ExceptionGroup as group:
             # Unwrap for the base class; prefer the beat/key error since it decides
             # permanent vs retryable failure recording.
-            beat_key_error = None if beat_key_task.cancelled() else beat_key_task.exception()
+            beat_key_error = (
+                None
+                if beat_key_task is None or beat_key_task.cancelled()
+                else beat_key_task.exception()
+            )
             primary = beat_key_error or group.exceptions[0]
             for error in group.exceptions:
                 if error is not primary:

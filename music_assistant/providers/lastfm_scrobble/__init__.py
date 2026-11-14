@@ -36,7 +36,7 @@ SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaTy
 
 # Configuration keys
 CONF_API_KEY: Final[str] = "_api_key"
-CONF_API_SECRET: Final[str] = "_api_secret"
+CONF_API_SECRET: Final[str] = "_api_secret"  # noqa: S105 - config key
 CONF_SESSION_KEY: Final[str] = "_api_session_key"
 CONF_USERNAME: Final[str] = "_username"
 CONF_PROVIDER: Final[str] = "_provider"

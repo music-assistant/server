@@ -5,8 +5,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, PropertyMock, patch
 
+import pytest
 from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderType
+from music_assistant_models.enums import (
+    AlbumType,
+    ArtistType,
+    ExternalID,
+    MediaType,
+    ProviderType,
+)
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
 from music_assistant_models.provider import ProviderManifest
 
@@ -14,6 +22,7 @@ from music_assistant.constants import DB_TABLE_EXTERNAL_ID_LOOKUP, DB_TABLE_PROV
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.models import (
+    MusicBrainzArtist,
     MusicBrainzMedia,
     MusicBrainzRecording,
     MusicBrainzRelation,
@@ -22,7 +31,7 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzTrack,
     MusicBrainzUrl,
 )
-from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
+from music_assistant.providers.musicbrainz.provider import IdentifiedArtist, MusicbrainzProvider
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -34,6 +43,7 @@ ISRCS = ("GBSTK0700001", "GBSTK0700002")
 BARCODE = "0634904032463"
 TIDAL_INSTANCE = "tidal--test"
 TIDAL_ALBUM_ID = "79280548"
+ARTIST_MBID = "0fe841c1-0d1a-4d2c-9a4e-3b7a1f6c2e10"
 
 
 class _TidalStub(MusicProvider):
@@ -217,3 +227,155 @@ async def test_album_is_identified_and_linked_through_musicbrainz(mass: MusicAss
     assert {(row["item_id"], row["provider_item_id"]) for row in track_mappings} == {
         (int(track.item_id), f"td-{track.track_number}") for track in tracks
     }
+
+
+async def _add_artists_sharing_an_mbid(
+    mass: MusicAssistant, newer_type: ArtistType = ArtistType.SINGER
+) -> tuple[Artist, Artist]:
+    """Store an artist tagged with the MusicBrainz id, then a newer one from Spotify without it."""
+    older = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Sydney Symphony Orchestra",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="sso",
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--test",
+                    in_library=True,
+                )
+            },
+            external_ids={(ExternalID.MB_ARTIST, ARTIST_MBID)},
+        )
+    )
+    newer = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Sydney Symphony",
+            artist_type=newer_type,
+            provider_mappings={_spotify("4Z8W4fKeB5YxbusRsdQVPb")},
+        )
+    )
+    return older, newer
+
+
+def _mb_artist() -> MusicBrainzArtist:
+    """Return the MusicBrainz artist both library artists are."""
+    return MusicBrainzArtist(
+        id=ARTIST_MBID, name="Sydney Symphony Orchestra", sort_name="Sydney Symphony Orchestra"
+    )
+
+
+async def _identify(mass: MusicAssistant, artist: Artist, entry_point: str) -> None:
+    """Identify an artist on MusicBrainz through the link run or the metadata refresh."""
+    if entry_point == "link":
+        await mass.metadata.link_item_to_musicbrainz(artist)
+        return
+    # the online metadata providers are not what is under test
+    with patch.object(MetaDataController, "providers", new_callable=PropertyMock, return_value=[]):
+        await mass.metadata._update_artist_metadata(artist, force_refresh=True)
+
+
+@pytest.mark.parametrize("entry_point", ["link", "refresh"])
+async def test_artist_identified_by_streaming_link_merges_into_the_oldest(
+    mass: MusicAssistant, entry_point: str
+) -> None:
+    """An artist whose Spotify link names another library artist's id merges into the oldest."""
+    older, newer = await _add_artists_sharing_an_mbid(mass)
+
+    with (
+        patch.object(MusicbrainzProvider, "get_mbid_by_url", AsyncMock(return_value=ARTIST_MBID)),
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())
+        ),
+    ):
+        await _identify(mass, newer, entry_point)
+
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.artists.get_library_item(newer.item_id)
+    merged = await mass.music.artists.get_library_item(older.item_id)
+    assert merged.name == "Sydney Symphony Orchestra"
+    assert {mapping.provider_domain for mapping in merged.provider_mappings} == {
+        "filesystem_local",
+        "spotify",
+    }
+
+
+async def test_adding_an_artist_merged_by_its_metadata_update_returns_the_survivor(
+    mass: MusicAssistant,
+) -> None:
+    """Adding an artist that its metadata update merges away returns the older artist."""
+    older, newer = await _add_artists_sharing_an_mbid(mass)
+
+    with (
+        patch.object(MusicbrainzProvider, "get_mbid_by_url", AsyncMock(return_value=ARTIST_MBID)),
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())
+        ),
+        patch.object(MetaDataController, "providers", new_callable=PropertyMock, return_value=[]),
+        # only the metadata update of the add itself is under test
+        patch.object(mass.metadata, "schedule_update_metadata"),
+    ):
+        added = await mass.music.add_item_to_library(newer)
+
+    assert added.item_id == older.item_id
+    assert "spotify" in {mapping.provider_domain for mapping in added.provider_mappings}
+
+
+async def test_updating_metadata_of_an_artist_it_merges_returns_the_survivor(
+    mass: MusicAssistant,
+) -> None:
+    """Updating the metadata of an artist that the update merges away returns the older artist."""
+    older, newer = await _add_artists_sharing_an_mbid(mass)
+
+    with (
+        patch.object(MusicbrainzProvider, "get_mbid_by_url", AsyncMock(return_value=ARTIST_MBID)),
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())
+        ),
+        patch.object(MetaDataController, "providers", new_callable=PropertyMock, return_value=[]),
+    ):
+        updated = await mass.metadata.update_metadata(newer, force_refresh=True)
+
+    assert updated is not None
+    assert updated.item_id == older.item_id
+
+
+async def test_artist_identified_by_name_search_is_not_merged(mass: MusicAssistant) -> None:
+    """An id only a name search found may belong to a namesake, so both artists stay."""
+    older, newer = await _add_artists_sharing_an_mbid(mass)
+
+    with (
+        patch.object(
+            MusicbrainzProvider,
+            "identify_artist",
+            AsyncMock(return_value=IdentifiedArtist(_mb_artist(), True)),
+        ),
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())
+        ),
+    ):
+        await mass.metadata.link_item_to_musicbrainz(newer)
+
+    assert (await mass.music.artists.get_library_item(older.item_id)).mbid == ARTIST_MBID
+    assert (await mass.music.artists.get_library_item(newer.item_id)).mbid == ARTIST_MBID
+
+
+async def test_artists_of_different_roles_sharing_an_mbid_stay_apart(
+    mass: MusicAssistant,
+) -> None:
+    """An author and a singer with one MusicBrainz id are left apart without an error."""
+    older, newer = await _add_artists_sharing_an_mbid(mass, newer_type=ArtistType.AUTHOR)
+
+    with (
+        patch.object(MusicbrainzProvider, "get_mbid_by_url", AsyncMock(return_value=ARTIST_MBID)),
+        patch.object(
+            MusicbrainzProvider, "get_artist_details", AsyncMock(return_value=_mb_artist())
+        ),
+    ):
+        await mass.metadata.link_item_to_musicbrainz(newer)
+
+    assert await mass.music.artists.get_library_item(older.item_id)
+    assert (await mass.music.artists.get_library_item(newer.item_id)).mbid == ARTIST_MBID

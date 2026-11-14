@@ -1,4 +1,4 @@
-"""Tests for ``provider.config.build_config_entries``."""
+"""Tests for retained non-policy provider configuration entries."""
 
 from __future__ import annotations
 
@@ -6,22 +6,12 @@ from typing import TYPE_CHECKING
 
 from music_assistant.providers.fastmcp_server.config import build_config_entries
 from music_assistant.providers.fastmcp_server.constants import (
-    CONF_CONFIG_READ,
-    CONF_CONFIG_WRITE_CORE,
-    CONF_CONFIG_WRITE_PLAYER,
-    CONF_CONFIG_WRITE_PROVIDER,
-    CONF_CONFIG_WRITE_SECRET,
     CONF_DEBUG_EVENT_BUFFER_CAPACITY,
-    CONF_DEBUG_EVENTS,
-    CONF_DEBUG_INSPECT,
-    CONF_DEBUG_LOGS,
-    CONF_DEBUG_PROVIDERS,
-    CONF_DEBUG_RELOAD,
-    CONF_DELETE_LIBRARY,
-    CONF_QUERY_LIBRARY,
     CONF_REQUIRE_AUTH,
+    CONF_RES_LIBRARY,
+    CONF_RES_PLAYER,
+    CONF_RES_PROMPTS,
     DEFAULT_MOUNT_PATH,
-    PERMISSION_KEYS,
     RESOURCE_KEYS,
 )
 
@@ -29,115 +19,29 @@ if TYPE_CHECKING:
     from unittest.mock import MagicMock
 
 
-def test_total_entry_count(mock_mass: MagicMock) -> None:
-    """41 entries: 1 info label + 1 connect-wizard action + 9 server + 16 perms + 3 resources + 6 debug + 5 config."""
-    entries = build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)
-    assert len(entries) == 1 + 1 + 9 + 16 + 3 + 6 + 5
+def test_retained_endpoint_resource_and_prompt_entries(mock_mass: MagicMock) -> None:
+    """V2 keeps endpoint/auth/Origin/resource/prompt controls and event capacity."""
+    entries = {entry.key: entry for entry in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
+
+    assert CONF_REQUIRE_AUTH in entries
+    assert entries.keys() >= RESOURCE_KEYS
+    assert entries[CONF_RES_LIBRARY].default_value is True
+    assert entries[CONF_RES_PLAYER].default_value is True
+    assert entries[CONF_RES_PROMPTS].default_value is True
+    assert "enable_mcp_app" not in entries
+    capacity = entries[CONF_DEBUG_EVENT_BUFFER_CAPACITY]
+    assert capacity.default_value == 500
+    assert capacity.range == (50, 5000)
 
 
-def test_all_permission_keys_present(mock_mass: MagicMock) -> None:
-    """Every permission key from PERMISSION_KEYS has a matching ConfigEntry."""
-    entries = build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)
-    keys = {e.key for e in entries}
-    assert PERMISSION_KEYS.issubset(keys)
-    assert RESOURCE_KEYS.issubset(keys)
-    assert CONF_REQUIRE_AUTH in keys
-
-
-def test_delete_keys_default_false(mock_mass: MagicMock) -> None:
-    """All delete-family permissions default to False (least-privilege)."""
-    entries = {e.key: e for e in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
-    mutation_prefixes = ("delete_", "control_", "edit_")
-    for key in PERMISSION_KEYS:
-        if key.startswith(mutation_prefixes):
-            assert entries[key].default_value is False, f"{key} should default False"
-
-
-def test_query_keys_default_true(mock_mass: MagicMock) -> None:
-    """All query-family permissions default to True."""
-    entries = {e.key: e for e in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
-    assert entries[CONF_QUERY_LIBRARY].default_value is True
-
-
-def test_categories_match_pr2889_ux(mock_mass: MagicMock) -> None:
-    """Categories mirror upstream PR #2889 grouping for familiarity at review time."""
-    entries = build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)
-    categories = {getattr(e, "category", None) for e in entries if getattr(e, "category", None)}
-    # ``Generic`` comes from the Connect Wizard ACTION entry, which mirrors the
-    # Spotify provider's ``CONF_ACTION_AUTH`` button (no explicit category).
-    assert categories == {
-        "server",
-        "query_permissions",
-        "control_permissions",
-        "edit_permissions",
-        "delete_permissions",
-        "mcp_resources",
-        "debug",
-        "mcp_config",
-        "generic",
-    }
-
-
-def test_info_label_includes_base_url(mock_mass: MagicMock) -> None:
-    """The info label embeds MA's base_url so users see where to point clients."""
-    entries = build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)
-    info = entries[0]
-    assert mock_mass.webserver.base_url in str(info.label)
-    assert "/mcp/v1" in str(info.label)
-
-
-def test_info_label_normalises_mount_path_without_leading_slash(
-    mock_mass: MagicMock,
-) -> None:
-    """
-    A user-typed ``mcp/v1`` (no leading slash) must still render a valid URL.
-
-    Regression for upstream PR #3858 Copilot comment: the runtime normalises
-    the mount path, but the info label did not — so the displayed endpoint
-    glued the host to the path with no separator (``…:8095mcp/v1``).
-    """
+def test_info_label_includes_normalized_endpoint(mock_mass: MagicMock) -> None:
+    """The runtime info label renders endpoint guidance instead of its structural key."""
     entries = build_config_entries(mock_mass, "mcp/v1")
-    label = str(entries[0].label)
-    base_url = mock_mass.webserver.base_url
-    assert f"{base_url}/mcp/v1" in label
-    assert f"{base_url}mcp" not in label
+    info = entries[0]
 
-
-def test_delete_library_default(mock_mass: MagicMock) -> None:
-    """Specifically: delete_library defaults False (a hard-to-undo permission)."""
-    entries = {e.key: e for e in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
-    assert entries[CONF_DELETE_LIBRARY].default_value is False
-
-
-def test_debug_entries_present_with_off_defaults(mock_mass: MagicMock) -> None:
-    """Debug ConfigEntries are present and default to off (least privilege)."""
-    entries = {e.key: e for e in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
-    for key in (
-        CONF_DEBUG_INSPECT,
-        CONF_DEBUG_LOGS,
-        CONF_DEBUG_EVENTS,
-        CONF_DEBUG_PROVIDERS,
-        CONF_DEBUG_RELOAD,
-    ):
-        assert key in entries, f"missing {key}"
-        assert entries[key].default_value is False, f"{key} must be off by default"
-        assert entries[key].category == "debug"
-
-    cap = entries[CONF_DEBUG_EVENT_BUFFER_CAPACITY]
-    assert cap.default_value == 500
-    assert cap.range == (50, 5000)
-
-
-def test_config_entries_present_with_off_defaults(mock_mass: MagicMock) -> None:
-    """Config ConfigEntries are present and default to off (least privilege)."""
-    entries = {e.key: e for e in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
-    for key in (
-        CONF_CONFIG_READ,
-        CONF_CONFIG_WRITE_PROVIDER,
-        CONF_CONFIG_WRITE_CORE,
-        CONF_CONFIG_WRITE_PLAYER,
-        CONF_CONFIG_WRITE_SECRET,
-    ):
-        assert key in entries, f"missing {key}"
-        assert entries[key].default_value is False, f"{key} must be off by default"
-        assert entries[key].category == "mcp_config"
+    assert info.key == "info_label"
+    assert info.label == (
+        f"MCP endpoint: {mock_mass.webserver.base_url}/mcp/v1\n"
+        "Create tokens in Profile → Long-lived access tokens."
+    )
+    assert info.translation_params is None

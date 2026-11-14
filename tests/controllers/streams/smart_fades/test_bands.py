@@ -8,6 +8,7 @@ import pytest
 from music_assistant.controllers.streams.smart_fades.bands import (
     build_band_profile,
     instrumental_claim_confirmed,
+    kick_runs,
     loudness_referenced_level,
     smoothstep,
     window_duty,
@@ -15,6 +16,7 @@ from music_assistant.controllers.streams.smart_fades.bands import (
 )
 from music_assistant.controllers.streams.smart_fades.models import BandProfile
 from music_assistant.controllers.streams.smart_fades.vocal import VocalMask
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
 
 
@@ -40,9 +42,12 @@ class TestBandProfile:
         assert f1 == pytest.approx(f2, abs=1e-6)
 
     def test_missing_band_rms_returns_none(self) -> None:
-        """v1 rows (no extra_data) yield None so policies bypass."""
+        """v1 rows (no band envelopes) yield None so policies bypass."""
         a = _analysis_with_bands(0.3, 0.1, 0.1, 0.05)
-        a.extra_data = None
+        a.band_rms_low = None
+        a.band_rms_low_mid = None
+        a.band_rms_mid = None
+        a.band_rms_high = None
         assert build_band_profile(a) is None
 
     def test_all_silent_track_returns_none(self) -> None:
@@ -72,13 +77,71 @@ class TestBandProfile:
     def test_duty_counts_bars_above_reference_fraction(self) -> None:
         """Duty = share of window bars at >= k x the track's sustained band power."""
         a = _analysis_with_bands(0.3, 0.1, 0.1, 0.05)
-        assert a.extra_data is not None
-        bands = a.extra_data["band_rms"]
-        bands["mid"] = ([0.0] * 900) + ([0.4] * 900)  # mid silent first half
+        a.band_rms_mid = ([0.0] * 900) + ([0.4] * 900)  # mid silent first half
         p = build_band_profile(a)
         assert p is not None
         assert window_duty(p, "mid", 0.0, 120.0) == pytest.approx(0.0, abs=0.05)
         assert window_duty(p, "mid", 120.0, 240.0) == pytest.approx(1.0, abs=0.05)
+
+    def test_legacy_extra_data_row_lifts_into_the_same_profile(self) -> None:
+        """A pre-typed-field row shaped as extra_data["band_rms"] lifts to the same profile."""
+        modern = _analysis_with_bands(0.3, 0.1, 0.1, 0.05)
+        legacy = AudioAnalysisData.from_dict(
+            {
+                "duration": modern.duration,
+                "bpm": modern.bpm,
+                "beats": modern.beats,
+                "downbeats": modern.downbeats,
+                "rms_energy": modern.rms_energy,
+                "key": modern.key,
+                "mode": modern.mode,
+                "extra_data": {
+                    "band_rms": {
+                        "low": modern.band_rms_low,
+                        "low_mid": modern.band_rms_low_mid,
+                        "mid": modern.band_rms_mid,
+                        "high": modern.band_rms_high,
+                    }
+                },
+            }
+        )
+        assert legacy.extra_data is None
+        p_modern = build_band_profile(modern)
+        p_legacy = build_band_profile(legacy)
+        assert p_modern is not None
+        assert p_legacy is not None
+        assert window_fraction(p_legacy, "low", 0.0, 60.0) == pytest.approx(
+            window_fraction(p_modern, "low", 0.0, 60.0), abs=1e-9
+        )
+
+
+class TestKickRuns:
+    """Kick runs merge consecutive kick bars and clip to the asked window."""
+
+    def test_runs_merge_consecutive_bars_and_clip_to_the_window(self) -> None:
+        """Kick bars outside two quiet gaps form three runs, clipped at the window edges."""
+        low = np.full(1800, 0.5, dtype=np.float32)
+        t = np.arange(1800) * (240.0 / 1800)
+        low[((t >= 10.0) & (t < 20.0)) | ((t >= 30.0) & (t < 40.0))] = 0.01
+        profile = build_band_profile(_analysis_with_bands(low, 0.1, 0.1, 0.1))
+        assert profile is not None
+
+        runs = kick_runs(profile, 0.5, 5.0, 45.0)
+
+        assert runs == [
+            pytest.approx((5.0, 10.0)),
+            pytest.approx((20.0, 30.0)),
+            pytest.approx((40.0, 45.0)),
+        ]
+
+    def test_a_kickless_window_has_no_runs(self) -> None:
+        """A window without a kick bar yields no run."""
+        low = np.full(1800, 0.5, dtype=np.float32)
+        low[np.arange(1800) * (240.0 / 1800) >= 200.0] = 0.01
+        profile = build_band_profile(_analysis_with_bands(low, 0.1, 0.1, 0.1))
+        assert profile is not None
+
+        assert kick_runs(profile, 0.5, 200.0, 240.0) == []
 
 
 class TestSmoothstep:
@@ -108,9 +171,7 @@ class TestLoudnessReferencedLevel:
     def test_louder_window_scores_higher(self) -> None:
         """A window with more low-band power than the track average scores > 1."""
         a = _analysis_with_bands(0.1, 0.1, 0.1, 0.1)
-        assert a.extra_data is not None
-        bands = a.extra_data["band_rms"]
-        bands["low"] = ([0.1] * 900) + ([0.5] * 900)  # louder low band, second half
+        a.band_rms_low = ([0.1] * 900) + ([0.5] * 900)  # louder low band, second half
         p = build_band_profile(a)
         assert p is not None
         quiet = loudness_referenced_level(p, "low", 0.0, 120.0)

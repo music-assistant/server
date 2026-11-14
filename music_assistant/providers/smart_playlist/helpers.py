@@ -98,11 +98,17 @@ def _coerce_str_keyed_dict(value: Any, field_name: str) -> dict[str, str]:
 
 @dataclass
 class SmartPlaylistRules:
-    """Rules that define which tracks are included in a smart playlist."""
+    """
+    Rules that define which tracks are included in a smart playlist.
+
+    ``exclude_favorites`` vetoes the current user's liked tracks after AND/OR matching.
+    It defaults off for existing playlists and cannot be combined with ``favorites_only``.
+    """
 
     genre_ids: list[int] = field(default_factory=list)
     artist_ids: list[int] = field(default_factory=list)
     album_ids: list[int] = field(default_factory=list)
+    folder_paths: list[str] = field(default_factory=list)
     favorites_only: bool = False
     seed_track_uris: list[str] = field(default_factory=list)
     seed_artist_uris: list[str] = field(default_factory=list)
@@ -132,6 +138,7 @@ class SmartPlaylistRules:
     max_duration: int | None = None
     last_played_before_value: int | None = None
     last_played_before_unit: str | None = None  # "hours", "days", "weeks", "months"
+    exclude_favorites: bool = False
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -154,7 +161,9 @@ class SmartPlaylistRules:
             "genre_ids": self.genre_ids,
             "artist_ids": self.artist_ids,
             "album_ids": self.album_ids,
+            "folder_paths": self.folder_paths,
             "favorites_only": self.favorites_only,
+            "exclude_favorites": self.exclude_favorites,
             "seed_track_uris": self.seed_track_uris,
             "seed_artist_uris": self.seed_artist_uris,
             "seed_album_uris": self.seed_album_uris,
@@ -188,11 +197,16 @@ class SmartPlaylistRules:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SmartPlaylistRules:
         """Deserialize from dictionary."""
+        exclude_favorites = data.get("exclude_favorites", False)
+        if not isinstance(exclude_favorites, bool):
+            raise InvalidDataError("exclude_favorites must be a boolean")
         return cls(
             genre_ids=_coerce_id_list(data.get("genre_ids"), "genre_ids"),
             artist_ids=_coerce_id_list(data.get("artist_ids"), "artist_ids"),
             album_ids=_coerce_id_list(data.get("album_ids"), "album_ids"),
+            folder_paths=_coerce_str_list(data.get("folder_paths"), "folder_paths"),
             favorites_only=data.get("favorites_only", False),
+            exclude_favorites=exclude_favorites,
             seed_track_uris=_coerce_str_list(data.get("seed_track_uris"), "seed_track_uris"),
             seed_artist_uris=_coerce_str_list(data.get("seed_artist_uris"), "seed_artist_uris"),
             seed_album_uris=_coerce_str_list(data.get("seed_album_uris"), "seed_album_uris"),
@@ -261,6 +275,10 @@ class SmartPlaylistRules:
         if self.album_ids:
             names = [self.album_names.get(aid, str(aid)) for aid in self.album_ids]
             parts.append(f"Albums: {', '.join(names)}")
+        if self.folder_paths:
+            # only the count: the summary ends up in the playlist description every user sees,
+            # while a folder may be on a music source hidden from some of them
+            parts.append(f"Folders: {len(self.folder_paths)}")
         seed_uris = self.all_seed_uris()
         if seed_uris:
             labels = [self.seed_names.get(uri, uri) for uri in seed_uris]
@@ -294,10 +312,11 @@ class SmartPlaylistRules:
             parts.append(duration_range)
         if last_played_str := self._format_last_played():
             parts.append(last_played_str)
-        if not parts:
+        if not parts and not self.exclude_favorites:
             return "No rules (all library tracks)"
         connector = f" {self.logic} "
-        return connector.join(parts)
+        summary = connector.join(parts) or "All library tracks"
+        return f"{summary}; Exclude favorites" if self.exclude_favorites else summary
 
     def _format_year_range(self) -> str | None:
         """Format year filter as human-readable string."""
@@ -329,6 +348,10 @@ class SmartPlaylistRules:
 
 def validate_rules(rules: SmartPlaylistRules) -> None:
     """Raise InvalidDataError if any rule field is out of allowed range."""
+    if not isinstance(rules.exclude_favorites, bool):
+        raise InvalidDataError("exclude_favorites must be a boolean")
+    if rules.favorites_only and rules.exclude_favorites:
+        raise InvalidDataError("favorites_only and exclude_favorites cannot both be enabled")
     if rules.logic not in (LOGIC_AND, LOGIC_OR):
         msg = f"Invalid logic operator: {rules.logic}. Must be AND or OR."
         raise InvalidDataError(msg)
@@ -348,6 +371,14 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
             f"{rules.year_from}>{rules.year_to}"
         )
         raise InvalidDataError(msg)
+    for folder_path in rules.folder_paths:
+        prov_instance, sep, _ = folder_path.partition("://")
+        if not sep or not prov_instance.startswith("filesystem_"):
+            msg = (
+                f"Invalid folder path: {folder_path!r}. "
+                "Expected '<filesystem provider instance>://<path>'"
+            )
+            raise InvalidDataError(msg)
     total_seeds = len(rules.all_seed_uris())
     if total_seeds > MAX_SEEDS:
         msg = f"Too many seeds: {total_seeds} > {MAX_SEEDS}"

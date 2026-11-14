@@ -6,7 +6,7 @@
   "description": "Primary lyrics provider, delivering synced and unsynced lyrics from the LrcLib database.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/metadata/lyrics/",
   "multi_instance": false,
   "builtin": true,
   "allow_disable": true,

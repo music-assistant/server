@@ -29,9 +29,15 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpisode
+from music_assistant_models.media_items import (
+    AudioFormat,
+    MediaItemTranscriptCue,
+    Podcast,
+    PodcastEpisode,
+)
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
@@ -42,8 +48,10 @@ from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
+    find_episode_transcripts,
     get_cached_podcast,
     get_episode_positions,
+    get_episode_transcript,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -152,7 +160,7 @@ class OvercastProvider(MusicProvider):
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
-            except MediaNotFoundError as err:
+            except (MediaNotFoundError, ProviderUnavailableError) as err:
                 self.report_skipped_sync_item(MediaType.PODCAST, feed_url, err)
                 continue
             applied = await self._apply_playback_states(feed_url, subscription, parsed_podcast)
@@ -209,6 +217,7 @@ class OvercastProvider(MusicProvider):
                 if state is not None and (state.played or state.progress_s):
                     mass_episode.resume_position_ms = (state.progress_s or 0) * 1000
                     mass_episode.fully_played = state.played
+                    mass_episode.resume_position_timestamp = state.user_updated_at
             yield mass_episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -220,6 +229,20 @@ class OvercastProvider(MusicProvider):
                 await self._enrich_episode_chapters(podcast_id, guid_or_stream_url, mass_episode)
                 return mass_episode
         raise MediaNotFoundError("Did not find episode.")
+
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """Get the transcript for a podcast episode."""
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
+        podcast = await self._cache_get_podcast(podcast_id)
+        return await get_episode_transcript(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            transcripts=find_episode_transcripts(
+                parsed_feed=podcast, guid_or_stream_url=guid_or_stream_url
+            ),
+        )
 
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
@@ -410,12 +433,10 @@ class OvercastProvider(MusicProvider):
             )
             if mass_episode is None:
                 continue
-            if not state.played:
-                # never move the user backwards: the playlog write replaces whatever MA
-                # recorded itself, which may be a position further into the episode
-                _, local_position_ms = await self.mass.music.get_resume_position(mass_episode)
-                if local_position_ms > (state.progress_s or 0) * 1000:
-                    continue
+            overcast_point = (state.played, (state.progress_s or 0) * 1000)
+            if await self.mass.music.get_resume_position(mass_episode) != overcast_point:
+                # the progress Music Assistant recorded itself wins
+                continue
             await self.mass.music.mark_item_played(
                 mass_episode,
                 fully_played=state.played,

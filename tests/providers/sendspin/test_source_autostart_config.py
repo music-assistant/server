@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlayerType
 
 from music_assistant.providers.sendspin.constants import (
     CONF_SOURCE_AUTOSTART_TARGET,
@@ -70,10 +70,13 @@ def _target_entry(player: SendspinBasePlayer) -> ConfigEntry | None:
     return next((e for e in entries if e.key == CONF_SOURCE_AUTOSTART_TARGET), None)
 
 
-def test_no_autostart_entries_without_line_sense() -> None:
-    """A source that cannot report signal presence has no trigger, so it gets no setting."""
+def test_a_source_without_line_sense_gets_a_note_instead_of_the_setting() -> None:
+    """A source that cannot report signal presence has no trigger, so it explains why instead."""
     player = _player(negotiated_role_ids=["source@v1"], line_sense=False, known_players=["speaker"])
-    assert player._get_source_autostart_config_entries() == []
+    entries = player._get_source_autostart_config_entries()
+    assert [(e.key, e.type) for e in entries] == [
+        ("source_autostart_unavailable", ConfigEntryType.LABEL)
+    ]
 
 
 def test_no_autostart_entries_for_a_client_without_a_source_role() -> None:
@@ -113,6 +116,20 @@ def test_an_unavailable_player_is_not_selectable() -> None:
     entry = _target_entry(player)
     assert entry is not None
     assert "sleeping-speaker" not in {option.value for option in entry.options or []}
+
+
+def test_the_devices_own_player_stays_the_default_while_unavailable() -> None:
+    """A device still being set up is unavailable, yet it stays the default it later resolves to."""
+    player = _player(
+        negotiated_role_ids=["source@v1", "player@v1"],
+        line_sense=True,
+        known_players=["speaker"],
+        unavailable_players=["turntable"],
+    )
+    entry = _target_entry(player)
+    assert entry is not None
+    assert entry.default_value == "turntable"
+    assert "turntable" in {option.value for option in entry.options or []}
 
 
 def test_players_that_cannot_render_audio_are_not_offered() -> None:

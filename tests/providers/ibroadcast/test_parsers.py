@@ -300,6 +300,35 @@ async def test_track_without_artwork_is_parsed(provider: IBroadcastProvider) -> 
     assert not tracks[0].metadata.images
 
 
+@pytest.mark.parametrize(
+    ("genres_additional", "expected"),
+    [
+        (["Indie", "Alternative"], {"Rock", "Indie", "Alternative"}),
+        (["Rock", "Indie"], {"Rock", "Indie"}),
+        ([], {"Rock"}),
+        (None, {"Rock"}),
+    ],
+)
+async def test_additional_genres_are_added_to_the_track(
+    provider: IBroadcastProvider, genres_additional: list[str] | None, expected: set[str]
+) -> None:
+    """The field holds a list of genre names, which can also be empty or null."""
+    provider._client.tracks = {1001: {**TRACK, "genres_additional": genres_additional}}
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert [track.metadata.genres for track in tracks] == [expected]
+
+
+async def test_short_row_without_additional_genres_is_parsed(provider: IBroadcastProvider) -> None:
+    """The api zips rows against a field map, so a short row has no "genres_additional" key."""
+    provider._client.tracks = {1001: {k: v for k, v in TRACK.items() if k != "genres_additional"}}
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert [track.metadata.genres for track in tracks] == [{"Rock"}]
+
+
 async def test_album_without_artwork_is_parsed(provider: IBroadcastProvider) -> None:
     """The client raises when no track of an album carries artwork."""
     provider._client.missing_artwork.add("album")

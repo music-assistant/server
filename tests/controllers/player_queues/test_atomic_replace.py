@@ -9,6 +9,7 @@ new items are ready, and hands the audio over in a single swap.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -25,7 +26,9 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.models.player import Player
 
 NEW_TRACKS = ["n1", "n2", "n3"]
 PLAYING_TRACKS = ["p1", "p2", "p3"]
@@ -66,7 +69,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
-    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    ctrl.mass.players.get_player = Mock(
+        return_value=Mock(extra_data={}, offline_by_power_control=False)
+    )
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
@@ -84,7 +89,7 @@ def _controller(**queue_kwargs: Any) -> Any:
     ctrl._smart_shuffle.is_enabled = Mock(return_value=False)
     ctrl._media_resolver = Mock()
     ctrl._media_resolver._resolve_media_items = AsyncMock(
-        side_effect=lambda *_a, **_kw: [_track(item_id) for item_id in NEW_TRACKS]
+        side_effect=lambda *_a, **_kw: [ResolvedItem(_track(item_id)) for item_id in NEW_TRACKS]
     )
     queue = PlayerQueue(
         queue_id="q1", active=True, display_name="Q1", available=True, items=0, **queue_kwargs
@@ -252,11 +257,10 @@ async def test_replace_starting_at_a_chosen_track_never_advertises_a_partial_que
 
 async def test_replacing_a_dynamic_queue_hides_the_rebuild_from_clients() -> None:
     """
-    The pool is fetched over the network with the queue already emptied, so updates are held off.
+    Player updates are held off while the pool is fetched over the network.
 
-    Player updates would otherwise reconcile against the half-built queue and publish it as empty
-    with nothing playing - the very state this is meant to remove, and on the dynamic path the
-    fetch is the slowest part of the whole operation.
+    A track change picked up during the fetch, the slowest part of the whole operation, would
+    otherwise start a refill of the tail the rebuild is about to replace.
     """
     ctrl = _controller(is_dynamic=True, shuffle_enabled=True)
     _load_playing_queue(ctrl)
@@ -309,3 +313,33 @@ async def test_replacing_an_ended_queue_keeps_the_sources_it_just_stored() -> No
     assert _queue(ctrl).ended is False
     assert [source.item_id for source in ctrl._queue_data["q1"].source_items] == ["pl1"]
     assert _item_ids(ctrl) == NEW_TRACKS
+
+
+async def test_a_player_still_reporting_the_replaced_item_keeps_the_new_queue_position() -> None:
+    """A stale player report preserves the new queue position after replacement."""
+    ctrl = _controller()
+    replaced = _load_playing_queue(ctrl)
+    await ctrl.play_media("q1", _playlist(), QueueOption.REPLACE)
+    # Set the position normally established by the mocked play_index.
+    new_items = ctrl._queue_data["q1"].items
+    queue = _queue(ctrl)
+    queue.state = PlaybackState.PLAYING
+    queue.current_index = 0
+    queue.current_item = new_items[0]
+    queue.next_item = new_items[1]
+    player = SimpleNamespace(
+        player_id="q1",
+        active_output_protocol="native",
+        current_media=SimpleNamespace(
+            source_id="q1", queue_item_id=replaced[0].queue_item_id, uri=None
+        ),
+        state=SimpleNamespace(playback_state=PlaybackState.PLAYING, corrected_elapsed_time=12.0),
+    )
+
+    updated = ctrl._update_current_index_from_player(queue, cast("Player", player))
+
+    assert queue.current_index == 0
+    assert queue.current_item is new_items[0]
+    assert queue.next_item is new_items[1]
+    assert queue.elapsed_time == 0
+    assert updated is False

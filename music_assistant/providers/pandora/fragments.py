@@ -41,7 +41,8 @@ class PandoraFragment:
     fetched_at: float
     last_activity_at: float
     spent: bool = False
-    served: set[str] = field(default_factory=set)
+    # Pandora id -> when the track was handed to the audio pipeline from this fragment
+    served: dict[str, float] = field(default_factory=dict)
 
     def find(self, pandora_id: str) -> dict[str, Any] | None:
         """Return the raw track data for the given Pandora id, if this fragment holds it."""
@@ -52,7 +53,7 @@ class PandoraFragment:
         if self.find(pandora_id) is None:
             return
         self.last_activity_at = now
-        self.served.add(pandora_id)
+        self.served[pandora_id] = now
         if self.tracks[-1].get("pandoraId") == pandora_id:
             self.spent = True
 

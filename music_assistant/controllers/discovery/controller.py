@@ -12,7 +12,6 @@ from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, EventType
 from zeroconf import (
@@ -28,6 +27,7 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.helpers.hassio import SupervisorError, supervisor_request
 from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
@@ -80,18 +80,26 @@ class DiscoveryController(CoreController):
         self._upnp_locks: dict[str, asyncio.Lock] = {}
         self._upnp_run_lock = asyncio.Lock()
         self._mdns_waiters: list[asyncio.Event] = []
+        # the path of the MCP server offered to Home Assistant, None when not offered
+        self._mcp_path: str | None = None
+        self._mcp_discovery_uuid: str | None = None
+        self._mcp_refusal_logged = False
 
     @property
     def aiozc(self) -> AsyncZeroconf:
-        """Return the shared AsyncZeroconf instance for discovery consumers."""
+        """Return the shared AsyncZeroconf instance, which lives for the whole server run."""
         assert self._aiozc is not None, "DiscoveryController is not initialized"
         return self._aiozc
+
+    async def start_zeroconf(self) -> None:
+        """Create the shared zeroconf instance (aiozc), once per server run and ahead of setup."""
+        if self._aiozc is None:
+            config = await self.mass.config.get_core_config(self.domain)
+            self._aiozc = self._create_aiozc(config)
 
     async def setup(self, config: CoreConfig) -> None:
         """Initialize discovery controller."""
         self.config = config
-        if self._aiozc is None:
-            self._aiozc = self._create_aiozc(config)
         self._configure_library_loggers()
         await self._setup_mdns_browser()
         await self._register_mass_service()
@@ -151,6 +159,32 @@ class DiscoveryController(CoreController):
         self._mdns_locks.pop(instance_id, None)
         self._upnp_locks.pop(instance_id, None)
         self._schedule_periodic_upnp_discovery()
+
+    async def refresh_mdns_browser(self) -> None:
+        """Make the mDNS browser follow the service types of the registered manifests."""
+        await self._setup_mdns_browser()
+
+    async def announce_mcp_server(self, path: str) -> None:
+        """
+        Offer the MCP server to Home Assistant, now and on every daily re-announce.
+
+        Only has effect when running as Home Assistant add-on.
+
+        :param path: The path of the MCP endpoint on the internal (ingress) webserver.
+        """
+        self._mcp_path = path
+        await self._announce_mcp_server()
+
+    async def withdraw_mcp_server(self) -> None:
+        """Withdraw the offer of the MCP server to Home Assistant."""
+        self._mcp_path = None
+        if (discovery_uuid := self._mcp_discovery_uuid) is None:
+            return
+        self._mcp_discovery_uuid = None
+        try:
+            await supervisor_request(self.mass, "delete", f"/discovery/{discovery_uuid}")
+        except SupervisorError as err:
+            self.logger.debug("Failed to withdraw the MCP server from Home Assistant: %s", err)
 
     async def async_find_mdns_service(
         self, service_type: str, name_filter: str | None = None, timeout: float = 3.0
@@ -336,7 +370,10 @@ class DiscoveryController(CoreController):
             if not provider.available or not provider.manifest.mdns_discovery:
                 continue
             if service_type in provider.manifest.mdns_discovery:
-                self.mass.create_task(process_mdns_state_change(provider))
+                self.mass.create_task(
+                    process_mdns_state_change(provider),
+                    task_name=f"mdns_state_change_{provider.instance_id}",
+                )
 
     async def _replay_mdns_discovery(self, provider: ProviderInstanceType) -> None:
         """Replay cached mDNS results for a provider after it loads."""
@@ -474,7 +511,6 @@ class DiscoveryController(CoreController):
 
     async def _announce_to_homeassistant(self) -> None:
         """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
         addon_hostname = os.environ["HOSTNAME"]
         ha_integration_token = await self.mass.webserver.auth.get_homeassistant_system_user_token()
         discovery_payload = {
@@ -486,20 +522,44 @@ class DiscoveryController(CoreController):
             },
         }
         try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
+            result = await supervisor_request(
+                self.mass, "post", "/discovery", json_data=discovery_payload
+            )
+            self.logger.debug(
+                "Successfully announced to Home Assistant. Discovery UUID: %s",
+                result.get("uuid") if isinstance(result, dict) else None,
+            )
         except Exception as err:
             self.logger.warning("Failed to announce to Home Assistant: %s", err)
+        await self._announce_mcp_server()
+
+    async def _announce_mcp_server(self) -> None:
+        """Announce the MCP server to Home Assistant via Supervisor API, when offered."""
+        if self._mcp_path is None or not self.mass.running_as_hass_addon:
+            return
+        discovery_payload = {
+            "service": "mcp",
+            "config": {
+                "url": f"http://{os.environ['HOSTNAME']}:{INGRESS_SERVER_PORT}{self._mcp_path}",
+                "token": await self.mass.webserver.auth.get_homeassistant_system_user_token(),
+            },
+        }
+        try:
+            result = await supervisor_request(
+                self.mass, "post", "/discovery", json_data=discovery_payload
+            )
+        except SupervisorError as err:
+            # an add-on whose config does not list the mcp discovery service yet is refused
+            if err.status == 403:
+                if not self._mcp_refusal_logged:
+                    self._mcp_refusal_logged = True
+                    self.logger.info(
+                        "Home Assistant does not accept the MCP server discovery yet: %s", err
+                    )
+                return
+            self.logger.warning("Failed to announce the MCP server to Home Assistant: %s", err)
+            return
+        self._mcp_discovery_uuid = result.get("uuid") if isinstance(result, dict) else None
 
     def _schedule_periodic_ha_announce(self) -> None:
         """Schedule the periodic (re)announce to Home Assistant."""

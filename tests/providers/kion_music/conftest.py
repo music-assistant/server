@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping
+from yandex_music import ClientAsync
 
 
 class ProviderStub:
@@ -118,8 +119,7 @@ class StreamingProviderStubWithTracking:
         return
 
 
-# Minimal client-like object for kion_music de_json (library requires client, not None)
-DE_JSON_CLIENT = type("ClientStub", (), {"report_unknown_fields": False})()
+DE_JSON_CLIENT = ClientAsync()
 
 
 @pytest.fixture

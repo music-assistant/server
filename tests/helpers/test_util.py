@@ -5,21 +5,28 @@ import codecs
 import contextlib
 import gc
 import logging
+import os
 import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import ifaddr
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import MediaType, ProviderTier, ProviderType
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Album, ItemMapping, ProviderMapping, Track
+from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
+    TaskManager,
     detect_charset,
+    get_folder_size,
     get_source_ip_for_target,
     guard_single_request,
     import_module_in_thread,
@@ -297,6 +304,19 @@ class TestImportModuleInThread:
         assert import_mock.call_count == 1
 
 
+def _sendspin_manifest(tier: ProviderTier = ProviderTier.CORE) -> ProviderManifest:
+    """Return a provider manifest with one pinned requirement that carries an extra."""
+    return ProviderManifest(
+        type=ProviderType.PLAYER,
+        domain="sendspin",
+        name="Sendspin",
+        description="",
+        codeowners=[],
+        tier=tier,
+        requirements=["aiosendspin[server]==6.1.1"],
+    )
+
+
 class TestLoadProviderModule:
     """load_provider_module verifies pinned requirements before importing the provider."""
 
@@ -317,7 +337,7 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.install_package") as install_mock,
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
         version_mock.assert_awaited_once_with("aiosendspin")
         install_mock.assert_not_awaited()
 
@@ -329,7 +349,7 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.install_package") as install_mock,
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
         install_mock.assert_awaited_once_with("aiosendspin[server]==6.1.1")
 
     @pytest.mark.asyncio
@@ -342,8 +362,8 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.install_package") as install_mock,
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
+            await load_provider_module(_sendspin_manifest())
         version_mock.assert_awaited_once()
         install_mock.assert_not_awaited()
 
@@ -359,10 +379,41 @@ class TestLoadProviderModule:
             patch("music_assistant.helpers.util.importlib.import_module"),
         ):
             with pytest.raises(RuntimeError):
-                await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+                await load_provider_module(_sendspin_manifest())
             install_mock.side_effect = None
-            await load_provider_module("sendspin", ["aiosendspin[server]==6.1.1"])
+            await load_provider_module(_sendspin_manifest())
         assert install_mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_community_requirement_not_installed(self) -> None:
+        """An outdated requirement of a community provider is left as it is."""
+        with (
+            patch(
+                "music_assistant.helpers.util.get_package_version", return_value="6.0.0"
+            ) as version_mock,
+            patch("music_assistant.helpers.util.install_package") as install_mock,
+            patch("music_assistant.helpers.util.importlib.import_module") as import_mock,
+        ):
+            module = await load_provider_module(_sendspin_manifest(ProviderTier.COMMUNITY))
+        assert module is import_mock.return_value
+        import_mock.assert_called_once_with(".sendspin", "music_assistant.providers")
+        version_mock.assert_not_awaited()
+        install_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_community_import_error_installs_nothing(self) -> None:
+        """A community provider that fails to import raises without an install attempt."""
+        with (
+            patch("music_assistant.helpers.util.install_package") as install_mock,
+            patch(
+                "music_assistant.helpers.util.importlib.import_module",
+                side_effect=ImportError("no module named aiosendspin"),
+            ) as import_mock,
+            pytest.raises(ImportError),
+        ):
+            await load_provider_module(_sendspin_manifest(ProviderTier.COMMUNITY))
+        assert import_mock.call_count == 1
+        install_mock.assert_not_awaited()
 
 
 class TestGetIpAddresses:
@@ -647,6 +698,89 @@ class TestJoinTask:
         assert await task == "done"
 
 
+class TestTaskManager:
+    """TaskManager hands its tasks the name the caller gave, so its work is identifiable."""
+
+    @pytest.mark.asyncio
+    async def test_task_is_named_when_a_name_is_given(self, mass_minimal: MusicAssistant) -> None:
+        """A name reaches the task, which is what the slow-callback warning reports."""
+
+        async def _work() -> None:
+            return
+
+        async with TaskManager(mass_minimal) as manager:
+            task = manager.create_task(_work(), "sync_provider_somewhere")
+            assert task.get_name() == "sync_provider_somewhere"
+
+    @pytest.mark.asyncio
+    async def test_limited_task_is_named_too(self, mass_minimal: MusicAssistant) -> None:
+        """The semaphore-limited entry point names its task the same way."""
+        started = asyncio.Event()
+
+        async def _work() -> None:
+            started.set()
+
+        async with TaskManager(mass_minimal, limit=1) as manager:
+            await manager.create_task_with_limit(_work(), "sync_provider_elsewhere")
+            await started.wait()
+            assert [t.get_name() for t in manager._tasks] == ["sync_provider_elsewhere"]
+
+    @pytest.mark.asyncio
+    async def test_task_without_a_name_is_left_to_asyncio(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """Without a name asyncio numbers the task, rather than a task id standing in."""
+
+        async def _work() -> None:
+            return
+
+        async with TaskManager(mass_minimal) as manager:
+            task = manager.create_task(_work())
+            assert task.get_name().startswith("Task-")
+
+
+class TestGetFolderSize:
+    """get_folder_size adds up the files in a folder tree."""
+
+    async def test_symlinks_are_not_followed(self, tmp_path: Path) -> None:
+        """A symlink counts as itself, not as the (possibly huge) file it points to."""
+        folder = tmp_path / "folder"
+        (folder / "nested").mkdir(parents=True)
+        (folder / "nested" / "file.bin").write_bytes(b"x" * 4096)
+        (tmp_path / "outside.bin").write_bytes(b"x" * 1024 * 1024)
+        (folder / "link.bin").symlink_to(tmp_path / "outside.bin")
+        (folder / "broken.bin").symlink_to(tmp_path / "gone.bin")
+        links = (folder / "link.bin").lstat().st_size + (folder / "broken.bin").lstat().st_size
+
+        assert await get_folder_size(str(folder)) * (1 << 30) == 4096 + links
+
+    async def test_excluded_folder_is_left_out(self, tmp_path: Path) -> None:
+        """A folder inside the measured one can be left out, e.g. a cache inside the data."""
+        (tmp_path / ".cache" / "images").mkdir(parents=True)
+        (tmp_path / "data.db").write_bytes(b"x" * 4096)
+        (tmp_path / ".cache" / "images" / "cover.jpg").write_bytes(b"x" * 1024)
+        (tmp_path / ".cache-old").mkdir()
+        (tmp_path / ".cache-old" / "kept.bin").write_bytes(b"x" * 512)
+
+        size = await get_folder_size(str(tmp_path), exclude=(f"{tmp_path}/.cache/",))
+
+        assert size * (1 << 30) == 4096 + 512
+
+    async def test_vanished_file_is_skipped(self, tmp_path: Path) -> None:
+        """A file removed while the folder is walked does not fail the measurement."""
+        (tmp_path / "kept.bin").write_bytes(b"x" * 2048)
+        (tmp_path / "journal.bin").write_bytes(b"x" * 100)
+        real_lstat = os.lstat
+
+        def _lstat(path: str) -> object:
+            if path.endswith("journal.bin"):
+                raise FileNotFoundError(path)
+            return real_lstat(path)
+
+        with patch.object(os, "lstat", _lstat):
+            assert await get_folder_size(str(tmp_path)) * (1 << 30) == 2048
+
+
 class TestSanitizeHttpHeaderValue:
     """sanitize_http_header_value strips characters aiohttp forbids in response headers."""
 
@@ -725,6 +859,29 @@ class TestGuardSingleRequest:
         assert isinstance(results[0], asyncio.CancelledError)
         assert results[1:] == ["result-123", "result-123"]
         assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_callers_of_different_identities_do_not_share_a_request(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A request resolves per user and role, so only the same identity joins one flight."""
+        caller = _GuardedCaller(mass_minimal)
+        users = [
+            User(user_id=name, username=name, role=role)
+            for name, role in (("a", UserRole.USER), ("a", UserRole.USER), ("b", UserRole.USER))
+        ]
+        # the same account after a role change is a different identity as well
+        users.append(User(user_id="a", username="a", role=UserRole.GUEST))
+
+        async def fetch_as(user: User) -> str:
+            set_current_user(user)
+            return await caller.fetch("123")
+
+        calls = [asyncio.create_task(fetch_as(user)) for user in users]
+        await asyncio.sleep(0)
+        assert caller.calls == 3
+        caller.release.set()
+        assert await asyncio.gather(*calls) == ["result-123"] * 4
 
     @pytest.mark.asyncio
     async def test_failure_reaches_the_caller_without_being_logged(
@@ -1056,3 +1213,24 @@ def _provider_mapping(item_id: str) -> ProviderMapping:
         provider_domain=GUARDED_PROVIDER_ID,
         provider_instance=GUARDED_PROVIDER_ID,
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Disc 1", True),
+        ("disc1", True),
+        ("CD2", True),
+        ("cd 03", True),
+        ("Disk 1", True),
+        ("DVD1", True),
+        ("Volume 2", True),
+        ("Vol. 2", True),
+        ("Album", False),
+        ("weird-disc-name", False),
+        ("", False),
+    ],
+)
+def test_is_disc_dir(name: str, expected: bool) -> None:
+    """Only a recognized disc/volume naming pattern is treated as a disc subfolder."""
+    assert util.is_disc_dir(name) is expected

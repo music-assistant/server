@@ -69,7 +69,7 @@ def get_item_mapping(instance_id: str, media_type: MediaType, key: str, name: st
     )
 
 
-def parse_track(  # noqa: PLR0915
+def parse_track(  # noqa: C901, PLR0912, PLR0915
     logger: logging.Logger,
     instance_id: str,
     sonic_song: SonicSong,
@@ -257,28 +257,9 @@ def parse_artist(
             )
         )
 
-    if sonic_artist.artist_image_url:
-        metadata.add_image(
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=sonic_artist.artist_image_url,
-                provider=instance_id,
-                remotely_accessible=True,
-            )
-        )
-
     if sonic_info:
         if sonic_info.biography:
             metadata.description = sonic_info.biography
-        if sonic_info.small_image_url:
-            metadata.add_image(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=sonic_info.small_image_url,
-                    provider=instance_id,
-                    remotely_accessible=True,
-                )
-            )
 
     artist = Artist(
         item_id=sonic_artist.id,
@@ -322,15 +303,6 @@ def parse_album(
         )
 
     if sonic_info:
-        if sonic_info.small_image_url:
-            metadata.add_image(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=sonic_info.small_image_url,
-                    remotely_accessible=True,
-                    provider=instance_id,
-                )
-            )
         if sonic_info.notes:
             metadata.description = sonic_info.notes
 
@@ -471,6 +443,9 @@ def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:
             )
         },
     )
+
+    if sonic_playlist.comment:
+        playlist.metadata.description = sonic_playlist.comment
 
     if sonic_playlist.cover_art:
         playlist.metadata.add_image(

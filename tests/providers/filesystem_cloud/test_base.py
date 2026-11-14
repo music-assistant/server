@@ -479,9 +479,9 @@ def _make_playlist_provider(
 ) -> tuple[_StubCloudProvider, MagicMock]:
     """Return a provider on PLAYLIST_TREE with tag parsing and track building stubbed."""
     provider = _make_provider(tree=PLAYLIST_TREE)
-    # the inherited implementation lives in (and imports from) filesystem_local
+    # a cloud file is parsed from its stream URL by the cloud provider itself
     monkeypatch.setattr(
-        "music_assistant.providers.filesystem_local.async_parse_tags",
+        "music_assistant.providers.filesystem_cloud.base.async_parse_tags",
         AsyncMock(return_value=MagicMock()),
     )
     track = MagicMock(name="track")

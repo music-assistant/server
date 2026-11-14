@@ -143,10 +143,6 @@ class MusicAssistantControl:
                     queue_id=queue_id,
                     repeat_mode=LOOP_STATUS_MAP_REVERSE[value],
                 )
-            # if "volume" in properties:
-            #     self.send_request("core.mixer.set_volume", {"volume": int(properties["volume"])})
-            # if "mute" in properties:
-            #     self.send_request("core.mixer.set_mute", {"mute": properties["mute"]})
         elif cmd == "GetProperties":
 
             def handle_result(result: dict[str, Any]) -> None:

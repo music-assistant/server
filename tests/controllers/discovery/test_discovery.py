@@ -123,6 +123,7 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
             return_value=zc_args,
         ) as mock_get_zeroconf_args,
     ):
+        await mass_minimal.discovery.start_zeroconf()
         await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
         assert mass_minimal.discovery.aiozc is mock_zc
 
@@ -162,6 +163,33 @@ async def test_mass_service_advertises_webserver_publish_addresses(
         await mass_minimal.discovery._register_mass_service()
 
     assert mock_service_info.call_args.kwargs["addresses"] == [b"192.168.1.10", b"fd00::10"]
+
+
+async def test_refresh_mdns_browser_follows_registered_manifests(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A refresh replaces the mDNS browser by one for the manifests registered at that time."""
+    mass_minimal.discovery._aiozc = MagicMock()
+    mass_minimal._provider_manifests["first"] = MagicMock(mdns_discovery=["_first._tcp.local."])
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceBrowser"
+    ) as mock_browser:
+        first_browser = MagicMock(async_cancel=AsyncMock())
+        mock_browser.return_value = first_browser
+        await mass_minimal.discovery.refresh_mdns_browser()
+        assert mock_browser.call_args.args[1] == ["_first._tcp.local."]
+
+        del mass_minimal._provider_manifests["first"]
+        mass_minimal._provider_manifests["second"] = MagicMock(
+            mdns_discovery=["_second._tcp.local."]
+        )
+        mock_browser.return_value = MagicMock(async_cancel=AsyncMock())
+        await mass_minimal.discovery.refresh_mdns_browser()
+
+    first_browser.async_cancel.assert_awaited_once()
+    assert mock_browser.call_args.args[1] == ["_second._tcp.local."]
+    assert mass_minimal.discovery._mdns_browser is mock_browser.return_value
 
 
 async def test_mass_service_refreshes_on_core_state_update(

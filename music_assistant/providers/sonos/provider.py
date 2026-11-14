@@ -208,8 +208,10 @@ class SonosPlayerProvider(PlayerProvider):
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
         if self.mass.players.get_player(player_id):
-            msg = f"Player {player_id} already exists"
-            raise ValueError(msg)
+            # set up in the meantime: this announcement arrived while an earlier
+            # setup (mdns or manual IP) was still running
+            self.logger.debug("Ignoring %s in discovery as it is already set up.", name)
+            return
         if self._ignore_disabled_discovery(player_id, name):
             return
         address = get_primary_ip_address(info)

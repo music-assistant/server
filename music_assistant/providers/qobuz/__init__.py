@@ -6,10 +6,10 @@ import asyncio
 import datetime
 import hashlib
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from datetime import UTC
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
 
 from aiohttp import client_exceptions
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -36,12 +36,16 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -61,9 +65,12 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
     ThrottlerManager,
     parse_retry_after,
+    request_priority,
     throttle_with_retries,
 )
 from music_assistant.helpers.util import (
@@ -94,6 +101,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
@@ -101,13 +109,61 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.TRACK_BY_EXTERNAL_ID,
     ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 VARIOUS_ARTISTS_ID = "145383"
 # Bump when the shape of parsed artists, albums or tracks changes, so cached items are re-parsed
-PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v1"
+PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v2"
 
 CONF_QUALITY = "quality"
+
+
+class QobuzRecommendationRow(NamedTuple):
+    """A Discover row backed by a Qobuz album list."""
+
+    # album/getFeatured list type, None for rows backed by another endpoint
+    featured_type: str | None
+    name: str
+    icon: str
+    translation_key: str | None
+    enabled_by_default: bool = False
+
+
+# Discover row with the latest releases of the user's favorite artists
+FAVORITE_ARTIST_RELEASES_ROW = "favorite_artist_releases"
+# Discover rows, keyed on their (stable) row id
+RECOMMENDATION_ROWS = {
+    FAVORITE_ARTIST_RELEASES_ROW: QobuzRecommendationRow(
+        None,
+        "New From Your Artists",
+        "mdi-account-music",
+        "favorite_artist_releases",
+        enabled_by_default=True,
+    ),
+    "new_releases": QobuzRecommendationRow(
+        "new-releases", "New Releases", "mdi-new-box", "new_releases", enabled_by_default=True
+    ),
+    "best_sellers": QobuzRecommendationRow(
+        "best-sellers", "Best Sellers", "mdi-chart-line", "best_sellers"
+    ),
+    "most_streamed": QobuzRecommendationRow(
+        "most-streamed", "Most Streamed", "mdi-trending-up", "most_streamed"
+    ),
+    "press_awards": QobuzRecommendationRow(
+        "press-awards", "Press Awards", "mdi-trophy", "press_awards"
+    ),
+    "editor_picks": QobuzRecommendationRow(
+        "editor-picks", "Editor's Picks", "mdi-star", "editor_picks", enabled_by_default=True
+    ),
+    # "qobuzissims" is the actual API type value; Qobuzissime is a brand name, so not translated
+    "qobuzissime": QobuzRecommendationRow(
+        "qobuzissims", "Qobuzissime", "mdi-star-circle", translation_key=None
+    ),
+    "ideal_discography": QobuzRecommendationRow(
+        "ideal-discography", "Ideal Discography", "mdi-bookshelf", "ideal_discography"
+    ),
+}
 
 _LookupItemT = TypeVar("_LookupItemT", Track, Album)
 
@@ -243,6 +299,7 @@ class QobuzProvider(MusicProvider):
     @use_cache(3600 * 24 * 30, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        _require_qobuz_artist_id(prov_artist_id)
         params: dict[str, Any] = {"artist_id": prov_artist_id}
         artist_obj = await self._get_data("artist/get", **params)
         if artist_obj and artist_obj.get("id"):
@@ -386,6 +443,8 @@ class QobuzProvider(MusicProvider):
     )  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
+        if not _is_qobuz_artist_id(prov_artist_id):
+            return []
         result = await self._get_data(
             "artist/get",
             artist_id=prov_artist_id,
@@ -411,6 +470,8 @@ class QobuzProvider(MusicProvider):
     )  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
+        if not _is_qobuz_artist_id(prov_artist_id):
+            return []
         result = await self._get_data(
             "artist/get",
             artist_id=prov_artist_id,
@@ -443,10 +504,41 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id=row_id,
+                provider=self.instance_id,
+                name=row.name,
+                translation_key=row.translation_key,
+                icon=row.icon,
+                enabled_by_default=row.enabled_by_default,
+            )
+            for row_id, row in RECOMMENDATION_ROWS.items()
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == FAVORITE_ARTIST_RELEASES_ROW:
+            return UniqueList(await self._get_favorite_artist_releases())
+        row = RECOMMENDATION_ROWS.get(item_id)
+        if not row or not row.featured_type:
+            return UniqueList()
+        return UniqueList(await self._get_featured_albums(row.featured_type))
+
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         result = None
         if item.media_type == MediaType.ARTIST:
+            if not _is_qobuz_artist_id(item.item_id):
+                return False
             result = await self._get_data("favorite/create", artist_id=item.item_id)
         elif item.media_type == MediaType.ALBUM:
             result = await self._get_data("favorite/create", album_ids=item.item_id)
@@ -460,6 +552,8 @@ class QobuzProvider(MusicProvider):
         """Remove item from library."""
         result = None
         if media_type == MediaType.ARTIST:
+            if not _is_qobuz_artist_id(prov_item_id):
+                return False
             result = await self._get_data("favorite/delete", artist_ids=prov_item_id)
         elif media_type == MediaType.ALBUM:
             result = await self._get_data("favorite/delete", album_ids=prov_item_id)
@@ -508,6 +602,57 @@ class QobuzProvider(MusicProvider):
             playlist_track_ids=",".join(playlist_track_ids),
         )
 
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
+        """
+        await self.move_playlist_tracks(prov_playlist_id, [from_position], to_position)
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based. None
+            moves the tracks to the end of the playlist.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        items = await self._get_all_items(
+            "playlist/get", key="tracks", playlist_id=prov_playlist_id, extra="tracks"
+        )
+        if to_position is None:
+            to_position = len(items) - len(positions) + 1
+        selected = validate_playlist_block_move(len(items), positions, to_position)
+        if selected == list(range(to_position, to_position + len(selected))):
+            return
+        insert_before = _insert_before(len(items), selected, to_position)
+        self.logger.debug(
+            "Moving positions %s of playlist %s to position %s (insert_before=%s)",
+            selected,
+            prov_playlist_id,
+            to_position,
+            insert_before,
+        )
+        # one request moves the whole block, however many tracks it holds
+        await self._get_data(
+            "playlist/updateTracksPosition",
+            playlist_id=prov_playlist_id,
+            playlist_track_ids=",".join(
+                str(items[pos - 1]["playlist_track_id"]) for pos in selected
+            ),
+            insert_before=insert_before,
+        )
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         max_quality = int(cast("str", self.config.get_value(CONF_QUALITY)) or "27")
@@ -540,7 +685,6 @@ class QobuzProvider(MusicProvider):
         else:
             msg = f"Unsupported mime type for {item_id}"
             raise MediaNotFoundError(msg)
-        self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
@@ -557,6 +701,13 @@ class QobuzProvider(MusicProvider):
             allow_seek=True,
         )
 
+    async def on_stream_started(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Handle callback when an item started streaming."""
+        await self._report_playback_started(streamdetails.data)
+
     async def on_streamed(
         self,
         streamdetails: StreamDetails,
@@ -566,13 +717,12 @@ class QobuzProvider(MusicProvider):
             msg = "User auth info not available"
             raise LoginFailed(msg)
         user_id = self._user_auth_info["user"]["id"]
-        async with self.throttler.bypass():
-            await self._get_data(
-                "track/reportStreamingEnd",
-                user_id=user_id,
-                track_id=str(streamdetails.item_id),
-                duration=try_parse_int(streamdetails.seconds_streamed),
-            )
+        await self._get_data(
+            "track/reportStreamingEnd",
+            user_id=user_id,
+            track_id=str(streamdetails.item_id),
+            duration=try_parse_int(streamdetails.seconds_streamed),
+        )
 
     async def _report_playback_started(self, streamdata: dict[str, Any]) -> None:
         """Report playback start to qobuz."""
@@ -601,7 +751,7 @@ class QobuzProvider(MusicProvider):
                 "format_id": format_id,
             }
         ]
-        async with self.throttler.bypass():
+        with request_priority(RequestPriority.LOW):
             await self._post_data("track/reportStreamingStart", data=events)
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
@@ -609,7 +759,7 @@ class QobuzProvider(MusicProvider):
         artist = Artist(
             item_id=str(artist_obj["id"]),
             provider=self.instance_id,
-            name=artist_obj["name"],
+            name=artist_obj["name"].strip(),
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist_obj["id"]),
@@ -766,7 +916,7 @@ class QobuzProvider(MusicProvider):
                 if ", " not in performer_str:
                     continue
                 role = performer_str.split(", ")[1]
-                name = performer_str.split(", ")[0]
+                name = performer_str.split(", ")[0].strip()
                 if "artist" in role.lower():
                     artist = Artist(
                         item_id=name,
@@ -788,7 +938,7 @@ class QobuzProvider(MusicProvider):
             if album:
                 track.album = album
         if track_obj.get("performers"):
-            track.metadata.performers = {x.strip() for x in track_obj["performers"].split("-")}
+            track.metadata.performers = {x.strip() for x in track_obj["performers"].split(" - ")}
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
         if track_obj.get("parental_warning"):
@@ -845,6 +995,51 @@ class QobuzProvider(MusicProvider):
         if timestamp := playlist_obj.get("subscribed_at") or playlist_obj.get("created_at"):
             playlist.date_added = datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
         return playlist
+
+    @use_cache(
+        3600 * 6, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 6 hours
+    async def _get_featured_albums(self, featured_type: str) -> list[Album]:
+        """
+        Get the albums of a Qobuz editorial list.
+
+        :param featured_type: The Qobuz featured album type, e.g. 'press-awards'.
+        """
+        result = await self._get_data("album/getFeatured", type=featured_type, limit=50)
+        if not result:
+            return []
+        return await self._parse_recommended_albums(result.get("albums", {}).get("items", []))
+
+    @use_cache(
+        3600 * 6, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 6 hours
+    async def _get_favorite_artist_releases(self) -> list[Album]:
+        """Get the latest releases of the user's favorite artists, newest first."""
+        result = await self._get_data("favorite/getNewReleases", type="artists", limit=50)
+        if not result:
+            return []
+        return await self._parse_recommended_albums(
+            [_flatten_album_obj(item) for item in result.get("items", []) if item]
+        )
+
+    async def _parse_recommended_albums(self, album_objs: list[dict[str, Any]]) -> list[Album]:
+        """
+        Parse the albums of a recommendation row, leaving out the ones that cannot be used.
+
+        :param album_objs: Qobuz album objects.
+        """
+        # skip items without artist, as _parse_album would fetch each of those in full,
+        # and unplayable (e.g. purchase-only or region-blocked) releases
+        required_keys = ("id", "artist", "streamable", "displayable")
+        albums: list[Album] = []
+        for item in album_objs:
+            if not item or not all(item.get(key) for key in required_keys):
+                continue
+            try:
+                albums.append(await self._parse_album(item))
+            except (KeyError, TypeError) as err:
+                self.logger.debug("Skipping recommended album %s: %s", item["id"], err)
+        return albums
 
     async def _get_item_by_external_id(
         self,
@@ -928,7 +1123,6 @@ class QobuzProvider(MusicProvider):
             kwargs["limit"] = limit
             kwargs["offset"] = offset
             result = await self._get_data(endpoint, **kwargs)
-            offset += limit
             if not result:
                 break
             if not result.get(key) or not result[key].get("items"):
@@ -936,6 +1130,7 @@ class QobuzProvider(MusicProvider):
             all_items.extend(result[key]["items"])
             total = result[key].get("total", 0)
             items_received = len(result[key]["items"])
+            offset += items_received
             if items_received < limit:
                 # If the API returned fewer items than requested but reports more exist,
                 # the server silently capped our limit. Continue paginating.
@@ -946,7 +1141,7 @@ class QobuzProvider(MusicProvider):
 
     @throttle_with_retries
     async def _get_data(
-        self, endpoint: str, sign_request: bool = False, **kwargs: Any
+        self, /, endpoint: str, sign_request: bool = False, **kwargs: Any
     ) -> dict[str, Any] | None:
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)
@@ -1079,3 +1274,62 @@ class QobuzProvider(MusicProvider):
         if obj.get("artist"):
             return self.__get_image(obj["artist"])
         return None
+
+
+def _is_qobuz_artist_id(item_id: str) -> bool:
+    """
+    Return whether an artist id is a Qobuz artist id.
+
+    An artist Qobuz names without an id has its name as its id, which must never be sent to the
+    API.
+
+    :param item_id: The provider item id of the artist.
+    """
+    return item_id.isdecimal()
+
+
+def _require_qobuz_artist_id(item_id: str) -> None:
+    """
+    Raise MediaNotFoundError for an artist id that cannot exist on Qobuz, without a request.
+
+    :param item_id: The provider item id of the artist.
+    """
+    if not _is_qobuz_artist_id(item_id):
+        raise MediaNotFoundError(f"{item_id} is not a Qobuz artist id")
+
+
+def _flatten_album_obj(album_obj: dict[str, Any]) -> dict[str, Any]:
+    """
+    Flatten an album from favorite/getNewReleases into the format the other endpoints return.
+
+    :param album_obj: Album object with its artists, rights, audio_info and dates nested.
+    """
+    rights = album_obj.get("rights") or {}
+    audio_info = album_obj.get("audio_info") or {}
+    flat_obj = {
+        **album_obj,
+        # the main artist is listed first
+        "artist": (album_obj.get("artists") or [None])[0],
+        "streamable": rights.get("streamable"),
+        # this format has no displayable flag, so streamable stands in for it
+        "displayable": rights.get("streamable"),
+        "maximum_sampling_rate": audio_info.get("maximum_sampling_rate"),
+        "maximum_bit_depth": audio_info.get("maximum_bit_depth"),
+    }
+    if release_date := (album_obj.get("dates") or {}).get("original"):
+        with suppress(ValueError, TypeError):
+            flat_obj["released_at"] = (
+                datetime.datetime.fromisoformat(release_date).replace(tzinfo=UTC).timestamp()
+            )
+    return flat_obj
+
+
+def _insert_before(length: int, selected: list[int], to_position: int) -> int:
+    """Return the Qobuz insert_before value that puts the selected positions at to_position."""
+    # The Qobuz API is unofficial: insert_before follows the web player, a 1-based position
+    # in the playlist as it is before the move. The counting lives in this function only.
+    chosen = set(selected)
+    rest = [pos for pos in range(1, length + 1) if pos not in chosen]
+    if to_position - 1 < len(rest):
+        return rest[to_position - 1]
+    return length + 1

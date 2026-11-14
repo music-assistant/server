@@ -10,19 +10,19 @@ CONF_VIRTUAL_PLAYER_OWNER = "virtual_player_owner"
 DEFAULT_SENDSPIN_STATIC_DELAY = 0
 
 CONF_ALLOW_LEGACY_CLIENTS = "allow_legacy_clients"
-CONF_MIN_PIN_LENGTH = "min_pin_length"
-DEFAULT_MIN_PIN_LENGTH = 4
 
 # Pairing method the setup flow lets the user pick between.
 CONF_PAIRING_METHOD = "pairing_method"
-CONF_PAIRING_TOKEN = "pairing_token"
+CONF_PAIRING_TOKEN = "pairing_token"  # noqa: S105 - config key
 PAIR_METHOD_PIN = "pin"
 PAIR_METHOD_DYNAMIC_PIN = "dynamic_pin"
 PAIR_METHOD_STATIC_PIN = "static_pin"
-PAIR_METHOD_TOKEN = "token"
+PAIR_METHOD_TOKEN = "token"  # noqa: S105 - auth method name
 # The consent step's choice between connecting straight away and pairing first.
 CONF_CONNECT_METHOD = "connect_method"
 CONNECT_METHOD_UNPAIRED = "unpaired"
+CONNECT_METHOD_UNPAIRED_WITH_INPUT = "unpaired_with_input"
+CONNECT_METHOD_UNPAIRED_WITHOUT_INPUT = "unpaired_without_input"
 CONNECT_METHOD_PAIR = "pair"
 
 # The setup flow step for a device whose audio input awaits a decision.
@@ -30,11 +30,13 @@ CONF_SOURCE_INPUT_ACTION = "source_input_action"
 SOURCE_INPUT_PAIR = "pair"
 SOURCE_INPUT_DISMISS = "dismiss"
 # Persisted (raw player config) marker that the user declined the audio input.
-CONF_SOURCE_APPROVAL_DISMISSED = "source_approval_dismissed"
+CONF_SOURCE_INPUT_DECLINED = "source_input_declined"
 
 CONF_PAIRING_PIN = "pairing_pin"
 
 CONF_ACTION_UNPAIR = "unpair"
+CONF_ACTION_SOURCE_INPUT_ENABLE = "source_input_enable"
+CONF_ACTION_SOURCE_INPUT_DISABLE = "source_input_disable"
 
 CONF_ACTION_MANAGEMENT_ENTER = "management_enter"
 CONF_ACTION_MANAGEMENT_EXIT = "management_exit"

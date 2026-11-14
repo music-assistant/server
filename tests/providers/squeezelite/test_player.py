@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, RepeatMode
+from aioslimproto.models import EventType as SlimEventType
+from aioslimproto.models import PlayerState as SlimPlayerState
+from aioslimproto.models import SlimEvent
+from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -14,8 +20,17 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     CONF_PREFER_WAV_FOR_LIVE_SOURCES,
 )
+from music_assistant.providers.squeezelite.constants import (
+    CONF_ENTRY_DISPLAY,
+    CONF_ENTRY_VISUALIZATION,
+    CONF_STORED_VOLUME,
+    DEFAULT_PLAYER_VOLUME,
+)
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer, is_protocol_only_device
 from tests.common import use_real_create_task
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
 
 
 async def test_squeezelite_prefers_wav_for_live_sources_by_default() -> None:
@@ -101,13 +116,14 @@ def test_group_regular_track_ignores_wav_preference() -> None:
     [
         (MediaType.RADIO, (64, 1)),
         (MediaType.AUDIO_SOURCE, (64, 1)),
+        (MediaType.ANNOUNCEMENT, (64, 1)),
         (MediaType.TRACK, (200, 20)),
     ],
 )
 async def test_live_streams_start_on_a_smaller_buffer(
     media_type: MediaType, expected: tuple[int, int]
 ) -> None:
-    """Radio and AudioSource streams start on a smaller buffer, also when repeated."""
+    """Radio, AudioSource and announcement streams start on a smaller buffer, also when repeated."""
     player, mass = _player_with_mocked_mass()
     player._extra_data = {}
     mass.player_queues.get.return_value = MagicMock(
@@ -203,6 +219,7 @@ async def test_grouped_play_media_passes_per_member_mime_type() -> None:
     player._player_id = "leader"
     player._attr_group_members = ["leader", "member_flac", "member_mp3"]
     player.multi_client_stream = None
+    player.client = MagicMock(elapsed_seconds=0)
     use_real_create_task(mass)
 
     mass.player_queues.get_item.return_value = None
@@ -241,3 +258,177 @@ async def test_grouped_play_media_passes_per_member_mime_type() -> None:
     flac_client, mp3_client = clients
     assert flac_client.play_url.call_args.kwargs["mime_type"] == "audio/flac"
     assert mp3_client.play_url.call_args.kwargs["mime_type"] == "audio/mpeg"
+
+
+async def test_regroup_supersedes_pending_resume() -> None:
+    """A member removed and re-added while the leader is busy restarts the leader once."""
+    player, mass = _player_with_mocked_mass()
+    player._player_id = "leader"
+    player._attr_group_members = ["leader", "member"]
+    player._attr_playback_state = PlaybackState.PLAYING
+    use_real_create_task(mass)
+    member = MagicMock()
+    member.player_id = "member"
+    # the mock is both the member's sync client and the member player
+    member.state = member.client.state = SlimPlayerState.STOPPED
+    mass.players.get_player.return_value = member
+    # the playback lock an announcement holds on the leader while it plays
+    leader_busy = asyncio.Event()
+    resumed: list[str] = []
+
+    async def _cmd_resume(player_id: str) -> None:
+        await leader_busy.wait()
+        resumed.append(player_id)
+
+    mass.players.cmd_resume = _cmd_resume
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(SqueezelitePlayer, "state", new_callable=PropertyMock),
+        patch.object(player, "_get_sync_clients", return_value=[member]),
+        patch.object(player, "update_state"),
+    ):
+        await player.set_members(player_ids_to_remove=["member"])
+        await player.set_members(player_ids_to_add=["member"])
+        leader_busy.set()
+        await asyncio.gather(*mass._tracked_tasks.values(), return_exceptions=True)
+
+    assert resumed == ["leader"]
+
+
+async def test_play_media_resets_elapsed_anchor() -> None:
+    """A new stream does not carry the previous stream's position."""
+    player, mass = _player_with_mocked_mass()
+    player.multi_client_stream = None
+    player.client = MagicMock(elapsed_seconds=0)
+    player._provider = MagicMock(mass=mass)
+    player._attr_elapsed_time = 3.9
+    player._attr_elapsed_time_last_updated = time.time() - 4
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
+        ),
+        patch.object(SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="p1"),
+        patch.object(player, "_handle_play_url_for_slimplayer", new=AsyncMock()),
+        patch.object(player, "update_attributes"),
+        patch.object(player, "update_state"),
+    ):
+        await player.play_media(
+            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+        )
+
+    assert player._attr_elapsed_time == 0
+    assert time.time() - player._attr_elapsed_time_last_updated < 1
+
+
+async def test_play_media_drops_heartbeat_from_before_the_flush() -> None:
+    """An old-stream heartbeat that lands before the flush does not survive the restart."""
+    player, mass = _player_with_mocked_mass()
+    player.multi_client_stream = None
+    player._extra_data = {}
+    player.client = client = MagicMock(elapsed_seconds=0)
+    client.play_url = AsyncMock()
+    player._provider = MagicMock(mass=mass)
+    mass.player_queues.get.return_value = None
+
+    async def _resolve_with_heartbeat(*_args: object) -> str:
+        player._attr_elapsed_time = 3.9
+        return "http://127.0.0.1:8097/x.flac"
+
+    mass.streams.resolve_stream_url = _resolve_with_heartbeat
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
+        ),
+        patch.object(SqueezelitePlayer, "player_id", new_callable=PropertyMock, return_value="p1"),
+    ):
+        await player.play_media(
+            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+        )
+
+    assert player._attr_elapsed_time == 0
+
+
+def _player_for_volume_restore(
+    stored: dict[str, object], legacy_cache: list[object] | None
+) -> tuple[SqueezelitePlayer, MagicMock]:
+    """Return a player whose stored config values and legacy cache entry are mocked."""
+    player, mass = _player_with_mocked_mass()
+    player._player_id = "p1"
+    player._provider = MagicMock(mass=mass, instance_id="squeezelite_1")
+    player.logger = MagicMock()
+    player.client = MagicMock(player_id="p1", muted=False, volume_level=20)
+    player.client.stop = AsyncMock()
+    player.client.mute = AsyncMock()
+    player.client.volume_set = AsyncMock(
+        side_effect=lambda level: setattr(player.client, "volume_level", level)
+    )
+    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, key, default=None: (
+        stored.get(key, default)
+    )
+    mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+        stored.__setitem__(key, value)
+    )
+    mass.cache.get = AsyncMock(return_value=legacy_cache)
+    mass.players.register_or_update = AsyncMock()
+    return player, mass
+
+
+@pytest.mark.parametrize(
+    ("stored", "legacy_cache", "expected_volume"),
+    [
+        # volume mapped to an AVR: the provider never sends volume commands, so the
+        # cache entry expired, but the stored value must still be restored
+        ({CONF_STORED_VOLUME: 100}, None, 100),
+        ({CONF_STORED_VOLUME: 35}, [False, 80], 35),
+        # stored before the volume moved out of the cache
+        ({}, [True, 55], 55),
+        ({}, None, DEFAULT_PLAYER_VOLUME),
+    ],
+)
+async def test_setup_restores_volume_without_a_valid_cache_entry(
+    stored: dict[str, object],
+    legacy_cache: list[object] | None,
+    expected_volume: int,
+) -> None:
+    """Reconnecting restores the last volume even after the cache entry expired."""
+    player, mass = _player_for_volume_restore(stored, legacy_cache)
+
+    with patch.object(player, "update_attributes"):
+        await player.setup()
+
+    client = cast("MagicMock", player.client)
+    client.mute.assert_not_called()
+    client.volume_set.assert_awaited_once_with(expected_volume)
+    mass.players.register_or_update.assert_awaited_once_with(player)
+    assert stored[CONF_STORED_VOLUME] == expected_volume
+
+
+async def test_volume_changed_on_the_player_is_stored() -> None:
+    """A volume change made on the player itself (e.g. JiveLite) is kept for the next connect."""
+    stored: dict[str, object] = {}
+    player, mass = _player_for_volume_restore(stored, None)
+    with patch.object(player, "update_attributes"), patch.object(player, "update_state"):
+        await player.setup()
+        mass.config.set_raw_player_config_value.reset_mock()
+        event = SlimEvent(type=SlimEventType.PLAYER_UPDATED, player_id="p1")
+
+        cast("MagicMock", player.client).volume_level = 65
+        player.handle_slim_event(event)
+        assert stored[CONF_STORED_VOLUME] == 65
+
+        player.handle_slim_event(event)
+        mass.config.set_raw_player_config_value.assert_called_once()
+
+
+@pytest.mark.parametrize("entry", [CONF_ENTRY_DISPLAY, CONF_ENTRY_VISUALIZATION])
+def test_the_settings_entries_of_a_player_can_be_serialized(entry: ConfigEntry) -> None:
+    """The settings page of a player turns its entries into a dict, which a bad default breaks."""
+    entry.to_dict()
+    if entry.options:
+        assert entry.default_value in {option.value for option in entry.options}

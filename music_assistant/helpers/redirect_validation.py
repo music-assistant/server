@@ -30,6 +30,7 @@ def is_allowed_redirect_url(
     url: str,
     request: web.Request | None = None,
     base_url: str | None = None,
+    external_url: str | None = None,
 ) -> tuple[bool, str]:
     """
     Validate if a redirect URL is allowed for OAuth/auth flows.
@@ -39,13 +40,14 @@ def is_allowed_redirect_url(
     2. Same origin as the request - auto-allowed (trusted)
     3. Localhost (127.0.0.1, ::1, localhost) - auto-allowed (trusted)
     4. Private network IPs (RFC 1918) - auto-allowed (trusted)
-    5. Configured base_url - auto-allowed (trusted)
+    5. Configured base_url or external_url - auto-allowed (trusted)
     6. Matches allowed redirect patterns - auto-allowed (trusted)
     7. Everything else - requires user consent (external)
 
     :param url: The redirect URL to validate.
     :param request: Optional aiohttp request to compare origin.
     :param base_url: Optional configured base URL to allow.
+    :param external_url: Optional configured External URL to allow.
     :return: Tuple of (is_valid, category) where category is:
         - "trusted": Auto-allowed, no consent needed
         - "external": Valid but requires user consent
@@ -90,11 +92,17 @@ def is_allowed_redirect_url(
             LOGGER.debug("Redirect URL trusted (private IP): %s", url)
             return True, "trusted"
 
-        # 4. Configured base_url - always trusted
+        # 4. Configured base_url or external_url - always trusted
         if base_url:
             base_parsed = urlparse(base_url)
             if parsed.netloc == base_parsed.netloc:
                 LOGGER.debug("Redirect URL trusted (base_url): %s", url)
+                return True, "trusted"
+        if external_url:
+            external_parsed = urlparse(external_url)
+            # match the scheme too, the token must not travel over plain http on the internet
+            if (parsed.scheme, parsed.netloc) == (external_parsed.scheme, external_parsed.netloc):
+                LOGGER.debug("Redirect URL trusted (external_url): %s", url)
                 return True, "trusted"
 
         # If we get here, URL is external and requires user consent

@@ -5,17 +5,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from copy import deepcopy
 from typing import Any
 
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.providers.ai_radio.constants import DEFAULT_LLM_INSTRUCTIONS
-from music_assistant.providers.ai_radio.hosts import AIRadioHostsMixin
+from music_assistant.providers.ai_radio.constants import (
+    DEFAULT_LLM_INSTRUCTIONS,
+    EVENT_HOSTS_UPDATED,
+)
+from music_assistant.providers.ai_radio.hosts import (
+    PRESET_HOSTS,
+    AIRadioHostsMixin,
+    _compile_preset_host,
+    _preset_content_hash,
+)
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
+from .events import ProviderEventRecorder
 
-class DummyHosts(AIRadioHostsMixin, AIRadioStorageMixin):
+
+class DummyHosts(ProviderEventRecorder, AIRadioHostsMixin, AIRadioStorageMixin):
     """Minimal harness combining host and storage helpers."""
 
     def __init__(self) -> None:
@@ -583,3 +594,216 @@ def test_music_nerd_preset_compiles_its_recurring_segments_as_optional() -> None
             ],
         },
     ]
+
+
+def test_write_hosts_emits_a_hosts_hint(tmp_path: Any) -> None:
+    """Persisting the hosts announces a refetch hint."""
+    dummy = DummyHosts()
+    dummy._hosts_file = tmp_path / "hosts.json"
+    dummy._hosts = {"rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""}}
+
+    asyncio.run(dummy._write_hosts())
+
+    assert dummy.provider_events == [{"event": EVENT_HOSTS_UPDATED}]
+
+
+def _preset(host_id: str) -> Any:
+    return next(preset for preset in PRESET_HOSTS if preset.host_id == host_id)
+
+
+def _age_preset_copy(dummy: DummyHosts, host_id: str) -> None:
+    """Rewrite a seeded copy to look like an untouched seed of an older bundle."""
+    host = dummy._hosts[host_id]
+    host["instructions"] = "Old instructions."
+    dummy._sections[host["section_ids"][0]]["prompt"] = "Old prompt."
+    host["preset_hash"] = _preset_content_hash(host, dummy._sections)
+
+
+def test_seed_preset_hosts_tags_every_host(tmp_path: Any) -> None:
+    """Tag each seeded host with its preset id and the hash of its stored content."""
+    dummy = _preset_dummy(tmp_path)
+
+    asyncio.run(dummy._seed_preset_hosts())
+
+    for host in dummy._hosts.values():
+        assert host["preset_id"] == host["id"]
+        assert host["preset_hash"] == _preset_content_hash(host, dummy._sections)
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        {"preset_id": "morning_show"},
+        {"preset_hash": "abc"},
+        {"preset_id": " ", "preset_hash": "abc"},
+    ],
+)
+def test_normalize_host_drops_incomplete_preset_tag(tag: dict[str, str]) -> None:
+    """Emit neither preset key unless both are present and non-blank."""
+    dummy = DummyHosts()
+    dummy._sections = {"Song_Transition": _section("Song_Transition")}
+    normalized = dummy._normalize_host({**_host(["Song_Transition"]), **tag})
+    assert "preset_id" not in normalized
+    assert "preset_hash" not in normalized
+
+
+def test_refresh_updates_untouched_copy_of_older_bundle(tmp_path: Any) -> None:
+    """Bring an untouched old copy back to the bundled wording, keeping name and voice."""
+    dummy = _preset_dummy(tmp_path)
+    asyncio.run(dummy._seed_preset_hosts())
+    host = dummy._hosts["morning_show"]
+    host.update(
+        {"name": "My mornings", "tts_engine": "tts.piper", "language": "nl_NL", "options": {"x": 1}}
+    )
+    _age_preset_copy(dummy, "morning_show")
+    dummy.provider_events = []
+
+    asyncio.run(dummy._refresh_preset_hosts())
+
+    fresh_host, fresh_sections = _compile_preset_host(_preset("morning_show"))
+    host = dummy._hosts["morning_show"]
+    assert host["instructions"] == fresh_host["instructions"]
+    assert dummy._sections["morning_show_intro"] == fresh_sections[0]
+    assert host["name"] == "My mornings"
+    assert host["tts_engine"] == "tts.piper"
+    assert host["language"] == "nl_NL"
+    assert host["options"] == {"x": 1}
+    assert host["preset_hash"] == fresh_host["preset_hash"]
+    assert len(dummy.provider_events) == 2
+    stored = json.loads(dummy._hosts_file.read_text())["hosts"]
+    assert next(item for item in stored if item["id"] == "morning_show") == host
+
+
+def test_refresh_freezes_edited_copy(tmp_path: Any) -> None:
+    """Strip the preset tag from a copy the user edited and leave its content alone."""
+    dummy = _preset_dummy(tmp_path)
+    asyncio.run(dummy._seed_preset_hosts())
+    dummy._hosts["morning_show"]["instructions"] = "My own instructions."
+    dummy._sections["morning_show_intro"]["prompt"] = "My own prompt."
+
+    asyncio.run(dummy._refresh_preset_hosts())
+
+    host = dummy._hosts["morning_show"]
+    assert "preset_id" not in host
+    assert "preset_hash" not in host
+    assert host["instructions"] == "My own instructions."
+    assert dummy._sections["morning_show_intro"]["prompt"] == "My own prompt."
+
+
+def test_refresh_updates_menu_copy_under_other_id(tmp_path: Any) -> None:
+    """Refresh a copy added from the preset menu under its own host id."""
+    dummy = _preset_dummy(tmp_path)
+    copy_host, copy_sections = _compile_preset_host(_preset("morning_show"), "morning_show_2")
+    assert copy_host["merge_section_id"] == "morning_show_2_smoother"
+    for section in copy_sections:
+        dummy._sections[section["id"]] = deepcopy(section)
+    dummy._hosts["morning_show_2"] = deepcopy(copy_host)
+    _age_preset_copy(dummy, "morning_show_2")
+
+    asyncio.run(dummy._refresh_preset_hosts())
+
+    host = dummy._hosts["morning_show_2"]
+    assert host["instructions"] == copy_host["instructions"]
+    assert dummy._sections["morning_show_2_intro"] == copy_sections[0]
+    assert host["preset_hash"] == _preset_content_hash(host, dummy._sections)
+    assert host["preset_id"] == "morning_show"
+
+
+@pytest.mark.parametrize("still_referenced", [False, True])
+def test_refresh_removes_stale_section_unless_referenced(
+    tmp_path: Any, still_referenced: bool
+) -> None:
+    """Delete a section only the old copy used, but keep one another host still lists."""
+    dummy = _preset_dummy(tmp_path)
+    asyncio.run(dummy._seed_preset_hosts())
+    dummy._sections["morning_show_traffic"] = _section("morning_show_traffic")
+    dummy._hosts["morning_show"]["section_ids"].append("morning_show_traffic")
+    if still_referenced:
+        other = dummy._normalize_host(_host(["morning_show_traffic"]))
+        dummy._hosts[other["id"]] = other
+    _age_preset_copy(dummy, "morning_show")
+
+    asyncio.run(dummy._refresh_preset_hosts())
+
+    assert "morning_show_traffic" not in dummy._hosts["morning_show"]["section_ids"]
+    assert ("morning_show_traffic" in dummy._sections) is still_referenced
+
+
+def test_refresh_strips_unknown_preset_id(tmp_path: Any) -> None:
+    """Untag a host whose preset is no longer bundled."""
+    dummy = _preset_dummy(tmp_path)
+    asyncio.run(dummy._seed_preset_hosts())
+    dummy._hosts["morning_show"]["preset_id"] = "retired_preset"
+
+    asyncio.run(dummy._refresh_preset_hosts())
+
+    assert "preset_id" not in dummy._hosts["morning_show"]
+    assert "preset_hash" not in dummy._hosts["morning_show"]
+
+
+def test_refresh_after_fresh_seed_writes_nothing(tmp_path: Any) -> None:
+    """Leave a freshly seeded install untouched."""
+    dummy = _preset_dummy(tmp_path)
+    asyncio.run(dummy._seed_preset_hosts())
+    events_before = list(dummy.provider_events)
+
+    asyncio.run(dummy._refresh_preset_hosts())
+
+    assert dummy.provider_events == events_before
+
+
+def _resolve_dummy(host_id: str = "morning_show") -> tuple[DummyHosts, dict[str, Any]]:
+    """Return a harness holding a compiled preset copy, plus that host."""
+    dummy = DummyHosts()
+    host, sections = _compile_preset_host(_preset("morning_show"), host_id)
+    for section in sections:
+        dummy._sections[section["id"]] = section
+    return dummy, host
+
+
+def test_resolve_preset_tag_matches_current_bundle() -> None:
+    """Tag a copy matching the bundle with the bundle's hash."""
+    dummy, host = _resolve_dummy()
+    bundle_hash = host["preset_hash"]
+    host["preset_hash"] = "stale"
+
+    dummy._resolve_preset_tag(host)
+
+    assert host["preset_id"] == "morning_show"
+    assert host["preset_hash"] == bundle_hash
+
+
+def test_resolve_preset_tag_keeps_untouched_older_copy() -> None:
+    """Keep the tag of a copy that still matches the hash it carries."""
+    dummy, host = _resolve_dummy()
+    host["instructions"] = "Old instructions."
+    old_hash = _preset_content_hash(host, dummy._sections)
+    host["preset_hash"] = old_hash
+
+    dummy._resolve_preset_tag(host)
+
+    assert host["preset_hash"] == old_hash
+
+
+def test_resolve_preset_tag_strips_edited_copy() -> None:
+    """Untag a copy that matches neither the bundle nor its carried hash."""
+    dummy, host = _resolve_dummy()
+    host["instructions"] = "My own instructions."
+
+    dummy._resolve_preset_tag(host)
+
+    assert "preset_id" not in host
+    assert "preset_hash" not in host
+
+
+def test_resolve_preset_tag_accepts_menu_copy_under_other_id() -> None:
+    """Tag a menu copy saved under a new id, though it carries the hash from the menu."""
+    dummy, host = _resolve_dummy("morning_show_2")
+    bundle_hash = host["preset_hash"]
+    menu_host, _ = _compile_preset_host(_preset("morning_show"))
+    host["preset_hash"] = menu_host["preset_hash"]
+
+    dummy._resolve_preset_tag(host)
+
+    assert host["preset_id"] == "morning_show"
+    assert host["preset_hash"] == bundle_hash

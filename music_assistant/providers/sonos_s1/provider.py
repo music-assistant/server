@@ -106,11 +106,11 @@ class SonosPlayerProvider(PlayerProvider):
                 await self._setup_player(player)
             except RequestException as err:
                 # player is offline
-                self.logger.debug("Failed to add SonosPlayer %s: %s", player, err)
+                self.logger.debug("Failed to add SonosPlayer %s: %s", ip_address, err)
             except Exception as err:
                 self.logger.warning(
                     "Failed to add SonosPlayer %s: %s",
-                    player,
+                    ip_address,
                     err,
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )

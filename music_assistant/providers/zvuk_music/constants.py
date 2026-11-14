@@ -5,15 +5,12 @@ from __future__ import annotations
 from typing import Final
 
 # Configuration Keys
-CONF_TOKEN: Final[str] = "token"
+CONF_TOKEN: Final[str] = "token"  # noqa: S105 - config key
 CONF_QUALITY: Final[str] = "quality"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
 PLAYLIST_TRACKS_PAGE_SIZE: Final[int] = 50
-# Max tracks to fetch when reading a playlist for modification (e.g. track removal).
-# The Zvuk API has no remove-by-ID endpoint, so we must fetch all tracks and re-upload.
-PLAYLIST_TRACK_FETCH_LIMIT: Final[int] = 10_000
 
 # Quality options
 QUALITY_HIGH: Final[str] = "high"

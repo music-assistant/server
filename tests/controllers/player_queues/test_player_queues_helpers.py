@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
 from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -19,7 +21,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
-from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
@@ -30,11 +32,15 @@ from music_assistant.controllers.player_queues.helpers import (
     handle_play_action,
     has_dynamic_source,
     is_dynamic_source,
+    is_finite_radio,
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.players.constants import SwitchedOffAction
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from music_assistant_models.media_items import MediaItemType
 
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
@@ -54,13 +60,14 @@ def _playlist(*, is_dynamic: bool, name: str = "PL") -> Playlist:
     )
 
 
-def _radio(*, is_dynamic: bool, name: str = "R") -> Radio:
+def _radio(*, is_dynamic: bool, is_endless: bool = True, name: str = "R") -> Radio:
     return Radio(
         item_id=name.lower(),
         provider="test",
         name=name,
         provider_mappings=_PROVIDER_MAPPINGS,
         is_dynamic=is_dynamic,
+        is_endless=is_endless,
     )
 
 
@@ -152,9 +159,39 @@ class TestIsDynamicSource:
         """A non-dynamic (live-stream) radio is not a dynamic source."""
         assert is_dynamic_source(_radio(is_dynamic=False)) is False
 
+    def test_finite_radio(self) -> None:
+        """A finite radio station (e.g. an AI Radio show) does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless=False)) is False
+
+    def test_stream_radio(self) -> None:
+        """A live-stream radio does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless=True)) is False
+
     def test_track(self) -> None:
         """A track is never a dynamic source."""
         assert is_dynamic_source(_track("Song")) is False
+
+
+class TestIsFiniteRadio:
+    """Tests for is_finite_radio."""
+
+    def test_finite_radio(self) -> None:
+        """A non-dynamic, non-endless station is a fixed tracklist."""
+        assert is_finite_radio(_radio(is_dynamic=False, is_endless=False)) is True
+
+    def test_stream_radio(self) -> None:
+        """A live stream never ends, so it is not finite."""
+        assert is_finite_radio(_radio(is_dynamic=False, is_endless=True)) is False
+
+    def test_dynamic_radio(self) -> None:
+        """A dynamic station (endless or finite) is fed on demand, not played as a tracklist."""
+        assert is_finite_radio(_radio(is_dynamic=True, is_endless=True)) is False
+        assert is_finite_radio(_radio(is_dynamic=True, is_endless=False)) is False
+
+    def test_non_radio(self) -> None:
+        """Only radio stations can be finite radios."""
+        assert is_finite_radio(_track("Song")) is False
+        assert is_finite_radio(_playlist(is_dynamic=False)) is False
 
 
 class TestFindDynamicSource:
@@ -232,14 +269,32 @@ class _FakeLock:
 class _FakePlayer:
     def __init__(self, player_id: str) -> None:
         self.player_id = player_id
+        self.display_name = player_id
+        self.offline_by_power_control = False
 
 
 class _FakePlayers:
     def __init__(self, player_ids: set[str]) -> None:
         self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
+        self.locks_held = 0
+        # (player_id, whether a lock was held) for every power on
+        self.powered_on: list[tuple[str, bool]] = []
 
-    def get_group_and_player_lock(self, queue_id: str) -> _FakeLock:
-        return _FakeLock()
+    @contextlib.asynccontextmanager
+    async def get_group_and_player_lock(
+        self, queue_id: str, strict: bool = False
+    ) -> AsyncIterator[None]:
+        self.locks_held += 1
+        try:
+            yield
+        finally:
+            self.locks_held -= 1
+
+    async def _power_on_switched_off_player(self, player_id: str) -> _FakePlayer:
+        self.powered_on.append((player_id, self.locks_held > 0))
+        player = self._players[player_id]
+        player.offline_by_power_control = False
+        return player
 
     def get_player(self, player_id: str) -> _FakePlayer | None:
         return self._players.get(player_id)
@@ -304,6 +359,40 @@ async def _boom(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: AR
     raise RuntimeError("boom")
 
 
+@handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
+async def _start_playback(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action that starts playback."""
+    return "playing"
+
+
+@handle_play_action(switched_off=SwitchedOffAction.POWER_ON)
+async def _record_while_playing(
+    self: PlayerQueuesController, queue_id: str, sink: list[tuple[bool, int]]
+) -> str:
+    """Stand in for an action that starts playback, recording the flag and refcount of its queue."""
+    sink.append((_flag_value(self, queue_id), self._queue_data[queue_id].play_action_refcount))
+    return "playing"
+
+
+@handle_play_action(switched_off=SwitchedOffAction.IGNORE)
+async def _ignored(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action with nothing to do on a switched off player."""
+    return "ran"
+
+
+@handle_play_action(switched_off=SwitchedOffAction.RUN)
+async def _run_as_is(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action that handles a switched off player itself."""
+    return "ran"
+
+
+def _switched_off(ctrl: _FakeController, queue_id: str) -> _FakePlayers:
+    """Switch the player of the given queue off at its power control."""
+    players = ctrl.mass.players
+    players._players[queue_id].offline_by_power_control = True
+    return players
+
+
 class TestHandlePlayAction:
     """Tests for the handle_play_action decorator."""
 
@@ -358,6 +447,71 @@ class TestHandlePlayAction:
             await _boom(cast("PlayerQueuesController", ctrl), "q1")
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    async def test_a_switched_off_player_is_refused_by_default(self) -> None:
+        """An action on a switched off player is refused before it takes any lock."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        _switched_off(ctrl, "q1")
+        sink: list[bool] = []
+
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink)
+
+        assert sink == []
+        assert ctrl.calls == []
+
+    async def test_a_switched_off_player_is_powered_on_before_the_locks(self) -> None:
+        """An action that starts playback powers the player on before it takes the locks."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        players = _switched_off(ctrl, "q1")
+
+        assert await _start_playback(cast("PlayerQueuesController", ctrl), "q1") == "playing"
+
+        assert players.powered_on == [("q1", False)]
+
+    async def test_a_queue_registered_anew_during_the_power_on_is_flagged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An action that waited for the power on flags the queue record that exists by then."""
+        stale_queue, new_queue = _FakeQueue(), _FakeQueue()
+        ctrl = _FakeController({"q1": stale_queue})
+        players = _switched_off(ctrl, "q1")
+        power_on = players._power_on_switched_off_player
+
+        async def _power_on_and_register_anew(player_id: str) -> _FakePlayer:
+            ctrl._queue_data[player_id] = PlayerQueueData(queue=cast("PlayerQueue", new_queue))
+            return await power_on(player_id)
+
+        monkeypatch.setattr(players, "_power_on_switched_off_player", _power_on_and_register_anew)
+        sink: list[tuple[bool, int]] = []
+
+        result = await _record_while_playing(cast("PlayerQueuesController", ctrl), "q1", sink)
+
+        assert result == "playing"
+        assert sink == [(True, 1)]
+        assert new_queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl._queue_data["q1"].play_action_refcount == 0
+        assert stale_queue.extra_attributes == {}
+
+    async def test_an_ignored_action_does_nothing_on_a_switched_off_player(self) -> None:
+        """An action with nothing to act on returns without running or signalling."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        players = _switched_off(ctrl, "q1")
+
+        assert await _ignored(cast("PlayerQueuesController", ctrl), "q1") is None
+
+        assert ctrl.calls == []
+        assert players.powered_on == []
+
+    async def test_an_action_that_handles_it_runs_as_is(self) -> None:
+        """An action that handles a switched off player itself runs under the locks as usual."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        players = _switched_off(ctrl, "q1")
+
+        assert await _run_as_is(cast("PlayerQueuesController", ctrl), "q1") == "ran"
+
+        assert players.powered_on == []
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
 
 
 class TestSpaceByArtist:
@@ -478,6 +632,20 @@ class TestBuildQueueItem:
         assert isinstance(item.media_item, Radio)
         assert item.media_item.metadata.description
         assert item.media_item.metadata.images
+
+    def test_records_the_origin(self) -> None:
+        """The origin handed in is kept on the item and survives the persisted cache."""
+        origin = QueueItemOrigin(
+            container=ItemMapping(
+                media_type=MediaType.ALBUM, item_id="a1", provider="test", name="Album"
+            ),
+            provider_instance="test",
+            item_id="t1",
+        )
+        item = build_queue_item("q1", _heavy_track(), origin=origin)
+        assert item.origin == origin
+        assert QueueItem.from_cache(item.to_cache()).origin == origin
+        assert build_queue_item("q1", _heavy_track()).origin is None
 
     def test_cache_roundtrip_preserves_slim_shape(self) -> None:
         """A slim track queue item round-trips through the persisted cache unchanged."""

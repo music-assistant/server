@@ -453,6 +453,7 @@ class AirPlayReceiverProvider(PluginProvider):
         player_id = player.player_id
         safe_player_id = re.sub(r"[^A-Za-z0-9_.-]", "_", player_id)
         receiver_key = f"{self.instance_id}_{safe_player_id}"
+        runtime_path = self.mass.runtime_path
         audio_source = AudioSource(
             # the player id is stable across renames, so the source uri survives them
             item_id=player_id,
@@ -479,11 +480,11 @@ class AirPlayReceiverProvider(PluginProvider):
             safe_player_id=safe_player_id,
             airplay_name=airplay_name,
             port=self._ports[player_id],
-            audio_pipe=AsyncNamedPipeWriter(f"/tmp/ma_airplay_audio_{receiver_key}"),  # noqa: S108
+            audio_pipe=AsyncNamedPipeWriter(f"{runtime_path}/ma_airplay_audio_{receiver_key}"),
             metadata_pipe=AsyncNamedPipeWriter(
-                f"/tmp/ma_airplay_metadata_{receiver_key}"  # noqa: S108
+                f"{runtime_path}/ma_airplay_metadata_{receiver_key}"
             ),
-            config_file=f"/tmp/ma_shairport_sync_{receiver_key}.conf",  # noqa: S108
+            config_file=f"{runtime_path}/ma_shairport_sync_{receiver_key}.conf",
             audio_source=audio_source,
             stream_metadata=StreamMetadata(title=f"AirPlay | {airplay_name}"),
         )

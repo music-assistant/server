@@ -79,7 +79,8 @@ if TYPE_CHECKING:
 
     from .provider import AirPlayProvider
 
-_CONTROL_RECONNECT_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_INITIAL_DELAY: Final[float] = 30.0
+_CONTROL_RECONNECT_MAX_DELAY: Final[float] = 600.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 
 # mDNS TXT keys whose values change with transient playback, session or group
@@ -160,6 +161,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_push_listener: _AirPlayPushListener | None = None
         self._connection_task: asyncio.Task[None] | None = None
         self._connection_lock = asyncio.Lock()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
+        self._reconnect_wakeup = asyncio.Event()
         self._power_on_event = asyncio.Event()
         self._volume_before_mute: int | None = None
         self._disconnecting = False
@@ -229,7 +232,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
         The streaming pairing (if any) is the required "device code" that gates
         ``needs_setup``; the optional Companion (remote control) and MRP (playback
-        monitoring) pairings are offered afterwards as sequential, skippable steps.
+        monitoring) pairings are offered afterwards behind a single skippable choice.
         Re-launching from the player settings re-offers every pairing, so a stored
         pairing can be redone (replaced) when it went stale.
 
@@ -237,8 +240,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """
         collected: dict[str, ConfigValueType] = {}
         await self._run_streaming_pairing(session, collected)
-        await self._run_companion_pairing(session, collected)
-        await self._run_mrp_pairing(session, collected)
+        if (
+            self.companion_pairing_supported or self.mrp_pairing_supported
+        ) and await self._offer_optional_pairing(session, "control_offer"):
+            await self._run_companion_pairing(session, collected)
+            await self._run_mrp_pairing(session, collected)
         await session.finish(collected)
         if collected.keys() & {
             CONF_COMPANION_CREDENTIALS,
@@ -479,8 +485,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         if self._connection_task and not self._connection_task.done():
             if not force:
+                # a dropped channel must not wait out another channel's backoff
+                self._reconnect_wakeup.set()
                 return
             self._connection_task.cancel()
+        self._reconnect_delay = _CONTROL_RECONNECT_INITIAL_DELAY
         self._restart_connections = self._restart_connections or force
         self._connection_task = self.mass.create_task(
             self._connection_loop(),
@@ -490,11 +499,18 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     async def _connection_loop(self) -> None:
         """Connect control services and retry transient failures."""
-        retry = True
-        while retry and not self._unloading:
+        while not self._unloading:
+            self._reconnect_wakeup.clear()
             retry = await self._connect_control_services()
-            if retry:
-                await asyncio.sleep(_CONTROL_RECONNECT_DELAY)
+            if self._reconnect_wakeup.is_set():
+                # a channel dropped during this pass
+                continue
+            if not retry:
+                return
+            delay = self._reconnect_delay
+            self._reconnect_delay = min(delay * 2, _CONTROL_RECONNECT_MAX_DELAY)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._reconnect_wakeup.wait(), delay)
 
     async def _connect_control_services(self) -> bool:
         """Connect Companion and MRP independently."""
@@ -855,17 +871,15 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional Companion (remote control) pairing, when supported.
+        Pair Companion (remote control), when supported.
 
-        Shows a skippable choice; on "set up now" it drives the PIN pairing and adds
-        the resulting credentials to ``collected`` (replacing any stored ones).
+        Drives the PIN pairing and adds the resulting credentials to ``collected``
+        (replacing any stored ones).
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
         if not self.companion_pairing_supported:
-            return
-        if not await self._offer_optional_pairing(session, "companion_offer"):
             return
         errors: dict[str, str] | None = None
         while True:
@@ -901,7 +915,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional MRP (playback monitoring) pairing, when supported.
+        Pair MRP (playback monitoring), when supported.
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
@@ -913,8 +927,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         discovery_info, protocol = endpoint
         cred_key = self._mrp_credentials_key
-        if not await self._offer_optional_pairing(session, "mrp_offer"):
-            return
         errors: dict[str, str] | None = None
         while True:
             pairing = await self._begin_pyatv_pairing(discovery_info, protocol)

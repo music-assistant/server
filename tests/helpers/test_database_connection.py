@@ -112,6 +112,24 @@ async def test_vacuum_spills_temp_storage_to_disk(db_connection: DatabaseConnect
     assert await _get_temp_store(db_connection) == TEMP_STORE_MEMORY
 
 
+async def test_vacuum_truncates_the_wal(db_with_table: DatabaseConnection) -> None:
+    """Test that vacuum() checkpoints and truncates the WAL so compaction frees disk."""
+    blob = "x" * 1024
+    await db_with_table.upsert_many(
+        "items", [{"name": f"item{i}", "url": blob} for i in range(3000)]
+    )
+    await db_with_table.delete("items")
+
+    db_path = pathlib.Path(db_with_table.db_path)
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    size_before = db_path.stat().st_size
+
+    await db_with_table.vacuum()
+
+    assert not wal_path.exists() or wal_path.stat().st_size < 64 * 1024
+    assert db_path.stat().st_size < size_before
+
+
 async def test_vacuum_restores_temp_store_on_failure(
     db_connection: DatabaseConnection,
 ) -> None:

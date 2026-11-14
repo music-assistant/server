@@ -1,12 +1,13 @@
 name: Auto Release
 
 # Automatically creates releases with proper version increments.
-# - Nightly: runs at 05:00 Europe/Amsterdam with 2+ commits
+# - Nightly: runs at 04:00 Europe/Amsterdam with 2+ commits, an hour after the
+#   frontend and models nightlies so their version bumps are included
 # - Beta, RC, stable: manually triggered
 
 on:
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 4 * * *"
       timezone: "Europe/Amsterdam"
   workflow_dispatch:
     inputs:
@@ -35,6 +36,9 @@ jobs:
   resolve-release:
     name: Resolve release source and version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_release: ${{ steps.version.outputs.should_release }}
@@ -42,6 +46,16 @@ jobs:
       branch: ${{ steps.branch.outputs.branch }}
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
+      # The dispatch ref picks the release tooling (github.workflow_sha), so keep it on dev.
+      - name: Require dispatch from dev
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/dev" ]; then
+            echo "::error::Run this workflow from the dev branch, not $DISPATCH_REF. The channel still decides which branch gets released."
+            exit 1
+          fi
+
       - name: Check out release workflow
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -62,6 +76,20 @@ jobs:
           fi
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           echo "Release channel: $channel"
+
+      # backport-to-stable.yml keeps one open backport/<version> PR per upcoming patch release.
+      - name: Require merged backport PR
+        if: steps.channel.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          open_pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base stable --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("backport/"))][0].number // empty')
+          if [ -n "$open_pr" ]; then
+            echo "::error::Backport PR #$open_pr into stable is still open. Merge or close it before releasing stable."
+            exit 1
+          fi
 
       - name: Resolve source branch
         id: branch
@@ -98,11 +126,14 @@ jobs:
         env:
           CHANNEL: ${{ steps.channel.outputs.channel }}
           COMMITS_SINCE: ${{ steps.version.outputs.commits_since }}
+          PREVIOUS_TAG: ${{ steps.version.outputs.previous_tag }}
           SHOULD_RELEASE: ${{ steps.version.outputs.should_release }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           if [ "$SHOULD_RELEASE" = "true" ]; then
             echo "Will create $CHANNEL release $VERSION from $COMMITS_SINCE new commit(s)"
+          elif [ "$COMMITS_SINCE" = "0" ]; then
+            echo "Skipping $CHANNEL release: no new commits since $PREVIOUS_TAG"
           else
             echo "Skipping $CHANNEL release with only $COMMITS_SINCE new commit(s)"
           fi

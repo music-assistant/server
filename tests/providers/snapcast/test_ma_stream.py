@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+import time
+from typing import TYPE_CHECKING, Any, Self
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -18,6 +19,8 @@ from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.snapcast.provider import SnapCastProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from .conftest import FakeSnapserver
 
 
@@ -106,6 +109,133 @@ def test_external_transport_format_reads_uri_codec() -> None:
 
     assert output_format.content_type == ContentType.FLAC
     assert output_format.codec_type == ContentType.FLAC
+
+
+class _FakeFFMpeg:
+    """FFMpeg stand-in that exits immediately."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+    async def wait(self) -> int:
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_streamer_pokes_players_when_playback_anchor_is_known(
+    fake_provider: MagicMock,
+) -> None:
+    """The stream's players are refreshed once the server buffer delay has passed."""
+    fake_provider._use_builtin_server = True
+    fake_provider._snapcast_server_buffer_size = 2000
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    fake_provider.mass.closing = True
+    stream = _make_stream(fake_provider, name="music")
+    stream.snap_stream = MagicMock(identifier="music-1", path="tcp://0.0.0.0:4953")
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _FakeFFMpeg):
+        await stream._streamer_task_impl()
+
+    fake_provider.mass.call_later.assert_called_once_with(
+        2.0, stream._snap_on_stream_update, task_id="snapcast_playback_started_music"
+    )
+
+
+def test_external_server_playback_starts_after_its_buffer(fake_provider: MagicMock) -> None:
+    """With an external Snapserver, clients start playing only after its buffer."""
+    fake_provider._snapcast_server_buffer_size = 1000
+    stream = _make_stream(fake_provider)
+
+    stream._streaming_started_at = time.time() - 0.5
+    assert stream.playback_started_at is None
+
+    stream._streaming_started_at = time.time() - 1.5
+    assert stream.playback_started_at == stream._streaming_started_at + 1.0
+
+
+class _ConsumingFFMpeg(_FakeFFMpeg):
+    """FFMpeg stand-in that reads all of its input at once, like ffmpeg's -re burst."""
+
+    def __init__(self, audio_input: AsyncGenerator[bytes], **kwargs: Any) -> None:
+        self._audio_input = audio_input
+
+    async def wait(self) -> int:
+        async for _ in self._audio_input:
+            pass
+        return 0
+
+
+def _clip_stream(fake_provider: MagicMock, seconds: float) -> SnapcastMAStream:
+    """Build a stream on the built-in server (0.5 s buffer) whose source yields a clip."""
+    fake_provider._use_builtin_server = True
+    fake_provider._snapcast_server_buffer_size = 500
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    fake_provider.mass.closing = True
+
+    async def clip() -> AsyncGenerator[bytes]:
+        yield b"\0" * int(DEFAULT_SNAPCAST_FORMAT.pcm_sample_size * seconds)
+
+    fake_provider.mass.streams.get_stream = MagicMock(return_value=clip())
+    stream = _make_stream(fake_provider)
+    stream.snap_stream = MagicMock(identifier="clip-1", path="tcp://0.0.0.0:4953")
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_streamer_ends_once_clients_played_the_buffered_audio(
+    fake_provider: MagicMock,
+) -> None:
+    """A short clip is not cut off by switching the group away while clients still play it."""
+    stream = _clip_stream(fake_provider, seconds=0.5)
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _ConsumingFFMpeg):
+        task = asyncio.ensure_future(stream._streamer_task_impl())
+        # played out after 0.5 s buffer + 0.5 s clip
+        await asyncio.sleep(0.7)
+        assert not task.done()
+        await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_the_play_out_wait(fake_provider: MagicMock) -> None:
+    """A stop request does not wait for the clients to play the buffered audio."""
+    stream = _clip_stream(fake_provider, seconds=1.5)
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _ConsumingFFMpeg):
+        task = asyncio.ensure_future(stream._streamer_task_impl())
+        await asyncio.sleep(0.1)
+        assert not task.done()
+
+        stream.request_stop_stream()
+        await asyncio.wait_for(task, 0.5)
+
+
+@pytest.mark.asyncio
+async def test_closing_the_tracked_audio_closes_the_source(fake_provider: MagicMock) -> None:
+    """Closing the audio early (stop or restart) still runs the source's cleanup."""
+    closed = False
+
+    async def source() -> AsyncGenerator[bytes]:
+        nonlocal closed
+        try:
+            while True:
+                yield b"\0" * 4
+        finally:
+            closed = True
+
+    tracked = _make_stream(fake_provider)._track_sent_audio(source())
+    await anext(tracked)
+    await tracked.aclose()
+
+    assert closed
 
 
 @pytest.mark.asyncio
@@ -389,12 +519,7 @@ def test_displaced_stream_is_scheduled_for_stop(fake_provider: MagicMock) -> Non
 
 
 def test_pinned_stream_survives_being_displaced(fake_provider: MagicMock) -> None:
-    """
-    Regression: the music stream must outlive an announcement taking over the group.
-
-    The announcement points the group at its own stream, so the music stream reads as
-    unused. Stopping it there leaves nothing to hand the group back to afterwards.
-    """
+    """A media change on a playing stream kills the old run without draining it."""
     stream = _displaced_stream(fake_provider)
     stream.pin("player-1")
 
@@ -427,6 +552,71 @@ def test_one_member_finishing_does_not_release_another_members_pin(
     fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
 
 
+async def test_replay_after_stop_waits_for_the_previous_run(fake_provider: MagicMock) -> None:
+    """
+    Regression: replaying right after a stop must not return while the old run drains.
+
+    The caller points the group at the stream once this returns; snapserver still plays
+    the previous session's audio until the stopping run has finished.
+    """
+    stream = _make_stream(fake_provider)
+    stream._setup_done = True
+    fake_provider.mass.create_task = asyncio.ensure_future
+    new_run = AsyncMock()
+    stream._streamer_task_impl = new_run  # type: ignore[method-assign]
+    old_run_done = asyncio.Event()
+
+    async def old_run() -> None:
+        await old_run_done.wait()
+
+    stream._streamer_task = asyncio.ensure_future(old_run())
+    stream._streamer_task.add_done_callback(stream._on_streamer_done)
+    stream.request_stop_stream()
+
+    start = asyncio.ensure_future(stream.start_stream(allow_restart=True))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(asyncio.shield(start), 0.05)
+
+    old_run_done.set()
+    await asyncio.wait_for(start, 1)
+    await asyncio.sleep(0.01)
+    new_run.assert_awaited_once()
+
+
+async def test_restart_of_a_running_stream_does_not_wait(fake_provider: MagicMock) -> None:
+    """A media change on a playing stream returns at once; the group is already on it."""
+    stream = _make_stream(fake_provider)
+    stream._setup_done = True
+    stream._streamer_task = asyncio.ensure_future(asyncio.sleep(10))
+
+    stream.update_media(MagicMock())
+    await asyncio.wait_for(stream.start_stream(allow_restart=True), 0.05)
+
+    assert stream._restart_requested
+    stream._streamer_task.cancel()
+
+
+async def test_restart_drops_the_playback_anchor_of_the_old_run(
+    fake_provider: MagicMock,
+) -> None:
+    """
+    Regression: a restarted stream must not report when the replaced run started.
+
+    The group can be put on the stream before the old run has finished, so players would
+    anchor their elapsed time to the old run's start.
+    """
+    fake_provider._snapcast_server_buffer_size = 1000
+    stream = _make_stream(fake_provider)
+    stream._setup_done = True
+    stream._streamer_task = asyncio.ensure_future(asyncio.sleep(10))
+    stream._streaming_started_at = time.time() - 20
+
+    await stream.start_stream(allow_restart=True)
+
+    assert stream.playback_started_at is None
+    stream._streamer_task.cancel()
+
+
 def test_releasing_the_pin_schedules_the_stop_again(fake_provider: MagicMock) -> None:
     """A stream that stays unused after its pin is released is stopped as usual."""
     stream = _displaced_stream(fake_provider)
@@ -437,3 +627,88 @@ def test_releasing_the_pin_schedules_the_stop_again(fake_provider: MagicMock) ->
     SnapCastProvider.update_stream_usage(fake_provider)
 
     fake_provider.mass.loop.call_later.assert_called_once_with(3.0, stream.request_stop_stream)
+
+
+class _RunningFFMpeg(_FakeFFMpeg):
+    """FFMpeg stand-in that runs until it is killed."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kill = AsyncMock()
+        _running_ffmpegs.append(self)
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+
+_running_ffmpegs: list[_RunningFFMpeg] = []
+
+
+async def test_restart_kills_the_old_run_without_draining(fake_provider: MagicMock) -> None:
+    """
+    Regression: a media change on a playing stream must not drain the old track.
+
+    Clients play everything the old run still sends, so a graceful close and the wait for
+    snapserver to go idle put seconds of the old track before the new one.
+    """
+    _running_ffmpegs.clear()
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    stream = _make_stream(fake_provider, name="music")
+    stream.snap_stream = MagicMock(identifier="music-1", path="tcp://0.0.0.0:4953")
+    stream._wait_stream_idle = AsyncMock()  # type: ignore[method-assign]
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _RunningFFMpeg):
+        stream._streamer_task = asyncio.ensure_future(stream._streamer_task_impl())
+        await asyncio.sleep(0.01)
+        stream.update_media(MagicMock())
+        await asyncio.wait_for(stream._streamer_task, 1)
+
+    _running_ffmpegs[0].kill.assert_awaited_once()
+
+
+async def test_replay_during_an_explicit_stop_still_drains(fake_provider: MagicMock) -> None:
+    """A replay requested while an explicit stop drains must not skip the idle wait."""
+    _running_ffmpegs.clear()
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    stream = _make_stream(fake_provider, name="music")
+    stream.snap_stream = MagicMock(identifier="music-1", path="tcp://0.0.0.0:4953")
+    stream._wait_stream_idle = AsyncMock()  # type: ignore[method-assign]
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _RunningFFMpeg):
+        stream._streamer_task = asyncio.ensure_future(stream._streamer_task_impl())
+        await asyncio.sleep(0.01)
+        stream.request_stop_stream()
+        # what start_stream sets when a replay finds the run still stopping
+        stream._restart_requested = True
+        await asyncio.wait_for(stream._streamer_task, 1)
+
+    _running_ffmpegs[0].kill.assert_not_awaited()
+    stream._wait_stream_idle.assert_awaited_once()
+
+
+async def test_run_stopped_while_starting_does_not_signal_started(fake_provider: MagicMock) -> None:
+    """A restart during FFmpeg startup leaves the wait for the replacement run pending."""
+    _running_ffmpegs.clear()
+    fake_provider._snapcast_server_host = "127.0.0.1"
+    fake_provider.mass.create_task.side_effect = asyncio.ensure_future
+    stream = _make_stream(fake_provider, name="music")
+    stream.snap_stream = MagicMock(identifier="music-1", path="tcp://0.0.0.0:4953")
+    stream._wait_stream_idle = AsyncMock()  # type: ignore[method-assign]
+    started_at_kill: list[bool] = []
+
+    class _RestartedWhileStarting(_RunningFFMpeg):
+        async def __aenter__(self) -> Self:
+            if len(_running_ffmpegs) == 1:
+                stream.update_media(MagicMock())
+            self.kill.side_effect = lambda: started_at_kill.append(
+                stream._streamer_started_evt.is_set()
+            )
+            return self
+
+    with patch("music_assistant.providers.snapcast.ma_stream.FFMpeg", _RestartedWhileStarting):
+        stream._streamer_task = asyncio.ensure_future(stream._streamer_task_impl())
+        await asyncio.wait_for(stream._streamer_task, 1)
+
+    assert started_at_kill == [False]

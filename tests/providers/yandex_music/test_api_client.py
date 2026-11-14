@@ -3,25 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import re
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from types import MethodType
 from typing import Any, cast
 from unittest import mock
 
 import pytest
 from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth import SecretStr
+from yandex_music import ClientAsync
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.rotor.dashboard import Dashboard
 from yandex_music.rotor.station_result import StationResult
-from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import (
+    RequestPriority,
+    current_priority,
+    request_priority,
+)
 from music_assistant.providers.yandex_music.api_client import (
     GET_FILE_INFO_CODECS,
     YandexMusicClient,
@@ -47,6 +49,12 @@ def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
     """
     client = YandexMusicClient(token=SecretStr("fake_token"))
     mock_underlying = mock.AsyncMock()
+    mock_underlying.report_unknown_fields = False
+    mock_underlying.strict = False
+    mock_underlying.on_schema_mismatch = None
+    mock_underlying.tracks_file_info = mock.AsyncMock(
+        wraps=MethodType(ClientAsync.tracks_file_info, mock_underlying)
+    )
     client._client = mock_underlying
     client._user_id = 12345
     # Disable throttling in unit tests — replace every kind with an AsyncMock.
@@ -224,11 +232,13 @@ async def test_send_rotor_station_feedback_skip() -> None:
 # -- rotor session API (/rotor/session/*) --------------------------------------
 
 
-def _patch_rotor_session_request(client: YandexMusicClient, response: object) -> mock.AsyncMock:
-    """Install a mocked _rotor_session_request on the client and return the mock."""
-    req_mock = mock.AsyncMock(return_value=response)
-    client._rotor_session_request = req_mock  # type: ignore[method-assign]
-    return req_mock
+def _patch_rotor_transport(client: YandexMusicClient, response: object) -> mock.AsyncMock:
+    """Run the real library's session methods against a mocked HTTP transport."""
+    underlying = ClientAsync("fake_token")
+    post = mock.AsyncMock(return_value=response)
+    underlying._request = mock.MagicMock(post=post)
+    client._client = underlying
+    return post
 
 
 def _patch_get_tracks(client: YandexMusicClient, tracks: list[object]) -> mock.AsyncMock:
@@ -254,21 +264,21 @@ def _call_args(m: mock.AsyncMock) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
 async def test_rotor_session_new_posts_expected_body_and_returns_session() -> None:
     """rotor_session_new POSTs to /rotor/session/new with wave-model flags and parses result."""
     client, underlying = _make_client()
-    del underlying  # unused; session API bypasses MarshalX client
+    del underlying
     response = {
         "radioSessionId": "sess_abc",
         "batchId": "batch_1",
-        "sequence": [{"track": {"id": 100, "title": "T"}, "liked": False}],
+        "sequence": [{"type": "track", "track": {"id": 100, "title": "T"}, "liked": False}],
     }
-    req_mock = _patch_rotor_session_request(client, response)
+    req_mock = _patch_rotor_transport(client, response)
     _patch_get_tracks(client, [type("T", (), {"id": 100})()])
 
-    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+    session_id, tracks, batch_id, ended = await client.rotor_session_new("user:onyourwave")
 
     req_mock.assert_awaited_once()
-    args, _ = _call_args(req_mock)
-    path, body = args[0], args[1]
-    assert path == "new"
+    args, kwargs = _call_args(req_mock)
+    path, body = args[0], kwargs["json"]
+    assert path == "https://api.music.yandex.net/rotor/session/new"
     assert body["seeds"] == ["user:onyourwave"]
     assert body["queue"] == []
     assert body["includeTracksInResponse"] is True
@@ -278,13 +288,14 @@ async def test_rotor_session_new_posts_expected_body_and_returns_session() -> No
     assert batch_id == "batch_1"
     assert len(tracks) == 1
     assert tracks[0].id == 100
+    assert not ended
 
 
 async def test_rotor_session_new_appends_settings_as_seeds() -> None:
     """rotor_session_new appends settingDiversity / settingMoodEnergy / settingLanguage seeds."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(
+    req_mock = _patch_rotor_transport(
         client, {"radioSessionId": "s1", "batchId": "b1", "sequence": []}
     )
     _patch_get_tracks(client, [])
@@ -294,8 +305,8 @@ async def test_rotor_session_new_appends_settings_as_seeds() -> None:
         settings={"diversity": "discover", "moodEnergy": "calm", "language": "russian"},
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     assert body["seeds"] == [
         "user:onyourwave",
         "settingDiversity:discover",
@@ -305,16 +316,17 @@ async def test_rotor_session_new_appends_settings_as_seeds() -> None:
 
 
 async def test_rotor_session_new_returns_empty_on_missing_session_id() -> None:
-    """If the response lacks radioSessionId the call returns (None, [], None) without raising."""
+    """A missing response returns an empty, nonterminal result without raising."""
     client, underlying = _make_client()
     del underlying
-    _patch_rotor_session_request(client, None)
+    _patch_rotor_transport(client, None)
 
-    session_id, tracks, batch_id = await client.rotor_session_new("user:onyourwave")
+    session_id, tracks, batch_id, ended = await client.rotor_session_new("user:onyourwave")
 
     assert session_id is None
     assert tracks == []
     assert batch_id is None
+    assert not ended
 
 
 async def test_rotor_session_tracks_posts_current_track_queue() -> None:
@@ -323,40 +335,45 @@ async def test_rotor_session_tracks_posts_current_track_queue() -> None:
     del underlying
     response = {
         "batchId": "batch_2",
-        "sequence": [{"track": {"id": 200}}, {"track": {"id": 201}}],
+        "sequence": [
+            {"type": "track", "track": {"id": 200}, "liked": False},
+            {"type": "track", "track": {"id": 201}, "liked": False},
+        ],
     }
-    req_mock = _patch_rotor_session_request(client, response)
+    req_mock = _patch_rotor_transport(client, response)
     _patch_get_tracks(client, [type("T", (), {"id": 200})(), type("T", (), {"id": 201})()])
 
-    tracks, batch_id = await client.rotor_session_tracks("sess_abc", current_track_id="100")
+    tracks, batch_id, ended = await client.rotor_session_tracks("sess_abc", current_track_id="100")
+    assert not ended
 
-    args, _ = _call_args(req_mock)
-    path, body = args[0], args[1]
-    assert path == "sess_abc/tracks"
+    args, kwargs = _call_args(req_mock)
+    path, body = args[0], kwargs["json"]
+    assert path == "https://api.music.yandex.net/rotor/session/sess_abc/tracks"
     assert body == {"queue": ["100"]}
     assert batch_id == "batch_2"
     assert [t.id for t in tracks] == [200, 201]
 
 
 async def test_rotor_session_feedback_radio_started_sends_from_field() -> None:
-    """RadioStarted event uses event.from=track_id (not trackId)."""
+    """RadioStarted uses a top-level from field, as defined by the session API."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     result = await client.rotor_session_feedback(
         "sess_abc", "radioStarted", track_id="100", batch_id="batch_1"
     )
 
     assert result is True
-    args, _ = _call_args(req_mock)
-    path, body = args[0], args[1]
-    assert path == "sess_abc/feedback"
+    args, kwargs = _call_args(req_mock)
+    path, body = args[0], kwargs["json"]
+    assert path == "https://api.music.yandex.net/rotor/session/sess_abc/feedback"
     assert body["batchId"] == "batch_1"
     event = body["event"]
     assert event["type"] == "radioStarted"
-    assert event["from"] == "100"
-    assert "trackId" not in event
+    assert body["from"] == "100"
+    assert event.get("trackId") is None
+    assert "from" not in event
     assert "timestamp" in event
     assert re.match(r"^\d{4}-\d{2}-\d{2}T", event["timestamp"])
 
@@ -365,26 +382,26 @@ async def test_rotor_session_feedback_track_started_sends_track_id() -> None:
     """TrackStarted event uses event.trackId (not from)."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback(
         "sess_abc", "trackStarted", track_id="100", batch_id="batch_1"
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "trackStarted"
     assert event["trackId"] == "100"
     assert "from" not in event
-    assert "totalPlayedSeconds" not in event
+    assert event.get("totalPlayedSeconds") is None
 
 
 async def test_rotor_session_feedback_track_finished_includes_seconds() -> None:
     """TrackFinished event includes totalPlayedSeconds."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback(
         "sess_abc",
@@ -394,8 +411,8 @@ async def test_rotor_session_feedback_track_finished_includes_seconds() -> None:
         batch_id="batch_1",
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "trackFinished"
     assert event["trackId"] == "100"
@@ -406,14 +423,14 @@ async def test_rotor_session_feedback_skip_includes_seconds() -> None:
     """Skip event includes totalPlayedSeconds and trackId."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback(
         "sess_abc", "skip", track_id="100", total_played_seconds=10, batch_id="batch_1"
     )
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "skip"
     assert event["trackId"] == "100"
@@ -421,19 +438,19 @@ async def test_rotor_session_feedback_skip_includes_seconds() -> None:
 
 
 async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> None:
-    """like/dislike events use trackId but do NOT include totalPlayedSeconds."""
+    """Like events use trackId without totalPlayedSeconds."""
     client, underlying = _make_client()
     del underlying
-    req_mock = _patch_rotor_session_request(client, {"result": "ok"})
+    req_mock = _patch_rotor_transport(client, {"result": "ok"})
 
     await client.rotor_session_feedback("sess_abc", "like", track_id="100", batch_id="batch_1")
 
-    args, _ = _call_args(req_mock)
-    body = args[1]
+    _, kwargs = _call_args(req_mock)
+    body = kwargs["json"]
     event = body["event"]
     assert event["type"] == "like"
     assert event["trackId"] == "100"
-    assert "totalPlayedSeconds" not in event
+    assert event.get("totalPlayedSeconds") is None
 
 
 async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None:
@@ -445,14 +462,10 @@ async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None
     provider instead of triggering MA's re-auth prompt.
     """
     client, underlying = _make_client()
-    # _do is awaited via _call_with_retry → _ensure_connected → returns our
-    # AsyncMock underlying client. The underlying client's ._request.post is
-    # what actually raises.
-    underlying._request = mock.MagicMock()
-    underlying._request.post = mock.AsyncMock(side_effect=UnauthorizedError("stale token"))
+    underlying.rotor_session_new.side_effect = UnauthorizedError("stale token")
 
     with pytest.raises(LoginFailed):
-        await client._rotor_session_request("new", {"seeds": ["user:onyourwave"]})
+        await client.rotor_session_new("user:onyourwave")
 
 
 # -- get_similar_artists ------------------------------------------------------
@@ -628,39 +641,6 @@ def test_lrc_regex_rejects_invalid_formats() -> None:
         assert not re.search(pattern, case), f"Should NOT match: {case}"
 
 
-# -- HMAC sign construction tests --------------------------------------------
-
-
-def test_hmac_sign_construction_explicit() -> None:
-    """HMAC sign is constructed explicitly with commas stripped from codecs."""
-    # Simulate the parameters
-    timestamp = 1234567890
-    track_id = "12345"
-
-    # The correct way (explicit construction)
-    codecs_for_sign = GET_FILE_INFO_CODECS.replace(",", "")
-    param_string = f"{timestamp}{track_id}lossless{codecs_for_sign}encraw"
-
-    # Verify codecs_for_sign has no commas
-    assert "," not in codecs_for_sign
-
-    # Verify the construction is correct
-    expected = f"1234567890{track_id}lossless{codecs_for_sign}encraw"
-    assert param_string == expected
-
-    # Verify HMAC can be constructed
-    hmac_sign = hmac.new(
-        DEFAULT_SIGN_KEY.encode(),
-        param_string.encode(),
-        hashlib.sha256,
-    )
-    sign = base64.b64encode(hmac_sign.digest()).decode()[:-1]
-
-    # Verify sign is 43 characters (SHA-256 base64 with one "=" removed)
-    assert len(sign) == 43
-    assert not sign.endswith("=")
-
-
 # -- rate-limit detection -----------------------------------------------------
 
 
@@ -720,7 +700,7 @@ async def test_get_dashboard_stations_returns_personalized_stations() -> None:
     """get_dashboard_stations() returns stations from rotor/stations/dashboard."""
     client, underlying = _make_client()
 
-    _de_client = type("C", (), {"report_unknown_fields": False})()
+    _de_client = ClientAsync()
 
     station_result = StationResult.de_json(
         {
@@ -805,7 +785,7 @@ async def test_get_dashboard_stations_skips_user_type() -> None:
     """get_dashboard_stations() filters out personal 'user' type stations."""
     client, underlying = _make_client()
 
-    _de_client = type("C", (), {"report_unknown_fields": False})()
+    _de_client = ClientAsync()
 
     personal_station = StationResult.de_json(
         {
@@ -966,8 +946,8 @@ async def test_circuit_breaker_clears_after_deadline() -> None:
     underlying.tracks.assert_awaited()
 
 
-async def test_bypass_throttler_bypasses_block() -> None:
-    """BYPASS_THROTTLER must allow refresh paths through even while a kind is blocked."""
+async def test_playback_priority_bypasses_block() -> None:
+    """Playback priority passes a blocked kind but still takes a throttler slot."""
     client, underlying = _make_client()
     client._block_until["file_info"] = time.monotonic() + 600
 
@@ -981,21 +961,19 @@ async def test_bypass_throttler_bypasses_block() -> None:
     underlying._request.get = mock.AsyncMock(return_value=raw_response)
     underlying.base_url = "https://api.music.yandex.net"
 
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
 
     assert result is not None
     assert result["url"] == "https://example.com/x"
+    cast("mock.AsyncMock", client._throttlers["file_info"].acquire).assert_awaited_once()
 
 
 async def test_captcha_during_bypass_still_engages_block() -> None:
     """
-    Captcha received during a BYPASS_THROTTLER call must still quarantine the kind.
+    Captcha received during a playback priority call must still quarantine the kind.
 
-    Stream URL refresh runs under BYPASS_THROTTLER to keep an in-flight track
+    Stream URL refresh runs under playback priority to keep an in-flight track
     alive — but if Yandex returns smart-captcha on that very refresh, we DO
     want the file_info kind quarantined so that subsequent NEW-track plays
     fail fast instead of hitting Yandex and prolonging the edge ban.
@@ -1009,12 +987,9 @@ async def test_captcha_during_bypass_still_engages_block() -> None:
     # Pre-condition: file_info kind is NOT blocked.
     assert client._block_until["file_info"] == 0.0
 
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         # get_track_file_info swallows ResourceTemporarilyUnavailable and returns None.
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
 
     assert result is None
     # The block must have been engaged despite the bypass.
@@ -1157,21 +1132,18 @@ async def test_file_info_cache_invalidated_on_bad_request() -> None:
 
     # Trigger the BadRequest code path. A second call WITHOUT bypass would
     # short-circuit on the cache hit and never reach the network — so we use
-    # BYPASS_THROTTLER (the same context that stream URL refresh uses) to skip
+    # playback priority (the same context that stream URL refresh uses) to skip
     # the cache lookup. The 4xx-invalidation runs regardless of bypass.
     underlying._request.get = mock.AsyncMock(side_effect=BadRequestError("nope"))
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert result is None
     # Cache invalidated by the BadRequest handler.
     assert cache_key not in client._file_info_cache
 
 
-async def test_file_info_cache_bypassed_when_bypass_throttler_set() -> None:
-    """Under BYPASS_THROTTLER, refresh must hit the network even with cached entry."""
+async def test_file_info_cache_bypassed_under_playback_priority() -> None:
+    """Under playback priority, refresh must hit the network even with cached entry."""
     client, underlying = _make_client()
     underlying._request = mock.MagicMock()
     underlying._request.get = mock.AsyncMock(return_value=_make_file_info_response())
@@ -1179,11 +1151,8 @@ async def test_file_info_cache_bypassed_when_bypass_throttler_set() -> None:
 
     await client.get_track_file_info("42")  # populate cache
 
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
 
     assert underlying._request.get.await_count == 2
 
@@ -1258,9 +1227,7 @@ async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
     during an active edge ban.
     """
     client, underlying = _make_client()
-    underlying._request = mock.MagicMock()
-    underlying._request.post = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
-    underlying.base_url = "https://api.music.yandex.net"
+    underlying.rotor_session_feedback.side_effect = NetworkError(_CAPTCHA_HTML_SNIPPET)
 
     # Pre-condition: rotor kind not blocked.
     assert client._block_until["rotor"] == 0.0
@@ -1369,7 +1336,7 @@ async def test_file_info_cache_hit_blocked_during_cooldown() -> None:
 
 async def test_bypass_refresh_replaces_cached_entry() -> None:
     """
-    BYPASS_THROTTLER refresh must overwrite the existing cache entry.
+    Playback priority refresh must overwrite the existing cache entry.
 
     Otherwise the next non-bypass caller keeps receiving the old URL until
     the TTL expires, even though refresh has just proven that entry stale.
@@ -1386,15 +1353,12 @@ async def test_bypass_refresh_replaces_cached_entry() -> None:
     assert first is not None
     assert first["url"] == "https://example.com/old"
 
-    # Refresh under BYPASS_THROTTLER with a fresh URL.
+    # Refresh under playback priority with a fresh URL.
     underlying._request.get = mock.AsyncMock(
         return_value=_make_file_info_response(url="https://example.com/new")
     )
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         refreshed = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert refreshed is not None
     assert refreshed["url"] == "https://example.com/new"
 
@@ -1426,11 +1390,8 @@ async def test_file_info_cache_invalidated_on_unauthorized() -> None:
 
     # UnauthorizedError on a bypass refresh — must invalidate.
     underlying._request.get = mock.AsyncMock(side_effect=UnauthorizedError("token expired"))
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert result is None
     assert cache_key not in client._file_info_cache
 
@@ -1535,13 +1496,10 @@ async def test_captcha_strikes_per_kind_isolated() -> None:
     underlying._request.get = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     underlying.base_url = "https://api.music.yandex.net"
 
-    # Trip captcha on file_info via the BYPASS_THROTTLER + get_track_file_info path
+    # Trip captcha on file_info via the playback priority + get_track_file_info path
     # (which swallows the exception and returns None).
-    token = BYPASS_THROTTLER.set(True)
-    try:
+    with request_priority(RequestPriority.HIGH):
         result = await client.get_track_file_info("42")
-    finally:
-        BYPASS_THROTTLER.reset(token)
     assert result is None
 
     assert len(client._captcha_strikes["file_info"]) == 1
@@ -1855,15 +1813,15 @@ async def test_get_artist_tracks_propagates_captcha_rtu() -> None:
     assert exc_info.value.backoff_time == 15
 
 
-# -- jitter respects BYPASS_THROTTLER (#146) ---------------------------------
+# -- jitter respects playback priority (#146) --------------------------------
 
 
-async def test_jitter_skipped_under_bypass_throttler() -> None:
+async def test_jitter_skipped_under_playback_priority() -> None:
     """
-    Stream URL refresh paths run under BYPASS_THROTTLER — jitter must not fire.
+    Stream URL refresh paths run under playback priority — jitter must not fire.
 
-    The helper sits inside the ``if not BYPASS_THROTTLER.get():`` block in
-    both _call_with_retry and _call_no_retry. If a future refactor lifts
+    The helper sits inside the playback priority check in both
+    _call_with_retry and _call_no_retry. If a future refactor lifts
     the jitter call out of that block, stream URL refresh would eat up to
     INITIAL_SYNC_JITTER_S of avoidable latency during the first
     INITIAL_SYNC_WINDOW_S after every connect — exactly when reconnect
@@ -1882,15 +1840,14 @@ async def test_jitter_skipped_under_bypass_throttler() -> None:
     underlying._request.get = mock.AsyncMock(return_value=raw_response)
     underlying.base_url = "https://api.music.yandex.net"
 
-    with mock.patch(
-        "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
-        new_callable=mock.AsyncMock,
-    ) as sleep_mock:
-        token = BYPASS_THROTTLER.set(True)
-        try:
-            await client.get_track_file_info("42")
-        finally:
-            BYPASS_THROTTLER.reset(token)
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+            new_callable=mock.AsyncMock,
+        ) as sleep_mock,
+        request_priority(RequestPriority.HIGH),
+    ):
+        await client.get_track_file_info("42")
 
     sleep_mock.assert_not_awaited()
 
@@ -2060,6 +2017,45 @@ async def test_parallel_same_endpoint_calls_serialize() -> None:
     assert concurrent_peak == 1, (
         f"per-endpoint lock failed to serialise; saw {concurrent_peak} concurrent calls"
     )
+
+
+async def test_restrictive_mode_waiting_calls_hold_no_permit() -> None:
+    """A call still waiting for its throttler slot holds no permit, so playback gets through."""
+    client = YandexMusicClient(token=SecretStr("fake"), restrictive_rate_limits=True)
+    client._client = mock.AsyncMock()
+    client._user_id = 12345
+    for kind in client._throttlers:
+        client._throttlers[kind] = mock.AsyncMock()
+    release_low = asyncio.Event()
+
+    async def _paced_acquire(priority: RequestPriority | None = None) -> float:
+        # background calls sit in the pacer, playback takes its slot at once
+        if (priority or current_priority()) is RequestPriority.LOW:
+            await release_low.wait()
+        return 0.0
+
+    client._throttlers["default"].acquire = _paced_acquire  # type: ignore[method-assign]
+    client._invoke_under_endpoint_lock = mock.AsyncMock(  # type: ignore[method-assign]
+        return_value=mock.MagicMock()
+    )
+
+    async def _fake(_c: Any) -> Any:
+        return None
+
+    with request_priority(RequestPriority.LOW):
+        waiting = [
+            asyncio.create_task(client._call_with_retry(_fake, kind="default"))
+            for _ in range(RESTRICTIVE_GLOBAL_CONCURRENCY + 1)
+        ]
+    await asyncio.sleep(0)
+    try:
+        with request_priority(RequestPriority.HIGH):
+            async with asyncio.timeout(1):
+                await client._call_with_retry(_fake, kind="default")
+        assert all(not task.done() for task in waiting)
+    finally:
+        release_low.set()
+        await asyncio.gather(*waiting)
 
 
 async def test_restrictive_mode_caps_global_concurrency() -> None:

@@ -42,7 +42,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
-    CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_IDLE_POWER_OFF,
     CONF_ENTRY_MAX_VOLUME,
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_OUTPUT_CHANNELS,
@@ -71,7 +71,11 @@ from music_assistant.constants import (
     PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
-from music_assistant.controllers.config.helpers import _with_translation_owner
+from music_assistant.controllers.config.helpers import (
+    _mask_encrypted,
+    _reject_encrypted_values,
+    _with_translation_owner,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
@@ -443,7 +447,7 @@ class PlayerConfigMixin:
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_player_config_value(player_id, key)) is not None:
             if not unpack_splitted_values:
-                return raw_value
+                return _mask_encrypted(raw_value)
         conf = await self.get_player_config(player_id)
         if key not in conf.values:
             if default is not None:
@@ -451,8 +455,8 @@ class PlayerConfigMixin:
             msg = f"Config key {key} not found for player {player_id}"
             raise KeyError(msg)
         if unpack_splitted_values:
-            return conf.values[key].get_splitted_values()
-        return (
+            return _mask_encrypted(conf.values[key].get_splitted_values())
+        return _mask_encrypted(
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
@@ -507,6 +511,7 @@ class PlayerConfigMixin:
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
+        _reject_encrypted_values(values)
         values = await self._update_output_protocol_config(values)
         values = await self._update_plugin_provider_config(player_id, values)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
@@ -743,7 +748,6 @@ class PlayerConfigMixin:
                 default_entries += [
                     CONF_ENTRY_OUTPUT_CODEC,
                     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES,
-                    CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
                 # only inject the sample-rates config when the player can't declare its rates itself
@@ -910,20 +914,24 @@ class PlayerConfigMixin:
         if player.supports_feature(PlayerFeature.VOLUME_SET) or auto_option in volume_options:
             mute_options.append(ConfigValueOption(PLAYER_CONTROL_FAKE))
 
+        power_entry = ConfigEntry(
+            key=CONF_POWER_CONTROL,
+            type=ConfigEntryType.STRING,
+            default_value=_first_enabled_control_value(power_options),
+            required=False,
+            options=[
+                *power_options,
+                *(ConfigValueOption(x.id, title=x.name) for x in power_controls),
+            ],
+            category="player_controls",
+        )
+        if is_group:
+            # group volume and mute are always fanned out to the members and use each
+            # member's own control, so a group only gets the (opt-in) power control
+            return [power_entry]
         # return final config entries for all options
         return [
-            # Power control config entry
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                default_value=_first_enabled_control_value(power_options),
-                required=False,
-                options=[
-                    *power_options,
-                    *(ConfigValueOption(x.id, title=x.name) for x in power_controls),
-                ],
-                category="player_controls",
-            ),
+            power_entry,
             # Volume control config entry
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
@@ -955,7 +963,8 @@ class PlayerConfigMixin:
             # For group players, power on/off is purely a "capture members"
             # toggle (Fake control) and auto-starting playback there causes
             # surprise playback when the user just wanted to pin the group.
-            *([] if is_group else [CONF_ENTRY_AUTO_PLAY]),
+            CONF_ENTRY_AUTO_PLAY,
+            CONF_ENTRY_IDLE_POWER_OFF,
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915

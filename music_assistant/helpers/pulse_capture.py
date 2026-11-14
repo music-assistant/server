@@ -100,7 +100,7 @@ class PulseCaptureServer:
     Lazily started on the first :meth:`acquire` and stopped again on the last
     :meth:`release` (reference-counted) — use :func:`get_pulse_capture_server`
     to obtain the shared per-process instance. The daemon loads only the native
-    protocol on a unix socket inside a private runtime dir under MA's cache dir;
+    protocol on a unix socket inside a private dir under MA's runtime dir;
     audio clients are pointed at it via :meth:`child_env` and their audio is
     captured through :class:`PipeSink` FIFOs.
 
@@ -114,12 +114,12 @@ class PulseCaptureServer:
         """
         Initialize the capture server (the daemon is not started yet).
 
-        :param mass: MusicAssistant instance, used for the private runtime dir
-            under its cache path.
+        :param mass: MusicAssistant instance, used for the private dir under its
+            runtime path.
         """
-        # only the cache path is kept: holding mass itself would pin the
+        # only the runtime path is kept: holding mass itself would pin the
         # WeakKeyDictionary registry entry (value -> key) forever
-        self._base_dir = Path(mass.cache_path) / "pulse_capture"
+        self._base_dir = Path(mass.runtime_path) / "pulse_capture"
         self._socket_path = self._base_dir / "native"
         self._config_path = self._base_dir / "pulse_capture.pa"
         self._lock = asyncio.Lock()
@@ -230,7 +230,7 @@ class PulseCaptureServer:
         # PA's .pa config and module argument parsers are space-delimited with no
         # escaping; refuse early with a clear error instead of mis-parsing later
         if " " in str(self._base_dir):
-            raise RuntimeError(f"cache path may not contain spaces: {self._base_dir}")
+            raise RuntimeError(f"runtime path may not contain spaces: {self._base_dir}")
 
         def _prepare() -> None:
             self._base_dir.mkdir(parents=True, exist_ok=True)

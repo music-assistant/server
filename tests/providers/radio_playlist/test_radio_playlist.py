@@ -184,7 +184,7 @@ async def test_artist_seed_uses_top_tracks_not_full_resolution() -> None:
 
     await prov.get_dynamic_tracks([artist_seed, album_seed], target_size=5)
 
-    prov.mass.music.artists.top_tracks.assert_awaited_once_with("art1", "test")
+    prov.mass.music.artists.top_tracks.assert_awaited_once_with("art1", "test", limit=None)
     get_tracks_for_playback = cast("Any", prov.mass.player_queues.get_tracks_for_playback)
     called_item_ids = [call.args[0].item_id for call in get_tracks_for_playback.await_args_list]
     assert called_item_ids == ["alb1"]
@@ -202,7 +202,7 @@ async def test_artist_seed_without_top_tracks_falls_back() -> None:
 
     result = await prov.get_dynamic_tracks([artist_seed], include_base_tracks=True, target_size=5)
 
-    prov.mass.music.artists.tracks.assert_awaited_once_with("art1", "test")
+    prov.mass.music.artists.tracks.assert_awaited_once_with("art1", "test", limit=None)
     cast("Any", prov.mass.player_queues.get_tracks_for_playback).assert_not_awaited()
     assert any(t.item_id == "full1" for t in result)
 

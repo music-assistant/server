@@ -251,3 +251,29 @@ def test_invalid_playlists() -> None:
     # EXTINF without segment URL
     with pytest.raises(InvalidDataError, match="without preceding segment URL"):
         HLSMediaPlaylistParser("#EXTM3U\n#EXTINF:10.0,\n#EXTINF:10.0,").parse()
+
+
+def test_playlist_header_accessors() -> None:
+    """Test the typed accessors for media sequence, target duration, end and segment time."""
+    live_text = """#EXTM3U
+#EXT-X-MEDIA-SEQUENCE:279721739
+#EXT-X-TARGETDURATION:6
+#EXT-X-PROGRAM-DATE-TIME:2026-09-24T03:05:23.200000Z
+#EXTINF:6.4, no desc
+seg-279721739.ts
+#EXTINF:6.4, no desc
+seg-279721740.ts
+"""
+    live = HLSMediaPlaylistParser(live_text).parse()
+    assert live.media_sequence == 279721739
+    assert live.target_duration == 6
+    assert not live.ended
+    start = live.segments[0].start_time
+    assert start is not None
+    assert start.isoformat() == "2026-09-24T03:05:23.200000+00:00"
+    assert live.segments[1].start_time is None
+
+    vod = HLSMediaPlaylistParser("#EXTM3U\n#EXTINF:1,\nseg.ts\n#EXT-X-ENDLIST").parse()
+    assert vod.media_sequence == 0
+    assert vod.target_duration is None
+    assert vod.ended

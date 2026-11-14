@@ -13,7 +13,7 @@ from uuid import uuid4
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
+from music_assistant.constants import DB_TABLE_MEDIA_PROGRESS
 from music_assistant.mass import MusicAssistant
 
 
@@ -48,11 +48,18 @@ async def test_fully_played_episode_credits_parent_podcast(mass: MusicAssistant)
     )
 
     await mass.music.mark_item_played(
+        episode,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        userid=user.user_id,
+    )
+    await mass.music.mark_item_played(
         episode, fully_played=True, user_initiated=False, userid=user.user_id
     )
 
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "media_type": MediaType.PODCAST.value,
             "item_id": podcast.item_id,
@@ -88,13 +95,20 @@ async def test_user_initiated_show_play_stays_sticky_across_episode_credit(
     await mass.music.mark_item_played(
         podcast, fully_played=True, user_initiated=True, userid=user.user_id
     )
-    # a later episode credit writes user_initiated=False; the ON CONFLICT merge must keep it sticky
+    # a provider sync reports progress, then completion; the explicit show state stays sticky
+    await mass.music.mark_item_played(
+        episode,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        userid=user.user_id,
+    )
     await mass.music.mark_item_played(
         episode, fully_played=True, user_initiated=False, userid=user.user_id
     )
 
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "media_type": MediaType.PODCAST.value,
             "item_id": podcast.item_id,
@@ -131,7 +145,7 @@ async def test_partial_episode_does_not_credit_podcast(mass: MusicAssistant) -> 
     )
 
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "media_type": MediaType.PODCAST.value,
             "item_id": podcast.item_id,
@@ -184,11 +198,18 @@ async def test_library_podcast_episode_credits_library_scoped_row(
         podcast=provider_scoped_podcast,
     )
     await mass.music.mark_item_played(
+        episode,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        userid=user.user_id,
+    )
+    await mass.music.mark_item_played(
         episode, fully_played=True, user_initiated=False, userid=user.user_id
     )
 
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "media_type": MediaType.PODCAST.value,
             "item_id": library_podcast.item_id,
@@ -202,7 +223,7 @@ async def test_library_podcast_episode_credits_library_scoped_row(
     )
 
     dup_row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "media_type": MediaType.PODCAST.value,
             "item_id": ext_item_id,
@@ -232,13 +253,20 @@ async def test_non_library_podcast_episode_credits_provider_scoped_row(
         position=1,
         podcast=podcast,
     )
+    await mass.music.mark_item_played(
+        episode,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        userid=user.user_id,
+    )
 
     await mass.music.mark_item_played(
         episode, fully_played=True, user_initiated=False, userid=user.user_id
     )
 
     row = await mass.music.database.get_row(
-        DB_TABLE_PLAYLOG,
+        DB_TABLE_MEDIA_PROGRESS,
         {
             "media_type": MediaType.PODCAST.value,
             "item_id": podcast.item_id,

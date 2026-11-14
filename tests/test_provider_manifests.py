@@ -1,4 +1,4 @@
-"""Tests for provider manifest loading, in particular the has_setup_flow flag."""
+"""Tests for provider manifest loading: the has_setup_flow flag and the tier."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import pathlib
 from typing import TYPE_CHECKING
 
 import pytest
+from music_assistant_models.enums import ProviderTier
 
 from music_assistant import mass as mass_module
 
@@ -21,7 +22,11 @@ async def _load_manifests(mass_minimal: MusicAssistant) -> None:
 
 
 def _write_provider(
-    providers_dir: pathlib.Path, domain: str, *, setup_flow_source: str | None
+    providers_dir: pathlib.Path,
+    domain: str,
+    *,
+    setup_flow_source: str | None,
+    extra_manifest_keys: dict[str, object] | None = None,
 ) -> None:
     """Write a minimal provider package with an optional setup_flow.py module."""
     provider_dir = providers_dir / domain
@@ -35,6 +40,7 @@ def _write_provider(
                 "name": domain,
                 "description": "test provider",
                 "codeowners": [],
+                **(extra_manifest_keys or {}),
             }
         )
     )
@@ -89,3 +95,19 @@ async def test_has_setup_flow_ignores_internal_import_errors(
     )
     await _load_manifests(mass_minimal)
     assert mass_minimal.get_provider_manifest("broken_flow").has_setup_flow is True
+
+
+async def test_shipped_provider_is_core_whatever_its_manifest_says(
+    mass_minimal: MusicAssistant, fake_providers_dir: pathlib.Path
+) -> None:
+    """A provider loaded from the server's own providers folder is always marked core."""
+    _write_provider(
+        fake_providers_dir,
+        "claims_community",
+        setup_flow_source=None,
+        extra_manifest_keys={"tier": "community"},
+    )
+    await _load_manifests(mass_minimal)
+    manifest = mass_minimal.get_provider_manifest("claims_community")
+    assert manifest.tier == ProviderTier.CORE
+    assert manifest.to_dict()["tier"] == "core"

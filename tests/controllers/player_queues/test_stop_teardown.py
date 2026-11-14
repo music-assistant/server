@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -40,6 +41,13 @@ def _fake_controller() -> MagicMock:
         side_effect=lambda qid: d.queue if (d := fake._queue_data.get(qid)) else None
     )
     fake.mass.players._handle_cmd_stop = AsyncMock()
+    fake.mass.players.get_player.return_value.offline_by_power_control = False
+    fake._cancel_pending_playback = partial(
+        PlayerQueuesController._cancel_pending_playback, cast("PlayerQueuesController", fake)
+    )
+    fake._end_session = partial(
+        PlayerQueuesController._end_session, cast("PlayerQueuesController", fake)
+    )
 
     def _close_coro(target: Any, **_kwargs: Any) -> None:
         # the cleanup is handed to create_task as a coroutine; nothing awaits it here
@@ -93,6 +101,19 @@ async def test_a_player_that_cannot_be_stopped_still_loses_its_session() -> None
 
     assert fake._queue_data["q"].session_id is None
     fake.mass.streams.audio_processing.clear.assert_called_once_with("q", "sess-1")
+    fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_player_is_not_stopped_but_loses_its_session() -> None:
+    """A player switched off at its power control has nothing to stop; its session still ends."""
+    fake = _fake_controller()
+    fake.mass.players.get_player.return_value.offline_by_power_control = True
+
+    await _stop(fake)
+
+    fake.mass.players._handle_cmd_stop.assert_not_awaited()
+    assert fake._queue_data["q"].session_id is None
     fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
 
 
@@ -151,3 +172,16 @@ async def test_a_stop_that_lost_the_race_to_a_new_session_leaves_it_alone() -> N
     # the cleanup is handed the stopped session, so it tears down that session's audio
     # without touching what the replacement already prepared
     fake._cleanup_queue_audio_data.assert_called_once_with("q", "sess-1")
+
+
+@pytest.mark.asyncio
+async def test_stop_on_a_removed_queue_reports_it_unavailable() -> None:
+    """A stop for a queue whose player was unregistered raises PlayerUnavailableError."""
+    fake = _fake_controller()
+    fake._handle_stop = partial(
+        PlayerQueuesController._handle_stop, cast("PlayerQueuesController", fake)
+    )
+    fake._queue_data.pop("q")
+
+    with pytest.raises(PlayerUnavailableError):
+        await PlayerQueuesController.stop(cast("PlayerQueuesController", fake), "q")

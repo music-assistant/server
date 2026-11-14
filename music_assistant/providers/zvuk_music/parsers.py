@@ -321,8 +321,8 @@ def parse_playlist(
     user_id = getattr(playlist_obj, "user_id", None)
     if user_id and provider.client.user_id:
         is_editable = str(user_id) == str(provider.client.user_id)
-        if is_editable:
-            owner_name = "Me"
+    if is_editable:
+        owner_name = "Me"
 
     playlist = Playlist(
         item_id=playlist_id,

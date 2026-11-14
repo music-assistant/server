@@ -6,6 +6,6 @@
   "type": "music",
   "requirements": [],
   "codeowners": ["@yfhyou"],
-  "multi_instance": false,
+  "multi_instance": true,
   "stage": "stable"
 }

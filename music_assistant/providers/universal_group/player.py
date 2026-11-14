@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import HttpVersion11, web
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
@@ -18,16 +19,15 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import PlayerUnavailableError, UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_GROUP_MEMBERS,
-    CONF_HTTP_PROFILE,
     CONF_POWER_CONTROL,
+    CONF_REQUIRES_FIXED_CONTENT_LENGTH,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
 )
@@ -123,7 +123,7 @@ class UniversalGroupPlayer(Player):
         # mute are advertised whether or not the group currently has a live session.
         for member_id in self._attr_group_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
+            if member_player and member_player.available_for_playback:
                 for feature in EXTRA_FEATURES_FROM_MEMBERS:
                     if feature in member_player.state.supported_features:
                         features.add(feature)
@@ -218,7 +218,6 @@ class UniversalGroupPlayer(Player):
                 required=False,
             ),
             CONF_ENTRY_UGP_OUTPUT_FORMAT,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
         ]
 
     async def stop(self) -> None:
@@ -282,7 +281,13 @@ class UniversalGroupPlayer(Player):
                 self, only_powered=True, active_only=True
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, False)
+                    with suppress(PlayerUnavailableError):
+                        async with self.mass.players.get_group_and_player_lock(member.player_id):
+                            # once the member no longer reports this group, its power off does
+                            # not release the group again; the internal handler needs no access
+                            # to the member
+                            member.refresh_state()
+                            await self.mass.players._handle_cmd_power(member.player_id, False)
 
         if not powered:
             # reset the original group members when powered off
@@ -506,7 +511,8 @@ class UniversalGroupPlayer(Player):
                 # member is part of a syncgroup — release it first
                 await member.ungroup()
             if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                await self.mass.players.cmd_power(member.player_id, True)
+                with suppress(PlayerUnavailableError):
+                    await self.mass.players.cmd_power(member.player_id, True)
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""
@@ -609,26 +615,16 @@ class UniversalGroupPlayer(Player):
             "Content-Type": get_mime_type(output_format_str),
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = self.get_config_value(CONF_HTTP_PROFILE, "chunked")
-        # prefer the configuration of the player that actually renders the audio
+        # use the configuration of the player that actually renders the audio
         # (the member's active protocol player when it outputs via a protocol);
-        # child player_id may be stale/invalid, then fall back to the group profile
-        if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
-            http_profile = child_player.get_output_config_value(CONF_HTTP_PROFILE, http_profile)
-        if http_profile == "chunked" and request.version < HttpVersion11:
-            # chunked encoding is not allowed on HTTP/1.0; fall back to
-            # connection-close streaming to avoid raising in resp.prepare()
-            self.logger.debug(
-                "Disabling chunked encoding for UGP stream to HTTP/1.0 client %s",
-                child_player_id or request.remote,
-            )
-            http_profile = "no_content_length"
-        if http_profile == "forced_content_length":
-            # some clients (notably older Chromecast firmware) refuse to play unless
-            # they see a Content-Length header up front
+        # child player_id may be stale/invalid, then no fixed content length is sent
+        if (
+            child_player_id
+            and (child_player := self.mass.players.get_player(child_player_id))
+            and child_player.get_output_config_value(CONF_REQUIRES_FIXED_CONTENT_LENGTH, False)
+        ):
+            # some clients refuse to play unless they see a Content-Length header up front
             resp.content_length = 4294967296
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # return early if this is not a GET request

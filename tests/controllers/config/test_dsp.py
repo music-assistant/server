@@ -106,6 +106,57 @@ async def test_apply_preset_and_manual_save_reset_identity() -> None:
     assert config.get_player_dsp_config("player-1").preset_id is None
 
 
+async def test_toggling_enabled_keeps_preset_identity() -> None:
+    """Switching DSP off and on again keeps the applied preset selected."""
+    config = _DSPConfigStore()
+    await config.save_dsp_presets(
+        DSPConfigPreset(
+            name="Warm",
+            preset_id="warm",
+            config=DSPConfig(enabled=True, filters=[ToneControlFilter(enabled=True)]),
+        )
+    )
+    applied = await config.apply_dsp_preset("player-1", "warm")
+
+    applied.enabled = False
+    disabled = await config.save_dsp_config("player-1", applied)
+    assert disabled.enabled is False
+    assert disabled.preset_id == "warm"
+
+    disabled.enabled = True
+    enabled = await config.save_dsp_config("player-1", disabled)
+    assert enabled.preset_id == "warm"
+    assert config.get_player_dsp_config("player-1").preset_id == "warm"
+
+
+async def test_manual_save_cannot_claim_unmatched_preset() -> None:
+    """A saved config only keeps a preset identity when its settings match that preset."""
+    config = _DSPConfigStore()
+    await config.save_dsp_presets(
+        DSPConfigPreset(name="Quiet", preset_id="quiet", config=DSPConfig(input_gain=-2.0))
+    )
+
+    saved = await config.save_dsp_config(
+        "player-1", DSPConfig(enabled=True, input_gain=-4.0, preset_id="quiet")
+    )
+    assert saved.preset_id is None
+    saved = await config.save_dsp_config("player-1", DSPConfig(enabled=True, preset_id="missing"))
+    assert saved.preset_id is None
+
+
+async def test_apply_preset_enables_dsp() -> None:
+    """Applying a preset turns DSP on, even when the preset was saved while DSP was off."""
+    config = _DSPConfigStore()
+    await config.save_dsp_presets(
+        DSPConfigPreset(name="Quiet", preset_id="quiet", config=DSPConfig(enabled=False))
+    )
+
+    applied = await config.apply_dsp_preset("player-1", "quiet")
+
+    assert applied.enabled is True
+    assert config.get_player_dsp_config("player-1").enabled is True
+
+
 async def test_apply_missing_preset_fails() -> None:
     """Applying an unknown preset reports invalid input."""
     config = _DSPConfigStore()

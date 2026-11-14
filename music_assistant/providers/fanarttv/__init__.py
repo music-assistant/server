@@ -170,7 +170,7 @@ class FanartTvMetadataProvider(MetadataProvider):
 
     # None here only signals a failed or rate-limited request, so don't cache it
     @use_cache(86400 * 60, cache_none=False)  # Cache for 60 days
-    async def _get_data(self, endpoint: str, **kwargs: str) -> dict[str, Any] | None:
+    async def _get_data(self, /, endpoint: str, **kwargs: str) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         headers = {

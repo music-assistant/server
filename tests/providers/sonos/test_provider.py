@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from zeroconf import ServiceStateChange
@@ -91,6 +91,25 @@ async def test_disabled_discovery_logs_again_after_reenable(
         record for record in caplog.records if "in discovery as it is disabled" in record.message
     ]
     assert len(ignored_records) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_player_set_up_in_the_meantime_is_not_set_up_again(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test a delayed setup of a player that is registered by then is skipped quietly."""
+    provider, mass = _make_provider(enabled=True)
+    mass.players.get_player.return_value = MagicMock(spec=SonosPlayer)
+    get_discovery_info = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.providers.sonos.provider.get_discovery_info", get_discovery_info
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=provider.logger.name):
+        await provider._setup_player(PLAYER_ID, SERVICE_NAME, _make_discovery_info())
+
+    get_discovery_info.assert_not_awaited()
+    assert "in discovery as it is already set up" in caplog.text
 
 
 @pytest.mark.asyncio

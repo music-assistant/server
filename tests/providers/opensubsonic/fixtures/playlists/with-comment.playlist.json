@@ -1,0 +1,43 @@
+{
+    "id": "4e7b9a2c-1f3d-4c8e-9a6b-2d5f8c1e7a30",
+    "name": "Road Trip",
+    "songCount": 1,
+    "coverArt": "pl-4e7b9a2c-1f3d-4c8e-9a6b-2d5f8c1e7a30",
+    "duration": 537,
+    "created": "2025-04-04T18:40:41.760062653Z",
+    "changed": "2025-04-04T18:40:41.760062653Z",
+    "comment": "Songs for long drives",
+    "owner": "user",
+    "public": false,
+    "entry": [
+        {
+            "id": "tr-16018",
+            "isDir": false,
+            "title": "November Rain",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 10,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 17316320,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 537,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/10 November Rain.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.669479868Z",
+            "type": "music",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        }
+    ]
+}

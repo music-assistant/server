@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from music_assistant.helpers import app_vars as app_vars_module
-from music_assistant.helpers.app_vars import APP_VAR_NAMES, app_var
+from music_assistant.helpers.app_vars import APP_VAR_NAMES, app_var, has_bundled_app_vars
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +87,16 @@ def test_bundled_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, expected in values.items():
         monkeypatch.delenv(f"MASS_APP_VAR_{name.upper()}", raising=False)
         assert app_var(name) == expected
+
+
+def test_has_bundled_app_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a bundle that decodes counts as the bundled credentials of a release build."""
+    monkeypatch.setattr(app_vars_module, "_bundled_text", lambda: _bundle_blob(os.urandom(16), {}))
+    assert has_bundled_app_vars()
+
+    app_vars_module._bundled.cache_clear()
+    monkeypatch.setattr(app_vars_module, "_bundled_text", lambda: None)
+    assert not has_bundled_app_vars()
 
 
 def test_corrupt_bundle_does_not_crash(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -14,6 +14,12 @@ CONF_CONTENT_TYPE = "content_type"
 # Hidden conf: Do we still need to promote authors/ narrators to full artists?
 CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
 
+# Hidden conf: Do we still need to store the folder signature of multi-file audiobooks?
+CONF_CHAPTER_FOLDER_REPARSE_DONE = "chapter_folder_reparse_done"
+
+# Hidden conf: Do we still need to prune dead mappings/ images of albums and artists?
+CONF_STALE_REFS_PRUNE_DONE = "stale_refs_prune_done"
+
 # Use a prefix: Authors/ narrators cannot be distinguished by their file path, like music artists.
 AUTHOR_ID_PREFIX: Final[str] = "author:"
 NARRATOR_ID_PREFIX: Final[str] = "narrator:"
@@ -34,10 +40,12 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
 )
 
 
+# the folder a new source is offered by default, where the caller may use it
+DEFAULT_MEDIA_FOLDER: Final[str] = "/media"
+
 CONF_ENTRY_PATH = ConfigEntry(
     key="path",
-    type=ConfigEntryType.STRING,
-    default_value="/media",
+    type=ConfigEntryType.FOLDER,
 )
 
 CONF_ENTRY_CONTENT_TYPE = ConfigEntry(

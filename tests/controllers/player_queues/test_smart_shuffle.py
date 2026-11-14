@@ -13,6 +13,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_VALUE_DISABLED, CONF_VALUE_ENABLED
 from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
+from music_assistant.controllers.player_queues.constants import SMART_FADE_ORDERING_BATCH
 from music_assistant.controllers.player_queues.smart_shuffle import (
     SmartShuffle,
     _arrange,
@@ -254,3 +255,98 @@ async def test_smart_fades_ordering_stays_inside_recency_tiers(
 
     index = {_song_id(item): position for position, item in enumerate(result)}
     assert max(index[f"f{i}"] for i in range(3)) < min(index[f"r{i}"] for i in range(3))
+
+
+@pytest.mark.asyncio
+async def test_smart_fades_ordering_reads_only_the_first_batch() -> None:
+    """A large queue only has the analysis of its first batch read, and nothing is dropped."""
+    items = [_item(f"s{i}", artist=f"A{i % 50}") for i in range(1000)]
+    looked_up: set[str] = set()
+
+    async def lookup(item_id: str, *_args: object, **_kwargs: object) -> None:
+        looked_up.add(item_id)
+
+    mass = MagicMock()
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(side_effect=lookup)
+
+    result = await _arrange_for_smart_fades(
+        mass, list(items), _snapshot(), RecencyWindows(), preceding_item=None
+    )
+
+    assert len(looked_up) == SMART_FADE_ORDERING_BATCH
+    assert sorted(_ids(result)) == sorted(_ids(items))
+
+
+@pytest.mark.asyncio
+async def test_the_first_batch_spans_the_recency_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first batch fills up tier by tier, and the tiers keep their order."""
+    fresh = [_item(f"f{i}", artist=f"F{i}") for i in range(3)]
+    recent = [_item(f"r{i}", artist=f"R{i}") for i in range(3)]
+    snapshot = _snapshot(song_recent=("r0", "r1", "r2"))
+    windows = RecencyWindows(song_seconds=WEEK, artist_seconds=0, duplicate_gap_seconds=GAP)
+    ordered_runs: list[list[str]] = []
+
+    async def record_run(
+        _mass: object,
+        items: list[QueueItem],
+        **_kwargs: object,
+    ) -> list[QueueItem]:
+        ordered_runs.append(_ids(items))
+        return list(items)
+
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_shuffle.order_queue_items",
+        record_run,
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_shuffle.SMART_FADE_ORDERING_BATCH", 4
+    )
+
+    result = await _arrange_for_smart_fades(
+        MagicMock(), [*recent, *fresh], snapshot, windows, preceding_item=None
+    )
+
+    # the three fresh items and one recent item make up the batch and lead the queue
+    assert [len(run) for run in ordered_runs] == [3, 1]
+    assert _ids(result)[:4] == [*ordered_runs[0], *ordered_runs[1]]
+    index = {_song_id(item): position for position, item in enumerate(result)}
+    assert max(index[f"f{i}"] for i in range(3)) < min(index[f"r{i}"] for i in range(3))
+    assert sorted(_ids(result)) == sorted(_ids([*recent, *fresh]))
+
+
+@pytest.mark.asyncio
+async def test_items_after_the_first_batch_start_clear_of_its_last_artist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The items after the first batch keep the regular spacing, clear of the last ordered one."""
+    first = _item("a1", artist="A")
+    same_artist = _item("a2", artist="A")
+    other_artist = _item("b1", artist="B")
+
+    async def keep_order(
+        _mass: object,
+        items: list[QueueItem],
+        **_kwargs: object,
+    ) -> list[QueueItem]:
+        return list(items)
+
+    monkeypatch.setattr("music_assistant.controllers.player_queues.smart_shuffle._interleave", list)
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_shuffle.order_queue_items",
+        keep_order,
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_shuffle.SMART_FADE_ORDERING_BATCH", 1
+    )
+
+    result = await _arrange_for_smart_fades(
+        MagicMock(),
+        [first, same_artist, other_artist],
+        _snapshot(),
+        RecencyWindows(),
+        preceding_item=None,
+    )
+
+    assert result == [first, other_artist, same_artist]

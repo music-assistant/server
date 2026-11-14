@@ -20,7 +20,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, Scope, User
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -36,21 +36,30 @@ from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.api import (
+    APICommandHandler,
+    parse_arguments,
+    redact_json_secrets,
+    redact_secrets,
+)
 from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
+from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 from .helpers.auth_middleware import (
+    INGRESS_CLIENT_KEY,
     has_scope,
     is_request_from_ingress,
+    is_request_from_ingress_proxy,
     player_access_filter,
     resolve_command_impersonation,
+    resolve_ingress_user,
     set_current_client_id,
     set_current_token,
     set_current_user,
     set_impersonated_user,
     set_sendspin_player_id,
 )
-from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
+from .helpers.login_flow import AuthTransport
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -82,11 +91,20 @@ class WebsocketClientHandler:
         self._sendspin_player_is_private = False  # whether that bound player is a private client
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
+        self._is_ingress_proxy = is_request_from_ingress_proxy(request)
+        # Home Assistant user and browser key an Ingress connection came in with
+        self._ingress_user_id: str | None = None
+        self._ingress_client_key: str | None = None
+        if self._is_ingress_proxy:
+            self._ingress_user_id = request.headers.get("X-Remote-User-ID") or None
+            self._ingress_client_key = request.query.get(INGRESS_CLIENT_KEY) or None
         self._events_unsub_callback: Any = None  # Will be set after authentication
         # uris of the personal playlists this client was told are gone
         self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
+        peername = request.transport.get_extra_info("peername") if request.transport else None
+        self._peer_address: str | None = peername[0] if peername else None
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
         self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
@@ -109,6 +127,22 @@ class WebsocketClientHandler:
         """Return the id of the WebRTC session this client connected through, if any."""
         return self._webrtc_session_id
 
+    @property
+    def auth_transport(self) -> AuthTransport:
+        """Return how this client reaches the server."""
+        if self._is_ingress_proxy:
+            return AuthTransport.INGRESS
+        if self.webserver.remote_access.is_gateway_connection(
+            self._webrtc_session_id, self._peer_address
+        ):
+            return AuthTransport.REMOTE
+        return AuthTransport.DIRECT
+
+    @property
+    def request_host(self) -> str:
+        """Return the host (and any port) the client says it used to reach the server."""
+        return self.request.headers.get("X-Forwarded-Host") or self.request.host
+
     def matches_token(self, token: str) -> bool:
         """
         Return True if this client authenticated with the given access token.
@@ -116,6 +150,15 @@ class WebsocketClientHandler:
         :param token: The access token to compare against.
         """
         return self._current_token == token
+
+    def matches_ingress_client(self, ha_user_id: str, client_key: str) -> bool:
+        """
+        Return True if this client came in through Home Assistant Ingress from the given browser.
+
+        :param ha_user_id: Id of the Home Assistant user the browser is signed in as.
+        :param client_key: The key the browser identifies itself with.
+        """
+        return self._ingress_user_id == ha_user_id and self._ingress_client_key == client_key
 
     def bind_sendspin_player(self, player_id: str) -> None:
         """
@@ -169,15 +212,15 @@ class WebsocketClientHandler:
             await wsock.close()
             return wsock
 
-        # For Ingress connections, auto-create/link user and subscribe to events immediately
-        # For regular connections, events will be subscribed after successful authentication
-        if self._is_ingress:
-            await self._handle_ingress_auth()
-            self._subscribe_to_events()
-
         disconnect_warn = None
 
         try:
+            # For Ingress connections, auto-create/link user and subscribe to events immediately
+            # For regular connections (and Ingress without a signed-in user), events will be
+            # subscribed after successful authentication
+            if self._is_ingress_proxy:
+                await self._handle_ingress_auth()
+
             while not wsock.closed:
                 msg = await wsock.receive()
 
@@ -187,12 +230,15 @@ class WebsocketClientHandler:
                 if msg.type != WSMsgType.TEXT:
                     continue
 
-                self._logger.log(VERBOSE_LOG_LEVEL, "Received: %s", msg.data)
+                if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                    self._logger.log(
+                        VERBOSE_LOG_LEVEL, "Received: %s", redact_json_secrets(msg.data)
+                    )
 
                 try:
                     command_msg = CommandMessage.from_json(msg.data)
                 except ValueError:
-                    disconnect_warn = f"Received invalid JSON: {msg.data}"
+                    disconnect_warn = "Received invalid JSON"
                     break
 
                 await self._handle_command(command_msg)
@@ -268,6 +314,7 @@ class WebsocketClientHandler:
         set_current_user(self._authenticated_user)
         set_current_token(self._current_token)
         set_sendspin_player_id(self._sendspin_player_id)
+        set_request_priority(RequestPriority.NORMAL)
 
         # Check authentication if required
         if handler.authenticated or handler.required_scope:
@@ -306,7 +353,9 @@ class WebsocketClientHandler:
         try:
             # handle the optional impersonation argument for impersonation-enabled commands
             if handler.allow_impersonation and msg.args:
-                if impersonation_user := await resolve_command_impersonation(self.mass, msg.args):
+                if impersonation_user := await resolve_command_impersonation(
+                    self.mass, msg.args, handler.required_scope
+                ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
@@ -339,11 +388,14 @@ class WebsocketClientHandler:
                     translation_key=err.translation_key,
                     translation_args=err.translation_args,
                     translation_owner=err.translation_owner,
+                    data=err.data,
                 )
             )
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
-                self._logger.exception("Error handling message: %s", msg)
+                self._logger.exception(
+                    "Error handling message: %s", replace(msg, args=redact_secrets(msg.args))
+                )
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
             err_msg = str(err) or err.__class__.__name__
@@ -363,7 +415,8 @@ class WebsocketClientHandler:
                     message: str = process()
                 else:
                     message = process
-                self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
+                if self._logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                    self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", redact_json_secrets(message))
                 await self.wsock.send_str(message)
 
     async def _send_message(self, message: MessageType) -> None:
@@ -517,58 +570,16 @@ class WebsocketClientHandler:
         await self._send_message(SuccessResultMessage(msg.message_id, {"locale": locale}))
 
     async def _handle_ingress_auth(self) -> None:
-        """Handle authentication for Ingress connections (auto-create/link user)."""
-        ingress_user_id = self.request.headers.get("X-Remote-User-ID")
-        ingress_username = self.request.headers.get("X-Remote-User-Name")
-        ingress_display_name = self.request.headers.get("X-Remote-User-Display-Name")
-
-        if ingress_user_id and ingress_username:
-            # Try to find existing user linked to this HA user ID
-            user = await self.webserver.auth.get_user_by_provider_link(
-                AuthProviderType.HOME_ASSISTANT, ingress_user_id
-            )
-
-            if not user:
-                # Check if a user with this username already exists
-                user = await self.webserver.auth.get_user_by_username(ingress_username)
-
-                if not user:
-                    # New user - fetch details from HA
-                    ha_username, ha_display_name, avatar_url = await get_ha_user_details(
-                        self.mass, ingress_user_id
-                    )
-                    # Auto-create user for Ingress (they're already authenticated by HA)
-                    role = await get_ha_user_role(self.mass, ingress_user_id)
-                    user = await self.webserver.auth.create_user(
-                        username=ha_username or ingress_username,
-                        role=role,
-                        display_name=ha_display_name or ingress_display_name,
-                        avatar_url=avatar_url,
-                    )
-
-                # Link to Home Assistant provider (or create the link if user already existed)
-                await self.webserver.auth.link_user_to_provider(
-                    user, AuthProviderType.HOME_ASSISTANT, ingress_user_id
-                )
-
-            # Update user with HA details if available (HA is source of truth)
-            # Fall back to ingress headers if API lookup doesn't return values
-            _, ha_display_name, avatar_url = await get_ha_user_details(self.mass, ingress_user_id)
-            final_display_name = ha_display_name or ingress_display_name
-            if final_display_name or avatar_url:
-                user = await self.webserver.auth.update_user(
-                    user,
-                    display_name=final_display_name,
-                    avatar_url=avatar_url,
-                )
-
+        """Handle authentication for Ingress connections (auto-create/link user, subscribe)."""
+        if user := await resolve_ingress_user(self.mass, self.request.headers):
             self._authenticated_user = user
             self._logger.debug("Ingress user authenticated: %s", user.username)
+            self._subscribe_to_events()
         else:
-            # No HA user headers - allow homeassistant system user to connect with token
+            # No (enabled) HA user - allow homeassistant system user to connect with token
             # This allows the Home Assistant integration to connect via the internal network
-            # The token authentication happens in _handle_auth_message
-            self._logger.debug("Ingress connection without user headers, expecting token auth")
+            # The token authentication happens in _handle_auth_command
+            self._logger.debug("Ingress connection without a signed-in user, expecting token auth")
 
     def _is_own_private_player(self, object_id: str | None) -> bool:
         """
@@ -653,6 +664,12 @@ class WebsocketClientHandler:
                 or event.data.user_id != self._authenticated_user.user_id
             ):
                 # a like or dislike is the business of its own user only
+                return
+
+            if event.event == EventType.BOOKMARKS_UPDATED and (
+                self._authenticated_user is None or event.data != self._authenticated_user.user_id
+            ):
+                # as are bookmarks; the data is the id of the user they belong to
                 return
 
             if isinstance(event.data, MediaItem) and event.data.favorite is not None:

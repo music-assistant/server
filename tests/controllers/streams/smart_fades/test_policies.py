@@ -9,8 +9,11 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.models import (
     Deck,
+    EchoOut,
+    TransitionStyle,
     TransitionTier,
 )
+from music_assistant.controllers.streams.smart_fades.planner.candidates import Candidate
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
 )
@@ -19,6 +22,7 @@ from music_assistant.controllers.streams.smart_fades.planner.policies import (
     AudibleTrimPolicy,
     DeadAirPolicy,
     OverlapPreferencePolicy,
+    RhythmClashPolicy,
     Verdict,
     VocalCollisionPolicy,
     VocalTruncationPolicy,
@@ -42,6 +46,7 @@ def _ctx(
     natural_entry: float = 0.0,
     outgoing_analysis: AudioAnalysisData | None = None,
     buffer_offset: float = 0.0,
+    bpm_diff_percent: float = 0.0,
 ) -> TransitionContext:
     deck = Deck(
         analysis=AudioAnalysisData(),
@@ -65,7 +70,7 @@ def _ctx(
         coda_zone=None,
         tier=tier,
         cross_meter=False,
-        bpm_diff_percent=0.0,
+        bpm_diff_percent=bpm_diff_percent,
         vocal_out_placement=None,
         vocal_in_placement=None,
         vocal_out_scoring=vocal_out_scoring,
@@ -73,6 +78,15 @@ def _ctx(
         natural_entry=natural_entry,
         protective_downbeats=(),
     )
+
+
+def _segue_candidate(duration: float, ideal: float) -> Candidate:
+    """Build a segue candidate off the downbeat, with its longest shrink step."""
+    candidate = _candidate(
+        bars=1, ideal=1, duration=duration, style=TransitionStyle.SEGUE, on_downbeat=False
+    )
+    spec = dataclasses.replace(candidate.spec, overlap_s=duration, ideal_overlap_s=ideal)
+    return dataclasses.replace(candidate, spec=spec)
 
 
 # a mask presence-only fixture: contents never matter to any policy, only
@@ -179,6 +193,53 @@ class TestVocalCollisionPolicy:
         assert self.policy.evaluate(near, ctx).penalty == pytest.approx(20.0, abs=0.01)
 
 
+class TestRhythmClashPolicy:
+    """Reject/penalize two kicks on top of each other, in a segue or a dressed transition."""
+
+    policy = RhythmClashPolicy()
+    kicks = ((0.0, 45.0),)
+
+    def _kick_ctx(self) -> TransitionContext:
+        return dataclasses.replace(_ctx(), kick_out=self.kicks, kick_in=self.kicks)
+
+    @pytest.mark.parametrize(
+        "style", [TransitionStyle.SEGUE, TransitionStyle.FILTER_OUT, TransitionStyle.ECHO_OUT]
+    )
+    def test_rejects_above_the_limit(self, style: TransitionStyle) -> None:
+        """A segue or a dressed transition clashing for more than 2 weighted bars is rejected."""
+        candidate = _candidate(style=style, rhythm_clash=2.01)
+
+        assert self.policy.evaluate(candidate, self._kick_ctx()).rejected is True
+
+    def test_penalty_quadratic_up_to_the_limit(self) -> None:
+        """Below the limit the penalty grows with the square of the clash."""
+        at_limit = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=2.0)
+        half = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=1.0)
+
+        assert self.policy.evaluate(at_limit, self._kick_ctx()).penalty == pytest.approx(20.0)
+        assert self.policy.evaluate(half, self._kick_ctx()).penalty == pytest.approx(5.0)
+
+    @pytest.mark.parametrize("style", [TransitionStyle.BLEND, TransitionStyle.CUT])
+    def test_a_blend_or_a_cut_is_not_judged(self, style: TransitionStyle) -> None:
+        """A blend or a cut is never rejected or penalized for its kicks."""
+        candidate = _candidate(style=style, rhythm_clash=9.0)
+
+        verdict = self.policy.evaluate(candidate, self._kick_ctx())
+
+        assert verdict.rejected is False
+        assert verdict.penalty == 0.0
+
+    def test_abstains_without_kick_data(self) -> None:
+        """A deck without a band profile leaves nothing to judge."""
+        candidate = _candidate(style=TransitionStyle.SEGUE, rhythm_clash=9.0)
+        ctx = dataclasses.replace(_ctx(), kick_out=self.kicks, kick_in=None)
+
+        verdict = self.policy.evaluate(candidate, ctx)
+
+        assert verdict.rejected is False
+        assert verdict.penalty == 0.0
+
+
 class TestVocalTruncationPolicy:
     """Reject a candidate that cuts off an audible outgoing vocal phrase."""
 
@@ -214,6 +275,15 @@ class TestVocalTruncationPolicy:
         ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(5.0, 19.5)]))
 
         assert self.policy.evaluate(candidate, ctx).rejected is False
+
+    def test_an_echo_out_truncates_at_its_cut(self) -> None:
+        """A phrase still singing past an echo's cut is cut off, though the echo rides on."""
+        echo = _candidate(duration=2.0, fade_end=20.0, style=TransitionStyle.ECHO_OUT)
+        plan = dataclasses.replace(echo.plan, echo=EchoOut(cut_s=18.0, beat_s=0.5))
+        candidate = dataclasses.replace(echo, plan=plan)
+        ctx = _ctx(vocal_out_scoring=VocalMask(windows=[(16.0, 19.0)]))
+
+        assert self.policy.evaluate(candidate, ctx).rejected is True
 
     def test_inaudible_vocal_past_the_rms_boundary_never_counts(self) -> None:
         """Windows beyond audio_end are inaudible and cannot register as truncation."""
@@ -303,9 +373,44 @@ class TestOverlapPreferencePolicy:
     def test_no_negative_penalty_when_tier_exceeds_context(self) -> None:
         """A candidate whose tier is more ambitious than the context's earns no tier penalty."""
         candidate = _candidate(bars=16, ideal=16, tier=TransitionTier.FULL_BLEND)
-        ctx = _ctx(tier=TransitionTier.QUICK_FADE)
+        ctx = _ctx(tier=TransitionTier.TEMPO_BLEND)
 
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(0.0)
+
+    def test_a_cut_pays_for_missing_the_preferred_segue(self) -> None:
+        """In a quick fade context any non-segue candidate pays the style penalty on top."""
+        candidate = _candidate(bars=2, ideal=4, tier=TransitionTier.QUICK_FADE)
+        ctx = _ctx(tier=TransitionTier.QUICK_FADE)
+
+        assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(25.0)
+
+    @pytest.mark.parametrize(("duration", "expected"), [(12.0, 0.0), (6.0, 4.0), (3.0, 8.0)])
+    def test_a_segue_pays_four_per_halving_of_its_longest_step(
+        self, duration: float, expected: float
+    ) -> None:
+        """A segue's cost grows by 4 for every halving below its longest step."""
+        candidate = _segue_candidate(duration, ideal=12.0)
+        ctx = _ctx(tier=TransitionTier.QUICK_FADE)
+
+        assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(expected)
+
+    def test_a_segue_pays_for_missing_the_preferred_blend(self) -> None:
+        """In a blend context the segue pays the style penalty on top."""
+        candidate = _segue_candidate(6.0, ideal=12.0)
+        ctx = _ctx(tier=TransitionTier.FULL_BLEND)
+
+        assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(19.0)
+
+    def test_a_rescue_segue_ranks_between_the_top_rung_and_the_rescue_rungs(self) -> None:
+        """In a blend context's rescue pass a full segue loses to a top rung, beats a 2-bar rung."""
+        ctx = _ctx(tier=TransitionTier.FULL_BLEND)
+        top_rung = _candidate(bars=8, ideal=8)
+        segue = _segue_candidate(12.0, ideal=12.0)
+        rescue_rung = _candidate(bars=2, ideal=8)
+
+        penalties = [self.policy.evaluate(c, ctx).penalty for c in (top_rung, segue, rescue_rung)]
+
+        assert penalties == [0.0, 15.0, 20.0]
 
     def test_never_rejects(self) -> None:
         """This is a pure soft-scoring policy: it never disqualifies a candidate."""
@@ -355,6 +460,12 @@ class TestAnchorAlignmentPolicy:
 
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(0.0)
 
+    def test_a_segue_is_never_judged_on_beat_alignment(self) -> None:
+        """An unsynced segue off the downbeat pays nothing."""
+        candidate = _segue_candidate(10.0, ideal=10.0)
+
+        assert self.policy.evaluate(candidate, _ctx()).penalty == pytest.approx(0.0)
+
     def test_penalties_stack(self) -> None:
         """Both the downbeat and entry-alignment penalties can apply together."""
         candidate = _candidate(on_downbeat=False)
@@ -366,12 +477,13 @@ class TestAnchorAlignmentPolicy:
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(6.0)
 
 
-def test_default_policies_returns_the_six_standard_policies() -> None:
-    """The standard policy tuple contains one instance of each of the six policies."""
+def test_default_policies_returns_the_seven_standard_policies() -> None:
+    """The standard policy tuple contains one instance of each of the seven policies."""
     policies = default_policies()
 
     assert [type(p) for p in policies] == [
         VocalCollisionPolicy,
+        RhythmClashPolicy,
         VocalTruncationPolicy,
         AudibleTrimPolicy,
         DeadAirPolicy,
