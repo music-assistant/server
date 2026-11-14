@@ -36,6 +36,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
+    CUSTOM_IMAGES_DIRNAME,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
@@ -151,6 +152,12 @@ class GenreController(MediaControllerBase[Genre]):
         self._sync_lookup_cache: dict[str | None, _SyncGenreLookup] = {}
 
         # register extra api handlers
+        self.mass.register_api_command(
+            "music/genres/set_image", self.set_item_image, required_scope=Scope.LIBRARY_MANAGE
+        )
+        self.mass.register_api_command(
+            "music/genres/remove_image", self.remove_item_image, required_scope=Scope.LIBRARY_MANAGE
+        )
         self.mass.register_api_command(
             "music/genres/add_alias", self.add_alias, required_scope=Scope.LIBRARY_MANAGE
         )
@@ -755,6 +762,14 @@ class GenreController(MediaControllerBase[Genre]):
         """
         if full_restore:
             self.logger.warning("Performing FULL restore - deleting all existing genres")
+            # the table wipe below would orphan any user-uploaded custom images,
+            # so delete their files (and cached variants) first
+            rows = await self.mass.music.database.get_rows_from_query(
+                f"SELECT metadata FROM {DB_TABLE_GENRES} "
+                f"WHERE metadata LIKE '%{CUSTOM_IMAGES_DIRNAME}/%'",
+                limit=0,
+            )
+            await self._delete_custom_images_of_rows(rows)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_MAPPING)
             await self.mass.music.database.delete(DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION)
             await self.mass.music.database.delete(
@@ -1295,6 +1310,16 @@ class GenreController(MediaControllerBase[Genre]):
             "last_scan_mapped": self._last_scan_mapped,
         }
 
+    def _get_default_images(
+        self, item: Genre, image_type: ImageType
+    ) -> UniqueList[MediaItemImage] | None:
+        """Return the builtin genre icon (if any) as the default thumb image."""
+        if image_type != ImageType.THUMB:
+            return None
+        if metadata := self._get_genre_icon_metadata(item.translation_key, item.content_type):
+            return metadata.images
+        return None
+
     @staticmethod
     async def _mapped_items[ItemCls: MediaItemType](
         controller: MediaControllerBase[ItemCls],
@@ -1700,8 +1725,7 @@ class GenreController(MediaControllerBase[Genre]):
             f")",
         )
         genres_before = await db.get_count(DB_TABLE_GENRES)
-        await db.delete_where_query(
-            DB_TABLE_GENRES,
+        empty_genres_where = (
             f"is_default = 0 "
             f"AND is_excluded = 0 "
             f"AND NOT EXISTS ("
@@ -1709,8 +1733,16 @@ class GenreController(MediaControllerBase[Genre]):
             f") "
             f"AND NOT EXISTS ("
             f"  SELECT 1 FROM {excl} WHERE {excl}.genre_id = {DB_TABLE_GENRES}.item_id"
-            f")",
+            f")"
         )
+        rows = await db.get_rows_from_query(
+            f"SELECT metadata FROM {DB_TABLE_GENRES} "
+            f"WHERE {empty_genres_where} "
+            f"AND metadata LIKE '%{CUSTOM_IMAGES_DIRNAME}/%'",
+            limit=0,
+        )
+        await self._delete_custom_images_of_rows(rows)
+        await db.delete_where_query(DB_TABLE_GENRES, empty_genres_where)
         genres_deleted = genres_before - await db.get_count(DB_TABLE_GENRES)
         if genres_deleted:
             self.logger.info("Genre scan: deleted %d empty non-default genres", genres_deleted)
@@ -1981,8 +2013,21 @@ class GenreController(MediaControllerBase[Genre]):
                     await self._ensure_aliases(genre_id, all_aliases)
                     if icon_metadata is not None:
                         current_md = json.loads(rows[0]["metadata"]) if rows[0]["metadata"] else {}
-                        fresh_images = icon_metadata.to_dict().get("images")
-                        if current_md.get("images") != fresh_images:
+                        current_images = current_md.get("images") or []
+                        custom_images = [
+                            img
+                            for img in current_images
+                            if (img.get("path") or "").startswith(f"{CUSTOM_IMAGES_DIRNAME}/")
+                        ]
+                        # never clobber a user-uploaded custom thumb with the builtin icon
+                        has_custom_thumb = any(
+                            img.get("type") == ImageType.THUMB.value for img in custom_images
+                        )
+                        fresh_images = [
+                            *(icon_metadata.to_dict().get("images") or []),
+                            *custom_images,
+                        ]
+                        if not has_custom_thumb and current_images != fresh_images:
                             current_md["images"] = fresh_images
                             await self.mass.music.database.update(
                                 DB_TABLE_GENRES,
@@ -2312,6 +2357,23 @@ class GenreController(MediaControllerBase[Genre]):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
+
+    async def _delete_custom_images_of_rows(self, rows: list[Mapping[str, Any]]) -> None:
+        """
+        Delete the custom image files (and cached variants) referenced by genre rows.
+
+        :param rows: Genre rows carrying a `metadata` JSON column.
+        """
+        for row in rows:
+            metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+            for img in metadata.get("images") or []:
+                img_path = img.get("path") or ""
+                if not img_path.startswith(f"{CUSTOM_IMAGES_DIRNAME}/"):
+                    continue
+                await self.mass.metadata.invalidate_image_cache(
+                    img.get("provider") or "builtin", img_path
+                )
+                await self._delete_custom_image_file(img_path)
 
     def _parse_summary_row(
         self, db_row: Mapping[str, Any], hidden_sources: set[str]
