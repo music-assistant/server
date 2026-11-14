@@ -1,0 +1,189 @@
+"""Tests for browsing the playlists and albums of the users a Soundcloud account follows."""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.media_items import BrowseFolder
+
+from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers import soundcloud
+from music_assistant.providers.soundcloud import SoundcloudMusicProvider
+
+BASE = "soundcloud--test123://"
+
+
+def _user_obj(user_id: int | None, permalink: str = "muloka", **extra: Any) -> dict[str, Any]:
+    """Build a Soundcloud API user object."""
+    return {
+        "id": user_id,
+        "username": permalink.capitalize(),
+        "permalink": permalink,
+        "avatar_url": "https://i1.sndcdn.com/avatars-abc-large.jpg",
+        **extra,
+    }
+
+
+def _playlist_obj(playlist_id: int, title: str, created_at: str = "") -> dict[str, Any]:
+    """Build a Soundcloud API playlist object."""
+    return {"id": playlist_id, "title": title, "created_at": created_at}
+
+
+@pytest.fixture
+def uncached(provider: SoundcloudMusicProvider) -> SoundcloudMusicProvider:
+    """Make the cached browse helpers call straight through to the api client."""
+    followed: Any = SoundcloudMusicProvider._get_followed_users.__wrapped__  # type: ignore[attr-defined]
+    user_sets: Any = SoundcloudMusicProvider._get_user_sets.__wrapped__  # type: ignore[attr-defined]
+    provider._get_followed_users = lambda: followed(provider)  # type: ignore[method-assign]
+    provider._get_user_sets = lambda *args: user_sets(provider, *args)  # type: ignore[method-assign]
+    return provider
+
+
+async def test_root_adds_following_folder(
+    provider: SoundcloudMusicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root listing keeps the standard folders and adds the Following folder."""
+    library_folder = BrowseFolder(item_id="artists", provider="x", path=f"{BASE}artists", name="")
+    monkeypatch.setattr(MusicProvider, "browse", AsyncMock(return_value=[library_folder]))
+
+    result = await provider.browse(BASE)
+
+    assert result[0] is library_folder
+    following = result[-1]
+    assert isinstance(following, BrowseFolder)
+    assert following.path == f"{BASE}following"
+    assert following.translation_key == "following"
+
+
+async def test_other_paths_go_to_the_standard_browse(
+    provider: SoundcloudMusicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A standard library path is left to the base implementation, without extra folders."""
+    base_browse = AsyncMock(return_value=[])
+    monkeypatch.setattr(MusicProvider, "browse", base_browse)
+
+    assert await provider.browse(f"{BASE}playlists") == []
+    base_browse.assert_awaited_once_with(f"{BASE}playlists")
+
+
+async def test_following_lists_a_folder_per_user(uncached: SoundcloudMusicProvider) -> None:
+    """Each followed user becomes a folder with the user's avatar; unusable users are skipped."""
+    uncached._soundcloud.get.return_value = {
+        "collection": [_user_obj(None), _user_obj(42)],
+        "next_href": None,
+    }
+
+    result = await uncached.browse(f"{BASE}following")
+
+    assert len(result) == 1
+    folder = result[0]
+    assert isinstance(folder, BrowseFolder)
+    assert folder.name == "Muloka"
+    # the permalink keeps the breadcrumb readable
+    assert folder.path == f"{BASE}following/muloka"
+    assert folder.image is not None
+    assert folder.image.path.endswith("avatars-abc-t500x500.jpg")
+    url = uncached._soundcloud.get.await_args.args[0]
+    assert "/users/1/followings?" in url
+
+
+async def test_following_leaves_out_users_without_sets(uncached: SoundcloudMusicProvider) -> None:
+    """A user without playlists or albums is left out, as the folder would be empty."""
+    uncached._soundcloud.get.return_value = {
+        "collection": [
+            _user_obj(1, "empty", playlist_count=0),
+            _user_obj(2, "curator", playlist_count=3),
+            _user_obj(3, "unknown"),
+        ],
+    }
+
+    result = await uncached.browse(f"{BASE}following")
+
+    # a user whose count is missing is kept, rather than hidden on a guess
+    assert [item.name for item in result] == ["Curator", "Unknown"]
+
+
+async def test_user_folder_lists_playlists_and_albums_newest_first(
+    uncached: SoundcloudMusicProvider,
+) -> None:
+    """A user's playlists and albums are merged into one list, newest first."""
+    uncached._soundcloud.get.side_effect = [
+        {"collection": [_user_obj(42)]},
+        {"collection": [_playlist_obj(1, "Old Mix", "2020-01-01T00:00:00Z"), {"id": 3}]},
+        {"collection": [_playlist_obj(2, "New Album", "2024-01-01T00:00:00Z")]},
+    ]
+
+    result = await uncached.browse(f"{BASE}following/muloka")
+
+    # the set without a title can not be parsed and is skipped
+    assert [item.name for item in result] == ["New Album", "Old Mix"]
+    urls = [call.args[0] for call in uncached._soundcloud.get.await_args_list]
+    assert "/users/42/playlists_without_albums?" in urls[1]
+    assert "/users/42/albums?" in urls[2]
+
+
+async def test_numeric_user_id_is_accepted(uncached: SoundcloudMusicProvider) -> None:
+    """A numeric user id in the path works for a user the account does not follow."""
+    uncached._soundcloud.get.side_effect = [
+        {"collection": []},
+        {"collection": [_playlist_obj(1, "Burning Man 2024")]},
+        {"collection": []},
+    ]
+
+    result = await uncached.browse(f"{BASE}following/999")
+
+    assert [item.name for item in result] == ["Burning Man 2024"]
+    assert "/users/999/" in uncached._soundcloud.get.await_args.args[0]
+
+
+async def test_unknown_permalink_is_not_found(uncached: SoundcloudMusicProvider) -> None:
+    """A permalink of a user the account does not follow can not be resolved."""
+    uncached._soundcloud.get.return_value = {"collection": [_user_obj(42)]}
+
+    with pytest.raises(MediaNotFoundError):
+        await uncached.browse(f"{BASE}following/someone-else")
+
+
+async def test_unknown_user_gives_an_empty_listing(uncached: SoundcloudMusicProvider) -> None:
+    """A user Soundcloud does not know answers with an error object, which lists nothing."""
+    uncached._soundcloud.get.return_value = {"errors": [{"error_message": "404 - Not Found"}]}
+
+    assert await uncached.browse(f"{BASE}following/999") == []
+
+
+async def test_path_below_a_user_is_rejected(provider: SoundcloudMusicProvider) -> None:
+    """A path deeper than a user's folder raises an error."""
+    with pytest.raises(InvalidDataError):
+        await provider.browse(f"{BASE}following/muloka/playlists")
+
+
+async def test_paged_collection_follows_next_href(provider: SoundcloudMusicProvider) -> None:
+    """The pages are followed through next_href until Soundcloud sends no further page."""
+    provider._soundcloud.get.side_effect = [
+        {"collection": [{"id": 1}], "next_href": "https://api-v2.soundcloud.com/next"},
+        {"collection": [{"id": 2}], "next_href": None},
+    ]
+
+    items = await provider._get_paged_collection("/users/42/albums")
+
+    assert items == [{"id": 1}, {"id": 2}]
+    assert provider._soundcloud.get.await_args.args[0] == "https://api-v2.soundcloud.com/next"
+
+
+async def test_paged_collection_stops_at_the_item_cap(
+    provider: SoundcloudMusicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large collection is cut off at the cap instead of being fetched in full."""
+    monkeypatch.setattr(soundcloud, "BROWSE_MAX_ITEMS", 3)
+    provider._soundcloud.get.return_value = {
+        "collection": [{"id": 1}, {"id": 2}],
+        "next_href": "https://api-v2.soundcloud.com/next",
+    }
+
+    items = await provider._get_paged_collection("/users/42/albums")
+
+    assert len(items) == 3
+    assert provider._soundcloud.get.await_count == 2

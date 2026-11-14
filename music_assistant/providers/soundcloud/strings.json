@@ -22,6 +22,9 @@
       "soundcloud_feed": {
         "name": "SoundCloud Feed"
       }
+    },
+    "folder": {
+      "following": { "name": "Following" }
     }
   },
   "manifest": {

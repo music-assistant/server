@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
+    BrowseFolder,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -39,6 +40,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
+from soundcloudpy.const import BASE_URL
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
@@ -67,6 +69,13 @@ API_RATE_LIMIT = 4
 API_RATE_PERIOD = 1
 # the tracks endpoint rejects a request for more ids than this
 TRACK_IDS_BATCH_SIZE = 50
+
+# browse folder that lists the playlists and albums of the users the account follows
+BROWSE_FOLLOWING = "following"
+USER_SETS_ENDPOINTS = ("playlists_without_albums", "albums")
+# a browse listing fetches pages of this size, and stops after the item cap
+BROWSE_PAGE_SIZE = 50
+BROWSE_MAX_ITEMS = 500
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -157,11 +166,11 @@ class DrmProtectedTrackError(MediaNotFoundError):
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from aiohttp import ClientSession
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
+    from music_assistant_models.media_items import ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -372,6 +381,39 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if item_id == f"{self.instance_id}_sc_subscribed_feed":
             return UniqueList(await self._get_subscribed_feed_tracks())
         return await self._recommendation_items_from_payload(item_id)
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse this provider's items.
+
+        :param path: The path to browse, (e.g. provider_id://following/123/playlists).
+        """
+        base = f"{self.instance_id}://"
+        path_parts = [part for part in path.removeprefix(base).split("/") if part]
+        if not path_parts or path_parts[0] != BROWSE_FOLLOWING:
+            result = list(await super().browse(path))
+            if not path_parts:
+                result.append(
+                    BrowseFolder(
+                        item_id=BROWSE_FOLLOWING,
+                        provider=self.instance_id,
+                        path=f"{base}{BROWSE_FOLLOWING}",
+                        name="Following",
+                        translation_key=BROWSE_FOLLOWING,
+                    )
+                )
+            return result
+
+        if len(path_parts) == 1:
+            return [
+                self._user_folder(artist, f"{base}{BROWSE_FOLLOWING}")
+                for artist in await self._get_followed_users()
+            ]
+        if len(path_parts) == 2:
+            user_id = await self._resolve_user_segment(path_parts[1])
+            return await self._get_user_sets(user_id)
+        msg = f"Invalid browse path: {path}"
+        raise InvalidDataError(msg)
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the mixed-selection collections as folders with items."""
@@ -843,6 +885,100 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 full_objs.update((str(obj.get("id")), obj) for obj in details)
         return [full_objs.get(str(item.get("id")), item) for item in track_objs]
 
+    @use_cache(3600, allow_expired_cache=True)  # Cache for 1 hour
+    async def _get_followed_users(self) -> list[Artist]:
+        """Return the users the account follows that have public playlists or albums."""
+        artists: list[Artist] = []
+        for user_obj in await self._get_paged_collection(f"/users/{self._user_id}/followings"):
+            # a user without sets would only lead to an empty folder; the count also holds
+            # sets that are not public, so a user that passes can still show an empty folder
+            if user_obj.get("playlist_count", 1) == 0:
+                continue
+            try:
+                artists.append(await self._parse_artist(user_obj))
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug(
+                    "Skipping followed user %s: %s", _item_id(user_obj), describe_sync_error(error)
+                )
+        return artists
+
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
+    async def _get_user_sets(self, user_id: str) -> list[Playlist]:
+        """
+        Return the public playlists and albums of a Soundcloud user, newest first.
+
+        :param user_id: The Soundcloud user id.
+        """
+        set_objs: list[dict[str, Any]] = []
+        for endpoint in USER_SETS_ENDPOINTS:
+            set_objs += await self._get_paged_collection(f"/users/{user_id}/{endpoint}")
+        set_objs.sort(key=lambda obj: str(obj.get("created_at") or ""), reverse=True)
+        playlists: list[Playlist] = []
+        for playlist_obj in set_objs:
+            try:
+                playlists.append(await self._parse_playlist(playlist_obj))
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug(
+                    "Skipping playlist %s of user %s: %s",
+                    _item_id(playlist_obj),
+                    user_id,
+                    describe_sync_error(error),
+                )
+        return playlists
+
+    async def _get_paged_collection(self, path: str) -> list[dict[str, Any]]:
+        """
+        Return the items of a paged Soundcloud collection, up to BROWSE_MAX_ITEMS.
+
+        :param path: The api path of the collection, e.g. /users/123/albums.
+        """
+        url: str | None = (
+            f"{BASE_URL}{path}?limit={BROWSE_PAGE_SIZE}&linked_partitioning=1"
+            f"&client_id={self._soundcloud.client_id}&app_version={self._soundcloud.app_version}"
+        )
+        items: list[dict[str, Any]] = []
+        while url and len(items) < BROWSE_MAX_ITEMS:
+            response = await self._soundcloud.get(url, headers=self._soundcloud.headers)
+            if not isinstance(response, dict):
+                break
+            # an unknown or deleted user answers with an error object instead of a collection
+            items.extend(response.get("collection") or [])
+            url = response.get("next_href")
+        return items[:BROWSE_MAX_ITEMS]
+
+    def _user_folder(self, artist: Artist, base_path: str) -> BrowseFolder:
+        """
+        Return the browse folder of a Soundcloud user.
+
+        :param artist: The user, as parsed by _parse_artist.
+        :param base_path: The browse path the folder sits in.
+        """
+        # the permalink makes the breadcrumb readable, where the numeric id would not be
+        folder = BrowseFolder(
+            item_id=artist.item_id,
+            provider=self.instance_id,
+            path=f"{base_path}/{_user_permalink(artist) or artist.item_id}",
+            name=artist.name,
+        )
+        if artist.metadata.images:
+            folder.image = artist.metadata.images[0]
+        return folder
+
+    async def _resolve_user_segment(self, segment: str) -> str:
+        """
+        Return the user id that a user segment of a browse path stands for.
+
+        :param segment: The permalink of a followed user, or a numeric user id.
+        :raises MediaNotFoundError: When the segment matches no followed user and is no id.
+        """
+        for artist in await self._get_followed_users():
+            if _user_permalink(artist) == segment:
+                return artist.item_id
+        if segment.isdigit():
+            return segment
+        msg = f"Soundcloud user {segment} is not available"
+        raise MediaNotFoundError(msg)
+
     def _report_skipped_item(
         self, media_type: MediaType, item_obj: dict[str, Any], err: Exception
     ) -> None:
@@ -950,6 +1086,14 @@ def _item_id(item_obj: Any) -> Any:
     """Return the id of a raw api object, or None if it does not have a readable one."""
     # called from the handlers that log an unusable object, so it must never raise itself
     return item_obj.get("id") if isinstance(item_obj, dict) else None
+
+
+def _user_permalink(artist: Artist) -> str | None:
+    """Return the permalink of a Soundcloud user, taken from its profile url."""
+    for mapping in artist.provider_mappings:
+        if mapping.url:
+            return mapping.url.rstrip("/").rsplit("/", 1)[-1] or None
+    return None
 
 
 def _token_claims(auth_token: str) -> dict[str, Any]:
