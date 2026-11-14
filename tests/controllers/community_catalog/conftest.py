@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import tarfile
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -11,12 +14,15 @@ from aiohttp import hdrs, web
 from aiohttp.test_utils import TestServer
 
 from music_assistant.controllers.community_catalog import index as index_module
+from music_assistant.controllers.community_catalog import installer as installer_module
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Mapping, Sequence
 
 ADDED = "2026-10-01T12:00:00Z"
 RELEASED = "2026-11-01T12:00:00Z"
+# the top-level folder of an archive GitHub serves
+ARCHIVE_ROOT = "someone-repo-0123abcd"
 
 
 @dataclass
@@ -29,6 +35,48 @@ class Registry:
     delay: float = 0
     # the line and the If-None-Match header of each request
     requests: list[tuple[str, str | None]] = field(default_factory=list)
+
+
+@dataclass
+class GitHub:
+    """What the fixture GitHub answers to a request for the archive of a commit."""
+
+    # the archive of each commit
+    archives: dict[str, bytes] = field(default_factory=dict)
+    status: int = 200
+    # send the start of the archive, then nothing until the fixture ends
+    stall: bool = False
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+def build_archive(
+    files: Mapping[str, bytes],
+    *,
+    modes: Mapping[str, int] | None = None,
+    extra: Sequence[tarfile.TarInfo] = (),
+) -> bytes:
+    """
+    Return a repository as GitHub archives it: one top-level folder, each folder before its files.
+
+    :param files: The content of each file, by path in the repository.
+    :param modes: The mode of a file, by path in the repository; 0o644 when omitted.
+    :param extra: Members added after the files as they are, named by their full path in the archive.
+    """
+    modes = modes or {}
+    folders = {parent for path in files for parent in PurePosixPath(path).parents}
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for folder in sorted(folders, key=str):
+            info = tarfile.TarInfo(str(PurePosixPath(ARCHIVE_ROOT, folder)))
+            info.type, info.mode = tarfile.DIRTYPE, 0o755
+            tar.addfile(info)
+        for path, content in files.items():
+            info = tarfile.TarInfo(f"{ARCHIVE_ROOT}/{path}")
+            info.size, info.mode = len(content), modes.get(path, 0o644)
+            tar.addfile(info, io.BytesIO(content))
+        for info in extra:
+            tar.addfile(info)
+    return buffer.getvalue()
 
 
 def catalog_index(line: str = "nightly", schema: int = 1) -> dict[str, Any]:
@@ -76,6 +124,32 @@ async def registry(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Registry]:
         url = f"http://{server.host}:{server.port}/v1/{{line}}.json"
         monkeypatch.setattr(index_module, "INDEX_URL", url)
         yield registry
+
+
+@pytest.fixture
+async def github(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[GitHub]:
+    """Serve archives at the address the server downloads community providers from."""
+    github = GitHub()
+
+    async def serve_archive(request: web.Request) -> web.StreamResponse:
+        if github.status != 200:
+            return web.Response(status=github.status)
+        archive = github.archives[request.match_info["commit"]]
+        if not github.stall:
+            return web.Response(body=archive)
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await response.write(archive[:100])
+        await github.release.wait()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/{owner}/{name}/tar.gz/{commit}", serve_archive)
+    async with TestServer(app) as server:
+        url = f"http://{server.host}:{server.port}/{{repository}}/tar.gz/{{commit}}"
+        monkeypatch.setattr(installer_module, "ARCHIVE_URL", url)
+        yield github
+        github.release.set()
 
 
 def _entry(
