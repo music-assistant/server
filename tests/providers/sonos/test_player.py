@@ -41,7 +41,7 @@ def _actions(flags: dict[str, bool]) -> PlaybackActions:
 def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:
     """Create a SonosPlayer bound to the given MusicAssistant, with a mocked client."""
     player = SonosPlayer.__new__(SonosPlayer)
-    client = MagicMock()
+    client = MagicMock(player_ip="192.168.1.20")
     client.disconnect = AsyncMock()
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.player")
@@ -61,7 +61,9 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._flow_queue_id = None
     player._queue_session_id = None
     player._hand_over_tasks = set()
-    player.upnp = MagicMock(follow=AsyncMock(), unfollow=AsyncMock(), follows=False)
+    player.upnp = MagicMock(
+        follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
+    )
     player._attr_options = []
     player._provider = MagicMock()
     player.client = client
@@ -201,6 +203,21 @@ async def test_on_unload_of_an_offline_speaker_ends_no_subscription() -> None:
 
     upnp: Any = player.upnp
     upnp.unfollow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_at_a_new_address_moves_upnp_along(timer_mass: MusicAssistant) -> None:
+    """Test a speaker that reconnects at a new address gets its UPnP requests there."""
+    player, client = _bind_player(timer_mass)
+    old_upnp: Any = player.upnp
+    client.player_ip = "192.168.1.21"
+
+    await _connect_player(player, client)
+    await asyncio.sleep(0)
+
+    assert player.upnp.location == "http://192.168.1.21:1400/xml/device_description.xml"
+    old_upnp.unfollow.assert_awaited_once()
+    await player.on_unload()
 
 
 @pytest.mark.asyncio

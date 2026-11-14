@@ -106,6 +106,7 @@ class SonosSpeakerUpnp:
         """
         self._upnp = upnp
         self._logger = logger
+        self.player_ip = player_ip
         self.location = f"http://{player_ip}:{UPNP_PORT}/xml/device_description.xml"
         self._device: UpnpDevice | None = None
         self._device_lock = asyncio.Lock()

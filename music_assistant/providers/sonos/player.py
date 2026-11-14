@@ -1366,6 +1366,9 @@ class SonosPlayer(Player):
             self.upnp.reset_timeouts()
             # a speaker that restarted lost its event subscription: the next poll makes it anew
             self.mass.create_task(self.upnp.unfollow())
+            if self.upnp.player_ip != self.client.player_ip:
+                provider = cast("SonosPlayerProvider", self._provider)
+                self.upnp = SonosSpeakerUpnp(provider.upnp, self.client.player_ip, self.logger)
             if self._marked_asleep:
                 self._attr_powered = True
                 self._marked_asleep = False
