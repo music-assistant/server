@@ -73,6 +73,9 @@ class MemberJoin:
     """
     A switched-off player that is powered on for the player that took it along.
 
+    It lasts until the player joined its owner, and ends before that when the power on or
+    the join fails, its owner calls it off or its owner is gone.
+
     :param owner_id: The group player or leader that took the player along.
     :param added: Whether the player was added to its owner, which adds it again once its
         device is online. Otherwise its owner started to play, and takes it into what it
@@ -119,6 +122,33 @@ class PowerMixin(_PlayerControllerBase):
         )
         async with lock:
             await self._handle_cmd_power(player_id, powered)
+
+    def awaits_member_join(self, owner_id: str, member_id: str) -> bool:
+        """
+        Return whether a player that was powered on for a group or leader still has to join it.
+
+        For a group that lets such a member join later (see
+        PlayerProtocol.on_member_powered_on): it only does so while this holds. A stop, a
+        pause or a power off of the owner, or a removal of the member from it, ends it.
+
+        :param owner_id: The group player or leader that took the player along.
+        :param member_id: The player that was powered on for it.
+        """
+        join = self._member_joins.get(member_id)
+        return join is not None and join.owner_id == owner_id
+
+    def member_join_ended(self, owner_id: str, member_id: str) -> None:
+        """
+        Tell that a member a group let join later has joined, or that the group gave it up.
+
+        From then on the member is powered off as idle like any other player. Does nothing
+        for a member that does not wait to join the group.
+
+        :param owner_id: The group player that took the player along.
+        :param member_id: The player that was powered on for it.
+        """
+        if self.awaits_member_join(owner_id, member_id):
+            del self._member_joins[member_id]
 
     def _handle_external_power_off(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -545,7 +575,8 @@ class PowerMixin(_PlayerControllerBase):
             what it plays by then.
         :return: A future that resolves to whether the device came online.
         """
-        if (join := self._member_joins.get(member.player_id)) is not None:
+        join = self._member_joins.get(member.player_id)
+        if join is not None and not join.online.done():
             join.owner_id, join.added = owner.player_id, added
             return join.online
         join = MemberJoin(owner.player_id, added, asyncio.get_running_loop().create_future())
@@ -561,6 +592,7 @@ class PowerMixin(_PlayerControllerBase):
         :param member_id: The player to power on.
         :param join: Its pending join.
         """
+        joins_later = False
         try:
             # the user's access was checked on the player that takes this one along
             with system_auth_context():
@@ -593,22 +625,25 @@ class PowerMixin(_PlayerControllerBase):
                 # a play that waits for its first member does not start once the power on
                 # was called off, also when the device is online by then
                 join.online.set_result(self._member_joins.get(member_id) is join)
-                await self._join_owner(member, join)
+                joins_later = await self._join_owner(member, join)
         finally:
-            if self._member_joins.get(member_id) is join:
+            # a join its group put off lasts until the group reports its end
+            if not joins_later and self._member_joins.get(member_id) is join:
                 del self._member_joins[member_id]
             if not join.online.done():
                 join.online.set_result(False)
 
-    async def _join_owner(self, member: Player, join: MemberJoin) -> None:
+    async def _join_owner(self, member: Player, join: MemberJoin) -> bool:
         """
         Let a player whose device came online join the player that took it along.
 
         :param member: The player that was powered on.
         :param join: Its pending join.
+        :return: Whether its group lets it join later (see
+            PlayerProtocol.on_member_powered_on).
         """
         if (owner := self.get_player(join.owner_id)) is None:
-            return
+            return False
         # what the owner and its members can group with includes the player again
         for player_id in dict.fromkeys((owner.player_id, *owner.group_members)):
             if player := self.get_player(player_id):
@@ -620,15 +655,16 @@ class PowerMixin(_PlayerControllerBase):
                 if self._member_joins.get(member.player_id) is not join:
                     # the owner was stopped or paused, or the player was removed from it,
                     # while this waited for the lock
-                    return
+                    return False
                 if join.added:
                     await self.cmd_set_members(
                         owner.player_id, player_ids_to_add=[member.player_id]
                     )
                 elif own := owner.own_protocol:
-                    await own.on_member_powered_on(member)
+                    return await own.on_member_powered_on(member) is True
         except MusicAssistantError as err:
             self.logger.warning("Player %s could not join %s: %s", member.name, owner.name, err)
+        return False
 
     def _cancel_power_on(self, player: Player) -> bool:
         """

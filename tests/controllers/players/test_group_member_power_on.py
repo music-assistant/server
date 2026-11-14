@@ -465,3 +465,94 @@ async def test_a_power_control_that_fails_leaves_the_member_out_with_one_warning
     assert setup.controller._member_joins == {}
     assert not den.player.power_on_in_progress
     setup.joined.assert_not_awaited()
+
+
+async def test_a_member_its_group_lets_join_later_waits_until_the_group_reports_the_end(
+    mock_mass: MagicMock,
+) -> None:
+    """A join the group put off lasts, and keeps the member from idling off, until it ended."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    setup.joined.return_value = True
+
+    await controller._power_on_group_members(setup.group)
+    await asyncio.sleep(BOOT_TIME * 2)
+
+    setup.joined.assert_awaited_once_with(setup.speakers["den"].player)
+    assert controller.awaits_member_join("downstairs", "den")
+    assert not controller.awaits_member_join("kitchen", "den")
+    assert list(controller._member_joins) == ["den"]
+
+    # only the group that took the member along ends its join
+    controller.member_join_ended("kitchen", "den")
+    assert list(controller._member_joins) == ["den"]
+    controller.member_join_ended("downstairs", "den")
+    assert controller._member_joins == {}
+    assert not controller.awaits_member_join("downstairs", "den")
+
+
+async def test_a_join_the_group_put_off_ends_when_the_group_is_called_off(
+    mock_mass: MagicMock,
+) -> None:
+    """A stop of the group ends the wait of a member that still had to join it."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    setup.joined.return_value = True
+    await controller._power_on_group_members(setup.group)
+    await asyncio.sleep(BOOT_TIME * 2)
+
+    controller._cancel_power_on(setup.group)
+
+    assert not controller.awaits_member_join("downstairs", "den")
+    assert controller._member_joins == {}
+
+
+async def test_a_member_that_waits_to_join_is_powered_on_again_when_it_went_off(
+    mock_mass: MagicMock,
+) -> None:
+    """A join the group put off does not stand in for a new power on of the member."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    den = setup.speakers["den"]
+    setup.joined.return_value = True
+    await controller._power_on_group_members(setup.group)
+    await asyncio.sleep(BOOT_TIME * 2)
+    put_off = controller._member_joins["den"]
+
+    # someone switches the member off again
+    den.control.power_state = False
+    den.protocol._attr_available = False
+    den.player.update_state(signal_event=False, force_update=True)
+    await controller._power_on_group_members(setup.group)
+
+    assert controller._member_joins["den"] is not put_off
+    await asyncio.sleep(BOOT_TIME * 2)
+    assert cast("AsyncMock", den.control.power_on).await_count == 2
+    assert setup.joined.await_count == 2
+
+
+@pytest.mark.parametrize("gone", ["owner", "member"])
+async def test_a_power_on_ends_with_the_player_that_is_removed(
+    mock_mass: MagicMock, gone: str
+) -> None:
+    """A member is not powered on for a group that is gone, nor does a removed member wait."""
+    setup = _setup(mock_mass, "kitchen", "den", switched_off=("den",))
+    controller = setup.controller
+    den = setup.speakers["den"]
+    setup.joined.return_value = True
+    if gone == "member":
+        # online, with a join that its group put off
+        await controller._power_on_group_members(setup.group)
+        await asyncio.sleep(BOOT_TIME * 2)
+    else:
+        await controller._power_on_group_members(setup.group)
+        await asyncio.sleep(BOOT_TIME / 2)
+        assert list(controller._member_joins) == ["den"]
+
+    with patch.object(controller, "_release_audio_source", AsyncMock()):
+        await controller._unregister_player(setup.group if gone == "owner" else den.player)
+
+    assert controller._member_joins == {}
+    assert not den.player.power_on_in_progress
+    await asyncio.sleep(BOOT_TIME * 2)
+    assert setup.joined.await_count == (0 if gone == "owner" else 1)

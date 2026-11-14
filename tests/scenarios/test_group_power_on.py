@@ -196,6 +196,40 @@ async def test_a_group_that_is_powered_on_waits_for_the_first_member_that_is_bac
     await power_off
 
 
+async def test_a_member_that_waits_for_its_busy_sync_group_is_not_powered_off_as_idle(
+    scenario: Scenario,
+) -> None:
+    """
+    A member a sync group switched on is not powered off as idle before it joined the leader.
+
+    The member has an idle power off of one minute. Its device is back while a command holds
+    the group for longer than that, so the member waits, on and idle. Its plug is not switched
+    off meanwhile, and it joins the leader at the leader's next report once the group is free.
+    """
+    _, (kitchen, office, den) = await _speakers(scenario, "Kitchen", "Office", "Den")
+    kitchen_id = _player_id(scenario, kitchen)
+    office_id, den_id = _player_id(scenario, office), _player_id(scenario, den)
+    group_id = await _group(scenario, "sync_group", kitchen_id, office_id, den_id)
+    await scenario.configure_player(den_id, idle_power_off=1)
+    plug = await _switch_off(scenario, den)
+    players = scenario.mass.players
+    await scenario.play(group_id)
+    assert plug.commands == [True]
+    await _come_back(scenario, den)
+    assert _state(scenario, den_id).synced_to is None
+
+    async with players.get_player_lock(group_id, PlayerLockPurpose.PLAYBACK):
+        await scenario.advance(100)
+        assert plug.commands == [True]
+        assert _state(scenario, den_id).synced_to is None
+    await scenario.report(kitchen, volume_level=30)
+    await scenario.idle()
+
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    assert plug.commands == [True]
+    await _stop(scenario, group_id)
+
+
 @pytest.mark.parametrize("group_type", ["sync_group", "universal_group"])
 async def test_a_power_control_that_refuses_leaves_the_member_out(
     scenario: Scenario, group_type: str, caplog: pytest.LogCaptureFixture

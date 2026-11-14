@@ -444,25 +444,27 @@ class UniversalGroupPlayer(PlayerProtocol):
                 await self.mass.players._handle_cmd_stop(player_id)
         self.update_state()
 
-    async def on_member_powered_on(self, member: Player) -> None:
+    async def on_member_powered_on(self, member: Player) -> bool:
         """
         Take a configured member this group powered on into the session, while it has one.
 
         :param member: The player of the member, whose device is online by now.
+        :return: False, as the member has joined once this returns.
         """
         if not self.is_active_session and self._attr_powered is not True:
-            return
+            return False
         member_id = member.player_id
         if (
             # the play that started the session took it in when its device was online by then
             member_id in self._attr_group_members
             or member_id not in self._attr_static_group_members
         ):
-            return
+            return False
         self._attr_group_members.append(member_id)
         if self.stream and not self.stream.done:
             await self._play_media_on_member(member_id, self._member_media(member_id))
         self.update_state()
+        return False
 
     async def poll(self) -> None:
         """Poll player for state updates."""

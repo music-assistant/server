@@ -4339,6 +4339,51 @@ class TestMemberTheGroupPoweredOn:
 
         assert sgp._late_members == set()
 
+    async def test_the_group_tells_whether_the_member_joins_later(self) -> None:
+        """Only a member that the group lets join later is reported as one that still joins."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _dynamic_group_with_a_member_away(mass)
+
+        assert await sgp.on_member_powered_on(display) is True
+
+        sgp.sync_leader = None
+        assert await sgp.on_member_powered_on(display) is False
+
+    async def test_a_member_whose_power_on_was_called_off_no_longer_joins(self) -> None:
+        """A stop or pause of the group keeps out a member that still had to join the leader."""
+        mass = _make_mock_mass()
+        sgp, leader, display = _dynamic_group_with_a_member_away(mass)
+        await sgp.on_member_powered_on(display)
+        mass.call_later.reset_mock()
+        mass.players.awaits_member_join = MagicMock(return_value=False)
+
+        sgp.on_group_member_updated(leader, {"volume_level": (10, 20)})
+        await sgp._rejoin_members()
+
+        mass.players.awaits_member_join.assert_called_with(sgp._group_player.player_id, "display")
+        mass.call_later.assert_not_called()
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.parametrize("end", ["joined", "removed", "dissolved"])
+    async def test_the_group_reports_the_end_of_a_join_it_put_off(self, end: str) -> None:
+        """The controller is told once a member joined the leader, or the group gave it up."""
+        mass = _make_mock_mass()
+        sgp, _leader, display = _dynamic_group_with_a_member_away(mass)
+        mass.players.member_join_ended = MagicMock()
+        await sgp.on_member_powered_on(display)
+        mass.players.member_join_ended.assert_not_called()
+
+        if end == "joined":
+            await sgp._rejoin_members()
+        elif end == "removed":
+            await sgp.set_members(player_ids_to_remove=["display"])
+        else:
+            await sgp._dissolve_syncgroup()
+
+        mass.players.member_join_ended.assert_called_once_with(
+            sgp._group_player.player_id, "display"
+        )
+
     async def test_a_dissolved_group_forgets_the_members_it_powered_on(self) -> None:
         """Once the group is dissolved, no member is taken to a leader any more."""
         mass = _make_mock_mass()

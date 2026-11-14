@@ -49,7 +49,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Iterable
 
     from music_assistant_models.enums import RepeatMode
     from music_assistant_models.player import PlayerSource
@@ -697,7 +697,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     translation_args=[self.display_name],
                 )
             members.remove(member_id)
-            self._late_members.discard(member_id)
+            self._forget_late_members([member_id])
             final_players_to_remove.append(member_id)
 
         if (leader := self.sync_leader) is None:
@@ -789,16 +789,18 @@ class SyncGroupPlayer(PlayerProtocol):
         if (not self.is_dynamic or self._late_members) and self.sync_leader is not None:
             self._schedule_rejoin_missing_members()
 
-    async def on_member_powered_on(self, member: Player) -> None:
+    async def on_member_powered_on(self, member: Player) -> bool:
         """
         Let a member this group powered on join the leader, while the group is formed.
 
         :param member: The player of the member, whose device is online by now.
+        :return: Whether the member joins the leader later, when the leader can take it.
         """
         if self.sync_leader is None or member.player_id not in self._attr_group_members:
-            return
+            return False
         self._late_members.add(member.player_id)
         self._schedule_rejoin_missing_members()
+        return True
 
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
@@ -1080,7 +1082,7 @@ class SyncGroupPlayer(PlayerProtocol):
             if sync_leader:
                 self.mass.players.schedule_active_output_protocol_clear(sync_leader)
             self.sync_leader = None
-            self._late_members.clear()
+            self._forget_late_members(list(self._late_members))
             self._update_attributes()
             self.update_state()
             # members derive active_group from our session; when the dissolve leaves our own
@@ -1670,9 +1672,15 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         grouped = set(leader.group_members)
         group_player_id = self._group_player.player_id
+        # a member whose power on was called off since no longer joins
+        late_members = [
+            member_id
+            for member_id in self._late_members
+            if self.mass.players.awaits_member_join(group_player_id, member_id)
+        ]
         return [
             member_id
-            for member_id in dict.fromkeys((*self._attr_static_group_members, *self._late_members))
+            for member_id in dict.fromkeys((*self._attr_static_group_members, *late_members))
             if member_id != leader.player_id
             and member_id not in grouped
             # the leader lists the available players it can group with, so a member
@@ -1730,8 +1738,8 @@ class SyncGroupPlayer(PlayerProtocol):
                 # add goes past set_members: track the member again so the next formation
                 # includes it. The leader may report the join only later, so this does not
                 # wait for it; a member the controller passed over is dropped by that form
+                self._forget_late_members(member_ids)
                 for member_id in member_ids:
-                    self._late_members.discard(member_id)
                     if member_id not in self._attr_group_members:
                         self._attr_group_members.append(member_id)
         except (PlayerCommandFailed, ResourceBusyError) as err:
@@ -1739,6 +1747,17 @@ class SyncGroupPlayer(PlayerProtocol):
             self.logger.warning(
                 "Could not re-add members to syncgroup %s: %s", self.display_name, err
             )
+
+    def _forget_late_members(self, member_ids: Iterable[str]) -> None:
+        """
+        Forget the members that still had to join the leader: they joined, or are given up.
+
+        :param member_ids: The members to forget, whether they still had to join or not.
+        """
+        for member_id in self._late_members.intersection(member_ids):
+            self._late_members.discard(member_id)
+            if self.player is not None:
+                self.mass.players.member_join_ended(self.player.player_id, member_id)
 
     def _schedule_reform_timer(self) -> None:
         """(Re)schedule the debounced re-form after the sync leader was removed."""

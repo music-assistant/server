@@ -1569,6 +1569,17 @@ plugs are switched on, and Downstairs is on once the device of Office is back.
   container of a virtual player.
 - Proven by: `test_group_power_on.py::test_a_group_that_is_powered_on_waits_for_the_first_member_that_is_back`
 
+### GROUP-33 · A member that waits for its busy sync group is not powered off as idle
+
+Den has an idle power off of one minute and its plug is switched off. The sync group Downstairs
+of Kitchen, Office and Den plays on Kitchen and Office and switched the plug on. Den's device is
+back while a command holds Downstairs for longer than that minute, so Den waits, on and idle. It
+is not powered off meanwhile, and joins Kitchen at Kitchen's next report once Downstairs is
+free.
+
+- End-to-end: **no**: it needs a command that holds a group for over a minute.
+- Proven by: `test_group_power_on.py::test_a_member_that_waits_for_its_busy_sync_group_is_not_powered_off_as_idle`
+
 ### GROUP-34 · A power control that refuses leaves the member out
 
 Downstairs, a sync group or a universal group with a fixed member list, has Den as a member,
