@@ -616,10 +616,14 @@ def construct_media_item_from_playlist_item(
             image_type = ImageType(img.type)
         except ValueError:
             continue
-        # nothing in the file proves who owns a local path, so only remote references are
-        # imported, and only from builtin or a provider that is loaded
-        if not img.path.startswith(_REMOTE_IMAGE_PREFIXES) or not (
-            img.provider == "builtin" or mass.get_provider(img.provider) is not None
+        # nothing in the file proves who owns a path, so only remote references from builtin
+        # or a loaded provider are imported, plus paths a loaded provider explicitly accepts
+        prov = mass.get_provider(img.provider)
+        is_remote = img.path.startswith(_REMOTE_IMAGE_PREFIXES)
+        if not (
+            (img.provider == "builtin" or prov is not None)
+            if is_remote
+            else (prov is not None and prov.accepts_stored_image_path(img.path))
         ):
             LOGGER.debug("Skipping playlist image %s of provider %s", img.path, img.provider)
             continue
@@ -628,7 +632,8 @@ def construct_media_item_from_playlist_item(
                 type=image_type,
                 path=img.path,
                 provider=img.provider,
-                remotely_accessible=img.remotely_accessible,
+                # a path only its provider can resolve is never reachable by a client itself
+                remotely_accessible=is_remote and img.remotely_accessible,
             )
         )
     return media_item
