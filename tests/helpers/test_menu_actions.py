@@ -7,11 +7,10 @@ from typing import Any
 import pytest
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType
-from music_assistant_models.provider import ProviderMenuAction
+from music_assistant_models.provider import MAX_MENU_ACTION_LABEL_LENGTH, ProviderMenuAction
 
 from music_assistant.helpers.menu_actions import (
     MAX_MENU_ACTION_ICON_LENGTH,
-    MAX_MENU_ACTION_LABEL_LENGTH,
     MAX_MENU_ACTIONS,
     read_menu_actions,
 )
@@ -80,6 +79,8 @@ def test_valid_actions_kept_untouched() -> None:
         "عرض على الإطار",
         "フォトフレームに表示",
         "Frame 🖼️",
+        "Family \U0001f468\u200d\U0001f469\u200d\U0001f467",
+        "Persian می\u200cخواهم",  # noqa: RUF001 - Persian letters, not Latin look-alikes
     ],
 )
 def test_label_in_any_script_accepted(label: str) -> None:
@@ -108,6 +109,10 @@ def test_not_a_list() -> None:
         _action(media_types="album"),
         _action(media_types=[1]),
         _action(icon=["mdi-image-frame"]),
+        _action(icon=0),
+        _action(icon=False),
+        _action(icon=[]),
+        _action(icon={}),
         _action(requires_player="false"),
         _action(requires_player=1),
     ],
@@ -138,6 +143,10 @@ def test_action_of_wrong_type_left_out(item: object) -> None:
         ({"label": "Show\u202eemarf eht no"}, "needs a label"),
         ({"label": "Show\u2067on the frame"}, "needs a label"),
         ({"label": "Show\x00"}, "needs a label"),
+        ({"label": "\u200b"}, "needs a label"),
+        ({"label": "\ufeff"}, "needs a label"),
+        ({"label": "\u00ad"}, "needs a label"),
+        ({"label": "\u200b\u200d "}, "needs a label"),
         ({"media_types": []}, "needs media_types"),
         ({"media_types": ["album", "unknown"]}, "needs media_types"),
         ({"media_types": ["album", "something_new"]}, "needs media_types"),

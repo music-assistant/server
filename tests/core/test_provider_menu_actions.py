@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 FRAME = "menu_frame"
 PLAIN = "menu_plain"
+LABELS = "menu_labels"
 DEMO = "_demo_plugin_provider"
 ALBUM_URI = "library://album/1"
 TRACK_URI = "library://track/1"
@@ -44,9 +45,13 @@ from music_assistant_models.config_entries import ConfigActionResult
 
 from music_assistant.models.plugin import PluginProvider
 
+# the calls of handle_menu_action, as (instance id, action id)
+CALLS = []
+
 
 class FrameProvider(PluginProvider):
     async def handle_menu_action(self, action_id, uri, player_id):
+        CALLS.append((self.instance_id, action_id))
         args = [action_id, self.instance_id, uri, str(player_id)]
         return ConfigActionResult(
             message=" ".join(args), translation_key="done", translation_args=args
@@ -131,6 +136,55 @@ async def test_menu_actions_reach_client_translated(
     ]
 
 
+async def test_translated_labels_checked(mass: MusicAssistant, location: Path) -> None:
+    """A translated label reaches a client only when it is one readable line of at most 80."""
+    action = {"media_types": ["album"], "scope": "library.read"}
+    menu_actions = [
+        {**action, "id": "good", "label": "Show on the picture frame"},
+        {**action, "id": "two_lines", "label": "Show on two lines"},
+        {**action, "id": "long", "label": "Show a long text"},
+        {**action, "id": "invisible", "label": "Show nothing"},
+    ]
+    texts = {
+        "good": "Show on the frame",
+        "two_lines": "Show on\ntwo lines",
+        "long": "x" * 81,
+        "invisible": "\u200b",
+    }
+    texts_nl = {
+        "good": "Toon op de fotolijst",
+        "two_lines": "Toon \u202eop twee regels",
+        "long": "y" * 80,
+        "invisible": "\u200b\ufeff",
+    }
+    _write_provider(
+        location,
+        LABELS,
+        PLAIN_CODE,
+        {"menu_actions": menu_actions},
+        {"menu_actions": {key: {"label": text} for key, text in texts.items()}},
+        {"menu_actions": {key: {"label": text} for key, text in texts_nl.items()}},
+    )
+    await mass.register_provider_manifest(str(location / LABELS), ProviderTier.COMMUNITY)
+    token = await _token(mass, UserRole.GUEST)
+
+    labels = {}
+    for language in ("en", "nl"):
+        async with mass.http_session_no_ssl.post(
+            f"{mass.webserver.internal_base_url}/api",
+            json={"message_id": "1", "command": "providers/manifests"},
+            headers={"Authorization": f"Bearer {token}", "Accept-Language": language},
+        ) as response:
+            manifests = await response.json()
+        manifest = next(m for m in manifests if m["domain"] == LABELS)
+        labels[language] = [action["label"] for action in manifest["menu_actions"]]
+
+    assert labels == {
+        "en": ["Show on the frame", "Show on two lines", "Show a long text", "Show nothing"],
+        "nl": ["Toon op de fotolijst", "Show on two lines", "y" * 80, "Show nothing"],
+    }
+
+
 @pytest.mark.parametrize(
     ("language", "message"),
     [
@@ -163,6 +217,7 @@ async def test_each_instance_answers_for_itself(mass: MusicAssistant, location: 
         ]
 
     assert len(set(instance_ids)) == 2
+    assert _hook_calls() == [(instance_id, "send_to_frame") for instance_id in instance_ids]
     assert messages == [
         f"send_to_frame by {instance_id} for {ALBUM_URI} on None" for instance_id in instance_ids
     ]
@@ -218,6 +273,7 @@ async def test_refused(
         )
 
     assert answer == {"error_code": getattr(error, "error_code")}  # noqa: B009
+    assert _hook_calls() == []
 
 
 async def test_refused_for_an_unloaded_provider(mass: MusicAssistant, location: Path) -> None:
@@ -230,6 +286,7 @@ async def test_refused_for_an_unloaded_provider(mass: MusicAssistant, location: 
         answer = await _invoke(client, instance_id, "send_to_frame", ALBUM_URI)
 
     assert answer == {"error_code": ProviderUnavailableError.error_code}
+    assert _hook_calls() == []
 
 
 async def test_refused_for_an_unavailable_provider(mass: MusicAssistant, location: Path) -> None:
@@ -244,6 +301,7 @@ async def test_refused_for_an_unavailable_provider(mass: MusicAssistant, locatio
         answer = await _invoke(client, instance_id, "send_to_frame", ALBUM_URI)
 
     assert answer == {"error_code": ProviderUnavailableError.error_code}
+    assert _hook_calls() == []
 
 
 async def test_demo_menu_action(mass: MusicAssistant) -> None:
@@ -366,6 +424,12 @@ async def _demo_player(mass: MusicAssistant) -> str:
         ):
             await asyncio.sleep(0.05)
     return players[0].player_id
+
+
+def _hook_calls() -> list[tuple[str, str]]:
+    """Return the calls of handle_menu_action on the frame provider, as (instance, action)."""
+    calls: list[tuple[str, str]] = sys.modules[f"{providers_package.__name__}.{FRAME}"].CALLS
+    return calls
 
 
 async def _token(mass: MusicAssistant, role: str) -> str:
