@@ -1596,13 +1596,35 @@ async def test_reconfigure_to_another_account_is_refused(flow_mass: MusicAssista
         assert step.type == FlowStepType.ABORT, step
         assert step.reason_translation is not None
         assert step.reason_translation.key == "provider_account_changed"
-        await _wait_for(lambda: _signed_in_account(flow_mass, instance_id))
 
     assert _signed_in_account(flow_mass, instance_id) == "account-a"
     conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
     assert flow_mass.config.decrypt_string(conf["setup_data"]["token"]) == "account-a"
     assert _bound_account(flow_mass, instance_id) == "account-a"
     assert conf.get("last_error") is None
+
+
+async def test_refused_reconfigure_returns_once_the_previous_account_is_back(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A flow retrying after the refusal never runs next to the recovery load."""
+
+    async def slow_init(_provider: _AccountProvider) -> None:
+        await asyncio.sleep(0.05)
+
+    with (
+        _use_account_provider(),
+        patch.object(_AccountProvider, "handle_async_init", slow_init),
+    ):
+        instance_id = await _load_account_provider(flow_mass, "account-a")
+        step = await _reconfigure_account(flow_mass, instance_id, "account-b")
+        assert step.type == FlowStepType.ABORT, step
+        # no recovery load is still in flight when the flow gets its error back
+        assert _signed_in_account(flow_mass, instance_id) == "account-a"
+        step = await _reconfigure_account(flow_mass, instance_id, "account-a")
+        assert step.type == FlowStepType.FINISH, step
+
+    assert _signed_in_account(flow_mass, instance_id) == "account-a"
 
 
 async def test_provider_without_account_is_not_bound(flow_mass: MusicAssistant) -> None:
