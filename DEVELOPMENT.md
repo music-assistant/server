@@ -250,10 +250,38 @@ The manifest file contains metadata and configuration about a provider. The supp
 | upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
 | self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. A provider whose setup reaches into the server itself, like a folder on its disk, may only keep it `true` when its setup flow checks what a member picks against what that member may use (the Local files flow checks every folder against `mass.storage.can_hold_music_source`); otherwise set it to `false` | boolean |
 | credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
+| menu_actions | Entries the provider adds to the menu of a media item, see [Menu actions](#-menu-actions). | array[object] |
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
 Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
+
+## 📋 Menu actions
+A provider can add its own entries to the menu of a track, album, artist, playlist, radio station, podcast, podcast episode or audiobook. It declares them in `menu_actions` in its manifest, and every app draws them: the provider ships no code for the app. The demo plugin (`_demo_plugin_provider`) has a complete example.
+
+```json
+"menu_actions": [
+  {
+    "id": "send_to_frame",
+    "label": "Show on the picture frame",
+    "media_types": ["album", "playlist"],
+    "icon": "mdi-image-frame",
+    "command": "my_plugin/send_to_frame",
+    "plays": false
+  }
+]
+```
+
+* `id`: names the action within the provider, in lower case letters, digits and underscores (at most 32).
+* `label`: the English text of the menu entry, at most 40 characters. Put the same text in the provider's `strings.json` under `menu_actions.<id>.label` to have it translated, as with the other texts of the provider.
+* `media_types`: the kinds of media item the entry is offered for: `track`, `album`, `artist`, `playlist`, `radio`, `podcast`, `podcast_episode` and `audiobook`.
+* `icon`: optional, the name of a [Material Design Icon](https://pictogrammers.com/library/mdi), such as `mdi-image-frame`.
+* `command`: the API command the app calls when the entry is chosen. It starts with the domain of the provider (`<domain>/...`).
+* `plays`: optional, `true` when the action plays the item. The app then offers it with the ways to play the item and also passes the player to play on.
+
+The provider registers the command itself, in `loaded_in_mass` with `self.mass.register_api_command()`, with the scope of what the action does, and removes it again in `unload`. The command receives `uri`, the uri of the media item, and for an action that plays also `player_id`. It answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once. To say the action failed, raise a `MusicAssistantError`.
+
+The server checks the declared actions when it loads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first five valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
 
 ## 🤝 Community providers
 Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
