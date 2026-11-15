@@ -35,11 +35,11 @@ def _setup(pause_timeout: Any = None) -> tuple[PlayerQueuesController, MagicMock
     player = MagicMock()
     player.offline_by_power_control = False
     player.extra_data = {}
-    player.state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
     mass.players.get_player = MagicMock(return_value=player)
 
     async def _device_pause(_queue_id: str) -> None:
-        player.state.playback_state = PlaybackState.PAUSED
+        player.playback_state = PlaybackState.PAUSED
 
     mass.players._handle_cmd_pause = AsyncMock(side_effect=_device_pause)
 
@@ -94,7 +94,7 @@ async def test_queue_resumed_within_the_pause_timeout_is_not_stopped() -> None:
 
     async def _resume_at_100_seconds(_seconds: float) -> None:
         if sleep.await_count == 100:
-            player.state.playback_state = PlaybackState.PLAYING
+            player.playback_state = PlaybackState.PLAYING
 
     sleep = AsyncMock(side_effect=_resume_at_100_seconds)
 

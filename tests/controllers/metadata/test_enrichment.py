@@ -44,6 +44,7 @@ from music_assistant.controllers.music.helpers import fill_track_from_recording
 from music_assistant.controllers.music.listing_cache import Listing
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
+    MusicBrainzLifeSpan,
     MusicBrainzRecording,
     MusicBrainzRelation,
     MusicBrainzRelease,
@@ -2216,6 +2217,33 @@ async def test_artist_identity_with_linking_disabled_fills_discogs_but_links_not
     assert artist.get_external_id(ExternalID.DISCOGS) == "3840"
     assert artist.metadata.last_musicbrainz_lookup is not None
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_stores_the_type_and_life_span_it_looked_up() -> None:
+    """The artist details fetched for linking also fill in the artist's type and life span."""
+    details = MusicBrainzArtist(
+        id=OTHER_MBID,
+        name="Johnny Cash",
+        sort_name="Cash, Johnny",
+        type="Person",
+        life_span=MusicBrainzLifeSpan(begin="1932-02-26", end="2003-09-12", ended=True),
+    )
+    musicbrainz = _musicbrainz(artist=details)
+    enrichment = _enrichment(musicbrainz)
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Johnny Cash",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
+    )
+
+    assert await enrichment._link_artist_to_musicbrainz(artist) is False
+
+    musicbrainz.get_artist_details.assert_awaited_once_with(OTHER_MBID)
+    assert artist.metadata.artist_entity_type == ArtistEntityType.PERSON
+    assert artist.metadata.life_span == LifeSpan(begin="1932-02-26", end="2003-09-12", ended=True)
 
 
 def _merged_artist(external_ids: set[tuple[ExternalID, str]] | None = None) -> Artist:

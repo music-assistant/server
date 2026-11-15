@@ -17,6 +17,7 @@ from music_assistant.helpers.provider_access import (
     own_music_sources,
     playback_instance_for,
     playback_sources,
+    resolve_playback_user_or_stand_in,
     source_access,
     source_owner,
     visible_music_sources,
@@ -509,3 +510,68 @@ async def test_playback_sources_skips_a_disabled_own_source() -> None:
 
     assert allowed is None
     assert preferred == []
+
+
+def _sources_of_every_sharing_mode() -> dict[str, ProviderAccess | None]:
+    """Return one streaming account per sharing mode, plus a source of the whole home."""
+    return {
+        "builtin": None,
+        **{
+            f"{sharing.value}--aaaa": ProviderAccess(
+                owner=OWNER, sharing=sharing, shared_users=[MEMBER]
+            )
+            for sharing in ProviderSharing
+        },
+    }
+
+
+async def test_playback_user_of_a_queue_with_a_user_is_that_user() -> None:
+    """Media for a queue that plays for a user is fetched as that user."""
+    mass = _mass()
+    owner = _user(OWNER)
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=MagicMock(userid=OWNER))
+    mass.webserver.auth.get_user = AsyncMock(return_value=owner)
+
+    assert await resolve_playback_user_or_stand_in(mass, "queue-1") is owner
+
+
+async def test_stand_in_for_anonymous_playback_may_use_what_anonymous_playback_may() -> None:
+    """The stand-in sees, for every sharing mode, exactly the sources of anonymous playback."""
+    sources = _sources_of_every_sharing_mode()
+    mass = _mass([_provider(instance_id, is_streaming=True) for instance_id in sources])
+    set_music_source_access(mass, sources)
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=MagicMock(userid=None))
+
+    stand_in = await resolve_playback_user_or_stand_in(mass, "queue-1")
+
+    anonymous = visible_playback_sources(mass, None)
+    assert anonymous == ["builtin", f"{ProviderSharing.EVERYONE.value}--aaaa"]
+    assert visible_music_sources(mass, stand_in) == anonymous
+    assert visible_playback_sources(mass, stand_in) == anonymous
+    assert hidden_music_sources(mass, stand_in) == hidden_music_sources(mass, None)
+    for access in sources.values():
+        assert access_allows(access, stand_in) is access_allows(access, None)
+    # it owns nothing, so no source is preferred or narrowed for it either
+    assert own_music_sources(mass, stand_in) == []
+    assert await playback_sources(mass, "queue-1") == (anonymous, [])
+
+
+async def test_stand_in_for_anonymous_playback_is_unrestricted_where_anonymous_playback_is() -> (
+    None
+):
+    """Without a source that is held back, neither anonymous playback nor its stand-in is."""
+    mass = _mass()
+    set_music_source_access(
+        mass,
+        {
+            "builtin": None,
+            "spotify--aaaa": ProviderAccess(owner=OWNER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=None)
+
+    stand_in = await resolve_playback_user_or_stand_in(mass, "queue-1")
+
+    assert visible_playback_sources(mass, None) is None
+    assert visible_music_sources(mass, stand_in) is None
+    assert visible_playback_sources(mass, stand_in) is None

@@ -5,7 +5,6 @@
   "name": "Subsonic Scrobbler",
   "description": "Scrobbles tracks played in Music Assistant to your local Subsonic server for history and stats.",
   "codeowners": ["@clusters"],
-  "tier": "community",
   "documentation": "https://music-assistant.io/plugins/subsonic_scrobble/",
   "multi_instance": false,
   "builtin": false,

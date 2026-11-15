@@ -46,6 +46,11 @@ def _native_player(mac: str | None = MAC, provider_domain: str = "sendspin") -> 
     )
 
 
+def _players(protocols: list[SimpleNamespace]) -> SimpleNamespace:
+    """Return a players controller holding the given protocols of other providers."""
+    return SimpleNamespace(iter_protocols=lambda: iter(protocols))
+
+
 def _mass(
     entities: list[dict[str, Any]],
     devices: list[dict[str, Any]] | None = None,
@@ -70,7 +75,7 @@ def _mass(
         "MusicAssistant",
         SimpleNamespace(
             get_provider=lambda _domain: hass_prov,
-            players=native_players or [],
+            players=_players(native_players or []),
         ),
     )
 
@@ -143,11 +148,13 @@ def test_native_player_macs_excludes_own_players() -> None:
     mass = cast(
         "MusicAssistant",
         SimpleNamespace(
-            players=[
-                _native_player(),
-                _native_player(mac="11:22:33:44:55:66", provider_domain="hass_players"),
-                _native_player(mac=None),
-            ]
+            players=_players(
+                [
+                    _native_player(),
+                    _native_player(mac="11:22:33:44:55:66", provider_domain="hass_players"),
+                    _native_player(mac=None),
+                ]
+            )
         ),
     )
     assert native_player_macs(mass) == {normalized_mac(MAC)}

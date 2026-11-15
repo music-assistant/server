@@ -34,6 +34,7 @@ from music_assistant.models.recommendation_payload import RecommendationPayloadM
 
 from .api_client import AppleMusicAPIClient
 from .constants import (
+    ARTWORK_TOKEN_MEDIA_TYPES,
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
@@ -242,13 +243,18 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve an artwork token to a freshly signed artwork URL."""
-        media_type, _, item_id = path.partition("/")
-        # a station token from before stations were radios cannot resolve as a playlist
-        if not is_apple_id(item_id) or (
-            media_type == MediaType.PLAYLIST.value and item_id.startswith("ra.")
-        ):
+        if not _is_artwork_token(path):
             return ""
+        media_type, _, item_id = path.partition("/")
         return await self.media_manager.get_artwork_url(media_type, item_id) or ""
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like an artwork token of this provider.
+
+        :param path: The stored image path.
+        """
+        return _is_artwork_token(path)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
@@ -513,3 +519,12 @@ def _pick_app_token(stored: str | None, bundled: str) -> str | None:
 def _token_expiry(token: str) -> int:
     """Return the expiry (unix timestamp) of an app token."""
     return int(jwt.decode(token, options={"verify_signature": False})["exp"])
+
+
+def _is_artwork_token(path: str) -> bool:
+    """Return whether path is an artwork token that resolve_image may look up."""
+    media_type, _, item_id = path.partition("/")
+    if media_type not in ARTWORK_TOKEN_MEDIA_TYPES or not is_apple_id(item_id):
+        return False
+    # a station token from before stations were radios cannot resolve as a playlist
+    return not (media_type == MediaType.PLAYLIST.value and item_id.startswith("ra."))

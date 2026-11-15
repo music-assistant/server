@@ -15,6 +15,7 @@ from music_assistant.constants import CONF_LOG_LEVEL, DB_TABLE_MEDIA_PROGRESS
 from music_assistant.controllers.music.helpers import ResumePoint, select_resume_point
 from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -174,6 +175,36 @@ async def test_library_sync_compares_with_the_owners_progress(
         "reader_a": 10,
         "reader_b": 30,
     }
+
+
+@pytest.mark.parametrize(
+    ("provider_timestamp", "expected_timestamp"),
+    [(OLD, OLD.timestamp()), (datetime(2100, 1, 1, tzinfo=UTC), None)],
+)
+async def test_library_sync_stamps_the_providers_time(
+    music_mass: MusicAssistant, provider_timestamp: datetime, expected_timestamp: float | None
+) -> None:
+    """The provider's progress keeps the time it was made; a time in the future counts as now."""
+    set_current_user(User(user_id="reader", username="reader", role=UserRole.USER))
+    try:
+        book = await music_mass.music.audiobooks.add_item_to_library(
+            _book(
+                fully_played=False,
+                resume_position_ms=10_000,
+                resume_position_timestamp=provider_timestamp,
+            )
+        )
+    finally:
+        set_current_user(None)
+
+    row = await music_mass.music.database.get_row(
+        DB_TABLE_MEDIA_PROGRESS, {"item_id": book.item_id, "provider": "library"}
+    )
+    assert row is not None
+    if expected_timestamp is None:
+        assert abs(row["timestamp"] - utc_timestamp()) < 60
+    else:
+        assert row["timestamp"] == expected_timestamp
 
 
 class _Provider(MusicProvider):

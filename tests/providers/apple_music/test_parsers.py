@@ -54,6 +54,7 @@ def _create_provider_mock() -> MagicMock:
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    provider.library_manager.mark_purchases_on_sale = AsyncMock()
     use_real_create_task(provider.mass)
     return provider
 
@@ -1255,7 +1256,7 @@ def _library_song_obj(play_params: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def test_parse_track_purchase_only_is_unavailable() -> None:
-    """A purchase with no catalog twin has playParams but Apple refuses to stream it."""
+    """Metadata cannot say whether a purchase is still sold, so the parser assumes not."""
     provider = _create_provider_mock()
     track_obj = _library_song_obj(
         {"id": "i.librarysong", "kind": "song", "isLibrary": True, "purchasedId": "397010985"}
@@ -1361,3 +1362,35 @@ def test_parse_album_library_album_is_available() -> None:
     result = parse_album(provider, album_obj)
 
     assert _availability(result) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["album/1440833098", "track/i.abc123", "artist/r.x_Y-1", "playlist/pl.u-1", "radio/ra.1"],
+)
+def test_accepts_stored_image_path_artwork_tokens(path: str) -> None:
+    """Artwork tokens of the item types the parser emits are accepted."""
+    assert AppleMusicProvider.accepts_stored_image_path(_create_provider_mock(), path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        "album/",
+        "album/Some Album",
+        "album/123/x",
+        "album/../x",
+        "album/123?x",
+        "album/123\n",
+        "/album/123",
+        "podcast/123",
+        "playlist/ra.123",
+        "@evil.com/x",
+        "//evil.com/x",
+        "http://evil/x",
+    ],
+)
+def test_accepts_stored_image_path_refuses_paths(path: str) -> None:
+    """Anything but an artwork token the provider can look up is refused."""
+    assert not AppleMusicProvider.accepts_stored_image_path(_create_provider_mock(), path)

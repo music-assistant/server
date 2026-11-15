@@ -22,26 +22,24 @@ from music_assistant.providers.chromecast.constants import MASS_APP_ID
 from music_assistant.providers.chromecast.player import ChromecastPlayer
 
 
-def _fake_player(*, flow_underrun: bool = False) -> Any:
-    """
-    Build an idle, ungrouped Cast player on mocked collaborators.
-
-    :param flow_underrun: Whether the queue's flow stream has been fully consumed.
-    """
+def _fake_player() -> Any:
+    """Build an idle, ungrouped Cast player on mocked collaborators."""
     # __init__ is skipped: it needs a provider, cast info and a live Chromecast connection.
     # Typed as Any because the collaborators below are read back as the mocks they are.
     fake = cast("Any", ChromecastPlayer.__new__(ChromecastPlayer))
+    fake._player = None
     fake.mass = MagicMock()
+    fake._provider = MagicMock(get_protocol=lambda pid: fake.mass.players.get_protocol(pid))
     fake.logger = MagicMock()
     fake.cc = MagicMock(app_id=MASS_APP_ID)
     fake.update_state = MagicMock()
-    fake._flow_stream_underrun = MagicMock(return_value=flow_underrun)
     fake._media_error_reported = False
     fake._app_quit_task_id = "cast_quit_app_test"
     fake._app_track_change_task_id = "cast_app_track_change_test"
     fake.active_cast_group = None
-    # display_name is a cached property, normally built from the config in __init__
-    fake._cache = {"display_name": "Test Cast"}
+    # an unattached protocol shows the name its device reports
+    fake._cache = {}
+    fake._attr_name = "Test Cast"
     # playback_state is a read-only property, so it is seeded through its backing field
     fake._attr_playback_state = PlaybackState.IDLE
     return fake
@@ -107,24 +105,15 @@ def test_group_error_is_not_logged_by_every_member() -> None:
     group.cc.media_controller.status = _error_status()
     member = _fake_player()
     member.active_cast_group = "group-uuid"
-    member.mass.players.get_player = MagicMock(return_value=group)
+    member.mass.players.get_protocol = MagicMock(return_value=group)
 
     member._handle_media_status(_error_status())
 
     member.logger.warning.assert_not_called()
     # assert the group status was really processed, so the check above cannot pass
     # just because the member bailed out before reaching the error handling
-    member.mass.players.get_player.assert_called_once_with("group-uuid")
+    member.mass.players.get_protocol.assert_called_once_with("group-uuid")
     member.update_state.assert_called_once()
-
-
-def test_flow_stream_underrun_is_not_an_error() -> None:
-    """An idle ERROR at the end of a fully consumed flow stream is expected, not logged."""
-    fake = _fake_player(flow_underrun=True)
-
-    fake._handle_media_status(_error_status())
-
-    fake.logger.warning.assert_not_called()
 
 
 def test_load_media_failed_logs_the_error_code() -> None:

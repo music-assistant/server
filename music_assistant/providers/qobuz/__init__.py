@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import hashlib
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from datetime import UTC
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
@@ -65,6 +65,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.playlists import validate_playlist_block_move
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     ThrottlerManager,
@@ -100,6 +101,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_MOVE,
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
@@ -598,6 +600,57 @@ class QobuzProvider(MusicProvider):
             "playlist/deleteTracks",
             playlist_id=prov_playlist_id,
             playlist_track_ids=",".join(playlist_track_ids),
+        )
+
+    async def move_playlist_track(
+        self, prov_playlist_id: str, from_position: int, to_position: int
+    ) -> None:
+        """
+        Move one track of a playlist to another position.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param from_position: The current position of the track, 1-based.
+        :param to_position: The position the track ends up at after the move, 1-based.
+        :raises InvalidDataError: A position is outside the playlist.
+        """
+        await self.move_playlist_tracks(prov_playlist_id, [from_position], to_position)
+
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based. None
+            moves the tracks to the end of the playlist.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        items = await self._get_all_items(
+            "playlist/get", key="tracks", playlist_id=prov_playlist_id, extra="tracks"
+        )
+        if to_position is None:
+            to_position = len(items) - len(positions) + 1
+        selected = validate_playlist_block_move(len(items), positions, to_position)
+        if selected == list(range(to_position, to_position + len(selected))):
+            return
+        insert_before = _insert_before(len(items), selected, to_position)
+        self.logger.debug(
+            "Moving positions %s of playlist %s to position %s (insert_before=%s)",
+            selected,
+            prov_playlist_id,
+            to_position,
+            insert_before,
+        )
+        # one request moves the whole block, however many tracks it holds
+        await self._get_data(
+            "playlist/updateTracksPosition",
+            playlist_id=prov_playlist_id,
+            playlist_track_ids=",".join(
+                str(items[pos - 1]["playlist_track_id"]) for pos in selected
+            ),
+            insert_before=insert_before,
         )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -1269,3 +1322,14 @@ def _flatten_album_obj(album_obj: dict[str, Any]) -> dict[str, Any]:
                 datetime.datetime.fromisoformat(release_date).replace(tzinfo=UTC).timestamp()
             )
     return flat_obj
+
+
+def _insert_before(length: int, selected: list[int], to_position: int) -> int:
+    """Return the Qobuz insert_before value that puts the selected positions at to_position."""
+    # The Qobuz API is unofficial: insert_before follows the web player, a 1-based position
+    # in the playlist as it is before the move. The counting lives in this function only.
+    chosen = set(selected)
+    rest = [pos for pos in range(1, length + 1) if pos not in chosen]
+    if to_position - 1 < len(rest):
+        return rest[to_position - 1]
+    return length + 1

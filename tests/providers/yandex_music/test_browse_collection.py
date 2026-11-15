@@ -125,3 +125,26 @@ async def test_collection_folders_carry_authored_translation_keys() -> None:
         assert isinstance(folder, BrowseFolder)
         assert folder.translation_key is not None
         assert folder.translation_key in authored
+
+
+@pytest.mark.asyncio
+async def test_collection_plays_only_the_tracks_folder() -> None:
+    """Only the tracks folder of the Collection is playable, not the artists/albums/playlists."""
+    features = {
+        ProviderFeature.LIBRARY_TRACKS,
+        ProviderFeature.LIBRARY_ARTISTS,
+        ProviderFeature.LIBRARY_ALBUMS,
+        ProviderFeature.LIBRARY_PLAYLISTS,
+    }
+    provider = _make_provider_mock(features)
+
+    folders = await YandexMusicProvider._browse_collection(
+        provider, "yandex_music_instance://collection"
+    )
+
+    assert {f.item_id: f.is_playable for f in folders if isinstance(f, BrowseFolder)} == {
+        "tracks": True,
+        "artists": False,
+        "albums": False,
+        "playlists": False,
+    }

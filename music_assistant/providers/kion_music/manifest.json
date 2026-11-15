@@ -7,7 +7,6 @@
   "codeowners": [
     "@trudenboy"
   ],
-  "tier": "community",
   "credits": [
     "[yandex-music-api](https://github.com/MarshalX/yandex-music-api)"
   ],

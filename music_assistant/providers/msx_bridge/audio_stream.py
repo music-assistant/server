@@ -65,13 +65,13 @@ class AudioPipeline:
         media: PlayerMedia,
     ) -> web.StreamResponse:
         """Serve this player's current media on this request."""
-        player_id = player.player_id
-        if not player.config.enabled:
+        player_id = player.protocol_id
+        if player.player is None:
             raise web.HTTPNotFound(text="Player not found")
 
         if self.provider.is_redirect_stream_mode():
             redirect_url = await self.provider.get_ma_stream_url(player_id, media)
-            if not player.config.enabled:
+            if player.player is None:
                 raise web.HTTPNotFound(text="Player not found")
             if redirect_url:
                 redirect_url = rewrite_stream_host(request, redirect_url)
@@ -111,7 +111,7 @@ class AudioPipeline:
         headers: dict[str, str],
     ) -> web.StreamResponse:
         """Serve audio via independent ffmpeg stream."""
-        player_id = player.player_id
+        player_id = player.protocol_id
         audio_source = self.provider.mass.streams.get_stream(
             media,
             pcm_format,
@@ -169,7 +169,7 @@ class AudioPipeline:
         pacing_profile: PacingProfile,
     ) -> None:
         """Pre-buffer audio chunks, then send HTTP headers and stream remaining data."""
-        player_id = player.player_id
+        player_id = player.protocol_id
         chunk_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=32)
         producer_done = asyncio.Event()
 
@@ -275,13 +275,7 @@ class AudioPipeline:
         """Return the pacing profile for the audio delivered to the TV."""
         if media.media_type == MediaType.AUDIO_SOURCE:
             return PacingProfile.LOW_LATENCY
-        if media.media_type in (MediaType.RADIO, MediaType.FLOW_STREAM):
-            return PacingProfile.NEAR_REALTIME
-        if media.source_id and media.queue_item_id:
-            item = self.provider.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            if item and item.streamdetails and item.streamdetails.is_realtime:
-                return PacingProfile.NEAR_REALTIME
-        return PacingProfile.DEFAULT
+        return PacingProfile.REALTIME
 
 
 def rewrite_stream_host(request: web.Request, url: str) -> str:
