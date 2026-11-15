@@ -70,7 +70,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 # a new enum value or error code, a change in what an existing field holds, or a command that
 # only the bundled frontend uses: the frontend ships in lockstep with the server and never
 # gates on this.
-API_SCHEMA_VERSION: Final[int] = 112
+API_SCHEMA_VERSION: Final[int] = 114
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -1063,6 +1063,26 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
     # audio overlay feature) at zero resource cost until actually used
     ("ambient_sounds", False),
+}
+
+# The editorial part of the Marketplace, which the team edits per release.
+CATALOG_POPULAR: Final[tuple[str, ...]] = (
+    "spotify",
+    "tidal",
+    "qobuz",
+    "filesystem_local",
+    "sonos",
+    "chromecast",
+    "airplay",
+    "spotify_connect",
+    "airplay_receiver",
+)
+# what to suggest next to a provider that is set up
+CATALOG_PAIRINGS: Final[dict[str, tuple[str, ...]]] = {
+    "spotify": ("spotify_connect", "lastfm_scrobble"),
+    "tidal": ("lastfm_scrobble",),
+    "qobuz": ("lastfm_scrobble",),
+    "airplay": ("airplay_receiver",),
 }
 
 # Seconds an external source may sit paused before we consider its session ended.
