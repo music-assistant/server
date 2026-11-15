@@ -804,15 +804,15 @@ async def test_a_sync_group_is_not_led_by_a_member_that_can_group_with_none_of_t
     await _stop(scenario, group_id)
 
 
-async def test_a_sync_group_is_led_by_the_member_that_can_group_with_the_most_others(
+async def test_a_first_member_that_can_group_with_some_of_the_others_leads_the_sync_group(
     scenario: Scenario,
 ) -> None:
     """
-    The member that can group with the most of the others leads, so all of them play.
+    A first member that can group with some of the others leads, whoever could lead more.
 
-    After Downstairs was created, Garden, its first member, kept only Office to group with, and
-    Kitchen and Den can not group with Garden. Office can group with all of them, so it leads
-    and every member follows it.
+    After Downstairs was created, Garden, its first member, kept only Office to group with,
+    while Office can group with all of them. Garden leads and Office follows it; Kitchen and
+    Den, which can not group with Garden, are left out, which is logged.
     """
     _, (garden, kitchen, office, den) = await _speakers(
         scenario, "Garden", "Kitchen", "Office", "Den"
@@ -825,14 +825,17 @@ async def test_a_sync_group_is_led_by_the_member_that_can_group_with_the_most_ot
     await scenario.report(kitchen, can_group_with={"sonos_office", "sonos_den"})
     await scenario.report(den, can_group_with={"sonos_kitchen", "sonos_office"})
     await scenario.idle()
+    scenario.expect_log("can not be grouped with")
 
     await scenario.play(group_id)
     await scenario.idle()
 
-    for member_id in (garden_id, kitchen_id, den_id):
-        assert _state(scenario, member_id).synced_to == office_id
-    assert _state(scenario, office_id).active_group == group_id
+    assert _state(scenario, office_id).synced_to == garden_id
+    assert _state(scenario, garden_id).active_group == group_id
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    for member_id in (kitchen_id, den_id):
+        assert _state(scenario, member_id).synced_to is None
+        assert member_id not in _state(scenario, group_id).group_members
     await _stop(scenario, group_id)
 
 
@@ -990,34 +993,6 @@ async def test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     assert _state(scenario, patio_id).synced_to is None
     assert _state(scenario, porch_id).synced_to is None
-    await _stop(scenario, group_id)
-
-
-async def test_a_member_that_follows_another_player_does_not_outrank_the_first_member(
-    scenario: Scenario,
-) -> None:
-    """
-    A member that follows a leader outside the sync group does not lead it over the first member.
-
-    Office follows Hall when Downstairs, of Kitchen, Office and Den, plays: Kitchen, its first
-    member, leads, and Office and Den follow it.
-    """
-    _, (kitchen, office, den, hall) = await _speakers(scenario, "Kitchen", "Office", "Den", "Hall")
-    kitchen_id, office_id, den_id, hall_id = (
-        _player_id(scenario, x) for x in (kitchen, office, den, hall)
-    )
-    await scenario.mass.players.cmd_set_members(hall_id, player_ids_to_add=[office_id])
-    await scenario.advance(10)
-    await scenario.idle()
-    group_id = await _sync_group(scenario, kitchen_id, office_id, den_id)
-
-    await scenario.play(group_id)
-    await scenario.idle()
-
-    assert _state(scenario, office_id).synced_to == kitchen_id
-    assert _state(scenario, den_id).synced_to == kitchen_id
-    assert _state(scenario, kitchen_id).active_group == group_id
-    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     await _stop(scenario, group_id)
 
 

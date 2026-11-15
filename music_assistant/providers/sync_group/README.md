@@ -81,7 +81,7 @@ The sync leader is selected when the group is powered on (which forms the group)
 4. **Prioritize static members**: For static groups, prefer members from the configured list
 5. **First available**: Otherwise pick the first available member as leader
 
-Within steps 2 to 5, the member that can group with the most other members leads, and the member order decides between equals: the first member only gives way to one that reaches more of the group. A member that follows another player at that moment counts as reaching all of them, because what it can group with only shows once it is released. Members that can not group with the chosen leader are left out of the group.
+Within steps 2 to 5 the first member leads, unless it can group with none of the other members while a later member can: that member leads then. A member that follows another player at that moment keeps its place, because what it can group with only shows once it is released. Members that can not group with the chosen leader are left out of the group.
 
 ### Leader Responsibilities
 
