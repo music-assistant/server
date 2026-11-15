@@ -10,9 +10,16 @@ import pytest
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import SlimEvent
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    ProtocolRole,
+)
 from music_assistant_models.errors import UnsupportedFeaturedException
 
+from music_assistant.constants import CONF_GROUP_MEMBERS
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer
 from tests.scenarios.harness import DEFAULT_FEATURES
 
@@ -427,3 +434,44 @@ async def test_a_stored_sync_group_of_speakers_plays_through_sendspin(scenario: 
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     assert [_streams(kitchen), _streams(office)] == [0, 0]
     await _stop(scenario, group_id)
+
+
+async def test_a_sync_group_plays_without_a_speaker_that_has_no_sendspin_output(
+    scenario: Scenario,
+) -> None:
+    """A sync group leaves a member out that its leader can not group with, and says so."""
+    (kitchen, office), (kitchen_out, office_out) = await _bridged_speakers(
+        scenario, (KITCHEN, "Kitchen"), (OFFICE, "Office")
+    )
+    garden = await _squeezelite(scenario, GARDEN, "Garden")
+    await scenario.idle()
+    kitchen_id, office_id, garden_id = _player_id(kitchen), _player_id(office), _player_id(garden)
+    # a group as it was stored while its members grouped through the squeezelite protocol
+    scenario.mass.config.create_protocol_record(
+        "syncgroup_downstairs",
+        provider="sync_group",
+        player_id=None,
+        role=ProtocolRole.VIRTUAL,
+        default_name="Downstairs",
+    )
+    scenario.mass.config.set_protocol_value(
+        "syncgroup_downstairs", CONF_GROUP_MEMBERS, [kitchen_id, office_id, garden_id]
+    )
+    sync_groups = scenario.mass.get_provider("sync_group")
+    assert isinstance(sync_groups, PlayerProvider)
+    await sync_groups.discover_players()
+    await scenario.idle()
+    group = scenario.mass.players.get_player_by_protocol("syncgroup_downstairs")
+    assert group is not None
+    scenario.expect_log("it can not be grouped with Kitchen")
+
+    await scenario.play(group.player_id)
+    await scenario.idle()
+
+    assert _commands(kitchen_out, "set_members") == [
+        ("set_members", [office_out.protocol_id], None)
+    ]
+    assert _state(scenario, group.player_id).group_members == [kitchen_id, office_id]
+    assert _state(scenario, garden_id).playback_state == PlaybackState.IDLE
+    assert [_streams(kitchen), _streams(office), _streams(garden)] == [0, 0, 0]
+    await _stop(scenario, group.player_id)
