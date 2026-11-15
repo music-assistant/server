@@ -8,7 +8,6 @@ from async_upnp_client.aiohttp import AiohttpSessionRequester
 from async_upnp_client.client_factory import UpnpFactory
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_PLAYERS
 from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -63,7 +62,7 @@ class DLNAPlayerProvider(PlayerProvider):
                 "eventing": not player.force_poll,
                 "last_seen_age_sec": round(now - player.last_seen),
             }
-            for player in self.players
+            for player in self.protocols
             if isinstance(player, DLNAPlayer)
         ]
         return {
@@ -103,7 +102,7 @@ class DLNAPlayerProvider(PlayerProvider):
             if udn in self._ignored_udns:
                 return
 
-            if dlna_player := self.mass.players.get_player(udn):
+            if dlna_player := self.get_protocol(udn):
                 # existing player
                 assert isinstance(dlna_player, DLNAPlayer)
                 if dlna_player.description_url == description_url and dlna_player.available:
@@ -113,16 +112,14 @@ class DLNAPlayerProvider(PlayerProvider):
                 dlna_player.description_url = description_url
             else:
                 # new player detected, setup our DLNAPlayer wrapper
-                conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
-                enabled = self.mass.config.get(conf_key, True)
                 # ignore disabled players
-                if not enabled:
+                if not self.mass.players.wants_protocol(udn):
                     self.logger.debug("Ignoring disabled player: %s", udn)
                     return
 
                 dlna_player = DLNAPlayer(
                     provider=self,
-                    player_id=udn,
+                    protocol_id=udn,
                     description_url=description_url,
                 )
                 # will be updated later when device connects

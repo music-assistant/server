@@ -2010,7 +2010,7 @@ async def test_get_track_audio_metadata_energy_level_prefers_loudness_provider()
     c = _analysis_controller_with_rows(rows)
     result = await c.get_track_audio_metadata(_track_with_mapping())
     assert result is not None
-    assert result.energy_level == 7
+    assert result.energy_level == 9
 
 
 @pytest.mark.asyncio

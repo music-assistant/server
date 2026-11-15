@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 async def test_announcement_waits_for_resolved_duration() -> None:
     """Wait for the effective stream duration instead of incomplete media metadata."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "test_player"
+    player._protocol_id = "test_player"
+    player._player = mock.MagicMock(player_id="pl_test_player")
     vars(player)["_audio_client"] = False
     player._attr_volume_level = 20
     player.glagol = cast(
@@ -51,7 +52,8 @@ async def test_announcement_waits_for_resolved_duration() -> None:
 async def test_announcement_without_known_duration_waits_for_timeout() -> None:
     """An unknown announcement duration falls back to the bounded wait."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "test_player"
+    player._protocol_id = "test_player"
+    player._player = mock.MagicMock(player_id="pl_test_player")
     vars(player)["_audio_client"] = False
     player._attr_volume_level = 20
     player.glagol = cast(
@@ -80,7 +82,8 @@ async def test_announcement_without_known_duration_waits_for_timeout() -> None:
 async def test_announcement_restores_volume_after_failure() -> None:
     """A failed announcement still restores the volume it changed."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "test_player"
+    player._protocol_id = "test_player"
+    player._player = mock.MagicMock(player_id="pl_test_player")
     vars(player)["_audio_client"] = False
     player._attr_volume_level = 20
     player.glagol = cast(
@@ -110,7 +113,8 @@ async def test_announcement_restores_volume_after_failure() -> None:
 async def test_announcement_uses_audio_play_on_current_firmware() -> None:
     """Announcements share the feature-gated URL playback path."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "test_player"
+    player._protocol_id = "test_player"
+    player._player = mock.MagicMock(player_id="pl_test_player")
     vars(player)["_audio_client"] = True
     player._attr_volume_level = 20
     send = mock.AsyncMock(return_value={"status": "SUCCESS"})

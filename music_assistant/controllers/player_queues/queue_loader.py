@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     SleepTimerMode,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
@@ -44,7 +45,7 @@ from music_assistant_models.media_items import (
     media_from_dict,
 )
 
-from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.autoplay import (
@@ -61,7 +62,9 @@ from music_assistant.controllers.player_queues.constants import (
 )
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
+    can_be_enqueued,
     committed_index,
+    external_track_placeholder,
     handle_play_action,
     has_dynamic_source,
     is_dynamic_source,
@@ -69,6 +72,7 @@ from music_assistant.controllers.player_queues.helpers import (
     origin_for,
     play_request_deadline,
     played_from_album,
+    replace_media_item,
 )
 from music_assistant.controllers.player_queues.managed_pool import gate_tracks
 from music_assistant.controllers.players.constants import SwitchedOffAction
@@ -76,9 +80,14 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
     set_impersonated_user,
+    user_auth_context,
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
-from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
+from music_assistant.helpers.provider_access import (
+    playback_sources,
+    resolve_playback_user,
+    resolve_playback_user_or_stand_in,
+)
 from music_assistant.helpers.throttle_retry import (
     RequestPriority,
     request_priority,
@@ -86,6 +95,7 @@ from music_assistant.helpers.throttle_retry import (
     with_request_priority,
 )
 from music_assistant.helpers.uri import parse_uri
+from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
@@ -103,6 +113,45 @@ if TYPE_CHECKING:
 
 class QueueLoaderMixin(_PlayerQueuesBase):
     """Load items into a queue: apply the enqueue option, resolve single items, refill the pool."""
+
+    async def look_up_external_track(self, queue_item: QueueItem) -> None:
+        """
+        Make a queue item play the track its external id names on a music provider.
+
+        The queue item keeps its id and its origin; its name, duration and image follow the
+        track that was found. Only the music sources the queue's stream may use are asked,
+        and loads of the same item that run at once share one lookup. An item that does
+        not, or no longer, hold a track known only by an external id is left as it is.
+
+        :param queue_item: The queue item that is about to be loaded.
+        :raises MediaNotFoundError: None of those music sources has the track, or the item
+            was marked unavailable before.
+        :raises ResourceTemporarilyUnavailable: The track was not found while a music
+            provider or MusicBrainz could not answer.
+        :raises RetriesExhausted: As above, after the retries ran out.
+        """
+        if not queue_item.available:
+            raise MediaNotFoundError(f"Item {queue_item.uri} is not available")
+        queue_id = queue_item.queue_id
+        # as for its stream details: whoever has the item loaded is not necessarily the
+        # user the queue plays for
+        user = await resolve_playback_user_or_stand_in(self.mass, queue_id)
+        external_track = queue_item.media_item
+        if external_track is None or external_track.provider != EXTERNAL_ID_PROVIDER:
+            # another load of the item found its track in the meantime
+            return
+        with user_auth_context(user):
+            track = await self._external_track_on_a_provider(external_track.item_id)
+        if queue_item.media_item is not external_track:
+            # the load that shared this lookup already put the track in place
+            return
+        replace_media_item(queue_item, track)
+        # a play counts as picked by the user when it is of an item that was enqueued
+        enqueued_items = self._queue_data[queue_id].enqueued_media_items
+        for index, enqueued_item in enumerate(enqueued_items):
+            if enqueued_item == external_track:
+                enqueued_items[index] = track
+        self.signal_update(queue_id, items_changed=True)
 
     async def _enqueue_with_option(
         self,
@@ -344,30 +393,47 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             raise MediaNotFoundError(f"Item {queue_item.uri} is not available")
 
         if queue_item.media_item and isinstance(queue_item.media_item, Track):
+            looked_up = queue_item.media_item.provider == EXTERNAL_ID_PROVIDER
+            if looked_up:
+                await self.look_up_external_track(queue_item)
             album = queue_item.media_item.album
-            # prefer the full library media item so we have all metadata and provider(quality) info
-            # always request the full library item as there might be other qualities available
-            if library_item := await self.mass.music.get_library_item_by_prov_id(
-                queue_item.media_item.media_type,
-                queue_item.media_item.item_id,
-                queue_item.media_item.provider,
-            ):
-                queue_item.media_item = cast("Track", library_item)
-            elif not queue_item.media_item.image or queue_item.media_item.provider.startswith(
-                "ytmusic"
-            ):
-                # Youtube Music has poor thumbs by default, so we always fetch the full item
-                # this also catches the case where they have an unavailable item in a listing
-                try:
-                    fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
-                except (ResourceTemporarilyUnavailable, RetriesExhausted) as err:
-                    self.logger.warning(
-                        "Could not fetch full details of %s, playing it as listed: %s",
-                        queue_item.uri,
-                        err,
-                    )
-                else:
-                    queue_item.media_item = cast("Track", fetched_item)
+            # the track that was just looked up is the library track when there is one, and
+            # the full track of its provider otherwise
+            if not looked_up:
+                # prefer the full library media item so we have all metadata and
+                # provider(quality) info
+                # always request the full library item as there might be other qualities available
+                if library_item := await self.mass.music.get_library_item_by_prov_id(
+                    queue_item.media_item.media_type,
+                    queue_item.media_item.item_id,
+                    queue_item.media_item.provider,
+                ):
+                    queue_item.media_item = cast("Track", library_item)
+                elif not queue_item.media_item.image or queue_item.media_item.provider.startswith(
+                    "ytmusic"
+                ):
+                    # Youtube Music has poor thumbs by default, so we always fetch the full item
+                    # this also catches the case where they have an unavailable item in a listing
+                    # like the stream details that follow, the details are fetched for the
+                    # queue's playback, whoever has the item loaded
+                    playback_user = await resolve_playback_user_or_stand_in(self.mass, queue_id)
+                    try:
+                        with user_auth_context(playback_user):
+                            fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
+                    except (
+                        ResourceTemporarilyUnavailable,
+                        RetriesExhausted,
+                        # whether the queue may play from the item's source is for the
+                        # stream details to say
+                        InsufficientPermissions,
+                    ) as err:
+                        self.logger.warning(
+                            "Could not fetch full details of %s, playing it as listed: %s",
+                            queue_item.uri,
+                            err,
+                        )
+                    else:
+                        queue_item.media_item = cast("Track", fetched_item)
 
             # ensure we got the full (original) album set
             if album and (
@@ -629,7 +695,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         played = 0 if queue.current_index is None else queue.current_index + 1
         unplayed = max(len(queue_data.items) - played, 0)
         headroom = max(MANAGED_POOL_MAX - unplayed, 0)
-        queue_items = [build_queue_item(queue_id, x) for x in pool_tracks[:headroom] if x.available]
+        queue_items = [
+            build_queue_item(queue_id, x) for x in pool_tracks[:headroom] if can_be_enqueued(x)
+        ]
         if not queue_items:
             return
         await self.load(
@@ -824,7 +892,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_items = [
                 build_queue_item(queue_id, track, origin=origin_for(artist, track, pin=False))
                 for track in tracks
-                if track.available
+                if can_be_enqueued(track)
             ]
             if queue_items:
                 break
@@ -1149,7 +1217,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 queue_id, cast("PlayableMediaItemType", resolved.item), origin=resolved.origin
             )
             for resolved in media_items
-            if resolved.item.available
+            if can_be_enqueued(resolved.item)
         ]
 
         if not queue_items:
@@ -1175,9 +1243,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         :raises MusicAssistantError: When the entry can not be played, the request then skips it.
         """
         # parse provided uri into a MA MediaItem or Basic QueueItem from URL
-        media_item = (
-            await self.mass.music.get_item_by_uri(entry) if isinstance(entry, str) else entry
-        )
+        media_item = await self._item_by_uri(entry) if isinstance(entry, str) else entry
         if isinstance(media_item, ItemMapping):
             # Resolve any ItemMapping to its full media item, exactly as the str-uri
             # form above already does. The loader needs the real object: the
@@ -1186,11 +1252,50 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # needs details such as a playlist's 'is_dynamic'.
             if media_item.uri is None:
                 raise InvalidDataError("ItemMapping has no URI")
-            media_item = await self.mass.music.get_item_by_uri(media_item.uri)
+            media_item = await self._item_by_uri(media_item.uri)
+        if isinstance(media_item, Track) and media_item.provider == EXTERNAL_ID_PROVIDER:
+            # it is on no music source yet: the queue looks it up when it loads it, on the
+            # music sources of the user it then plays for
+            return media_item
         # never enqueue what this user has no music source for; failing here keeps
         # the caller from finding out only when the item is about to be streamed
         self.mass.music.check_item_playable_for_user(media_item, user)
         return media_item
+
+    @guard_single_request
+    async def _external_track_on_a_provider(self, item_id: str) -> Track:
+        """
+        Return the track an external item id names, on a music source of the current user.
+
+        :param item_id: Item id as external_item_id() builds it.
+        :raises MediaNotFoundError: None of the user's music sources has the track.
+        :raises MusicAssistantError: When the track was not found while a music provider
+            or MusicBrainz could not answer.
+        """
+        return await self.mass.music.tracks.get(
+            item_id,
+            EXTERNAL_ID_PROVIDER,
+            allow_update_metadata=False,
+            # playing a track takes no details of its album and artists
+            recursive=False,
+        )
+
+    async def _item_by_uri(self, uri: str) -> MediaItemType | BrowseFolder:
+        """
+        Return the media item a uri of a play request names.
+
+        A track known only by an external id is returned as it is known without a lookup:
+        in the form it was listed in, or named by its id when no listing was kept.
+
+        :param uri: The uri of one entry of a play request.
+        :raises MusicAssistantError: When the uri names nothing that can be played.
+        """
+        if uri.startswith(f"{EXTERNAL_ID_PROVIDER}://"):
+            media_type, _, item_id = await parse_uri(uri)
+            if media_type == MediaType.TRACK:
+                listed = await self.mass.music.tracks.get_listed_external_item(item_id)
+                return listed or external_track_placeholder(item_id)
+        return await self.mass.music.get_item_by_uri(uri)
 
     async def _played_copy(
         self, requested: str | MediaItemType | ItemMapping | BrowseFolder
@@ -1296,7 +1401,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if track not in held and held_songs.isdisjoint(song_keys(track))
                 ]
             queue_items = [
-                build_queue_item(queue_id, track) for track in pool_tracks if track.available
+                build_queue_item(queue_id, track) for track in pool_tracks if can_be_enqueued(track)
             ]
             if not queue_items:
                 raise MediaNotFoundError(
@@ -1356,14 +1461,20 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
+        # a track that is not looked up yet is left out: as a seed it would cost a lookup
+        # of its own, for every such track a refill is seeded with
         queue_track_items: list[Track] = [
             q.media_item
             for q in self._queue_data[queue_id].items
-            if q.media_item and isinstance(q.media_item, Track)
+            if isinstance(q.media_item, Track) and q.media_item.provider != EXTERNAL_ID_PROVIDER
         ]
-        source_items = (
-            seed_items if seed_items is not None else self._queue_data[queue_id].source_items
-        )
+        source_items = [
+            item
+            for item in (
+                seed_items if seed_items is not None else self._queue_data[queue_id].source_items
+            )
+            if item.provider != EXTERNAL_ID_PROVIDER
+        ]
         if not source_items:
             # this may happen during race conditions as this method is called delayed
             return []

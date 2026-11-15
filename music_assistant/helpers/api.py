@@ -7,15 +7,16 @@ import inspect
 import logging
 import pkgutil
 import re
-from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Sequence
+from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
 from functools import cache
 from types import NoneType, UnionType
-from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Final, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from mashumaro.exceptions import MissingField
+from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.media_items.media_item import MediaItem
 
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
@@ -23,6 +24,9 @@ from music_assistant.helpers.util import try_parse_bool
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import Scope
+    from music_assistant_models.errors import MusicAssistantError
+
+    from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +36,26 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 _TYPE_ALIAS_CACHE: dict[str, Any] = {}
 _MODEL_TYPE_CACHE: dict[str, Any] = {}
 _MAX_TYPE_HINT_RESOLVE_ATTEMPTS = 32
+
+# the arguments, by name, that hold the id of a player (or of several) in the commands
+# that have them; a queue shares the id of its player
+PLAYER_ID_ARGUMENTS: Final[frozenset[str]] = frozenset(
+    {
+        "player_id",
+        "queue_id",
+        "target_player",
+        "source_queue_id",
+        "target_queue_id",
+        "venue_player_id",
+        "web_player_id",
+        "player_ids",
+        "child_player_ids",
+        "player_ids_to_add",
+        "player_ids_to_remove",
+        "members",
+        "player_filter",
+    }
+)
 
 _REDACTED = "<redacted>"
 _SECRET_KEY_SUFFIXES = (
@@ -106,6 +130,7 @@ class APICommandHandler:
         :param authenticated: Whether authentication is required (default: True).
         :param required_scope: Scope required to execute the command, a tuple of scopes
             of which the caller needs one, None for any authenticated user.
+            ``Scope.ALL`` (``*``) means administrators only.
         :param allow_impersonation: Whether the command accepts a 'user' argument
             to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
@@ -195,6 +220,7 @@ def api_command(
     :param authenticated: Whether authentication is required (default: True).
     :param required_scope: Scope required to execute the command, a tuple of scopes
         of which the caller needs one, None means any authenticated user.
+        ``Scope.ALL`` (``*``) means administrators only.
     :param allow_impersonation: Whether the command accepts a 'user' argument
         to execute the command on behalf of another user (default: False).
     :param alias: Whether this is a backward-compatible alias (default: False).
@@ -244,6 +270,61 @@ def parse_arguments(
                 name, value, value_type, default, allow_value_convert=True
             )
     return final_args
+
+
+def run_api_command(
+    mass: MusicAssistant, handler: APICommandHandler, args: Mapping[str, Any]
+) -> Any:
+    """
+    Call the handler of an API command, with the legacy player ids in its arguments resolved.
+
+    :param mass: The MusicAssistant instance.
+    :param handler: The handler of the command.
+    :param args: The arguments of the command, by name.
+    :return: What the handler returns, which may be a coroutine or an async generator.
+    """
+    return handler.target(**resolve_player_ids(mass, args))
+
+
+def api_error_message(message_id: str, error: MusicAssistantError) -> ErrorResultMessage:
+    """
+    Return the message that reports an error of a command to an API client.
+
+    :param message_id: The id of the command the error answers.
+    :param error: The error the command raised.
+    """
+    return ErrorResultMessage(
+        message_id,
+        error.error_code,
+        str(error) or error.__class__.__name__,
+        translation_key=error.translation_key,
+        translation_args=error.translation_args,
+        translation_owner=error.translation_owner,
+        data=error.data,
+    )
+
+
+def resolve_player_ids(mass: MusicAssistant, args: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Return the arguments of an API command with the legacy player ids in them resolved.
+
+    A player keeps answering to its legacy ids: in the arguments named in
+    PLAYER_ID_ARGUMENTS, each of them is replaced by the id of its player.
+
+    :param mass: The MusicAssistant instance.
+    :param args: The arguments of the command, by name.
+    """
+    resolved = dict(args)
+    for name in PLAYER_ID_ARGUMENTS.intersection(args):
+        value = args[name]
+        if isinstance(value, str):
+            resolved[name] = mass.players.resolve_player_id(value)
+        elif isinstance(value, list):
+            resolved[name] = [
+                mass.players.resolve_player_id(item) if isinstance(item, str) else item
+                for item in value
+            ]
+    return resolved
 
 
 def parse_utc_timestamp(datetime_string: str) -> datetime:

@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +39,10 @@ SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 OCI_REVISION_ANNOTATION = "org.opencontainers.image.revision"
 OCI_WHEEL_ANNOTATION = "io.music-assistant.wheel.sha256"
 APP_SECRETS_PATH = "music_assistant/helpers/app_secrets.json"
+PROVIDERS_PATH = "music_assistant/providers"
+# the manifest of a provider; a folder that starts with an underscore is a template,
+# which a server only loads in dev mode
+PROVIDER_MANIFEST_PATTERN = re.compile(rf"^{PROVIDERS_PATH}/(?P<domain>[^/_][^/]*)/manifest\.json$")
 FRONTEND_VERSION_PATTERN = re.compile(r"^(?P<base>\d+(?:\.\d+)+)(?:\.post(?P<post>\d+))?$")
 
 
@@ -120,6 +124,19 @@ class GitRepository:
             raise ReleaseWorkflowError(result.stderr.strip() or f"Unable to compare {tag}")
         return int(self._run("rev-list", "--count", f"{base}..{source_sha}"))
 
+    def added_files(self, since: str, source_sha: str, path: str) -> list[str]:
+        """
+        Return the files under a path that the source commit has and an earlier one lacks.
+
+        :param since: Tag or commit to compare with.
+        :param source_sha: Exact release source commit.
+        :param path: Folder to look in.
+        """
+        output = self._run(
+            "diff", "--name-only", "--diff-filter=A", "--no-renames", since, source_sha, "--", path
+        )
+        return output.splitlines()
+
     def _run(self, *args: str) -> str:
         result = self._run_result(*args)
         if result.returncode:
@@ -191,9 +208,7 @@ def determine_auto_release(
 
     if channel == "stable":
         # during an RC window the stable branch already carries next-minor content
-        if latest_rc is not None and (
-            latest_stable is None or compare_release_versions(latest_rc, latest_stable) == "newer"
-        ):
+        if _in_rc_window(latest_rc, latest_stable):
             msg = (
                 f"An RC newer than the latest stable release exists ({latest_rc}); "
                 "create the next stable release manually via the Create Release workflow"
@@ -235,6 +250,39 @@ def determine_auto_release(
         previous_tag=previous_tag,
         commits_since=commits_since,
     )
+
+
+def next_release_line(branch: str, tags: Iterable[str]) -> str:
+    """
+    Return the ``<major>.<minor>`` line of the next release from a branch, as auto-release names it.
+
+    For ``dev`` that is the line of the next beta; for ``stable`` the line of the next stable
+    release, which in an RC window is the line of the release candidate.
+
+    :param branch: ``dev`` or ``stable``.
+    :param tags: The tags of the repository.
+    """
+    tags = list(tags)
+    latest = {
+        channel: max(
+            (tag for tag in tags if pattern.fullmatch(tag)), key=_release_version_key, default=None
+        )
+        for channel, pattern in CHANNEL_PATTERNS.items()
+    }
+    if branch == channel_branch("stable"):
+        if _in_rc_window(latest["rc"], latest["stable"]):
+            version = _next_rc(latest["rc"], latest["beta"])
+        else:
+            version = _next_stable(latest["stable"])
+    else:
+        version = _next_beta(latest["beta"], latest["stable"])
+    base = next(
+        match.group("base")
+        for pattern in CHANNEL_PATTERNS.values()
+        if (match := pattern.fullmatch(version))
+    )
+    major, minor, _patch = _version_tuple(base)
+    return f"{major}.{minor}"
 
 
 def previous_release_tag(
@@ -293,6 +341,31 @@ def is_current_release(
     return latest_tag is None or _release_version_key(version) >= _release_version_key(
         latest_tag
     ), latest_tag
+
+
+def new_providers(repository: GitRepository, version: str, source_sha: str) -> list[str]:
+    """
+    Return the domains of the providers that are new in the release line of a version.
+
+    A provider is new when the newest stable release of an earlier release line lacks it.
+    Without such a release, no provider is new.
+
+    :param repository: Source Git repository, with the release tags.
+    :param version: Release version, of any channel.
+    :param source_sha: Exact release source commit.
+    """
+    line = _release_version_key(version)[:2]
+    earlier = [
+        tag for tag in repository.tags(CHANNEL_PATTERNS["stable"]) if _version_tuple(tag)[:2] < line
+    ]
+    if not earlier:
+        return []
+    files = repository.added_files(earlier[0], source_sha, PROVIDERS_PATH)
+    return [
+        match.group("domain")
+        for file in files
+        if (match := PROVIDER_MANIFEST_PATTERN.fullmatch(file))
+    ]
 
 
 def compare_release_versions(current: str, requested: str) -> str:
@@ -584,6 +657,12 @@ def set_addon_version(config_path: Path, version: str) -> None:
     config_path.write_text(config, encoding="utf-8")
 
 
+def _in_rc_window(latest_rc: str | None, latest_stable: str | None) -> bool:
+    return latest_rc is not None and (
+        latest_stable is None or compare_release_versions(latest_rc, latest_stable) == "newer"
+    )
+
+
 def _next_stable(latest_stable: str | None) -> str:
     if latest_stable is None:
         return "0.1.0"
@@ -760,6 +839,13 @@ def _configure_release_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--github-output", type=Path)
 
 
+def _configure_new_providers_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--repository", type=Path, default=Path.cwd())
+    parser.add_argument("--output", type=Path, required=True)
+
+
 def _configure_compare_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--current", required=True)
     parser.add_argument("--requested", required=True)
@@ -808,6 +894,8 @@ def _build_parser() -> argparse.ArgumentParser:
     current_parser.add_argument("--version", required=True)
     current_parser.add_argument("--repository", type=Path, default=Path.cwd())
     current_parser.add_argument("--github-output", type=Path)
+
+    _configure_new_providers_parser(subparsers.add_parser("new-providers"))
 
     _configure_compare_parser(subparsers.add_parser("compare-release-versions"))
     _configure_compare_parser(subparsers.add_parser("compare-frontend-versions"))
@@ -888,6 +976,13 @@ def main() -> int:
                 },
                 args.github_output,
             )
+        elif args.command == "new-providers":
+            domains = new_providers(
+                GitRepository(args.repository),
+                args.version,
+                args.source_sha,
+            )
+            args.output.write_text(json.dumps(domains) + "\n", encoding="utf-8")
         elif args.command == "compare-release-versions":
             _write_outputs(
                 {

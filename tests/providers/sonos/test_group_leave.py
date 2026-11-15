@@ -62,7 +62,6 @@ class _Household:
         self.mass = MagicMock()
         self.apis = {player_id: AsyncMock() for player_id in (LEADER, MEMBER, OTHER)}
         self.players = {player_id: self._player(player_id) for player_id in self.apis}
-        self.mass.players.get_player.side_effect = self.players.get
         # what the household looks like after the next change on the leader
         self.next_groups = LEFT
 
@@ -103,8 +102,9 @@ class _Household:
         """Create a connected SonosPlayer around a real aiosonos client."""
         player = SonosPlayer.__new__(SonosPlayer)
         player.mass = self.mass
+        player._provider = MagicMock(get_protocol=lambda protocol_id: self.players.get(protocol_id))
         player.logger = logging.getLogger("test.sonos.player")
-        player._player_id = player_id
+        player._protocol_id = player_id
         player._attr_name = player_id
         player.connected = True
         player.client = self._client(player_id)

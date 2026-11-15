@@ -1,4 +1,4 @@
-"""Tests for ``Player.supported_sample_rates`` and ``get_supported_sample_rates``."""
+"""Tests for ``PlayerProtocol.supported_sample_rates`` and ``get_supported_sample_rates``."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 
 from music_assistant.constants import CONF_SAMPLE_RATES
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 
 
 def test_supported_sample_rates_property_reads_attr() -> None:
@@ -59,7 +59,7 @@ def test_declares_supported_sample_rates_false_for_default_player() -> None:
 def test_declares_supported_sample_rates_true_when_property_overridden() -> None:
     """A subclass that overrides ``supported_sample_rates`` also counts as declared."""
 
-    class _OverridingPlayer(Player):
+    class _OverridingPlayer(PlayerProtocol):
         @property
         def supported_sample_rates(self) -> list[tuple[int, int]] | None:
             return [(48000, 24)]
@@ -75,12 +75,12 @@ def _bare_player(
     *,
     attr_supported: list[tuple[int, int]] | None,
     config_value: list[str] | None = None,
-) -> Player:
-    """Construct a Player instance without invoking the real __init__."""
-    # the Player ABC's __init__ depends on a full provider/mass wiring;
+) -> PlayerProtocol:
+    """Construct a protocol instance without invoking the real __init__."""
+    # the protocol's __init__ depends on a full provider/mass wiring;
     # for these unit tests we only need the attributes that supported_sample_rates
     # and get_supported_sample_rates actually read.
-    player = object.__new__(Player)
+    player = object.__new__(PlayerProtocol)
     player._cache = {}
     player._attr_supported_sample_rates = attr_supported
     config = MagicMock()

@@ -566,8 +566,9 @@ class _YTMusicGate:
     """Throttle shared by the ytmusicapi calls of all provider instances."""
 
     logger = logging.getLogger(f"{MASS_LOGGER_NAME}.ytmusic")
-    # all instances share the server's IP, and YouTube is quick to flag bursts as a bot
-    throttler = ThrottlerManager(rate_limit=5, period=2, retry_attempts=3)
+    # all instances share the server's IP, and YouTube is quick to flag bursts as a bot;
+    # a cold Endless Mix start resolves 100+ similar tracks, so it needs this headroom
+    throttler = ThrottlerManager(rate_limit=10, period=1, retry_attempts=3)
 
     @throttle_with_retries
     async def run_ytmusicapi(self, func: Callable[[], Any]) -> Any:

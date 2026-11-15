@@ -126,6 +126,35 @@ jobs:
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
             --jq '.[] | .filename, (.previous_filename // empty)' | python3 scripts/check_provider_scope.py
 
+  moved-providers:
+    # A provider leaves the server only once the community catalog offers it on every line the
+    # change reaches; asks the catalog only when a PR removes a provider or changes the moved list.
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Set up Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version-file: ".python-version"
+      - name: Check moved providers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -o pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --jq '.[] | "\(.status)\t\(.filename)\t\(.previous_filename // "")"' \
+            | python -m scripts.check_moved_providers --base-branch "$BASE_REF" --base-sha "$BASE_SHA"
+
   lint:
     runs-on: ubuntu-latest
 
@@ -271,7 +300,7 @@ jobs:
   # The branch ruleset requires a check named `test`: it passes when every pytest shard
   # passed, or when there was nothing to test.
   test:
-    needs: [changes, pytest]
+    needs: [changes, pytest, moved-providers]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:

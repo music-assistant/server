@@ -17,7 +17,6 @@ from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
-from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -254,12 +253,11 @@ class _JoinCatchupState:
 @dataclass(slots=True)
 class _PipelineConfig:
     requires_transform: bool
-    output_channels: str
     filter_params: tuple[str | ComplexFilter, ...]
 
     @property
-    def signature(self) -> tuple[bool, str, tuple[str | ComplexFilter, ...]]:
-        return (self.requires_transform, self.output_channels, self.filter_params)
+    def signature(self) -> tuple[bool, tuple[str | ComplexFilter, ...]]:
+        return (self.requires_transform, self.filter_params)
 
 
 @dataclass(slots=True)
@@ -355,7 +353,7 @@ class SendspinPlaybackSession:
 
         :param new_player: The SendspinPlayer that will take over as session owner.
         """
-        old_leader_id = self.player.player_id
+        old_leader_id = self.player.protocol_id
         self.player = new_player
         # Release the old leader's DSP pipeline -- it's no longer in the group
         # and _refresh_member_mappings won't touch it since it only iterates
@@ -365,7 +363,7 @@ class SendspinPlaybackSession:
             self._pipeline_config_cache.pop(old_leader_id, None)
             self._preassigned_channels.pop(old_leader_id, None)
             # Members exclude the leader, so the new leader's next sync_members won't remove it.
-            self._members.discard(new_player.player_id)
+            self._members.discard(new_player.protocol_id)
             self._mapping_dirty = True
         if pipeline is not None and pipeline.processor is not None:
             await self._close_member_ffmpeg(pipeline.processor)
@@ -509,7 +507,7 @@ class SendspinPlaybackSession:
         """Return (join_pending_ids, active_pipelines) under lock."""
         async with self._state_lock:
             members = self._members
-            leader_id = self.player.player_id
+            leader_id = self.player.protocol_id
             return set(self._join_catchup), tuple(
                 (mid, p)
                 for mid, p in self._member_pipelines.items()
@@ -726,7 +724,7 @@ class SendspinPlaybackSession:
             # A line-in has no queue item, so it is opened first to learn its format.
             if media.media_type == MediaType.AUDIO_SOURCE:
                 source_stream = await self.player.mass.streams.open_audio_source_stream(
-                    media, self.player.player_id
+                    media, self.player.protocol_id
                 )
             # let automatic Sendspin formats follow the first item's sample rate, then
             # refresh the session PCM format from the leader's preferred output before
@@ -787,7 +785,7 @@ class SendspinPlaybackSession:
                 source_stream.stream(self._pcm_format)
                 if source_stream is not None
                 else self.player.mass.streams.get_stream(
-                    media, self._pcm_format, self.player.player_id
+                    media, self._pcm_format, self.player.protocol_id
                 )
             )
             completed = False
@@ -1001,6 +999,11 @@ class SendspinPlaybackSession:
             # new playback is superseding this one, so skipping tracks is still fast.
             if producer_stopped_cleanly and not self._cancel_requested:
                 try:
+                    # resamplers and encoders hold the end of the audio back until flushed
+                    try:
+                        await push_stream.flush_audio()
+                    except Exception:
+                        self.player.logger.exception("Failed to flush the end of the audio")
                     await self._wait_for_buffer_drain()
                 except asyncio.CancelledError:
                     # New playback interrupted the drain — treat as
@@ -1212,7 +1215,7 @@ class SendspinPlaybackSession:
         for member_id in member_ids:
             await self._sync_member_pipeline(member_id)
         # Keep leader pipeline in sync so leader DSP can be applied when required.
-        await self._sync_member_pipeline(self.player.player_id)
+        await self._sync_member_pipeline(self.player.protocol_id)
 
     async def _sync_member_pipeline(self, player_id: str) -> _MemberPipeline:
         """Create/update pipeline state for one member from current MA config."""
@@ -1275,16 +1278,12 @@ class SendspinPlaybackSession:
 
     def _read_pipeline_config(self, player_id: str) -> _PipelineConfig:
         """Read MA config and determine if member needs a dedicated DSP channel."""
-        dsp_config = self.player.mass.config.get_player_dsp_config(player_id)
-        dsp_enabled = bool(dsp_config.enabled)
-        raw_output_channels = self.player.mass.config.get_raw_player_config_value(
-            player_id,
-            CONF_OUTPUT_CHANNELS,
-            "stereo",
+        # the DSP settings are those of the player the member's protocol belongs to
+        member = self.player.mass.players.get_player_by_protocol(player_id)
+        dsp_config = self.player.mass.config.get_player_dsp_config(
+            member.player_id if member else player_id
         )
-        output_channels = str(raw_output_channels or "stereo").strip().lower()
-        if output_channels not in {"stereo", "left", "right", "mono"}:
-            output_channels = "stereo"
+        dsp_enabled = bool(dsp_config.enabled)
         try:
             output_format = self._get_member_output_format(player_id)
             output_plan = self.player.mass.streams.audio.get_player_output_plan(
@@ -1301,7 +1300,7 @@ class SendspinPlaybackSession:
         custom_filter_graph = any(
             not isinstance(param, str) or param.strip() for param in filter_params
         )
-        requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
+        requires_transform = dsp_enabled or custom_filter_graph
         if (
             output_plan is not None
             and self._queue_id is not None
@@ -1315,7 +1314,6 @@ class SendspinPlaybackSession:
             )
         return _PipelineConfig(
             requires_transform=requires_transform,
-            output_channels=output_channels,
             filter_params=filter_params,
         )
 
@@ -1331,7 +1329,7 @@ class SendspinPlaybackSession:
         from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
 
         for player_id in player_ids:
-            player = self.player.mass.players.get_player(player_id)
+            player = self.player.provider.get_protocol(player_id)
             if isinstance(player, SendspinPlayer):
                 await player.follow_session_sample_rate(self._start_streamdetails)
 
@@ -1345,7 +1343,7 @@ class SendspinPlaybackSession:
         clients with a different preferred rate up/down-sample in their own DSP
         step on the receiving side.
         """
-        leader_output = self._get_member_output_format(self.player.player_id)
+        leader_output = self._get_member_output_format(self.player.protocol_id)
         sample_rate = int(leader_output.sample_rate) or _DEFAULT_PCM_FORMAT.sample_rate
         if leader_output.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
             sample_rate = min(sample_rate, _LOSSY_MAX_SAMPLE_RATE)
@@ -1537,7 +1535,7 @@ class SendspinPlaybackSession:
             return pipeline.channel_id
         # Force a fresh config read for pending/unknown joiners so the very
         # first resolution (triggered by add_client) uses up-to-date DSP settings.
-        force = player_id not in self._members and player_id != self.player.player_id
+        force = player_id not in self._members and player_id != self.player.protocol_id
         config = self._get_pipeline_config_cached(player_id, force_refresh=force)
         if not config.requires_transform:
             return MAIN_CHANNEL

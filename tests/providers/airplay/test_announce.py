@@ -75,12 +75,16 @@ def _make_stream(
 def _make_player(player_id: str, stream: MagicMock | None = None) -> MagicMock:
     """Build a mock AirPlay player for announcement orchestration tests."""
     player = MagicMock()
-    player.player_id = player_id
+    player.protocol_id = player_id
     player.display_name = player_id
     player.synced_to = None
-    player.state.active_group = None
-    player.state.volume_level = 30
-    player.protocol_parent_id = None
+    # the player the protocol renders for, which holds the group state and the volume
+    player.player.player_id = f"pl_{player_id}"
+    player.player.display_name = player_id
+    player.player.mass = player.mass
+    player.player.logger = logging.getLogger("test.airplay.announce")
+    player.player.active_group = None
+    player.player.volume_level = 30
     player.has_live_audio = stream is not None
     player.stream = stream
     player._lock = asyncio.Lock()
@@ -362,27 +366,23 @@ async def test_short_clip_is_fully_covered_by_the_announcement_volume() -> None:
 
 
 @pytest.mark.asyncio
-async def test_announcement_volume_lands_on_the_protocol_parent() -> None:
+async def test_announcement_volume_lands_on_the_player() -> None:
     """
-    The announcement volume is set on the control that owns the member's output.
+    The announcement volume is set on the player, whose control owns the member's output.
 
-    An AirPlay child of a native player must not write the receiver's own level:
-    the command travels through the controller to the parent, on the parent's scale.
+    An AirPlay protocol of a native device must not write the receiver's own level:
+    the command travels through the controller to the player, on the player's scale.
     """
     (member,) = _make_playing_group(_make_stream())
-    parent = _make_player("parent")
-    parent.state.volume_level = 20
-    parent.mass = member.mass
-    member.protocol_parent_id = "parent"
-    member.mass.players.get_player = MagicMock(return_value=parent)
+    member.player.volume_level = 20
 
     with _timeline(member):
         await announce.play_announcement(member, _make_announcement(), 55)
 
-    # the parent's own level is bumped and restored; the child is never addressed
+    # the player's level is bumped and restored; the protocol is never addressed
     assert member.mass.players.cmd_volume_set.await_args_list == [
-        call("parent", 55),
-        call("parent", 20),
+        call("pl_member_0", 55),
+        call("pl_member_0", 20),
     ]
 
 
@@ -420,27 +420,25 @@ def test_member_duck_compensates_the_volume_bump() -> None:
     down shallows it symmetrically, and without a bump the base duck applies.
     """
     member = _make_player("m")
-    member.state.volume_level = 38
+    member.player.volume_level = 38
     assert announce._member_duck_db(member, 61) == pytest.approx(-24.9)
     assert announce._member_duck_db(member, 18) == pytest.approx(-12.0)
     assert announce._member_duck_db(member, None) == pytest.approx(-18.0)
     assert announce._member_duck_db(member, 38) == pytest.approx(-18.0)
     # extreme bumps clamp to the binary's usable range (never boost the music)
-    member.state.volume_level = 0
+    member.player.volume_level = 0
     assert announce._member_duck_db(member, 100) == pytest.approx(-48.0)
     assert announce._member_duck_db(member, 0) == pytest.approx(-18.0)
-    member.state.volume_level = 100
+    member.player.volume_level = 100
     assert announce._member_duck_db(member, 0) == pytest.approx(0.0)
 
 
 def test_member_duck_compensates_the_volume_target_bump() -> None:
-    """The compensation follows the level of the control the bump is applied to."""
+    """The compensation follows the level of the player the bump is applied to."""
     member = _make_player("child")
-    member.state.volume_level = 100
-    parent = _make_player("parent")
-    parent.state.volume_level = 38
-    member.protocol_parent_id = "parent"
-    member.mass.players.get_player = MagicMock(return_value=parent)
+    # the receiver's own level is not what the announcement volume moves
+    member.volume_level = 100
+    member.player.volume_level = 38
 
     assert announce._member_duck_db(member, 61) == pytest.approx(-24.9)
 
@@ -454,7 +452,7 @@ def test_member_duck_compensates_the_bump_the_device_actually_gets() -> None:
     duck deepened by that delta would bury it.
     """
     member = _make_player("m")
-    member.state.volume_level = 30
+    member.player.volume_level = 30
     # max_volume 60: logical 30 lands on device 18, logical 55 on device 33
     member.mass.players.scale_volume_to_device = MagicMock(
         side_effect=lambda _player_id, level: (level * 60) // 100
@@ -464,17 +462,14 @@ def test_member_duck_compensates_the_bump_the_device_actually_gets() -> None:
     assert announce._member_duck_db(member, 55) == pytest.approx(-22.5)
 
 
-def test_volume_target_is_the_protocol_parent() -> None:
-    """The volume of a member with a protocol parent is owned by that parent."""
+def test_volume_target_is_the_player() -> None:
+    """The volume of a member is owned by the player it renders for."""
     member = _make_player("child")
-    parent = _make_player("parent")
-    member.protocol_parent_id = "parent"
-    member.mass.players.get_player = MagicMock(return_value=parent)
 
-    assert announce._volume_target(member) is parent
-    # a member without one owns its own volume
-    member.protocol_parent_id = None
-    assert announce._volume_target(member) is member
+    assert announce._volume_target(member) is member.player
+    # a member that is not attached has no volume to bump
+    member.player = None
+    assert announce._volume_target(member) is None
 
 
 @pytest.mark.asyncio
@@ -520,8 +515,8 @@ async def test_cancelled_announcement_hands_the_bumped_volume_back() -> None:
     await asyncio.gather(*spawned)
 
     assert member.mass.players.cmd_volume_set.await_args_list == [
-        call("member_0", 55),
-        call("member_0", 30),
+        call("pl_member_0", 55),
+        call("pl_member_0", 30),
     ]
 
 
@@ -541,8 +536,8 @@ async def test_completed_announcement_leaves_nothing_to_restore() -> None:
 
     assert spawned == []
     assert member.mass.players.cmd_volume_set.await_args_list == [
-        call("member_0", 55),
-        call("member_0", 30),
+        call("pl_member_0", 55),
+        call("pl_member_0", 30),
     ]
 
 
@@ -591,9 +586,9 @@ async def test_group_entity_fanout_arms_each_member_at_one_shared_instant() -> N
     render = _make_render()
     for member in members:
         member.provider = provider
-        member.state.active_group = "syncgroup_1"
+        member.player.active_group = "syncgroup_1"
         if member is not leader:
-            member.synced_to = leader.player_id
+            member.synced_to = leader.protocol_id
         member.mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
     # the second member reports a span past the fallback the others assume:
     # the shared instant must clear the LARGEST one for every sibling arm
@@ -632,33 +627,9 @@ async def test_group_entity_session_leader_announces_alone() -> None:
     streams = [_make_stream(), _make_stream()]
     members = _make_playing_group(*streams)
     leader = members[0]
-    leader.state.active_group = "syncgroup_1"
-    members[1].synced_to = leader.player_id
-
-    await announce.play_announcement(leader, _make_announcement(), None)
-
-    streams[0].announce.assert_awaited_once()
-    streams[1].announce.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_protocol_child_reads_group_ownership_from_its_parent() -> None:
-    """
-    A protocol child leading a syncgroup's session still announces alone.
-
-    Protocol players never carry active_group themselves - the model keeps the
-    group state on the device player they render for - so the whole-group
-    handle is found through the protocol parent (the regression heard as an
-    individual announcement playing on the whole syncgroup).
-    """
-    streams = [_make_stream(), _make_stream()]
-    members = _make_playing_group(*streams)
-    leader = members[0]
-    leader.protocol_parent_id = "milo_parent"
-    parent = MagicMock()
-    parent.state.active_group = "syncgroup_1"
-    leader.mass.players.get_player = MagicMock(return_value=parent)
-    members[1].synced_to = leader.player_id
+    # the group state lives on the player the protocol renders for
+    leader.player.active_group = "syncgroup_1"
+    members[1].synced_to = leader.protocol_id
 
     await announce.play_announcement(leader, _make_announcement(), None)
 

@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Generator
+from collections.abc import Awaitable, Callable, Generator
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, PlaybackState, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import (
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    ResourceBusyError,
+)
 from music_assistant_models.media_items import Album, ItemMapping, Radio, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.helpers import handle_play_action
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
+from tests.common import bare_player_controller, virtual_loop_clock
 
 
 class _DummyACM:
@@ -44,6 +53,7 @@ def _fake_controller(source_id: str, target_player: MagicMock) -> MagicMock:
     target_queue = MagicMock()
 
     fake = MagicMock()
+    fake._resolve_queue_id = lambda queue_id: queue_id
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == source_id else target_queue)
     fake.stop = AsyncMock()
     fake.load = AsyncMock()
@@ -66,9 +76,9 @@ async def test_transfer_queue_ad_hoc_member_ungroups_target_not_leader() -> None
     recurse back into transfer_queue, so only the target may be ungrouped.
     """
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.synced_to = "leaderA"
-    target_player.state.active_group = None
+    target_player.type = PlayerType.PLAYER
+    target_player.synced_to = "leaderA"
+    target_player.active_group = None
     fake = _fake_controller("src", target_player)
 
     await PlayerQueuesController.transfer_queue(
@@ -85,7 +95,7 @@ async def test_transfer_queue_refuses_non_audio_target() -> None:
     The source queue must survive intact: no stop, no clear, no item handover.
     """
     target_player = MagicMock()
-    target_player.state.type = PlayerType.VISUALIZER
+    target_player.type = PlayerType.VISUALIZER
     fake = _fake_controller("src", target_player)
 
     with pytest.raises(PlayerCommandFailed):
@@ -102,9 +112,9 @@ async def test_transfer_queue_refuses_non_audio_target() -> None:
 async def test_transfer_queue_group_member_ungroups_group() -> None:
     """Transferring onto a virtual-group member releases the group player itself."""
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.synced_to = None
-    target_player.state.active_group = "groupP"
+    target_player.type = PlayerType.PLAYER
+    target_player.synced_to = None
+    target_player.active_group = "groupP"
     fake = _fake_controller("src", target_player)
 
     await PlayerQueuesController.transfer_queue(
@@ -163,6 +173,7 @@ def _shuffle_controller(
     )
 
     fake = MagicMock()
+    fake._resolve_queue_id = lambda queue_id: queue_id
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == "src" else target_queue)
     fake._queue_data = {
         "src": PlayerQueueData(
@@ -193,9 +204,10 @@ def _shuffle_controller(
         PlayerQueuesController._resolve_default_toggles(fake, queue_data)
     )
     target_player = MagicMock()
-    target_player.state.type = PlayerType.PLAYER
-    target_player.state.synced_to = None
-    target_player.state.active_group = None
+    target_player.type = PlayerType.PLAYER
+    target_player.synced_to = None
+    target_player.active_group = None
+    target_player.offline_by_power_control = False
     fake.mass.players.get_player = MagicMock(return_value=target_player)
     fake.mass.streams.is_smart_fades_active = MagicMock(return_value=False)
     return fake
@@ -357,7 +369,14 @@ async def test_transfer_queue_resumes_a_replacement_for_a_missing_item_from_the_
     index from what it played before, so loading the items moves it onto the item at that index.
     """
     fake = _shuffle_controller(source_shuffle_enabled=False)
-    for name in ("load", "update_items", "_resync_position", "index_by_id", "get_item"):
+    for name in (
+        "load",
+        "update_items",
+        "_resync_position",
+        "index_by_id",
+        "get_item",
+        "queue_data_or_none",
+    ):
         method = getattr(PlayerQueuesController, name)
         setattr(fake, name, method.__get__(fake))
     fake.play_index = AsyncMock()
@@ -539,3 +558,350 @@ async def test_transfer_queue_carries_no_position_from_a_queue_that_had_ended() 
     assert target_queue.ended is True
     assert target_queue.resume_pos == 0
     assert target_queue.elapsed_time == 0
+
+
+async def test_transfer_queue_holds_the_playback_locks_of_both_players() -> None:
+    """The transfer runs under the playback locks of the source's and the target's player."""
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    fake.mass.players.get_playback_locks.assert_called_once_with("src", "tgt")
+
+
+async def test_a_play_action_on_the_target_waits_for_the_whole_transfer() -> None:
+    """
+    A play action on the target does not run in the middle of a transfer onto it.
+
+    Without the lock, a play on the target while the transfer loads it would be replaced by
+    the transfer's own start.
+    """
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    _with_real_locks(fake)
+    order: list[str] = []
+    loading = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _load(*_args: object, **_kwargs: object) -> None:
+        loading.set()
+        await release.wait()
+        order.append("transfer")
+
+    fake.load = AsyncMock(side_effect=_load)
+
+    async def _play() -> None:
+        order.append("play")
+
+    transfer = asyncio.create_task(
+        PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+        )
+    )
+    await loading.wait()
+    play = asyncio.create_task(_play_action(cast("PlayerQueuesController", fake), "tgt", _play))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not play.done()
+
+    release.set()
+    await asyncio.gather(transfer, play)
+
+    assert order == ["transfer", "play"]
+
+
+async def test_a_play_action_on_the_source_runs_on_the_emptied_queue() -> None:
+    """
+    A play action on the source waits for the transfer, and then finds its queue emptied.
+
+    Without the lock, a play on the source while the transfer stops it would run on the items
+    the transfer is taking away.
+    """
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    _with_real_locks(fake)
+    source_queue = fake.get("src")
+    source_queue.state = PlaybackState.PLAYING
+    source_queue.elapsed_time_last_updated = time.time()
+    order: list[str] = []
+    stopping = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _stop(_queue_id: str) -> None:
+        stopping.set()
+        await release.wait()
+
+    fake.stop = AsyncMock(side_effect=_stop)
+    fake._clear = MagicMock(side_effect=lambda *_args, **_kwargs: order.append("cleared"))
+
+    async def _play() -> None:
+        order.append("play")
+
+    transfer = asyncio.create_task(
+        PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+        )
+    )
+    await stopping.wait()
+    play = asyncio.create_task(_play_action(cast("PlayerQueuesController", fake), "src", _play))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not play.done()
+
+    release.set()
+    await asyncio.gather(transfer, play)
+
+    assert order == ["cleared", "play"]
+
+
+async def test_transfer_queue_reads_the_source_state_once_a_play_action_on_it_is_done() -> None:
+    """
+    Whether the transfer plays follows the source's state after the play action it waited for.
+
+    Read before the lock, a source that a play action was just starting would be handed
+    over as not playing.
+    """
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    _with_real_locks(fake)
+    source_queue = fake.get("src")
+    source_queue.elapsed_time_last_updated = time.time()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _start_playing() -> None:
+        started.set()
+        await release.wait()
+        source_queue.state = PlaybackState.PLAYING
+
+    play = asyncio.create_task(
+        _play_action(cast("PlayerQueuesController", fake), "src", _start_playing)
+    )
+    await started.wait()
+    transfer = asyncio.create_task(
+        PlayerQueuesController.transfer_queue(cast("PlayerQueuesController", fake), "src", "tgt")
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(play, transfer)
+
+    fake.resume.assert_awaited_once_with("tgt")
+
+
+async def test_transfer_queue_reports_a_source_that_went_away_while_it_waited() -> None:
+    """A source removed during the wait for its lock is reported as unavailable, not as a crash."""
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    _with_real_locks(fake)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    target_queue = fake.get("tgt")
+
+    async def _remove_the_source() -> None:
+        started.set()
+        await release.wait()
+        fake.get = MagicMock(side_effect=lambda qid: None if qid == "src" else target_queue)
+
+    play = asyncio.create_task(
+        _play_action(cast("PlayerQueuesController", fake), "src", _remove_the_source)
+    )
+    await started.wait()
+    transfer = asyncio.create_task(
+        PlayerQueuesController.transfer_queue(cast("PlayerQueuesController", fake), "src", "tgt")
+    )
+    await asyncio.sleep(0)
+    release.set()
+    await play
+
+    with pytest.raises(PlayerUnavailableError):
+        await transfer
+    fake.load.assert_not_awaited()
+
+
+async def test_transfer_queue_onto_the_same_player_keeps_a_play_action_waiting() -> None:
+    """A transfer onto the player itself holds its lock through the start, like any other."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.IDLE, track)
+    _with_real_locks(fake)
+    order: list[str] = []
+    loading = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _load(*_args: object, **_kwargs: object) -> None:
+        loading.set()
+        await release.wait()
+
+    async def _start(*_args: object) -> None:
+        order.append("start")
+
+    async def _play() -> None:
+        order.append("play")
+
+    fake.load = AsyncMock(side_effect=_load)
+    fake.play_index = AsyncMock(side_effect=_start)
+    transfer = asyncio.create_task(
+        PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "src", auto_play=True
+        )
+    )
+    await loading.wait()
+    play = asyncio.create_task(_play_action(cast("PlayerQueuesController", fake), "src", _play))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(transfer, play)
+
+    assert order == ["start", "play"]
+
+
+@pytest.mark.parametrize("busy", ["src", "tgt"])
+async def test_a_transfer_that_can_not_get_a_player_fails_as_busy_and_changes_nothing(
+    busy: str,
+) -> None:
+    """
+    A transfer whose source or target stays busy fails as busy, with both queues as they were.
+
+    :param busy: The queue whose player another command holds.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.PAUSED, track)
+    players = _with_real_locks(fake)
+    queues_before = {qid: fake.get(qid).to_dict() for qid in ("src", "tgt")}
+    holding = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _hold() -> None:
+        async with players.get_player_lock(busy, PlayerLockPurpose.PLAYBACK):
+            holding.set()
+            await release.wait()
+
+    with virtual_loop_clock():
+        holder = asyncio.create_task(_hold())
+        await holding.wait()
+        try:
+            with pytest.raises(ResourceBusyError):
+                await PlayerQueuesController.transfer_queue(
+                    cast("PlayerQueuesController", fake), "src", "tgt"
+                )
+        finally:
+            release.set()
+            await holder
+
+    assert {qid: fake.get(qid).to_dict() for qid in ("src", "tgt")} == queues_before
+    fake.stop.assert_not_awaited()
+    fake._clear.assert_not_called()
+    fake.load.assert_not_awaited()
+    fake.play_index.assert_not_awaited()
+    fake.mass.players.cmd_ungroup.assert_not_called()
+
+
+@pytest.mark.parametrize("comes_online", [True, False])
+async def test_a_transfer_powers_a_switched_off_target_on_before_it_takes_the_locks(
+    comes_online: bool,
+) -> None:
+    """
+    A target switched off at its power control is powered on while no player is locked.
+
+    One that is still switched off once the locks are held (switched off again) fails as
+    unavailable, before anything changed.
+
+    :param comes_online: Whether the device is back when the power on returns.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, item = _playing_transfer(PlaybackState.IDLE, track)
+    players = _with_real_locks(fake)
+    target_player = fake.mass.players.get_player("tgt")
+    target_player.offline_by_power_control = True
+    locked_at_power_on: list[bool] = []
+
+    async def _power_on(_player_id: str) -> None:
+        locked_at_power_on.append(
+            any(lock.locked() for lock in players._player_command_locks.values())
+        )
+        target_player.offline_by_power_control = not comes_online
+
+    fake.mass.players._power_on_switched_off_player = AsyncMock(side_effect=_power_on)
+
+    if comes_online:
+        await PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "tgt"
+        )
+        fake.play_index.assert_awaited_once_with("tgt", item.queue_item_id, 20)
+    else:
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await PlayerQueuesController.transfer_queue(
+                cast("PlayerQueuesController", fake), "src", "tgt"
+            )
+        fake.stop.assert_not_awaited()
+        fake._clear.assert_not_called()
+        fake.load.assert_not_awaited()
+    assert locked_at_power_on == [False]
+
+
+async def test_a_transfer_that_does_not_play_leaves_a_switched_off_target_off() -> None:
+    """Without auto play, the queue moves to a switched-off target without powering it on."""
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, _item = _playing_transfer(PlaybackState.IDLE, track)
+    _with_real_locks(fake)
+    fake.mass.players.get_player("tgt").offline_by_power_control = True
+    fake.mass.players._power_on_switched_off_player = AsyncMock()
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    fake.mass.players._power_on_switched_off_player.assert_not_awaited()
+    fake.load.assert_awaited_once()
+
+
+@pytest.mark.parametrize("taken", [False, True])
+async def test_a_transfer_starts_a_target_a_group_took_once_it_let_go_of_the_players(
+    taken: bool,
+) -> None:
+    """
+    The target starts under the transfer's locks, unless it got another owner meanwhile.
+
+    A target that a group took while the transfer held it is started once the transfer let go
+    of both players, as a play action that takes the group's lock first.
+
+    :param taken: Whether a group takes the target while the transfer loads it.
+    """
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set())
+    fake, item = _playing_transfer(PlaybackState.IDLE, track)
+    players = _with_real_locks(fake)
+    owners: dict[str, str] = {}
+    players._playback_owner_id = lambda player_id: owners.get(player_id, player_id)  # type: ignore[method-assign]
+    fake.mass.players.holds_playback_owner_lock = players.holds_playback_owner_lock
+    locked_at_start: list[bool] = []
+
+    async def _load(*_args: object, **_kwargs: object) -> None:
+        if taken:
+            owners["tgt"] = "group"
+
+    async def _start(*_args: object) -> None:
+        locked_at_start.append(
+            any(lock.locked() for lock in players._player_command_locks.values())
+        )
+
+    fake.load = AsyncMock(side_effect=_load)
+    fake.play_index = AsyncMock(side_effect=_start)
+
+    await PlayerQueuesController.transfer_queue(cast("PlayerQueuesController", fake), "src", "tgt")
+
+    fake.play_index.assert_awaited_once_with("tgt", item.queue_item_id, 20)
+    assert locked_at_start == [not taken]
+
+
+def _with_real_locks(fake: MagicMock) -> PlayerController:
+    """Give the controller stand-in the real playback locks of a bare players controller."""
+    players = bare_player_controller()
+    fake.mass.players.get_playback_locks = players.get_playback_locks
+    fake.mass.players.get_group_and_player_lock = players.get_group_and_player_lock
+    return players
+
+
+@handle_play_action
+async def _play_action(
+    _self: PlayerQueuesController, _queue_id: str, body: Callable[[], Awaitable[None]]
+) -> None:
+    """Run the body as a play action on the queue, under its playback lock."""
+    await body()
