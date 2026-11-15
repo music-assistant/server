@@ -1,5 +1,9 @@
 {
   "config_entries": {
+    "manual_discovery_ip_addresses": {
+      "label": "Manual device addresses (IP or description URL)",
+      "description": "If a device is not discovered automatically, add it manually using its IPv4 address (e.g. 192.168.1.50) or, if the device does not respond to that, the full description URL (e.g. http://192.168.1.50:8080/description.xml)."
+    },
     "replace_pause_with_stop": {
       "label": "Replace Pause with Stop",
       "description": "Forces Music Assistant to stop playback instead of pausing. Enable for some legacy streamers which are unable to pause/resume playback when streaming uPnP/DLNA."
