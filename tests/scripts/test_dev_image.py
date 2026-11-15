@@ -1,4 +1,4 @@
-"""Tests for the development image: its repository references and its check."""
+"""Tests for the development image: its repository references and its publication."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 REPO_REF_SCRIPT = ROOT / "scripts" / "dev-image" / "repo_ref.sh"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 DEV_IMAGE_WORKFLOW = ROOT / ".github" / "workflows" / "dev-image.yml"
 
 # answers the two lookups of repo_ref.sh and logs every call
@@ -218,6 +219,36 @@ def test_dev_image_builds_on_the_base_image_argument() -> None:
     assert re.findall(r"^FROM .*$", dockerfile, re.MULTILINE) == ["FROM $BASE_IMAGE"]
 
 
+def test_dev_image_publication_follows_the_nightly_release() -> None:
+    """Only a nightly whose image is published and promoted is built on, by its exact digest."""
+    jobs = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    job = jobs["dev_image"]
+
+    assert {"exact_image", "promote_image"} <= set(job["needs"])
+    # without a status function the job only runs when every needed job succeeded
+    assert job["if"] == "inputs.channel == 'nightly'"
+    build = _step(job, "Build and push development image")["with"]
+    assert build["file"] == "source/Dockerfile.dev"
+    assert build["platforms"] == "linux/amd64,linux/arm64"
+    assert build["tags"] == "ghcr.io/${{ github.repository_owner }}/server:dev"
+    assert build["push"] is True
+    assert (
+        "BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/server"
+        "@${{ needs.exact_image.outputs.digest }}"
+    ) in build["build-args"].splitlines()
+    checkout = _step(job, "Check out release source")["with"]
+    assert checkout["ref"] == "${{ needs.resolve.outputs.source_sha }}"
+
+
+def test_dev_image_publication_never_fails_the_release() -> None:
+    """A failed development image leaves the run green and nothing waits on it."""
+    jobs = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+
+    assert jobs["dev_image"]["continue-on-error"] is True
+    for name, job in jobs.items():
+        assert "dev_image" not in job.get("needs", []), name
+
+
 def test_dev_image_check_needs_no_write_access() -> None:
     """The check of the image on pull requests reads the repository and nothing more."""
     workflow = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))
@@ -233,3 +264,11 @@ def test_dev_image_check_needs_no_write_access() -> None:
             "scripts/dev-image/**",
             ".github/workflows/dev-image.yml",
         }
+
+
+def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
+    for step in job["steps"]:
+        if step.get("name") == name:
+            return dict(step)
+    msg = f"Step {name!r} not found"
+    raise AssertionError(msg)
