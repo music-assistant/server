@@ -105,6 +105,7 @@ from music_assistant.helpers.catalog import (
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
+from music_assistant.helpers.menu_actions import check_menu_actions
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.runtime_dir import prepare_runtime_dir
 from music_assistant.helpers.util import (
@@ -1785,6 +1786,11 @@ class MusicAssistant:
         provider_manifest.has_setup_flow = await isfile(
             os.path.join(provider_path, "setup_flow.py")
         )
+        provider_manifest.menu_actions, problems = check_menu_actions(
+            provider_manifest.domain, provider_manifest.menu_actions
+        )
+        for problem in problems:
+            LOGGER.warning("Provider %s: left out %s", provider_manifest.domain, problem)
         # override Home Assistant provider if we're running as add-on
         if provider_manifest.domain == "hass" and self.running_as_hass_addon:
             provider_manifest.builtin = True
