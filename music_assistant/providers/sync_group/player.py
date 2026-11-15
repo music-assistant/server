@@ -1081,8 +1081,13 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         Select a (new) sync leader, preferring session and protocol continuity.
 
+        Among equally preferred members, the one that can group with the most other
+        members leads, so a member that shares no output with the others does not
+        leave them out; the member order decides between equals.
+
         :param new_members: Optional list of newly added member ids to consider
-            when no current/static members are available.
+            when no current/static members are available. The leader should also
+            be able to group with them.
         :param preferred_protocol_domain: If provided, prefer members that
             support this protocol domain so playback keeps using the same
             protocol.
@@ -1104,6 +1109,7 @@ class SyncGroupPlayer(PlayerProtocol):
             and member_player.type in PLAYBACK_TARGET_TYPES
         ]
         preferred_ids = set(preferred_member_ids or ())
+        member_ids = {*group_members, *(new_members or ())}
         # preference tiers, most specific first: a member that is already fed by the
         # live session can take it over without restarting playback, and one that
         # supports the active protocol at least keeps the session on that protocol
@@ -1125,13 +1131,15 @@ class SyncGroupPlayer(PlayerProtocol):
         ):
             if not matches:
                 continue
+            # max() keeps the first of equals, so the member order still decides those
+            leader = max(matches, key=lambda x: len(member_ids & x.can_group_with))
             self.logger.debug(
                 "Auto-selected %s as sync leader for group %s (%s)",
-                matches[0].name,
+                leader.name,
                 self.display_name,
                 reason,
             )
-            return matches[0]
+            return leader
         return None
 
     # -----------------------------------------------------------------------

@@ -81,6 +81,8 @@ The sync leader is selected when the group is powered on (which forms the group)
 4. **Prioritize static members**: For static groups, prefer members from the configured list
 5. **First available**: Otherwise pick the first available member as leader
 
+Within steps 2 to 5, the member that can group with the most other members wins, and the member order decides between equals. A member that shares no output with the others therefore does not become the leader and leave them all out; members that can not group with the chosen leader are left out of the group.
+
 ### Leader Responsibilities
 
 The sync leader is the **source of truth** for the group's playback state:
