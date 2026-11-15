@@ -49,7 +49,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 
 if TYPE_CHECKING:
     import pathlib

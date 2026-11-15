@@ -19,8 +19,8 @@ from music_assistant.controllers.community_catalog.models import (
     CommunityProviderState,
 )
 from music_assistant.helpers.catalog import CatalogRecommendation, CatalogRecommendationReason
+from music_assistant.testing import full_mass_context
 from tests.common import as_user
-from tests.conftest import full_mass_context
 
 if TYPE_CHECKING:
     from pathlib import Path

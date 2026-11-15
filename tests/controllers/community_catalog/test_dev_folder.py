@@ -16,7 +16,7 @@ from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.community_catalog import CommunityCatalogController, dependencies
 from music_assistant.controllers.community_catalog.dependencies import CommunityDependencies
 from music_assistant.helpers.util import purge_provider_modules
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 from tests.controllers.community_catalog.test_dependencies import _build_wheel
 from tests.controllers.community_catalog.test_settings import _wait_for_start
 
