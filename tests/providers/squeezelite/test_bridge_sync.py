@@ -730,12 +730,17 @@ def test_clock_jump_pauses_and_resumes_corrections() -> None:
     assert _offset(loop) == 14
 
 
-def test_clock_jump_does_not_repeat_the_start_jump() -> None:
-    """The start error is learned once: a large error after a clock jump is slewed."""
+def test_clock_jump_allows_one_more_jump() -> None:
+    """A large error found after a clock jump is corrected in one jump, once."""
     loop = SyncLoop(RATE, FRAME_SIZE, START_US)
     next_ms = _reports(loop, 3.0)
-    _reports(loop, 50.0, first_ms=next_ms, generation=1)
+    next_ms = _reports(loop, 50.0, first_ms=next_ms, generation=1)
+    # the start error stays what the start itself was off by
     assert loop.start_error_ms == pytest.approx(3.0)
+    assert abs(loop.rate_ppm) < 0.1
+    assert len(loop.process(bytes(4800 * FRAME_SIZE))) == (4800 - 2400) * FRAME_SIZE
+    # what shows up later in the same clock generation is left to the rate
+    _reports(loop, 70.0, first_ms=next_ms, count=20, generation=1)
     assert loop.rate_ppm == MAX_RATE_PPM
     assert len(loop.process(bytes(4800 * FRAME_SIZE))) == 4798 * FRAME_SIZE
 
@@ -1170,6 +1175,20 @@ def test_simulation_slews_a_small_start_error_away(output_delay_ms: float) -> No
     assert 1.0 < max(simulation.errors(10, 11)) < 3.5
     assert max(simulation.errors(30, 31)) < 1.0
     assert max(simulation.errors(40)) <= 0.5
+    _assert_rate_limited(simulation)
+
+
+@pytest.mark.parametrize("step_ms", [50.0, -50.0])
+def test_simulation_recovers_from_a_clock_step_at_the_start(step_ms: float) -> None:
+    """A clock step before the start error is measured costs a wrong jump, which is undone."""
+    simulation = _simulate(60, seed=4, clock_step=(0.5, step_ms))
+    assert simulation.clock.generation == 1
+    jumps = [change for _, change in simulation.changes if abs(change) > 1]
+    assert jumps == [
+        pytest.approx(step_ms * RATE / 1000, abs=RATE * 0.0015),
+        pytest.approx(-step_ms * RATE / 1000, abs=RATE * 0.0015),
+    ]
+    assert max(simulation.errors(15)) <= 1.0
     _assert_rate_limited(simulation)
 
 
