@@ -413,8 +413,12 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 ):
                     # Youtube Music has poor thumbs by default, so we always fetch the full item
                     # this also catches the case where they have an unavailable item in a listing
+                    # like the stream details that follow, the details are fetched for the
+                    # queue's playback, whoever has the item loaded
+                    playback_user = await resolve_playback_user_or_stand_in(self.mass, queue_id)
                     try:
-                        fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
+                        with user_auth_context(playback_user):
+                            fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
                     except (ResourceTemporarilyUnavailable, RetriesExhausted) as err:
                         self.logger.warning(
                             "Could not fetch full details of %s, playing it as listed: %s",

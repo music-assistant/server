@@ -9,7 +9,8 @@ user the queue plays for.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -341,6 +342,33 @@ def _queue(ctrl: Any, *tracks: Track, origin: QueueItemOrigin | None = None) -> 
 def _media_items(ctrl: Any) -> list[Track]:
     """Return the media items of the queue, in order."""
     return [cast("Track", item.media_item) for item in ctrl._queue_data[QUEUE_ID].items]
+
+
+@contextmanager
+def _recorded_fetches(music: MusicController) -> Iterator[list[tuple[str, User | None]]]:
+    """Record the uri of every item that is fetched with its details, and the user it is for."""
+    fetches: list[tuple[str, User | None]] = []
+    get_item_by_uri = music.get_item_by_uri
+
+    async def _record(uri: str) -> Any:
+        fetches.append((uri, get_current_user()))
+        return await get_item_by_uri(uri)
+
+    with patch.object(music, "get_item_by_uri", AsyncMock(side_effect=_record)):
+        yield fetches
+
+
+def _members_private_source(music: MusicController, *tracks: Track) -> MagicMock:
+    """Load the member's private account, which is returned, holding the given tracks."""
+    mine = _provider(MINE)
+    by_id = {track.item_id: track for track in tracks}
+    mine.get_track = AsyncMock(side_effect=lambda item_id: by_id[item_id])
+    _load_providers(music, mine)
+    set_music_source_access(
+        music.mass,
+        {MINE: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    return mine
 
 
 async def _remembered(music: MusicController, recording_id: str = RECORDING_ID) -> Any:
@@ -742,6 +770,72 @@ async def test_load_by_another_user_than_the_queues_fetches_nothing_as_that_user
 
     assert item.media_item is found
     assert _requests(mine) == 1
+
+
+async def test_looked_up_track_is_loaded_again_by_another_user(music: MusicController) -> None:
+    """A track found for the queue's user loads again for whoever selects it afterwards."""
+    found = _provider_track(MINE, "t9", image=False)
+    mine = _members_private_source(music, found)
+    mine.get_track_by_external_id = AsyncMock(return_value=found)
+    ctrl = _controller(music, userid=MEMBER.user_id)
+    current, item = _queue(ctrl, _provider_track(MINE, "t1"), _external_track())
+
+    with _recorded_fetches(music) as fetches:
+        # the queue preloads the track, which looks it up
+        assert await ctrl.load_next_queue_item(QUEUE_ID, current.queue_item_id) is item
+        assert fetches == []
+        # the owner, who may not use the member's account, then has it loaded once more
+        with user_auth_context(OWNER):
+            assert await ctrl.load_next_queue_item(QUEUE_ID, current.queue_item_id) is item
+            assert get_current_user() is OWNER
+
+    # its details are fetched for the user the queue plays for
+    assert fetches == [(f"{MINE}://track/t9", MEMBER)]
+    assert item.available is True
+    assert cast("Track", item.media_item).provider == MINE
+
+
+async def test_details_of_a_track_are_fetched_as_the_queue_user(music: MusicController) -> None:
+    """A track without a cover on the queue user's own account loads for another user too."""
+    listed = _provider_track(MINE, "t9", image=False)
+    _members_private_source(music, _provider_track(MINE, "t9", image=False))
+    ctrl = _controller(music, userid=MEMBER.user_id)
+    (item,) = _queue(ctrl, listed)
+
+    with _recorded_fetches(music) as fetches, user_auth_context(OWNER):
+        await ctrl._load_item(item)
+        assert get_current_user() is OWNER
+
+    assert fetches == [(f"{MINE}://track/t9", MEMBER)]
+    assert item.media_item is not listed
+    assert cast("Track", item.media_item).uri == f"{MINE}://track/t9"
+
+
+async def test_details_of_a_track_are_fetched_as_before_for_the_queue_user(
+    music: MusicController,
+) -> None:
+    """For the user the queue plays for, a track is fetched, or left as it is, as ever."""
+    without_cover = _provider_track(MINE, "t8", image=False)
+    with_cover = _provider_track(MINE, "t9")
+    # the cover a queued track keeps is the one of its album
+    cast("ItemMapping", with_cover.album).image = with_cover.image
+    full_track = _provider_track(MINE, "t8", image=False)
+    mine = _members_private_source(music, full_track)
+    ctrl = _controller(music, userid=MEMBER.user_id)
+    fetched, kept = _queue(ctrl, without_cover, with_cover)
+
+    with _recorded_fetches(music) as fetches, user_auth_context(MEMBER):
+        await ctrl._load_item(fetched)
+        await ctrl._load_item(kept)
+        assert get_current_user() is MEMBER
+
+    # the track without a cover is fetched, with its album; the other one is not
+    assert fetches == [(f"{MINE}://track/t8", MEMBER)]
+    assert fetched.media_item is full_track
+    assert kept.media_item is with_cover
+    mine.get_track.assert_awaited_once_with("t8")
+    mine.get_album.assert_awaited_once_with("t8_album")
+    assert _requests(mine) == 2
 
 
 async def test_loads_of_the_same_item_at_once_share_one_lookup(music: MusicController) -> None:
