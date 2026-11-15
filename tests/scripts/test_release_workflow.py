@@ -47,6 +47,7 @@ PINNED_ACTION_FILES = (
     ROOT / ".github" / "workflows" / "release.yml",
     ROOT / ".github" / "workflows" / "auto-release.yml",
     ROOT / ".github" / "workflows" / "build-base-image.yml",
+    ROOT / ".github" / "workflows" / "dev-image.yml",
     ROOT / ".github" / "workflows" / "dependabot-sync-manifests.yml",
     ROOT / ".github" / "workflows" / "pr-labels.yaml",
     ROOT / ".github" / "actions" / "generate-release-notes" / "action.yml",

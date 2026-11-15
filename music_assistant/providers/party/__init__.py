@@ -192,10 +192,10 @@ class PartyPlugin(PluginProvider):
                 options=[
                     ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
                     *[
-                        ConfigValueOption(player.player_id, title=player.display_name)
+                        ConfigValueOption(player.player_id, title=player.name)
                         for player in sorted(
                             self.mass.players.all_players(False, False),
-                            key=lambda p: p.display_name.lower(),
+                            key=lambda p: p.name.lower(),
                         )
                         if player.type in PLAYBACK_TARGET_TYPES
                     ],
@@ -557,9 +557,8 @@ class PartyPlugin(PluginProvider):
             session = await self._get_session()
             return session.queue_id if session else None
 
-        player_id = self.config.get_value(CONF_PARTY_PLAYER)
-        if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
-            return str(player_id)
+        if player_id := self._configured_player_id():
+            return player_id
 
         # Auto-select: prefer playing queue, then paused, then any active queue
         best_queue: str | None = None
@@ -1095,15 +1094,11 @@ class PartyPlugin(PluginProvider):
                 )
             except SetupFailedError as err:
                 self.logger.warning("Unable to create remote party session: %s", err)
-        else:
-            player_id = self.config.get_value(CONF_PARTY_PLAYER)
-            if player_id and str(player_id) != CONF_PARTY_PLAYER_AUTO:
-                try:
-                    self._session = await SharedPlaybackSession.create_venue(
-                        self.mass, str(player_id)
-                    )
-                except SetupFailedError as err:
-                    self.logger.warning("Unable to create venue party session: %s", err)
+        elif player_id := self._configured_player_id():
+            try:
+                self._session = await SharedPlaybackSession.create_venue(self.mass, player_id)
+            except SetupFailedError as err:
+                self.logger.warning("Unable to create venue party session: %s", err)
         return self._session
 
     async def _get_voter_id(self) -> str:
@@ -1163,3 +1158,11 @@ class PartyPlugin(PluginProvider):
                 tokens_revoked,
                 PARTY_GUEST_USER,
             )
+
+    def _configured_player_id(self) -> str | None:
+        """Return the id of the configured party player, or None for automatic selection."""
+        player_id = self.config.get_value(CONF_PARTY_PLAYER)
+        if not player_id or str(player_id) == CONF_PARTY_PLAYER_AUTO:
+            return None
+        # a stored id can be a legacy id of a player that answers to another id now
+        return self.mass.players.resolve_player_id(str(player_id))

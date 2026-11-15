@@ -19,11 +19,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.auth import UserRole
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, ProtocolRole
 from music_assistant_models.errors import InsufficientPermissions
 
 from music_assistant.controllers.players import PlayerController
-from tests.common import MockPlayer, MockProvider, as_user, grouping_player_controller
+from tests.common import (
+    MockProtocol,
+    MockProvider,
+    as_user,
+    attach_mock,
+    grouping_player_controller,
+)
 
 type Command = Callable[[PlayerController], Awaitable[None]]
 
@@ -34,29 +40,41 @@ def controller() -> PlayerController:
     return grouping_player_controller("a", "b", "c")
 
 
+def _protocol_id(player_id: str) -> str:
+    """Return the id of the protocol of a player in the grouping controller of the tests."""
+    return f"proto_{player_id}"
+
+
 def _api(controller: PlayerController, command: str) -> Callable[..., Awaitable[Any]]:
     """Return the handler the server runs for the given API command."""
     return cast("MagicMock", controller.mass).command_handlers[command].target  # type: ignore[no-any-return]
 
 
 def _sync(controller: PlayerController, leader_id: str, *member_ids: str) -> None:
-    """Sync the given members to the given leader."""
-    leader = controller._players[leader_id]
-    leader._attr_group_members = [leader_id, *member_ids]
+    """Sync the given members to the given leader, as the leader's protocol reports it."""
+    leader_protocol = cast("MockProtocol", controller._protocols[_protocol_id(leader_id)])
+    leader_protocol._attr_group_members = [
+        _protocol_id(player_id) for player_id in (leader_id, *member_ids)
+    ]
     for player in controller._players.values():
-        player.update_state(signal_event=False)
+        player.refresh_state(signal_event=False)
 
 
 def _capture(controller: PlayerController, *member_ids: str) -> None:
-    """Register a powered group player "g" that captures the given members."""
+    """Attach a powered group player "g" that captures the given members."""
     provider = MockProvider("group", instance_id="group", mass=cast("MagicMock", controller.mass))
-    group = MockPlayer(provider, "g", "Group G", player_type=PlayerType.GROUP)
-    group._attr_powered = True
-    group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
-    group._attr_group_members = list(member_ids)
-    group._cache.clear()
-    group.set_initialized()
-    controller._players["g"] = group
+    group, protocol = attach_mock(
+        provider,
+        "group_g",
+        "Group G",
+        role=ProtocolRole.VIRTUAL,
+        player_type=PlayerType.GROUP,
+        player_id="g",
+    )
+    protocol._attr_powered = True
+    protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+    # a group reports its members by their player ids
+    protocol._attr_group_members = list(member_ids)
     # the members derive their active group from the group's state
     group.update_state(signal_event=False)
     for member_id in member_ids:
@@ -118,7 +136,7 @@ async def test_grouping_another_player_is_refused(
         await command(controller)
 
     _assert_unchanged(controller)
-    assert all(not p.state.group_members for p in controller._players.values())
+    assert all(not p.group_members for p in controller._players.values())
 
 
 async def test_removing_a_player_from_another_players_group_is_refused(
@@ -181,7 +199,7 @@ async def test_own_player_joins_a_group_the_user_can_not_use_through_a_member(
 ) -> None:
     """Adding a player of one's own through a member of a group player is passed on to it."""
     _capture(controller, "a", "b")
-    assert controller._players["a"].state.active_group == "g"
+    assert controller._players["a"].active_group == "g"
 
     with as_user(["a", "c"]):
         await command(controller)
@@ -206,7 +224,7 @@ async def test_removing_another_member_of_a_group_the_user_can_not_use_is_refuse
         await _set_members("a", add=add, remove=["b"])(controller)
 
     _assert_unchanged(controller)
-    assert set(controller._players["g"].state.group_members) == {"a", "b"}
+    assert set(controller._players["g"].group_members) == {"a", "b"}
 
 
 @pytest.mark.parametrize(
@@ -309,33 +327,34 @@ async def test_an_unrestricted_caller_may_group_any_player(
     _assert_changed(controller, "a", add=["b"])
 
 
-def _capture_static(controller: PlayerController, power_control: bool) -> MockPlayer:
+def _capture_static(controller: PlayerController, power_control: bool) -> MockProtocol:
     """
-    Register group player "g" with static members "a" and "b", and power control on "a".
+    Attach group player "g" with static members "a" and "b", and power control on "a".
 
     A group without power control is playing, so that releasing it stops it. The power and
-    stop commands of "a" and "g" are mocked.
+    stop commands of the protocols of "a" and "g" are mocked. Returns the group's protocol.
 
     :param controller: The players controller.
     :param power_control: Whether the group player has a (native) power control.
     """
     _capture(controller, "a", "b")
-    group = cast("MockPlayer", controller._players["g"])
-    group._attr_static_group_members = ["a", "b"]
+    group_protocol = cast("MockProtocol", controller._protocols["group_g"])
+    group_protocol._attr_static_group_members = ["a", "b"]
     if power_control:
-        group._attr_supported_features.add(PlayerFeature.POWER)
+        group_protocol._attr_supported_features.add(PlayerFeature.POWER)
     else:
-        group._attr_playback_state = PlaybackState.PLAYING
-    member = cast("MockPlayer", controller._players["a"])
-    member._attr_powered = True
-    member._attr_supported_features.add(PlayerFeature.POWER)
-    for player in (group, member):
-        player._cache.clear()
-        player.update_state(force_update=True, signal_event=False)
-        player.power = AsyncMock()  # type: ignore[method-assign]
-        player.stop = AsyncMock()  # type: ignore[method-assign]
-    assert member.state.active_group == "g"
-    return group
+        group_protocol._attr_playback_state = PlaybackState.PLAYING
+    member_protocol = cast("MockProtocol", controller._protocols[_protocol_id("a")])
+    member_protocol._attr_powered = True
+    member_protocol._attr_supported_features.add(PlayerFeature.POWER)
+    for protocol in (group_protocol, member_protocol):
+        protocol._cache.clear()
+        protocol.power = AsyncMock()  # type: ignore[method-assign]
+        protocol.stop = AsyncMock()  # type: ignore[method-assign]
+    for player_id in ("g", "a"):
+        controller._players[player_id].update_state(force_update=True, signal_event=False)
+    assert controller._players["a"].active_group == "g"
+    return group_protocol
 
 
 def _ungroup(player_id: str) -> Command:
@@ -373,7 +392,7 @@ async def test_own_static_member_ends_the_session_of_its_group(
 ) -> None:
     """Ungroup or power off of a static member ends its group's session for whoever may use it."""
     group = _capture_static(controller, power_control)
-    member = controller._players["a"]
+    member = controller._protocols[_protocol_id("a")]
 
     with user():
         await command(controller)
@@ -397,24 +416,25 @@ async def test_static_member_the_user_can_not_use_is_refused(
 ) -> None:
     """A user who may not use a static member can not end its group's session through it."""
     group = _capture_static(controller, power_control=True)
-    member = controller._players["a"]
+    member = controller._protocols[_protocol_id("a")]
 
     with as_user(["c"]), pytest.raises(InsufficientPermissions, match="Player A"):
         await command(controller)
 
     group.power.assert_not_awaited()  # type: ignore[attr-defined]
     member.power.assert_not_awaited()  # type: ignore[attr-defined]
-    assert set(group.state.group_members) == {"a", "b"}
+    assert set(controller._players["g"].group_members) == {"a", "b"}
 
 
 async def test_own_dynamic_member_leaves_its_group_only(controller: PlayerController) -> None:
     """Ungroup of a dynamic member takes only that member out of its group player."""
-    group = _capture_static(controller, power_control=True)
-    group._attr_static_group_members = []
-    group.update_state(force_update=True, signal_event=False)
+    group_protocol = _capture_static(controller, power_control=True)
+    group_protocol._attr_static_group_members = []
+    group_protocol._cache.clear()
+    controller._players["g"].update_state(force_update=True, signal_event=False)
 
     with as_user(["a"]):
         await _ungroup("a")(controller)
 
     _assert_changed(controller, "g", remove=["a"])
-    group.power.assert_not_awaited()  # type: ignore[attr-defined]
+    group_protocol.power.assert_not_awaited()  # type: ignore[attr-defined]

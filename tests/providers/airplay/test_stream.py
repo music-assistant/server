@@ -63,7 +63,8 @@ def _make_cli_proc(*, quiesced: bool = True, calls: list[str] | None = None) -> 
 def _make_player() -> MagicMock:
     """Build a mock AirPlay player with both discovery records present."""
     player = MagicMock()
-    player.player_id = "apaabbccddeeff"
+    player.protocol_id = "apaabbccddeeff"
+    player.player.player_id = "plplayera0001"
     player.display_name = "Player A"
     player.address = "192.168.1.50"
     player.protocol = StreamingProtocol.AIRPLAY2
@@ -75,7 +76,7 @@ def _make_player() -> MagicMock:
     player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
-    player.state.active_group = None
+    player.player.active_group = None
     player.streaming_mode = STREAMING_MODE_AUTO
     player.streaming_mode_options = [
         MagicMock(value=STREAMING_MODE_AUTO),
@@ -114,6 +115,7 @@ def _make_player() -> MagicMock:
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
     prov.mass.runtime_path = "/ma-runtime"
+    prov.get_protocol = lambda pid: prov.mass.players.get_protocol(pid)
     player.provider = prov
     return player
 
@@ -2116,7 +2118,7 @@ def test_clock_stall_warns_without_touching_config() -> None:
         "ready_in_ms=0 ready_at_unix_ms=0"
     )
     assert stream._clock_stall_warned is True
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
     player.provider.mass.create_task.assert_not_called()
 
     # A superseded stream's stalled clock is the newer session resetting it on
@@ -2151,7 +2153,7 @@ def test_native_control_failure_warns_once_and_never_touches_config(
         stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
     assert caplog.text.count("stopped answering native AirPlay 2 control keepalives") == 1
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
     player.provider.mass.create_task.assert_not_called()
 
     # a pinned native route gets the same warning, and equally no config write
@@ -2162,7 +2164,24 @@ def test_native_control_failure_warns_once_and_never_touches_config(
     with caplog.at_level(logging.WARNING):
         pinned._handle_status_line("[ERROR] AirPlay 2 control channel failed")
     assert pinned._native_control_failure_warned is True
-    pinned_player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    pinned_player.provider.mass.config.set_protocol_value.assert_not_called()
+
+
+def test_compat_route_connection_loss_skips_the_native_keepalive_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The compatibility flow reports a lost connection with the same line, without native keepalives."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    player.stream = stream
+    stream._parse_route_status(
+        "[STATUS] route protocol=airplay2 flow=raop-compat timing=ntp buffered=0"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
+
+    assert "native AirPlay 2 control keepalives" not in caplog.text
 
 
 def test_native_control_failure_on_a_superseded_stream_stays_silent() -> None:
@@ -2179,7 +2198,7 @@ def test_native_control_failure_on_a_superseded_stream_stays_silent() -> None:
     stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
     assert stream._native_control_failure_warned is False
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
 
 
 @pytest.mark.parametrize("teardown_flag", ["superseded", "_stopping"])
@@ -2254,7 +2273,7 @@ def test_native_control_failure_before_publication_stays_reportable(
         stream._handle_status_line("[ERROR] AirPlay 2 control channel failed")
 
     assert "stopped answering native AirPlay 2 control keepalives" in caplog.text
-    player.provider.mass.config.set_raw_player_config_value.assert_not_called()
+    player.provider.mass.config.set_protocol_value.assert_not_called()
 
 
 def test_unrelated_cli_error_is_not_a_control_channel_verdict() -> None:
@@ -2792,6 +2811,17 @@ async def test_prepare_artwork_returns_cache_path() -> None:
     )
 
 
+def _binary_confirms_stop(stream: AirPlayStream) -> AsyncMock:
+    """Return a command-pipe write that answers STOP the way the binary does."""
+
+    async def _write(data: bytes) -> bool:
+        if data == b"ACTION=STOP\n":
+            stream._handle_status_line("[STATUS] stopped")
+        return True
+
+    return AsyncMock(side_effect=_write)
+
+
 @pytest.mark.asyncio
 async def test_stop_cleans_up_when_stop_command_fails() -> None:
     """A command-pipe failure cannot skip process and stream cleanup."""
@@ -2845,7 +2875,7 @@ async def test_stop_awaits_cancelled_stdout_reader() -> None:
     await reader_started.wait()
 
     with (
-        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "write", _binary_confirms_stop(stream)),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
     ):
         await stream.stop(force=True)
@@ -2879,7 +2909,7 @@ async def test_force_stop_does_not_wait_for_artwork_render() -> None:
         return "late.jpg"
 
     with (
-        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "write", _binary_confirms_stop(stream)),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
         patch.object(
             stream,
@@ -2896,6 +2926,60 @@ async def test_force_stop_does_not_wait_for_artwork_render() -> None:
 
     assert stream._cleanup_complete is True
     process.kill.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_force_stop_kills_only_after_the_binary_confirmed_stop() -> None:
+    """
+    A forced stop leaves the binary time to release the receiver before killing it.
+
+    The binary sends the RTSP TEARDOWN before it confirms STOP; some receivers
+    (squeezelite-esp32) only free their output on that TEARDOWN.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+    events: list[str] = []
+    process = MagicMock()
+    process.closed = False
+    process.kill = AsyncMock(side_effect=lambda: events.append("kill"))
+    stream._cli_proc = process
+
+    async def _confirm_later() -> None:
+        await asyncio.sleep(0.05)
+        events.append("stopped")
+        stream._handle_status_line("[STATUS] stopped")
+
+    with (
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        confirm = asyncio.create_task(_confirm_later())
+        # well within the stop ack timeout: the confirmation ends the wait
+        await asyncio.wait_for(stream.stop(force=True), timeout=1)
+        await confirm
+
+    assert events == ["stopped", "kill"]
+
+
+@pytest.mark.asyncio
+async def test_force_stop_gives_up_on_a_binary_that_never_confirms() -> None:
+    """A binary that never confirms STOP is killed once the stop ack timeout runs out."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.closed = False
+    process.kill = AsyncMock()
+    stream._cli_proc = process
+
+    with (
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_STOP_ACK_TIMEOUT", 0.05),
+        patch.object(stream.commands_pipe, "write", new_callable=AsyncMock, return_value=True),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await asyncio.wait_for(stream.stop(force=True), timeout=1)
+
+    process.kill.assert_awaited_once()
+    assert stream._cleanup_complete is True
 
 
 async def _run_stderr_reader_to(
@@ -2985,6 +3069,7 @@ async def _run_unexpected_process_death(
         one. False models a stream a newer session already superseded.
     """
     stream = AirPlayStream(player)
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
     if still_owned:
         player.stream = stream
     process = MagicMock()
@@ -3010,19 +3095,18 @@ async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
     # the leader's other members are captured as fallback candidates in case
     # leadership transfers while the re-join backoff runs
     leader = MagicMock()
-    leader.group_members = ["leader", player.player_id, "sibling"]
-    player.provider.mass.players.get_player.return_value = leader
+    leader.group_members = ["leader", player.protocol_id, "sibling"]
+    player.provider.mass.players.get_protocol.return_value = leader
 
     stream = await _run_unexpected_process_death(player)
 
-    # the member is dropped from its native sync leader directly: cmd_ungroup
-    # would resolve a linked protocol player to its visible parent and act at
-    # the group level, removing the member from its (sync)group over one dead
-    # transport
+    # the player leaves the group of its AirPlay sync leader only: cmd_ungroup
+    # acts on the player at the group level, removing the member from its
+    # (sync)group over one dead transport
     players_controller = player.provider.mass.players
-    players_controller.cmd_set_members.assert_called_once_with(
-        "leader", player_ids_to_remove=[player.player_id]
-    )
+    stream._leave_group.assert_called_once_with(leader.player, "plplayera0001")  # type: ignore[attr-defined]
+    leader.set_members.assert_not_called()
+    players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
     player.set_state_from_stream.assert_called_once_with(
@@ -3035,13 +3119,56 @@ async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
     """A dying leader re-joins towards its surviving members (leadership transfers)."""
     player = _make_player()
     player.synced_to = None
-    player.group_members = [player.player_id, "child1", "child2"]
+    player.group_members = [player.protocol_id, "child1", "child2"]
 
-    await _run_unexpected_process_death(player)
+    stream = await _run_unexpected_process_death(player)
 
+    # the controller transfers the leadership of the player, so it gets the player id
+    stream._leave_group.assert_called_once_with(player.player, "plplayera0001")  # type: ignore[attr-defined]
+    player.provider.mass.players.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["child1", "child2"])
     # the controller sets the leader's final state (transfer or dissolve)
     player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receiver_taken_over_leaves_the_group_without_a_rejoin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A member whose receiver another sender took over is dropped, not re-joined.
+
+    Re-joining would take the receiver back from the other sender (an iPhone).
+    """
+    player = _make_player()
+    player.synced_to = "leader"
+    player.group_members = []
+    leader = MagicMock()
+    leader.group_members = ["leader", player.protocol_id]
+    player.provider.mass.players.get_protocol.return_value = leader
+    stream = AirPlayStream(player)
+    stream._leave_group = MagicMock()  # type: ignore[method-assign]
+    player.stream = stream
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "[STATUS] receiver_closed"
+
+    with (
+        caplog.at_level(logging.INFO),
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+
+    stream._leave_group.assert_called_once_with(leader.player, "plplayera0001")
+    player.schedule_group_rejoin.assert_not_called()
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+    assert "another sender took over" in caplog.text
+    assert "stopped unexpectedly" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -3053,6 +3180,8 @@ async def test_unexpected_death_of_solo_player_schedules_no_rejoin() -> None:
 
     stream = await _run_unexpected_process_death(player)
 
+    stream._leave_group.assert_not_called()  # type: ignore[attr-defined]
+    player.provider.mass.players.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_not_called()
     player.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream
@@ -3067,22 +3196,20 @@ async def test_unexpected_death_of_static_group_member_drops_member_only() -> No
     player.group_members = []
     # the player is a static member of an actively playing group player, for
     # which cmd_ungroup would release (stop) the WHOLE group
-    player.state.active_group = "syncgroup1"
+    player.player.active_group = "syncgroup1"
     group_player = MagicMock()
-    group_player.static_group_members = ["leader", player.player_id]
+    group_player.static_group_members = ["plplayera0001"]
     leader = MagicMock()
-    leader.group_members = ["leader", player.player_id]
-    player.provider.mass.players.get_player.side_effect = lambda player_id: {
-        "syncgroup1": group_player,
-        "leader": leader,
-    }.get(player_id)
+    leader.group_members = ["leader", player.protocol_id]
+    player.provider.mass.players.get_player.side_effect = {"syncgroup1": group_player}.get
+    player.provider.mass.players.get_protocol.side_effect = {"leader": leader}.get
 
-    await _run_unexpected_process_death(player)
+    stream = await _run_unexpected_process_death(player)
 
     players_controller = player.provider.mass.players
-    players_controller.cmd_set_members.assert_called_once_with(
-        "leader", player_ids_to_remove=[player.player_id]
-    )
+    stream._leave_group.assert_called_once_with(leader.player, "plplayera0001")  # type: ignore[attr-defined]
+    leader.set_members.assert_not_called()
+    players_controller.cmd_set_members.assert_not_called()
     players_controller.cmd_ungroup.assert_not_called()
     player.schedule_group_rejoin.assert_called_once_with(["leader"])
 
@@ -3103,6 +3230,7 @@ async def test_unexpected_death_of_superseded_stream_leaves_the_group_alone() ->
     stream = await _run_unexpected_process_death(player, still_owned=False)
 
     players_controller = player.provider.mass.players
+    stream._leave_group.assert_not_called()  # type: ignore[attr-defined]
     players_controller.cmd_ungroup.assert_not_called()
     players_controller.cmd_set_members.assert_not_called()
     player.schedule_group_rejoin.assert_not_called()
@@ -3270,7 +3398,7 @@ def test_current_metadata_prefers_state_composition_for_the_same_item() -> None:
     session_media = MagicMock(queue_item_id="item-1", title="Track")
     state_media = MagicMock(queue_item_id="item-1", title="Track (Remastered)")
     stream.session = MagicMock(media=session_media)
-    player.state.current_media = state_media
+    player.player.current_media = state_media
 
     assert stream._current_metadata() is state_media
 
@@ -3282,10 +3410,10 @@ def test_current_metadata_keeps_session_media_when_state_describes_another_item(
     session_media = MagicMock(queue_item_id="item-2", title="Next track")
     stream.session = MagicMock(media=session_media)
 
-    player.state.current_media = MagicMock(queue_item_id="item-1", title="Previous track")
+    player.player.current_media = MagicMock(queue_item_id="item-1", title="Previous track")
     assert stream._current_metadata() is session_media
 
-    player.state.current_media = None
+    player.player.current_media = None
     assert stream._current_metadata() is session_media
 
 
@@ -3295,7 +3423,7 @@ def test_current_metadata_without_queue_item_never_swaps_sources() -> None:
     stream = AirPlayStream(player)
     session_media = MagicMock(queue_item_id=None, title="Announcement")
     stream.session = MagicMock(media=session_media)
-    player.state.current_media = MagicMock(queue_item_id=None, title="Something else")
+    player.player.current_media = MagicMock(queue_item_id=None, title="Something else")
 
     assert stream._current_metadata() is session_media
 

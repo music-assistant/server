@@ -687,12 +687,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get the full details of a Podcast."""
-        podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
+        podcast_obj = await self._get_podcast_obj(prov_podcast_id)
         return self._parse_podcast(podcast_obj)
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes from a podcast."""
-        podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
+        podcast_obj = await self._get_podcast_obj(prov_podcast_id)
         podcast_obj["podcastId"] = prov_podcast_id
         podcast = self._parse_podcast(podcast_obj)
         episodes = podcast_obj.get("episodes", [])
@@ -1733,6 +1733,16 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             language=self.language,
             user=self._yt_user,
         )
+
+    # kept short, so a new episode still shows up as soon as the episode listing refreshes
+    @use_cache(60)
+    async def _get_podcast_obj(self, prov_podcast_id: str) -> dict[str, Any]:
+        """
+        Return the raw podcast, cached so the calls of one podcast page share a single fetch.
+
+        :param prov_podcast_id: The provider id of the podcast.
+        """
+        return await get_podcast(prov_podcast_id, headers=self._headers)
 
     async def _get_playlist_entries(self, prov_playlist_id: str) -> list[dict[str, Any]]:
         """Return the raw entries of a playlist in listing order."""

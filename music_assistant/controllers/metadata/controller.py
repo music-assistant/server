@@ -40,6 +40,7 @@ from music_assistant.constants import (
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     VERBOSE_LOG_LEVEL,
 )
@@ -82,6 +83,7 @@ from .constants import (
     MUSICBRAINZ_LINK_ITEM_INTERVAL,
     MUSICBRAINZ_LINK_ITEM_TIMEOUT,
     MUSICBRAINZ_LINK_TASK_ID,
+    MUSICBRAINZ_RELINK_TASK_ID_PREFIX,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     REFRESH_INTERVAL,
     THUMB_CACHE_CLEANUP_TASK_ID,
@@ -395,7 +397,12 @@ class MetaDataController(
         return item
 
     def schedule_update_metadata(self, item: MediaItemType) -> None:
-        """Schedule metadata update for given MediaItem."""
+        """
+        Schedule metadata update for given MediaItem.
+
+        An artist whose metadata is up to date is linked to the music providers loaded since
+        it was last looked up on MusicBrainz instead.
+        """
         if item.provider != "library":
             # this shouldn't happen but just in case.
             return
@@ -405,6 +412,8 @@ class MetaDataController(
             and self._description_language_outdated(item.metadata)
         )
         if not needs_update:
+            if isinstance(item, Artist):
+                self._schedule_musicbrainz_relink(item)
             return
         assert item.uri is not None
         uri = item.uri
@@ -812,6 +821,7 @@ class MetaDataController(
                 limit=budget,
                 sort_field=SortField.TIMESTAMP_ADDED,
                 sort_direction=SortDirection.DESC,
+                in_library_only=False,
             )
             for item in items:
                 if musicbrainz.rate_limited:
@@ -932,6 +942,26 @@ class MetaDataController(
         dropped. The very first run seeds the providers present with 0, as the library was
         linked to those while it was identified.
         """
+        stored = self._stored_musicbrainz_linked_domains()
+        first_seen = 0 if stored is None else int(time())
+        # a provider whose instance was gone for a run comes back as a new one: the items
+        # identified meanwhile lack its links, so its relink phase re-checks those still not
+        # mapped to it, from the MusicBrainz cache
+        linked = {
+            domain: (stored or {}).get(domain, first_seen)
+            for domain in sorted(self._loaded_musicbrainz_link_domains())
+        }
+        # an empty map is persisted too: it tells the first run apart from a later one
+        if stored is None or linked != stored:
+            self.mass.config.set_raw_core_config_value(
+                self.domain,
+                CONF_MUSICBRAINZ_LINKED_DOMAINS,
+                [f"{domain}:{seen}" for domain, seen in linked.items()],
+            )
+        return linked
+
+    def _stored_musicbrainz_linked_domains(self) -> dict[str, int] | None:
+        """Return since when each linked music provider has been loaded, None before any run."""
         # persisted as "domain:epoch" entries, the map itself not being a config value type
         entries = cast(
             "list[str] | None",
@@ -939,30 +969,67 @@ class MetaDataController(
                 self.domain, CONF_MUSICBRAINZ_LINKED_DOMAINS
             ),
         )
+        if entries is None:
+            return None
         stored: dict[str, int] = {}
-        for entry in entries or []:
+        for entry in entries:
             domain, _, seen = entry.partition(":")
             if seen.isdigit():
                 stored[domain] = int(seen)
+        return stored
+
+    def _loaded_musicbrainz_link_domains(self) -> list[str]:
+        """Return the music providers MusicBrainz links to that have a loaded instance."""
         # the providers the link step maps to: those with a loaded instance, available or not
-        present = [
+        return [
             domain
             for domain in MUSICBRAINZ_LINK_DOMAINS
             if self.mass.music.get_provider_instances(domain, return_unavailable=True)
         ]
-        first_seen = 0 if entries is None else int(time())
-        # a provider whose instance was gone for a run comes back as a new one: the items
-        # identified meanwhile lack its links, so its relink phase re-checks those still not
-        # mapped to it, from the MusicBrainz cache
-        linked = {domain: stored.get(domain, first_seen) for domain in sorted(present)}
-        # an empty map is persisted too: it tells the first run apart from a later one
-        if entries is None or linked != stored:
-            self.mass.config.set_raw_core_config_value(
-                self.domain,
-                CONF_MUSICBRAINZ_LINKED_DOMAINS,
-                [f"{domain}:{seen}" for domain, seen in linked.items()],
-            )
-        return linked
+
+    def _schedule_musicbrainz_relink(self, artist: Artist) -> None:
+        """Queue linking an artist to the music providers loaded since its MusicBrainz lookup."""
+        if not self._musicbrainz_relink_due(artist):
+            return
+        assert artist.uri is not None
+        uri, item_id = artist.uri, artist.item_id
+        self.mass.tasks.run_background_task(
+            task_id=f"{MUSICBRAINZ_RELINK_TASK_ID_PREFIX}_{uuid5(NAMESPACE_URL, uri).hex}",
+            name=f"Link {artist.name} to your music services",
+            handler=lambda: self._relink_artist(item_id),
+            translation_key="link_artist_to_music_services",
+            translation_args=[artist.name],
+            translation_owner=self.translation_owner,
+            # the user is looking at the artist, so it goes ahead of the metadata refreshes
+            priority=True,
+            metadata={"task_domain": "metadata_musicbrainz_relink", "item_uri": uri},
+        )
+
+    async def _relink_artist(self, item_id: str) -> None:
+        """Link a library artist to the music providers loaded since its MusicBrainz lookup."""
+        try:
+            artist = await self.mass.music.artists.get_library_item(item_id)
+        except MediaNotFoundError:
+            self.logger.debug("Artist %s left the library, skipping its relink", item_id)
+            return
+        # a metadata refresh or the link run may have linked it while the task waited
+        if self._musicbrainz_relink_due(artist):
+            await self.link_item_to_musicbrainz(artist)
+
+    def _musicbrainz_relink_due(self, artist: Artist) -> bool:
+        """Return whether an artist misses the links of a music provider loaded since its lookup."""
+        if not self.link_providers_via_musicbrainz or self.mass.music.active_sync_tasks:
+            return False
+        if (musicbrainz := self._musicbrainz_provider()) is None or musicbrainz.rate_limited:
+            return False
+        # a provider the link run has not recorded yet is left to that run
+        stored = self._stored_musicbrainz_linked_domains() or {}
+        linked = {
+            domain: stored[domain]
+            for domain in self._loaded_musicbrainz_link_domains()
+            if domain in stored
+        }
+        return _misses_musicbrainz_links(artist, linked)
 
     async def _pending_musicbrainz_link_counts(self) -> dict[str, int]:
         """Return how many albums, artists and tracks still await their MusicBrainz lookup."""
@@ -998,8 +1065,14 @@ class MetaDataController(
         limit: int = METADATA_SCAN_BATCH_SIZE,
         sort_field: SortField = SortField.RANDOM,
         sort_direction: SortDirection | None = None,
+        in_library_only: bool = True,
     ) -> list[ItemCls]:
-        """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
+        """
+        Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON.
+
+        :param in_library_only: Only select items in the library; False leaves the scope to
+            the query.
+        """
         try:
             items = await media_controller.get_library_items_by_query(
                 limit=limit,
@@ -1007,6 +1080,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[query],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         except sqlite3.OperationalError as err:
             if "malformed JSON" not in str(err):
@@ -1018,6 +1092,7 @@ class MetaDataController(
                 sort_direction=sort_direction,
                 extra_query_parts=[f"{_valid_metadata_guard(table)} AND {query}"],
                 extra_query_params=query_params,
+                in_library_only=in_library_only,
             )
         # a clean scan proves the table currently holds no corrupt rows
         self._corrupt_metadata_rows.pop(table, None)
@@ -1126,6 +1201,56 @@ def _has_musicbrainz_id(item_id: str, media_type: MediaType, id_type: ExternalID
     )
 
 
+def _in_library_query(item_id: str, media_type: MediaType) -> str:
+    """
+    Return a query part that is true for an item in the library.
+
+    :param item_id: SQL expression of the library item id, e.g. ``albums.item_id``.
+    :param media_type: Media type of the item.
+    """
+    # the definition the library listings use (in_library_only)
+    return (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+        f"WHERE {DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{media_type.value}' "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {item_id} "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1)"
+    )
+
+
+def _musicbrainz_link_scope(media_type: MediaType) -> str:
+    """
+    Return a query part selecting the items a MusicBrainz link run may work on.
+
+    That is every library item, plus an album holding a library track and an artist
+    credited on a library album or track.
+
+    :param media_type: Media type of the items: album, artist or track.
+    """
+    if media_type == MediaType.ALBUM:
+        library_track = _in_library_query(f"{DB_TABLE_ALBUM_TRACKS}.track_id", MediaType.TRACK)
+        holds_library_track = (
+            f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {DB_TABLE_ALBUMS}.item_id "
+            f"AND {library_track})"
+        )
+        in_library = _in_library_query(f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM)
+        return f"({in_library} OR {holds_library_track})"
+    if media_type == MediaType.ARTIST:
+        scope = [_in_library_query(f"{DB_TABLE_ARTISTS}.item_id", MediaType.ARTIST)]
+        for credit_table, column, credited_type in (
+            (DB_TABLE_ALBUM_ARTISTS, "album_id", MediaType.ALBUM),
+            (DB_TABLE_TRACK_ARTISTS, "track_id", MediaType.TRACK),
+        ):
+            credited_item = _in_library_query(f"{credit_table}.{column}", credited_type)
+            scope.append(
+                f"EXISTS (SELECT 1 FROM {credit_table} "
+                f"WHERE {credit_table}.artist_id = {DB_TABLE_ARTISTS}.item_id "
+                f"AND {credited_item})"
+            )
+        return f"({' OR '.join(scope)})"
+    return _in_library_query(f"{DB_TABLE_TRACKS}.item_id", MediaType.TRACK)
+
+
 def _albums_to_identify_query() -> str:
     """Return a query part selecting albums due for a MusicBrainz lookup (param ``stale``)."""
     marker = _musicbrainz_lookup_marker(DB_TABLE_ALBUMS)
@@ -1133,7 +1258,10 @@ def _albums_to_identify_query() -> str:
         f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM, ExternalID.MB_ALBUM
     )
     # an album MusicBrainz did not know is looked up again once its lookup is stale
-    return f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified}))"
+    return (
+        f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified})) "
+        f"AND {_musicbrainz_link_scope(MediaType.ALBUM)}"
+    )
 
 
 def _artists_to_identify_query() -> str:
@@ -1151,7 +1279,10 @@ def _artists_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.ARTIST)}"
+    )
 
 
 def _tracks_to_identify_query() -> str:
@@ -1169,7 +1300,10 @@ def _tracks_to_identify_query() -> str:
         f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {DB_TABLE_TRACKS}.item_id "
         f"AND {album_identified})"
     )
-    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+    return (
+        f"({marker} ISNULL AND NOT {identified} AND {has_identified_album}) "
+        f"AND {_musicbrainz_link_scope(MediaType.TRACK)}"
+    )
 
 
 def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str:
@@ -1177,7 +1311,8 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     Return a query part selecting identified items that miss the links of a music provider.
 
     Selects items not mapped to the provider (param ``domain``) that were looked up before
-    it was loaded (param ``seen``) or never looked up at all.
+    it was loaded (param ``seen``) or never looked up at all. :func:`_misses_musicbrainz_links`
+    makes the same selection for one item.
 
     :param table: The library table to select from.
     :param media_type: Media type of the items.
@@ -1192,7 +1327,30 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     )
     marker = _musicbrainz_lookup_marker(table)
     # an id taken from tags or a local server leaves the marker unset: never linked at all
-    return f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen))"
+    return (
+        f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen)) "
+        f"AND {_musicbrainz_link_scope(media_type)}"
+    )
+
+
+def _misses_musicbrainz_links(item: Artist | Album, linked_domains: dict[str, int]) -> bool:
+    """
+    Return whether an identified item misses the links of one of the given music providers.
+
+    The same selection :func:`_relink_query` makes in the library database, for one item.
+
+    :param item: The library artist or album.
+    :param linked_domains: Since when each linked music provider has been loaded, by domain.
+    """
+    if not item.mbid:
+        return False
+    mapped = {mapping.provider_domain for mapping in item.provider_mappings}
+    marker = item.metadata.last_musicbrainz_lookup
+    # an id taken from tags or a local server leaves the marker unset: never linked at all
+    return any(
+        domain not in mapped and (marker is None or marker <= seen)
+        for domain, seen in linked_domains.items()
+    )
 
 
 def _valid_metadata_guard(table: str) -> str:

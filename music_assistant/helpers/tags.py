@@ -45,6 +45,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 FFPROBE_TIMEOUT = 60
 FFMPEG_DURATION_TIMEOUT = 600
 NETWORK_READ_TIMEOUT = 10
+MAX_ID3_TAG_SIZE = 32 * 1024 * 1024
 
 
 # the only multi-item splitter we accept is the semicolon,
@@ -797,6 +798,10 @@ async def async_parse_tags(
         source,
     ]
     try:
+        try:
+            await asyncio.to_thread(_validate_id3_tag_size, source, fd)
+        except (OSError, InvalidDataError) as err:
+            raise InvalidDataError(f"Unable to retrieve info for {input_file}: {err}") from err
         async with AsyncProcess(
             args, stdin=False, stdout=True, stderr=True, pass_fds=pass_fds
         ) as probe:
@@ -907,6 +912,31 @@ def _parse_tags_output(
         except UnicodeEncodeError:
             msg = f"Unable to retrieve info for a file with a non-UTF-8 filename: {input_file!r}"
         raise InvalidDataError(msg) from err
+
+
+def _validate_id3_tag_size(source: str, fd: int | None) -> None:
+    """Reject oversized ID3 tags before FFprobe or Mutagen reads their payload."""
+    if fd is not None:
+        header = os.pread(fd, 10, 0)
+    elif not source.startswith("http") and Path(source).is_file():
+        with open(source, "rb") as file:
+            header = file.read(10)
+    else:
+        return
+    if len(header) != 10 or header[:3] != b"ID3":
+        return
+    if any(value & 0x80 for value in header[6:10]):
+        msg = "Invalid ID3 tag size"
+        raise InvalidDataError(msg)
+    tag_size = 0
+    for value in header[6:10]:
+        tag_size = (tag_size << 7) | value
+    if tag_size > MAX_ID3_TAG_SIZE:
+        msg = (
+            f"ID3 metadata is too large to inspect safely ({tag_size} bytes; "
+            f"limit {MAX_ID3_TAG_SIZE} bytes)"
+        )
+        raise InvalidDataError(msg)
 
 
 def _get_ffprobe_error(err: subprocess.CalledProcessError) -> str:

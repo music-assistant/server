@@ -14,7 +14,7 @@ import pytest
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, ResourceBusyError
-from music_assistant_models.player import DeviceInfo, PlayerMedia
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_IP_ADDRESS
 from music_assistant.providers.raumfeld.constants import (
@@ -154,8 +154,8 @@ def _room_of_two(
     """
     Build a provider whose room Bar holds two speakers, listed by the host in that order.
 
-    :param pinned: The player id the cache holds for the room.
-    :param configured: The serial that already has a player config.
+    :param pinned: The protocol id the cache holds for the room.
+    :param configured: The serial whose protocol id already has a record.
     """
     provider, mass = _provider(_DEVICE_DESCRIPTION)
     provider.host._devices.locations["uuid:second"] = _SECOND_LOCATION
@@ -173,9 +173,9 @@ def _room_of_two(
     mass.http_session.get.side_effect = _get
     mass.cache.get = AsyncMock(return_value=pinned)
     mass.cache.set = AsyncMock()
-    configured_id = f"players/raumfeld_{configured.replace(':', '')}" if configured else None
-    mass.config.get.side_effect = lambda key: (
-        {"provider": "raumfeld"} if key == configured_id else None
+    configured_id = f"raumfeld_{configured.replace(':', '')}" if configured else None
+    mass.config.get_protocol_record.side_effect = lambda protocol_id: (
+        {"provider": "raumfeld"} if protocol_id == configured_id else None
     )
     provider.config = MagicMock(instance_id="raumfeld")
     return provider, mass
@@ -249,7 +249,7 @@ async def test_a_room_whose_speaker_is_away_at_start_keeps_its_player() -> None:
 
 
 async def test_a_room_seen_first_keeps_the_player_it_had_before() -> None:
-    """Without a remembered player, the speaker whose player is already configured is chosen."""
+    """Without a remembered id, the speaker whose protocol already has a record is chosen."""
     provider, mass = _room_of_two(configured="d8:3a:dd:da:8e:62")
 
     assert await _sync_ids(provider) == {"Bar": "raumfeld_d83addda8e62"}
@@ -268,8 +268,8 @@ async def test_a_room_of_one_speaker_reads_no_other_speaker() -> None:
 
 
 @pytest.mark.parametrize("cached", ["uuid:renderer", 42, ""])
-async def test_a_cached_value_that_is_no_player_id_is_not_taken(cached: Any) -> None:
-    """Only one of this provider's player ids counts as the player a room got."""
+async def test_a_cached_value_that_is_no_protocol_id_is_not_taken(cached: Any) -> None:
+    """Only one of this provider's protocol ids counts as the id a room got."""
     provider, _ = _room_of_two(pinned=cached)
 
     assert await _sync_ids(provider) == {"Bar": "raumfeld_04a316f3b6c4"}
@@ -336,15 +336,15 @@ def _place_speakers(provider: RaumfeldPlayerProvider, rooms: dict[str, tuple[str
 
 
 def _remember_room_ids(provider: RaumfeldPlayerProvider, cache: _Cache) -> None:
-    """Have the provider remember its room ids in the given cache, with no player configured."""
+    """Have the provider remember its room ids in the given cache, with no record from before."""
     provider.config = MagicMock(instance_id="raumfeld")
     mass = cast("MagicMock", provider.mass)
     mass.cache = cache
-    mass.config.get.return_value = None
+    mass.config.get_protocol_record.return_value = None
 
 
 async def _room_ids(provider: RaumfeldPlayerProvider) -> dict[str, str | None]:
-    """Run the id part of a room sync and return each room's player_id."""
+    """Run the id part of a room sync and return each room's protocol id."""
     rooms = provider.host.get_rooms()
     provider._forget_moved_renderers(rooms)
     for room in rooms:
@@ -353,7 +353,7 @@ async def _room_ids(provider: RaumfeldPlayerProvider) -> dict[str, str | None]:
         await provider._ensure_room_serial(room)
     provider._assign_room_ids(rooms)
     await provider._pin_room_ids()
-    return {room: provider._room_player_id(room) for room in rooms}
+    return {room: provider._room_protocol_id(room) for room in rooms}
 
 
 async def test_a_speaker_keeps_its_player_when_it_moves_to_a_new_room() -> None:
@@ -425,6 +425,25 @@ async def test_a_room_keeping_its_speaker_is_not_read_again() -> None:
     get.assert_not_called()
 
 
+def _attach(protocol: RaumfeldPlayer, player_id: str) -> MagicMock:
+    """
+    Attach a room built without its constructor to a stand-in for its player.
+
+    :param protocol: The room's protocol.
+    :param player_id: The id of the player, which is the id of the room's queue.
+    """
+    owner = MagicMock(player_id=player_id, extra_data={})
+    owner.linked_foreign_protocol.return_value = None
+    protocol._player = owner
+    return owner
+
+
+def _player_id(protocol: RaumfeldPlayer) -> str:
+    """Return the id of the player a room is attached to, which its queue has."""
+    assert protocol.player is not None
+    return protocol.player.player_id
+
+
 ROOMS = ("Bar", "Sofa", "Kitchen", "Office")
 _BASE_URL = "http://mass.local:8097"
 
@@ -440,7 +459,8 @@ def _player(room: str) -> RaumfeldPlayer:
     """Build a RaumfeldPlayer for a room, with just the group state."""
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player.room = room
-    player._player_id = f"raumfeld_{room.lower()}"
+    player._protocol_id = f"raumfeld_{room.lower()}"
+    _attach(player, f"pl_{room.lower()}")
     player._attr_group_members = []
     player._advance_task_id = f"raumfeld_advance_{room.lower()}"
     player._advance_armed = False
@@ -456,21 +476,21 @@ def _zone_provider(
     """Build a provider with a player per room, whose host reports the given zones."""
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
     players = {room: _player(room) for room in ROOMS}
-    by_id = {player.player_id: player for player in players.values()}
-    provider._room_ids = {room: player.player_id for room, player in players.items()}
+    by_id = {player.protocol_id: player for player in players.values()}
+    provider._room_ids = {room: player.protocol_id for room, player in players.items()}
     provider.host = MagicMock()
     _host_mock(provider).get_zones.return_value = zones
     # the host lists a zone's rooms sorted; the first one given here is its coordinator
     _host_mock(provider).zone_rooms.return_value = []
     _host_mock(provider).location.return_value = None
     mass = MagicMock()
-    mass.players.get_player.side_effect = by_id.get
-    mass.players.all_players.return_value = list(by_id.values())
+    mass.players.get_protocol.side_effect = by_id.get
     # a task a player starts (a rate check after a join) is not run unless a test runs it
     mass.create_task.side_effect = lambda coro: coro.close()
     provider.mass = mass
     for player in players.values():
         player.mass = mass
+        player._provider = provider
         # a zone's renderer runs on the host: each test sets what the zones answer there
         player._read_transport = lambda zone: _host_mock(provider).zone_transport(zone)  # type: ignore[method-assign]
         player._read_position = lambda zone: _host_mock(provider).zone_position(zone)  # type: ignore[method-assign]
@@ -480,7 +500,7 @@ def _zone_provider(
 
 def _groups(players: dict[str, RaumfeldPlayer]) -> dict[str, list[str]]:
     """Return the non-empty member lists, as room names keyed by the leading room."""
-    names = {player.player_id: room for room, player in players.items()}
+    names = {player.protocol_id: room for room, player in players.items()}
     return {
         room: [names[pid] for pid in player._attr_group_members]
         for room, player in players.items()
@@ -491,7 +511,9 @@ def _groups(players: dict[str, RaumfeldPlayer]) -> dict[str, list[str]]:
 def _sync(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldPlayer]) -> None:
     """Run a group sync with the provider's players in place."""
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=lambda: property(lambda _: players.values())
+        RaumfeldPlayerProvider,
+        "protocols",
+        new_callable=lambda: property(lambda _: players.values()),
     ):
         provider._sync_groups()
 
@@ -507,7 +529,7 @@ def test_the_leader_music_assistant_picked_keeps_leading(update_state: MagicMock
     """A zone whose coordinator is another room than MA's leader does not swap leaders."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
     sofa = players["Sofa"]
-    sofa._attr_group_members = [sofa.player_id, players["Bar"].player_id]
+    sofa._attr_group_members = [sofa.protocol_id, players["Bar"].protocol_id]
     _sync(provider, players)
     assert _groups(players) == {"Sofa": ["Sofa", "Bar"]}
     # nothing changed, so no state update goes out
@@ -518,7 +540,7 @@ def test_a_room_added_in_the_raumfeld_app_joins_the_existing_group() -> None:
     """The group keeps its leader and gains the new room."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     sofa = players["Sofa"]
-    sofa._attr_group_members = [sofa.player_id, players["Bar"].player_id]
+    sofa._attr_group_members = [sofa.protocol_id, players["Bar"].protocol_id]
     _sync(provider, players)
     assert _groups(players) == {"Sofa": ["Sofa", "Bar", "Kitchen"]}
 
@@ -527,7 +549,7 @@ def test_a_dissolved_zone_clears_the_group() -> None:
     """Rooms the host no longer groups are solo again, the former leader included."""
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     bar = players["Bar"]
-    bar._attr_group_members = [bar.player_id, players["Sofa"].player_id]
+    bar._attr_group_members = [bar.protocol_id, players["Sofa"].protocol_id]
     _sync(provider, players)
     assert _groups(players) == {}
 
@@ -536,8 +558,8 @@ def test_merged_groups_end_up_with_a_single_leader() -> None:
     """Two groups merged into one zone never leave two players leading each other."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Office", "Sofa"]])
     bar, kitchen = players["Bar"], players["Kitchen"]
-    bar._attr_group_members = [bar.player_id, players["Sofa"].player_id]
-    kitchen._attr_group_members = [kitchen.player_id, players["Office"].player_id]
+    bar._attr_group_members = [bar.protocol_id, players["Sofa"].protocol_id]
+    kitchen._attr_group_members = [kitchen.protocol_id, players["Office"].protocol_id]
     _sync(provider, players)
     assert _groups(players) == {"Bar": ["Bar", "Kitchen", "Office", "Sofa"]}
 
@@ -545,7 +567,9 @@ def test_merged_groups_end_up_with_a_single_leader() -> None:
 async def _follow(provider: RaumfeldPlayerProvider, players: dict[str, RaumfeldPlayer]) -> None:
     """Run one look of the zone watcher with the provider's players in place."""
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=lambda: property(lambda _: players.values())
+        RaumfeldPlayerProvider,
+        "protocols",
+        new_callable=lambda: property(lambda _: players.values()),
     ):
         await provider._follow_zones()
 
@@ -640,7 +664,7 @@ async def test_a_group_made_here_and_undone_in_the_raumfeld_app_is_cleared() -> 
     _sync(provider, players)
     # grouped in Music Assistant, which the host has undone again before any look at it
     bar = players["Bar"]
-    bar._attr_group_members = [bar.player_id, players["Sofa"].player_id]
+    bar._attr_group_members = [bar.protocol_id, players["Sofa"].protocol_id]
     await _follow(provider, players)
     await _follow(provider, players)
     assert _groups(players) == {}
@@ -661,8 +685,8 @@ def _playing_group(
     :param playing_zones: The zones whose transport reads as playing; all others stop.
     """
     leader = players[rooms[0]]
-    leader._attr_group_members = [players[room].player_id for room in rooms]
-    leader._attr_active_source = leader.player_id
+    leader._attr_group_members = [players[room].protocol_id for room in rooms]
+    leader._attr_active_source = _player_id(leader)
     leader._attr_playback_state = PlaybackState.PLAYING
     for player in players.values():
         player._provider = provider
@@ -676,14 +700,16 @@ def _playing_group(
     async def position(zone: list[str]) -> dict[str, str]:
         if zone not in playing_zones:
             return {"TrackURI": ""}
-        return {"TrackURI": f"{_BASE_URL}/flow/s1/{leader.player_id}/i1/{leader.player_id}.flac"}
+        return {
+            "TrackURI": f"{_BASE_URL}/flow/s1/{_player_id(leader)}/i1/{leader.protocol_id}.flac"
+        }
 
     _host_mock(provider).zone_transport = AsyncMock(side_effect=transport)
     _host_mock(provider).zone_position = AsyncMock(side_effect=position)
     mass = cast("MagicMock", provider.mass)
     mass.streams.base_url = _BASE_URL
-    queue = MagicMock(queue_id=leader.player_id, state=PlaybackState.PLAYING)
-    mass.player_queues.get_active_queue.return_value = queue
+    queue = MagicMock(queue_id=_player_id(leader), state=PlaybackState.PLAYING)
+    mass.players.get_active_queue.return_value = queue
     return mass
 
 
@@ -695,7 +721,7 @@ async def test_a_leader_taken_out_of_its_playing_group_hands_its_queue_over() ->
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
-    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    mass.players.cmd_ungroup.assert_called_once_with(_player_id(players["Bar"]))
     mass.create_task.assert_called_once()
     # the core moves the group over; mirroring the zones first would empty it here
     assert _groups(players) == {"Bar": ["Bar", "Sofa", "Kitchen"]}
@@ -711,7 +737,7 @@ async def test_a_partial_split_hands_the_queue_to_the_part_that_plays_on() -> No
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
-    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    mass.players.cmd_ungroup.assert_called_once_with(_player_id(players["Bar"]))
     assert _groups(players) == {"Bar": ["Bar", "Kitchen", "Office"]}
 
 
@@ -762,7 +788,7 @@ async def test_a_zone_that_does_not_tell_holds_the_decision(
         mass.players.cmd_ungroup.assert_not_called()
         _host_mock(provider).zone_transport.side_effect = answering
         await _follow(provider, players)
-    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    mass.players.cmd_ungroup.assert_called_once_with(_player_id(players["Bar"]))
 
 
 async def test_zones_that_never_answer_are_mirrored_in_the_end() -> None:
@@ -831,7 +857,7 @@ async def test_only_the_rooms_that_play_on_get_the_queue() -> None:
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
-    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    mass.players.cmd_ungroup.assert_called_once_with(_player_id(players["Bar"]))
     assert _groups(players) == {"Bar": ["Bar", "Kitchen", "Office"]}
 
 
@@ -879,7 +905,7 @@ async def test_a_room_that_joined_a_group_during_its_poll_drops_its_next_item() 
     synced_to = PropertyMock(return_value=None)
 
     async def joined_while_read(_zone: list[str]) -> dict[str, str]:
-        synced_to.return_value = sofa.player_id
+        synced_to.return_value = sofa.protocol_id
         return {"CurrentTransportState": "STOPPED"}
 
     _host_mock(provider).zone_transport = AsyncMock(side_effect=joined_while_read)
@@ -960,7 +986,7 @@ async def test_a_leader_that_switched_source_still_hands_its_queue_over() -> Non
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
         await _follow(provider, players)
-    mass.players.cmd_ungroup.assert_called_once_with(players["Bar"].player_id)
+    mass.players.cmd_ungroup.assert_called_once_with(_player_id(players["Bar"]))
 
 
 async def test_the_end_watch_leaves_a_split_group_to_the_watcher() -> None:
@@ -992,10 +1018,10 @@ async def test_a_room_that_joined_a_group_drops_its_own_next_item(joins: str) ->
     bar, sofa = players["Bar"], players["Sofa"]
     bar._advance_armed = True
     bar._next_media = MagicMock()
-    synced_to = PropertyMock(return_value=sofa.player_id if joins == "before the watch" else None)
+    synced_to = PropertyMock(return_value=sofa.protocol_id if joins == "before the watch" else None)
 
     async def joined_while_read(_zone: list[str]) -> dict[str, str]:
-        synced_to.return_value = sofa.player_id
+        synced_to.return_value = sofa.protocol_id
         return {"CurrentTransportState": "STOPPED"}
 
     _host_mock(provider).zone_transport = AsyncMock(side_effect=joined_while_read)
@@ -1013,14 +1039,14 @@ async def test_a_merge_of_two_playing_groups_keeps_the_queue_that_plays_on() -> 
     provider, players = _zone_provider([["Bar", "Sofa"], ["Kitchen", "Office"]])
     _playing_group(provider, players, ["Bar", "Sofa"], [])
     kitchen = players["Kitchen"]
-    kitchen._attr_group_members = [kitchen.player_id, players["Office"].player_id]
-    kitchen._attr_active_source = kitchen.player_id
+    kitchen._attr_group_members = [kitchen.protocol_id, players["Office"].protocol_id]
+    kitchen._attr_active_source = _player_id(kitchen)
     kitchen._attr_playback_state = PlaybackState.PLAYING
     _host_mock(provider).get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
     _host_mock(provider).zone_transport = AsyncMock(
         return_value={"CurrentTransportState": "PLAYING"}
     )
-    kitchen_stream = f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
+    kitchen_stream = f"{_BASE_URL}/flow/s1/{_player_id(kitchen)}/i1/{kitchen.protocol_id}.flac"
     _host_mock(provider).zone_position = AsyncMock(return_value={"TrackURI": kitchen_stream})
     with patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock, return_value=None):
         await _follow(provider, players)
@@ -1035,14 +1061,18 @@ def _merged_playing_groups() -> tuple[RaumfeldPlayerProvider, dict[str, Raumfeld
     provider, players = _zone_provider([["Bar", "Sofa"], ["Kitchen", "Office"]])
     _playing_group(provider, players, ["Bar", "Sofa"], [])
     kitchen = players["Kitchen"]
-    kitchen._attr_group_members = [kitchen.player_id, players["Office"].player_id]
-    kitchen._attr_active_source = kitchen.player_id
+    kitchen._attr_group_members = [kitchen.protocol_id, players["Office"].protocol_id]
+    kitchen._attr_active_source = _player_id(kitchen)
     kitchen._attr_playback_state = PlaybackState.PLAYING
     _host_mock(provider).get_zones.return_value = [["Bar", "Kitchen", "Office", "Sofa"]]
     _host_mock(provider).zone_transport = AsyncMock(
         return_value={"CurrentTransportState": "PLAYING"}
     )
-    return provider, players, f"{_BASE_URL}/flow/s1/{kitchen.player_id}/i1/{kitchen.player_id}.flac"
+    return (
+        provider,
+        players,
+        f"{_BASE_URL}/flow/s1/{_player_id(kitchen)}/i1/{kitchen.protocol_id}.flac",
+    )
 
 
 @pytest.mark.parametrize("disturbance", ["no answer", "playback starts"])
@@ -1071,7 +1101,7 @@ def test_the_room_playing_a_music_assistant_queue_leads_a_new_zone() -> None:
     """A room added in the Raumfeld app joins the room that plays MA's queue, not vice versa."""
     provider, players = _zone_provider([["Bar", "Sofa"]])
     sofa = players["Sofa"]
-    sofa._attr_active_source = sofa.player_id
+    sofa._attr_active_source = _player_id(sofa)
     sofa._attr_playback_state = PlaybackState.PLAYING
     _sync(provider, players)
     assert _groups(players) == {"Sofa": ["Sofa", "Bar"]}
@@ -1081,8 +1111,8 @@ def test_the_playing_room_leads_over_an_idle_leader_when_zones_merge() -> None:
     """An idle group merged into a room playing MA's queue does not take that queue's lead."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     bar, sofa = players["Bar"], players["Sofa"]
-    bar._attr_group_members = [bar.player_id, players["Kitchen"].player_id]
-    sofa._attr_active_source = sofa.player_id
+    bar._attr_group_members = [bar.protocol_id, players["Kitchen"].protocol_id]
+    sofa._attr_active_source = _player_id(sofa)
     sofa._attr_playback_state = PlaybackState.PLAYING
     _sync(provider, players)
     assert _groups(players) == {"Sofa": ["Sofa", "Bar", "Kitchen"]}
@@ -1092,9 +1122,9 @@ def test_a_follower_still_naming_its_own_queue_does_not_take_the_lead() -> None:
     """A follower mirrors its leader's playing state, which is not a queue of its own."""
     provider, players = _zone_provider([["Bar", "Kitchen", "Sofa"]])
     bar, sofa = players["Bar"], players["Sofa"]
-    sofa._attr_group_members = [sofa.player_id, bar.player_id]
+    sofa._attr_group_members = [sofa.protocol_id, bar.protocol_id]
     for player in (bar, sofa):
-        player._attr_active_source = player.player_id
+        player._attr_active_source = _player_id(player)
         player._attr_playback_state = PlaybackState.PLAYING
     _sync(provider, players)
     assert _groups(players) == {"Sofa": ["Sofa", "Bar", "Kitchen"]}
@@ -1272,7 +1302,7 @@ async def test_the_periodic_read_keeps_the_buttons_of_a_room_it_cannot_read() ->
     player.set_station_buttons = MagicMock()  # type: ignore[method-assign]
     with (
         patch.object(
-            RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[player]
+            RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[player]
         ),
         patch.object(provider, "_read_station_buttons", AsyncMock(side_effect=[None, []])),
     ):
@@ -1356,7 +1386,7 @@ def _joined_group(
         if stream_started_in_group
         else bar._configured_sample_rates()
     )
-    queue = MagicMock(queue_id=bar.player_id, corrected_elapsed_time=63.4)
+    queue = MagicMock(queue_id=_player_id(bar), corrected_elapsed_time=63.4)
     queue.current_item.duration = 240
     mass.players.get_active_queue.return_value = queue
     mass.player_queues.seek = AsyncMock()
@@ -1368,7 +1398,7 @@ async def test_a_room_joining_restarts_a_stream_it_may_not_play() -> None:
     """A stream started at rates a joining room does not play starts again where it was."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     await bar._restart_for_group_rates()
-    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+    mass.player_queues.seek.assert_awaited_once_with(_player_id(bar), 63)
 
 
 async def test_a_stream_the_whole_group_already_plays_is_not_restarted() -> None:
@@ -1384,7 +1414,7 @@ async def test_a_room_playing_only_16_bit_restarts_a_stream_at_the_same_rate() -
         lambda sofa: _allow_16_bit(sofa, 192000), stream_started_in_group=False
     )
     await bar._restart_for_group_rates()
-    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+    mass.player_queues.seek.assert_awaited_once_with(_player_id(bar), 63)
 
 
 async def test_radio_is_restarted_live_for_a_room_that_joined() -> None:
@@ -1395,7 +1425,7 @@ async def test_radio_is_restarted_live_for_a_room_that_joined() -> None:
     queue.current_item.duration = 0
     await bar._restart_for_group_rates()
     mass.player_queues.seek.assert_not_awaited()
-    mass.player_queues.resume.assert_awaited_once_with(bar.player_id, fade_in=False)
+    mass.player_queues.resume.assert_awaited_once_with(_player_id(bar), fade_in=False)
 
 
 def _held_playback_lock(mass: MagicMock) -> asyncio.Lock:
@@ -1440,11 +1470,11 @@ async def test_a_sync_group_that_plays_through_the_room_is_restarted() -> None:
         lambda sofa: _allow(sofa, 96000), stream_started_in_group=False
     )
     queue.queue_id = "syncgroup_living"
-    own_queue = MagicMock(queue_id=bar.player_id)
+    own_queue = MagicMock(queue_id=_player_id(bar))
     own_queue.current_item.duration = 0
     mass.player_queues.get.return_value = own_queue
     await bar._restart_for_group_rates()
-    mass.players.get_active_queue.assert_called_once_with(bar)
+    mass.players.get_active_queue.assert_called_once_with(bar.player)
     mass.player_queues.seek.assert_awaited_once_with("syncgroup_living", 63)
     mass.player_queues.resume.assert_not_awaited()
 
@@ -1510,6 +1540,8 @@ async def test_a_room_that_cannot_hook_in_leaves_the_others_waited_for() -> None
     """One room dropping the stream does not end the wait for another still hooking in."""
     bar, _, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     rooms = {"raumfeld_sofa": _player("Sofa"), "raumfeld_kitchen": _player("Kitchen")}
+    for room in rooms.values():
+        room._provider = bar.provider
     states = {
         "http://sofa/ctrl": iter(
             [{"TransportState": "NO_MEDIA_PRESENT", "TransportStatus": "buffer underrun"}]
@@ -1524,7 +1556,7 @@ async def test_a_room_that_cannot_hook_in_leaves_the_others_waited_for() -> None
     }
     reads = AsyncMock(side_effect=lambda url: next(states[url]))
     with (
-        patch.object(bar.mass.players, "get_player", side_effect=rooms.get),
+        patch.object(bar.mass.players, "get_protocol", side_effect=rooms.get),
         patch.object(
             bar.raumfeld,
             "room_transport_url",
@@ -1562,8 +1594,8 @@ async def test_the_wait_for_slow_rooms_keeps_to_its_budget() -> None:
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     rooms = [bar._attr_group_members[1], "raumfeld_kitchen", "raumfeld_office"]
     players = {pid: MagicMock(spec=RaumfeldPlayer, room=pid) for pid in rooms[1:]}
-    players[rooms[0]] = mass.players.get_player(rooms[0])
-    mass.players.get_player.side_effect = players.get
+    players[rooms[0]] = mass.players.get_protocol(rooms[0])
+    mass.players.get_protocol.side_effect = players.get
 
     async def hangs(_url: str) -> dict[str, str]:
         await asyncio.Event().wait()
@@ -1596,10 +1628,10 @@ async def test_rooms_joining_a_playing_group_have_its_rate_checked() -> None:
         patch.object(bar, "_wake_rooms", AsyncMock()),
         patch.object(bar, "_check_join", AsyncMock()) as check,
     ):
-        await bar.set_members([sofa.player_id])
+        await bar.set_members([sofa.protocol_id])
         for coro in started:
             await coro
-    check.assert_awaited_once_with([sofa.player_id])
+    check.assert_awaited_once_with([sofa.protocol_id])
     assert _groups(players) == {"Bar": ["Bar", "Sofa"]}
 
 
@@ -1607,7 +1639,7 @@ async def test_a_join_seen_while_playback_starts_is_checked_once_it_plays() -> N
     """A room grouped in the app while the leader's play still runs is checked after it."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     sofa_id = bar._attr_group_members[1]
-    bar._attr_group_members = [bar.player_id]
+    bar._attr_group_members = [bar.protocol_id]
     # the play has not reported playing yet, and holds the playback lock
     bar._attr_playback_state = PlaybackState.IDLE
     lock = _held_playback_lock(mass)
@@ -1615,14 +1647,14 @@ async def test_a_join_seen_while_playback_starts_is_checked_once_it_plays() -> N
     started: list[asyncio.Task[None]] = []
     mass.create_task.side_effect = lambda coro: started.append(asyncio.create_task(coro))
     with patch.object(bar, "_wait_for_rooms_playing", AsyncMock()):
-        bar.set_group_members([bar.player_id, sofa_id])
+        bar.set_group_members([bar.protocol_id, sofa_id])
         assert len(started) == 1
         await asyncio.sleep(0)
         # the play finishes and reports playing
         bar._attr_playback_state = PlaybackState.PLAYING
         lock.release()
         await started[0]
-    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+    mass.player_queues.seek.assert_awaited_once_with(_player_id(bar), 63)
 
 
 @pytest.mark.parametrize("media_type", [MediaType.FLOW_STREAM, MediaType.ANNOUNCEMENT])
@@ -1657,7 +1689,7 @@ async def test_a_room_leaving_while_the_stream_starts_widens_the_saved_rates() -
 
     async def sofa_leaves_meanwhile(_zone: list[str], action: str, **_kwargs: str) -> None:
         if action == "Play":
-            bar._attr_group_members = [bar.player_id]
+            bar._attr_group_members = [bar.protocol_id]
 
     with (
         patch.object(bar, "_ensure_playable_zone", AsyncMock(return_value=["Bar", "Sofa"])),
@@ -1671,9 +1703,9 @@ async def test_a_room_leaving_while_the_stream_starts_widens_the_saved_rates() -
     assert bar._stream_rates is not None
     assert max(rate for rate, _ in bar._stream_rates) == 192000
     # so the room rejoining has the stream restarted, whichever rates it was encoded at
-    bar._attr_group_members = [bar.player_id, sofa_id]
+    bar._attr_group_members = [bar.protocol_id, sofa_id]
     await bar._restart_for_group_rates()
-    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+    mass.player_queues.seek.assert_awaited_once_with(_player_id(bar), 63)
 
 
 async def test_the_next_item_starts_under_the_playback_lock() -> None:
@@ -1699,12 +1731,12 @@ async def test_a_room_grouped_in_the_raumfeld_app_has_the_rate_checked(
     provider, players = _zone_provider([["Bar"], ["Sofa"]])
     mass = _playing_group(provider, players, ["Bar"], [["Bar"]])
     bar, sofa = players["Bar"], players["Sofa"]
-    bar._attr_group_members = [bar.player_id, sofa.player_id] if not joins else []
+    bar._attr_group_members = [bar.protocol_id, sofa.protocol_id] if not joins else []
     started: list[Coroutine[Any, Any, None]] = []
     mass.create_task.side_effect = started.append
     with patch.object(bar, "_check_join", AsyncMock()) as check:
         # what following the zones does once the host shows Sofa in Bar's zone
-        bar.set_group_members([bar.player_id, sofa.player_id])
+        bar.set_group_members([bar.protocol_id, sofa.protocol_id])
         for coro in started:
             await coro
     assert check.await_count == (1 if checked else 0)
@@ -1721,7 +1753,7 @@ def test_a_room_event_reaches_that_rooms_player() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_room_event("http://192.168.1.42/bar.xml", {"Volume": "44"})
     bar.set_rendering_events.assert_called_once_with(True)
@@ -1753,7 +1785,7 @@ async def test_a_resync_tells_each_room_whether_its_events_come_in() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         await provider._resync()
     assert set(provider.room_events.refresh.await_args.args[0]) == {
@@ -1790,7 +1822,7 @@ def test_a_zone_event_has_the_rooms_of_that_zone_read() -> None:
     )
     players = [MagicMock(spec=RaumfeldPlayer, room=room) for room in ("Bar", "Sofa", "Bank")]
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=players
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=players
     ):
         provider._handle_zone_event(_ZONE_LOCATION, {"TransportState": "PLAYING"})
     players[0].zone_event.assert_called_once_with(_ZONE_LOCATION)
@@ -1809,7 +1841,7 @@ def test_a_room_transport_event_has_that_room_read() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_room_transport_event(_LOCATION, {"TransportState": "PAUSED_PLAYBACK"})
     bank.set_room_transport_events.assert_called_once_with(True)
@@ -1823,7 +1855,7 @@ def test_a_room_the_host_reports_changed_is_read() -> None:
     bar = MagicMock(spec=RaumfeldPlayer, room="Bar")
     bank = MagicMock(spec=RaumfeldPlayer, room="Bank")
     with patch.object(
-        RaumfeldPlayerProvider, "players", new_callable=PropertyMock, return_value=[bar, bank]
+        RaumfeldPlayerProvider, "protocols", new_callable=PropertyMock, return_value=[bar, bank]
     ):
         provider._handle_rooms_changed({"Bank"})
     bank.state_event.assert_called_once_with()
@@ -1891,26 +1923,26 @@ async def test_a_next_item_waiting_for_the_lock_is_dropped_when_the_room_follows
     play.assert_not_awaited()
 
 
-async def test_the_next_item_takes_the_lock_strictly() -> None:
-    """The next item never starts without the lock, as the queue's own play actions do."""
+async def test_the_next_item_takes_the_lock() -> None:
+    """The next item never starts without its player's lock, as the queue's own actions do."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._advance_armed = True
-    taken: list[dict[str, Any]] = []
+    taken: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
     @contextlib.asynccontextmanager
-    async def player_lock(*_args: Any, **kwargs: Any) -> AsyncIterator[None]:
-        taken.append(kwargs)
+    async def player_lock(*args: Any, **kwargs: Any) -> AsyncIterator[None]:
+        taken.append((args, kwargs))
         yield
 
     mass.players.get_group_and_player_lock = player_lock
     with patch.object(bar, "play_media", AsyncMock()) as play:
         await bar._play_next(PlayerMedia(uri="library://track/2"))
-    assert taken == [{"strict": True}]
+    assert taken == [((_player_id(bar),), {})]
     play.assert_awaited_once()
 
 
 async def test_a_next_item_that_never_gets_the_lock_is_not_started() -> None:
-    """A player kept busy past the strict timeout leaves the next item to that action."""
+    """A player kept busy past the lock timeout leaves the next item to that action."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._advance_armed = True
 
@@ -1922,7 +1954,7 @@ async def test_a_next_item_that_never_gets_the_lock_is_not_started() -> None:
     play.assert_not_awaited()
 
 
-async def test_the_rate_check_takes_the_lock_strictly() -> None:
+async def test_the_rate_check_takes_the_lock() -> None:
     """The check never looks at playback without the lock, and gives up if it stays taken."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=False)
     taken: list[dict[str, Any]] = []
@@ -1934,7 +1966,7 @@ async def test_the_rate_check_takes_the_lock_strictly() -> None:
 
     mass.players.get_group_and_player_lock = player_lock
     await bar._restart_for_group_rates()
-    assert taken == [{"strict": True}]
+    assert taken == [{}]
     mass.player_queues.seek.assert_awaited_once()
 
     busy = MagicMock()
@@ -1964,13 +1996,13 @@ async def test_a_join_restarts_a_stream_the_group_plays_when_set_to(
 async def test_a_join_restarts_the_stream_when_the_joining_room_asks_for_it() -> None:
     """The setting on the room that plays behind counts as much as on the leader."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
-    sofa = mass.players.get_player(bar._attr_group_members[1])
+    sofa = mass.players.get_protocol(bar._attr_group_members[1])
     rates = cast("MagicMock", sofa._config).get_value.return_value
     sofa._config = MagicMock(
         get_value=MagicMock(side_effect=lambda key, *_: key == CONF_RESTART_ON_JOIN or rates)
     )
     await bar._restart_for_group_rates()
-    mass.player_queues.seek.assert_awaited_once_with(bar.player_id, 63)
+    mass.player_queues.seek.assert_awaited_once_with(_player_id(bar), 63)
 
 
 def _restart_on_join(player: RaumfeldPlayer, on: bool) -> None:
@@ -2041,7 +2073,7 @@ async def test_overlapping_joins_restart_once_the_last_room_plays() -> None:
     """A room hooked in first waits for a room of another join that still hooks in."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
-    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _allow(mass.players.get_protocol("raumfeld_kitchen"), 96000)
     _restart_on_join(bar, True)
     kitchen_plays = asyncio.Event()
     restarted_while_kitchen_waits = False
@@ -2070,7 +2102,7 @@ async def test_a_room_that_joined_after_a_seek_is_restarted_for() -> None:
     """A room that joined the stream a seek started lags, even if an earlier join ends last."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
-    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _allow(mass.players.get_protocol("raumfeld_kitchen"), 96000)
     _restart_on_join(bar, True)
     kitchen_plays = asyncio.Event()
 
@@ -2093,7 +2125,7 @@ async def test_a_room_joining_while_a_check_waits_for_the_lock_is_waited_for() -
     """A check that got the lock while another join's room still hooks in leaves it the restart."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
-    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _allow(mass.players.get_protocol("raumfeld_kitchen"), 96000)
     _restart_on_join(bar, True)
     lock_free = asyncio.Event()
     kitchen_plays = asyncio.Event()
@@ -2127,7 +2159,7 @@ async def test_a_room_that_rejoins_while_an_earlier_check_waits_is_waited_for() 
     """A room that leaves and joins again is waited for, even once the first check is done."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
-    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _allow(mass.players.get_protocol("raumfeld_kitchen"), 96000)
     _restart_on_join(bar, True)
     first_done = asyncio.Event()
     rejoined_plays = asyncio.Event()
@@ -2156,7 +2188,7 @@ async def test_a_room_that_rejoined_after_a_seek_counts_with_the_new_stream() ->
     """An older check that ends last does not hide the newer stream a room rejoined."""
     bar, mass, _ = _joined_group(lambda sofa: _allow(sofa, 96000), stream_started_in_group=True)
     bar._attr_group_members = [*bar._attr_group_members, "raumfeld_kitchen"]
-    _allow(mass.players.get_player("raumfeld_kitchen"), 96000)
+    _allow(mass.players.get_protocol("raumfeld_kitchen"), 96000)
     _restart_on_join(bar, True)
     kitchen_plays = asyncio.Event()
 
@@ -2181,7 +2213,7 @@ async def test_a_room_that_left_while_hooked_in_leaves_no_restart() -> None:
     _restart_on_join(bar, True)
 
     async def sofa_leaves(_rooms: list[str]) -> None:
-        bar._attr_group_members = [bar.player_id]
+        bar._attr_group_members = [bar.protocol_id]
 
     with patch.object(bar, "_wait_for_rooms_playing", AsyncMock(side_effect=sofa_leaves)):
         await bar._check_join(["raumfeld_sofa"])
@@ -2345,7 +2377,7 @@ def _connecting_provider(address: str = "192.168.1.41") -> RaumfeldPlayerProvide
         return MagicMock(done=MagicMock(return_value=False))
 
     provider.mass.create_task = MagicMock(side_effect=create_task)
-    provider.mass.players.iter_players.return_value = []
+    provider.mass.players.iter_protocols.return_value = []
     provider.logger = MagicMock()
     provider._follow_moved_host = AsyncMock(return_value=False)  # type: ignore[method-assign]
     provider._load_line_in = AsyncMock()  # type: ignore[method-assign]
@@ -2437,7 +2469,7 @@ async def test_a_lost_host_stops_following_and_shows_its_rooms_unavailable() -> 
     bar = _player("Bar")
     bar._attr_available = True
     bar._playback_generation = 0
-    cast("MagicMock", provider.mass).players.iter_players.return_value = [bar]
+    cast("MagicMock", provider.mass).players.iter_protocols.return_value = [bar]
 
     await provider._disconnect("did not answer")
 
@@ -2458,76 +2490,36 @@ async def test_dropping_a_host_that_was_not_connected_does_not_warn() -> None:
     cast("MagicMock", provider.logger).warning.assert_not_called()
 
 
-def _registering_provider(
-    rooms: dict[str, tuple[str, str]], registered: list[RaumfeldPlayer]
+def _attaching_provider(
+    rooms: dict[str, tuple[str, str]],
 ) -> tuple[RaumfeldPlayerProvider, dict[str, RaumfeldPlayer]]:
     """
-    Build a provider whose host reports the given rooms, with the given players registered.
+    Build a provider whose host reports the given rooms, with nothing attached yet.
 
     :param rooms: Room name -> (room UDN, renderer UDN of the speaker in it).
-    :param registered: The players Music Assistant already has for this provider.
     """
     provider = _moving_provider(rooms)
     provider.config = MagicMock(instance_id="raumfeld")
+    provider._sync_lock = asyncio.Lock()
     # the software versions are covered by their own tests
     provider._versions_read = set(rooms)
     provider._room_versions = {}
-    # no room was pinned to a player_id before
+    # no room was pinned to a protocol id before, and no room has a record from before
     mass = cast("MagicMock", provider.mass)
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
-    registry = {player.player_id: player for player in registered}
+    mass.config.get_protocol_record.return_value = None
+    registry: dict[str, RaumfeldPlayer] = {}
     players = mass.players
-    players.iter_players.side_effect = lambda **_: list(registry.values())
-    players.get_player.side_effect = registry.get
+    players.iter_protocols.side_effect = lambda *_: list(registry.values())
+    players.get_protocol.side_effect = registry.get
+    players.wants_protocol.return_value = True
 
-    async def register(player: RaumfeldPlayer) -> None:
-        registry[player.player_id] = player
+    async def attach(player: RaumfeldPlayer) -> None:
+        registry[player.protocol_id] = player
 
-    players.register = AsyncMock(side_effect=register)
+    players.register = AsyncMock(side_effect=attach)
     return provider, registry
-
-
-def _registered(room: str, player_id: str) -> RaumfeldPlayer:
-    """Build a registered player for a room, available until told otherwise."""
-    player = _player(room)
-    player._player_id = player_id
-    player._attr_name = room
-    player._attr_available = True
-    player._playback_generation = 0
-    player._attr_device_info = DeviceInfo(model="Raumfeld One S", manufacturer="Teufel")
-    player._line_in = None
-    return player
-
-
-def _init_player(self: RaumfeldPlayer, player_id: str, room: str, **_: Any) -> None:
-    """Stand in for the player's constructor, which needs a running Music Assistant."""
-    self._player_id = player_id
-    self.room = room
-
-
-async def test_a_new_room_is_registered_under_its_speakers_serial() -> None:
-    """A room the host reports for the first time gets a player named after its speaker."""
-    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
-    with patch.object(RaumfeldPlayer, "__init__", _init_player):
-        await provider._sync_rooms()
-    assert list(registry) == ["raumfeld_d83addda8e62"]
-    assert registry["raumfeld_d83addda8e62"].room == "Marshall"
-
-
-async def test_a_known_room_is_available_again_under_its_new_name() -> None:
-    """A speaker that returns in a renamed room keeps its player, which takes the new name."""
-    marshall = _registered("Marshall", "raumfeld_d83addda8e62")
-    marshall._attr_available = False
-    provider, registry = _registering_provider(
-        {"Werkplaats": ("uuid:5e1d", "uuid:pi4")}, [marshall]
-    )
-    await provider._sync_rooms()
-    assert list(registry) == ["raumfeld_d83addda8e62"]
-    cast("MagicMock", provider.mass).players.register.assert_not_awaited()
-    assert marshall.room == "Werkplaats"
-    assert marshall._attr_name == "Werkplaats"
-    assert marshall.available
 
 
 # a speaker's renderer UUID -> (stream url, title) of its Line-In
@@ -2564,7 +2556,7 @@ async def _line_in_selected(player: RaumfeldPlayer) -> str:
 
 async def test_a_room_whose_speaker_is_swapped_plays_the_line_in_of_its_new_speaker() -> None:
     """The player a room keeps selects the Line-In of the speaker it plays through now."""
-    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    provider, registry = _attaching_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
     provider._line_in = dict(_LINE_INS)
     await provider._sync_rooms()
     marshall = registry["raumfeld_d83addda8e62"]
@@ -2578,7 +2570,7 @@ async def test_a_room_whose_speaker_is_swapped_plays_the_line_in_of_its_new_spea
 
 async def test_a_room_whose_speaker_is_swapped_shows_its_new_speaker() -> None:
     """The player a room keeps shows the model and software version of its new speaker."""
-    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    provider, registry = _attaching_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
     await provider._sync_rooms()
     marshall = registry["raumfeld_d83addda8e62"]
     location, serial = _SPEAKERS["uuid:pi3"]
@@ -2606,7 +2598,7 @@ async def test_a_room_whose_speaker_is_swapped_shows_its_new_speaker() -> None:
 
 async def test_a_room_read_through_another_speaker_offers_that_speakers_line_in() -> None:
     """While its own speaker is away a room offers the other's Line-In, and its own once back."""
-    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    provider, registry = _attaching_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
     provider._line_in = dict(_LINE_INS)
     _room_with(provider, ["uuid:pi4", "uuid:pi3"])
     await provider._sync_rooms()
@@ -2625,7 +2617,7 @@ async def test_a_room_read_through_another_speaker_offers_that_speakers_line_in(
 
 async def test_a_room_whose_new_speaker_has_no_line_in_offers_none() -> None:
     """A room that now plays through a speaker without a Line-In no longer offers one."""
-    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+    provider, registry = _attaching_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
     provider._line_in = {"pi4": _LINE_INS["pi4"]}
     await provider._sync_rooms()
     marshall = registry["raumfeld_d83addda8e62"]
@@ -2640,22 +2632,9 @@ async def test_a_room_whose_new_speaker_has_no_line_in_offers_none() -> None:
         await _line_in_selected(marshall)
 
 
-async def test_a_room_the_host_no_longer_lists_is_unavailable() -> None:
-    """A speaker gone from the host keeps its player, shown as unavailable."""
-    marshall = _registered("Marshall", "raumfeld_d83addda8e62")
-    kitchen = _registered("Keuken", "raumfeld_b827eb57daf9")
-    provider, registry = _registering_provider(
-        {"Marshall": ("uuid:5e1d", "uuid:pi4")}, [marshall, kitchen]
-    )
-    await provider._sync_rooms()
-    assert set(registry) == {"raumfeld_d83addda8e62", "raumfeld_b827eb57daf9"}
-    assert marshall.available
-    assert not kitchen.available
-
-
-async def test_a_room_whose_serial_cannot_be_read_waits_to_be_registered() -> None:
-    """A room is only registered once its speaker's serial is known, so its id never changes."""
-    provider, registry = _registering_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")}, [])
+async def test_a_room_whose_serial_cannot_be_read_waits_to_be_attached() -> None:
+    """A room is only attached once its speaker's serial is known, so its id never changes."""
+    provider, registry = _attaching_provider({"Marshall": ("uuid:5e1d", "uuid:pi4")})
     get = cast("MagicMock", provider.mass).http_session.get
     get.side_effect = aiohttp.ClientConnectionError("asleep")
     await provider._sync_rooms()
@@ -2789,9 +2768,9 @@ def _icy_provider(stored: dict[str, Any]) -> RaumfeldPlayerProvider:
     """
     provider = RaumfeldPlayerProvider.__new__(RaumfeldPlayerProvider)
     mass = MagicMock()
-    mass.config.get_raw_player_config_value.side_effect = lambda _pid, key: stored.get(key)
-    mass.config.set_raw_player_config_value.side_effect = lambda _pid, key, value: (
-        stored.__setitem__(key, value)
+    mass.config.get_protocol_value.side_effect = lambda _pid, key: stored.get(key)
+    mass.config.set_protocol_value.side_effect = lambda _pid, key, value: stored.__setitem__(
+        key, value
     )
     provider.mass = mass
     return provider
@@ -2809,6 +2788,53 @@ def test_a_room_without_an_icy_preference_gets_basic(stored: dict[str, Any], exp
     provider._ensure_icy_default("raumfeld_bar")
 
     assert stored["enable_icy_metadata"] == expected
+
+
+@pytest.mark.parametrize("attaches", [True, False], ids=["attached", "not_attached"])
+async def test_a_new_room_gets_the_icy_default_only_once_attached(attaches: bool) -> None:
+    """A new room that did not attach (e.g. during an unload) has no record to write to."""
+    stored: dict[str, Any] = {}
+    provider = _icy_provider(stored)
+    provider.config = MagicMock()
+    provider.logger = MagicMock()
+    provider.host = MagicMock()
+    _host_mock(provider).get_rooms.return_value = ["Bar"]
+    provider._room_ids = {"Bar": "raumfeld_bar"}
+    # the software versions are covered by their own tests
+    provider._versions_read = {"Bar"}
+    provider._room_versions = {}
+    provider._sync_lock = asyncio.Lock()
+    registry: dict[str, RaumfeldPlayer] = {}
+
+    async def attach(player: RaumfeldPlayer) -> None:
+        if attaches:
+            registry[player.protocol_id] = player
+
+    def build_player(**kwargs: Any) -> RaumfeldPlayer:
+        player = _player(kwargs["room"])
+        player._provider = kwargs["provider"]
+        return player
+
+    players = cast("MagicMock", provider.mass.players)
+    players.register = AsyncMock(side_effect=attach)
+    players.get_protocol.side_effect = registry.get
+    players.iter_protocols.return_value = []
+    players.wants_protocol.return_value = True
+    with (
+        patch.object(provider, "_forget_moved_renderers"),
+        patch.object(provider, "_load_room_pin", AsyncMock()),
+        patch.object(provider, "_settle_room_renderer", AsyncMock()),
+        patch.object(provider, "_ensure_room_serial", AsyncMock()),
+        patch.object(provider, "_assign_room_ids"),
+        patch.object(provider, "_pin_room_ids", AsyncMock()),
+        patch(
+            "music_assistant.providers.raumfeld.provider.RaumfeldPlayer",
+            side_effect=build_player,
+        ),
+    ):
+        await provider._sync_rooms()
+
+    assert ("enable_icy_metadata" in stored) is attaches
 
 
 def _commanding_provider() -> RaumfeldPlayerProvider:
@@ -2881,14 +2907,14 @@ async def test_only_a_room_in_the_leaders_zone_is_taken_out_of_it() -> None:
     """Ungrouping a room that already plays elsewhere leaves it where it plays."""
     provider, players = _zone_provider([["Bar", "Sofa"], ["Kitchen"]])
     bar, sofa, kitchen = players["Bar"], players["Sofa"], players["Kitchen"]
-    bar._attr_group_members = [bar.player_id, sofa.player_id, kitchen.player_id]
+    bar._attr_group_members = [bar.protocol_id, sofa.protocol_id, kitchen.protocol_id]
     for player in players.values():
         player._provider = provider
     provider._group_changes = 0
     provider.drop_room = AsyncMock()  # type: ignore[method-assign]
     _host_mock(provider).zone_udn.return_value = "uuid:zone"
     with patch.object(bar, "update_state"):
-        await bar.set_members(player_ids_to_remove=[sofa.player_id, kitchen.player_id])
+        await bar.set_members(player_ids_to_remove=[sofa.protocol_id, kitchen.protocol_id])
     provider.drop_room.assert_awaited_once_with("Sofa")
 
 

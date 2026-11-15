@@ -20,7 +20,7 @@ def _fake_flow_player() -> Any:
     fake = cast("Any", ChromecastPlayer.__new__(ChromecastPlayer))
     fake.mass = MagicMock()
     fake.logger = MagicMock()
-    fake._player_id = "cast-child-1"
+    fake._protocol_id = "cast-child-1"
     fake.cc = MagicMock()
     fake.cc.media_controller.status.player_is_playing = True
     fake.cc.media_controller.status.media_session_id = 7
@@ -29,7 +29,11 @@ def _fake_flow_player() -> Any:
     fake._attr_powered = True
     fake._attr_playback_state = PlaybackState.PLAYING
     fake._attr_current_media = PlayerMedia(uri=FLOW_URL)
-    fake._state = MagicMock(current_media=PlayerMedia(uri=FLOW_URL, title="Track 2"))
+    # the player the Cast is attached to, first seen after the player split
+    fake._player = MagicMock(
+        player_id="pl0123456789ab",
+        current_media=PlayerMedia(uri=FLOW_URL, title="Track 2"),
+    )
     return fake
 
 

@@ -83,16 +83,16 @@ def normalized_mac(mac: str) -> str:
 
 def native_player_macs(mass: MusicAssistant) -> set[str]:
     """
-    Collect the normalized MAC addresses of all natively registered players.
+    Collect the normalized MAC addresses of the devices other player providers attached.
 
     Used to detect HA entities that point to a device that is already available
     as a native Music Assistant player (e.g. an ESPHome device using Sendspin).
     """
     macs: set[str] = set()
-    for player in mass.players:
-        if player.provider.domain == DOMAIN:
+    for protocol in mass.players.iter_protocols():
+        if protocol.provider.domain == DOMAIN:
             continue
-        if mac := player.device_info.identifiers.get(IdentifierType.MAC_ADDRESS):
+        if mac := protocol.device_info.identifiers.get(IdentifierType.MAC_ADDRESS):
             macs.add(normalized_mac(mac))
     return macs
 

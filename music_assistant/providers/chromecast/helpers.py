@@ -13,19 +13,21 @@ from uuid import UUID
 
 from pychromecast import dial
 from pychromecast.const import CAST_TYPE_GROUP
-from pychromecast.models import HostServiceInfo
+from pychromecast.models import CastInfo, HostServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
 from .constants import DASHBOARD_NAMESPACE, MASS_APP_ID
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pychromecast import Chromecast
     from pychromecast.controllers.media import MediaStatus, MediaStatusListener
     from pychromecast.controllers.multizone import MultizoneManager, MultiZoneManagerListener
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.controllers.receiver import CastStatusListener as ReceiverStatusListener
-    from pychromecast.models import CastInfo, MDNSServiceInfo
+    from pychromecast.models import MDNSServiceInfo
     from pychromecast.socket_client import ConnectionStatus, ConnectionStatusListener
     from zeroconf import Zeroconf
 
@@ -151,6 +153,19 @@ class ChromecastInfo:
     def from_cast_info(cls, cast_info: CastInfo) -> ChromecastInfo:
         """Instantiate ChromecastInfo from CastInfo."""
         return cls(**asdict(cast_info))
+
+    def to_cast_info(self) -> CastInfo:
+        """Return the CastInfo pychromecast connects to the device with."""
+        return CastInfo(
+            set(self.services),
+            self.uuid,
+            self.model_name,
+            self.friendly_name,
+            self.host,
+            self.port,
+            self.cast_type,
+            self.manufacturer,
+        )
 
     def update(self, cast_info: CastInfo) -> None:
         """Update ChromecastInfo from CastInfo."""
@@ -298,9 +313,9 @@ def is_google_device(cast_info: ChromecastInfo) -> bool:
     """
     Check if a device is a Google device with native Cast support.
 
-    Google devices (Chromecast, Nest, Google Home) have native Cast support
-    and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-    support should be exposed as PlayerType.PROTOCOL.
+    Google devices (Chromecast, Nest, Google Home) have native Cast support,
+    so Cast is their native protocol. For a device of another brand Cast is an
+    audio protocol next to the device's own.
     """
     if not cast_info.manufacturer:
         # If no manufacturer, check model name for Google devices
@@ -345,21 +360,15 @@ class CastStatusListener:
 
     def new_cast_status(self, status: CastStatus) -> None:
         """Handle updated CastStatus."""
-        if not self._valid:
-            return
-        self.castplayer.on_new_cast_status(status)
+        self._deliver(self.castplayer.on_new_cast_status, status)
 
     def new_media_status(self, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
-        if not self._valid:
-            return
-        self.castplayer.on_new_media_status(status)
+        self._deliver(self.castplayer.on_new_media_status, status)
 
     def new_connection_status(self, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
-        if not self._valid:
-            return
-        self.castplayer.on_new_connection_status(status)
+        self._deliver(self.castplayer.on_new_connection_status, status)
 
     def added_to_multizone(self, group_uuid: str) -> None:
         """Handle the cast added to a group."""
@@ -376,9 +385,8 @@ class CastStatusListener:
         """Handle the cast removed from a group."""
         if not self._valid:
             return
-        if group_uuid == self.castplayer.active_source:
-            mass = self.castplayer.mass
-            mass.loop.call_soon_threadsafe(self.castplayer.update_state)
+        if group_uuid == self.castplayer.active_cast_group:
+            self._deliver(self._leave_group)
         self.castplayer.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.display_name, group_uuid
         )
@@ -390,8 +398,46 @@ class CastStatusListener:
 
     def multizone_new_cast_status(self, group_uuid: str, cast_status: CastStatus) -> None:
         """Handle reception of a new CastStatus for a group."""
-        mass = self.castplayer.mass
-        if group_player := mass.players.get_player(group_uuid):
+        self._deliver(self._apply_group_cast_status, group_uuid)
+
+    def multizone_new_media_status(self, group_uuid: str, media_status: MediaStatus) -> None:
+        """Handle reception of a new MediaStatus for a group."""
+        if not self._valid:
+            return
+        self.castplayer.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "%s got new media_status for group: %s",
+            self.castplayer.display_name,
+            group_uuid,
+        )
+        self._deliver(self.castplayer.on_new_media_status, media_status)
+
+    def load_media_failed(self, queue_item_id: int, error_code: int) -> None:
+        """Call when media failed to load."""
+        # NOTE: pychromecast only calls this when the receiver includes a detailed
+        # error code in its LOAD_FAILED message; receivers that omit it are caught
+        # by the idleReason ERROR handling in the media status instead.
+        self._deliver(self.castplayer.on_load_media_failed, queue_item_id, error_code)
+
+    def invalidate(self) -> None:
+        """
+        Invalidate this status listener.
+
+        All following callbacks won't be forwarded.
+        """
+        if self.castplayer.cast_info.is_audio_group:
+            self._mz_mgr.remove_multizone(self._uuid)
+        else:
+            self._mz_mgr.deregister_listener(self._uuid, cast("MultiZoneManagerListener", self))
+        self._valid = False
+
+    def _apply_group_cast_status(self, group_uuid: str) -> None:
+        """
+        Follow whether the cast plays from a group it is a member of (on the event loop).
+
+        :param group_uuid: The group that reported a new CastStatus.
+        """
+        if group_player := self.castplayer.provider.get_protocol(group_uuid):
             if TYPE_CHECKING:
                 assert isinstance(group_player, ChromecastPlayer)
             if group_player.cc.media_controller.is_active:
@@ -409,37 +455,25 @@ class CastStatusListener:
         if player_status is None:
             return
 
-        self.new_cast_status(player_status)
+        self.castplayer.on_new_cast_status(player_status)
 
-    def multizone_new_media_status(self, group_uuid: str, media_status: MediaStatus) -> None:
-        """Handle reception of a new MediaStatus for a group."""
-        if not self._valid:
-            return
-        self.castplayer.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "%s got new media_status for group: %s",
-            self.castplayer.display_name,
-            group_uuid,
-        )
-        self.castplayer.on_new_media_status(media_status)
+    def _leave_group(self) -> None:
+        """Show the own media of the cast once it left the group it played from (on the event loop)."""
+        self.castplayer.update_active_cast_group()
+        self.castplayer.on_new_media_status(self.castplayer.cc.media_controller.status)
 
-    def load_media_failed(self, queue_item_id: int, error_code: int) -> None:
-        """Call when media failed to load."""
-        if not self._valid:
-            return
-        # NOTE: pychromecast only calls this when the receiver includes a detailed
-        # error code in its LOAD_FAILED message; receivers that omit it are caught
-        # by the idleReason ERROR handling in the media status instead.
-        self.castplayer.on_load_media_failed(queue_item_id, error_code)
-
-    def invalidate(self) -> None:
+    def _deliver(self, handler: Callable[..., None], *args: Any) -> None:
         """
-        Invalidate this status listener.
+        Run a handler of the protocol on the event loop, unless this listener is invalid by then.
 
-        All following callbacks won't be forwarded.
+        :param handler: The handler to run.
+        :param args: The arguments to pass to it.
         """
-        if self.castplayer.cast_info.is_audio_group:
-            self._mz_mgr.remove_multizone(self._uuid)
-        else:
-            self._mz_mgr.deregister_listener(self._uuid, cast("MultiZoneManagerListener", self))
-        self._valid = False
+
+        def _run() -> None:
+            # checked on the event loop, where a detach invalidates the listener: what the
+            # socket thread queued before the detach never reaches the detached protocol
+            if self._valid:
+                handler(*args)
+
+        self.castplayer.mass.loop.call_soon_threadsafe(_run)
