@@ -54,6 +54,7 @@ def _create_provider_mock() -> MagicMock:
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    provider.library_manager.mark_purchases_on_sale = AsyncMock()
     use_real_create_task(provider.mass)
     return provider
 
