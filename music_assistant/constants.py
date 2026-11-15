@@ -398,6 +398,9 @@ PROVIDER_LOAD_CONCURRENCY = 8
 # MusicAssistantError, which is a bug rather than a handled condition
 UNHANDLED_PROVIDER_ERROR_CODE: Final = 999
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
+# the provider of an item known only by an external id, which is looked up on the music
+# providers when it is opened or played; its item id is built by external_item_id()
+EXTERNAL_ID_PROVIDER: Final[str] = "external"
 # The music sources that read the user's own files. Background audio analysis is deliberately
 # limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is
 # not something we do. Keep it that way.
@@ -1093,6 +1096,26 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
     # audio overlay feature) at zero resource cost until actually used
     ("ambient_sounds", False),
+}
+
+# The editorial part of the Marketplace, which the team edits per release.
+CATALOG_POPULAR: Final[tuple[str, ...]] = (
+    "spotify",
+    "tidal",
+    "qobuz",
+    "filesystem_local",
+    "sonos",
+    "chromecast",
+    "airplay",
+    "spotify_connect",
+    "airplay_receiver",
+)
+# what to suggest next to a provider that is set up
+CATALOG_PAIRINGS: Final[dict[str, tuple[str, ...]]] = {
+    "spotify": ("spotify_connect", "lastfm_scrobble"),
+    "tidal": ("lastfm_scrobble",),
+    "qobuz": ("lastfm_scrobble",),
+    "airplay": ("airplay_receiver",),
 }
 
 # Seconds an external source may sit paused before we consider its session ended.

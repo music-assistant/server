@@ -20,8 +20,13 @@ from music_assistant.controllers.community_catalog.dependencies import Dependenc
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.installer import InstallError
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
-from tests.conftest import full_mass_context
-from tests.controllers.community_catalog.conftest import ADDED, RELEASED, build_archive
+from music_assistant.testing import full_mass_context
+from tests.controllers.community_catalog.conftest import (
+    ADDED,
+    RELEASED,
+    assert_refused,
+    build_archive,
+)
 from tests.controllers.community_catalog.test_controller import (  # noqa: F401 - a fixture
     DEV_REQUIREMENT,
     REQUIREMENT,
@@ -137,8 +142,9 @@ async def test_update_of_an_imported_package(
         assert _installed(folder)["version"] == OLD
         assert (folder / ".staging" / DOMAIN).is_dir()
         _assert_runs(mass, DOMAIN, OLD)
-        with pytest.raises(ActionUnavailable, match="no update"):
+        with pytest.raises(ActionUnavailable, match="no update") as refused:
             await mass.community_catalog.update_providers(DOMAIN)
+        assert_refused(refused, "no_update", DOMAIN)
 
     async with _server(tmp_path) as mass:
         _assert_runs(mass, DOMAIN, NEW)
@@ -476,14 +482,17 @@ async def test_update_refused(tmp_path: Path, registry: Registry, github: GitHub
     await _install(tmp_path, registry, {DOMAIN: entry})
 
     async with _server(tmp_path) as mass:
-        with pytest.raises(ActionUnavailable, match="not installed"):
+        with pytest.raises(ActionUnavailable, match="not installed") as refused:
             await mass.community_catalog.update_providers(OTHER)
-        with pytest.raises(ActionUnavailable, match="no update"):
+        assert_refused(refused, "not_installed", OTHER)
+        with pytest.raises(ActionUnavailable, match="no update") as refused:
             await mass.community_catalog.update_providers(DOMAIN)
+        assert_refused(refused, "no_update", DOMAIN)
 
     async with _server(tmp_path, safe_mode=True) as mass:
-        with pytest.raises(ActionUnavailable, match="safe mode"):
+        with pytest.raises(ActionUnavailable, match="safe mode") as refused:
             await mass.community_catalog.update_providers()
+        assert_refused(refused, "safe_mode")
 
 
 async def test_failed_version_at_start_without_requirements(

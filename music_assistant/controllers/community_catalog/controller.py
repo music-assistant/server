@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
     ActionUnavailable,
     MusicAssistantError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.provider import ProviderManifest
 
@@ -63,6 +64,29 @@ _CHECK_SPREAD: Final = 3600
 # the timer that tries the automatic updates again that waited for playback to stop
 _UPDATE_RETRY: Final = "community_catalog_update_retry"
 _UPDATE_RETRY_INTERVAL: Final = 3600
+
+# why a command of the community catalog fails, as the admin reads it; the texts of the
+# translation keys community_catalog_<key> in the errors of strings.json
+_ERRORS: Final[dict[str, str]] = {
+    "remove_first": "Remove what you installed from the community catalog before you disable it.",
+    "switched_off": "Enable the community catalog to install from it.",
+    "not_installed": "{0} is not installed from the community catalog.",
+    "no_update": "There is no update of {0} to install.",
+    "not_offered": "The community catalog does not offer {0} for this version of Music Assistant.",
+    "already_installed": "{0} is installed already.",
+    "name_taken": (
+        "Music Assistant already has something named {0}, so it cannot be installed from the "
+        "community catalog."
+    ),
+    "packages_in_use": (
+        "{0} needs other versions of Python packages that something else from the community "
+        "catalog uses while it runs, so it cannot be installed."
+    ),
+    "safe_mode": "The community catalog is not available while Music Assistant is in safe mode.",
+    "unreachable": (
+        "The community catalog could not be reached to check for changes. Try again later."
+    ),
+}
 
 
 class CommunityCatalogController(CoreController):
@@ -116,7 +140,7 @@ class CommunityCatalogController(CoreController):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 required=False,
-                # the app switches it on from the catalog, after the user confirmed its description
+                # the app switches it on in the Marketplace once the user confirmed its description
                 hidden=True,
             ),
             ConfigEntry(
@@ -137,8 +161,8 @@ class CommunityCatalogController(CoreController):
         """
         Handle logic when the config is updated.
 
-        :raises ActionUnavailable: The community catalog is switched off while something the
-            admin installed from it is still installed.
+        :raises ActionUnavailable: The community catalog is disabled while something the admin
+            installed from it is still installed.
         """
         if (
             f"values/{CONF_ENABLED}" in changed_keys
@@ -146,8 +170,7 @@ class CommunityCatalogController(CoreController):
             and self._installed_by_admin()
         ):
             # the config controller puts the saved switch back on
-            msg = "Remove what you installed from the community catalog before you switch it off"
-            raise ActionUnavailable(msg)
+            raise _error("remove_first")
         await super().update_config(config, changed_keys)
         if self.mass.safe_mode:
             return
@@ -201,6 +224,8 @@ class CommunityCatalogController(CoreController):
         elif decision is None and domain in self._waiting_moves():
             error = self._move_errors.get(domain)
             decision = Decision(Verdict.MOVE_FAILED, error) if error else Decision(Verdict.MOVED)
+        elif decision is None and self._offered(domain):
+            decision = Decision(Verdict.NOT_INSTALLED)
         if decision is None or decision.verdict == Verdict.LOAD:
             return None
         detail = decision.detail or ""
@@ -213,7 +238,7 @@ class CommunityCatalogController(CoreController):
 
     @api_command("community_catalog/providers", required_scope=Scope.SYSTEM_MANAGE)
     async def get_providers(self) -> list[CommunityProvider]:
-        """Return the installed community providers and, while switched on, what the catalog offers."""
+        """Return the installed community providers and, while enabled, what the catalog offers."""
         self._raise_in_safe_mode()
         installed = self._store.state.installed
         providers = [
@@ -233,10 +258,19 @@ class CommunityCatalogController(CoreController):
 
     @api_command("community_catalog/refresh", required_scope=Scope.SYSTEM_MANAGE)
     async def refresh(self) -> list[CommunityProvider]:
-        """Fetch the index of the community catalog now, and return its providers."""
+        """
+        Fetch the index of the community catalog now, and return its providers.
+
+        :raises ResourceTemporarilyUnavailable: The index could not be fetched; the kept copy
+            stays in use.
+        """
         self._raise_in_safe_mode()
-        if self._needs_index() and await self._fetch_and_apply():
-            self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
+        if self._needs_index():
+            changed = await self._fetch_and_apply()
+            if changed is None:
+                raise _error("unreachable", error_type=ResourceTemporarilyUnavailable)
+            if changed:
+                self.mass.signal_event(EventType.COMMUNITY_CATALOG_UPDATED)
         return await self.get_providers()
 
     @api_command("community_catalog/install", required_scope=Scope.SYSTEM_MANAGE)
@@ -257,8 +291,7 @@ class CommunityCatalogController(CoreController):
         self._raise_in_safe_mode()
         async with self._lock:
             if not self.config.get_value(CONF_ENABLED):
-                msg = "Switch the community catalog on to install from it"
-                raise ActionUnavailable(msg)
+                raise _error("switched_off")
             installed = await self._install(domain)
             await self._load_installed(domain)
             provider = await self._installed_provider(domain, installed)
@@ -281,8 +314,7 @@ class CommunityCatalogController(CoreController):
         async with self._lock:
             state = self._store.state
             if domain not in state.installed:
-                msg = f"{domain} is not installed from the community catalog"
-                raise ActionUnavailable(msg)
+                raise _error("not_installed", domain)
             # dropped from the state first: files that cannot be removed then never load
             await self._store.save_state(
                 replace(state, installed={d: i for d, i in state.installed.items() if d != domain})
@@ -337,11 +369,9 @@ class CommunityCatalogController(CoreController):
             targets = self._versions.targets(include_updates=True, retry_failed=domain is not None)
             if domain is not None:
                 if domain not in self._store.state.installed:
-                    msg = f"{domain} is not installed from the community catalog"
-                    raise ActionUnavailable(msg)
+                    raise _error("not_installed", domain)
                 if domain not in targets:
-                    msg = f"There is no update of {domain} to install"
-                    raise ActionUnavailable(msg)
+                    raise _error("no_update", domain)
                 await self._versions.update(domain, targets[domain])
             else:
                 for target, version in targets.items():
@@ -387,8 +417,12 @@ class CommunityCatalogController(CoreController):
         finally:
             self._schedule_check()
 
-    async def _fetch_and_apply(self) -> bool:
-        """Fetch and apply the index, carry out what is to change, and return whether it changed."""
+    async def _fetch_and_apply(self) -> bool | None:
+        """
+        Fetch and apply the index, and carry out what is to change.
+
+        Returns whether the index changed, None when it could not be fetched.
+        """
         async with self._lock:
             if changed := await self._index_client.fetch():
                 await self._apply_index()
@@ -563,11 +597,7 @@ class CommunityCatalogController(CoreController):
         requirements[manifest.domain] = manifest.requirements
         resolved = await self._dependencies.resolve(requirements)
         if await self._dependencies.touches_imported(resolved.pins):
-            msg = (
-                f"{manifest.domain} needs other versions of packages that running community "
-                "providers use, which cannot be changed while they run"
-            )
-            raise ActionUnavailable(msg)
+            raise _error("packages_in_use", manifest.domain)
         await self._dependencies.sync(resolved)
         await self._installer.activate(manifest.domain)
 
@@ -626,6 +656,16 @@ class CommunityCatalogController(CoreController):
             for player in self.mass.players.iter_players()
         )
 
+    def _offered(self, domain: str) -> bool:
+        """Return whether the community catalog is enabled and offers a provider to this server."""
+        entry = self._gate.own_entry(domain)
+        return (
+            entry is not None
+            and not self.mass.safe_mode
+            and bool(self.config.get_value(CONF_ENABLED))
+            and available_provider(domain, entry, self.logger) is not None
+        )
+
     def _installable(self, domain: str) -> IndexProvider:
         """
         Return the index entry of a provider that may be installed now.
@@ -636,14 +676,11 @@ class CommunityCatalogController(CoreController):
         index = self._gate.own_index()
         entry = index.providers.get(domain) if index is not None else None
         if entry is None or available_provider(domain, entry, self.logger) is None:
-            msg = f"The community catalog does not offer {domain} for this server version"
-            raise ActionUnavailable(msg)
+            raise _error("not_offered", domain)
         if domain in self._store.state.installed:
-            msg = f"{domain} is installed already"
-            raise ActionUnavailable(msg)
+            raise _error("already_installed", domain)
         if any(manifest.domain == domain for manifest in self.mass.get_provider_manifests()):
-            msg = f"The server already has a provider named {domain}"
-            raise ActionUnavailable(msg)
+            raise _error("name_taken", domain)
         return entry
 
     async def _installed_provider(
@@ -674,5 +711,21 @@ class CommunityCatalogController(CoreController):
     def _raise_in_safe_mode(self) -> None:
         """Raise when the server runs in safe mode, which loads no community provider."""
         if self.mass.safe_mode:
-            msg = "The community catalog is not available in safe mode"
-            raise ActionUnavailable(msg)
+            raise _error("safe_mode")
+
+
+def _error(
+    key: str, *args: str, error_type: type[MusicAssistantError] = ActionUnavailable
+) -> MusicAssistantError:
+    """
+    Return the error of a command of the community catalog, with its translatable text.
+
+    :param key: The key of the text in _ERRORS.
+    :param args: What the text names, such as the domain of a provider.
+    :param error_type: The type of the error.
+    """
+    return error_type(
+        _ERRORS[key].format(*args),
+        translation_key=f"community_catalog_{key}",
+        translation_args=list(args),
+    )

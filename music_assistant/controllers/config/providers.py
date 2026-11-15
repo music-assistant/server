@@ -694,6 +694,41 @@ class ProviderConfigMixin:
         ):
             entry.value = value
 
+    def can_add_provider(self, manifest: ProviderManifest) -> bool:
+        """
+        Return whether the calling user may add an instance of the given provider.
+
+        :param manifest: The manifest of the provider.
+        """
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            return True
+        # a member may only add what becomes a music source of its own: a music
+        # service that allows more than one account and lets members set it up
+        return (
+            manifest.type == ProviderType.MUSIC
+            and not manifest.builtin
+            and manifest.multi_instance
+            and manifest.self_service
+        )
+
+    def own_provider_domains(self) -> builtins.set[str]:
+        """
+        Return the domains of the providers the calling user has set up.
+
+        A user who manages every music source has all that is set up; anyone else has the
+        music sources they own.
+        """
+        user, manages_all_sources = self._access_caller()
+        raw_confs: dict[str, dict[str, Any]] = self.get(CONF_PROVIDERS, {})
+        if user is None or manages_all_sources:
+            return {raw_conf["domain"] for raw_conf in raw_confs.values()}
+        return {
+            raw_conf["domain"]
+            for instance_id, raw_conf in raw_confs.items()
+            if source_owner(self.mass, instance_id) == user.user_id
+        }
+
     @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def _reload_provider(self, instance_id: str) -> None:
         """
@@ -929,17 +964,7 @@ class ProviderConfigMixin:
 
     def _check_provider_setup_permission(self, manifest: ProviderManifest) -> None:
         """Raise when the calling user may not add an instance of the given provider."""
-        user, manages_all_sources = self._access_caller()
-        if user is None or manages_all_sources:
-            return
-        # a member may only add what becomes a music source of its own: a music
-        # service that allows more than one account and lets members set it up
-        if (
-            manifest.type != ProviderType.MUSIC
-            or manifest.builtin
-            or not manifest.multi_instance
-            or not manifest.self_service
-        ):
+        if not self.can_add_provider(manifest):
             raise InsufficientPermissions(
                 f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to add {manifest.name}"
             )

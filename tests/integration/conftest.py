@@ -22,7 +22,7 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
-from tests.common import (
+from music_assistant.testing import (
     adopt_bound_sendspin_port,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
@@ -171,5 +171,5 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
         finally:
             # also stop after a failed boot, or the half-started server's open database
             # connections keep their non-daemon threads alive and hang the interpreter
-            # at exit (see the same note in tests/conftest.py)
+            # at exit (see the same note in music_assistant/testing.py)
             await mass_instance.stop()

@@ -35,8 +35,6 @@ from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
-from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
     sendspin_player_id,
@@ -184,129 +182,6 @@ async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]
                 await flag.wait()
         finally:
             release_cb()
-
-
-# the address a fixture's web and stream servers bind to, so a test run never listens
-# on the host's real interfaces
-LOOPBACK_IP = "127.0.0.1"
-
-
-@contextlib.contextmanager
-def use_ephemeral_server_ports() -> Iterator[None]:
-    """
-    Bind a full-server test fixture's web, stream and Sendspin servers to a free loopback port.
-
-    Port 0 has the kernel pick the port during the bind itself, so nothing else can
-    claim it in the meantime. The server also hands the Sendspin port out in the URLs it
-    builds for its own Sendspin clients, so once the provider has bound its listener the
-    fixture must call ``adopt_bound_sendspin_port`` to point those URLs at that port.
-
-    Binding loopback keeps a test run off the host's other interfaces and gives each
-    server a single socket, so it has one assigned port: asyncio binds a wildcard
-    address once per address family, each with its own port.
-    """
-    with (
-        patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
-        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
-        # the Sendspin provider binds its own listener; on a fixed port, parallel test
-        # workers collide and the provider unloads itself mid-test
-        patch("music_assistant.providers.sendspin.provider.SENDSPIN_SERVER_PORT", 0),
-        patch("music_assistant.controllers.webserver.controller.SENDSPIN_SERVER_PORT", 0),
-        patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
-        patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
-        # keep address detection off the host's real interfaces
-        patch(
-            "music_assistant.controllers.streams.controller.get_ip_addresses",
-            AsyncMock(return_value=(LOOPBACK_IP,)),
-        ),
-        patch(
-            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
-            AsyncMock(return_value=(LOOPBACK_IP,)),
-        ),
-        patch(
-            "music_assistant.controllers.webserver.controller.get_ip_addresses",
-            AsyncMock(return_value=(LOOPBACK_IP,)),
-        ),
-        patch(
-            "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
-            AsyncMock(return_value=(LOOPBACK_IP,)),
-        ),
-    ):
-        yield
-
-
-def bound_sendspin_port(mass: MusicAssistant) -> int | None:
-    """
-    Return the port the Sendspin provider's listener is bound to, if it is listening.
-
-    :param mass: The booted server to inspect.
-    """
-    provider = mass.get_provider("sendspin")
-    # aiosendspin keeps its aiohttp runner to itself; the runner's addresses are
-    # the bound sockets' names, which is the only place the kernel-picked port lives
-    runner = getattr(getattr(provider, "server_api", None), "_app_runner", None)
-    if runner is None:
-        return None
-    return next((address[1] for address in runner.addresses if address), None)
-
-
-def adopt_bound_sendspin_port(mass: MusicAssistant) -> None:
-    """
-    Point the server's own Sendspin clients at the port its listener actually bound.
-
-    Only meaningful inside ``use_ephemeral_server_ports``, whose patch of the URL
-    builder's port this replaces for the rest of the fixture's lifetime.
-
-    :param mass: The booted server whose Sendspin listener is up.
-    """
-    if (port := bound_sendspin_port(mass)) is not None:
-        setattr(webserver_controller, "SENDSPIN_SERVER_PORT", port)  # noqa: B010
-
-
-@contextlib.contextmanager
-def suppress_auto_loaded_providers() -> Iterator[None]:
-    """
-    Stop a fixture boot from auto-setting-up providers that reach into the host.
-
-    Keeps a booted test instance isolated from the developer's machine: the default
-    device providers (airplay/chromecast/dlna/...) are not auto-configured.
-    """
-    with patch("music_assistant.mass.DEFAULT_PROVIDERS", ()):
-        yield
-
-
-async def wait_for_boot_to_settle(mass: MusicAssistant) -> None:
-    """
-    Wait out the events a fixture boot leaves in flight.
-
-    A provider finishes loading in a detached task that registers background tasks, and
-    registering one emits a debounced task list, so without this a test can start watching
-    for events in time to catch the tail of its own fixture's boot.
-
-    :param mass: The started instance to settle.
-    """
-    for provider in mass.providers:
-        await provider.initialized.wait()
-        # the post-load task keeps working after it marks the provider initialized
-        if post_load := mass.get_task(f"post_load_provider_{provider.instance_id}"):
-            await asyncio.wait({post_load})
-    # emit the debounced task list now rather than waiting out its timer
-    if mass.tasks._scheduled_task_update_at is not None:
-        mass.cancel_timer(TASK_UPDATE_TIMER_ID)
-        mass.tasks._signal_task_update()
-
-
-@contextlib.contextmanager
-def suppress_initial_library_sync() -> Iterator[None]:
-    """
-    Hold a fixture boot's music providers to their recurring library sync only.
-
-    The first sync of a freshly loaded provider otherwise runs seconds into the boot, so on
-    a loaded machine it lands in the middle of whatever test is running by then, rewriting
-    the library under it. Tests that want a sync call ``start_sync()`` themselves.
-    """
-    with patch("music_assistant.controllers.music.controller.INITIAL_SYNC_DELAY", None):
-        yield
 
 
 def scheduled_call(coro: CoroutineType[Any, Any, Any]) -> tuple[str, dict[str, Any]]:

@@ -376,6 +376,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.resolve.outputs.source_sha }}
+          # the release tags tell which providers are new in this release line
+          fetch-depth: 0
           path: source
           persist-credentials: false
 
@@ -480,6 +482,21 @@ jobs:
           pyproject["project"]["version"] = os.environ["VERSION"]
           with open("pyproject.toml", "wb") as file_handle:
               tomli_w.dump(pyproject, file_handle)
+
+      # Without this file the Marketplace marks no provider as new, so a failure here
+      # never holds up a release.
+      - name: Record the providers that are new in this release line
+        if: needs.resolve.outputs.assets_ready != 'true'
+        continue-on-error: true
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py new-providers \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --repository source \
+            --output source/music_assistant/catalog_new.json
 
       # The app secrets are not covered by the Apache-2.0 license (see NOTICE), so they ship in
       # the wheel (and the image built from it) but never in the source distribution.

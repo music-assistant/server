@@ -124,7 +124,7 @@ async def test_failed_fetch_keeps_the_copy(
             registry.document = catalog_index(line="2.11")
 
     with caplog.at_level(logging.WARNING, logger=LOGGER.name):
-        assert await client.fetch() is False
+        assert await client.fetch() is None
 
     assert len(registry.requests) == 2
     assert (folder / "index.json").read_bytes() == kept

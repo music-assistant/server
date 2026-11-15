@@ -31,7 +31,7 @@ from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
 )
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 
 if TYPE_CHECKING:
     import pathlib

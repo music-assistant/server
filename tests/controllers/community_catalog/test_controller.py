@@ -5,25 +5,34 @@ from __future__ import annotations
 import json
 import sys
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
+from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.enums import EventType, ProviderStatus, ProviderTier
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, MusicAssistantError
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 import music_assistant
 from music_assistant import providers as providers_package
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.community_catalog import CommunityCatalogController, dependencies
 from music_assistant.controllers.community_catalog.constants import CONF_ENABLED
+from music_assistant.controllers.community_catalog.controller import _ERRORS
 from music_assistant.controllers.community_catalog.dependencies import DependencyConflict
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
 from music_assistant.helpers.util import purge_provider_modules
-from tests.conftest import full_mass_context
-from tests.controllers.community_catalog.conftest import ADDED, RELEASED, build_archive
+from music_assistant.testing import full_mass_context
+from tests.controllers.community_catalog.conftest import (
+    ADDED,
+    RELEASED,
+    assert_refused,
+    build_archive,
+)
 from tests.controllers.community_catalog.test_dependencies import _build_wheel
 from tests.controllers.community_catalog.test_installer import _hash
 from tests.controllers.community_catalog.test_settings import _switch, _wait_for_start
@@ -232,8 +241,9 @@ async def test_copy_of_another_line(
         assert _states(await mass.community_catalog.get_providers()) == {
             DOMAIN: CommunityProviderState.INSTALLED
         }
-        with pytest.raises(ActionUnavailable, match="does not offer other_one"):
+        with pytest.raises(ActionUnavailable, match="does not offer other_one") as refused:
             await mass.community_catalog.install_provider("other_one")
+        assert_refused(refused, "not_offered", "other_one")
 
     kept["providers"][DOMAIN]["status"] = "blocked"
     kept["providers"][DOMAIN]["reason"] = "Sends the library elsewhere"
@@ -263,14 +273,18 @@ async def test_no_kept_copy(
 
 
 @pytest.mark.parametrize(
-    ("domain", "message"),
+    ("domain", "message", "refusal"),
     [
-        ("switched_off", "Switch the community catalog on"),
-        ("blocked_one", "does not offer blocked_one"),
-        ("blocked_latest_one", "does not offer blocked_latest_one"),
-        ("unknown_one", "does not offer unknown_one"),
-        (DOMAIN, "installed already"),
-        ("builtin", "already has a provider named builtin"),
+        ("switched_off", "Enable the community catalog", ("switched_off",)),
+        ("blocked_one", "does not offer blocked_one", ("not_offered", "blocked_one")),
+        (
+            "blocked_latest_one",
+            "does not offer blocked_latest_one",
+            ("not_offered", "blocked_latest_one"),
+        ),
+        ("unknown_one", "does not offer unknown_one", ("not_offered", "unknown_one")),
+        (DOMAIN, "installed already", ("already_installed", DOMAIN)),
+        ("builtin", "already has something named builtin", ("name_taken", "builtin")),
     ],
 )
 async def test_install_refused(
@@ -280,6 +294,7 @@ async def test_install_refused(
     github: GitHub,
     domain: str,
     message: str,
+    refusal: tuple[str, ...],
 ) -> None:
     """A refused install stages nothing and changes nothing live or in the state."""
     blocked = _publish(github, "blocked_one")
@@ -302,9 +317,10 @@ async def test_install_refused(
             await mass.community_catalog.install_provider(DOMAIN)
         before = _snapshot(catalog)
 
-        with pytest.raises(ActionUnavailable, match=message):
+        with pytest.raises(ActionUnavailable, match=message) as refused:
             await mass.community_catalog.install_provider(domain)
 
+        assert_refused(refused, *refusal)
         assert _snapshot(catalog) == before
         assert mass.get_provider_manifest("builtin").tier == ProviderTier.CORE
 
@@ -314,7 +330,7 @@ async def test_install_refused(
     [
         (f"{REQUIREMENT}==2.0", DependencyConflict, f"comm_two clash with {DOMAIN}"),
         # no clash, but the version the loaded provider imported would be replaced
-        (REQUIREMENT, ActionUnavailable, "cannot be changed while they run"),
+        (REQUIREMENT, ActionUnavailable, "something else from the community catalog uses"),
     ],
 )
 async def test_install_refused_on_a_clash(
@@ -323,7 +339,7 @@ async def test_install_refused_on_a_clash(
     registry: Registry,
     github: GitHub,
     requirement: str,
-    error: type[Exception],
+    error: type[MusicAssistantError],
     message: str,
 ) -> None:
     """Requirements that clash with a loaded provider, or replace a package it uses, are refused."""
@@ -340,8 +356,10 @@ async def test_install_refused_on_a_clash(
         await mass.community_catalog.install_provider(DOMAIN)
         before = _snapshot(catalog), lock.read_bytes()
 
-        with pytest.raises(error, match=message):
+        with pytest.raises(error, match=message) as refused:
             await mass.community_catalog.install_provider("comm_two")
+        if error is ActionUnavailable:
+            assert_refused(refused, "packages_in_use", "comm_two")
 
         assert (_snapshot(catalog), lock.read_bytes()) == before
         with pytest.raises(KeyError):
@@ -400,12 +418,62 @@ async def test_remove(tmp_path: Path, catalog: Path, registry: Registry, github:
         )
         assert conf.status == ProviderStatus.UNAVAILABLE
         assert conf.last_error is not None
-        assert conf.last_error.translation_key == "provider_no_longer_available"
+        assert conf.last_error.translation_key == "community_provider_not_installed"
+        assert conf.last_error.message == _REASONS[Verdict.NOT_INSTALLED]
         assert _states(await mass.community_catalog.get_providers()) == {
             DOMAIN: CommunityProviderState.AVAILABLE
         }
-        with pytest.raises(ActionUnavailable, match="not installed"):
+        with pytest.raises(ActionUnavailable, match="not installed") as refused:
             await mass.community_catalog.remove_provider(DOMAIN)
+        assert_refused(refused, "not_installed", DOMAIN)
+
+
+@pytest.mark.usefixtures("catalog")
+async def test_settings_entry_of_an_offered_provider(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """The entry of a provider the catalog offers but that was never installed says so."""
+    registry.document = _index({DOMAIN: _publish(github, DOMAIN)})
+    _seed_instance(tmp_path, DOMAIN)
+
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        conf = _settings_entry(
+            await mass.config.get_provider_configs(include_unavailable=True), DOMAIN
+        )
+        assert conf.status == ProviderStatus.UNAVAILABLE
+        assert conf.last_error is not None
+        assert conf.last_error.translation_key == "community_provider_not_installed"
+        assert conf.last_error.message == _REASONS[Verdict.NOT_INSTALLED]
+
+        await mass.community_catalog.install_provider(DOMAIN)
+
+        assert mass.community_catalog.unavailable_reason(DOMAIN) is None
+
+
+@pytest.mark.usefixtures("catalog")
+@pytest.mark.parametrize("case", ["not offered", "disabled", "safe mode"])
+async def test_settings_entry_without_an_offer(
+    tmp_path: Path, registry: Registry, github: GitHub, case: str
+) -> None:
+    """The entry of a provider the catalog does not offer to this server has the general text."""
+    entry = _publish(github, DOMAIN)
+    if case == "not offered":
+        entry.update(status="blocked", reason="Sends the library elsewhere")
+    registry.document = _index({DOMAIN: entry})
+    _seed_instance(tmp_path, DOMAIN)
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        if case == "disabled":
+            await _switch(mass, enabled=False)
+
+    async with _server(tmp_path, safe_mode=case == "safe mode") as mass:
+        conf = _settings_entry(
+            await mass.config.get_provider_configs(include_unavailable=True), DOMAIN
+        )
+        assert conf.status == ProviderStatus.UNAVAILABLE
+        assert conf.last_error is not None
+        assert conf.last_error.translation_key == "provider_no_longer_available"
 
 
 async def test_switch_stays_on_while_a_provider_is_installed(
@@ -415,8 +483,9 @@ async def test_switch_stays_on_while_a_provider_is_installed(
     await _install(tmp_path, registry, github)
 
     async with _server(tmp_path) as mass:
-        with pytest.raises(ActionUnavailable, match="Remove what you installed"):
+        with pytest.raises(ActionUnavailable, match="Remove what you installed") as refused:
             await _switch(mass, enabled=False)
+        assert_refused(refused, "remove_first")
 
         assert mass.community_catalog.config.get_value(CONF_ENABLED) is True
         _assert_loaded(mass, catalog, DOMAIN)
@@ -478,8 +547,9 @@ async def test_safe_mode(tmp_path: Path, registry: Registry, github: GitHub) -> 
             mass.community_catalog.install_provider("other_one"),
             mass.community_catalog.remove_provider(DOMAIN),
         ):
-            with pytest.raises(ActionUnavailable, match="safe mode"):
+            with pytest.raises(ActionUnavailable, match="safe mode") as refused:
                 await command
+            assert_refused(refused, "safe_mode")
 
     assert len(registry.requests) == requests
 
@@ -542,12 +612,47 @@ async def test_remove_leaves_a_provider_of_the_server_alone(
 
 
 def test_reasons_match_the_texts() -> None:
-    """The reasons in the code are the English texts of their translation keys."""
+    """The reasons and errors in the code are the English texts of their translation keys."""
     strings_file = Path(music_assistant.__file__).parent / "strings.json"
     strings = json.loads(strings_file.read_bytes())["errors"]
 
     for verdict, text in _REASONS.items():
         assert strings[f"community_provider_{verdict}"] == text
+    for key, text in _ERRORS.items():
+        assert strings[f"community_catalog_{key}"] == text
+
+
+@pytest.mark.usefixtures("registry")
+async def test_client_reads_why_a_command_is_refused(mass: MusicAssistant) -> None:
+    """
+    A client gets the reason of a refusal, in a language without a translation of it in English.
+
+    Goes the way of the websocket: the error a command raised, as the result message a client gets.
+    """
+    with pytest.raises(ActionUnavailable) as refused:
+        await mass.community_catalog.remove_provider(DOMAIN)
+    error = refused.value
+    message = ErrorResultMessage(
+        "1",
+        error.error_code,
+        str(error),
+        translation_key=error.translation_key,
+        translation_args=error.translation_args,
+        translation_owner=error.translation_owner,
+    )
+    reason = f"{DOMAIN} is not installed from the community catalog."
+    await mass.translations.ensure_locale_loaded("nl")
+
+    for locale in ("en", "nl"):
+        token = TRANSLATION_RESOLVER.set(partial(mass.translations.get_translation, locale=locale))
+        try:
+            assert message.to_dict()["details"] == reason
+        finally:
+            TRANSLATION_RESOLVER.reset(token)
+    # the generic text has a translation, so Dutch is in use
+    assert mass.translations.get_translation(
+        "common.errors.action_unavailable", locale="nl"
+    ) != mass.translations.get_translation("common.errors.action_unavailable", locale="en")
 
 
 async def _install(

@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, ProviderType
 from music_assistant_models.media_items import MediaItem
@@ -23,7 +23,6 @@ from music_assistant_models.media_items import MediaItem
 from music_assistant.constants import CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
-    from music_assistant_models.auth import User
     from music_assistant_models.media_items import ProviderMapping
 
     from music_assistant.mass import MusicAssistant
@@ -31,6 +30,10 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.provider_access")
 
+# owns no source, is no member of the home and is on no list of selected users
+_ANONYMOUS_PLAYBACK_USER: Final = User(
+    user_id="anonymous_playback", username="anonymous_playback", role=UserRole.GUEST
+)
 # a record we can not read hides its source instead of exposing it
 _UNREADABLE_ACCESS = ProviderAccess(sharing=ProviderSharing.PRIVATE)
 
@@ -339,6 +342,22 @@ async def resolve_playback_user(mass: MusicAssistant, queue_id: str) -> User | N
     if (pq_data := mass.player_queues.queue_data_or_none(queue_id)) and pq_data.userid:
         return await mass.webserver.auth.get_user(pq_data.userid)
     return None
+
+
+async def resolve_playback_user_or_stand_in(mass: MusicAssistant, queue_id: str) -> User:
+    """
+    Return the user to fetch media as for the playback of a queue.
+
+    That is the user the queue plays for. For anonymous playback it is a stand-in user the
+    music source rules give exactly what they give anonymous playback: the sources of the
+    whole home and the ones shared with everyone. Media fetched as this user is on a
+    source the queue's stream may use, where fetching it without a user would use every
+    source there is.
+
+    :param mass: The MusicAssistant instance.
+    :param queue_id: The queue the playback belongs to.
+    """
+    return await resolve_playback_user(mass, queue_id) or _ANONYMOUS_PLAYBACK_USER
 
 
 async def playback_sources(

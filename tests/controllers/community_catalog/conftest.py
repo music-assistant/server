@@ -19,6 +19,8 @@ from music_assistant.controllers.community_catalog import installer as installer
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping, Sequence
 
+    from music_assistant_models.errors import MusicAssistantError
+
 ADDED = "2026-10-01T12:00:00Z"
 RELEASED = "2026-11-01T12:00:00Z"
 # the top-level folder of an archive GitHub serves
@@ -77,6 +79,20 @@ def build_archive(
         for info in extra:
             tar.addfile(info)
     return buffer.getvalue()
+
+
+def assert_refused(
+    refused: pytest.ExceptionInfo[MusicAssistantError], key: str, *args: str
+) -> None:
+    """
+    Assert that a command of the community catalog failed with one of its translatable texts.
+
+    :param refused: The raised error.
+    :param key: The key of the text, without its community_catalog_ prefix.
+    :param args: What the text names.
+    """
+    assert refused.value.translation_key == f"community_catalog_{key}"
+    assert refused.value.translation_args == list(args)
 
 
 def catalog_index(line: str = "nightly", schema: int = 1) -> dict[str, Any]:

@@ -20,12 +20,13 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
 
-from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
+from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.player_queues.constants import (
     PLAY_REQUEST_RESOLVE_TIMEOUT,
     ArtistOrder,
 )
 from music_assistant.controllers.players.constants import SwitchedOffAction
+from music_assistant.helpers.external_ids import external_item_id, parse_external_item_id
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType
@@ -292,6 +293,52 @@ def build_queue_item(
         # track's metadata here does not lose anything the queue listing still needs
         queue_item.media_item.metadata = MediaItemMetadata()
     return queue_item
+
+
+def can_be_enqueued(media_item: MediaItemType) -> bool:
+    """
+    Return whether a media item can go onto a queue.
+
+    A track known only by an external id is on no music source until the queue looks it
+    up when it loads it, so it counts like an item that is available.
+
+    :param media_item: The media item to check.
+    """
+    return media_item.available or media_item.provider == EXTERNAL_ID_PROVIDER
+
+
+def replace_media_item(queue_item: QueueItem, media_item: PlayableMediaItemType) -> None:
+    """
+    Make a queue item play another media item.
+
+    The queue item keeps its id, its place in the queue and its origin; its name, duration
+    and image follow the new media item.
+
+    :param queue_item: The queue item to change.
+    :param media_item: The media item it plays from now on.
+    """
+    derived = QueueItem.from_media_item(queue_item.queue_id, media_item)
+    queue_item.media_item = derived.media_item
+    queue_item.name = derived.name
+    queue_item.duration = derived.duration
+    queue_item.image = derived.image
+
+
+def external_track_placeholder(item_id: str) -> Track:
+    """
+    Return a track known only by an external id, named by that id.
+
+    :param item_id: Item id as external_item_id() builds it.
+    :raises InvalidProviderID: The item id is no valid external item id.
+    """
+    external_id_type, external_id = parse_external_item_id(item_id)
+    return Track(
+        item_id=external_item_id(external_id_type, external_id),
+        provider=EXTERNAL_ID_PROVIDER,
+        name=external_id,
+        external_ids={(external_id_type, external_id)},
+        provider_mappings=set(),
+    )
 
 
 def origin_for(
