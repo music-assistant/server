@@ -1,7 +1,7 @@
 """
 Teufel Raumfeld Player provider for Music Assistant.
 
-Talks to the Raumfeld host via the ``hassfeld`` library and exposes each Raumfeld
+Talks to the Raumfeld host's web service and UPnP devices and exposes each Raumfeld
 room as a Music Assistant player, mapping MA sync-groups onto Raumfeld zones.
 """
 

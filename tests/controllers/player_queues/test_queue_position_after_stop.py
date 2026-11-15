@@ -58,6 +58,7 @@ def _controller() -> PlayerQueuesController:
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.streams.is_smart_fades_active.return_value = False
     ctrl.mass.music.get_playback_speed = AsyncMock(return_value=1.0)
     ctrl.mass.players.play_media = AsyncMock()
@@ -69,16 +70,17 @@ def _player(state: PlaybackState, stream_elapsed: float) -> Any:
     return SimpleNamespace(
         player_id=QUEUE_ID,
         type=PlayerType.PLAYER,
-        active_output_protocol=None,
-        current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book", uri=None),
-        state=SimpleNamespace(
-            name="P",
-            available=True,
-            playback_state=state,
-            active_source=QUEUE_ID,
-            corrected_elapsed_time=stream_elapsed,
-            group_members=[],
+        extra_data={},
+        resolve_output_protocol=lambda: SimpleNamespace(
+            paused_position_reliable=False,
+            current_media=SimpleNamespace(source_id=QUEUE_ID, queue_item_id="book", uri=None),
         ),
+        name="P",
+        available=True,
+        playback_state=state,
+        active_source=QUEUE_ID,
+        corrected_elapsed_time=stream_elapsed,
+        group_members=[],
     )
 
 
@@ -108,6 +110,25 @@ async def test_stopped_queue_keeps_last_played_position(
     ctrl.on_player_elapsed_time_corrected(_player(PlaybackState.IDLE, reported_after_stop))
 
     assert ctrl._queue_data[QUEUE_ID].queue.elapsed_time == started_at + PLAYED
+
+
+async def test_resume_after_a_power_cut_starts_where_playback_stopped() -> None:
+    """A player that went idle when it lost power resumes where it stopped, not later."""
+    ctrl = _controller()
+    await ctrl.play_index(QUEUE_ID, 0, seek_position=0)
+    ctrl._update_queue_from_player(_player(PlaybackState.PLAYING, PLAYED))
+    # switched off at its power control: the player reports idle from then on
+    ctrl._update_queue_from_player(_player(PlaybackState.IDLE, PLAYED))
+    queue = ctrl._queue_data[QUEUE_ID].queue
+    # a minute passes before the user presses play again
+    queue.elapsed_time_last_updated -= 60
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+
+    await ctrl.resume(QUEUE_ID)
+
+    ctrl.play_index.assert_awaited_once()
+    assert ctrl.play_index.await_args is not None
+    assert ctrl.play_index.await_args.args[2] == PLAYED
 
 
 async def test_playing_queue_rebases_on_position_jump() -> None:

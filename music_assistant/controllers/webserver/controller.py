@@ -12,6 +12,7 @@ import hashlib
 import html
 import inspect
 import json
+import math
 import os
 import secrets
 import socket
@@ -27,7 +28,7 @@ import aiofiles
 from aiohttp import web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
-from music_assistant_models.api import CommandMessage
+from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import (
     ConfigActionResult,
@@ -37,11 +38,20 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
+    AudioError,
+    AuthenticationFailed,
+    AuthenticationRequired,
     InsufficientPermissions,
+    InvalidCommand,
     InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
     PlayerUnavailableError,
+    ProviderUnavailableError,
     RateLimited,
-    UserNotFoundError,
+    ResourceBusyError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -65,7 +75,12 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments, redact_json_secrets
+from music_assistant.helpers.api import (
+    api_error_message,
+    parse_arguments,
+    redact_json_secrets,
+    run_api_command,
+)
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
@@ -581,6 +596,31 @@ class WebserverController(CoreController):
                 user.username if user else "unknown",
             )
 
+    def set_sendspin_player_for_ingress_client(
+        self, ha_user_id: str, client_key: str, player_id: str
+    ) -> None:
+        """
+        Set the sendspin player_id on the Home Assistant Ingress websocket clients of a browser.
+
+        The Ingress counterpart of set_sendspin_player_for_token: Ingress connections hold no
+        token, so the key a browser identifies itself with, together with the Home Assistant
+        user it is signed in as, decides which connections a web player belongs to.
+
+        :param ha_user_id: Id of the Home Assistant user the browser is signed in as.
+        :param client_key: The key the browser identifies itself with.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if not client.matches_ingress_client(ha_user_id, client_key):
+                continue
+            client.bind_sendspin_player(player_id)
+            user = client.authenticated_user
+            self.logger.debug(
+                "Set sendspin player %s for Ingress websocket client of user %s",
+                player_id,
+                user.username if user else "unknown",
+            )
+
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
         """
         Set the sendspin player_id on a websocket client for a WebRTC session.
@@ -847,10 +887,14 @@ class WebserverController(CoreController):
         if handler is None:
             error = f"Invalid Command: {command_msg.command}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
-            return web.Response(status=400, text=error)
+            return await self._error_response(
+                request, 400, api_error_message(command_msg.message_id, InvalidCommand(error))
+            )
 
         # Check authentication if required
-        if error_response := await self._authenticate_api_command(request, handler):
+        if error_response := await self._authenticate_api_command(
+            request, handler, command_msg.message_id
+        ):
             return error_response
         set_request_priority(RequestPriority.NORMAL)
 
@@ -861,8 +905,11 @@ class WebserverController(CoreController):
                     self.mass, command_msg.args, handler.required_scope
                 ):
                     set_impersonated_user(impersonation_user)
-            args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-            result: Any = handler.target(**args)
+            try:
+                args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
+            except (LookupError, TypeError, ValueError) as err:
+                return await self._invalid_arguments_response(request, command_msg, err)
+            result: Any = run_api_command(self.mass, handler, args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
@@ -873,22 +920,23 @@ class WebserverController(CoreController):
             locale = _locale_from_request(request)
             await self.mass.translations.ensure_locale_loaded(locale)
             return self._localized_json_response(result, locale)
-        except InsufficientPermissions as e:
-            return web.Response(status=403, text=str(e))
-        except (InvalidDataError, UserNotFoundError) as e:
-            return web.Response(status=400, text=str(e))
-        except PlayerUnavailableError as e:
-            return web.Response(status=404, text=str(e))
+        except MusicAssistantError as e:
+            self.logger.warning("%s: %s", command_msg.command, e)
+            return await self._command_error_response(request, command_msg.message_id, e)
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
             error_msg = str(e)
             error = f"{error_type}: {error_msg}"
             self.logger.exception("Error executing command %s: %s", command_msg.command, error)
-            return web.Response(status=500, text="Internal server error")
+            return await self._error_response(
+                request,
+                500,
+                ErrorResultMessage(command_msg.message_id, 999, "Internal server error"),
+            )
 
     async def _authenticate_api_command(
-        self, request: web.Request, handler: APICommandHandler
+        self, request: web.Request, handler: APICommandHandler, message_id: str
     ) -> web.Response | None:
         """
         Authenticate the request and check the handler's required scope.
@@ -898,21 +946,24 @@ class WebserverController(CoreController):
         """
         if not (handler.authenticated or handler.required_scope):
             return None
+        auth_headers = {"WWW-Authenticate": 'Bearer realm="Music Assistant"'}
         try:
             user = await get_authenticated_user(request)
         except Exception:
             self.logger.exception("Authentication error")
-            return web.Response(
-                status=401,
-                text="Authentication failed",
-                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            return await self._error_response(
+                request,
+                401,
+                api_error_message(message_id, AuthenticationFailed("Authentication failed")),
+                auth_headers,
             )
 
         if not user:
-            return web.Response(
-                status=401,
-                text="Authentication required",
-                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            return await self._error_response(
+                request,
+                401,
+                api_error_message(message_id, AuthenticationRequired("Authentication required")),
+                auth_headers,
             )
 
         # Set user and token in context and check the required scope
@@ -921,13 +972,75 @@ class WebserverController(CoreController):
         if auth_header.lower().startswith("bearer "):
             set_current_token(auth_header[7:])
         if handler.required_scope and not has_scope(user, handler.required_scope):
-            return web.Response(
-                status=403,
-                text=f"This command requires the {handler.required_scope_label} scope",
+            error = InsufficientPermissions(
+                f"This command requires the {handler.required_scope_label} scope"
             )
+            return await self._error_response(request, 403, api_error_message(message_id, error))
         return None
 
-    def _localized_json_response(self, result: Any, locale: str | None) -> web.Response:
+    async def _command_error_response(
+        self, request: web.Request, message_id: str, error: MusicAssistantError
+    ) -> web.Response:
+        """
+        Answer an API command that raised the given error.
+
+        :param request: The request of the command.
+        :param message_id: The id of the command.
+        :param error: The error the command raised.
+        """
+        headers = None
+        if isinstance(error, ResourceTemporarilyUnavailable) and error.backoff_time:
+            headers = {"Retry-After": str(math.ceil(error.backoff_time))}
+        return await self._error_response(
+            request, _error_status(error), api_error_message(message_id, error), headers
+        )
+
+    async def _invalid_arguments_response(
+        self, request: web.Request, command_msg: CommandMessage, error: Exception
+    ) -> web.Response:
+        """
+        Answer an API command whose arguments could not be parsed.
+
+        :param request: The request of the command.
+        :param command_msg: The command.
+        :param error: The error the argument parser raised.
+        """
+        # like the websocket, answer with the parser's own text and no translation
+        self.logger.warning("%s: %s", command_msg.command, error)
+        # str() of a KeyError quotes its message
+        details = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        return await self._error_response(
+            request,
+            400,
+            ErrorResultMessage(command_msg.message_id, InvalidDataError.error_code, details),
+        )
+
+    async def _error_response(
+        self,
+        request: web.Request,
+        status: int,
+        error: ErrorResultMessage,
+        headers: dict[str, str] | None = None,
+    ) -> web.Response:
+        """
+        Answer an API command with an error, localized like the websocket API does.
+
+        :param request: The request of the command.
+        :param status: The HTTP status of the response.
+        :param error: The error to send in the body.
+        :param headers: Extra headers of the response.
+        """
+        locale = _locale_from_request(request)
+        await self.mass.translations.ensure_locale_loaded(locale)
+        return self._localized_json_response(error, locale, status, headers)
+
+    def _localized_json_response(
+        self,
+        result: Any,
+        locale: str | None,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> web.Response:
         """
         Serialize a command result to a JSON response with the per-request resolvers bound.
 
@@ -940,7 +1053,7 @@ class WebserverController(CoreController):
             partial(self.mass.translations.get_translation, locale=locale)
         )
         try:
-            return web.json_response(result, dumps=json_dumps)
+            return web.json_response(result, status=status, headers=headers, dumps=json_dumps)
         finally:
             IMAGE_PROXY_ID_RESOLVER.reset(token)
             TRANSLATION_RESOLVER.reset(token_loc)
@@ -1476,6 +1589,34 @@ class WebserverController(CoreController):
                 user.username if user else "unknown",
             )
             client.cancel()
+
+
+def _error_status(error: MusicAssistantError) -> int:
+    """
+    Return the HTTP status that answers a command that raised the given error.
+
+    :param error: The error the command raised.
+    """
+    # music_provider imports this module through the tasks controller
+    from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+    if isinstance(error, InsufficientPermissions):
+        return 403
+    if isinstance(error, (MediaNotFoundError, PlayerUnavailableError)):
+        return 404
+    # another stream or consumer holds what the command needs
+    if isinstance(error, (ResourceBusyError, ProviderStreamLimitError)):
+        return 409
+    if isinstance(error, RateLimited):
+        return 429
+    # a failure upstream or in our own audio processing, not in the request
+    if isinstance(error, (RetriesExhausted, AudioError)):
+        return 502
+    if isinstance(error, (ResourceTemporarilyUnavailable, ProviderUnavailableError)):
+        return 503
+    # the caller's own sign-in was checked before the command ran, so an authentication
+    # error raised by a command concerns another account (a provider's) and is no 401
+    return 400
 
 
 def _serialize_script_value(value: str) -> str:

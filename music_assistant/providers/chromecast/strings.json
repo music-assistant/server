@@ -10,7 +10,7 @@
     }
   },
   "manifest": {
-    "description": "Cast music and podcasts to Chromecast or Google Cast devices."
+    "description": "Cast music and podcasts to Chromecast or Google Cast devices, such as Google Nest speakers."
   },
   "errors": {
     "app_launch_refused": "{0} refused to launch the cast app. Try toggling the 'Use Music Assistant Cast App' option in the player settings.",

@@ -47,8 +47,8 @@ on:
 
 env:
   BASE_IMAGE_VERSION_STABLE: "1.6.3"
-  BASE_IMAGE_VERSION_BETA: "1.7.0"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.7.0"
+  BASE_IMAGE_VERSION_BETA: "1.7.1"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.7.1"
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
 
@@ -376,6 +376,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.resolve.outputs.source_sha }}
+          # the release tags tell which providers are new in this release line
+          fetch-depth: 0
           path: source
           persist-credentials: false
 
@@ -455,7 +457,7 @@ jobs:
 
       - name: Set up Python
         if: needs.resolve.outputs.assets_ready != 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version-file: "source/.python-version"
           check-latest: true
@@ -480,6 +482,21 @@ jobs:
           pyproject["project"]["version"] = os.environ["VERSION"]
           with open("pyproject.toml", "wb") as file_handle:
               tomli_w.dump(pyproject, file_handle)
+
+      # Without this file the Marketplace marks no provider as new, so a failure here
+      # never holds up a release.
+      - name: Record the providers that are new in this release line
+        if: needs.resolve.outputs.assets_ready != 'true'
+        continue-on-error: true
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py new-providers \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --repository source \
+            --output source/music_assistant/catalog_new.json
 
       # The app secrets are not covered by the Apache-2.0 license (see NOTICE), so they ship in
       # the wheel (and the image built from it) but never in the source distribution.
@@ -868,7 +885,7 @@ jobs:
           path: source/dist/
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1246,7 +1263,7 @@ jobs:
           done
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1292,7 +1309,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1485,7 +1502,6 @@ jobs:
         env:
           CHANNEL: ${{ inputs.channel }}
         run: |
-          dev_folder=""
           case "$CHANNEL" in
             stable)
               folder="music_assistant"
@@ -1495,12 +1511,9 @@ jobs:
               ;;
             nightly)
               folder="music_assistant_nightly"
-              # the dev add-on is built from the nightly image, so it follows this release
-              dev_folder="music_assistant_dev"
               ;;
           esac
           echo "folder=$folder" >> "$GITHUB_OUTPUT"
-          echo "dev_folder=$dev_folder" >> "$GITHUB_OUTPUT"
 
       - name: Update add-on release
         env:
@@ -1522,20 +1535,9 @@ jobs:
             --notes "$RUNNER_TEMP/release-notes.md" \
             --retain 3
 
-      - name: Update dev add-on version
-        if: steps.channel.outputs.dev_folder != ''
-        env:
-          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          python3 .release-workflow/scripts/release_workflow.py set-addon-version \
-            --config "addon-repo/$DEV_FOLDER/config.yaml" \
-            --version "$VERSION"
-
       - name: Commit add-on update
         env:
           ADDON_FOLDER: ${{ steps.channel.outputs.folder }}
-          DEV_FOLDER: ${{ steps.channel.outputs.dev_folder }}
           APP_SLUG: ${{ steps.app.outputs.slug }}
           APP_USER_ID: ${{ steps.app.outputs.user_id }}
           ADDON_BRANCH: ${{ steps.addon_repository.outputs.default_branch }}
@@ -1544,9 +1546,6 @@ jobs:
         run: |
           cd addon-repo
           git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
-          if [ -n "$DEV_FOLDER" ]; then
-            git add "$DEV_FOLDER/config.yaml"
-          fi
           if git diff --cached --quiet; then
             echo "Add-on $ADDON_FOLDER already references $VERSION"
             exit 0
@@ -1595,15 +1594,17 @@ jobs:
         shell: python
         run: |
           import os
+          import re
           import tomllib
 
+          # Sources from before the frontend left PyPI pin it by version instead of URL
+          pin = re.compile(
+              r"music-assistant-frontend(?:==| @ "
+              r"https://github\.com/music-assistant/frontend/releases/download/)([^/\s]+)"
+          )
           with open("pyproject.toml", "rb") as file_handle:
               dependencies = tomllib.load(file_handle)["project"]["dependencies"]
-          matches = [
-              dependency.removeprefix("music-assistant-frontend==")
-              for dependency in dependencies
-              if dependency.startswith("music-assistant-frontend==")
-          ]
+          matches = [match[1] for dependency in dependencies if (match := pin.match(dependency))]
           if len(matches) != 1:
               raise RuntimeError("Expected one pinned music-assistant-frontend dependency")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:

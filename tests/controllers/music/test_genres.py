@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -16,15 +18,17 @@ from uuid import uuid4
 
 import pytest
 from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import AlbumType, MediaType, SortDirection, SortField
+from music_assistant_models.enums import AlbumType, EventType, MediaType, SortDirection, SortField
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     Genre,
     GenreSummary,
     Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Track,
 )
@@ -43,9 +47,11 @@ from music_assistant.constants import (
     DEFAULT_AUDIOBOOK_GENRE_MAPPING,
     DEFAULT_GENRE_MAPPING,
     DEFAULT_PODCAST_GENRE_MAPPING,
+    PlaylistPlayableItem,
 )
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
 
 GET_CURRENT_USER = "music_assistant.controllers.music.media.base.get_current_user"
 # the user whose likes the favorite tests below check
@@ -87,6 +93,18 @@ def _library_provider_mapping() -> set[ProviderMapping]:
             item_id=uuid4().hex,
             provider_domain="library",
             provider_instance="library",
+            in_library=True,
+        )
+    }
+
+
+def _sync_provider_mapping(item_id: str) -> set[ProviderMapping]:
+    """Create a provider mapping set for an item a provider sync adds to the library."""
+    return {
+        ProviderMapping(
+            item_id=item_id,
+            provider_domain="plsync",
+            provider_instance="plsync",
             in_library=True,
         )
     }
@@ -1005,6 +1023,171 @@ class TestSyncMediaItemGenres:
             limit=0,
         )
         assert [(int(r["genre_id"]), r["is_manual"]) for r in rows] == [(int(manual.item_id), 1)]
+
+
+class TestPlaylistSyncLinksGenres:
+    """Tests for the genres a playlist sync links."""
+
+    async def test_podcast_genres_go_to_the_library_podcast(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A playlist episode's podcast gets its genres, not a track with the podcast's id."""
+        podcast = Podcast(
+            item_id="prov-podcast",
+            provider="plsync",
+            name="PlSync Podcast",
+            provider_mappings=_sync_provider_mapping("prov-podcast"),
+        )
+        podcast.metadata.genres = {"SzPlaylistPodcastGenre"}
+        episode = PodcastEpisode(
+            item_id="prov-episode",
+            provider="plsync",
+            name="PlSync Episode",
+            provider_mappings=_sync_provider_mapping("prov-episode"),
+            position=1,
+            podcast=podcast,
+        )
+        await _provider_sync_playlist(mass, episode, podcast)
+        library_podcast = await mass.music.podcasts.get_library_item_by_prov_mappings(
+            podcast.provider_mappings
+        )
+        assert library_podcast is not None
+        podcast_id = library_podcast.item_id
+        assert await _linked_genre_names(mass, MediaType.PODCAST, podcast_id) == {
+            "SzPlaylistPodcastGenre"
+        }
+        assert await _linked_genre_names(mass, MediaType.TRACK, podcast_id) == set()
+
+    async def test_audiobook_genres_go_to_the_library_audiobook(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A playlist audiobook gets its genres, not a track with the audiobook's id."""
+        audiobook = Audiobook(
+            item_id="prov-audiobook",
+            provider="plsync",
+            name="PlSync Audiobook",
+            provider_mappings=_sync_provider_mapping("prov-audiobook"),
+        )
+        audiobook.metadata.genres = {"SzPlaylistAudiobookGenre"}
+        await _provider_sync_playlist(mass, audiobook)
+        library_audiobook = await mass.music.audiobooks.get_library_item_by_prov_mappings(
+            audiobook.provider_mappings
+        )
+        assert library_audiobook is not None
+        audiobook_id = library_audiobook.item_id
+        assert await _linked_genre_names(mass, MediaType.AUDIOBOOK, audiobook_id) == {
+            "SzPlaylistAudiobookGenre"
+        }
+        assert await _linked_genre_names(mass, MediaType.TRACK, audiobook_id) == set()
+
+
+class TestLibrarySyncStoresGenres:
+    """Tests for the genre names a provider's library sync stores on the item."""
+
+    async def test_genre_tagged_after_import_survives_the_scan(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A genre the provider tags after the import stays linked after a genre scan."""
+        track = await _add_test_track(mass, "Tagged Later Track")
+        await _set_track_genres(mass, int(track.item_id), ["Rock"])
+        with patch.object(mass, "signal_event", wraps=mass.signal_event) as signal_event:
+            await _provider_sync_genres(mass, track, {"Rock", "SzTaggedLaterGenre"})
+        assert any(
+            call.args[:2] == (EventType.MEDIA_ITEM_UPDATED, track.uri)
+            for call in signal_event.call_args_list
+        )
+        await genre_ctrl._bulk_scan_unmapped_genres()
+
+        assert "SzTaggedLaterGenre" in await _linked_genre_names(
+            mass, MediaType.TRACK, track.item_id
+        )
+        stored = await mass.music.tracks.get_library_item(track.item_id)
+        assert stored.metadata.genres == {"Rock", "SzTaggedLaterGenre"}
+
+    async def test_unchanged_genres_do_not_rewrite_the_item(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A sync that finds the item's genres unchanged leaves its stored metadata alone."""
+        track = await _add_test_track(mass, "Unchanged Genres Track")
+        await _set_track_genres(mass, int(track.item_id), ["Rock"])
+        await _provider_sync_genres(mass, track, {"Rock"})
+        with patch.object(mass.music.tracks, "replace_metadata", AsyncMock()) as replace_metadata:
+            await _provider_sync_genres(mass, track, {"Rock"})
+        replace_metadata.assert_not_called()
+
+    async def test_sync_keeps_the_other_metadata_and_names_in_another_case(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Only the changed genre names are written; other fields and stored case are kept."""
+        track = await _add_test_track(mass, "Other Fields Track")
+        await mass.music.database.execute_write(
+            f"UPDATE {DB_TABLE_TRACKS} SET metadata = json_set(metadata, "
+            "'$.description', 'Kept text', '$.genres', json('[\"rock\"]')) "
+            "WHERE item_id = :id",
+            {"id": int(track.item_id)},
+        )
+        await _provider_sync_genres(mass, track, {"Rock", "Jazz"})
+        stored = await mass.music.tracks.get_library_item(track.item_id)
+        assert stored.metadata.description == "Kept text"
+        assert stored.metadata.genres == {"rock", "Jazz"}
+
+    @pytest.mark.parametrize("media_type", [MediaType.ALBUM, MediaType.ARTIST])
+    async def test_inherited_genre_the_provider_also_tags_survives_the_scan(
+        self, mass: MusicAssistant, genre_ctrl: GenreController, media_type: MediaType
+    ) -> None:
+        """A genre an item inherits from its tracks stays linked once its provider tags it."""
+        instance_id = f"fs_local_inherit_{media_type.value}"
+        track = await _add_test_track(mass, f"Inherit {media_type.value} Track")
+        track_id = int(track.item_id)
+        parent: Album | Artist
+        if media_type == MediaType.ALBUM:
+            parent = await _add_test_album(mass, "Inherit Album")
+            await mass.music.database.insert(
+                DB_TABLE_ALBUM_TRACKS,
+                {
+                    "track_id": track_id,
+                    "album_id": int(parent.item_id),
+                    "disc_number": 1,
+                    "track_number": 1,
+                },
+            )
+        else:
+            parent = await mass.music.artists.get_library_item(track.artists[0].item_id)
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await _set_track_genres(mass, track_id, ["SzInheritedGenre"])
+        mock_provider = MagicMock(domain="filesystem_local", instance_id=instance_id)
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._bulk_scan_unmapped_genres()
+            assert await _linked_genre_names(mass, media_type, parent.item_id) == {
+                "SzInheritedGenre"
+            }
+            await _provider_sync_genres(mass, parent, {"SzInheritedGenre", "SzOwnGenre"})
+            await genre_ctrl._bulk_scan_unmapped_genres()
+
+        assert await _linked_genre_names(mass, media_type, parent.item_id) == {
+            "SzInheritedGenre",
+            "SzOwnGenre",
+        }
 
 
 class TestAddItemLinksGenres:
@@ -3227,3 +3410,42 @@ async def _linked_genre_names(
         limit=0,
     )
     return {r["name"] for r in rows}
+
+
+async def _provider_sync_playlist(
+    mass: MusicAssistant, item: PlaylistPlayableItem, podcast: Podcast | None = None
+) -> None:
+    """
+    Run a provider's playlist sync step for a playlist holding a single item.
+
+    :param mass: The MusicAssistant instance.
+    :param item: The item the playlist holds.
+    :param podcast: The podcast the provider returns for a podcast episode.
+    """
+
+    async def _iter_playlist_tracks(*_: Any) -> AsyncGenerator[PlaylistPlayableItem]:
+        yield item
+
+    def _raise(_media_type: MediaType, _uri: str, err: Exception) -> None:
+        raise err
+
+    provider = MagicMock(mass=mass)
+    provider.iter_playlist_tracks = _iter_playlist_tracks
+    provider.get_podcast = AsyncMock(return_value=podcast)
+    provider.get_item_genre_names = AsyncMock(side_effect=NotImplementedError)
+    provider._handle_sync_item_failure = _raise
+    provider._sync_item_genres = partial(MusicProvider._sync_item_genres, provider)
+    playlist = MagicMock(item_id="prov-playlist")
+    playlist.name = "PlSync Playlist"
+    await MusicProvider._sync_playlist_tracks(provider, playlist)
+
+
+async def _provider_sync_genres(
+    mass: MusicAssistant, item: Track | Album | Artist, genres: set[str]
+) -> None:
+    """Run a provider library sync's genre step for an item that carries the given genres."""
+    provider = MagicMock(mass=mass)
+    provider.get_item_genre_names = AsyncMock(side_effect=NotImplementedError)
+    await MusicProvider._sync_item_genres(
+        provider, item.media_type, "prov-item", int(item.item_id), genres
+    )

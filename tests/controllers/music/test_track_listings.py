@@ -109,6 +109,7 @@ def _similar_tracks_provider() -> MagicMock:
     """Return the music provider of the reference track, which lists similar tracks."""
     provider = MagicMock(spec=MusicProvider)
     provider.instance_id = "qobuz_1"
+    provider.available = True
     provider.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     return provider
 
@@ -235,7 +236,7 @@ async def test_similar_tracks_of_a_plugin_leave_out_hidden_sources(mass: MusicAs
         },
     )
     sources = {
-        source: SimpleNamespace(instance_id=source, type=ProviderType.MUSIC)
+        source: SimpleNamespace(instance_id=source, type=ProviderType.MUSIC, available=True)
         for source in ("open_1", "hidden_1")
     }
     plugin = SimpleNamespace(name="plugin")

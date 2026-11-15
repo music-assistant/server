@@ -29,8 +29,8 @@ from music_assistant_models.errors import (
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import (
-    CONF_PLAYERS,
     CONF_PROVIDERS,
+    DB_TABLE_BOOKMARKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     HOMEASSISTANT_SYSTEM_USER,
@@ -240,7 +240,7 @@ async def test_create_user_with_builtin_provider(auth_manager: AuthenticationMan
     assert user.username == "testuser2"
 
 
-async def test_authenticate_by_name(auth_manager: AuthenticationManager) -> None:
+async def test_authenticate_with_password(auth_manager: AuthenticationManager) -> None:
     """
     Test authenticating with username and password.
 
@@ -353,7 +353,7 @@ async def test_password_hashing_runs_at_most_two_at_a_time(
     assert peak == 2
 
 
-async def test_authenticate_by_name_refuses_a_disabled_user(
+async def test_authenticate_with_password_refuses_a_disabled_user(
     auth_manager: AuthenticationManager,
 ) -> None:
     """
@@ -945,6 +945,7 @@ async def test_delete_user_removes_dependent_rows(
     assert progress_delete.await_args_list == [
         call(DB_TABLE_MEDIA_PROGRESS, {"userid": user.user_id}),
         call(DB_TABLE_PLAY_HISTORY, {"userid": user.user_id}),
+        call(DB_TABLE_BOOKMARKS, {"user_id": user.user_id}),
     ]
 
 
@@ -4061,38 +4062,3 @@ async def test_replace_player_in_user_filters_updates_live_sessions(
 
     assert session.authenticated_user is not None
     assert session.authenticated_user.player_filter == ["sonos_1"]
-
-
-async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:
-    """
-    Test that filter entries pointing at unknown players are cleaned up on startup.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    auth_manager.mass.config.set(f"{CONF_PLAYERS}/player_live", {"player_id": "player_live"})
-    user = await auth_manager.create_user(
-        username="stale",
-        player_filter=["player_gone", "player_live"],
-    )
-
-    await auth_manager._prune_stale_user_filters()
-
-    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_live"])
-
-
-async def test_prune_stale_user_filters_ignores_empty_config(
-    auth_manager: AuthenticationManager,
-) -> None:
-    """
-    Test that filters are left alone when nothing is configured (yet).
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    user = await auth_manager.create_user(
-        username="noconfig",
-        player_filter=["player_gone"],
-    )
-
-    await auth_manager._prune_stale_user_filters()
-
-    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_gone"])

@@ -360,7 +360,7 @@ def parse_station(
     provider: AppleMusicProvider,
     station_obj: dict[str, Any],
 ) -> Radio:
-    """Parse a station object into a dynamic Radio."""
+    """Parse a station object into a Radio: a live stream, or dynamic for track based stations."""
     station_id = station_obj["id"]
     attributes = station_obj.get("attributes", {})
     name = attributes.get("name", station_id)
@@ -368,7 +368,7 @@ def parse_station(
         item_id=station_id,
         provider=provider.instance_id,
         name=name,
-        is_dynamic=True,
+        is_dynamic=not attributes.get("isLive", False),
         provider_mappings={
             ProviderMapping(
                 item_id=station_id,
@@ -429,13 +429,13 @@ def _has_artist_details(artist_obj: dict[str, Any]) -> bool:
 
 def _is_available(attributes: dict[str, Any]) -> bool:
     """
-    Return whether Apple will actually serve a stream for this item.
+    Return whether Apple will serve a stream for this item, judged on its metadata alone.
 
-    ``playParams`` is absent entirely for items Apple has withdrawn. It is present
-    but carries a ``purchasedId`` with no ``catalogId`` for purchase-only items
-    (iTunes purchases, and the 2014 U2 giveaway), which the stream endpoint also
-    refuses. Uploads carry neither marker, so they stay available - see
-    music-assistant/support#6032 and #4108.
+    ``playParams`` is absent entirely for items Apple has withdrawn. It is present but
+    carries a ``purchasedId`` with no ``catalogId`` for purchase-only items (iTunes
+    purchases, and the 2014 U2 giveaway), which are reported unavailable here; the ones
+    Apple still sells are marked available by ``mark_purchases_on_sale``. Uploads carry
+    neither marker, so they stay available - see music-assistant/support#6032 and #4108.
     """
     play_params = attributes.get("playParams") or {}
     if play_params.get("id") is None:

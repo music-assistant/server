@@ -10,6 +10,7 @@ import pytest
 from aiohttp import ClientConnectionError, ClientResponseError, ClientSession
 from yarl import URL
 
+from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.helpers.audio import HTTP_HEADERS
 from music_assistant.helpers.mp3 import (
     NO_SEEK_HINTS,
@@ -214,6 +215,8 @@ def test_has_mp3_frame(data: bytes, *, expected: bool) -> None:
 def test_ffmpeg_http_headers() -> None:
     """Headers follow what the ffmpeg input args make ffmpeg send."""
     assert ffmpeg_http_headers([]) == HTTP_HEADERS
+    # ffmpeg sends our user agent to an http input that does not set one
+    assert HTTP_HEADERS["User-Agent"] == MASS_USER_AGENT
     assert ffmpeg_http_headers(["-user_agent", "Test/1.0", "-ss", "30"]) == {
         "User-Agent": "Test/1.0"
     }

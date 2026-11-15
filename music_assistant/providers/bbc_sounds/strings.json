@@ -8,28 +8,27 @@
     },
     "intro": {
       "label": "A BBC Sounds account is optional, but some UK-only content may not work without it"
-    },
-    "show_local": {
-      "label": "Show local radio stations?"
-    },
-    "stream_format": {
-      "label": "Preferred stream format",
-      "options": {
-        "hls": "HLS",
-        "dash": "MPEG-DASH"
-      }
     }
   },
   "media": {
     "folder": {
-      "schedule_programmes": {
-        "name": "Schedule and Programmes"
+      "catch_up": {
+        "name": "Catch-up Radio"
+      },
+      "schedules": {
+        "name": "Station Schedules"
       },
       "schedule": {
         "name": "Schedule"
       },
-      "listen_live": {
-        "name": "Listen Live"
+      "local_radio": {
+        "name": "Local Radio"
+      },
+      "international_radio": {
+        "name": "International Radio"
+      },
+      "live": {
+        "name": "Live Radio"
       },
       "today": {
         "name": "Today"

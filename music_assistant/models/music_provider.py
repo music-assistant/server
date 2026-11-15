@@ -25,12 +25,16 @@ from music_assistant_models.errors import (
     RetriesExhausted,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.errors import (
+    ProviderStreamHeldError as ProviderStreamHeldErrorBase,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemBookmark,
     MediaItemImage,
     MediaItemTranscriptCue,
     MediaItemType,
@@ -54,6 +58,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
 )
+from music_assistant.helpers.playlists import playlist_block_move_steps
 
 from .media_capabilities import AudioStreamMixin, MediaCatalogMixin, RecommendationsMixin
 from .provider import Provider
@@ -62,6 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -75,6 +81,9 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
+# a music service stops paging through an artist's discography at this many releases, so
+# one user action never costs a number of requests that grows with the catalogue (usage policy)
+ARTIST_ALBUMS_LIMIT: Final[int] = 100
 # a provider-wide payload change fails every single item, so only the first failures
 # of a sync run are logged in full to keep the (rotating) log file usable
 MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
@@ -175,6 +184,43 @@ class ProviderStreamLimitError(AudioError):
         self.limit = limit
 
 
+class ProviderStreamHeldError(ProviderStreamLimitError, ProviderStreamHeldErrorBase):
+    """
+    Raised when another player's playback holds the last source-stream slot of a provider.
+
+    A realtime source keeps its slot until its item ends, so waiting for one is pointless:
+    the request is refused right away, naming the player to stop. Callers handle it like any
+    ProviderStreamLimitError; API clients get its own error code and ``data`` naming the
+    holding player.
+    """
+
+    translation_key = "provider_stream_held"
+
+    def __init__(self, provider: MusicProvider, holder: PlayerQueue) -> None:
+        """
+        Initialize the error.
+
+        :param provider: Provider instance whose source-stream slots are all held.
+        :param holder: The queue whose playback holds the slot.
+        """
+        limit = provider.max_concurrent_streams
+        assert limit is not None
+        # skips ProviderStreamLimitError.__init__, which phrases the message in terms
+        # of the budget and the time spent waiting for it
+        MusicAssistantError.__init__(
+            self,
+            f"{provider.name} is already playing on {holder.display_name}",
+            translation_args=[provider.name, holder.display_name],
+            data={
+                "queue_id": holder.queue_id,
+                "player_name": holder.display_name,
+                "provider_instance": provider.instance_id,
+            },
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = limit
+
+
 def provider_fetch_log_level(err: Exception) -> int:
     """Return the log level for a provider fetch failure the caller skips over."""
     # an item a provider no longer lists is expected to stay that way, so it must not
@@ -241,6 +287,17 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             elsewhere.
         """
         return False
+
+    @property
+    def account_id(self) -> str | None:
+        """
+        Return a stable id of the account this instance is signed in to, if known.
+
+        Read once the instance has initialized. An instance stays bound to the account it
+        reported first: a load that reports another account is refused. Only return
+        something the provider already knows without an extra call to the service.
+        """
+        return None
 
     @property
     def max_concurrent_streams(self) -> int | None:
@@ -344,8 +401,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         Return all supported artist types by this provider.
 
-        Note, that this property currently is only used, to verify support of artists with
-        ArtistType.AUTHOR or ArtistType.NARRATOR.
+        Sent to clients with the provider; with ArtistType.AUTHOR or ArtistType.NARRATOR the
+        provider's audiobooks must list those as Artist objects instead of strings.
         """
         return {ArtistType.SINGER}
 
@@ -398,8 +455,9 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
-        Get a list of all albums for the given artist.
+        Get a list of albums for the given artist.
 
+        A music service stops paging through the discography at ARTIST_ALBUMS_LIMIT releases.
         Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
         """
         raise NotImplementedError
@@ -679,6 +737,37 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         raise NotImplementedError
 
+    async def move_playlist_tracks(
+        self, prov_playlist_id: str, positions: Sequence[int], to_position: int | None = None
+    ) -> None:
+        """
+        Move tracks of a playlist as one block to another position.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_MOVE. The moved tracks
+        keep their order. Override it when the provider can move several tracks in one call.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        :param positions: The current positions of the tracks, 1-based.
+        :param to_position: The position the block's first track ends up at, 1-based. None
+            moves the tracks to the end of the playlist.
+        :raises InvalidDataError: A position is outside the playlist, or the block does not fit.
+        """
+        # replay the block as single moves, which every provider with the feature implements.
+        # The listing can leave out entries it cannot resolve while keeping the positions of
+        # the others, so the highest listed position bounds the playlist too. Entries left out
+        # after the last listed track stay unknown, and "the end" is then after that track.
+        length = 0
+        page = 0
+        while page_items := await self.get_playlist_tracks(prov_playlist_id, page=page):
+            length = max(length + len(page_items), *(item.position or 0 for item in page_items))
+            page += 1
+        if to_position is None:
+            to_position = length - len(positions) + 1
+        for from_position, step_to_position in playlist_block_move_steps(
+            length, positions, to_position
+        ):
+            await self.move_playlist_track(prov_playlist_id, from_position, step_to_position)
+
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """
         Create a new playlist on provider with given name and targeting media_types.
@@ -739,6 +828,49 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         raise NotImplementedError
 
+    async def get_bookmarks(
+        self, media_type: MediaType, prov_item_id: str
+    ) -> list[MediaItemBookmark]:
+        """
+        Get the user's bookmarks of the given audiobook or podcast episode.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        """
+        raise NotImplementedError
+
+    async def set_bookmark(
+        self, media_type: MediaType, prov_item_id: str, start: float, name: str
+    ) -> None:
+        """
+        Add a bookmark to the given item, or rename the one at the same start.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        :param start: Position of the bookmark in seconds.
+        :param name: Name of the bookmark.
+        """
+        raise NotImplementedError
+
+    async def remove_bookmark(self, media_type: MediaType, prov_item_id: str, start: float) -> None:
+        """
+        Remove the bookmark at the given start of the given item.
+
+        Will only be called if the provider supports ProviderFeature.AUDIOBOOK_BOOKMARKS_EDIT
+        or ProviderFeature.PODCAST_EPISODE_BOOKMARKS_EDIT for the media type.
+
+        :param media_type: MediaType.AUDIOBOOK or MediaType.PODCAST_EPISODE.
+        :param prov_item_id: The id of the item on the provider.
+        :param start: Position of the bookmark in seconds.
+        """
+        raise NotImplementedError
+
     async def on_stream_started(
         self,
         streamdetails: StreamDetails,
@@ -748,6 +880,19 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
         Called once per playback, so unlike get_stream_details never for a preload.
         A playback that triggers this callback is followed by at least one on_streamed.
+        """
+
+    async def hint_next_item(self, playing: StreamDetails, upcoming: StreamDetails) -> None:
+        """
+        Handle a hint about the item that follows the one being streamed.
+
+        Called instead of preparing the upcoming item when the streamed item holds
+        this provider's only stream slot, so a provider that plays a queue itself
+        can line the upcoming item up. It may be called more than once for the same
+        pair; a call for a different upcoming item means the queue changed.
+
+        :param playing: Stream details of the item being streamed.
+        :param upcoming: Stream details of the item that follows it.
         """
 
     async def on_streamed(
@@ -902,6 +1047,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             raise KeyError(msg)
 
         # no subpath: return main listing
+        # artists, albums and playlists folders are not playable: playing one would fetch
+        # the tracks of every item in the library, one request each
         folders: list[BrowseFolder] = []
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
@@ -911,7 +1058,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "artists",
                     name="",
                     translation_key="artists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
@@ -922,7 +1068,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "albums",
                     name="",
                     translation_key="albums",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
@@ -944,7 +1089,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "playlists",
                     name="",
                     translation_key="playlists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
@@ -1404,9 +1548,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                 return
             genre_names = fallback_genres
 
-        await self.mass.music.genres.sync_media_item_genres(
+        if not await self.mass.music.genres.sync_media_item_genres(
             media_type, library_item_id, set(genre_names)
-        )
+        ):
+            return
+        # the genre scan keeps only links whose name is stored on the item, and an item with
+        # stored genres no longer inherits genres from its tracks, so store every name
+        controller = self.mass.music.get_controller(media_type)
+        library_item = await controller.get_library_item(library_item_id)
+        stored = set(library_item.metadata.genres or set())
+        # the genre scan compares names case-insensitively, so skip names stored in another case
+        stored_keys = {name.strip().lower() for name in stored}
+        stored |= {
+            name.strip()
+            for name in genre_names
+            if name.strip() and name.strip().lower() not in stored_keys
+        }
+        await controller.replace_metadata(library_item_id, {"genres": stored})
 
     async def _sync_library_artists(self) -> set[int]:
         """Sync Library Artists to Music Assistant library."""
@@ -1594,37 +1752,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                             prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
-                    elif self._library_item_needs_update(
-                        sync_details, prov_item
-                    ) or sync_details.authors_narrators_changed(prov_item):
+                    elif (
+                        self._library_item_needs_update(sync_details, prov_item)
+                        or sync_details.authors_narrators_changed(prov_item)
+                        or sync_details.resume_point_changed(prov_item)
+                    ):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
                     else:
                         db_id = sync_details.item_id
-                        lib_fully_played = sync_details.fully_played
-                        lib_resume_position_ms = sync_details.resume_position_ms
 
                     cur_db_ids.add(db_id)
                     if prov_item.favorite is not None:
                         await self.mass.music.favorites.record_from_provider(
                             self.instance_id, MediaType.AUDIOBOOK, db_id, prov_item.favorite
                         )
-                    # check if resume_position_ms or fully_played changed
-                    if (
-                        prov_item.resume_position_ms is not None
-                        and prov_item.fully_played is not None
-                        and (
-                            lib_resume_position_ms != prov_item.resume_position_ms
-                            or lib_fully_played != prov_item.fully_played
-                        )
-                    ):
-                        await self.mass.music.audiobooks.update_item_in_library(db_id, prov_item)
 
                     fallback_genres = (
                         set(prov_item.metadata.genres)
@@ -1758,7 +1902,7 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                         else None
                     )
                     await self._sync_item_genres(
-                        MediaType.TRACK,
+                        prov_track.media_type,
                         prov_track.item_id,
                         db_id,
                         fallback_genres,

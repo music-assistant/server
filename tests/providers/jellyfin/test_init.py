@@ -1,14 +1,20 @@
 """Tests for the Jellyfin provider."""
 
-from collections.abc import AsyncGenerator
+import asyncio
+import json
+from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
+from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
+import aiofiles
 import pytest
 from aiohttp import ClientSession
 from aiojellyfin.session import SessionConfiguration
 from aiojellyfin.testing import FixtureBuilder
+from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.mass import MusicAssistant
@@ -17,6 +23,7 @@ from music_assistant.providers.jellyfin import (
     CONF_ACCESS_TOKEN,
     CONF_USER_ID,
     JellyfinConnection,
+    JellyfinProvider,
     authenticate_by_name,
     authenticate_with_quick_connect,
     initiate_quick_connect,
@@ -26,6 +33,10 @@ from tests.common import get_fixtures_dir, wait_for_sync_completion
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.streamdetails import StreamDetails
+
+TRACK_FIXTURE = Path(__file__).parent / "fixtures" / "tracks" / "do_i_wanna_know.json"
+TRACK_ID = "da9c458e425584680765ddc3a89cbc0c"
 
 
 @pytest.fixture
@@ -41,26 +52,7 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
     async for _, track in get_fixtures_dir("tracks", "jellyfin"):
         f.add_json_bytes(track)
 
-    f_authenticate_by_name = f.to_authenticate_by_name()
-
-    with mock.patch(
-        "music_assistant.providers.jellyfin.authenticate_by_name", f_authenticate_by_name
-    ):
-        async with wait_for_sync_completion(mass):
-            config = await mass.config._create_provider_instance(
-                "jellyfin",
-                {},
-                # connection details are collected by the setup flow and live in setup_data
-                setup_data=mass.config._encrypt_values(
-                    {
-                        "url": "http://localhost",
-                        "username": "username",
-                        "password": "password",
-                    }
-                ),
-            )
-            await mass.music.start_sync()
-
+    async with _setup_provider(mass, f) as config:
         yield config
 
 
@@ -163,31 +155,6 @@ async def test_password_authentication() -> None:
     assert "api_key" not in client.audio_url("track-1")
 
 
-def _setup_flow_session(
-    setup_data: dict[str, Any], form_values: list[dict[str, Any]], collected: dict[str, Any]
-) -> SetupSession:
-    """Create a setup-flow session with deterministic form responses."""
-    mass = mock.MagicMock()
-    mass.server_id = "server-id"
-    mass.version = "1.0"
-    mass.http_session = mock.MagicMock()
-    mass.http_session_no_ssl = mock.MagicMock()
-    form = mock.AsyncMock(side_effect=form_values)
-
-    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
-        collected.update(values)
-        return {"instance_id": "jellyfin--1"}
-
-    session = SetupSession(
-        mass,
-        "flow-test",
-        SetupFlowContext(kind="setup", reason="user", domain="jellyfin", setup_data=setup_data),
-        finish,
-    )
-    session.form = form  # type: ignore[method-assign]
-    return session
-
-
 async def test_password_setup_clears_quick_connect_credentials() -> None:
     """Switching to password authentication removes stale token credentials."""
     collected: dict[str, Any] = {}
@@ -266,3 +233,118 @@ async def test_quick_connect_setup_clears_password_credentials() -> None:
         CONF_USER_ID: "new-user",
         "device_id": "server-id",
     }
+
+
+async def test_get_stream_details_loudness(
+    mass: MusicAssistant, jellyfin_provider: ProviderConfig
+) -> None:
+    """Test stream details carry and store loudness derived from Jellyfin's ReplayGain."""
+    stream_details, set_track_loudness = await _get_stream_details_with_loudness(
+        mass, jellyfin_provider, TRACK_ID
+    )
+
+    assert stream_details.loudness == pytest.approx(-9.6)
+    assert stream_details.loudness_album is None
+    set_track_loudness.assert_awaited_once_with(
+        item_id=TRACK_ID,
+        provider_instance_id_or_domain=jellyfin_provider.instance_id,
+        loudness=stream_details.loudness,
+        loudness_album=None,
+    )
+
+
+async def test_get_stream_details_album_loudness(mass: MusicAssistant) -> None:
+    """Test album loudness from Jellyfin's AlbumNormalizationGain reaches stream details."""
+    async with aiofiles.open(TRACK_FIXTURE, encoding="utf-8") as fp:
+        track = json.loads(await fp.read())
+    track["Id"] = "album-gain-track"
+    track["AlbumNormalizationGain"] = -10.0
+    fixture = FixtureBuilder()
+    fixture.add_json_bytes(json.dumps(track))
+
+    async with _setup_provider(mass, fixture) as config:
+        stream_details, set_track_loudness = await _get_stream_details_with_loudness(
+            mass, config, "album-gain-track"
+        )
+
+    assert stream_details.loudness == pytest.approx(-9.6)
+    assert stream_details.loudness_album == pytest.approx(-8.0)
+    set_track_loudness.assert_awaited_once_with(
+        item_id="album-gain-track",
+        provider_instance_id_or_domain=config.instance_id,
+        loudness=stream_details.loudness,
+        loudness_album=stream_details.loudness_album,
+    )
+
+
+def _setup_flow_session(
+    setup_data: dict[str, Any], form_values: list[dict[str, Any]], collected: dict[str, Any]
+) -> SetupSession:
+    """Create a setup-flow session with deterministic form responses."""
+    mass = mock.MagicMock()
+    mass.server_id = "server-id"
+    mass.version = "1.0"
+    mass.http_session = mock.MagicMock()
+    mass.http_session_no_ssl = mock.MagicMock()
+    form = mock.AsyncMock(side_effect=form_values)
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"instance_id": "jellyfin--1"}
+
+    session = SetupSession(
+        mass,
+        "flow-test",
+        SetupFlowContext(kind="setup", reason="user", domain="jellyfin", setup_data=setup_data),
+        finish,
+    )
+    session.form = form  # type: ignore[method-assign]
+    return session
+
+
+@asynccontextmanager
+async def _setup_provider(
+    mass: MusicAssistant, fixture: FixtureBuilder
+) -> AsyncIterator[ProviderConfig]:
+    """Add a Jellyfin provider backed by the given aiojellyfin fixture and sync it."""
+    with mock.patch(
+        "music_assistant.providers.jellyfin.authenticate_by_name",
+        fixture.to_authenticate_by_name(),
+    ):
+        async with wait_for_sync_completion(mass):
+            config = await mass.config._create_provider_instance(
+                "jellyfin",
+                {},
+                # connection details are collected by the setup flow and live in setup_data
+                setup_data=mass.config._encrypt_values(
+                    {
+                        "url": "http://localhost",
+                        "username": "username",
+                        "password": "password",
+                    }
+                ),
+            )
+            await mass.music.start_sync()
+
+        yield config
+
+
+async def _get_stream_details_with_loudness(
+    mass: MusicAssistant, config: ProviderConfig, item_id: str
+) -> tuple[StreamDetails, mock.AsyncMock]:
+    """Get stream details and await the loudness store task, returning its mock."""
+    provider = mass.get_provider(config.instance_id)
+    assert isinstance(provider, JellyfinProvider)
+    set_track_loudness = mock.AsyncMock()
+    tasks: list[asyncio.Task[Any]] = []
+
+    def _create_task(target: Coroutine[Any, Any, Any], *_args: Any, **_kwargs: Any) -> None:
+        tasks.append(asyncio.create_task(target))
+
+    with (
+        mock.patch.object(mass.streams.audio_analysis, "set_track_loudness", set_track_loudness),
+        mock.patch.object(mass, "create_task", _create_task),
+    ):
+        stream_details = await provider.get_stream_details(item_id, MediaType.TRACK)
+        await asyncio.gather(*tasks)
+    return stream_details, set_track_loudness
