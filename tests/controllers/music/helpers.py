@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from unittest.mock import MagicMock
 
 from music_assistant_models.enums import EventType, ExternalID
@@ -15,7 +16,19 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import (
+    DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_MEDIA_PROGRESS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+)
+from music_assistant.helpers.json import serialize_to_json
+from music_assistant.mass import MusicAssistant
+
 ISRC = "USRC17607839"
+
+CollectionBookState = Literal[
+    "unplayed", "finished", "in_progress", "unavailable", "not_in_library"
+]
 
 
 def create_track(
@@ -131,3 +144,61 @@ def media_item_events(signal_event: MagicMock) -> list[EventType]:
         for call in signal_event.call_args_list
         if call.args[0] != EventType.TASKS_UPDATED
     ]
+
+
+async def add_collection_audiobook(
+    mass: MusicAssistant,
+    item_id: int,
+    sequence: float | str | None,
+    state: CollectionBookState = "unplayed",
+    *,
+    collection: str = "Saga",
+    played_at: int = 100,
+) -> None:
+    """Insert a library audiobook of a collection on local_1, in the given state for user-a."""
+    await mass.music.database.insert(
+        DB_TABLE_AUDIOBOOKS,
+        {
+            "item_id": item_id,
+            "name": f"Book {item_id}",
+            "sort_name": f"book {item_id}",
+            "authors": "[]",
+            "narrators": "[]",
+            "metadata": serialize_to_json(
+                {
+                    "collections": [{"title": collection, "sequence": sequence}],
+                    "images": [
+                        {"type": "thumb", "path": f"cover_{item_id}", "provider": "local_1"}
+                    ],
+                }
+            ),
+            "search_name": f"book{item_id}",
+            "search_sort_name": f"book{item_id}",
+        },
+    )
+    await mass.music.database.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "media_type": "audiobook",
+            "item_id": item_id,
+            "provider_domain": "local",
+            "provider_instance": "local_1",
+            "provider_item_id": f"local-{item_id}",
+            "available": state != "unavailable",
+            "in_library": state != "not_in_library",
+        },
+    )
+    if state in ("finished", "in_progress"):
+        await mass.music.database.insert(
+            DB_TABLE_MEDIA_PROGRESS,
+            {
+                "item_id": str(item_id),
+                "provider": "library",
+                "media_type": "audiobook",
+                "name": f"Book {item_id}",
+                "timestamp": played_at,
+                "fully_played": state == "finished",
+                "seconds_played": 60,
+                "userid": "user-a",
+            },
+        )

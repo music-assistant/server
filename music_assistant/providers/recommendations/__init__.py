@@ -11,7 +11,14 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import MediaType, ProviderFeature, SortDirection, SortField
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import PodcastEpisode, RecommendationFolder, UniqueList
 
@@ -27,11 +34,7 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import (
-        ConfigEntry,
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
@@ -44,6 +47,7 @@ SUPPORTED_FEATURES: set[ProviderFeature] = {
 
 LATEST_EPISODES_TASK_ID: Final[str] = "recommendations_refresh_latest_episodes"
 LATEST_EPISODES_CACHE_KEY: Final[str] = "latest_episodes_by_podcast"
+CONF_CONTINUE_COLLECTION: Final[str] = "continue_collection"
 
 
 class LibraryRowID(StrEnum):
@@ -66,6 +70,15 @@ class LibraryRowID(StrEnum):
     MOST_PLAYED_TRACKS = "most_played_tracks"
     NEVER_PLAYED_TRACKS = "never_played_tracks"
     LATEST_EPISODES = "latest_episodes"
+    CONTINUE_COLLECTION = "continue_collection"
+
+
+class ContinueCollection(StrEnum):
+    """Where the next audiobook of a collection the user can continue is shown."""
+
+    OFF = "off"
+    OWN_ROW = "own_row"
+    IN_PROGRESS_ROW = "in_progress_row"
 
 
 async def setup(
@@ -82,7 +95,14 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return config entries for this provider."""
-    return ()
+    return (
+        ConfigEntry(
+            key=CONF_CONTINUE_COLLECTION,
+            type=ConfigEntryType.STRING,
+            options=[ConfigValueOption(x.value) for x in ContinueCollection],
+            default_value=ContinueCollection.OFF.value,
+        ),
+    )
 
 
 class LibraryRecommendationsProvider(PluginProvider):
@@ -115,10 +135,23 @@ class LibraryRecommendationsProvider(PluginProvider):
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get all library recommendation rows, without items."""
+        continue_collection_rows = (
+            [
+                _folder(
+                    LibraryRowID.CONTINUE_COLLECTION,
+                    "Continue collection",
+                    "continue_collection",
+                    "mdi-book-arrow-right",
+                )
+            ]
+            if self._continue_collection == ContinueCollection.OWN_ROW
+            else []
+        )
         return [
             _folder(
                 LibraryRowID.IN_PROGRESS, "In progress", "in_progress_items", "mdi-motion-play"
             ),
+            *continue_collection_rows,
             _folder(
                 LibraryRowID.RECENTLY_PLAYED,
                 "Recently played",
@@ -242,7 +275,19 @@ class LibraryRecommendationsProvider(PluginProvider):
         items: Sequence[MediaItemType | ItemMapping | BrowseFolder]
         match item_id:
             case LibraryRowID.IN_PROGRESS:
-                items = await self.mass.music.in_progress_items(limit=10, providers=providers)
+                items = await self.mass.music.in_progress_items(
+                    limit=10,
+                    providers=providers,
+                    include_next_in_collection=(
+                        self._continue_collection == ContinueCollection.IN_PROGRESS_ROW
+                    ),
+                )
+            case LibraryRowID.CONTINUE_COLLECTION if (
+                self._continue_collection == ContinueCollection.OWN_ROW
+            ):
+                items = await self.mass.music.next_in_collection_items(
+                    limit=10, providers=providers
+                )
             case LibraryRowID.RECENTLY_PLAYED:
                 items = await self.mass.music.recently_played(
                     limit=10,
@@ -356,6 +401,12 @@ class LibraryRecommendationsProvider(PluginProvider):
             case _:
                 items = []
         return UniqueList(items)
+
+    @property
+    def _continue_collection(self) -> ContinueCollection:
+        return ContinueCollection(
+            str(self.config.get_value(CONF_CONTINUE_COLLECTION, ContinueCollection.OFF.value))
+        )
 
     async def _get_latest_episodes(self, providers: list[str] | None) -> list[PodcastEpisode]:
         """Return the stored latest episodes, with the current user's played state."""

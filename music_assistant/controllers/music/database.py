@@ -663,6 +663,13 @@ class MusicDatabaseSetupMixin:
                 f"CREATE INDEX IF NOT EXISTS {db_table}_last_played_idx on {db_table}(last_played);"
             )
 
+        # the collections of all audiobooks, readable without loading their metadata
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_AUDIOBOOKS}_collections_idx "
+            f"ON {DB_TABLE_AUDIOBOOKS}(json_extract(metadata, '$.collections')) "
+            "WHERE json_extract(metadata, '$.collections') IS NOT NULL;"
+        )
+
         # indexes on provider_mappings table
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_media_type_item_id_idx "

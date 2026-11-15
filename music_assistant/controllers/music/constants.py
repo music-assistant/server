@@ -163,3 +163,36 @@ AUDIO_ANALYSIS_PACK_BATCH_SIZE: Final[int] = 100
 AUDIO_ANALYSIS_PACK_PROGRESS_ROWS: Final[int] = 2000
 # a collapsed collection shows the covers of its first items with a thumb as a stack
 COLLECTION_COVER_COUNT: Final[int] = 3
+# whether the sequence of a collection entry (iter_coll) is a number
+COLLECTION_SEQUENCE_IS_NUMERIC_SQL: Final[str] = """CASE
+                            WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
+                            THEN 1
+                            WHEN json_type(iter_coll.value, '$.sequence') = 'text'
+                                AND json_valid(json_extract(iter_coll.value, '$.sequence'))
+                            THEN CASE
+                                WHEN json_type(json_extract(iter_coll.value, '$.sequence'))
+                                    IN ('integer', 'real')
+                                THEN 1
+                                ELSE 0
+                            END
+                            ELSE 0
+                        END"""
+# the order of the items within a collection
+COLLECTION_SEQUENCE_ORDER_SQL: Final[str] = """
+                -- null case
+                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
+                -- numeric before text
+                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
+                -- order NUMERIC
+                CASE WHEN collection_sequence_is_numeric
+                    THEN CAST(collection_sequence AS REAL)
+                END,
+                -- order TEXT
+                CASE WHEN NOT collection_sequence_is_numeric
+                    THEN collection_sequence
+                END COLLATE NOCASE,
+                -- order by media name if no sequence given
+                CASE
+                    WHEN collection_sequence IS NULL
+                    THEN media_name
+                END COLLATE NOCASE"""

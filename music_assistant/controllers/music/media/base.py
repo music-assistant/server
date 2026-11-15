@@ -79,6 +79,8 @@ from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_LISTED_EXTERNAL_ITEMS,
     CACHE_CATEGORY_SEARCH_RESULTS,
     COLLECTION_COVER_COUNT,
+    COLLECTION_SEQUENCE_IS_NUMERIC_SQL,
+    COLLECTION_SEQUENCE_ORDER_SQL,
     EXTERNAL_ID_CACHE_EXPIRATION,
     LISTED_EXTERNAL_ITEM_CACHE_EXPIRATION,
     RANDOM_SORT_FIELDS,
@@ -3875,24 +3877,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         single_extra_order_keys = ""
         collection_extra_order_keys = ""
         # the order of the items within a collection, which the covers follow as well
-        sequence_order = """
-                -- null case
-                CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
-                -- numeric before text
-                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
-                -- order NUMERIC
-                CASE WHEN collection_sequence_is_numeric
-                    THEN CAST(collection_sequence AS REAL)
-                END,
-                -- order TEXT
-                CASE WHEN NOT collection_sequence_is_numeric
-                    THEN collection_sequence
-                END COLLATE NOCASE,
-                -- order by media name if no sequence given
-                CASE
-                    WHEN collection_sequence IS NULL
-                    THEN media_name
-                END COLLATE NOCASE"""
+        sequence_order = COLLECTION_SEQUENCE_ORDER_SQL
 
         # the played state of a collection, from the columns this media type has
         collection_extract_keys = ""
@@ -3940,19 +3925,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
                         json_extract(iter_coll.value, '$.search_title') as collection_search_title,
                         json_extract(iter_coll.value, '$.search_sort_title') as collection_search_sort_title,
-                        CASE
-                            WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
-                            THEN 1
-                            WHEN json_type(iter_coll.value, '$.sequence') = 'text'
-                                AND json_valid(json_extract(iter_coll.value, '$.sequence'))
-                            THEN CASE
-                                WHEN json_type(json_extract(iter_coll.value, '$.sequence'))
-                                    IN ('integer', 'real')
-                                THEN 1
-                                ELSE 0
-                            END
-                            ELSE 0
-                        END as collection_sequence_is_numeric,
+                        {COLLECTION_SEQUENCE_IS_NUMERIC_SQL} as collection_sequence_is_numeric,
                         -- only the items in view are listed, so only they need their data
                         CASE WHEN {in_view} THEN {json_object} END as media_data
                     FROM (

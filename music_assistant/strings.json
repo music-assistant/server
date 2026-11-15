@@ -1077,6 +1077,9 @@
       "in_progress_items": {
         "name": "In progress"
       },
+      "continue_collection": {
+        "name": "Continue collection"
+      },
       "latest_episodes": {
         "name": "Latest podcast episodes"
       },

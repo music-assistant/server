@@ -2,6 +2,17 @@
   "background_task": {
     "refresh_latest_episodes": "Refresh latest podcast episodes"
   },
+  "config_entries": {
+    "continue_collection": {
+      "label": "Continue audiobook collections",
+      "description": "Recommend the next audiobook of a collection once you finished one of its audiobooks and have none in progress.",
+      "options": {
+        "off": "Off",
+        "own_row": "As a separate row",
+        "in_progress_row": "In the in progress row"
+      }
+    }
+  },
   "manifest": {
     "description": "Provides standard library-based recommendation rows."
   }

@@ -67,6 +67,7 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
+    DB_TABLE_AUDIOBOOKS,
     DB_TABLE_MEDIA_PROGRESS,
     DB_TABLE_PLAY_HISTORY,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -78,6 +79,8 @@ from music_assistant.controllers.music.bookmarks import BookmarksController
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
+    COLLECTION_SEQUENCE_IS_NUMERIC_SQL,
+    COLLECTION_SEQUENCE_ORDER_SQL,
     CONF_DELETED_PROVIDERS,
     CONF_KEEP_REMASTERS_APART,
     CONF_RESET_DB,
@@ -110,6 +113,7 @@ from music_assistant.controllers.music.helpers import (
     select_resume_point,
     sibling_instance_mappings,
     sort_search_result,
+    usable_thumb,
 )
 from music_assistant.controllers.music.listing import apply_listing, resolve_listing_sort
 from music_assistant.controllers.music.listing_cache import (
@@ -1352,7 +1356,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/in_progress_items", required_scope=Scope.LIBRARY_READ)
     async def in_progress_items(
-        self, limit: int = 10, all_users: bool = False, providers: list[str] | None = None
+        self,
+        limit: int = 10,
+        all_users: bool = False,
+        providers: list[str] | None = None,
+        include_next_in_collection: bool = False,
     ) -> list[ItemMapping]:
         """
         Return a list of the Audiobooks and PodcastEpisodes that are in progress.
@@ -1363,85 +1371,73 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param providers: Restrict results to items reachable through one of these provider
             instance ids (OR semantics). None applies no filter; an explicit empty list
             returns no items.
+        :param include_next_in_collection: Also include the next audiobook of each collection
+            the current user can continue, see next_in_collection_items. Ignored with
+            all_users.
         """
         if providers is not None and not providers:
             return []
-        available_providers = ("library", *self.get_active_provider_instances())
-        available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
+        user = None if all_users else get_current_user()
         params: dict[str, Any] = {}
-        requested_clause = ""
-        direct_requested_clause = ""
-        if providers is not None:
-            params["requested_providers"] = providers
-            requested_clause = " AND m.provider_instance IN :requested_providers"
-            direct_requested_clause = " AND p.provider IN :requested_providers"
+        # for a library item, we still have to verify via the provider mapping table
+        # that the provider is available
+        mapping_clause = self._usable_instance_clause(
+            "m.provider_instance", user, providers, params
+        )
+        direct_clause = self._usable_instance_clause("p.provider", user, providers, params)
 
         # An audiobook can be part of the library, in contrast to podcast episodes.
         # We then need to check the provider mappings table.
         one_week_ago = int(utc_timestamp()) - (7 * 86400)
         query = (
-            "SELECT p.item_id, p.media_type, p.name, p.image, p.provider "
+            "SELECT p.item_id, p.media_type, p.name, p.image, p.provider, p.timestamp, "
+            "NULL AS images "
             f"FROM {DB_TABLE_MEDIA_PROGRESS} p "
             "WHERE p.media_type IN ('audiobook', 'podcast_episode') "
             "AND p.fully_played = 0 "
             "AND p.seconds_played > 0 "
             f"AND (p.media_type != 'podcast_episode' OR p.timestamp >= {one_week_ago}) "
-        )
-        query += (
             "AND ( "
             "CASE WHEN p.provider = 'library' THEN "
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
             "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
-            "AND m.available = 1 "
+            f"AND m.available = 1 AND {mapping_clause}) "
+            f"ELSE ({direct_clause}) "
+            "END "
+            ") "
         )
-        if not all_users and (user := get_current_user()):
-            filter_for_str = available_providers_str
-            if (visible := visible_music_sources(self.mass, user)) is not None:
-                filter_for_str = "(" + ",".join(f'"{x}"' for x in visible) + ")"
-            query += (
-                f"AND m.provider_instance IN {filter_for_str} "
-                f"AND m.provider_instance IN {available_providers_str}"
-                f"{requested_clause} "
-                ") "
-                f"ELSE (p.provider IN {filter_for_str} AND p.provider IN {available_providers_str}"
-                f"{direct_requested_clause})"
-                "END "
-                ") "
-                f"AND p.userid = '{user.user_id}' "
-            )
-        else:
-            # for a library item, we still have to verify via the provider mapping table
-            # that the provider is available
-            query += (
-                f"AND m.provider_instance IN {available_providers_str}"
-                f"{requested_clause} "
-                ") "
-                f"ELSE p.provider IN {available_providers_str}"
-                f"{direct_requested_clause} "
-                "END "
-                ") "
-            )
+        if user:
+            params["userid"] = user.user_id
+            query += "AND p.userid = :userid "
+            if include_next_in_collection:
+                query += f"UNION ALL {self._next_in_collection_query(user, providers, params)} "
         query += "ORDER BY timestamp DESC"
 
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params or None, limit=limit
         )
-        result: list[ItemMapping] = []
-        for db_row in db_rows:
-            provider = db_row["provider"]
-            result.append(
-                ItemMapping.from_dict(
-                    {
-                        "item_id": db_row["item_id"],
-                        "provider": provider,
-                        "media_type": db_row["media_type"],
-                        "name": db_row["name"],
-                        "image": json_loads(db_row["image"]) if db_row["image"] else None,
-                        "available": provider in available_providers,
-                    }
-                )
-            )
-        return result
+        return self._progress_item_mappings(db_rows, user)
+
+    async def next_in_collection_items(
+        self, limit: int = 10, providers: list[str] | None = None
+    ) -> list[ItemMapping]:
+        """
+        Return the next audiobook of each collection the current user can continue.
+
+        That is a collection the user finished an audiobook of and has none in progress
+        of; its next audiobook is the first one not finished yet.
+
+        :param limit: Maximum number of items to return.
+        :param providers: Restrict results to items reachable through one of these provider
+            instance ids (OR semantics). None applies no filter; an explicit empty list
+            returns no items.
+        """
+        if (providers is not None and not providers) or not (user := get_current_user()):
+            return []
+        params: dict[str, Any] = {}
+        query = f"{self._next_in_collection_query(user, providers, params)} ORDER BY timestamp DESC"
+        db_rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
+        return self._progress_item_mappings(db_rows, user)
 
     async def get_playlog_provider_item_ids(
         self, provider_instance_id: str, limit: int = 0, userid: str | None = None
@@ -4492,3 +4488,116 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             or playback_instance_for(self.mass, mapping.provider_instance, allowed) is not None
             for mapping in item.provider_mappings
         )
+
+    def _usable_instance_clause(
+        self,
+        column: str,
+        user: User | None,
+        providers: list[str] | None,
+        params: dict[str, Any],
+    ) -> str:
+        """Return the SQL condition that a provider instance column holds a usable instance."""
+        usable: list[Iterable[str]] = [("library", *self.get_active_provider_instances())]
+        if user and (visible := visible_music_sources(self.mass, user)) is not None:
+            usable.append(visible)
+        clauses = [
+            f"{column} IN (" + ",".join(f'"{x}"' for x in instances) + ")" for instances in usable
+        ]
+        if providers is not None:
+            params["requested_providers"] = providers
+            clauses.append(f"{column} IN :requested_providers")
+        return " AND ".join(clauses)
+
+    def _next_in_collection_query(
+        self, user: User, providers: list[str] | None, params: dict[str, Any]
+    ) -> str:
+        """Return the query of the next audiobook of each collection the user can continue."""
+        params["userid"] = user.user_id
+        # unary + keeps the planner on the item_id index, off the mappings of a whole instance
+        mapping_clause = self._usable_instance_clause(
+            "+m.provider_instance", user, providers, params
+        )
+        collections = "json_extract(a.metadata, '$.collections')"
+        user_progress = (
+            "p.provider = 'library' AND p.media_type = 'audiobook' AND p.userid = :userid"
+        )
+        return f"""
+            SELECT CAST(a.item_id AS TEXT) AS item_id, 'audiobook' AS media_type, a.name,
+                NULL AS image, 'library' AS provider, MAX(next_book.timestamp) AS timestamp,
+                json_extract(a.metadata, '$.images') AS images
+            FROM (
+                WITH
+                    -- the collections with a finished book and none in progress
+                    started AS (
+                        SELECT json_extract(iter_coll.value, '$.title') AS collection_title,
+                            MAX(p.timestamp) FILTER (WHERE p.fully_played = 1) AS timestamp
+                        FROM {DB_TABLE_MEDIA_PROGRESS} p
+                        JOIN {DB_TABLE_AUDIOBOOKS} a ON a.item_id = CAST(p.item_id AS INTEGER),
+                            json_each({collections}) AS iter_coll
+                        WHERE {user_progress}
+                        GROUP BY collection_title
+                        HAVING MAX(p.fully_played = 1) AND NOT MAX(
+                            COALESCE(p.fully_played, 0) = 0 AND p.seconds_played > 0
+                        )
+                    ),
+                    -- their books, read from the collections index only. Materialized, so
+                    -- the lookups per book below only run for these collections
+                    book AS MATERIALIZED (
+                        SELECT a.item_id, started.collection_title, started.timestamp,
+                            json_extract(iter_coll.value, '$.sequence') AS collection_sequence,
+                            {COLLECTION_SEQUENCE_IS_NUMERIC_SQL} AS collection_sequence_is_numeric
+                        FROM {DB_TABLE_AUDIOBOOKS} a
+                        CROSS JOIN json_each({collections}) AS iter_coll
+                        CROSS JOIN started
+                            ON started.collection_title = json_extract(iter_coll.value, '$.title')
+                        WHERE {collections} IS NOT NULL
+                    )
+                SELECT item_id, timestamp, ROW_NUMBER() OVER (
+                    PARTITION BY collection_title
+                    ORDER BY {COLLECTION_SEQUENCE_ORDER_SQL}, item_id
+                ) AS position
+                FROM (
+                    SELECT book.*, a.name AS media_name
+                    FROM book CROSS JOIN {DB_TABLE_AUDIOBOOKS} a ON a.item_id = book.item_id
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM {DB_TABLE_MEDIA_PROGRESS} p
+                        WHERE p.item_id = CAST(book.item_id AS TEXT) AND {user_progress}
+                        AND p.fully_played = 1
+                    ) AND EXISTS (
+                        SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m
+                        WHERE m.item_id = book.item_id AND m.media_type = 'audiobook'
+                        AND m.available = 1 AND m.in_library = 1 AND {mapping_clause}
+                    )
+                )
+            ) next_book
+            CROSS JOIN {DB_TABLE_AUDIOBOOKS} a ON a.item_id = next_book.item_id
+            WHERE next_book.position = 1
+            GROUP BY a.item_id
+        """
+
+    def _progress_item_mappings(
+        self, db_rows: Iterable[Mapping[str, Any]], user: User | None
+    ) -> list[ItemMapping]:
+        available_providers = ("library", *self.get_active_provider_instances())
+        hidden_sources = hidden_music_sources(self.mass, user) if user else set()
+        result: list[ItemMapping] = []
+        for db_row in db_rows:
+            provider = db_row["provider"]
+            if db_row["image"]:
+                image = json_loads(db_row["image"])
+            else:
+                # the next book of a collection has no playlog row to take the image from
+                image = usable_thumb(json_loads(db_row["images"] or "[]"), hidden_sources)
+            result.append(
+                ItemMapping.from_dict(
+                    {
+                        "item_id": db_row["item_id"],
+                        "provider": provider,
+                        "media_type": db_row["media_type"],
+                        "name": db_row["name"],
+                        "image": image,
+                        "available": provider in available_providers,
+                    }
+                )
+            )
+        return result
