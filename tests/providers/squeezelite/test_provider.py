@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from functools import partial
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from aiohttp import web
+from aiosendspin.clock import ManualClock, RawMonotonicClock
 from aioslimproto.cli import SlimCLICommand, parse_args
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
@@ -18,6 +20,10 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.squeezelite.player import SqueezelitePlayer
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
+from music_assistant.providers.squeezelite.sendspin_bridge import (
+    BRIDGE_STREAM_PATH,
+    SendspinBridgeManager,
+)
 
 FLOW_FORMAT = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=192000, bit_depth=32)
 PLAYER_COMMANDS = ("cmd_play", "cmd_pause", "cmd_play_pause", "cmd_stop")
@@ -187,6 +193,8 @@ def _cli_provider(role: ProtocolRole = ProtocolRole.NATIVE) -> MagicMock:
     protocol = MagicMock(role=role, player=MagicMock(player_id="kitchen"))
     # a protocol is held without a player until it is known which player it belongs to
     provider.get_protocol = {"p1": protocol, "unattached": MagicMock(player=None)}.get
+    # no Sendspin bridge plays on the client
+    provider.bridge_manager.get_transport_command_target.return_value = None
     for cmd in PLAYER_COMMANDS:
         setattr(provider.mass.players, cmd, AsyncMock())
     return provider
@@ -304,3 +312,124 @@ async def test_cli_command_that_fails_is_logged() -> None:
     )
 
     provider.logger.warning.assert_called_once()
+
+
+# ---------------------------------------------------------------- Sendspin bridge
+
+
+async def test_the_slimproto_server_runs_on_the_clock_of_sendspin() -> None:
+    """Every server time of aioslimproto is on the clock the Sendspin timestamps are on."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.mass = MagicMock()
+    provider.config = MagicMock()
+    provider.logger = MagicMock()
+
+    with (
+        patch("music_assistant.providers.squeezelite.provider.logging"),
+        patch("music_assistant.providers.squeezelite.provider.SlimServer") as slim_server,
+        patch.object(provider, "_validate_all_ports", new=AsyncMock()),
+    ):
+        await provider.handle_async_init()
+
+    # a clock of its own, of the kind Sendspin makes for itself
+    assert provider.clock == RawMonotonicClock()
+    assert isinstance(provider.bridge_manager, SendspinBridgeManager)
+    server_time = slim_server.call_args.kwargs["clock"]
+    provider.clock = ManualClock(now_us_value=5_000_000_250_000)
+    assert server_time() == 5_000_000.25
+
+
+async def test_the_bridge_stream_route_follows_the_provider() -> None:
+    """The route of the bridge streams is there while the provider is loaded."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.slimproto = MagicMock(start=AsyncMock(), stop=AsyncMock())
+    provider.mass = MagicMock()
+    provider.bridge_manager = bridge_manager = MagicMock(close=AsyncMock())
+
+    with patch.object(PlayerProvider, "loaded_in_mass", new=AsyncMock()):
+        await provider.loaded_in_mass()
+    provider.mass.streams.register_dynamic_route.assert_any_call(
+        BRIDGE_STREAM_PATH, provider._serve_bridge_stream
+    )
+
+    await provider.unload()
+
+    bridge_manager.close.assert_awaited_once()
+    provider.mass.streams.unregister_dynamic_route.assert_any_call(BRIDGE_STREAM_PATH)
+
+
+async def test_a_provider_that_failed_to_load_unloads_without_a_bridge_manager() -> None:
+    """An unload after a failed setup finds no bridge manager."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.mass = MagicMock()
+
+    await provider.unload()
+
+    provider.mass.streams.unregister_dynamic_route.assert_any_call(BRIDGE_STREAM_PATH)
+
+
+async def test_a_bridge_stream_is_served_by_the_bridge_of_its_player() -> None:
+    """The request names its player; the bridge of that player decides about the session."""
+    provider = MagicMock()
+    response = MagicMock()
+    bridge = MagicMock(serve_stream=AsyncMock(return_value=response))
+    provider.bridge_manager.get_bridge.side_effect = {"p1": bridge}.get
+    request = MagicMock(query={"player_id": "p1", "sid": "abc"})
+
+    assert await SqueezelitePlayerProvider._serve_bridge_stream(provider, request) is response
+    bridge.serve_stream.assert_awaited_once_with(request)
+
+    for query in ({"player_id": "other", "sid": "abc"}, {"sid": "abc"}):
+        with pytest.raises(web.HTTPNotFound):
+            await SqueezelitePlayerProvider._serve_bridge_stream(provider, MagicMock(query=query))
+
+
+@pytest.mark.parametrize("bridged", [True, False])
+def test_an_event_of_a_player_goes_to_its_bridge_first(bridged: bool) -> None:
+    """What the bridge does with an event decides what is left of it for the player."""
+    provider = MagicMock()
+    provider.mass.closing = False
+    player = MagicMock(sendspin_bridge=MagicMock() if bridged else None)
+    provider.get_protocol.return_value = player
+    steps = MagicMock()
+    steps.attach_mock(player.handle_slim_event, "player")
+    if bridged:
+        steps.attach_mock(player.sendspin_bridge.handle_slim_event, "bridge")
+    event = SlimEvent(type=SlimEventType.PLAYER_BUFFER_READY, player_id="p1")
+
+    SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
+
+    expected = [call.bridge(event), call.player(event)] if bridged else [call.player(event)]
+    assert steps.mock_calls == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_cmd"),
+    [(["play"], "cmd_play"), (["pause", "1"], "cmd_pause"), (["pause"], "cmd_play_pause")],
+)
+async def test_cli_commands_of_a_bridged_client_go_to_its_sendspin_group(
+    raw: list[str], expected_cmd: str
+) -> None:
+    """A client that plays for its Sendspin bridge controls the player that leads its group."""
+    provider = _cli_provider()
+    provider.get_protocol("p1").protocol_id = "p1"
+    provider.bridge_manager.get_transport_command_target.return_value = "living_room"
+
+    await SqueezelitePlayerProvider._handle_cli_command(provider, _cli_command("p1", raw))
+
+    provider.bridge_manager.get_transport_command_target.assert_called_once_with("p1")
+    assert _awaited_player_commands(provider) == [expected_cmd]
+    getattr(provider.mass.players, expected_cmd).assert_awaited_once_with("living_room")
+
+
+async def test_cli_stop_of_a_protocol_device_takes_it_out_of_its_sendspin_stream() -> None:
+    """A device that stops itself is not a group stop, and its bridge must not play on."""
+    provider = _cli_provider(ProtocolRole.AUDIO)
+    provider.get_protocol("p1").protocol_id = "p1"
+    provider.bridge_manager.get_transport_command_target.return_value = "living_room"
+
+    with pytest.raises(NotImplementedError):
+        await SqueezelitePlayerProvider._handle_cli_command(provider, _cli_command("p1", ["stop"]))
+
+    provider.bridge_manager.stop_streaming.assert_called_once_with("p1")
+    assert _awaited_player_commands(provider) == []

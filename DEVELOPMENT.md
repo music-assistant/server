@@ -97,6 +97,42 @@ A provider that lives outside the server repository (for example in a repository
 * A change to the code takes effect after a restart of the server.
 * To test the provider against a real server, add `pytest_plugins = ["music_assistant.testing"]` to `tests/conftest.py` (with pytest-asyncio's `asyncio_mode = "auto"`). The `mass` fixture then gives a started server in dev mode that loads the providers in the root folder of the test run, kept off the network. Next to the server, install the requirements of its built-in Sendspin provider (`aiosendspin[server]` and `av`, at the versions in `music_assistant/providers/sendspin/manifest.json`): the server starts that provider at every boot.
 
+### Trying a branch or your own provider in Docker
+
+The development image `ghcr.io/music-assistant/server:dev` runs a server without a development setup. It is the nightly server image plus the tools to install the server from a branch, a pull request or a fork, to build the frontend from a branch, and to load providers from their own repository. It runs the code of the repositories you name, so use it to test, not to run your daily server.
+
+Three environment variables say what to run; an empty or unset one is not used.
+* `SERVER_REPO`: the server to install instead of the nightly. A branch (`dev`, `feature/new-player`), a pull request (`pr-123`), a full commit hash, or a fork as `owner/repo@ref` (`owner/repo` uses the fork's default branch).
+* `FRONTEND_REPO`: the frontend to build instead of the one that comes with the server, in the same forms.
+* `PROVIDER_REPO`: a repository with one or more provider folders, such as one made from the [community provider template](https://github.com/music-assistant/community-provider-template). It is `owner/repo` (its default branch), `owner/repo@ref` (a branch, a tag or a commit) or `owner/repo@pr-12` (pull request 12 of that repository). The repository is fetched again at every start and the server runs in dev mode with it as its provider folder, see [Running a provider from a folder outside the server](#running-a-provider-from-a-folder-outside-the-server).
+
+The server keeps its data in `/data`, so give that a volume:
+
+```sh
+docker run --rm --network host -v ma-dev-data:/data \
+  -e PROVIDER_REPO=your-github-handle/your-repository \
+  ghcr.io/music-assistant/server:dev
+```
+
+With Docker Compose:
+
+```yaml
+services:
+  music-assistant-dev:
+    image: ghcr.io/music-assistant/server:dev
+    network_mode: host
+    volumes:
+      - ma-dev-data:/data
+    environment:
+      SERVER_REPO: pr-123
+      PROVIDER_REPO: your-github-handle/your-repository@my-branch
+
+volumes:
+  ma-dev-data:
+```
+
+Further arguments go to the server, as with the server image: `docker run … ghcr.io/music-assistant/server:dev --log-level debug`. A restart fetches and installs the named references again, so it picks up new commits. Pull the image again for a newer nightly. The Music Assistant DEV SERVER app for Home Assistant runs this image, and its options `server_repo`, `frontend_repo` and `provider_repo` are the three variables.
+
 ## Listing random order
 
 Server listing commands accept an optional integer `random_seed`. With `sort_field=random`,
@@ -125,6 +161,8 @@ The Music Assistant server is fully built in Python. The Python language has no 
 A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Local files can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
+
+Before you start, read [what a provider in the server asks of you](#-contributing-a-provider).
 
 
 **Adding the necessary files for a new Music Provider**
@@ -200,6 +238,8 @@ All Providers (of all types) can be found in the `music_assistant/providers` fol
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
+Before you start, read [what a provider in the server asks of you](#-contributing-a-provider).
+
 A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and registers it with `mass.players.register()`. The server builds the `Player` that users see from the protocols of a device, and attaches the protocol to it: the protocol finds it as `self.player`. The contract between the two:
 
 * A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
@@ -257,7 +297,7 @@ A provider's config entries are not declared in the manifest. They are built in 
 Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
 
 ## 📋 Menu actions
-A provider can add its own entries to the menu of a track, album, artist, playlist, radio station, podcast, podcast episode or audiobook. It declares them in `menu_actions` in its manifest and implements what they do in its code; the Music Assistant app draws the entries, so the provider ships no code for the app. The demo plugin (`_demo_plugin_provider`) has a complete example.
+A provider can add its own entries to the menu of a track, album, artist, playlist, radio station, podcast, podcast episode or audiobook. It declares them in `menu_actions` in its manifest and implements what they do in its code; the Music Assistant app draws the entries, in a submenu under the name of the provider instance, so the provider ships no code for the app. The demo plugin (`_demo_plugin_provider`) has a complete example.
 
 ```json
 "menu_actions": [
@@ -277,14 +317,25 @@ A provider can add its own entries to the menu of a track, album, artist, playli
 * `media_types`: the kinds of media item the entry is offered for: `track`, `album`, `artist`, `playlist`, `radio`, `podcast`, `podcast_episode` and `audiobook`.
 * `scope`: what a user needs to use the action, such as `library.read`, `library.write` or `queues.control` (the values of `Scope` in the models). The app does not show the entry to a user without it, and the server refuses it.
 * `icon`: optional, the name of a [Material Design Icon](https://pictogrammers.com/library/mdi), such as `mdi-image-frame`, of at most 64 characters.
-* `requires_player`: optional, `true` when the action acts on a player. The app then offers it with the ways to play the item and also passes the player.
+* `requires_player`: optional, `true` when the action acts on a player. The app then also offers it in the menu of the play button, and passes the chosen player.
 
 When a user chooses an entry, the app calls the API command `providers/invoke_menu_action` with the instance of the provider, the id of the action, the `uri` of the item and, for an action that requires a player, the `player_id`. The server checks that the user may use that instance and holds the scope of the action, that the `uri` is of one of its media types and that the user may use the player, and then calls `handle_menu_action(action_id, uri, player_id)` on that instance. The server only checks the kind of item in the `uri`, not that the item exists or that it belongs to your provider, so `handle_menu_action` looks the item up itself. Implement it in your provider: it answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once. To say the action failed, raise a `MusicAssistantError`. The provider registers no command. A provider that allows several instances needs nothing extra: the entries are offered for each instance, and each instance handles the actions chosen for it.
 
-The server checks the declared actions when it reads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first five valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
+The server checks the declared actions when it reads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first ten valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
 
-## 🤝 Community providers
-Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
+## 🤝 Contributing a provider
+**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and users install it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
+
+A provider that ships with Music Assistant is installed for every user and supported by the project. A new one therefore asks for more than working code:
+
+* **People ask for it.** Link the feature request or discussion that shows the demand.
+* **It is documented.** A pull request on the [documentation](https://github.com/music-assistant/music-assistant.io/blob/main/CONTRIBUTING.md) comes with it.
+* **It meets the standards.** It follows this guide and the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md), passes `lint` and `test`, and has tests of its own.
+* **You maintain it.** You are listed in `codeowners` and keep following up on bug reports and on changes in the service, the device or the server.
+
+A provider whose maintainer no longer follows up may be moved out of the server to the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md). That is announced first, so that someone can take it over.
+
+Every provider in this repository is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
 
 **Getting your changes merged**
 

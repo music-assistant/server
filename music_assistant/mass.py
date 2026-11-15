@@ -661,8 +661,9 @@ class MusicAssistant:
         """
         Return what the Marketplace suggests the calling user adds, and why.
 
-        Only providers the user may add are suggested. Providers of the community catalog are
-        only suggested to a user who manages the server, while the community catalog is enabled.
+        Only providers the user may add and has not set up are suggested. Providers of the
+        community catalog are only suggested to a user who manages the server, while the
+        community catalog is enabled.
         """
         user = get_current_user()
         if user is not None and not has_scope(user, Scope.CONFIG_PROVIDERS_OWN):
@@ -671,7 +672,7 @@ class MusicAssistant:
         manifests = self.get_provider_manifests()
         return get_recommendations(
             manifests,
-            configured={conf["domain"] for conf in self.config.get(CONF_PROVIDERS, {}).values()},
+            configured=self.config.own_provider_domains(),
             can_add=self.config.can_add_provider,
             discovered={
                 manifest.domain

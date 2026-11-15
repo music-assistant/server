@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
+from aiosendspin.clock import RawMonotonicClock
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
@@ -25,8 +26,10 @@ from .constants import (
     DEFAULT_SLIMPROTO_PORT,
 )
 from .player import SqueezelitePlayer
+from .sendspin_bridge import BRIDGE_STREAM_PATH, SendspinBridgeManager
 
 if TYPE_CHECKING:
+    from aiosendspin.clock import Clock
     from aioslimproto.cli import SlimCLICommand
 
 
@@ -35,6 +38,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
     reload_on_streams_network_change = True
     slimproto: SlimServer | None = None
+    # the clock every server time of slimproto is on: the one Sendspin runs on
+    clock: Clock
+    bridge_manager: SendspinBridgeManager
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -80,6 +86,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
         # Validate ALL required ports before starting ANY services
         await self._validate_all_ports(control_port, telnet_port, json_port)
 
+        self.clock = RawMonotonicClock()
+        self.bridge_manager = SendspinBridgeManager(self)
+
         # create the server here (also validates config and sets up the CLI) but defer
         # start() to loaded_in_mass, so we subscribe to events before accepting clients
         self.slimproto = SlimServer(
@@ -89,6 +98,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             name="Music Assistant",
             control_port=control_port,
             cli_command_handler=self._handle_cli_command,
+            clock=self._server_time,
         )
 
     async def loaded_in_mass(self) -> None:
@@ -108,6 +118,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self.mass.streams.register_dynamic_route(
             "/slimproto/multi", self._serve_multi_client_stream
         )
+        self.mass.streams.register_dynamic_route(BRIDGE_STREAM_PATH, self._serve_bridge_stream)
         # it seems that WiiM devices do not use the json rpc port that is broadcasted
         # in the discovery info but instead they just assume that the jsonrpc endpoint
         # lives on the same server as stream URL. So we need to provide a jsonrpc.js
@@ -129,10 +140,19 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        # Stop all Sendspin bridges
+        bridge_manager = getattr(self, "bridge_manager", None)
+        if bridge_manager:
+            await bridge_manager.close()
         # Ensure complete cleanup
         await self._cleanup_server()
         self.mass.streams.unregister_dynamic_route("/slimproto/multi")
+        self.mass.streams.unregister_dynamic_route(BRIDGE_STREAM_PATH)
         self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
+
+    def _server_time(self) -> float:
+        """Return the time of the clock of this provider in seconds, for aioslimproto."""
+        return self.clock.now_us() / 1_000_000
 
     def _lookup_display_name(self, player_id: str) -> str | None:
         """Return Music Assistant's display name for a slimproto player, or None if unknown."""
@@ -207,6 +227,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
             self.mass.create_task(self.mass.players.unregister(player.protocol_id))
             return
 
+        # the Sendspin bridge of the player goes first: what it does with an event
+        # decides what is left of it for the player itself
+        if (bridge := player.sendspin_bridge) is not None:
+            bridge.handle_slim_event(event)
+
         # forward all other events to the player itself
         player.handle_slim_event(event)
 
@@ -279,6 +304,13 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 break
         return resp
 
+    async def _serve_bridge_stream(self, request: web.Request) -> web.StreamResponse:
+        """Serve the stream of a Sendspin bridge to its player."""
+        player_id = request.query.get("player_id")
+        if not player_id or not (bridge := self.bridge_manager.get_bridge(player_id)):
+            raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
+        return await bridge.serve_stream(request)
+
     def _release_from_sync_leader(self, player_id: str) -> None:
         """Drop a player that left the stream of its sync group from the group of its leader."""
         # a reconnect attaches a fresh protocol, so the leader must let go of the old
@@ -295,7 +327,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
         Handle play, pause and stop sent by a client, acting on its whole group like LMS does.
 
         A stop from a protocol-only device stops only that device, which then leaves its group
-        unless that group belongs to a sync group player.
+        unless that group belongs to a sync group player. A client that plays for its Sendspin
+        bridge acts on the player that leads its Sendspin group.
 
         :param command: The CLI command as received from the client.
         :raises NotImplementedError: For any other command, an unknown player and a stop
@@ -325,11 +358,17 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 # group player would add it back right away, so its members stay
                 if not player.active_group:
                     self._release_from_sync_leader(protocol.protocol_id)
+                # its Sendspin bridge would otherwise put its stream right back
+                self.bridge_manager.stop_streaming(protocol.protocol_id)
                 raise NotImplementedError
             case _:
                 raise NotImplementedError
+        player_id = (
+            self.bridge_manager.get_transport_command_target(protocol.protocol_id)
+            or player.player_id
+        )
         try:
-            await player_cmd(player.player_id)
+            await player_cmd(player_id)
         except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to handle %s command from %s: %s",

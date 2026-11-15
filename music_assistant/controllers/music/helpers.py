@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.music.media.base import AudiobookSyncDetails
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.music_provider import MusicProvider
     from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
 
 # the trigram tokenizer of the FTS5 search index cannot match
@@ -400,6 +401,29 @@ async def provider_mappings_from_urls(
             )
         )
     return mappings
+
+
+def mappings_within_sources(
+    candidates: Iterable[ProviderMapping], sources: Sequence[MusicProvider]
+) -> list[ProviderMapping]:
+    """
+    Return the candidates that name one of the given music sources.
+
+    A candidate stays on its own instance when that is an available source; otherwise it
+    moves to the first available instance the sources have of its service, failing that to
+    the first there is. One on a service they do not include is left out.
+    """
+    available = {source.instance_id for source in sources if source.available}
+    first_by_domain: dict[str, str] = {}
+    for source in sorted(sources, key=lambda source: not source.available):
+        first_by_domain.setdefault(source.domain, source.instance_id)
+    within: list[ProviderMapping] = []
+    for candidate in candidates:
+        if candidate.provider_instance in available:
+            within.append(candidate)
+        elif instance := first_by_domain.get(candidate.provider_domain):
+            within.append(replace(candidate, provider_instance=instance))
+    return within
 
 
 def discogs_external_id(

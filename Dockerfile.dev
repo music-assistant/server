@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1
+#
+# Development image, for developers only: the nightly server image + the tooling to run the
+# server from a branch, PR or fork, the frontend from a branch and providers from their own
+# repository (see the development image section of DEVELOPMENT.md)
+#
+ARG BASE_IMAGE=ghcr.io/music-assistant/server:nightly
+FROM $BASE_IMAGE
+
+# ensure UV is installed
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# add some additional packages that are useful for debugging
+# cmake/ninja are needed to build any dependency a branch pins to a git ref or an sdist
+RUN set -x \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends build-essential cmake ninja-build jq htop git curl ca-certificates gnupg libportaudio2 libasound2-plugins dbus && \
+  # Install Node.js 22.x from NodeSource
+  mkdir -p /etc/apt/keyrings && \
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
+  apt-get update && \
+  apt-get install -y --no-install-recommends nodejs && \
+  npm install -g yarn && \
+  apt-get clean && \
+  rm -rf /var/lib/apt/lists/*
+
+LABEL \
+    org.opencontainers.image.title="Music Assistant Development Server" \
+    org.opencontainers.image.description="Runs a Music Assistant server from a branch, pull request or fork, with a frontend from a branch and providers from their own repository. For developers only."
+
+VOLUME [ "/data" ]
+EXPOSE 8095
+
+# /app is already world-writable here; a recursive chmod would copy the whole venv into a layer
+RUN chmod 777 -R /tmp
+
+COPY scripts/dev-image/entrypoint.sh scripts/dev-image/repo_ref.sh /app/dev-image/
+
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/app/dev-image/entrypoint.sh"]
