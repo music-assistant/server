@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
-from itertools import batched
+from itertools import batched, count
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from aiohttp import ClientError
@@ -2158,6 +2158,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
         # the provider reports each item it could not add as a task failure
         skipped = task.failure_count - failures_before if task else 0
+        await self._drop_kept_playlist_tracks(playlist_prov, playlist_prov_item_id)
         await self._request_metadata_refresh(playlist)
         update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
 
@@ -2181,6 +2182,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             msg = f"Provider {provider.name} does not support editing playlists"
             raise InvalidDataError(msg)
         await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
+        await self._drop_kept_playlist_tracks(provider, playlist_prov_item_id)
         await self._request_metadata_refresh(playlist)
 
     async def _get_reorderable_playlist(
@@ -2296,6 +2298,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id,
                 err,
             )
+
+    async def _drop_kept_playlist_tracks(
+        self, provider: MusicProvider, prov_playlist_id: str
+    ) -> None:
+        """
+        Drop the pages of a provider playlist its provider keeps, so the next read fetches them.
+
+        :param provider: The provider the playlist is on.
+        :param prov_playlist_id: The playlist id on the provider.
+        """
+        # the builtin provider reads its own file and keeps nothing
+        if provider.domain == "builtin":
+            return
+        for page in count():
+            # the key use_cache keeps get_playlist_tracks(prov_playlist_id, page=page) under
+            key = f"get_playlist_tracks.{prov_playlist_id}.page{page}"
+            if await self.mass.cache.get_expiration(key, provider=provider.instance_id) is None:
+                break
+            await self.mass.cache.delete(key, category=0, provider=provider.instance_id)
 
     async def _request_metadata_refresh(self, playlist: Playlist) -> None:
         """Have the next metadata run refresh the playlist, and announce its changed items."""
