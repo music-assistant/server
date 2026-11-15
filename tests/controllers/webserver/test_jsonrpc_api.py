@@ -240,16 +240,20 @@ async def test_an_error_reads_in_the_language_of_the_client(
     assert _body(response)["details"] == "Het opgevraagde mediabestand kon niet worden gevonden."
 
 
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, KeyError])
 async def test_an_unexpected_failure_answers_500_and_is_logged(
-    api_server: WebserverController, caplog: pytest.LogCaptureFixture
+    api_server: WebserverController,
+    caplog: pytest.LogCaptureFixture,
+    error_type: type[Exception],
 ) -> None:
     """
     Test that a failure the server did not raise on purpose answers 500 without its details.
 
     :param api_server: The webserver controller.
     :param caplog: The log capture fixture.
+    :param error_type: The error the command raises, including the ones the argument parser raises.
     """
-    _register(api_server, _raising(RuntimeError("secret internals")))
+    _register(api_server, _raising(error_type("secret internals")))
 
     with caplog.at_level(logging.ERROR):
         response = await api_server._handle_jsonrpc_api_command(_request())
