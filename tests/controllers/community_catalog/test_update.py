@@ -379,7 +379,7 @@ async def test_auto_update_waits_for_playback(
     entry = _entry(github, DOMAIN, {OLD: _files(DOMAIN, OLD)})
     await _install(tmp_path, registry, {DOMAIN: entry}, auto_update=True)
     player = MagicMock()
-    player.state.playback_state = PlaybackState.PLAYING
+    player.playback_state = PlaybackState.PLAYING
 
     async with _server(tmp_path) as mass:
         with patch.object(mass.players, "iter_players", return_value=[player]):

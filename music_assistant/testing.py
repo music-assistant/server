@@ -19,7 +19,6 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.controllers.webserver import controller as webserver_controller
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.sendspin.provider import SendspinProvider
 
 # the address a fixture's web and stream servers bind to, so a test run never listens
 # on the host's real interfaces
@@ -177,11 +176,9 @@ def bound_sendspin_port(mass: MusicAssistant) -> int | None:
     :param mass: The booted server to inspect.
     """
     provider = mass.get_provider("sendspin")
-    if not isinstance(provider, SendspinProvider):
-        return None
     # aiosendspin keeps its aiohttp runner to itself; the runner's addresses are
     # the bound sockets' names, which is the only place the kernel-picked port lives
-    runner = provider.server_api._app_runner
+    runner = getattr(getattr(provider, "server_api", None), "_app_runner", None)
     if runner is None:
         return None
     return next((address[1] for address in runner.addresses if address), None)
