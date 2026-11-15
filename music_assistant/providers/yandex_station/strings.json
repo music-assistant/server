@@ -6,7 +6,7 @@
     },
     "intercept_feature_enabled": {
       "label": "Experimental: Enable intercept feature",
-      "description": "Master switch for the intercept feature. When ON, individual stations can be configured (in their player settings) to redirect Alice-initiated playback to another Music Assistant player. When OFF, intercept is fully disabled regardless of per-player settings. Requires the 'yandex_music' music provider to be configured to actually resolve tracks."
+      "description": "Master switch for the intercept feature. When ON, individual stations can be configured (in their player settings) to redirect Alice-initiated playback to another Music Assistant player. When OFF, intercept is fully disabled regardless of per-player settings. Requires the 'yandex_music' music source to be configured to actually resolve tracks."
     },
     "alice_text_commands": {
       "label": "Allow text requests to Alice through the API",
@@ -30,7 +30,7 @@
     },
     "intercept_enabled": {
       "label": "Experimental: Intercept native Station playback",
-      "description": "When the Station starts native Yandex Music playback (typically triggered by an Alice voice command, but also a touch on the Station UI), silence the Station (setVolume 0; the Station keeps playing its own queue in the background so we see every next track) and play the same track on the chosen target player. Requires the provider-level intercept feature to be enabled and a configured 'yandex_music' music provider."
+      "description": "When the Station starts native Yandex Music playback (typically triggered by an Alice voice command, but also a touch on the Station UI), silence the Station (setVolume 0; the Station keeps playing its own queue in the background so we see every next track) and play the same track on the chosen target player. Requires the provider-level intercept feature to be enabled and a configured 'yandex_music' music source."
     },
     "intercept_target_player_id": {
       "label": "Intercept target player",
@@ -42,7 +42,7 @@
     },
     "ym_instance": {
       "label": "Yandex account source",
-      "description": "Borrow the Yandex account of a configured Yandex Music provider (single login, one token family) or use this provider's own credentials. When borrowing, authentication is managed in the linked Yandex Music provider.",
+      "description": "Borrow the Yandex account of a configured Yandex Music source (single login, one token family) or use this provider's own credentials. When borrowing, authentication is managed in the linked Yandex Music source.",
       "options": {
         "__own__": "Use own credentials (default)"
       }
@@ -51,7 +51,7 @@
   "setup_flow": {
     "user": {
       "title": "Yandex account source",
-      "description": "Borrow the account of a linked Yandex Music provider, or use this provider's own credentials."
+      "description": "Borrow the account of a linked Yandex Music source, or use this provider's own credentials."
     },
     "method": {
       "title": "Log in to Yandex",

@@ -15,7 +15,7 @@
     },
     "ym_instance": {
       "label": "Yandex account source",
-      "description": "Borrow the Yandex account of a configured Yandex Music provider for skill auto-create (single sign-in, no extra login) or use this provider's own sign-in. When borrowing, nothing is stored or rotated by this provider."
+      "description": "Borrow the Yandex account of a configured Yandex Music source for skill auto-create (single sign-in, no extra login) or use this provider's own sign-in. When borrowing, nothing is stored or rotated by this provider."
     },
     "external_base_url": {
       "label": "External Base URL (HTTPS)",
@@ -43,7 +43,7 @@
     },
     "exposed_playlists": {
       "label": "Exposed Playlists (max 10)",
-      "description": "Pick up to 10 playlists from your MA library — they fill the input_source mode slots after each player's native sources. Alice triggers slots by ordinal only (\"switch source to five\"); remember the order you picked. If the list is empty, save the form and reopen it once your music providers have finished loading their library."
+      "description": "Pick up to 10 playlists from your MA library — they fill the input_source mode slots after each player's native sources. Alice triggers slots by ordinal only (\"switch source to five\"); remember the order you picked. If the list is empty, save the form and reopen it once your music sources have finished loading their library."
     },
     "label_otp_confirm": {
       "label": "Enter this one-time code in the Yandex app: {0}"
@@ -94,7 +94,7 @@
   "errors": {
     "direct_requires_https": "Direct mode needs Music Assistant to be reachable over HTTPS. Set an external HTTPS URL and try again.",
     "skill_token_required": "Enter the skill's OAuth token to continue.",
-    "no_borrowed_token": "The linked Yandex Music account has no session token. Authenticate the Yandex Music provider (with Remember session enabled) and retry."
+    "no_borrowed_token": "The linked Yandex Music account has no session token. Authenticate the Yandex Music source (with Remember session enabled) and retry."
   },
   "manifest": {
     "description": "Expose Music Assistant players to Yandex Alice via Yandex Smart Home API."
