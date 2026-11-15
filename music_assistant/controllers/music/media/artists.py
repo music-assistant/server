@@ -50,7 +50,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
-    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     EXTERNAL_ID_PROVIDER,
@@ -78,7 +77,6 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import (
-    external_id_lookup_values,
     external_item_id,
     normalize_external_id,
     normalize_external_ids,
@@ -98,17 +96,7 @@ from music_assistant.providers.musicbrainz.listenbrainz import ListenBrainzClien
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import (
-        Awaitable,
-        Callable,
-        Container,
-        Hashable,
-        Iterable,
-        Mapping,
-        Sequence,
-    )
-
-    from music_assistant_models.media_items import MediaItemType
+    from collections.abc import Awaitable, Callable, Container, Hashable, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.models.media_capabilities import MusicDiscoveryMixin
@@ -1275,9 +1263,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         The result combines (and deduplicates, preserving order) the top tracks from the music
         providers attached to the artist. When those return nothing, the recordings of the
         artist that are listened to most on ListenBrainz are listed, unless the result is
-        limited to a provider; only without those are the metadata and plugin providers
-        implementing the feature consulted. Empty when no source yields a result, incomplete
-        when a source failed or a provider is not loaded.
+        limited to a provider: those the user does not have only when one of the user's music
+        providers can be asked for them. Only without those are the metadata and plugin
+        providers implementing the feature consulted. Empty when no source yields a result,
+        incomplete when a source failed or a provider is not loaded.
 
         :param item_id: The library item ID of the artist.
         :param provider_filter: Optional provider instance ID, or IDs, to limit the result to.
@@ -2427,13 +2416,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         Return the recordings of an artist that are listened to most on ListenBrainz, as tracks.
 
-        A recording the user has in the library is listed as that library track, any other as
-        a track known only by its recording id, which is looked up when it is opened or played.
+        A recording the user has in the library is listed as that library track. Any other is
+        listed as a track known only by its recording id, which is looked up when it is opened
+        or played, but only when one of the user's music providers can be asked for it.
         Empty for an artist without a MusicBrainz id, or one ListenBrainz has no list for.
 
         :param artist: The in-library artist.
         :raises RetriesExhausted: ListenBrainz rate limited the request.
         :raises aiohttp.ClientError: ListenBrainz could not be asked, or answered with an error.
+        :raises TimeoutError: ListenBrainz did not answer in time.
         """
         if not artist.mbid:
             return []
@@ -2441,8 +2432,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if not top.recordings:
             return []
         artist_mbid = normalize_external_id(ExternalID.MB_ARTIST, artist.mbid)
-        credited = await self._library_items_by_external_ids(
-            self,
+        credited = await self.get_library_items_by_external_id_batch(
             ExternalID.MB_ARTIST,
             {mbid for recording in top.recordings for mbid in recording.artist_mbids}
             - {artist_mbid},
@@ -2462,6 +2452,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 )
             )
         library_tracks = await self._library_tracks_of_recordings(artist, top.recordings)
+        if not self.mass.music.tracks.can_look_up_recordings():
+            # a track the user does not have could never be found for them
+            return [
+                library_tracks[recording.recording_mbid]
+                for recording in top.recordings
+                if recording.recording_mbid in library_tracks
+            ]
         return [
             library_tracks.get(recording.recording_mbid)
             or external_tracks[recording.recording_mbid]
@@ -2481,8 +2478,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param recordings: The recordings to find.
         :returns: The tracks by recording id, for the recordings that were found.
         """
-        found = await self._library_items_by_external_ids(
-            self.mass.music.tracks,
+        found = await self.mass.music.tracks.get_library_items_by_external_id_batch(
             ExternalID.MB_RECORDING,
             {recording.recording_mbid for recording in recordings},
             in_library_only=True,
@@ -2511,56 +2507,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             for recording, track in zip(unmatched, by_title, strict=True)
             if track
         )
-        return found
-
-    async def _library_items_by_external_ids[T: MediaItemType](
-        self,
-        controller: MediaControllerBase[T],
-        external_id_type: ExternalID,
-        external_ids: Iterable[str],
-        in_library_only: bool = False,
-    ) -> dict[str, T]:
-        """
-        Return the library items on the user's sources that carry one of the external ids.
-
-        :param controller: The controller of the media type to look the items up for.
-        :param external_id_type: The type of the external ids.
-        :param external_ids: The external ids to look up, all in one query.
-        :param in_library_only: Only an item with a provider mapping that is in that
-            provider's library counts.
-        :returns: The items by external id; an id that several items carry names the first.
-        """
-        lookup_values = tuple(
-            sorted(
-                {
-                    lookup_value
-                    for external_id in external_ids
-                    for lookup_value in external_id_lookup_values(external_id_type, external_id)
-                }
-            )
-        )
-        if not lookup_values:
-            return {}
-        items = await controller.get_library_items_by_query(
-            limit=0,
-            extra_query_parts=[
-                f"{controller.db_table}.item_id IN (SELECT item_id "
-                f"FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} WHERE media_type = :ext_id_media_type "
-                "AND external_id_type = :external_id_type AND external_id IN :external_ids)"
-            ],
-            extra_query_params={
-                "ext_id_media_type": controller.media_type.value,
-                "external_id_type": str(external_id_type),
-                "external_ids": lookup_values,
-            },
-            provider_filter=self._ensure_provider_filter(None),
-            in_library_only=in_library_only,
-        )
-        found: dict[str, T] = {}
-        for item in items:
-            for id_type, value in item.external_ids:
-                if id_type == external_id_type:
-                    found.setdefault(normalize_external_id(id_type, value), item)
         return found
 
 

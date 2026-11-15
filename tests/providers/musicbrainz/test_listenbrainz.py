@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-from typing import TYPE_CHECKING
-from unittest.mock import patch
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import ClientResponseError
+from aiohttp import ClientResponseError, ClientSession, ClientTimeout, web
+from aiohttp.test_utils import TestServer
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import RetriesExhausted
 
 from music_assistant.constants import MASS_USER_AGENT
+from music_assistant.controllers.webserver.helpers.auth_middleware import user_auth_context
 from music_assistant.providers.musicbrainz.listenbrainz import (
+    REQUEST_TIMEOUT,
     TOP_TRACKS_LIMIT,
     ListenBrainzClient,
     TopRecording,
@@ -26,12 +31,17 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from music_assistant.mass import MusicAssistant
 
 WEEK = 7 * 24 * 3600
 DAY = 24 * 3600
 OTHER_ARTIST_MBID = "8ed2e0b3-aa4c-4e13-bec3-dc7393ed4d6b"
+USER_A = User(user_id="user-a", username="user-a", role=UserRole.USER)
+USER_B = User(user_id="user-b", username="user-b", role=UserRole.USER)
 CACHE_CLOCK = "music_assistant.controllers.cache.controller.time"
+CLIENT = "music_assistant.providers.musicbrainz.listenbrainz"
 
 
 @pytest.fixture
@@ -54,9 +64,11 @@ async def test_most_listened_recording_of_each_title_is_kept_up_to_the_cap(
     answer = recorded_answer()
     assert top.fetched
     assert len(top.recordings) == TOP_TRACKS_LIMIT == 50
-    # the 44th entry is a second, less listened recording of "Creep"; the seven titles after
-    # it fill the list, so the last two titles of the answer don't make it
+    # the 44th entry is a second, less listened recording of "Creep", the 50th one of a
+    # recording Radiohead is not credited on; the seven titles besides those fill the list,
+    # so the last titles of the answer don't make it
     assert answer[43]["recording_name"] == "Creep"
+    assert RADIOHEAD_MBID not in answer[49]["artist_mbids"]
     assert [recording.name for recording in top.recordings] == [
         *(entry["recording_name"] for entry in answer[:43]),
         "Bangers and Mash",
@@ -70,7 +82,30 @@ async def test_most_listened_recording_of_each_title_is_kept_up_to_the_cap(
     creep = next(recording for recording in top.recordings if recording.name == "Creep")
     assert creep.recording_mbid == answer[4]["recording_mbid"]
     # the whole list in one request, without a query parameter or a token
-    get.assert_called_once_with(TOP_RECORDINGS_URL, headers={"User-Agent": MASS_USER_AGENT})
+    get.assert_called_once_with(
+        TOP_RECORDINGS_URL, headers={"User-Agent": MASS_USER_AGENT}, timeout=REQUEST_TIMEOUT
+    )
+
+
+async def test_recording_not_credited_to_the_artist_is_left_out(
+    client: ListenBrainzClient,
+) -> None:
+    """A recording of others in the ranking hides no recording of the artist of the same title."""
+    wish_you_were_here = [
+        entry for entry in recorded_answer() if entry["recording_name"].startswith("Wish You")
+    ]
+    # Sparklehorse feat. Thom Yorke, then Radiohead's own, much less listened recording
+    assert [RADIOHEAD_MBID in entry["artist_mbids"] for entry in wish_you_were_here] == [
+        False,
+        True,
+    ]
+    answer_listenbrainz(client.mass, body=wish_you_were_here)
+
+    top = await client.get_top_recordings(RADIOHEAD_MBID)
+
+    assert [recording.recording_mbid for recording in top.recordings] == [
+        wish_you_were_here[1]["recording_mbid"]
+    ]
 
 
 async def test_recording_without_release_cover_or_length(client: ListenBrainzClient) -> None:
@@ -179,6 +214,102 @@ async def test_long_rate_limit_sends_nothing_until_it_is_over(client: ListenBrai
     assert 118 < client.throttler.cooldown_remaining <= 120
 
 
+async def test_calls_at_the_same_moment_share_one_request(client: ListenBrainzClient) -> None:
+    """Two users opening the artist at once cost one request; one of them gets it as fetched."""
+    get, released = _answer_when_released(client)
+
+    with user_auth_context(USER_A):
+        first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+    with user_auth_context(USER_B):
+        second = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+    await _until(lambda: get.call_count == 1)
+    released.set()
+    tops = [await first, await second]
+    third = await client.get_top_recordings(RADIOHEAD_MBID)
+
+    assert get.call_count == 1
+    assert [top.fetched for top in tops] == [True, False]
+    assert tops[0].recordings == tops[1].recordings == third.recordings
+    assert not third.fetched
+    # nothing is left behind for the artist
+    await asyncio.sleep(0)
+    assert not [task_id for task_id in client.mass._tracked_tasks if "listenbrainz" in task_id]
+
+
+async def test_cancelled_caller_leaves_the_shared_request_to_the_other(
+    client: ListenBrainzClient,
+) -> None:
+    """A caller that gives up neither cancels the request nor fails the call that joined it."""
+    get, released = _answer_when_released(client)
+
+    first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+    second = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+    await _until(lambda: get.call_count == 1)
+    first.cancel()
+    released.set()
+    top = await second
+
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert get.call_count == 1
+    assert top.fetched
+    assert len(top.recordings) == TOP_TRACKS_LIMIT
+
+
+async def test_call_that_missed_the_list_as_it_was_kept_makes_no_request(
+    client: ListenBrainzClient,
+) -> None:
+    """A call that found no list just before another call's fetch kept one does not fetch."""
+    get, released = _answer_when_released(client)
+    cache_get = client.mass.cache.get
+    first = asyncio.create_task(client.get_top_recordings(RADIOHEAD_MBID))
+    await _until(lambda: get.call_count == 1)
+    looks = 0
+
+    async def look_late(key: str, **kwargs: Any) -> Any:
+        nonlocal looks
+        looks += 1
+        kept = await cache_get(key, **kwargs)
+        if looks == 1:
+            # the first call's fetch keeps the list and lets go of the artist meanwhile
+            released.set()
+            await first
+            await asyncio.sleep(0)
+        return kept
+
+    with patch.object(client.mass.cache, "get", AsyncMock(side_effect=look_late)):
+        second = await client.get_top_recordings(RADIOHEAD_MBID)
+
+    assert get.call_count == 1
+    assert not second.fetched
+    assert second.recordings == (await first).recordings
+
+
+async def test_stalled_answer_is_given_up_on(client: ListenBrainzClient) -> None:
+    """An answer that does not come within the timeout fails the call and keeps nothing."""
+    requests: list[web.Request] = []
+
+    async def stall(request: web.Request) -> web.Response:
+        requests.append(request)
+        await asyncio.sleep(10)
+        return web.json_response([])
+
+    app = web.Application()
+    app.router.add_get("/1/popularity/top-recordings-for-artist/{mbid}", stall)
+    async with TestServer(app) as server, ClientSession() as session:
+        client.mass._http_session = session
+        with (
+            patch(f"{CLIENT}.LB_BASE_URL", str(server.make_url("/1"))),
+            patch(f"{CLIENT}.REQUEST_TIMEOUT", ClientTimeout(total=0.2)),
+        ):
+            for _ in range(2):
+                with pytest.raises(TimeoutError):
+                    await client.get_top_recordings(RADIOHEAD_MBID)
+
+    # nothing is kept, so the second call asked again
+    assert len(requests) == 2
+
+
 async def test_failure_is_not_kept(client: ListenBrainzClient) -> None:
     """A failed request keeps nothing, so the next call asks ListenBrainz again."""
     answer_listenbrainz(client.mass, status=500)
@@ -191,3 +322,30 @@ async def test_failure_is_not_kept(client: ListenBrainzClient) -> None:
     get.assert_called_once()
     assert top.fetched
     assert len(top.recordings) == TOP_TRACKS_LIMIT
+
+
+def _answer_when_released(client: ListenBrainzClient) -> tuple[MagicMock, asyncio.Event]:
+    """
+    Have ListenBrainz answer with the recorded answer once the returned event is set.
+
+    :return: The mocked get of the HTTP session, and the event that releases the answer.
+    """
+    get = answer_listenbrainz(client.mass)
+    released = asyncio.Event()
+    body = recorded_answer()
+
+    async def answer(**_kwargs: object) -> list[dict[str, object]]:
+        await released.wait()
+        return body
+
+    get.return_value.__aenter__.return_value.json = AsyncMock(side_effect=answer)
+    return get, released
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    """Let the event loop run until the condition holds."""
+    for _ in range(100):
+        if condition():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition never held")

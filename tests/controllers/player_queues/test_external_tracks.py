@@ -380,7 +380,8 @@ async def _artist_ranked_by_listenbrainz(music: MusicController) -> Artist:
     """
     Add an artist without library tracks to the library, that no music provider ranks.
 
-    Playing it plays its top tracks: the fifty recordings ListenBrainz ranks for it.
+    Playing it plays its top tracks: the fifty recordings ListenBrainz ranks for it, once a
+    music service that can look them up is loaded.
     """
     music.artists._listenbrainz.throttler = own_throttler()
     answer_listenbrainz(music.mass)
@@ -561,7 +562,8 @@ async def test_autoplay_of_a_similar_artist_enqueues_its_top_tracks_as_they_are(
 ) -> None:
     """Autoplay picks a similar artist's tracks the way playing it does, without a lookup."""
     artist = await _artist_ranked_by_listenbrainz(music)
-    musicbrainz = _load_providers(music)
+    spotify = _provider("spotify--1")
+    musicbrainz = _load_providers(music, spotify)
     ctrl = _controller(music)
     ctrl._media_resolver = MediaResolver(ctrl)
     ctrl._autoplay = Mock(get_similar_artists=AsyncMock(return_value=[artist]))
@@ -574,6 +576,7 @@ async def test_autoplay_of_a_similar_artist_enqueues_its_top_tracks_as_they_are(
     assert len(queue_items) == TOP_TRACKS_LIMIT
     assert {item.media_item.provider for item in queue_items} == {EXTERNAL_ID_PROVIDER}
     musicbrainz.get_recording_details.assert_not_awaited()
+    assert _requests(spotify) == 0
 
 
 # ---------------------------------------------------------------------------

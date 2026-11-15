@@ -39,6 +39,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, create_uri, get_global_cache_value
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     Audiobook,
     AudioFormat,
@@ -53,6 +54,7 @@ from music_assistant_models.media_items import (
     MediaItemSummaryType,
     MediaItemType,
     ProviderMapping,
+    Track,
     UniqueList,
 )
 
@@ -1182,6 +1184,58 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return list(result.values())
 
     @final
+    async def get_library_items_by_external_id_batch(
+        self,
+        external_id_type: ExternalID,
+        external_ids: Iterable[str],
+        in_library_only: bool = False,
+    ) -> dict[str, ItemCls]:
+        """
+        Return the library items on the user's sources that carry one of the external ids.
+
+        All ids are looked up in one query.
+
+        :param external_id_type: The type of the external ids.
+        :param external_ids: The external ids to look up.
+        :param in_library_only: Only an item with a provider mapping that is in that
+            provider's library counts.
+        :returns: The items by (canonical) external id; an id that several items carry names
+            the first.
+        """
+        lookup_values = tuple(
+            sorted(
+                {
+                    lookup_value
+                    for external_id in external_ids
+                    for lookup_value in external_id_lookup_values(external_id_type, external_id)
+                }
+            )
+        )
+        if not lookup_values:
+            return {}
+        items = await self.get_library_items_by_query(
+            limit=0,
+            extra_query_parts=[
+                f"{self.db_table}.item_id IN (SELECT item_id "
+                f"FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} WHERE media_type = :ext_id_media_type "
+                "AND external_id_type = :external_id_type AND external_id IN :external_ids)"
+            ],
+            extra_query_params={
+                "ext_id_media_type": self.media_type.value,
+                "external_id_type": str(external_id_type),
+                "external_ids": lookup_values,
+            },
+            provider_filter=self._ensure_provider_filter(None),
+            in_library_only=in_library_only,
+        )
+        found: dict[str, ItemCls] = {}
+        for item in items:
+            for id_type, value in item.external_ids:
+                if id_type == external_id_type:
+                    found.setdefault(normalize_external_id(id_type, value), item)
+        return found
+
+    @final
     async def get_library_item_by_external_ids(
         self, external_ids: set[tuple[ExternalID, str]]
     ) -> ItemCls | None:
@@ -1261,6 +1315,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Return an item known only by an external id in the form it was last listed in.
 
         Nothing is looked up for it; None is returned for an item no listing was kept of.
+        The library items it names (an artist, an album) are left out when the current user
+        may not see them.
 
         :param item_id: Item id as external_item_id() builds it.
         :raises InvalidProviderID: The item id is no valid external item id.
@@ -1273,7 +1329,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             allow_bypass=False,
             base_class=self.item_cls,
         )
-        return listed
+        if listed is None or not self._hidden_sources():
+            return listed
+        # the form is kept once for everyone, as the user it was listed to could see it
+        return await self._without_hidden_library_items(listed)
 
     @final
     async def get_library_items_by_prov_id(
@@ -3547,6 +3606,25 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     def _has_visible_source(self, item: MediaItemType) -> bool:
         """Return whether the current user may see one of the item's sources."""
         return has_visible_source(self.mass, item.provider_mappings, get_current_user())
+
+    @final
+    async def _without_hidden_library_items(self, item: ItemCls) -> ItemCls:
+        """Leave the library artists and album the current user may not see out of an item."""
+
+        async def visible(reference: Artist | Album | ItemMapping) -> bool:
+            if reference.provider != "library":
+                return True
+            controller = self.mass.music.get_controller(reference.media_type)
+            library_item = await controller.get_visible_library_item_by_prov_id(
+                reference.item_id, "library"
+            )
+            return library_item is not None
+
+        if isinstance(item, (Album, Track)):
+            item.artists = UniqueList([artist for artist in item.artists if await visible(artist)])
+        if isinstance(item, Track) and item.album and not await visible(item.album):
+            item.album = None
+        return item
 
     @final
     async def _get_stored_metadata(self, db_id: int) -> MediaItemMetadata:

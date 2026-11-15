@@ -48,6 +48,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
+from music_assistant.controllers.metadata.constants import MUSICBRAINZ_LINK_DOMAINS
 from music_assistant.controllers.music.constants import SIMILAR_ITEMS_LIMIT
 from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
@@ -681,6 +682,16 @@ class TracksController(MediaControllerBase[Track]):
             limit=limit,
             offset=offset,
             random_seed=random_seed,
+        )
+
+    def can_look_up_recordings(self) -> bool:
+        """Return whether a track can be looked up by its recording id for the current user."""
+        # the music sources the lookup asks: the ones MusicBrainz links a recording to, and
+        # the ones that find a track by the ISRC of the recording
+        return any(
+            provider.domain in MUSICBRAINZ_LINK_DOMAINS
+            or ProviderFeature.TRACK_BY_EXTERNAL_ID in provider.supported_features
+            for provider in self.mass.music.providers
         )
 
     async def resolve_musicbrainz_recording(

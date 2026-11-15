@@ -8,6 +8,7 @@ up when it is opened or played. ListenBrainz answers from a recorded answer.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,6 +34,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import EXTERNAL_ID_PROVIDER
+from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.helpers.external_ids import external_item_id
 from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
@@ -44,14 +46,19 @@ from tests.providers.musicbrainz.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from music_assistant.mass import MusicAssistant
 
 FILES = "filesystem_local--files"
 HIDDEN = "filesystem_local--hidden"
+PRIVATE = "filesystem_local--private"
 SPOTIFY = "spotify--1"
 LASTFM = "lastfm_recommendations"
 PJ_HARVEY_MBID = "e795e03d-b5d5-4a5f-834d-162cfb308a2c"
 USER = User(user_id="user-a", username="user-a", role=UserRole.USER)
+# the owner of the private music sources
+OWNER_B = User(user_id="user-b", username="user-b", role=UserRole.USER)
 # every request a music provider or MusicBrainz could be sent for the listing
 REQUESTS = (
     "get_artist_toptracks",
@@ -187,6 +194,16 @@ def _external_item_id(name: str) -> str:
     return external_item_id(ExternalID.MB_RECORDING, _recording(name)["recording_mbid"])
 
 
+@contextmanager
+def _as_user(user: User) -> Iterator[None]:
+    """Make the user the current user of the music controller and its media controllers."""
+    with (
+        patch("music_assistant.controllers.music.media.base.get_current_user", return_value=user),
+        patch("music_assistant.controllers.music.controller.get_current_user", return_value=user),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # the request budget and the sources asked
 # ---------------------------------------------------------------------------
@@ -197,7 +214,7 @@ async def test_opening_the_top_tracks_costs_one_listenbrainz_request_a_week(
 ) -> None:
     """The listing is ListenBrainz's, asked once; MusicBrainz and the services are not asked."""
     artist = await _add_artist(mass)
-    providers = _load_providers(mass, _source(FILES))
+    providers = _load_providers(mass, _source(FILES), _source(SPOTIFY))
     get = answer_listenbrainz(mass)
 
     listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
@@ -244,20 +261,22 @@ async def test_artist_without_musicbrainz_id_goes_to_lastfm(mass: MusicAssistant
 
 
 @pytest.mark.parametrize(
-    ("status", "body", "headers", "complete"),
+    ("status", "body", "headers", "error", "complete"),
     [
-        (200, [], None, True),
-        (401, {"code": 401}, None, True),
-        (500, None, None, False),
-        (429, None, {"X-RateLimit-Reset-In": "9"}, False),
+        (200, [], None, None, True),
+        (401, {"code": 401}, None, None, True),
+        (500, None, None, None, False),
+        (429, None, {"X-RateLimit-Reset-In": "9"}, None, False),
+        (200, None, None, TimeoutError(), False),
     ],
-    ids=["empty answer", "401", "server error", "rate limited"],
+    ids=["empty answer", "401", "server error", "rate limited", "timeout"],
 )
 async def test_without_a_list_lastfm_is_asked(
     mass: MusicAssistant,
     status: int,
     body: Any,
     headers: dict[str, str] | None,
+    error: Exception | None,
     complete: bool,
 ) -> None:
     """
@@ -267,7 +286,7 @@ async def test_without_a_list_lastfm_is_asked(
     """
     artist = await _add_artist(mass)
     providers = _load_providers(mass, _source(FILES))
-    get = answer_listenbrainz(mass, status=status, body=body, headers=headers)
+    get = answer_listenbrainz(mass, status=status, body=body, headers=headers, error=error)
 
     listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
 
@@ -308,7 +327,7 @@ async def test_library_tracks_take_the_place_of_their_recordings(mass: MusicAssi
     )
     # found by its title, it carries no recording id
     by_title = await _add_track(mass, artist, "Paranoid Android")
-    _load_providers(mass, _source(FILES))
+    _load_providers(mass, _source(FILES), _source(SPOTIFY))
     answer_listenbrainz(mass)
 
     listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
@@ -332,13 +351,17 @@ async def test_library_track_on_a_hidden_source_does_not_count(mass: MusicAssist
     """A user is listed the recording itself where the library track is on a hidden source."""
     set_music_source_access(
         mass,
-        {FILES: None, HIDDEN: ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE)},
+        {
+            FILES: None,
+            SPOTIFY: None,
+            HIDDEN: ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
     )
     artist = await _add_artist(mass)
     hidden = await _add_track(
         mass, artist, "No Surprises", _recording("No Surprises")["recording_mbid"], HIDDEN
     )
-    _load_providers(mass, _source(FILES), _source(HIDDEN))
+    _load_providers(mass, _source(FILES), _source(SPOTIFY), _source(HIDDEN))
     answer_listenbrainz(mass)
 
     owner_listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
@@ -348,6 +371,110 @@ async def test_library_track_on_a_hidden_source_does_not_count(mass: MusicAssist
     assert owner_listing.items[2].uri == hidden.uri
     assert user_listing.items[2].item_id == _external_item_id("No Surprises")
     assert user_listing.items[2].provider == EXTERNAL_ID_PROVIDER
+
+
+@pytest.mark.parametrize(
+    ("source", "features", "lists_external_tracks"),
+    [
+        (SPOTIFY, set(), True),
+        ("soundcloud--1", {ProviderFeature.TRACK_BY_EXTERNAL_ID}, True),
+        ("soundcloud--1", set(), False),
+    ],
+    ids=["linked by MusicBrainz", "looks tracks up by ISRC", "neither"],
+)
+async def test_tracks_the_user_does_not_have_need_a_service_to_find_them(
+    mass: MusicAssistant,
+    source: str,
+    features: set[ProviderFeature],
+    lists_external_tracks: bool,
+) -> None:
+    """
+    A recording the user does not have is listed only when a music service can be asked for it.
+
+    Without one, the list is the user's library tracks, in the order ListenBrainz ranks them.
+    """
+    artist = await _add_artist(mass)
+    paranoid_android = await _add_track(mass, artist, "Paranoid Android")
+    creep = await _add_track(mass, artist, "Creep", _recording("Creep")["recording_mbid"])
+    _load_providers(mass, _source(FILES), _source(source, features))
+    answer_listenbrainz(mass)
+
+    listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
+
+    if lists_external_tracks:
+        assert len(listing.items) == 50
+        assert listing.items[0].provider == EXTERNAL_ID_PROVIDER
+    else:
+        assert [track.uri for track in listing.items] == [paranoid_android.uri, creep.uri]
+    assert listing.complete
+    # the listed forms serve other users, who may have such a service
+    karma_police = await mass.music.tracks.get_listed_external_item(
+        _external_item_id("Karma Police")
+    )
+    assert karma_police is not None
+
+
+async def test_a_service_the_user_may_not_see_finds_nothing_for_them(
+    mass: MusicAssistant,
+) -> None:
+    """Only a music service of the user's own counts for the tracks the user does not have."""
+    set_music_source_access(
+        mass,
+        {FILES: None, SPOTIFY: ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE)},
+    )
+    artist = await _add_artist(mass)
+    creep = await _add_track(mass, artist, "Creep", _recording("Creep")["recording_mbid"])
+    _load_providers(mass, _source(FILES), _source(SPOTIFY))
+    answer_listenbrainz(mass)
+
+    with _as_user(USER):
+        user_listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
+    with _as_user(OWNER_B):
+        owner_listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
+
+    assert [track.uri for track in user_listing.items] == [creep.uri]
+    assert len(owner_listing.items) == 50
+    assert owner_listing.items[4].uri == creep.uri
+
+
+async def test_listed_form_names_no_library_artist_the_user_may_not_see(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A listed form kept for one user names to another only the library artists they may see.
+
+    It is kept once, for everyone, as the user whose visit fetched the answer could see it.
+    """
+    set_music_source_access(
+        mass,
+        {
+            FILES: None,
+            SPOTIFY: None,
+            PRIVATE: ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    artist = await _add_artist(mass)
+    pj_harvey = await _add_artist(mass, "PJ Harvey", PJ_HARVEY_MBID, instance_id=PRIVATE)
+    _load_providers(mass, _source(FILES), _source(SPOTIFY), _source(PRIVATE))
+    answer_listenbrainz(mass)
+    item_id = _external_item_id("This Mess We\u2019re In")
+    queue = PlayerQueuesController.__new__(PlayerQueuesController)
+    queue.mass = mass
+
+    with _as_user(OWNER_B):
+        await mass.music.artists.get_library_artist_toptracks(artist.item_id)
+        owner_form = await mass.music.tracks.get_listed_external_item(item_id)
+    with _as_user(USER):
+        user_form = await mass.music.tracks.get_listed_external_item(item_id)
+        enqueued = await queue._item_by_uri(f"external://track/{item_id}")
+
+    assert owner_form is not None
+    assert [mapping.uri for mapping in owner_form.artists] == [artist.uri, pj_harvey.uri]
+    assert user_form is not None
+    assert [mapping.uri for mapping in user_form.artists] == [artist.uri]
+    assert isinstance(enqueued, Track)
+    assert [mapping.uri for mapping in enqueued.artists] == [artist.uri]
+    assert enqueued.album == owner_form.album
 
 
 @pytest.mark.parametrize("co_artist_in_library", [True, False])
@@ -360,7 +487,7 @@ async def test_external_track_carries_its_artists_album_and_cover(
     if co_artist_in_library:
         pj_harvey = await _add_artist(mass, "PJ Harvey", PJ_HARVEY_MBID)
         expected_artists.append(ItemMapping.from_item(pj_harvey))
-    _load_providers(mass, _source(FILES))
+    _load_providers(mass, _source(FILES), _source(SPOTIFY))
     answer_listenbrainz(mass)
 
     listing = await mass.music.artists.get_library_artist_toptracks(artist.item_id)
@@ -409,7 +536,7 @@ async def test_external_track_carries_its_artists_album_and_cover(
 async def test_external_tracks_are_kept_as_listed_once_per_answer(mass: MusicAssistant) -> None:
     """Each external track is kept in its listed form when the answer is fetched, not again."""
     artist = await _add_artist(mass)
-    _load_providers(mass, _source(FILES))
+    _load_providers(mass, _source(FILES), _source(SPOTIFY))
     answer_listenbrainz(mass)
     tracks = mass.music.tracks
     store = AsyncMock(side_effect=tracks.store_listed_external_item)
@@ -436,10 +563,14 @@ async def test_external_tracks_survive_search_sort_and_paging(mass: MusicAssista
     """A user with a hidden source searches, sorts and pages the listing like any other."""
     set_music_source_access(
         mass,
-        {FILES: None, HIDDEN: ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE)},
+        {
+            FILES: None,
+            SPOTIFY: None,
+            HIDDEN: ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
     )
     artist = await _add_artist(mass)
-    _load_providers(mass, _source(FILES), _source(HIDDEN))
+    _load_providers(mass, _source(FILES), _source(SPOTIFY), _source(HIDDEN))
     answer_listenbrainz(mass)
     artist_id = str(artist.item_id)
 

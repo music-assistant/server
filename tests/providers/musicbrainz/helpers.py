@@ -49,6 +49,7 @@ def answer_listenbrainz(
     status: int = 200,
     body: Any = None,
     headers: dict[str, str] | None = None,
+    error: Exception | None = None,
 ) -> MagicMock:
     """
     Have every ListenBrainz request answered with the given response.
@@ -57,6 +58,7 @@ def answer_listenbrainz(
     :param status: The HTTP status of the answer.
     :param body: The JSON body of the answer, the recorded answer when None.
     :param headers: The headers of the answer.
+    :param error: Raised by every request instead of an answer.
     :return: The mocked get of the HTTP session, to count the requests with.
     """
     response = MagicMock()
@@ -73,6 +75,6 @@ def answer_listenbrainz(
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=response)
     context.__aexit__ = AsyncMock(return_value=False)
-    get = MagicMock(return_value=context)
+    get = MagicMock(return_value=context, side_effect=error)
     mass._http_session = MagicMock(get=get)
     return get
