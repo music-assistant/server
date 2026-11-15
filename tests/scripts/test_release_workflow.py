@@ -506,6 +506,9 @@ def test_release_workflow_records_the_new_providers_before_it_builds() -> None:
     checkout = _workflow_step(workflow, "build_artifacts", "Check out release source")
     assert checkout["with"]["fetch-depth"] == 0
     step = _workflow_step(workflow, "build_artifacts", name)
+    # recorded whenever the distributions are built
+    sdist_step = _workflow_step(workflow, "build_artifacts", "Build source distribution")
+    assert step["if"] == sdist_step["if"]
     assert step["env"]["SOURCE_SHA"] == "${{ needs.resolve.outputs.source_sha }}"
     run = str(step["run"])
     assert "release_workflow.py new-providers" in run
