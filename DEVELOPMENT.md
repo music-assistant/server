@@ -96,6 +96,42 @@ A provider that lives outside the server repository (for example in a repository
 * The `requirements` in `manifest.json` are plain package names with versions, such as `aiohttp-retry==2.9.1`. They are installed next to the server's own packages and never replace one of them: a provider whose requirements clash with the server is not loaded.
 * A change to the code takes effect after a restart of the server.
 
+### Trying a branch or your own provider in Docker
+
+The development image `ghcr.io/music-assistant/server:dev` runs a server without a development setup. It is the nightly server image plus the tools to install the server from a branch, a pull request or a fork, to build the frontend from a branch, and to load providers from their own repository. It runs the code of the repositories you name, so use it to test, not to run your daily server.
+
+Three environment variables say what to run; an empty or unset one is not used.
+* `SERVER_REPO`: the server to install instead of the nightly. A branch (`dev`, `feature/new-player`), a pull request (`pr-123`), a full commit hash, or a fork as `owner/repo@ref` (`owner/repo` uses the fork's default branch).
+* `FRONTEND_REPO`: the frontend to build instead of the one that comes with the server, in the same forms.
+* `PROVIDER_REPO`: a repository with one or more provider folders, such as one made from the [community provider template](https://github.com/music-assistant/community-provider-template). It is `owner/repo` (its default branch), `owner/repo@ref` (a branch, a tag or a commit) or `owner/repo@pr-12` (pull request 12 of that repository). The repository is fetched again at every start and the server runs in dev mode with it as its provider folder, see [Running a provider from a folder outside the server](#running-a-provider-from-a-folder-outside-the-server).
+
+The server keeps its data in `/data`, so give that a volume:
+
+```sh
+docker run --rm --network host -v ma-dev-data:/data \
+  -e PROVIDER_REPO=your-github-handle/your-repository \
+  ghcr.io/music-assistant/server:dev
+```
+
+With Docker Compose:
+
+```yaml
+services:
+  music-assistant-dev:
+    image: ghcr.io/music-assistant/server:dev
+    network_mode: host
+    volumes:
+      - ma-dev-data:/data
+    environment:
+      SERVER_REPO: pr-123
+      PROVIDER_REPO: your-github-handle/your-repository@my-branch
+
+volumes:
+  ma-dev-data:
+```
+
+A restart fetches and installs the named references again, so it picks up new commits. Pull the image again for a newer nightly. The Music Assistant DEV SERVER app for Home Assistant works the same way once it uses this image, with the options `server_repo`, `frontend_repo` and `provider_repo`.
+
 ## Listing random order
 
 Server listing commands accept an optional integer `random_seed`. With `sort_field=random`,
