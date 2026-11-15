@@ -594,10 +594,22 @@ protocol that reports for it, its `device_protocol`: the player is switched off 
 no longer reaches the device while the control is off, and it is back once that protocol reaches
 it again. What its other protocols read does not count: an AirPlay receiver can read available
 for minutes after the power was cut. A device protocol that only controls needs an audio protocol
-that reaches the device next to it. Until the device protocol notices a power cut, the player
-reads as reachable and powered off, and a play in that window switches the control on and starts
-at once. While the control is on and no power on waits, none of this applies: the player plays
-through any protocol that reaches its device.
+that reaches the device next to it.
+
+A protocol notices a power cut at its own pace, some only minutes later. So a few seconds after
+the control reports off (`DEVICE_CHECK_DELAY`), the device protocol is asked to check its device
+now (`PlayerProtocol.check_device`), unless it reads unavailable already or the control reports on
+again meanwhile; a protocol that finds its device gone reads unavailable. While a power on waits
+for the device, the device protocol is asked every few seconds to reach it
+(`DEVICE_CHECK_INTERVAL`), so it is back with its device instead of on its own reconnect backoff.
+A check runs in a task of its own and holds no lock; one that raises or does not come back within
+10 seconds changes nothing. The controller keeps nothing about the device itself: what the device
+protocol reads stays the only truth. Until the device protocol finds the cut, by a check or by
+itself, the player reads as reachable and powered off, and a play in that window switches the
+control on and starts at once: a play within those first seconds, a device protocol that can not
+check, a power cut without an off report of the control. While the control is on and no power on
+waits, none of this applies and nothing is checked: the player plays through any protocol that
+reaches its device.
 
 A command that starts a group player waits for the members that are switched off at their power
 control: a play, a resume, a play of an item or of media on its queue, a play or a power on of
