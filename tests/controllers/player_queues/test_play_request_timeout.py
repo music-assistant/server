@@ -369,10 +369,11 @@ async def test_a_request_without_an_option_on_a_reachable_player_looks_the_media
     lookup.assert_awaited_once()
 
 
-async def test_a_request_without_an_option_on_a_group_of_reachable_players_looks_the_media_up_once() -> (
-    None
-):
-    """A group none of whose members is switched off at a power control needs no extra lookup."""
+@pytest.mark.parametrize("member_switched_off", [False, True], ids=["members on", "member off"])
+async def test_a_request_without_an_option_on_a_group_looks_the_default_up_for_a_switched_off_member(
+    member_switched_off: bool,
+) -> None:
+    """Only a group that a start would power a member of on needs the lookup of the default."""
     ctrl, _lock = _controller()
     group = Mock(
         extra_data={},
@@ -381,12 +382,18 @@ async def test_a_request_without_an_option_on_a_group_of_reachable_players_looks
         group_members=["m1"],
         static_group_members=[],
     )
-    member = Mock(offline_by_power_control=False, available=True)
-    ctrl.mass.players.get_player.side_effect = {"q1": group, "m1": member}.get
-    ctrl.mass.players._still_boots = Mock(return_value=False)
+    member = Mock(offline_by_power_control=member_switched_off, available=True)
+    players = bare_player_controller()
+    players._players = {"m1": member}
+    players._controls = {}
+    ctrl.mass.players.get_player.return_value = group
+    ctrl.mass.players._members_to_power_on = players._members_to_power_on
     ctrl.mass.players._power_on_members = AsyncMock()
     lookup = _lookup(ctrl, _track("new"))
+    ctrl.get_config_value = Mock(return_value=QueueOption.ADD.value)
 
     await ctrl.play_media("q1", "test://track/new")
 
-    lookup.assert_awaited_once()
+    # the loader looks the media up too; the default decides that nothing is powered on
+    assert lookup.await_count == (2 if member_switched_off else 1)
+    ctrl.mass.players._power_on_members.assert_not_awaited()
