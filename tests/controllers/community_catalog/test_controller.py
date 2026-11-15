@@ -611,6 +611,31 @@ async def test_remove_leaves_a_provider_of_the_server_alone(
             assert sys.modules[f"{providers_package.__name__}.{DOMAIN}"] is module
 
 
+async def test_broken_menu_actions_at_start(
+    tmp_path: Path, catalog: Path, registry: Registry, github: GitHub
+) -> None:
+    """An installed provider with broken menu actions loads without them, next to the others."""
+    broken = "comm_two"
+    valid = {"id": "show", "label": "Show", "media_types": ["album"], "scope": "library.read"}
+    menu_actions = [{"id": "broken", "label": None}, valid]
+    registry.document = _index(
+        {
+            DOMAIN: _publish(github, DOMAIN),
+            broken: _publish(github, broken, manifest_keys={"menu_actions": menu_actions}),
+        }
+    )
+    _seed_instance(tmp_path, DOMAIN, broken)
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        for domain in (DOMAIN, broken):
+            await mass.community_catalog.install_provider(domain)
+
+    async with _server(tmp_path) as mass:
+        _assert_loaded(mass, catalog, DOMAIN)
+        _assert_loaded(mass, catalog, broken)
+        assert [action.id for action in mass.get_provider_manifest(broken).menu_actions] == ["show"]
+
+
 def test_reasons_match_the_texts() -> None:
     """The reasons and errors in the code are the English texts of their translation keys."""
     strings_file = Path(music_assistant.__file__).parent / "strings.json"
@@ -689,15 +714,22 @@ def _forget_imports(tmp_path: Path) -> None:
             sys.modules.pop(name, None)
 
 
-def _publish(github: GitHub, domain: str, *, requirements: Sequence[str] = ()) -> dict[str, Any]:
+def _publish(
+    github: GitHub,
+    domain: str,
+    *,
+    requirements: Sequence[str] = (),
+    manifest_keys: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Serve a provider on the fixture GitHub and return its listed entry in the index.
 
     :param github: The fixture GitHub.
     :param domain: The domain of the provider.
     :param requirements: The requirements in its manifest.
+    :param manifest_keys: Keys added to its manifest.
     """
-    files = _provider_files(domain, requirements)
+    files = _provider_files(domain, requirements, manifest_keys)
     commit = f"{domain}-{VERSION}"
     github.archives[commit] = build_archive({f"{domain}/{p}": c for p, c in files.items()})
     return {
@@ -723,12 +755,15 @@ def _publish(github: GitHub, domain: str, *, requirements: Sequence[str] = ()) -
     }
 
 
-def _provider_files(domain: str, requirements: Sequence[str] = ()) -> dict[str, bytes]:
+def _provider_files(
+    domain: str, requirements: Sequence[str] = (), manifest_keys: dict[str, Any] | None = None
+) -> dict[str, bytes]:
     """
     Return the files of a plugin provider that imports the version of its first requirement.
 
     :param domain: The domain of the provider.
     :param requirements: The requirements in its manifest.
+    :param manifest_keys: Keys added to its manifest.
     """
     manifest = {
         "type": "plugin",
@@ -737,6 +772,7 @@ def _provider_files(domain: str, requirements: Sequence[str] = ()) -> dict[str, 
         "description": "test provider",
         "codeowners": ["@someone"],
         "requirements": list(requirements),
+        **(manifest_keys or {}),
     }
     imports = ""
     if requirements:
