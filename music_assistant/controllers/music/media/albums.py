@@ -39,12 +39,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import (
-    DB_TABLE_ALBUM_ARTISTS,
-    DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_ALBUMS,
-    EXTERNAL_ID_PROVIDER,
-)
+from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
 from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
@@ -66,7 +61,6 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import (
     barcode_to_upc,
-    external_item_id,
     is_valid_barcode,
     is_valid_isrc,
     normalize_external_id,
@@ -202,11 +196,6 @@ class AlbumsController(MediaControllerBase[Album]):
         recursive: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
-        if provider_instance_id_or_domain == "musicbrainz":
-            # clients and saved links name an album outside the library by its release group
-            # id under MusicBrainz, which is the external album of that release group
-            item_id = external_item_id(ExternalID.MB_RELEASEGROUP, item_id)
-            provider_instance_id_or_domain = EXTERNAL_ID_PROVIDER
         album = await super().get(
             item_id,
             provider_instance_id_or_domain,

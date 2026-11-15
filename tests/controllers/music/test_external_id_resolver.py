@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import ExitStack
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -61,14 +61,6 @@ TIDAL_ALBUM_ID = "79280548"
 
 RECORDING_ITEM_ID = external_item_id(ExternalID.MB_RECORDING, RECORDING_ID)
 RELEASE_ITEM_ID = external_item_id(ExternalID.MB_ALBUM, RELEASE_ID)
-RELEASE_GROUP_ITEM_ID = external_item_id(ExternalID.MB_RELEASEGROUP, RELEASE_GROUP_ID)
-
-# every command a client opens an album with by the MusicBrainz address of its release group
-MUSICBRAINZ_ALBUM_OPENERS: dict[str, Callable[[MusicController], Awaitable[Any]]] = {
-    "item_by_uri": lambda music: music.get_item_by_uri(f"musicbrainz://album/{RELEASE_GROUP_ID}"),
-    "item": lambda music: music.get_item(MediaType.ALBUM, RELEASE_GROUP_ID, "musicbrainz"),
-    "albums_get": lambda music: music.albums.get(RELEASE_GROUP_ID, "musicbrainz"),
-}
 
 # the owner's private Spotify account, and the member's own accounts
 THEIRS = "spotify_theirs"
@@ -596,7 +588,7 @@ async def test_release_no_provider_has_is_not_found(music: MusicController) -> N
 
 
 async def test_release_group_takes_the_release_group_route(music: MusicController) -> None:
-    """A release group id, in the external form or the MusicBrainz one, is resolved one way."""
+    """A release group id in the external form is resolved by the release group route."""
     album = create_album("spotify_1", SPOTIFY_ALBUM_ID)
     _load(music, _album_provider("spotify_1"))
     item_id = external_item_id(ExternalID.MB_RELEASEGROUP, RELEASE_GROUP_ID)
@@ -605,9 +597,8 @@ async def test_release_group_takes_the_release_group_route(music: MusicControlle
         music.albums, "resolve_musicbrainz_release_group", AsyncMock(return_value=album)
     ) as resolve:
         assert await music.get_item_by_uri(f"external://album/{item_id}") is album
-        assert await music.get_item_by_uri(f"musicbrainz://album/{RELEASE_GROUP_ID}") is album
 
-    assert [call.args for call in resolve.await_args_list] == [(RELEASE_GROUP_ID,)] * 2
+    assert [call.args for call in resolve.await_args_list] == [(RELEASE_GROUP_ID,)]
 
     not_found = MediaNotFoundError("no provider has it")
     with patch.object(
@@ -620,60 +611,6 @@ async def test_release_group_takes_the_release_group_route(music: MusicControlle
         with pytest.raises(MediaNotFoundError) as excinfo:
             await music.albums.get(item_id, EXTERNAL_ID_PROVIDER)
     assert excinfo.value.translation_key == "album_not_available_on_music_services"
-
-
-@pytest.mark.parametrize(
-    "open_album", MUSICBRAINZ_ALBUM_OPENERS.values(), ids=MUSICBRAINZ_ALBUM_OPENERS.keys()
-)
-async def test_musicbrainz_album_address_opens_the_external_release_group(
-    music: MusicController, open_album: Callable[[MusicController], Awaitable[Any]]
-) -> None:
-    """A release group's MusicBrainz address opens what its external form found and remembered."""
-    spotify = _album_provider("spotify_1")
-    spotify_album = create_album("spotify_1", SPOTIFY_ALBUM_ID)
-    spotify.get_album = AsyncMock(return_value=spotify_album)
-    _load(music, spotify)
-
-    with patch.object(
-        music.albums, "resolve_musicbrainz_release_group", AsyncMock(return_value=spotify_album)
-    ) as resolve:
-        external = await music.get_item_by_uri(f"external://album/{RELEASE_GROUP_ITEM_ID}")
-        found = await open_album(music)
-
-    assert (found.provider, found.item_id) == (external.provider, external.item_id)
-    assert (found.provider, found.item_id) == ("spotify_1", SPOTIFY_ALBUM_ID)
-    # the address is served what the external form found, by the album's own id
-    resolve.assert_awaited_once_with(RELEASE_GROUP_ID, allow_update_metadata=False)
-    spotify.get_album.assert_awaited_once_with(SPOTIFY_ALBUM_ID)
-
-
-@pytest.mark.parametrize(
-    "open_album", MUSICBRAINZ_ALBUM_OPENERS.values(), ids=MUSICBRAINZ_ALBUM_OPENERS.keys()
-)
-async def test_musicbrainz_album_address_opens_the_library_album_without_a_request(
-    music: MusicController, open_album: Callable[[MusicController], Awaitable[Any]]
-) -> None:
-    """A release group in the library opens, by its MusicBrainz address, as the library album."""
-    library_album = await music.albums.add_item_to_library(
-        create_album(
-            "spotify_1",
-            SPOTIFY_ALBUM_ID,
-            external_ids={(ExternalID.MB_RELEASEGROUP, RELEASE_GROUP_ID)},
-        )
-    )
-    spotify = _album_provider("spotify_1")
-    _load(music, spotify)
-
-    with patch.object(
-        music.albums,
-        "resolve_musicbrainz_release_group",
-        AsyncMock(side_effect=MediaNotFoundError("looked up on MusicBrainz")),
-    ) as resolve:
-        found = await open_album(music)
-
-    assert (found.provider, found.item_id) == ("library", library_album.item_id)
-    resolve.assert_not_awaited()
-    assert _requests(spotify) == 0
 
 
 async def test_album_by_barcode_asks_the_library_then_the_providers(
