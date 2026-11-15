@@ -68,7 +68,7 @@ if TYPE_CHECKING:
     from pychromecast.controllers import BaseController
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
-    from pychromecast.socket_client import ConnectionStatus
+    from pychromecast.socket_client import ConnectionStatus, SocketClient
 
     from .provider import ChromecastProvider
 
@@ -388,12 +388,21 @@ class ChromecastPlayer(PlayerProtocol):
         """
         if self.cast_info.is_audio_group or (listener := self.status_listener) is None:
             return None
-        client = self.cc
-        answers = await self._client_endpoint_answers(client)
+        socket_client = self.cc.socket_client
+        # the client reconnects by itself under the same listener, but on a new socket
+        connection, connected = socket_client.socket, socket_client.is_connected
+        answers = await self._client_endpoint_answers(socket_client, connected)
         if self.player is None or self.status_listener is not listener:
             # detached, or connected with another client, meanwhile
             return answers
-        if answers == client.socket_client.is_connected:
+        if (
+            socket_client.socket is not connection
+            or socket_client.is_connected != connected
+            or (connection is not None and not connected)
+        ):
+            # the probe was made against a connection that is gone, or still being made
+            return socket_client.is_connected
+        if answers == connected:
             return answers
         if not answers:
             # the client would only notice on its heartbeat
@@ -1050,14 +1059,15 @@ class ChromecastPlayer(PlayerProtocol):
         disconnect_cast(old_client, 0)
         self._start_client()
 
-    async def _client_endpoint_answers(self, client: Chromecast) -> bool:
+    async def _client_endpoint_answers(self, socket_client: SocketClient, connected: bool) -> bool:
         """
         Return whether the device accepts a connection where the given client connects to it.
 
-        :param client: The client of the device.
+        :param socket_client: The socket client of the device.
+        :param connected: Whether that client is connected: the endpoint of its connection is
+            probed, else the services it tries.
         """
-        socket_client = client.socket_client
-        if socket_client.is_connected:
+        if connected:
             endpoints = {(socket_client.host, socket_client.port)}
         else:
             # the services the client tries, resolved as it resolves them itself
