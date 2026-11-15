@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -38,7 +38,7 @@ async def webserver(mass_minimal: MusicAssistant) -> AsyncIterator[WebserverCont
         compute_image_id=lambda provider, path: f"{provider}--{path}"
     )
     mass_minimal.translations = SimpleNamespace(  # type: ignore[assignment]
-        get_translation=lambda _key, **_kwargs: None
+        get_translation=lambda _key, **_kwargs: None, ensure_locale_loaded=AsyncMock()
     )
     webserver = WebserverController(mass_minimal)
     mass_minimal.webserver = webserver
