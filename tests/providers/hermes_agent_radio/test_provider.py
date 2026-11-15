@@ -21,11 +21,14 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Radio
 
-from music_assistant.providers.hermes_agent_radio import (
-    NOW_PLAYING_ENDPOINT,
-    SUPPORTED_FEATURES,
-    HermesAgentRadio,
+from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.providers.hermes_agent_radio import SUPPORTED_FEATURES
+from music_assistant.providers.hermes_agent_radio.constants import NOW_PLAYING_URL
+from music_assistant.providers.hermes_agent_radio.helpers import (
+    parse_now_playing,
+    parse_stations,
 )
+from music_assistant.providers.hermes_agent_radio.provider import HermesAgentRadio
 
 STATIONS_ANSWER: dict[str, Any] = {
     "stations": [
@@ -63,8 +66,10 @@ NOW_PLAYING_ANSWER: dict[str, Any] = {
         "title": "Queue Jump Blues",
         "artist": "Night Shift Cipher",
         "duration_s": 195.0,
+        "started_at": "2026-11-15T06:28:57+00:00",
     },
     "up_next": [{"kind": "track", "title": "Barn Light Boogie", "artist": "Glitter Protocol"}],
+    "station_at": "2026-11-15T06:29:27+00:00",
 }
 
 
@@ -101,7 +106,7 @@ def _provider(
     """Return a provider wired to mocks serving the canned feed answers."""
 
     def _get(url: str, **_kwargs: Any) -> _FakeResponse:
-        if NOW_PLAYING_ENDPOINT in url:
+        if NOW_PLAYING_URL in url:
             if now_playing_error:
                 raise now_playing_error
             return _FakeResponse(now_playing)
@@ -130,7 +135,9 @@ def _provider(
         return asyncio.create_task(coro)
 
     mass.create_task = _create_task
-    return HermesAgentRadio(mass, manifest, config, SUPPORTED_FEATURES)
+    provider = HermesAgentRadio(mass, manifest, config, SUPPORTED_FEATURES)
+    provider._throttler = Throttler(rate_limit=1000, period=1)
+    return provider
 
 
 @pytest.fixture(name="provider")
@@ -139,11 +146,11 @@ def provider_fixture() -> HermesAgentRadio:
     return _provider()
 
 
-async def test_features_and_streaming_flag(provider: HermesAgentRadio) -> None:
-    """The provider declares browse/search and never caches audio."""
+async def test_features_and_media_types(provider: HermesAgentRadio) -> None:
+    """The provider declares browse/search and serves radio."""
     assert ProviderFeature.BROWSE in provider.supported_features
     assert ProviderFeature.SEARCH in provider.supported_features
-    assert provider.is_streaming_provider
+    assert provider.supported_media_types == {MediaType.RADIO}
 
 
 async def test_browse_lists_the_station_lineup(provider: HermesAgentRadio) -> None:
@@ -152,6 +159,7 @@ async def test_browse_lists_the_station_lineup(provider: HermesAgentRadio) -> No
     assert [r.item_id for r in radios] == ["main", "hiphop", "techno"]
     first = cast("Radio", next(r for r in radios if r.item_id == "main"))
     assert first.name == "Hermes Agent Radio"
+    assert first.provider == provider.instance_id
     assert first.metadata.description == (
         "Everything we play, one stream\n60 community songs in rotation"
     )
@@ -166,10 +174,10 @@ async def test_browse_touches_only_the_stations_feed(provider: HermesAgentRadio)
     assert calls[0].endswith("stations.json")
 
 
-async def test_browse_rejects_a_subpath(provider: HermesAgentRadio) -> None:
-    """Unknown browse subpaths raise instead of returning wrong content."""
-    with pytest.raises(KeyError):
-        await provider.browse("hermes_agent_radio://nope")
+async def test_browse_returns_the_lineup_for_any_path(provider: HermesAgentRadio) -> None:
+    """The stations have no sub folders; any path lists the full lineup."""
+    for path in ("hermes_agent_radio://", "hermes_agent_radio://whatever"):
+        assert len(await provider.browse(path)) == 3
 
 
 async def test_get_radio_returns_the_station(provider: HermesAgentRadio) -> None:
@@ -208,12 +216,13 @@ async def test_search_keeps_to_requested_types_and_limit(provider: HermesAgentRa
 
 
 async def test_stream_details_use_the_station_mounts(provider: HermesAgentRadio) -> None:
-    """Each station plays its own mount, as a realtime MP3 stream."""
+    """Each station plays its own mount, as an MP3 stream on the instance."""
     main = await provider.get_stream_details("main", MediaType.RADIO)
     assert main.path == "https://hermesagentradio.com/stream"
     assert main.stream_type == StreamType.HTTP
+    assert main.provider == provider.instance_id
     assert main.audio_format.content_type == ContentType.MP3
-    assert main.is_realtime
+    assert main.audio_format.bit_rate == 128
     techno = await provider.get_stream_details("techno", MediaType.RADIO)
     assert techno.path == "https://hermesagentradio.com/stream/techno"
 
@@ -260,7 +269,47 @@ async def test_metadata_callback_updates_from_the_now_playing_feed(
     assert meta.title == "Queue Jump Blues"
     assert meta.artist == "Night Shift Cipher"
     assert meta.duration == 195
-    assert meta.description == "Up next: Barn Light Boogie"
+    assert meta.description is None
+
+
+async def test_metadata_callback_computes_elapsed_time_from_the_feed() -> None:
+    """Seconds played come from the feed's own timestamps, not the local clock."""
+    provider = _provider(
+        now_playing={
+            "now": {
+                "title": "Slow Burn",
+                "duration_s": 300.0,
+                "started_at": "2026-11-15T10:00:00+00:00",
+            },
+            "station_at": "2026-11-15T10:01:30+00:00",
+        }
+    )
+    streamdetails = await provider.get_stream_details("main", MediaType.RADIO)
+    await provider._update_stream_metadata(streamdetails, 0)
+    meta = streamdetails.stream_metadata
+    assert meta is not None
+    assert meta.elapsed_time == 90
+    assert meta.elapsed_time_last_updated is not None
+
+
+async def test_metadata_callback_without_a_start_shows_no_progress() -> None:
+    """A feed answer without started_at keeps duration only, without a position."""
+    provider = _provider(now_playing={"now": {"title": "No Start", "duration_s": 100.0}})
+    streamdetails = await provider.get_stream_details("main", MediaType.RADIO)
+    await provider._update_stream_metadata(streamdetails, 0)
+    meta = streamdetails.stream_metadata
+    assert meta is not None
+    assert meta.elapsed_time is None
+    assert meta.elapsed_time_last_updated is None
+
+
+async def test_metadata_callback_clears_when_nothing_is_playing() -> None:
+    """A feed that answers with no current title clears the stale one."""
+    provider = _provider(now_playing={"now": {}, "up_next": []})
+    streamdetails: StreamDetails = await provider.get_stream_details("main", MediaType.RADIO)
+    streamdetails.stream_metadata = StreamMetadata(title="previous item")
+    await provider._update_stream_metadata(streamdetails, 0)
+    assert streamdetails.stream_metadata is None
 
 
 async def test_metadata_callback_asks_for_the_playing_mount(provider: HermesAgentRadio) -> None:
@@ -268,17 +317,44 @@ async def test_metadata_callback_asks_for_the_playing_mount(provider: HermesAgen
     streamdetails = await provider.get_stream_details("techno", MediaType.RADIO)
     await provider._update_stream_metadata(streamdetails, 0)
     session: Any = provider.mass.http_session
-    now_calls = [
-        call for call in session.get.call_args_list if NOW_PLAYING_ENDPOINT in call.args[0]
-    ]
+    now_calls = [call for call in session.get.call_args_list if NOW_PLAYING_URL in call.args[0]]
     assert now_calls[-1].kwargs["params"] == {"station": "techno"}
 
 
 async def test_metadata_callback_keeps_last_known_on_failure() -> None:
     """A failing now-playing fetch must not blank the display or raise."""
     provider = _provider(now_playing_error=aiohttp.ClientError("down"))
-    streamdetails: StreamDetails = await provider.get_stream_details("main", MediaType.RADIO)
+    streamdetails = await provider.get_stream_details("main", MediaType.RADIO)
     sentinel = StreamMetadata(title="previous item", artist="previous artist")
     streamdetails.stream_metadata = sentinel
     await provider._update_stream_metadata(streamdetails, 0)
     assert streamdetails.stream_metadata is sentinel
+
+
+def test_parse_stations_skips_unusable_entries() -> None:
+    """An entry without id, name or mount is not a station we can list or play."""
+    stations = parse_stations(
+        {
+            "stations": [
+                {"id": "ok", "name": "OK", "stream": "/stream/ok"},
+                {"name": "No Id", "stream": "/stream/x"},
+                {"id": "nostream", "name": "No Mount"},
+                {"id": "nostreamname"},
+                "junk",
+            ]
+        }
+    )
+    assert [station.id for station in stations.values()] == ["ok"]
+
+
+def test_parse_stations_handles_bad_answers() -> None:
+    """A malformed or empty answer parses to nothing."""
+    assert parse_stations(None) == {}
+    assert parse_stations({"stations": []}) == {}
+
+
+def test_parse_now_playing_says_nothing_without_a_title() -> None:
+    """An answer without a current title means nothing is on the air."""
+    assert parse_now_playing({"now": {}}) is None
+    assert parse_now_playing({}) is None
+    assert parse_now_playing("junk") is None

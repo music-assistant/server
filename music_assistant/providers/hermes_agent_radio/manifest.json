@@ -7,6 +7,5 @@
   "codeowners": ["@rahlquist"],
   "requirements": [],
   "documentation": "https://www.music-assistant.io/music-providers/hermes-agent-radio/",
-  "multi_instance": false,
-  "icon": "radio"
+  "multi_instance": false
 }
