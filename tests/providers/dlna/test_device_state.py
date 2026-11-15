@@ -145,7 +145,7 @@ def _mock_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     """
     clock = _Clock(REPORTED_AT.timestamp() + 600)
     monkeypatch.setattr("music_assistant.providers.dlna.player.time", clock)
-    monkeypatch.setattr("music_assistant.models.player.time", clock)
+    monkeypatch.setattr("music_assistant.models.player_protocol.time", clock)
     return clock
 
 
