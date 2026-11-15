@@ -54,7 +54,7 @@ from music_assistant.controllers.music.constants import CACHE_CATEGORY_EXTERNAL_
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
-from music_assistant.controllers.player_queues.media_resolver import ResolvedItem
+from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -66,6 +66,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.external_ids import external_item_id
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.musicbrainz.listenbrainz import TOP_TRACKS_LIMIT
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzArtistCredit,
@@ -75,6 +76,7 @@ from music_assistant.providers.musicbrainz.models import (
 )
 from tests.common import set_music_source_access
 from tests.controllers.music.helpers import ISRC, create_album
+from tests.providers.musicbrainz.helpers import RADIOHEAD_MBID, answer_listenbrainz, own_throttler
 
 GET_CURRENT_USER = "music_assistant.controllers.player_queues.queue_loader.get_current_user"
 QUEUE_ID = "q1"
@@ -374,6 +376,33 @@ def _members_private_source(music: MusicController, *tracks: Track) -> MagicMock
     return mine
 
 
+async def _artist_ranked_by_listenbrainz(music: MusicController) -> Artist:
+    """
+    Add an artist without library tracks to the library, that no music provider ranks.
+
+    Playing it plays its top tracks: the fifty recordings ListenBrainz ranks for it, once a
+    music service that can look them up is loaded.
+    """
+    music.artists._listenbrainz.throttler = own_throttler()
+    answer_listenbrainz(music.mass)
+    return await music.artists.add_item_to_library(
+        Artist(
+            item_id="radiohead",
+            provider="filesystem_local--files",
+            name="Radiohead",
+            external_ids={(ExternalID.MB_ARTIST, RADIOHEAD_MBID)},
+            provider_mappings={
+                ProviderMapping(
+                    item_id="radiohead",
+                    provider_domain="filesystem_local",
+                    provider_instance="filesystem_local--files",
+                    in_library=True,
+                )
+            },
+        )
+    )
+
+
 async def _remembered(music: MusicController, recording_id: str = RECORDING_ID) -> Any:
     """Return what is kept as the track a recording was found as."""
     return await music.mass.cache.get(
@@ -507,6 +536,47 @@ async def test_external_album_and_radio_mode_are_resolved_at_once(music: MusicCo
     assert [call.args for call in get_item.await_args_list] == [
         (f"radio_playlist://playlist/{_uri()}",)
     ] * 2
+
+
+async def test_playing_an_artist_enqueues_its_top_tracks_as_they_are(
+    music: MusicController,
+) -> None:
+    """An artist played by its top tracks puts the ones that are not looked up on the queue."""
+    artist = await _artist_ranked_by_listenbrainz(music)
+    spotify = _provider("spotify--1")
+    musicbrainz = _load_providers(music, spotify)
+    ctrl = _controller(music)
+    ctrl._media_resolver = MediaResolver(ctrl)
+
+    await ctrl.play_media(QUEUE_ID, artist, QueueOption.REPLACE)
+
+    queued = _media_items(ctrl)
+    assert len(queued) == TOP_TRACKS_LIMIT
+    assert {track.provider for track in queued} == {EXTERNAL_ID_PROVIDER}
+    musicbrainz.get_recording_details.assert_not_awaited()
+    assert _requests(spotify) == 0
+
+
+async def test_autoplay_of_a_similar_artist_enqueues_its_top_tracks_as_they_are(
+    music: MusicController,
+) -> None:
+    """Autoplay picks a similar artist's tracks the way playing it does, without a lookup."""
+    artist = await _artist_ranked_by_listenbrainz(music)
+    spotify = _provider("spotify--1")
+    musicbrainz = _load_providers(music, spotify)
+    ctrl = _controller(music)
+    ctrl._media_resolver = MediaResolver(ctrl)
+    ctrl._autoplay = Mock(get_similar_artists=AsyncMock(return_value=[artist]))
+    ctrl.load = AsyncMock()
+    ctrl._queue_data[QUEUE_ID].queue.autoplay_enabled = True
+
+    await ctrl._fill_autoplay_similar_artist(QUEUE_ID)
+
+    queue_items = ctrl.load.await_args.args[1]
+    assert len(queue_items) == TOP_TRACKS_LIMIT
+    assert {item.media_item.provider for item in queue_items} == {EXTERNAL_ID_PROVIDER}
+    musicbrainz.get_recording_details.assert_not_awaited()
+    assert _requests(spotify) == 0
 
 
 # ---------------------------------------------------------------------------

@@ -892,7 +892,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_items = [
                 build_queue_item(queue_id, track, origin=origin_for(artist, track, pin=False))
                 for track in tracks
-                if track.available
+                if can_be_enqueued(track)
             ]
             if queue_items:
                 break
