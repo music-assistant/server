@@ -408,3 +408,32 @@ async def test_a_client_another_bridge_registered_rides_on_that_bridge_once_refr
     await scenario.settle()
 
     assert scenario.mass.players.get_protocol(BRIDGE_ID) is bridge, "the stale add replaced it"
+
+
+async def test_a_client_refreshed_twice_rides_on_the_bridge_that_holds_it(
+    scenario: Scenario,
+) -> None:
+    """A refresh that follows one still waiting to register leaves the output on the holder."""
+    await _bridged_device(scenario, "chromecast")
+    await scenario.add_provider("airplay")
+    airplay = _carrier(scenario, "airplay")
+    await scenario.mass.players.register(airplay)
+    await scenario.settle()
+    sendspin: Any = scenario.provider("sendspin")
+    # the AirPlay bridge registered the same client id and holds it from then on
+    sendspin.register_bridge_identifiers(BRIDGE_ID, {IdentifierType.AIRPLAY_ID: AIRPLAY_ID})
+    sendspin.register_bridge_underlying_protocol(BRIDGE_ID, AIRPLAY_ID)
+    sendspin.hold_bridge_client(BRIDGE_ID, AIRPLAY_ID)
+
+    async with scenario.mass.players._register_lock:
+        # the first refresh waits to register its protocol when the second one starts
+        sendspin.refresh_bridge_client(BRIDGE_ID)
+        sendspin.refresh_bridge_client(BRIDGE_ID)
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert bridge is not None
+    assert bridge.underlying_protocol_id == AIRPLAY_ID
+    record = scenario.mass.config.get_protocol_record(BRIDGE_ID)
+    assert record is not None
+    assert record["values"]["underlying_player_id"] == AIRPLAY_ID

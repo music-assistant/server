@@ -667,6 +667,9 @@ class SendspinProvider(PlayerProvider):
 
         :param client_id: The bridge client id.
         """
+        if holder := self._bridge_holders.get(client_id):
+            # also for a refresh that follows one still waiting to register its protocol
+            self._bridge_underlying_protocols[client_id] = holder
         event_version = self._begin_client_event(client_id)
         self.mass.create_task(self._handle_client_added(client_id, event_version))
 
