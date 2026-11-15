@@ -28,6 +28,8 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.throttle_retry import RequestPriority, set_request_priority
 
 if TYPE_CHECKING:
+    from types import MethodType
+
     from music_assistant import MusicAssistant
 
 
@@ -44,6 +46,12 @@ class _Cacheable(Protocol):
 ProviderT = TypeVar("ProviderT", bound="_Cacheable")
 P = ParamSpec("P")
 R = TypeVar("R")
+
+# the attribute that marks a use_cache method with the category it keeps its results in
+_CATEGORY_ATTRIBUTE = "_use_cache_category"
+# per provider id and method, how often the kept results of each family of calls were
+# dropped: a call only keeps its result while that count stood still
+_drops: dict[tuple[str, str], dict[str, int]] = {}
 
 
 def use_cache(
@@ -97,13 +105,10 @@ def use_cache(
         @functools.wraps(func)
         async def wrapper(self: ProviderT, /, *args: P.args, **kwargs: P.kwargs) -> R:
             cache = self.mass.cache
-            provider_id = getattr(self, "instance_id", self.domain)
-
-            # create a cache key dynamically based on the (remaining) args/kwargs
-            cache_key_parts = [func.__name__, *args]
-            for key in sorted(kwargs.keys()):
-                cache_key_parts.append(f"{key}{kwargs[key]}")
-            cache_key = ".".join(map(str, cache_key_parts))
+            provider_id = _owner_id(self)
+            cache_key = _cache_key(func.__name__, *args, **kwargs)
+            # what this call fetches is only kept while its entry is not dropped meanwhile
+            drops = _drop_count(provider_id, func.__name__, cache_key)
 
             # single lookup that returns the entry, its freshness and whether it was found;
             # found distinguishes a stored None (a negative hit) from a cache miss. expired
@@ -124,8 +129,12 @@ def use_cache(
             if cache_hit and is_fresh:
                 return _reconstruct(cachedata)
 
-            def _store_task(result: R) -> Any:
-                return cache.set(
+            async def _store_task(result: R) -> None:
+                # a result fetched before its entry was dropped may predate the change that
+                # dropped it
+                if _drop_count(provider_id, func.__name__, cache_key) != drops:
+                    return
+                await cache.set(
                     key=cache_key,
                     data=cast("SerializableType", result),
                     expiration=expiration,
@@ -135,6 +144,9 @@ def use_cache(
                     persistent=persistent,
                     allow_expired_cache=allow_expired_cache,
                 )
+                if _drop_count(provider_id, func.__name__, cache_key) != drops:
+                    # the entry was dropped while it was being written
+                    await cache.delete(cache_key, category=category, provider=provider_id)
 
             if cache_hit and allow_expired_cache:
                 # serve stale data and refresh in the background;
@@ -216,9 +228,33 @@ def use_cache(
                 )
                 return cast("R", outcome.result)
 
+        setattr(wrapper, _CATEGORY_ATTRIBUTE, category)
         return wrapper
 
     return _decorator
+
+
+async def forget_cached(method: Callable[..., Awaitable[Any]], *args: Any) -> None:
+    """
+    Drop what use_cache keeps of a method for every call that starts with the given arguments.
+
+    Calls that pass further arguments are dropped too, and what a call that started earlier
+    is still fetching is not kept. A method without use_cache keeps nothing to drop.
+
+    :param method: The method, bound to the object it keeps its results for.
+    :param args: The leading positional arguments of the calls to drop.
+    """
+    func = getattr(method, "__func__", None)
+    if (category := getattr(func, _CATEGORY_ATTRIBUTE, None)) is None:
+        return
+    bound = cast("MethodType", method)
+    owner = cast("_Cacheable", bound.__self__)
+    provider_id = _owner_id(owner)
+    family = _cache_key(bound.__name__, *args)
+    families = _drops.setdefault((provider_id, bound.__name__), {})
+    families[family] = families.get(family, 0) + 1
+    await owner.mass.cache.delete(family, category=category, provider=provider_id)
+    await owner.mass.cache.delete_prefix(f"{family}.", provider=provider_id, category=category)
 
 
 @dataclass(slots=True)
@@ -242,3 +278,35 @@ def _resolve_return_hint(func: Callable[..., Any]) -> Any:
     :param func: The decorated function whose return-type annotation to resolve.
     """
     return get_type_hints(func)["return"]
+
+
+def _owner_id(owner: _Cacheable) -> str:
+    """Return the provider id an object keeps its use_cache results under."""
+    return cast("str", getattr(owner, "instance_id", owner.domain))
+
+
+def _cache_key(func_name: str, *args: Any, **kwargs: Any) -> str:
+    """
+    Return the key use_cache keeps the result of a call under.
+
+    :param func_name: The name of the cached method.
+    :param args: The positional arguments of the call, its owner left out.
+    :param kwargs: The keyword arguments of the call.
+    """
+    parts = [func_name, *args, *(f"{key}{kwargs[key]}" for key in sorted(kwargs))]
+    return ".".join(map(str, parts))
+
+
+def _drop_count(provider_id: str, func_name: str, key: str) -> int:
+    """
+    Return how often the families of calls a cache key belongs to were dropped.
+
+    :param provider_id: The provider id the key is kept under.
+    :param func_name: The name of the cached method.
+    :param key: The cache key of the call.
+    """
+    if (families := _drops.get((provider_id, func_name))) is None:
+        return 0
+    return sum(
+        count for family, count in families.items() if key == family or key.startswith(f"{family}.")
+    )

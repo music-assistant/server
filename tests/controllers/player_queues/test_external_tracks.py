@@ -1519,7 +1519,12 @@ async def test_track_still_to_look_up_costs_its_lookup_and_nothing_more(
     else:
         # one match by ISRC on the playlist's service per track
         assert _saved(playlist_provider) == ["match1", "match2", "match3"]
-        assert _calls(other) == ["get_playlist_tracks", *lookups, "add_playlist_tracks"]
+        assert _calls(other) == [
+            "get_playlist_tracks",
+            *lookups,
+            "add_playlist_tracks",
+            "forget_playlist_tracks",
+        ]
 
 
 @pytest.mark.parametrize("target", ["builtin", SERVICE])

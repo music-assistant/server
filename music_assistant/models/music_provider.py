@@ -54,6 +54,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.cache.helpers import forget_cached
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_text,
@@ -721,6 +722,17 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
         raise NotImplementedError
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """
+        Drop what the provider keeps of a playlist's tracks, so the next read fetches them anew.
+
+        Called once Music Assistant changed the playlist. The default drops what use_cache
+        keeps of get_playlist_tracks; override it when the provider keeps them another way.
+
+        :param prov_playlist_id: The playlist id on the provider.
+        """
+        await forget_cached(self.get_playlist_tracks, prov_playlist_id)
 
     async def move_playlist_track(
         self, prov_playlist_id: str, from_position: int, to_position: int
