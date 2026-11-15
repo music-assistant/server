@@ -10,7 +10,7 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderFeature, ProviderSharing, ProviderType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import MediaItemPalette
+from music_assistant_models.media_items import MediaItemMetadata, MediaItemPalette
 
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -212,3 +212,166 @@ async def test_lyrics_of_a_library_track_refresh_the_stored_item(
     # the refresh fills the household's item, so it runs as the server, not as the caller
     assert refreshing_users == [None]
     assert get_current_user() is None
+
+
+def _lyrics_provider(result: MediaItemMetadata | Exception | None) -> MagicMock:
+    """Return a metadata provider that looks up lyrics."""
+    provider = MagicMock()
+    provider.name = "lyrics"
+    provider.priority = 0
+    provider.supported_features = {ProviderFeature.LYRICS}
+    if isinstance(result, Exception):
+        provider.get_track_metadata = AsyncMock(side_effect=result)
+    else:
+        provider.get_track_metadata = AsyncMock(return_value=result)
+    return provider
+
+
+async def test_track_lyrics_prefers_lrc_from_later_provider(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An earlier plain result does not prevent looking for synchronized lyrics."""
+    mass_minimal.music = MusicController(mass_minimal)
+    first = _lyrics_provider(MediaItemMetadata(lyrics="first plain"))
+    second = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    track = create_track("spotify", "t1")
+    track.metadata.lyrics = "track plain"
+
+    with patch.object(mass_minimal, "get_providers", return_value=[first, second]):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == ("track plain", "[00:01.00]sync")
+    first.get_track_metadata.assert_awaited_once()
+    second.get_track_metadata.assert_awaited_once()
+    lookup_track = first.get_track_metadata.await_args.args[0]
+    assert lookup_track is track
+    assert (lookup_track.metadata.lyrics, lookup_track.metadata.lrc_lyrics) == (
+        "track plain",
+        None,
+    )
+    assert track.metadata.lyrics == "track plain"
+
+
+async def test_track_lyrics_returns_first_plain_result_after_searching_providers(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The first plain result is retained when no provider supplies LRC."""
+    mass_minimal.music = MusicController(mass_minimal)
+    first = _lyrics_provider(MediaItemMetadata(lyrics="first plain"))
+    second = _lyrics_provider(MediaItemMetadata(lyrics="second plain"))
+    track = create_track("spotify", "t1")
+    track.metadata.lyrics = "track plain"
+
+    with patch.object(mass_minimal, "get_providers", return_value=[first, second]):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == ("track plain", None)
+    first.get_track_metadata.assert_awaited_once()
+    second.get_track_metadata.assert_awaited_once()
+
+
+async def test_track_lyrics_returns_lrc_in_plain_field_immediately(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """LRC-formatted text in the plain field is recognized as synchronized lyrics."""
+    mass_minimal.music = MusicController(mass_minimal)
+    first = _lyrics_provider(MediaItemMetadata(lyrics="[00:01.00]sync"))
+    second = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:02.00]later"))
+    track = create_track("spotify", "t1")
+
+    with patch.object(mass_minimal, "get_providers", return_value=[first, second]):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == ("[00:01.00]sync", "[00:01.00]sync")
+    first.get_track_metadata.assert_awaited_once()
+    second.get_track_metadata.assert_not_awaited()
+
+
+async def test_track_lyrics_continues_after_provider_error(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A provider failure does not stop the search or discard a plain fallback."""
+    mass_minimal.music = MusicController(mass_minimal)
+    failed = _lyrics_provider(RuntimeError("lookup failed"))
+    plain = _lyrics_provider(MediaItemMetadata(lyrics="plain fallback"))
+    track = create_track("spotify", "t1")
+
+    with patch.object(mass_minimal, "get_providers", return_value=[failed, plain]):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == ("plain fallback", None)
+    failed.get_track_metadata.assert_awaited_once()
+    plain.get_track_metadata.assert_awaited_once()
+
+
+async def test_track_lyrics_returns_none_when_no_provider_finds_lyrics(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An empty lookup returns no plain or synchronized lyrics."""
+    mass_minimal.music = MusicController(mass_minimal)
+    empty = _lyrics_provider(None)
+    track = create_track("spotify", "t1")
+
+    with patch.object(mass_minimal, "get_providers", return_value=[empty]):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == (None, None)
+    empty.get_track_metadata.assert_awaited_once()
+
+
+async def test_track_lyrics_continues_after_plain_lyrics_from_own_provider(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Plain lyrics from a track's own provider do not prevent searching metadata providers."""
+    mass_minimal.music = MusicController(mass_minimal)
+    own_provider = MagicMock(spec=MusicProvider)
+    own_provider.supported_features = {ProviderFeature.LYRICS}
+    full_track = create_track("spotify", "t1")
+    full_track.metadata.lyrics = "own plain"
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    track = create_track("spotify", "t1")
+
+    with (
+        patch.object(mass_minimal.music, "get_visible_provider", return_value=own_provider),
+        patch.object(
+            mass_minimal.music.tracks, "get_provider_item", new=AsyncMock(return_value=full_track)
+        ),
+        patch.object(mass_minimal, "get_providers", return_value=[lyrics_provider]),
+    ):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == ("own plain", "[00:01.00]sync")
+    lyrics_provider.get_track_metadata.assert_awaited_once()
+
+
+async def test_track_lyrics_continues_after_plain_lyrics_from_library_refresh(
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Plain lyrics after a library refresh do not prevent searching metadata providers."""
+    mass_minimal.music = MusicController(mass_minimal)
+    track = create_track("library", "1")
+    track.provider = "library"
+    track.metadata.lyrics = "library plain"
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
+    stored_track = create_track("spotify", "t1")
+    stored_track.item_id, stored_track.provider = "1", "library"
+    stored_track.metadata.lyrics = "refreshed plain"
+    refresh = AsyncMock()
+
+    with (
+        patch.object(mass_minimal.music.tracks, "get", new=AsyncMock(return_value=stored_track)),
+        patch.object(metadata_controller, "_update_track_metadata", new=refresh),
+        patch.object(mass_minimal, "get_providers", return_value=[lyrics_provider]),
+    ):
+        result = await metadata_controller.get_track_lyrics(track)
+
+    assert result == ("library plain", "[00:01.00]sync")
+    refresh.assert_awaited_once()
+    lyrics_provider.get_track_metadata.assert_awaited_once()

@@ -234,11 +234,9 @@ def _lyrics_provider(lyrics: MediaItemMetadata | Exception | None) -> MagicMock:
     if isinstance(lyrics, Exception):
         provider.get_track_metadata = AsyncMock(side_effect=lyrics)
     else:
-        # like LRCLIB, a track that already has lyrics is not looked up
+        # like LRCLIB, a track that already has synchronized lyrics is not looked up
         provider.get_track_metadata = AsyncMock(
-            side_effect=lambda track: (
-                None if track.metadata.lyrics or track.metadata.lrc_lyrics else lyrics
-            )
+            side_effect=lambda track: None if track.metadata.lrc_lyrics else lyrics
         )
     return provider
 
@@ -280,18 +278,22 @@ async def test_forced_track_refresh_looks_up_the_lyrics_again() -> None:
 
 
 @pytest.mark.asyncio
-async def test_track_refresh_that_is_not_forced_keeps_the_stored_lyrics() -> None:
-    """A refresh that is due keeps the stored lyrics and reads the lookup cache."""
+async def test_track_refresh_that_is_not_forced_adds_lrc_to_stored_plain_lyrics() -> None:
+    """A refresh reads the lookup cache and adds synchronized lyrics to stored plain lyrics."""
     enrichment = _enrichment()
-    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="other"))
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
     enrichment.providers = [lyrics_provider]  # type: ignore[misc]
-    track = _track_with_lyrics("stored", None)
+    track = _track_with_lyrics("stored plain", None)
 
     await enrichment._update_track_metadata(track, force_refresh=False)
 
     _mass(enrichment).cache.handle_refresh.assert_called_once_with(False)
+    lyrics_provider.get_track_metadata.assert_awaited_once()
     _replaced_lyrics(enrichment).assert_not_awaited()
-    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == ("stored", None)
+    assert (track.metadata.lyrics, track.metadata.lrc_lyrics) == (
+        "stored plain",
+        "[00:01.00]sync",
+    )
 
 
 @pytest.mark.asyncio
@@ -309,14 +311,14 @@ async def test_forced_track_refresh_takes_the_lyrics_of_the_local_file_first() -
     _mass(enrichment).music.tracks.get_provider_item = AsyncMock(
         side_effect=lambda item_id, _instance, **_kwargs: prov_items[item_id]
     )
-    lyrics_provider = _lyrics_provider(MediaItemMetadata(lyrics="lrclib"))
+    lyrics_provider = _lyrics_provider(MediaItemMetadata(lrc_lyrics="[00:01.00]sync"))
     enrichment.providers = [lyrics_provider]  # type: ignore[misc]
     track = _track_with_lyrics("wrong", None, streaming, local)
 
     await enrichment._update_track_metadata(track, force_refresh=True)
 
     _replaced_lyrics(enrichment).assert_awaited_once_with(
-        "1", {"lyrics": "local plain", "lrc_lyrics": None}
+        "1", {"lyrics": "local plain", "lrc_lyrics": "[00:01.00]sync"}
     )
 
 
