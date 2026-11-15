@@ -28,11 +28,11 @@ class TestMenuLoading:
         async def fake_refresh() -> None:
             provider.menu = uk_menu
 
-        provider._refresh_menu_from_api = AsyncMock(side_effect=fake_refresh)  # type: ignore[method-assign]
+        provider.browse_manager._refresh_menu_from_api = AsyncMock(side_effect=fake_refresh)  # type: ignore[method-assign]
 
-        await provider._get_menu()
+        await provider.browse_manager._get_menu()
 
-        provider._refresh_menu_from_api.assert_awaited_once()
+        provider.browse_manager._refresh_menu_from_api.assert_awaited_once()
         assert provider.menu is uk_menu
 
     async def test_expired_menu_is_refreshed(
@@ -41,11 +41,11 @@ class TestMenuLoading:
         """Test that when a menu has expired, it is refreshed from the API."""
         provider.menu = uk_menu
         provider.menu_last_fetched = utc_timestamp() - Constants.SHORT_EXPIRATION - 1
-        provider._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
+        provider.browse_manager._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
 
-        await provider._get_menu()
+        await provider.browse_manager._get_menu()
 
-        provider._refresh_menu_from_api.assert_awaited_once()
+        provider.browse_manager._refresh_menu_from_api.assert_awaited_once()
 
     @pytest.mark.parametrize(
         "last_fetched", [1788517216, 1788517216 - Constants.SHORT_EXPIRATION + 1]
@@ -62,10 +62,10 @@ class TestMenuLoading:
         mock_menu_is_stale.return_value = False
         provider.menu = uk_menu
         provider.menu_last_fetched = last_fetched
-        provider._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
-        provider._convert_menu = AsyncMock(return_value=uk_menu.sub_items)  # type: ignore[method-assign]
+        provider.browse_manager._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
+        provider.browse_manager._convert_menu = AsyncMock(return_value=uk_menu.sub_items)  # type: ignore[method-assign]
 
-        result = await provider._get_menu()
+        result = await provider.browse_manager._get_menu()
 
-        provider._refresh_menu_from_api.assert_not_called()
+        provider.browse_manager._refresh_menu_from_api.assert_not_called()
         assert result == uk_menu.sub_items  # type: ignore[comparison-overlap]
