@@ -257,7 +257,7 @@ A provider's config entries are not declared in the manifest. They are built in 
 Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
 
 ## 📋 Menu actions
-A provider can add its own entries to the menu of a track, album, artist, playlist, radio station, podcast, podcast episode or audiobook. It declares them in `menu_actions` in its manifest, and every app draws them: the provider ships no code for the app. The demo plugin (`_demo_plugin_provider`) has a complete example.
+A provider can add its own entries to the menu of a track, album, artist, playlist, radio station, podcast, podcast episode or audiobook. It declares them in `menu_actions` in its manifest and implements what they do in its code; the Music Assistant app draws the entries, so the provider ships no code for the app. The demo plugin (`_demo_plugin_provider`) has a complete example.
 
 ```json
 "menu_actions": [
@@ -265,23 +265,23 @@ A provider can add its own entries to the menu of a track, album, artist, playli
     "id": "send_to_frame",
     "label": "Show on the picture frame",
     "media_types": ["album", "playlist"],
+    "scope": "library.read",
     "icon": "mdi-image-frame",
-    "command": "my_plugin/send_to_frame",
-    "plays": false
+    "requires_player": false
   }
 ]
 ```
 
 * `id`: names the action within the provider, in lower case letters, digits and underscores (at most 32).
-* `label`: the English text of the menu entry, at most 40 characters. Put the same text in the provider's `strings.json` under `menu_actions.<id>.label` to have it translated, as with the other texts of the provider.
+* `label`: the English text of the menu entry, one line of at most 40 characters. Put the same text in the provider's `strings.json` under `menu_actions.<id>.label` to have it translated, as with the other texts of the provider.
 * `media_types`: the kinds of media item the entry is offered for: `track`, `album`, `artist`, `playlist`, `radio`, `podcast`, `podcast_episode` and `audiobook`.
-* `icon`: optional, the name of a [Material Design Icon](https://pictogrammers.com/library/mdi), such as `mdi-image-frame`.
-* `command`: the API command the app calls when the entry is chosen. It starts with the domain of the provider (`<domain>/...`).
-* `plays`: optional, `true` when the action plays the item. The app then offers it with the ways to play the item and also passes the player to play on.
+* `scope`: what a user needs to use the action, such as `library.read`, `library.write` or `queues.control` (the values of `Scope` in the models). The app does not show the entry to a user without it, and the server refuses it.
+* `icon`: optional, the name of a [Material Design Icon](https://pictogrammers.com/library/mdi), such as `mdi-image-frame`, of at most 64 characters.
+* `requires_player`: optional, `true` when the action acts on a player. The app then offers it with the ways to play the item and also passes the player.
 
-The provider registers the command itself, in `loaded_in_mass` with `self.mass.register_api_command()`, with the scope of what the action does, and removes it again in `unload`. The command receives `uri`, the uri of the media item, and for an action that plays also `player_id`. It answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once. To say the action failed, raise a `MusicAssistantError`.
+When a user chooses an entry, the app calls the API command `providers/invoke_menu_action` with the instance of the provider, the id of the action, the `uri` of the item and, for an action that requires a player, the `player_id`. The server checks that the user may use that instance and holds the scope of the action, that the item is of one of its media types and that the user may use the player, and then calls `handle_menu_action(action_id, uri, player_id)` on that instance. Implement it in your provider: it answers nothing, or a `ConfigActionResult` with a message the app shows and/or a url it opens once. To say the action failed, raise a `MusicAssistantError`. The provider registers no command. A provider that allows several instances needs nothing extra: the entries are offered for each instance, and each instance handles the actions chosen for it.
 
-The server checks the declared actions when it loads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first five valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
+The server checks the declared actions when it reads the manifest. An action that breaks one of the rules above, has the same `id` as an earlier one, or comes after the first five valid ones is left out with a warning in the log, and the provider loads without it. For a provider in this repository the same rules fail the `check_manifests` check. A provider in its own repository declares menu actions in the same way, with its texts in the `strings.json` and `translations/` of its own folder.
 
 ## 🤝 Community providers
 Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
