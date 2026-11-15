@@ -369,3 +369,66 @@ async def test_rebase_publishes_its_position_step_on_the_same_commit(
     assert len(elapsed) >= 2, "fixture must publish a position before the stall"
     # Sub-threshold step: the periodic gate alone would have withheld it.
     assert abs(elapsed[-1] - elapsed[-2]) < 1.0
+
+
+async def test_a_commit_finishing_after_its_stream_was_replaced_leaves_the_session_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A skip can start the next stream while a commit of the previous one is in flight.
+
+    aiosendspin then stops the old stream mid-commit and the commit still returns, with a
+    timestamp from the old stream's buffer (up to 30 s ahead). The new playback has already
+    reset the session, so that chunk must not land in its history: the session would take
+    its anchor from it and place position 0 of the new stream up to 30 s in the future.
+    """
+    first_us = 1_000_000_000
+    session_ref: list[SendspinPlaybackSession] = []
+    replacement = _FakePushStream([first_us + 1_000_000])
+
+    class _ReplacedMidCommit(_FakePushStream):
+        calls = 0
+
+        async def commit_audio(self) -> int:
+            self.calls += 1
+            if self.calls == 2:
+                # The next playback starts a new stream and resets the session state.
+                session = session_ref[0]
+                self.is_stopped = True
+                session._push_stream = replacement  # type: ignore[assignment]
+                session._history.clear()
+                session._produced_audio_us = 0
+                session._timeline_start_us = None
+                return first_us + 30_000_000
+            return await super().commit_audio()
+
+    player = MagicMock()
+    player.player_id = "leader"
+    player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    player.mass.config.get_raw_player_config_value.return_value = "stereo"
+    player.mass.streams.get_stream.return_value = _fake_audio_source(4)
+    player.api.group.stop = AsyncMock()
+    session = SendspinPlaybackSession(player)
+    session_ref.append(session)
+    monkeypatch.setattr(
+        session, "_select_session_pcm_formats", lambda: (_PCM_FORMAT, _SENDSPIN_PCM_FORMAT)
+    )
+    old_stream = _ReplacedMidCommit([first_us + i * _CHUNK_DURATION_US for i in range(4)])
+    monkeypatch.setattr(session, "_create_push_stream", lambda: old_stream)
+    monkeypatch.setattr(
+        "music_assistant.providers.sendspin.playback.import_module_in_thread", AsyncMock()
+    )
+    seen: list[tuple[int, int | None]] = []
+    original_prune = SendspinPlaybackSession._prune_history_locked
+
+    def _recording_prune(self: SendspinPlaybackSession, now_monotonic_us: int) -> None:
+        seen.append((len(self._history), self._timeline_start_us))
+        original_prune(self, now_monotonic_us)
+
+    monkeypatch.setattr(session, "_prune_history_locked", _recording_prune.__get__(session))
+
+    await session._run_playback(PlayerMedia(uri="library://track/1"))
+
+    # Only the first chunk was taken; the one returned after the replacement was not.
+    assert seen == [(1, first_us)]
+    cast("MagicMock", player.on_first_audio_heard).assert_not_called()

@@ -987,6 +987,14 @@ class SendspinPlaybackSession:
                     timeline_start_us=int(commit_start_us) - self._produced_audio_us,
                 )
                 async with self._state_lock:
+                    # A commit in flight when the next playback replaced this stream still
+                    # returns, stamped from the old stream's buffer (up to 30 s ahead). The
+                    # session state belongs to the new stream by then: leave it alone.
+                    if push_stream.is_stopped or self._push_stream is not push_stream:
+                        self.player.logger.debug(
+                            "Stopping commit loop: the push stream was replaced"
+                        )
+                        break
                     self._history.append(committed_history_chunk)
                     anchor_us = self._playing_timeline_start_us_locked(commit_now_us)
                     self._timeline_start_us = anchor_us
