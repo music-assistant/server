@@ -50,8 +50,9 @@ if TYPE_CHECKING:
 
 # What each readiness outcome means for the join anchor: a projection only moves
 # it when it clears the join floor, which otherwise carries the anchor alone, so
-# the note says which bound the outcome set. STALLED has no note because it never
-# reaches a join anchor - a stalled joiner is refused the join before that.
+# the note says which bound the outcome set. STALLED has no note: the binary only
+# reports a stall well after this wait has given up, and a joiner that stalls is
+# removed from the session then (see remove_stalled_joiner).
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
     ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring no earlier than that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
@@ -406,6 +407,26 @@ class AirPlayStreamSession:
             self.sync_clients.remove(airplay_player)
         await self._cleanup_after_removal(airplay_player, reason=reason)
 
+    async def remove_stalled_joiner(self, airplay_player: AirPlayPlayer) -> None:
+        """
+        Remove a late joiner whose receiver never answered the server's PTP clock.
+
+        Such a receiver renders silence, so the group plays on without it and the
+        player reports idle instead of playing.
+
+        :param airplay_player: The late joiner to remove.
+        """
+        async with self._lock:
+            if airplay_player not in self.sync_clients:
+                return
+            self.sync_clients.remove(airplay_player)
+        self.prov.logger.warning(
+            "Removed late joiner %s from the group: its receiver never answered the "
+            "server's PTP clock, so it would only render silence",
+            airplay_player.display_name,
+        )
+        await self._cleanup_after_removal(airplay_player, reason="receiver clock stalled")
+
     async def stop_client(
         self, airplay_player: AirPlayPlayer, reason: str = "stop_client called"
     ) -> None:
@@ -482,20 +503,6 @@ class AirPlayStreamSession:
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner connection failed")
-            return
-
-        if readiness is ClockReadiness.STALLED:
-            # The receiver never answered our clock, so it would render silence
-            # for as long as it stayed in the group while every other signal
-            # said it was playing. Better to leave it out: the group keeps
-            # playing and the player stays idle, which is the visible truth.
-            # The binary's own report names the device and the ports to check.
-            self.prov.logger.warning(
-                "Late joiner %s: not adding it to the group - its receiver never answered "
-                "the server's PTP clock, so it would render silence",
-                airplay_player.protocol_id,
-            )
-            await self.stop_client(airplay_player, reason="receiver clock stalled")
             return
 
         pcm_sample_size = self._pcm_byte_rate
