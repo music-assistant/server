@@ -1265,6 +1265,28 @@ async def test_another_format_starts_the_stream_again(rig: _Rig) -> None:
     )
 
 
+async def test_another_format_before_the_first_audio_starts_the_stream_again(rig: _Rig) -> None:
+    """A stream that changes its format before its audio arrives is requested in that format."""
+    await rig.start_hires()
+    first = await rig.start_stream()
+
+    # the same format: the session the stream start request began is the one of the stream
+    rig.role.on_stream_start()
+    await _settle()
+    assert rig.session is first
+
+    assert rig.role.set_preferred_format(None)
+    rig.role.on_stream_start()
+    await _settle()
+
+    assert rig.session is not first
+    assert first.ended
+    assert (first.sample_rate, rig.session.sample_rate) == (48000, 44100)
+    assert rig.client.play_url.await_args.kwargs["mime_type"] == (
+        "audio/pcm;rate=44100;bitrate=24;channels=2"
+    )
+
+
 # ---------------------------------------------------------------- chunk placement
 
 
@@ -2122,6 +2144,21 @@ async def test_a_track_change_reaches_the_player(rig: _Rig) -> None:
     rig.bridge.update_now_playing()
     await _settle()
     rig.client.update_metadata.assert_awaited_once_with({})
+
+
+async def test_a_track_change_while_the_stream_is_requested_reaches_the_player(rig: _Rig) -> None:
+    """The request of a stream holds the track of its moment: a change during it follows."""
+    rig.protocol.player.current_media = _media("One")
+
+    async def _play_url(**_kwargs: Any) -> None:
+        # the group moves on while the request goes out to the player
+        rig.protocol.player.current_media = _media("Two")
+
+    rig.client.play_url.side_effect = _play_url
+    await rig.start_stream()
+
+    assert rig.client.play_url.await_args.kwargs["metadata"] == _metadata("One")
+    rig.client.update_metadata.assert_awaited_once_with(_metadata("Two"))
 
 
 async def test_a_bridge_that_does_not_play_shows_nothing(rig: _Rig) -> None:

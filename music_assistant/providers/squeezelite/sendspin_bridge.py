@@ -674,7 +674,12 @@ class SendspinSqueezeliteBridge:
     def _on_role_stream_start(self) -> None:
         """Start a session for a stream that begins without a stream start request."""
         session = self._session
-        if session is not None and not session.ended and session.first_audible_us is None:
+        if (
+            session is not None
+            and not session.ended
+            and session.first_audible_us is None
+            and session.audio_format == self._role_format()
+        ):
             # the session the stream start request of this stream began
             return
         self._begin_session()
@@ -810,16 +815,20 @@ class SendspinSqueezeliteBridge:
                 f"{self.mass.streams.base_url}{BRIDGE_STREAM_PATH}"
                 f"?player_id={self.protocol.protocol_id}&sid={session.session_id}"
             )
+            now_playing = self._now_playing()
             # flushes what the player holds and powers it on
             await self._client.play_url(
                 url=url,
                 mime_type=session.mime_type,
-                metadata=self._now_playing(),
+                metadata=now_playing,
                 send_flush=True,
                 autostart=False,
                 stream_threshold=STREAM_THRESHOLD_KB,
                 output_threshold=OUTPUT_THRESHOLD,
             )
+            if (current := self._now_playing()) != now_playing:
+                # the group moved on while the request went out, which that update missed
+                await self._client.update_metadata(current)
             session.stream_requested = True
             async with asyncio.timeout(START_TIMEOUT_SECONDS):
                 await session.start_decided.wait()
