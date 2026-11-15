@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     SleepTimerMode,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
@@ -419,7 +420,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     try:
                         with user_auth_context(playback_user):
                             fetched_item = await self.mass.music.get_item_by_uri(queue_item.uri)
-                    except (ResourceTemporarilyUnavailable, RetriesExhausted) as err:
+                    except (
+                        ResourceTemporarilyUnavailable,
+                        RetriesExhausted,
+                        # whether the queue may play from the item's source is for the
+                        # stream details to say
+                        InsufficientPermissions,
+                    ) as err:
                         self.logger.warning(
                             "Could not fetch full details of %s, playing it as listed: %s",
                             queue_item.uri,

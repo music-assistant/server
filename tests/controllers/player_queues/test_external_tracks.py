@@ -18,6 +18,7 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
+    ContentType,
     ExternalID,
     ImageType,
     MediaType,
@@ -25,6 +26,7 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
     QueueOption,
+    StreamType,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -44,6 +46,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem, QueueItemOrigin
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.music import MusicController
@@ -836,6 +839,62 @@ async def test_details_of_a_track_are_fetched_as_before_for_the_queue_user(
     mine.get_track.assert_awaited_once_with("t8")
     mine.get_album.assert_awaited_once_with("t8_album")
     assert _requests(mine) == 2
+
+
+@pytest.mark.parametrize("userid", [None, MEMBER.user_id], ids=["no user", "another user"])
+async def test_track_on_a_source_the_queue_may_not_use_is_skipped(
+    music: MusicController, userid: str | None
+) -> None:
+    """A track whose details may not be fetched is left to the stream, which has it skipped."""
+    theirs, shared = _provider(THEIRS), _provider(SHARED)
+    theirs.get_track = AsyncMock(return_value=_provider_track(THEIRS, "s9", image=False))
+    playable = _provider_track(SHARED, "t9", image=False)
+    shared.get_track = AsyncMock(return_value=playable)
+    shared.get_stream_details = AsyncMock(
+        return_value=StreamDetails(
+            provider=SHARED,
+            item_id="t9",
+            audio_format=AudioFormat(content_type=ContentType.FLAC),
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.HTTP,
+            path="http://test.invalid/t9.flac",
+            duration=215,
+        )
+    )
+    _load_providers(music, theirs, shared)
+    set_music_source_access(
+        music.mass,
+        {
+            THEIRS: ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
+            SHARED: ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    ctrl = _controller(music, userid=userid)
+    # the stream details decide for real which source the queue may play from
+    ctrl.mass.providers = [theirs, shared]
+    ctrl.mass.get_provider = music.mass.get_provider
+    ctrl.mass.streams.get_config_value.return_value = -17
+    ctrl.mass.streams.audio = StreamsAudio(ctrl.mass)
+    ctrl.update_items = Mock()
+    current, blocked, following = _queue(
+        ctrl,
+        _provider_track(SHARED, "t1"),
+        _provider_track(THEIRS, "s9", image=False),
+        _provider_track(SHARED, "t9", image=False),
+    )
+
+    # the server itself has the next item loaded, as when the queue preloads it
+    with pytest.raises(MediaNotFoundError) as excinfo:
+        await ctrl._load_item(blocked)
+    assert excinfo.value.translation_key == "media_not_available_for_user"
+
+    next_item = await ctrl.load_next_queue_item(QUEUE_ID, current.queue_item_id)
+
+    assert next_item is following
+    assert next_item.media_item is playable
+    assert blocked.available is False
+    theirs.get_stream_details.assert_not_called()
+    ctrl.update_items.assert_called_once()
 
 
 async def test_loads_of_the_same_item_at_once_share_one_lookup(music: MusicController) -> None:
