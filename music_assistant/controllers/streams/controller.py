@@ -1383,6 +1383,17 @@ class StreamsController(CoreController):
                         self.mass.player_queues.release_failed_item_source(queue_id, queue_item_id),
                         task_name=f"release_dropped_item_source_{queue_id}",
                     )
+            if (
+                request.method == "GET"
+                and queue_item_id not in self._requested_item_ids(queue_id, session_id)
+                and self.mass.player_queues.index_by_id(queue_id, queue_item_id) is None
+            ):
+                # the item left the queue while this request kept its source, and no other
+                # request reaches that source any more
+                self.mass.create_task(
+                    self.mass.player_queues.release_left_item_source(queue_id, queue_item),
+                    task_name=f"release_left_item_source_{queue_id}",
+                )
             # Paired with on_source_selected — fires regardless of how streaming
             # ended (normal completion, client disconnect, exception). Lets
             # NAMED_PIPE plugins release ownership without depending on an

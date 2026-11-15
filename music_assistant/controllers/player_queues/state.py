@@ -97,6 +97,9 @@ class PlayerQueueData:
     session_id: str | None = None
     # per-item play log for the active flow-mode stream
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
+    # queue_item_id the flow-mode stream selected last; it plays that item from then on, also
+    # before the item has its entry in the play log
+    flow_incoming_item_id: str | None = None
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
     # queue_item_id whose audio was most recently asked to be prepared ahead of its playback

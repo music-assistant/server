@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import MethodType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -97,8 +97,10 @@ class _Harness:
         player_queues.get.return_value = self.queue_data.queue
         player_queues.queue_data.return_value = self.queue_data
         player_queues.get_item.side_effect = self._queues.get_item
+        player_queues.index_by_id.side_effect = self._queues.index_by_id
         player_queues.track_loaded_in_buffer.side_effect = self._track_loaded
         player_queues.release_failed_item_source = self.release
+        player_queues.release_left_item_source.side_effect = self._release_left
 
         player = MagicMock()
         player.stop_called = False
@@ -158,10 +160,35 @@ class _Harness:
         """Wait for the source releases running in the background."""
         await asyncio.gather(*self._background)
 
+    def take_off_queue(self, *items: QueueItem) -> None:
+        """
+        Take items off the queue, as an edit of the queue does.
+
+        :param items: The queue items to take off.
+        """
+        mass = cast("MagicMock", self._queues.mass)
+        mass.streams.requested_item_ids = MethodType(
+            StreamsController.requested_item_ids, self.ctrl
+        )
+        mass.streams.audio.fade_into_pending.return_value = False
+        mass.streams.audio.drop_fade_into = AsyncMock()
+        mass.create_task.side_effect = self._create_task
+        self._queues.signal_update = MagicMock()  # type: ignore[method-assign]
+        # the queue double has no position of its own; none of these items is the current one
+        queue = self.queue_data.queue
+        queue.current_item = queue.current_index = queue.index_in_buffer = None
+        kept = [item for item in self.queue_data.items if item not in items]
+        self._queues.update_items(QUEUE_ID, kept)
+
     async def _release(self, queue_id: str, queue_item_id: str) -> None:
         """Record the release, then let the queue release the item's source for real."""
         self.calls.append(f"release:{queue_item_id}")
         await self._queues.release_failed_item_source(queue_id, queue_item_id)
+
+    async def _release_left(self, queue_id: str, queue_item: QueueItem) -> None:
+        """Record the release, then let the queue release the item's source for real."""
+        self.calls.append(f"release_left:{queue_item.queue_item_id}")
+        await self._queues.release_left_item_source(queue_id, queue_item)
 
     def _track_loaded(self, queue_id: str, item_id: str) -> None:
         """Record the item whose first chunk reached the player, as the queue does."""
@@ -386,6 +413,57 @@ async def test_a_track_dropped_before_its_first_audio_hands_its_slot_to_the_next
         await harness.start("upcoming")[0]
     await harness.settle()
     assert harness.calls == ["release:dropped", "details:upcoming", "details:upcoming"]
+
+
+async def test_a_track_taken_off_the_queue_while_requested_hands_its_slot_over_when_dropped() -> (
+    None
+):
+    """A track the player still had open when the queue let go of it frees its slot once dropped."""
+    removed, upcoming = _item("removed", LIMITED), _item("upcoming")
+    removed_source = _buffer(removed)
+    harness = _Harness(removed, upcoming)
+    harness.details_released.set()
+    stream, player = harness.start("removed")
+    # the player asked for it, and its first audio has not reached the player yet
+    await player.next_write()
+
+    harness.take_off_queue(removed)
+    await harness.settle()
+    # the player may still play it, so the edit leaves its source alone
+    removed_source.clear.assert_not_awaited()
+
+    # the player gives up on it and asks for the track that now plays next
+    player.drop()
+    await stream
+    with pytest.raises(web.HTTPNotFound):
+        await harness.start("upcoming")[0]
+    await harness.settle()
+
+    removed_source.clear.assert_awaited_once()
+
+
+async def test_a_track_taken_off_the_queue_keeps_its_source_while_another_request_reads_it() -> (
+    None
+):
+    """Only the end of the last request for a track that left the queue frees its source."""
+    removed, upcoming = _item("removed", LIMITED), _item("upcoming")
+    removed_source = _buffer(removed)
+    harness = _Harness(removed, upcoming)
+    first, first_player = harness.start("removed")
+    await _stream_first_chunk(first_player)
+    second, second_player = harness.start("removed")
+    await second_player.next_write()
+    harness.take_off_queue(removed)
+
+    first_player.drop()
+    await first
+    await harness.settle()
+    removed_source.clear.assert_not_awaited()
+
+    second_player.drop()
+    await second
+    await harness.settle()
+    removed_source.clear.assert_awaited_once()
 
 
 async def test_asking_again_for_a_track_dropped_before_its_first_audio_keeps_its_source() -> None:

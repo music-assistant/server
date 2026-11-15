@@ -10,20 +10,25 @@ the track that does play next needs that slot, and the capture nobody needs has 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
-from typing import Any
+from functools import partial
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import (
     ContentType,
+    CrossfadeMode,
     MediaType,
     PlaybackState,
     ProviderType,
     QueueOption,
+    RepeatMode,
     StreamType,
 )
+from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -34,6 +39,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import CrossfadeHandover, StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
 INSTANCE = "single--account_x"
@@ -42,6 +48,8 @@ SESSION_ID = "session-a"
 PCM_FORMAT = AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=8000, bit_depth=16)
 # seconds a speaker's request may wait for the slot in these tests
 SHORT_WAIT = 2.0
+
+Source = Callable[[], AsyncGenerator[bytes]]
 
 
 class _SingleStreamProvider(MusicProvider):
@@ -62,18 +70,43 @@ class _TwoStreamProvider(MusicProvider):
         return 2
 
 
-async def _realtime_capture(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+def _seconds(count: int) -> bytes:
+    """Return the given number of seconds of audible PCM audio."""
+    # not silence: a held-back tail reads zero-filled audio as trailing silence
+    return b"\x10\x20" * (PCM_FORMAT.pcm_sample_size // 2 * count)
+
+
+async def _realtime_capture() -> AsyncGenerator[bytes]:
     """Deliver the first seconds of a track, then keep capturing it far from its end."""
     for _ in range(3):
-        yield b"\x00" * PCM_FORMAT.pcm_sample_size
+        yield _seconds(1)
     await asyncio.Event().wait()
 
 
-def _track_item(name: str) -> QueueItem:
+async def _source(
+    before: int, after: int = 0, gate: asyncio.Event | None = None
+) -> AsyncGenerator[bytes]:
+    """
+    Deliver a track of the given seconds, holding at the gate after the first part.
+
+    :param before: Seconds delivered right away.
+    :param after: Seconds delivered once the gate opens.
+    :param gate: The gate between the two parts, if the source holds there.
+    """
+    for _ in range(before):
+        yield _seconds(1)
+    if gate is not None:
+        await gate.wait()
+    for _ in range(after):
+        yield _seconds(1)
+
+
+def _track_item(name: str, realtime: bool = True) -> QueueItem:
     """
     Build a queue item of a track on the single-slot provider, with its stream details resolved.
 
     :param name: Neutral name of the track, also used for its ids.
+    :param realtime: Whether its source delivers the audio at playback pace.
     """
     mapping = ProviderMapping(
         item_id=f"track-{name}",
@@ -101,7 +134,7 @@ def _track_item(name: str) -> QueueItem:
         stream_type=StreamType.CUSTOM,
         duration=198,
         queue_id=QUEUE_ID,
-        is_realtime=True,
+        is_realtime=realtime,
     )
     return item
 
@@ -123,7 +156,15 @@ class _Rig:
         self.provider = provider_cls(MagicMock(), manifest, config)
         self.provider.available = True
         self.items: list[QueueItem] = []
-        self.tasks: list[asyncio.Future[Any]] = []
+        self.tasks: list[asyncio.Task[Any]] = []
+        # the sources of the tracks by name; a track without one is captured in real time
+        self.sources: dict[str, Source] = {}
+        # schedules tasks with the server's own create_task: started eagerly, tracked by id
+        self._task_host = SimpleNamespace(
+            _tracked_tasks={},
+            loop=asyncio.get_running_loop(),
+            verify_event_loop_thread=lambda _what: None,
+        )
         mass = MagicMock()
         mass.get_provider.side_effect = lambda instance, **_kwargs: (
             self.provider if instance == INSTANCE else None
@@ -132,32 +173,43 @@ class _Rig:
         mass.music.providers = []
         mass.config.get_raw_core_config_value.side_effect = lambda _core, _key, default: default
         mass.create_task.side_effect = self._create_task
+        mass.cancel_task.side_effect = partial(
+            MusicAssistant.cancel_task, cast("Any", self._task_host)
+        )
         mass.streams.audio_analysis.start_analysis = AsyncMock()
         self.queues = PlayerQueuesController.__new__(PlayerQueuesController)
         self.queues.mass = mass
         self.queues.logger = MagicMock()
         self.queues._queue_data = {}
         self.queues.signal_update = MagicMock()  # type: ignore[method-assign]
-        # the stream details are resolved up front, so loading the next item only finds it
         self.queues.load_next_queue_item = AsyncMock(  # type: ignore[method-assign]
-            side_effect=lambda queue_id, current_id: self.queues.get_next_item(queue_id, current_id)
+            side_effect=self._load_next
         )
         mass.player_queues = self.queues
         self.mass = mass
         self.audio = StreamsAudio(mass)
-        self.audio._get_media_stream = _realtime_capture  # type: ignore[method-assign]
+        self.audio._get_media_stream = self._media_stream  # type: ignore[method-assign,assignment]
         mass.streams.audio = self.audio
 
-    def play(self, *names: str) -> list[QueueItem]:
+    def play(
+        self,
+        *names: str,
+        current: int = 0,
+        repeat: RepeatMode = RepeatMode.OFF,
+        realtime: bool = True,
+    ) -> list[QueueItem]:
         """
-        Put a queue on the rig that plays the first of the given tracks.
+        Put a queue on the rig that plays one of the given tracks.
 
         The playing track's own capture has finished, as it has when the server prepares the
         track after it on a single-slot source.
 
-        :param names: The tracks of the queue, the playing one first.
+        :param names: The tracks of the queue, in queue order.
+        :param current: Index of the track that plays.
+        :param repeat: The queue's repeat mode.
+        :param realtime: Whether the sources of the tracks deliver their audio at playback pace.
         """
-        items = [self.track(name) for name in names]
+        items = [self.track(name, realtime) for name in names]
         queue = PlayerQueue(
             queue_id=QUEUE_ID,
             active=True,
@@ -165,22 +217,24 @@ class _Rig:
             available=True,
             items=len(items),
             state=PlaybackState.PLAYING,
-            current_index=0,
-            current_item=items[0],
-            index_in_buffer=0,
+            current_index=current,
+            current_item=items[current],
+            index_in_buffer=current,
+            repeat_mode=repeat,
         )
         self.queues._queue_data[QUEUE_ID] = PlayerQueueData(
             queue=queue, items=list(items), session_id=SESSION_ID
         )
         return items
 
-    def track(self, name: str) -> QueueItem:
+    def track(self, name: str, realtime: bool = True) -> QueueItem:
         """
         Build a queue item the rig cleans up after the test.
 
         :param name: Neutral name of the track.
+        :param realtime: Whether its source delivers the audio at playback pace.
         """
-        item = _track_item(name)
+        item = _track_item(name, realtime)
         self.items.append(item)
         return item
 
@@ -224,8 +278,9 @@ class _Rig:
         )
 
     async def settle(self) -> None:
-        """Wait for the work the controller scheduled so far."""
-        await asyncio.gather(*self.tasks)
+        """Wait for the work the controller scheduled, including what that work schedules."""
+        while pending := [task for task in self.tasks if not task.done()]:
+            await asyncio.gather(*pending)
 
     async def close(self) -> None:
         """Stop every capture and task the test left running."""
@@ -235,11 +290,22 @@ class _Rig:
             if item.streamdetails and (buffer := item.streamdetails.buffer):
                 await buffer.clear()
 
-    def _create_task(self, target: Awaitable[Any], **_kwargs: Any) -> asyncio.Future[Any]:
-        """Run a task the controller schedules, keeping it so a test can wait for it."""
-        task = asyncio.ensure_future(target)
+    def _create_task(self, target: Awaitable[Any], *args: Any, **kwargs: Any) -> asyncio.Task[Any]:
+        """Start a task the controller schedules as the server does, keeping it for settle."""
+        task = MusicAssistant.create_task(cast("Any", self._task_host), target, *args, **kwargs)
         self.tasks.append(task)
         return task
+
+    async def _load_next(self, queue_id: str, current_item_id: str) -> QueueItem:
+        """Find the item after the given one; its stream details are resolved up front."""
+        if (next_item := self.queues.get_next_item(queue_id, current_item_id)) is None:
+            raise QueueEmpty("No more tracks left in the queue.")
+        return next_item
+
+    def _media_stream(self, streamdetails: StreamDetails, *_args: Any) -> AsyncGenerator[bytes]:
+        """Open the source of a track, as the provider would."""
+        name = streamdetails.item_id.removeprefix("track-")
+        return self.sources.get(name, _realtime_capture)()
 
 
 @pytest.fixture
@@ -356,6 +422,102 @@ async def test_a_fade_being_mixed_into_a_removed_track_finishes_before_its_relea
     assert QUEUE_ID not in rig.audio._crossfade_handover
 
 
+async def test_the_track_after_the_wrap_gives_its_slot_to_a_track_played_next(rig: _Rig) -> None:
+    """With repeat on, the first track prepared to follow the last one makes way for play next."""
+    first, _second, _third, playing = rig.play(
+        "track 0", "track 1", "track 2", "track 3", current=3, repeat=RepeatMode.ALL
+    )
+    prepared_capture = await rig.prepare_next(playing)
+    assert rig.queues.get_next_item(QUEUE_ID, playing.queue_item_id) is first
+    new_next = rig.track("track 5")
+
+    await rig.queues._enqueue_with_option(QUEUE_ID, [new_next], QueueOption.NEXT)
+    buffer = await rig.ask(new_next)
+
+    assert buffer is not None
+    assert buffer.is_buffering
+    assert not prepared_capture.is_buffering
+
+
+async def test_a_track_the_flow_stream_took_plays_in_full_when_the_queue_changes(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A track the flow stream took to play next keeps its source through a change of the queue.
+
+    The change lands while the flow stream builds its crossfade into that track, before any of
+    the track's audio is out.
+    """
+    outgoing, incoming = rig.play("track 0", "track 1", realtime=False)
+    queue = rig.queues._queue_data[QUEUE_ID].queue
+    gate = asyncio.Event()
+    rig.sources["track 0"] = partial(_source, 30)
+    rig.sources["track 1"] = partial(_source, 20, 10, gate)
+    rig.mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    # the player reports no progress here, so nothing would ever let these finish
+    rig.queues._preload_next_item = MagicMock()  # type: ignore[method-assign]
+    rig.queues.queue_buffer_completed = MagicMock()  # type: ignore[method-assign]
+    rig.audio.setup()
+
+    async def _item_stream(
+        queue_item: QueueItem,
+        seek_position: int = 0,
+        prepared_buffer: AudioBuffer | None = None,
+        **_kwargs: Any,
+    ) -> AsyncGenerator[bytes]:
+        # the real stream without its decoding: the item's own buffer, refused like the
+        # real one refuses a prepared buffer that is no longer the item's or no longer valid
+        assert queue_item.streamdetails is not None
+        if prepared_buffer is not None and (
+            queue_item.streamdetails.buffer is not prepared_buffer
+            or not prepared_buffer.is_valid(seek_position * 1000)
+        ):
+            return
+        buffer = prepared_buffer or await rig.ask(queue_item)
+        assert buffer is not None
+        async for chunk in buffer.get_raw_stream(seek_position * 1000):
+            yield chunk
+
+    async def _build_while_the_queue_changes(**_kwargs: Any) -> SimpleNamespace:
+        await rig.queues._enqueue_with_option(
+            QUEUE_ID, [rig.track("track 5", realtime=False)], QueueOption.NEXT
+        )
+        await rig.settle()
+        gate.set()
+        return SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=0.0, crossfade_duration=8.0, pre_crossfade_duration=0.0
+            )
+        )
+
+    async def _concat_mix(
+        _smart_fade: object, *, fade_in_part: AsyncGenerator[bytes], fade_out_part: bytes, **_: Any
+    ) -> AsyncGenerator[bytes]:
+        # a lossless stand-in for the mixer, so every byte of both tracks stays countable
+        yield fade_out_part
+        async for chunk in fade_in_part:
+            yield chunk
+
+    monkeypatch.setattr(rig.audio, "get_queue_item_stream", _item_stream)
+    monkeypatch.setattr(
+        rig.audio.smart_fades_mixer, "build", AsyncMock(side_effect=_build_while_the_queue_changes)
+    )
+    monkeypatch.setattr(rig.audio.smart_fades_mixer, "mix", _concat_mix)
+
+    emitted = 0
+    async for chunk in rig.audio.get_queue_flow_stream(
+        queue, outgoing, PCM_FORMAT, session_id=SESSION_ID
+    ):
+        emitted += len(chunk)
+        await asyncio.sleep(0)
+
+    # all of both tracks, 30 seconds each
+    assert emitted == 60 * PCM_FORMAT.pcm_sample_size
+    assert incoming.streamdetails is not None
+    assert incoming.streamdetails.buffer is not None
+    assert not incoming.streamdetails.buffer.cancelled
+
+
 async def test_a_removed_track_a_speaker_still_streams_keeps_its_capture(rig: _Rig) -> None:
     """A speaker that asked for the prepared track before the change keeps receiving it."""
     playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
@@ -400,18 +562,25 @@ async def test_the_playing_track_keeps_its_capture_when_what_follows_it_changes(
 
 
 @pytest.mark.parametrize(
+    ("current_index", "index_in_buffer"),
+    [(1, 1), (0, 1), (1, 2)],
+    # it plays; the player took it while the one before still plays; it plays while the player
+    # already took the one after it
+    ids=["playing", "taken_by_the_player", "playing_with_the_next_taken"],
+)
+@pytest.mark.parametrize(
     "option", [QueueOption.REPLACE_NEXT, QueueOption.NEXT], ids=["replace_next", "next"]
 )
 async def test_a_prepared_track_that_plays_keeps_its_capture_when_what_follows_it_changes(
-    rig: _Rig, option: QueueOption
+    rig: _Rig, option: QueueOption, current_index: int, index_in_buffer: int
 ) -> None:
-    """Once the prepared track plays, a change of the tracks after it leaves its capture alone."""
-    first, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    """Once the prepared track plays or the player took it, changes after it leave it alone."""
+    first, _prepared, _later = rig.play("track 0", "track 1", "track 2")
     prepared_capture = await rig.prepare_next(first)
-    # the speaker moved on to the prepared track, which now plays from that capture
     queue = rig.queues._queue_data[QUEUE_ID].queue
-    queue.current_index = queue.index_in_buffer = 1
-    queue.current_item = prepared
+    queue.current_index = current_index
+    queue.current_item = rig.queues.get_item(QUEUE_ID, current_index)
+    queue.index_in_buffer = index_in_buffer
 
     await rig.queues._enqueue_with_option(QUEUE_ID, [rig.track("track 5")], option)
     await rig.settle()
