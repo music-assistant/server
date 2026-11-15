@@ -78,11 +78,8 @@ from music_assistant.providers.musicbrainz.provider import recording_matches_tra
 from .base import (
     EXTERNAL_ID_LOOKUP_ERRORS,
     MAX_EXTERNAL_ID_MATCH_LOOKUPS,
-    UNREACHABLE_SOURCE_ERRORS,
     MediaControllerBase,
     TrackSyncDetails,
-    unanswered_lookup_error,
-    unreachable_source_error,
 )
 
 if TYPE_CHECKING:
@@ -1841,12 +1838,11 @@ class TracksController(MediaControllerBase[Track]):
         if musicbrainz is None:
             raise ProviderUnavailableError("MusicBrainz is not available")
         try:
-            recording = await musicbrainz.get_recording_details(recording_id)
+            with self._musicbrainz_request():
+                recording = await musicbrainz.get_recording_details(recording_id)
         except InvalidDataError as err:
             self.logger.debug("Recording %s could not be looked up: %s", recording_id, err)
             return None
-        except UNREACHABLE_SOURCE_ERRORS as err:
-            raise unreachable_source_error("MusicBrainz", err) from err
         isrcs = sorted(
             {
                 normalize_external_id(ExternalID.ISRC, isrc)
@@ -1871,8 +1867,9 @@ class TracksController(MediaControllerBase[Track]):
         except EXTERNAL_ID_LOOKUP_ERRORS as err:
             # a linked provider in trouble is still asked by ISRC, as are the others
             self.logger.debug("Linked track of recording %s not fetched: %s", recording_id, err)
-            could_not_answer = unanswered_lookup_error(
-                err, f"the music provider MusicBrainz links recording {recording_id} to"
+            # which linked provider failed is not known here
+            could_not_answer = self._unanswered_lookup_error(
+                err, "the linked music provider", named=False
             )
         track = None
         if isrcs:
