@@ -181,7 +181,12 @@ async def test_a_returning_device_resumes_where_its_queue_was(scenario: Scenario
     assert returned.commands[0][1].queue_item_id == item_id
     resumed = scenario.queue(player_id)
     assert resumed is not None
-    assert (resumed.state, resumed.elapsed_time) == (PlaybackState.PLAYING, int(position))
+    assert resumed.state == PlaybackState.PLAYING
+    # the stream starts at the position the queue was at, and the device plays on from there
+    assert resumed.current_item is not None
+    assert resumed.current_item.streamdetails is not None
+    assert resumed.current_item.streamdetails.seek_position == int(position)
+    assert resumed.elapsed_time >= int(position)
 
 
 async def test_a_new_device_whose_setup_is_called_off_leaves_nothing_behind(
