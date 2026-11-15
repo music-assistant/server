@@ -1,0 +1,332 @@
+name: Development image
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - Dockerfile.dev
+      - scripts/dev-image/**
+      - .github/workflows/dev-image.yml
+  pull_request:
+    paths:
+      - Dockerfile.dev
+      - scripts/dev-image/**
+      - .github/workflows/dev-image.yml
+  # a release run may have published a new nightly; Create Release only shows up here when it is
+  # dispatched itself, under Auto Release it runs as part of that run
+  workflow_run:
+    workflows:
+      - Auto Release
+      - Create Release
+    types:
+      - completed
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a pull request cancels its own earlier run; every other run may publish, so it waits its turn
+concurrency:
+  group: dev-image-${{ github.event.pull_request.number || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
+
+jobs:
+  # Decides whether to build, and on which nightly: the check and the publishing build on the
+  # digest found here. It needs no login, so a pull request from a fork gets through too.
+  resolve:
+    name: Resolve nightly image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.nightly.outputs.build }}
+      digest: ${{ steps.nightly.outputs.digest }}
+      version: ${{ steps.nightly.outputs.version }}
+      revision: ${{ steps.nightly.outputs.revision }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      # Most release runs bring no new nightly: after one, an image that already sits on the
+      # current nightly is left as it is. Started by hand or by a push, it is always built.
+      - name: Resolve nightly image
+        id: nightly
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY:nightly" \
+            --format '{{json .Manifest}}' > "$RUNNER_TEMP/nightly-manifest.json"
+          digest=$(jq -r '.digest' "$RUNNER_TEMP/nightly-manifest.json")
+          amd64_digest=$(jq -r \
+            '.manifests[]
+             | select(.platform.os == "linux" and .platform.architecture == "amd64")
+             | .digest' \
+            "$RUNNER_TEMP/nightly-manifest.json")
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY@$amd64_digest" \
+            --format '{{json .Image}}' > "$RUNNER_TEMP/nightly-image.json"
+          version=$(jq -r '.config.Labels["org.opencontainers.image.version"] // empty' \
+            "$RUNNER_TEMP/nightly-image.json")
+          revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' \
+            "$RUNNER_TEMP/nightly-image.json")
+          if [ -z "$version" ] || [ -z "$revision" ]; then
+            echo "$IMAGE_REPOSITORY:nightly ($digest) has no version or revision label" >&2
+            exit 1
+          fi
+          {
+            echo "digest=$digest"
+            echo "version=$version"
+            echo "revision=$revision"
+          } >> "$GITHUB_OUTPUT"
+          echo "Nightly $version ($revision) is $digest"
+
+          build=true
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            error_file="$RUNNER_TEMP/dev-inspect-error.txt"
+            if docker buildx imagetools inspect "$IMAGE_REPOSITORY:dev" \
+              --format '{{json .Manifest}}' \
+              > "$RUNNER_TEMP/dev-manifest.json" 2> "$error_file"; then
+              dev_amd64_digest=$(jq -r \
+                '.manifests[]
+                 | select(.platform.os == "linux" and .platform.architecture == "amd64")
+                 | .digest' \
+                "$RUNNER_TEMP/dev-manifest.json")
+              current_base=$(docker buildx imagetools inspect \
+                "$IMAGE_REPOSITORY@$dev_amd64_digest" --format '{{json .Image}}' |
+                jq -r '.config.Labels["org.opencontainers.image.base.digest"] // empty')
+              if [ "$current_base" = "$digest" ]; then
+                echo "$IMAGE_REPOSITORY:dev already sits on nightly $version ($digest)"
+                build=false
+              fi
+            elif ! grep -Eqi 'not found|manifest unknown|status.*404' "$error_file"; then
+              cat "$error_file" >&2
+              echo "Unable to inspect $IMAGE_REPOSITORY:dev" >&2
+              exit 1
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  # Builds the amd64 image of this commit on the resolved nightly and starts it.
+  check:
+    name: Build and start the development image
+    runs-on: ubuntu-latest
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    timeout-minutes: 30
+    env:
+      IMAGE: music-assistant-server-dev:ci
+      PROVIDER_REPO: music-assistant/community-provider-template
+      PROVIDER_DOMAIN: example_music
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Build development image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.dev
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}
+          load: true
+          push: false
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ needs.resolve.outputs.digest }}
+
+      # Refused before anything is installed, so it stops within seconds and needs no network.
+      - name: Refuse an invalid provider repository
+        run: |
+          code=0
+          output=$(timeout 120 docker run --rm --network none \
+            -e PROVIDER_REPO=not-a-repository "$IMAGE" 2>&1) || code=$?
+          printf '%s\n' "$output"
+          if [ "$code" -ne 1 ]; then
+            echo "::error::Expected exit code 1, got $code"
+            exit 1
+          fi
+          if ! grep -q "ERROR: 'not-a-repository' does not name a provider repository" <<< "$output"; then
+            echo "::error::The refusal does not say why"
+            exit 1
+          fi
+
+      # the argument goes to the server, next to the provider folder the entrypoint adds
+      - name: Start with the provider template
+        run: |
+          docker run -d --name dev-server --network host \
+            -e PROVIDER_REPO="$PROVIDER_REPO" "$IMAGE" --log-level debug
+
+      - name: Wait for the server
+        run: |
+          for _ in {1..60}; do
+            if curl -fs -o /dev/null http://localhost:8095/info; then
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' dev-server)" != "true" ]; then
+              echo "::error::The server stopped before it answered"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::The server did not answer within five minutes"
+          exit 1
+
+      # The server has no line in its log for a provider it loads, so ask it: the provider is
+      # registered as a community provider only when it came from the local provider folder.
+      - name: Check that the template provider loaded
+        run: |
+          token=$(curl -fsS -X POST http://localhost:8095/setup \
+            -H "Content-Type: application/json" \
+            -d '{"username": "ci", "password": "ci-only-password"}' | jq -r '.token')
+          echo "::add-mask::$token"
+          request=$(jq -cn --arg domain "$PROVIDER_DOMAIN" '{
+            command: "providers/manifests/get",
+            message_id: "1",
+            args: {instance_id_or_domain: $domain}
+          }')
+          # community providers load after the server's own providers
+          for _ in {1..36}; do
+            if manifest=$(curl -fsS -X POST http://localhost:8095/api \
+              -H "Authorization: Bearer $token" \
+              -H "Content-Type: application/json" \
+              -d "$request" 2>/dev/null); then
+              printf '%s\n' "$manifest" | jq '{domain, tier}'
+              if jq -e --arg domain "$PROVIDER_DOMAIN" \
+                '.domain == $domain and .tier == "community"' <<< "$manifest" > /dev/null; then
+                exit 0
+              fi
+              echo "::error::$PROVIDER_DOMAIN is not loaded as a community provider"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::$PROVIDER_DOMAIN did not load within three minutes"
+          exit 1
+
+      - name: Check that the server got the argument
+        run: |
+          if ! docker logs dev-server 2>&1 | grep -q " DEBUG ("; then
+            echo "::error::The server does not log at debug level"
+            exit 1
+          fi
+
+      - name: Show server log
+        if: always()
+        run: docker logs dev-server 2>&1 || true
+
+  # Builds the commit the check started again, on the same nightly digest and now for both
+  # platforms, and publishes it; it only runs after the check passed.
+  publish:
+    name: Publish development image
+    runs-on: ubuntu-latest
+    needs: [resolve, check]
+    if: >-
+      needs.resolve.outputs.build == 'true' &&
+      github.event_name != 'pull_request' &&
+      github.repository == 'music-assistant/server'
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Require dev
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$DISPATCH_REF" != "refs/heads/dev" ]; then
+            echo "::error::Run this workflow from the dev branch, not $DISPATCH_REF."
+            exit 1
+          fi
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      # the commit the check built, which the step above holds to dev
+      - name: Check out dev
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # the resolved nightly can be outdated by now: on a re-run of an older run, or when a
+      # nightly was published since the resolve
+      - name: Require the resolved nightly
+        env:
+          RESOLVED_DIGEST: ${{ needs.resolve.outputs.digest }}
+        run: |
+          current=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:nightly" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+          if [ "$current" != "$RESOLVED_DIGEST" ]; then
+            echo "::error::The nightly moved since this run resolved it ($RESOLVED_DIGEST, now $current), so nothing is pushed. Start the workflow again from dev."
+            exit 1
+          fi
+
+      - name: Build and push development image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          file: Dockerfile.dev
+          tags: ${{ env.IMAGE_REPOSITORY }}:dev
+          push: true
+          provenance: true
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ needs.resolve.outputs.digest }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.revision }}
+            org.opencontainers.image.base.digest=${{ needs.resolve.outputs.digest }}
+
+      - name: Verify development image
+        env:
+          BASE_DIGEST: ${{ needs.resolve.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          manifest_file="$RUNNER_TEMP/dev-manifest.json"
+          for attempt in {1..12}; do
+            if docker buildx imagetools inspect "$IMAGE_REPOSITORY:dev" \
+              --format '{{json .Manifest}}' > "$manifest_file" &&
+              [ "$(jq -r '.digest' "$manifest_file")" = "$BUILT_DIGEST" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "$IMAGE_REPOSITORY:dev does not point to $BUILT_DIGEST" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          platforms=$(jq -r \
+            '.manifests[]
+             | select(.platform.os != "unknown")
+             | "\(.platform.os)/\(.platform.architecture)"' \
+            "$manifest_file" | sort)
+          if [ "$platforms" != $'linux/amd64\nlinux/arm64' ]; then
+            echo "$IMAGE_REPOSITORY:dev has an unexpected platform set: $platforms" >&2
+            exit 1
+          fi
+
+          for runtime_digest in $(jq -r \
+            '.manifests[] | select(.platform.os == "linux") | .digest' "$manifest_file"); do
+            docker buildx imagetools inspect "$IMAGE_REPOSITORY@$runtime_digest" \
+              --format '{{json .Image}}' > "$RUNNER_TEMP/dev-image.json"
+            jq -e --arg base "$BASE_DIGEST" \
+              '.config.Labels["org.opencontainers.image.base.digest"] == $base' \
+              "$RUNNER_TEMP/dev-image.json" > /dev/null
+          done
