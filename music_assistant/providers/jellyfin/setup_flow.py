@@ -83,7 +83,7 @@ async def run_setup(session: SetupSession) -> None:
 
 async def _run_quick_connect(session: SetupSession) -> None:
     """Connect to Jellyfin through its Quick Connect device flow."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data: dict[str, ConfigValueType] = dict(session.context.setup_data)
     setup_data[CONF_USERNAME] = None
     setup_data[CONF_PASSWORD] = None
