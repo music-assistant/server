@@ -20,7 +20,7 @@ from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, ProviderType
 from music_assistant_models.media_items import MediaItem
 
-from music_assistant.constants import CONF_PROVIDERS, MASS_LOGGER_NAME
+from music_assistant.constants import CONF_PROVIDERS, EXTERNAL_ID_PROVIDER, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import ProviderMapping
@@ -264,7 +264,8 @@ def visible_items[T](mass: MusicAssistant, items: Iterable[T], user: User | None
     Return the items, leaving out the media items no source the user may see can serve.
 
     A media item is kept when at least one of its provider mappings resolves through
-    `visible_provider`; other items, such as folders, are always kept.
+    `visible_provider`. An item known only by an external id is always kept, as it is looked
+    up on the user's own sources, and so are other items, such as folders.
 
     :param mass: The MusicAssistant instance.
     :param items: The items to narrow.
@@ -284,6 +285,7 @@ def visible_items[T](mass: MusicAssistant, items: Iterable[T], user: User | None
         item
         for item in items
         if not isinstance(item, MediaItem)
+        or item.provider == EXTERNAL_ID_PROVIDER
         # a library item is only visible through the exact accounts holding it
         or (
             has_visible_source(mass, item.provider_mappings, user)

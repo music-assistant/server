@@ -23,11 +23,22 @@ from tests.common import set_music_source_access
 from tests.controllers.music.helpers import create_track
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.controllers.metadata import MetaDataController
     from music_assistant.mass import MusicAssistant
 
 # every test here registers image ids, which are persisted to the cache database
 pytestmark = pytest.mark.usefixtures("cache_database")
+
+
+@pytest.fixture
+async def music_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]:
+    """Set a music controller on the minimal server, and close its library database afterwards."""
+    controller = MusicController(mass_minimal)
+    mass_minimal.music = controller
+    yield controller
+    await controller.close()
 
 
 async def test_get_image_palette_resolves_registered_id(
@@ -161,12 +172,13 @@ async def test_lyrics_come_only_from_a_source_the_user_may_see(
 
 
 async def test_lyrics_of_a_library_track_refresh_the_stored_item(
-    metadata_controller: MetaDataController, mass_minimal: MusicAssistant
+    metadata_controller: MetaDataController,
+    mass_minimal: MusicAssistant,
+    music_controller: MusicController,
 ) -> None:
     """The caller's copy of a library track is never written back, the stored item is used."""
     owner = User(user_id="user-owner", username="owner", role=UserRole.USER)
     member = User(user_id="user-member", username="member", role=UserRole.USER)
-    mass_minimal.music = MusicController(mass_minimal)
     mass_minimal.streams = MagicMock()
     mass_minimal.streams.audio_analysis.get_track_audio_metadata = AsyncMock(return_value=None)
     mass_minimal.webserver = MagicMock()
@@ -175,7 +187,7 @@ async def test_lyrics_of_a_library_track_refresh_the_stored_item(
     # the minimal server runs no cache database
     mass_minimal.cache.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
     mass_minimal.cache.set = AsyncMock()  # type: ignore[method-assign]
-    await mass_minimal.music._setup_database()
+    await music_controller._setup_database()
     set_music_source_access(
         mass_minimal,
         {"spotify_theirs": ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},

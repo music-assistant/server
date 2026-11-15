@@ -1081,8 +1081,12 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         Select a (new) sync leader, preferring session and protocol continuity.
 
+        Among equally preferred members the first one leads, unless it is at rest and
+        can group with none of the other members while a later one can.
+
         :param new_members: Optional list of newly added member ids to consider
-            when no current/static members are available.
+            when no current/static members are available. They count as members
+            the leader should be able to group with.
         :param preferred_protocol_domain: If provided, prefer members that
             support this protocol domain so playback keeps using the same
             protocol.
@@ -1104,6 +1108,12 @@ class SyncGroupPlayer(PlayerProtocol):
             and member_player.type in PLAYBACK_TARGET_TYPES
         ]
         preferred_ids = set(preferred_member_ids or ())
+        member_ids = {*group_members, *(new_members or ())}
+
+        def _can_lead(candidate: Player) -> bool:
+            # the list forming the group goes by; it never holds the candidate itself
+            return not member_ids.isdisjoint(candidate.can_group_with)
+
         # preference tiers, most specific first: a member that is already fed by the
         # live session can take it over without restarting playback, and one that
         # supports the active protocol at least keeps the session on that protocol
@@ -1125,13 +1135,31 @@ class SyncGroupPlayer(PlayerProtocol):
         ):
             if not matches:
                 continue
+            leader = matches[0]
+            # what a member can group with only shows in full while it is at rest: the
+            # list is empty while it follows another player, and what it plays itself
+            # can narrow it
+            if (
+                not leader.synced_to
+                and leader.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                and not _can_lead(leader)
+            ):
+                # a member that leads players of its own is left to that
+                leader = next(
+                    (
+                        x
+                        for x in matches[1:]
+                        if _can_lead(x) and not set(x.group_members) - {x.player_id}
+                    ),
+                    leader,
+                )
             self.logger.debug(
                 "Auto-selected %s as sync leader for group %s (%s)",
-                matches[0].name,
+                leader.name,
                 self.display_name,
                 reason,
             )
-            return matches[0]
+            return leader
         return None
 
     # -----------------------------------------------------------------------
