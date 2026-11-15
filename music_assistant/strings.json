@@ -1326,6 +1326,7 @@
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
     "login_failed": "Login failed. Please check your credentials and try again.",
+    "provider_account_changed": "This is a different account than the one this provider was set up with. To use another account, remove this provider and add it again.",
     "audio_error": "An error occurred while processing audio.",
     "provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
     "provider_stream_held": "{0} is already playing on {1}. Stop playback there first.",

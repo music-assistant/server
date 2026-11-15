@@ -33,6 +33,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
     InvalidProviderURI,
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -78,6 +79,7 @@ from music_assistant.controllers.music.bookmarks import BookmarksController
 from music_assistant.controllers.music.constants import (
     BROWSE_CACHE_EXPIRATION,
     CACHE_CATEGORY_SEARCH_RESULTS,
+    CONF_BOUND_ACCOUNT_ID,
     CONF_DELETED_PROVIDERS,
     CONF_KEEP_REMASTERS_APART,
     CONF_RESET_DB,
@@ -539,6 +541,30 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Sync tasks are unscheduled by MusicAssistant.unload_provider itself, which also
         decides whether their persisted state is kept (reload) or cleared (removal).
         """
+
+    async def check_provider_account(self, provider: MusicProvider) -> None:
+        """
+        Refuse a provider instance that signed in to another account than it is bound to.
+
+        Called while the instance loads, before it goes live. The first load binds the
+        instance to the account it reports. Nothing is checked when the provider does not
+        report an account.
+
+        :param provider: The provider instance that was just initialized.
+        :raises LoginFailed: When the instance signed in to another account.
+        """
+        if (account_id := provider.account_id) is None:
+            return
+        instance_id = provider.instance_id
+        bound = self.mass.config.get_provider_setup_value(instance_id, CONF_BOUND_ACCOUNT_ID)
+        if bound is None:
+            provider._update_setup_data(CONF_BOUND_ACCOUNT_ID, account_id)
+        elif bound != account_id:
+            msg = (
+                "This is a different account than the one this provider was set up with. "
+                "To use another account, remove this provider and add it again."
+            )
+            raise LoginFailed(msg, translation_key="provider_account_changed")
 
     @property
     def providers(self) -> list[MusicProvider]:
