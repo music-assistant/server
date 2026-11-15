@@ -237,6 +237,8 @@ A provider's config entries are not declared in the manifest. They are built in 
 Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
 
 ## 🤝 Contributing a provider
+**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and users install it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
+
 A provider that ships with Music Assistant is installed for every user and supported by the project. A new one therefore asks for more than working code:
 
 * **People ask for it.** Link the feature request or discussion that shows the demand.

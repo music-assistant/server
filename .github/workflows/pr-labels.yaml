@@ -133,12 +133,27 @@ jobs:
               }
               const guide = 'https://github.com/music-assistant/server/' +
                 'blob/dev/DEVELOPMENT.md#-contributing-a-provider';
+              const catalog = 'https://github.com/music-assistant/' +
+                '.github/blob/main/COMMUNITY_CATALOG_RULES.md';
+              const template = 'https://github.com/music-assistant/' +
+                'community-provider-template';
               const body = [
                 marker,
-                'Thanks for adding a provider! A provider that ships ' +
-                'with Music Assistant is installed for every user and ' +
-                'supported by the project, so it asks for a bit more ' +
-                'than working code:',
+                'Thanks for adding a provider!',
+                '',
+                'Instead of adding it to the server itself, which ' +
+                'comes with the expectations below and a longer wait ' +
+                'for reviews, consider publishing it in the ' +
+                `[community catalog](${catalog}), especially when it ` +
+                'covers a limited use case or a small group of users. ' +
+                'There you keep it in your own repository and release ' +
+                'whenever you want, and users install it from the ' +
+                'Marketplace in Music Assistant. The ' +
+                `[provider template](${template}) gets you started.`,
+                '',
+                'A provider that ships with Music Assistant is ' +
+                'installed for every user and supported by the ' +
+                'project, so it asks for a bit more than working code:',
                 '',
                 '* **People ask for it:** link the feature request or ' +
                 'discussion.',
