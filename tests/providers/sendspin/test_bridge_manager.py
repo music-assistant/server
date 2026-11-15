@@ -387,3 +387,29 @@ async def test_the_bridge_that_registers_or_claims_its_client_holds_it(claimed: 
     await env.manager.remove_bridge(BASE_ID)
 
     assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) is None
+
+
+async def test_a_bridge_that_fails_after_registering_takes_its_client_along() -> None:
+    """A bridge whose start fails after it registered its client holds it while it is stopped."""
+    env = _Environment()
+    holder_at_stop: list[str | None] = []
+
+    class _FailingBridge(FakeBridge):
+        async def start(self) -> None:
+            self.started = True
+            raise RuntimeError("the wiring after the registration failed")
+
+        async def stop(self) -> None:
+            holder_at_stop.append(env.sendspin_provider.get_bridge_holder(CLIENT_ID))
+            await super().stop()
+
+    with patch.object(
+        env.manager,
+        "_create_bridge",
+        lambda protocol: _FailingBridge(env.manager.sendspin_server, protocol),
+    ):
+        await env.manager.evaluate_bridge(env.protocol)
+
+    assert holder_at_stop == [BASE_ID], "the bridge did not hold its client when it was stopped"
+    assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) is None
+    assert env.manager.get_bridge(BASE_ID) is None

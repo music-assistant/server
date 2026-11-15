@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import AsyncGenerator
 from types import MethodType
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiosendspin.models.core import ClientHelloPayload
@@ -422,8 +422,10 @@ class _Device:
         squeezelite and Cast only the client they still hold.
         """
         protocol_id = protocol.protocol_id
-        bridge = MagicMock(is_registered=True, sendspin_server=self.server, shared_group=None)
+        bridge = MagicMock(sendspin_server=self.server, shared_group=None)
         bridge.client = None
+        # as the real bridges: registered once the registration returned its client
+        type(bridge).is_registered = PropertyMock(side_effect=lambda: bridge.client is not None)
 
         async def _start() -> None:
             client_id = self.manager_of(protocol)._client_ids[protocol_id]

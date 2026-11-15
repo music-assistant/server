@@ -188,8 +188,12 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             except Exception:
                 self.logger.warning("Failed to start Sendspin bridge for %s", protocol.display_name)
                 if bridge is not None:
+                    if bridge.is_registered:
+                        # it registered its client before it failed, and takes it along
+                        self._hold_client(protocol)
                     with suppress(Exception):
                         await bridge.stop()
+                    self._release_client(protocol)
                 return
             if not bridge.is_registered:
                 return
@@ -309,6 +313,17 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             sendspin_provider := self.sendspin_provider
         ):
             sendspin_provider.hold_bridge_client(client_id, protocol.protocol_id)
+
+    def _release_client(self, protocol: PlayerProtocol) -> None:
+        """
+        Forget that the bridge of a protocol holds its client, once that bridge is gone.
+
+        :param protocol: The bridged protocol.
+        """
+        if (client_id := self._bridge_client_id(protocol)) and (
+            sendspin_provider := self.sendspin_provider
+        ):
+            sendspin_provider.release_bridge_client(client_id, protocol.protocol_id)
 
     def _has_switched_on_output(self, player: Player, protocol_domain: str) -> bool:
         """
