@@ -5,12 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from music_assistant_models.dsp import AudioChannel
 from music_assistant_models.enums import (
+    ContentType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS, CONF_VOLUME_CONTROL
 from tests.common import grouping_player_controller
@@ -19,12 +22,16 @@ from tests.scenarios.harness import DEFAULT_FEATURES, FakeProtocol, Scenario
 if TYPE_CHECKING:
     from unittest.mock import AsyncMock
 
+    from music_assistant.models.player_protocol import PlayerProtocol
     from tests.common import MockProtocol
 
 KITCHEN = {
     IdentifierType.MAC_ADDRESS: "54:78:C9:E6:0D:A0",
     IdentifierType.IP_ADDRESS: "192.168.1.20",
 }
+PCM_STEREO = AudioFormat(
+    content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32, channels=2
+)
 
 
 def _names(protocol: FakeProtocol) -> list[str]:
@@ -46,6 +53,36 @@ async def _native_and_airplay(
     await scenario.register(audio)
     await scenario.idle()
     return scenario.single_player(native, audio).player_id, native, audio
+
+
+async def _bridge_on_airplay(scenario: Scenario, *, with_native: bool) -> PlayerProtocol:
+    """
+    Return the attached Sendspin bridge that rides on the AirPlay output of a player.
+
+    :param scenario: The running server.
+    :param with_native: Whether the player also has a native (own) protocol.
+    """
+    if with_native:
+        await _native_and_airplay(scenario)
+    else:
+        airplay = await scenario.add_provider("airplay")
+        await scenario.register(
+            airplay.protocol("ap_kitchen", "Kitchen", role="audio", identifiers=KITCHEN)
+        )
+    sendspin = await scenario.add_provider("sendspin")
+    await scenario.register(
+        sendspin.protocol(
+            "spb_kitchen", "Kitchen", role="audio", underlying_protocol_id="ap_kitchen"
+        )
+    )
+    await scenario.idle()
+    bridge = scenario.mass.players.get_protocol("spb_kitchen")
+    airplay_protocol = scenario.mass.players.get_protocol("ap_kitchen")
+    assert bridge is not None
+    assert airplay_protocol is not None
+    assert bridge.player is not None
+    assert bridge.player is airplay_protocol.player
+    return bridge
 
 
 async def test_audio_protocol_that_takes_over_gets_the_level_of_the_player_first(
@@ -971,6 +1008,59 @@ async def test_output_channels_of_the_player_apply_to_the_output_that_renders(
     scenario.mass.config.set_protocol_value("ap_kitchen", CONF_OUTPUT_CHANNELS, "right")
 
     assert streams._get_output_channels(audio, player_id) == "right"
+
+
+async def test_a_bridge_takes_the_output_channels_of_the_output_it_rides_on(
+    scenario: Scenario,
+) -> None:
+    """A bridge plays the channel set on the output it rides on, unless it has its own."""
+    bridge = await _bridge_on_airplay(scenario, with_native=False)
+    streams = scenario.mass.streams.audio
+
+    assert streams._get_output_channels(bridge, "spb_kitchen") == "stereo"
+
+    scenario.mass.config.set_protocol_value("ap_kitchen", CONF_OUTPUT_CHANNELS, "left")
+
+    assert streams._get_output_channels(bridge, "spb_kitchen") == "left"
+    plan = streams.get_player_output_plan("spb_kitchen", PCM_STEREO, PCM_STEREO)
+    assert plan.output_details.source_channel == AudioChannel.FL
+    assert "pan=stereo|c0=FL|c1=FL" in plan.filter_params
+
+    scenario.mass.config.set_protocol_value("spb_kitchen", CONF_OUTPUT_CHANNELS, "right")
+
+    assert streams._get_output_channels(bridge, "spb_kitchen") == "right"
+
+
+async def test_the_output_a_bridge_rides_on_ranks_above_the_own_protocol(
+    scenario: Scenario,
+) -> None:
+    """The output a bridge rides on is closer to it than its player's own protocol."""
+    bridge = await _bridge_on_airplay(scenario, with_native=True)
+    streams = scenario.mass.streams.audio
+    scenario.mass.config.set_protocol_value("RINCON_KITCHEN", CONF_OUTPUT_CHANNELS, "right")
+    scenario.mass.config.set_protocol_value("ap_kitchen", CONF_OUTPUT_CHANNELS, "left")
+
+    assert streams._get_output_channels(bridge, "spb_kitchen") == "left"
+
+    scenario.mass.config.set_protocol_value("ap_kitchen", CONF_OUTPUT_CHANNELS, None)
+
+    # what the output it rides on would play
+    assert streams._get_output_channels(bridge, "spb_kitchen") == "right"
+
+
+async def test_a_bridge_keeps_the_output_channels_of_an_output_that_is_gone(
+    scenario: Scenario,
+) -> None:
+    """The setting stored on the output a bridge rides on holds while that output is away."""
+    bridge = await _bridge_on_airplay(scenario, with_native=False)
+    streams = scenario.mass.streams.audio
+    scenario.mass.config.set_protocol_value("ap_kitchen", CONF_OUTPUT_CHANNELS, "left")
+
+    await scenario.unregister(scenario.protocol("ap_kitchen"))
+    await scenario.idle()
+
+    assert scenario.mass.players.get_protocol("ap_kitchen") is None
+    assert streams._get_output_channels(bridge, "spb_kitchen") == "left"
 
 
 async def test_sync_the_protocols_report_in_their_own_ids_is_one_of_players() -> None:
