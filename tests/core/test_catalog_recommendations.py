@@ -17,7 +17,7 @@ from music_assistant.controllers.community_catalog.models import (
     CommunityProvider,
     CommunityProviderState,
 )
-from music_assistant.helpers.catalog import Recommendation, RecommendationReason
+from music_assistant.helpers.catalog import CatalogRecommendation, CatalogRecommendationReason
 from tests.common import as_user
 from tests.conftest import full_mass_context
 
@@ -42,16 +42,20 @@ async def test_admin(tmp_path: Path) -> None:
                 recommendations = await mass.get_catalog_recommendations()
 
     assert recommendations[:3] == [
-        Recommendation("sonos", RecommendationReason.DISCOVERED),
-        Recommendation("spotify_connect", RecommendationReason.COMPLEMENTS, "spotify"),
-        Recommendation("lastfm_scrobble", RecommendationReason.COMPLEMENTS, "spotify"),
+        CatalogRecommendation("sonos", CatalogRecommendationReason.DISCOVERED),
+        CatalogRecommendation(
+            "spotify_connect", CatalogRecommendationReason.COMPLEMENTS, "spotify"
+        ),
+        CatalogRecommendation(
+            "lastfm_scrobble", CatalogRecommendationReason.COMPLEMENTS, "spotify"
+        ),
     ]
     reasons = _by_reason(recommendations)
     # spotify allows more than one account, airplay is set up once
-    assert {"spotify", "sonos", "chromecast"} <= set(reasons[RecommendationReason.POPULAR])
+    assert {"spotify", "sonos", "chromecast"} <= set(reasons[CatalogRecommendationReason.POPULAR])
     assert all(rec.domain != "airplay" for rec in recommendations)
     # lrclib ships with the server
-    assert reasons[RecommendationReason.NEW] == ["sonos"]
+    assert reasons[CatalogRecommendationReason.NEW] == ["sonos"]
 
 
 async def test_nothing_new(tmp_path: Path) -> None:
@@ -61,7 +65,7 @@ async def test_nothing_new(tmp_path: Path) -> None:
             recommendations = await mass.get_catalog_recommendations()
 
     assert recommendations
-    assert RecommendationReason.NEW not in _by_reason(recommendations)
+    assert CatalogRecommendationReason.NEW not in _by_reason(recommendations)
 
 
 async def test_member_and_guest(tmp_path: Path) -> None:
@@ -75,7 +79,7 @@ async def test_member_and_guest(tmp_path: Path) -> None:
             guest = await mass.get_catalog_recommendations()
         manifests = {manifest.domain: manifest for manifest in mass.get_provider_manifests()}
 
-    assert {"spotify", "tidal"} <= set(_by_reason(member)[RecommendationReason.POPULAR])
+    assert {"spotify", "tidal"} <= set(_by_reason(member)[CatalogRecommendationReason.POPULAR])
     for rec in member:
         manifest = manifests[rec.domain]
         assert manifest.type == ProviderType.MUSIC, rec
@@ -86,7 +90,7 @@ async def test_member_and_guest(tmp_path: Path) -> None:
 
 async def test_community(tmp_path: Path) -> None:
     """The community catalog adds to the suggestions of an admin, while it is switched on."""
-    new = Recommendation(COMMUNITY_DOMAIN, RecommendationReason.NEW)
+    new = CatalogRecommendation(COMMUNITY_DOMAIN, CatalogRecommendationReason.NEW)
     get_providers = AsyncMock(return_value=[_community_provider()])
 
     async with full_mass_context(tmp_path) as mass:
@@ -106,9 +110,9 @@ async def test_community(tmp_path: Path) -> None:
     assert new not in switched_off
     assert new in switched_on
     assert new not in failing
-    assert _by_reason(failing)[RecommendationReason.POPULAR]
+    assert _by_reason(failing)[CatalogRecommendationReason.POPULAR]
     assert new not in member
-    assert _by_reason(member)[RecommendationReason.POPULAR]
+    assert _by_reason(member)[CatalogRecommendationReason.POPULAR]
 
 
 def _set_up(mass: MusicAssistant, *domains: str) -> None:
@@ -128,8 +132,10 @@ def _set_up(mass: MusicAssistant, *domains: str) -> None:
         )
 
 
-def _by_reason(recommendations: list[Recommendation]) -> dict[RecommendationReason, list[str]]:
-    result: dict[RecommendationReason, list[str]] = {}
+def _by_reason(
+    recommendations: list[CatalogRecommendation],
+) -> dict[CatalogRecommendationReason, list[str]]:
+    result: dict[CatalogRecommendationReason, list[str]] = {}
     for rec in recommendations:
         result.setdefault(rec.reason, []).append(rec.domain)
     return result

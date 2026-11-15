@@ -19,8 +19,8 @@ from music_assistant.controllers.community_catalog.models import (
 from music_assistant.helpers import catalog as catalog_module
 from music_assistant.helpers.catalog import (
     COMMUNITY_RECENT,
-    Recommendation,
-    RecommendationReason,
+    CatalogRecommendation,
+    CatalogRecommendationReason,
     get_recommendations,
     read_new_domains,
 )
@@ -48,7 +48,7 @@ def test_discovered() -> None:
     manifests = [_manifest("speaker"), _manifest("hub", multi_instance=True)]
 
     assert _recommend(manifests, discovered={"speaker", "hub"}, configured={"hub"}) == [
-        Recommendation("speaker", RecommendationReason.DISCOVERED),
+        CatalogRecommendation("speaker", CatalogRecommendationReason.DISCOVERED),
     ]
 
 
@@ -57,13 +57,13 @@ def test_complements() -> None:
     manifests = [_manifest(domain) for domain in ("plugin_x", "plugin_y", "plugin_z", "other")]
 
     assert _recommend(manifests, configured={"source_a", "source_b"}) == [
-        Recommendation("plugin_x", RecommendationReason.COMPLEMENTS, "source_b"),
-        Recommendation("plugin_y", RecommendationReason.COMPLEMENTS, "source_b"),
-        Recommendation("plugin_z", RecommendationReason.COMPLEMENTS, "source_a"),
+        CatalogRecommendation("plugin_x", CatalogRecommendationReason.COMPLEMENTS, "source_b"),
+        CatalogRecommendation("plugin_y", CatalogRecommendationReason.COMPLEMENTS, "source_b"),
+        CatalogRecommendation("plugin_z", CatalogRecommendationReason.COMPLEMENTS, "source_a"),
     ]
     assert _recommend(manifests, configured={"source_a"}) == [
-        Recommendation("plugin_y", RecommendationReason.COMPLEMENTS, "source_a"),
-        Recommendation("plugin_z", RecommendationReason.COMPLEMENTS, "source_a"),
+        CatalogRecommendation("plugin_y", CatalogRecommendationReason.COMPLEMENTS, "source_a"),
+        CatalogRecommendation("plugin_z", CatalogRecommendationReason.COMPLEMENTS, "source_a"),
     ]
 
 
@@ -72,8 +72,8 @@ def test_popular() -> None:
     manifests = [_manifest("alpha"), _manifest("other"), _manifest("zeta")]
 
     assert _recommend(manifests) == [
-        Recommendation("zeta", RecommendationReason.POPULAR),
-        Recommendation("alpha", RecommendationReason.POPULAR),
+        CatalogRecommendation("zeta", CatalogRecommendationReason.POPULAR),
+        CatalogRecommendation("alpha", CatalogRecommendationReason.POPULAR),
     ]
 
 
@@ -86,17 +86,17 @@ def test_new_builtin() -> None:
     ]
 
     assert _recommend(manifests, new_domains={"fresh", "comm"}) == [
-        Recommendation("fresh", RecommendationReason.NEW),
+        CatalogRecommendation("fresh", CatalogRecommendationReason.NEW),
     ]
 
 
 @pytest.mark.parametrize(
     ("added", "released", "reason"),
     [
-        (NOW - COMMUNITY_RECENT, None, RecommendationReason.NEW),
-        (NOW - COMMUNITY_RECENT, NOW, RecommendationReason.NEW),
-        (NOW - COMMUNITY_RECENT - timedelta(seconds=1), NOW, RecommendationReason.UPDATED),
-        (NOW - timedelta(days=90), NOW - COMMUNITY_RECENT, RecommendationReason.UPDATED),
+        (NOW - COMMUNITY_RECENT, None, CatalogRecommendationReason.NEW),
+        (NOW - COMMUNITY_RECENT, NOW, CatalogRecommendationReason.NEW),
+        (NOW - COMMUNITY_RECENT - timedelta(seconds=1), NOW, CatalogRecommendationReason.UPDATED),
+        (NOW - timedelta(days=90), NOW - COMMUNITY_RECENT, CatalogRecommendationReason.UPDATED),
         (NOW - timedelta(days=90), NOW - COMMUNITY_RECENT - timedelta(seconds=1), None),
         (None, None, None),
     ],
@@ -110,12 +110,12 @@ def test_new_builtin() -> None:
     ],
 )
 def test_community_new_or_updated(
-    added: datetime | None, released: datetime | None, reason: RecommendationReason | None
+    added: datetime | None, released: datetime | None, reason: CatalogRecommendationReason | None
 ) -> None:
     """A community provider is new for 30 days after it was added, else updated after a release."""
     provider = _community("comm", added=_iso(added), released=_iso(released))
 
-    expected = [Recommendation("comm", reason)] if reason else []
+    expected = [CatalogRecommendation("comm", reason)] if reason else []
     assert _recommend([], community=[provider]) == expected
 
 
@@ -127,7 +127,7 @@ def test_community_dates() -> None:
             _community("naive", added=(NOW - COMMUNITY_RECENT).replace(tzinfo=None).isoformat()),
             _community("garbage", added="soon", released="yesterday"),
         ],
-    ) == [Recommendation("naive", RecommendationReason.NEW)]
+    ) == [CatalogRecommendation("naive", CatalogRecommendationReason.NEW)]
 
 
 def test_community_states() -> None:
@@ -139,7 +139,7 @@ def test_community_states() -> None:
     ]
 
     assert _recommend([], community=providers) == [
-        Recommendation(state, RecommendationReason.NEW)
+        CatalogRecommendation(state, CatalogRecommendationReason.NEW)
         for state in ("available", "installed", "update_available", "restart_required")
     ]
 
@@ -190,9 +190,9 @@ def test_set_up_multi_instance() -> None:
     assert _recommend(
         manifests, configured={"multi", "comm"}, new_domains={"multi"}, community=[community]
     ) == [
-        Recommendation("multi", RecommendationReason.POPULAR),
-        Recommendation("comm", RecommendationReason.NEW),
-        Recommendation("multi", RecommendationReason.NEW),
+        CatalogRecommendation("multi", CatalogRecommendationReason.POPULAR),
+        CatalogRecommendation("multi", CatalogRecommendationReason.NEW),
+        CatalogRecommendation("comm", CatalogRecommendationReason.NEW),
     ]
 
 
@@ -209,13 +209,13 @@ def test_not_allowed() -> None:
         can_add=lambda manifest: manifest.type == ProviderType.MUSIC,
         community=community,
     ) == [
-        Recommendation("zeta", RecommendationReason.POPULAR),
-        Recommendation("comm_music", RecommendationReason.NEW),
+        CatalogRecommendation("zeta", CatalogRecommendationReason.POPULAR),
+        CatalogRecommendation("comm_music", CatalogRecommendationReason.NEW),
     ]
 
 
 def test_order() -> None:
-    """By reason, then popular and complements in their list order and the rest by name."""
+    """By reason; the curated lists in their order, the community catalog newest first."""
     manifests = [
         _manifest("speaker_b", name="A speaker"),
         _manifest("speaker_a", name="B speaker"),
@@ -226,9 +226,10 @@ def test_order() -> None:
         _manifest("fresh", name="Fresh"),
     ]
     community = [
-        _community("comm_b", name="beta", added=_iso(NOW)),
-        _community("comm_a", name="Gamma", added=_iso(NOW)),
-        _community("comm_d", name="delta", released=_iso(NOW)),
+        _community("comm_b", name="beta", added=_iso(NOW - timedelta(days=2))),
+        _community("comm_a", name="Gamma", added=_iso(NOW - timedelta(days=1))),
+        _community("comm_e", name="alpha", added=_iso(NOW - timedelta(days=2))),
+        _community("comm_d", name="delta", released=_iso(NOW - timedelta(days=3))),
         _community("comm_c", name="Epsilon", released=_iso(NOW)),
     ]
 
@@ -239,17 +240,18 @@ def test_order() -> None:
         new_domains={"fresh"},
         community=community,
     ) == [
-        Recommendation("speaker_b", RecommendationReason.DISCOVERED),
-        Recommendation("speaker_a", RecommendationReason.DISCOVERED),
-        Recommendation("plugin_x", RecommendationReason.COMPLEMENTS, "source_b"),
-        Recommendation("plugin_z", RecommendationReason.COMPLEMENTS, "source_a"),
-        Recommendation("zeta", RecommendationReason.POPULAR),
-        Recommendation("alpha", RecommendationReason.POPULAR),
-        Recommendation("comm_b", RecommendationReason.NEW),
-        Recommendation("fresh", RecommendationReason.NEW),
-        Recommendation("comm_a", RecommendationReason.NEW),
-        Recommendation("comm_d", RecommendationReason.UPDATED),
-        Recommendation("comm_c", RecommendationReason.UPDATED),
+        CatalogRecommendation("speaker_b", CatalogRecommendationReason.DISCOVERED),
+        CatalogRecommendation("speaker_a", CatalogRecommendationReason.DISCOVERED),
+        CatalogRecommendation("plugin_x", CatalogRecommendationReason.COMPLEMENTS, "source_b"),
+        CatalogRecommendation("plugin_z", CatalogRecommendationReason.COMPLEMENTS, "source_a"),
+        CatalogRecommendation("zeta", CatalogRecommendationReason.POPULAR),
+        CatalogRecommendation("alpha", CatalogRecommendationReason.POPULAR),
+        CatalogRecommendation("fresh", CatalogRecommendationReason.NEW),
+        CatalogRecommendation("comm_a", CatalogRecommendationReason.NEW),
+        CatalogRecommendation("comm_e", CatalogRecommendationReason.NEW),
+        CatalogRecommendation("comm_b", CatalogRecommendationReason.NEW),
+        CatalogRecommendation("comm_c", CatalogRecommendationReason.UPDATED),
+        CatalogRecommendation("comm_d", CatalogRecommendationReason.UPDATED),
     ]
 
 
@@ -293,7 +295,7 @@ def _recommend(
     discovered: Collection[str] = (),
     new_domains: Collection[str] = (),
     community: Iterable[CommunityProvider] = (),
-) -> list[Recommendation]:
+) -> list[CatalogRecommendation]:
     return get_recommendations(
         manifests,
         configured=configured,

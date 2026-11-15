@@ -48,7 +48,7 @@ _LISTED_COMMUNITY_STATES: Final = frozenset(
 )
 
 
-class RecommendationReason(StrEnum):
+class CatalogRecommendationReason(StrEnum):
     """Why the Marketplace suggests a provider, in the order the recommendations come in."""
 
     # seen on the network, and not set up
@@ -63,11 +63,11 @@ class RecommendationReason(StrEnum):
 
 
 @dataclass
-class Recommendation(DataClassDictMixin):
+class CatalogRecommendation(DataClassDictMixin):
     """A provider the Marketplace suggests to add."""
 
     domain: str
-    reason: RecommendationReason
+    reason: CatalogRecommendationReason
     # for complements: the domain of the provider that is set up
     detail: str | None = None
 
@@ -80,9 +80,12 @@ def get_recommendations(
     new_domains: Collection[str],
     community: Iterable[CommunityProvider],
     now: datetime,
-) -> list[Recommendation]:
+) -> list[CatalogRecommendation]:
     """
-    Return what the Marketplace suggests to add, by reason and within a reason in a fixed order.
+    Return what the Marketplace suggests to add, by reason.
+
+    Within a reason the curated lists keep their order, the community catalog's new and updated
+    providers come newest first, and the rest comes by name.
 
     Only providers that can be added are suggested: not built-in, not deprecated, of a type
     the Marketplace offers, allowed for the user, and not set up already unless more than one
@@ -123,28 +126,33 @@ def get_recommendations(
         for domain, manifest in known.items()
         if domain in new_domains and manifest.tier != ProviderTier.COMMUNITY
     ]
-    updated: list[ProviderManifest] = []
+    # of the community catalog: when it was added or last released, with its manifest
+    added: list[tuple[datetime, ProviderManifest]] = []
+    released: list[tuple[datetime, ProviderManifest]] = []
     since = now - COMMUNITY_RECENT
     for provider in community:
         if provider.state not in _LISTED_COMMUNITY_STATES or not addable(provider.manifest):
             continue
-        if _is_since(provider.added, since):
-            new.append(provider.manifest)
-        elif _is_since(provider.released, since):
-            updated.append(provider.manifest)
+        if (moment := _moment(provider.added)) and moment >= since:
+            added.append((moment, provider.manifest))
+        elif (moment := _moment(provider.released)) and moment >= since:
+            released.append((moment, provider.manifest))
     return [
-        *_by_name(found, RecommendationReason.DISCOVERED),
+        *_by_name(found, CatalogRecommendationReason.DISCOVERED),
         *(
-            Recommendation(domain, RecommendationReason.COMPLEMENTS, configured_domain)
+            CatalogRecommendation(
+                domain, CatalogRecommendationReason.COMPLEMENTS, configured_domain
+            )
             for domain, configured_domain in complements.items()
         ),
         *(
-            Recommendation(domain, RecommendationReason.POPULAR)
+            CatalogRecommendation(domain, CatalogRecommendationReason.POPULAR)
             for domain in CATALOG_POPULAR
             if domain in known
         ),
-        *_by_name(new, RecommendationReason.NEW),
-        *_by_name(updated, RecommendationReason.UPDATED),
+        *_by_name(new, CatalogRecommendationReason.NEW),
+        *_newest_first(added, CatalogRecommendationReason.NEW),
+        *_newest_first(released, CatalogRecommendationReason.UPDATED),
     ]
 
 
@@ -166,20 +174,31 @@ def read_new_domains(path: Path) -> frozenset[str]:
 
 
 def _by_name(
-    manifests: Iterable[ProviderManifest], reason: RecommendationReason
-) -> list[Recommendation]:
+    manifests: Iterable[ProviderManifest], reason: CatalogRecommendationReason
+) -> list[CatalogRecommendation]:
     return [
-        Recommendation(manifest.domain, reason)
+        CatalogRecommendation(manifest.domain, reason)
         for manifest in sorted(manifests, key=lambda manifest: manifest.name.casefold())
     ]
 
 
-def _is_since(timestamp: str | None, since: datetime) -> bool:
+def _newest_first(
+    dated: Iterable[tuple[datetime, ProviderManifest]], reason: CatalogRecommendationReason
+) -> list[CatalogRecommendation]:
+    return [
+        CatalogRecommendation(manifest.domain, reason)
+        for _, manifest in sorted(
+            dated, key=lambda item: (-item[0].timestamp(), item[1].name.casefold())
+        )
+    ]
+
+
+def _moment(timestamp: str | None) -> datetime | None:
     if not timestamp:
-        return False
+        return None
     try:
         moment = datetime.fromisoformat(timestamp)
     except ValueError:
-        return False
+        return None
     # a moment without a timezone is taken as UTC
-    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)) >= since
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)

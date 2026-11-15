@@ -98,7 +98,7 @@ from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.build_info import get_official_build_info
 from music_assistant.helpers.catalog import (
     CATALOG_NEW_FILE,
-    Recommendation,
+    CatalogRecommendation,
     get_recommendations,
     read_new_domains,
 )
@@ -591,12 +591,12 @@ class MusicAssistant:
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
 
     @api_command("catalog/recommendations", required_scope=Scope.PROVIDERS_READ)
-    async def get_catalog_recommendations(self) -> list[Recommendation]:
+    async def get_catalog_recommendations(self) -> list[CatalogRecommendation]:
         """
         Return what the Marketplace suggests the calling user adds, and why.
 
         Only providers the user may add are suggested. Providers of the community catalog are
-        only suggested to a user who manages the server, while the community catalog is on.
+        only suggested to a user who manages the server, while the community catalog is enabled.
         """
         user = get_current_user()
         if user is not None and not has_scope(user, Scope.CONFIG_PROVIDERS_OWN):
