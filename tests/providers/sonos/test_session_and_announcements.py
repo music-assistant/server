@@ -31,7 +31,8 @@ def _player(
     mass.streams.get_announcement_duration = AsyncMock(return_value=3)
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.player")
-    player._player_id = PLAYER
+    player._protocol_id = PLAYER
+    player._player = None
     player._attr_name = "Office"
     player._cache = {}
     player._config = MagicMock()
@@ -105,6 +106,8 @@ def _player_loading_our_queue(
     player._woken_from_sleep = False
     player._announcement_media = None
     player.cloud_queue_item_generation = 0
+    player._window_item_ids = {}
+    player._served_bindings = {}
     player.cloud_queue_version = 1.0
     cast("MagicMock", player.mass).streams.base_url = "http://192.168.1.10:8097"
     client.player.is_passive = False

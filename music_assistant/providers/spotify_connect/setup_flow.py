@@ -2,7 +2,7 @@
 Setup flow for the Spotify Connect plugin.
 
 The flow is a single explicit backend choice: Spotify Soloist (Spotify's
-official headless client, guarded by a ToS warning/consent step and a personal
+official headless client, guarded by a download consent step and a personal
 API key) or the community go-librespot daemon. The players this plugin exposes
 Spotify Connect devices for are regular provider options, not setup input.
 Reconfigure preselects the stored backend and re-runs the branch steps;
@@ -116,7 +116,7 @@ async def _choose_backend(
 
 async def _run_soloist_steps(session: SetupSession, collected: dict[str, Any]) -> bool:
     """
-    Run the soloist branch: the ToS warning/consent step, then the API key step.
+    Run the soloist branch: the download consent step, then the API key step.
 
     :param session: The setup session driving the flow.
     :param collected: The values collected so far; updated in place.

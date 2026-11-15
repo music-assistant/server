@@ -172,6 +172,7 @@ class PhishInProvider(MusicProvider):
         if prov_artist_id != PHISH_ARTIST_ID:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
+        # the one artist is the whole catalogue, so no ARTIST_ALBUMS_LIMIT: it's a few cached pages
         albums = []
         page = 1
         per_page = 750  # Phish.in limit is 1000 but this caused asyncio warnings

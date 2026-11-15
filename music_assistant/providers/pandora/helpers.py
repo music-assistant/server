@@ -39,7 +39,6 @@ def handle_pandora_error(response_data: dict[str, Any]) -> None:
 
     message = response_data.get("message", response_data.get("errorString", "Unknown error"))
 
-    # Use the categorized sets for cleaner logic
     if error_code in AUTH_ERRORS:
         raise LoginFailed(f"Authentication failed: {message}")
 

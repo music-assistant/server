@@ -335,6 +335,10 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
         _CONTROL_ANNOTATIONS,
         frozenset({str(Capability.EDIT_PLAYLISTS)}),
     ),
+    "player_queues/add_to_playlist": CommandDecision(
+        _CONTROL_ANNOTATIONS,
+        frozenset({str(Capability.EDIT_PLAYLISTS)}),
+    ),
     "player_queues/delete_item": _destructive_write(Capability.DELETE_QUEUE),
     "player_queues/clear": _destructive_write(Capability.DELETE_QUEUE),
     "fastmcp/queue/remove_items_safe": _destructive_write(Capability.DELETE_QUEUE),
@@ -363,6 +367,9 @@ EXACT_POLICIES: dict[str, CommandDecision] = {
     ),
     "players/remove_group_player": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
     "players/remove": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
+    "players/remove_unavailable": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
+    "players/merge": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
+    "players/unlink_protocol": _destructive_write(Capability.CONFIG_WRITE_PLAYER),
     "players/add_currently_playing_to_favorites": CommandDecision(
         _CONTROL_ANNOTATIONS,
         frozenset({str(Capability.EDIT_FAVORITES)}),

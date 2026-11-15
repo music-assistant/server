@@ -20,6 +20,7 @@ from music_assistant.controllers.player_queues.config import (
     CATEGORY_CLICK_ACTIONS,
     CATEGORY_DEFAULT_ENQUEUE_OPTION,
     CATEGORY_ITEMS_TO_SELECT,
+    CATEGORY_PLAYBACK,
     core_config_entries,
     queue_config_entries,
 )
@@ -39,6 +40,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
     CONF_DEFAULT_PLAY_ACTION_ALBUM_TRACK,
     CONF_DEFAULT_PLAY_ACTION_PLAYLIST_TRACK,
+    CONF_PAUSE_TIMEOUT,
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
@@ -72,6 +74,20 @@ def test_core_config_entries_enqueue_defaults() -> None:
     # the enqueue entries now live in their own dedicated categories
     assert by_key[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST].category == CATEGORY_ITEMS_TO_SELECT
     assert by_key[CONF_DEFAULT_ENQUEUE_OPTION_TRACK].category == CATEGORY_DEFAULT_ENQUEUE_OPTION
+
+
+def test_core_config_entries_artist_selection() -> None:
+    """An artist prefers its library tracks by default; no selection lists its whole catalogue."""
+    entry = _by_key(core_config_entries(_mass(similar_tracks=True, smart_fades=True)))[
+        CONF_DEFAULT_ENQUEUE_SELECT_ARTIST
+    ]
+    assert entry.default_value == "prefer_library"
+    assert [option.value for option in entry.options] == [
+        "top_tracks",
+        "library_tracks",
+        "prefer_library",
+        "library_album_tracks",
+    ]
 
 
 def test_core_config_entries_artist_order() -> None:
@@ -146,6 +162,11 @@ def test_core_config_entries_global_feature_defaults() -> None:
     # the global-only settings live only on the core schema
     assert CONF_CROSSFADE_DURATION in by_key
     assert CONF_SMART_SHUFFLE_SONG_RECENCY in by_key
+    pause_timeout = by_key[CONF_PAUSE_TIMEOUT]
+    assert pause_timeout.default_value == 30
+    assert pause_timeout.range == (30, 240)
+    assert pause_timeout.category == CATEGORY_PLAYBACK
+    assert pause_timeout.advanced
 
 
 def test_queue_config_entries_offer_global_option() -> None:
@@ -161,9 +182,11 @@ def test_queue_config_entries_offer_global_option() -> None:
         entry = by_key[key]
         assert entry.default_value == CONF_VALUE_GLOBAL
         assert CONF_VALUE_GLOBAL in {opt.value for opt in entry.options}
-    # crossfade duration and the recency windows are global-only (not overridable per queue)
+    # crossfade duration, the recency windows and the pause timeout are global-only (not
+    # overridable per queue)
     assert CONF_CROSSFADE_DURATION not in by_key
     assert CONF_SMART_SHUFFLE_SONG_RECENCY not in by_key
+    assert CONF_PAUSE_TIMEOUT not in by_key
 
 
 def test_queue_config_smart_crossfade_unavailable() -> None:

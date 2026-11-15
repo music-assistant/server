@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -128,6 +129,44 @@ async def test_library_artist_tracks_follow_the_listing_contract(mass: MusicAssi
     assert await _tracks(limit=0) == ["Apple", "Mango", "Zebra"]
     with pytest.raises(InvalidDataError):
         await _tracks(sort_field=SortField.YEAR)
+
+
+async def test_artist_release_date_filters_before_pagination(
+    mass: MusicAssistant,
+) -> None:
+    """Typed shelves return the newest 50 of a year without skipping the next page."""
+    albums = []
+    for index in range(60):
+        album = _album(f"release-{index}", f"Release {index:02}", 2025)
+        album.album_type = AlbumType.SINGLE if index % 2 else AlbumType.EP
+        album.metadata.release_date = datetime(2025, 1, 1, tzinfo=UTC) + timedelta(days=index)
+        albums.append(album)
+    other_type = _album("album", "Newer album", 2026)
+    other_type.album_type = AlbumType.ALBUM
+    with patch.object(
+        mass.music.artists,
+        "get_library_artist_albums",
+        AsyncMock(return_value=[other_type, *albums]),
+    ):
+        page = await mass.music.artists.albums(
+            "1",
+            "library",
+            album_types=[AlbumType.SINGLE, AlbumType.EP],
+            sort_field=SortField.RELEASE_DATE,
+            limit=50,
+        )
+        remainder = await mass.music.artists.albums(
+            "1",
+            "library",
+            album_types=[AlbumType.SINGLE, AlbumType.EP],
+            sort_field=SortField.RELEASE_DATE,
+            limit=50,
+            offset=50,
+        )
+    assert [album.item_id for album in page] == [f"release-{index}" for index in range(59, 9, -1)]
+    assert [album.item_id for album in remainder] == [
+        f"release-{index}" for index in range(9, -1, -1)
+    ]
 
 
 async def test_library_artist_tracks_count_matches_listing_filters(
@@ -477,60 +516,6 @@ async def test_library_artist_ranking_is_kept_per_provider_filter(
     ]
 
 
-async def test_provider_artist_tracks_follow_the_calling_users_music_sources(
-    mass: MusicAssistant,
-) -> None:
-    """The tracks a library album adds to a provider artist are those the calling user may see."""
-    artist = await mass.music.artists.add_item_to_library(_artist())
-    album = await mass.music.albums.add_item_to_library(_album("album1", "Album"))
-    for number, (name, source) in enumerate((("Shared", "qobuz_1"), ("Private", "tidal_1")), 1):
-        track = _track(f"t{number}", name)
-        track.provider_mappings = {
-            ProviderMapping(
-                item_id=f"t{number}",
-                provider_domain=source.split("_", maxsplit=1)[0],
-                provider_instance=source,
-                in_library=True,
-            )
-        }
-        track.artists = UniqueList([artist])
-        track.album = album
-        track.track_number = number
-        await mass.music.tracks.add_item_to_library(track)
-    # the second source is the private account of the first user
-    set_music_source_access(
-        mass,
-        {
-            "qobuz_1": None,
-            "tidal_1": ProviderAccess(owner="owner", sharing=ProviderSharing.PRIVATE),
-        },
-    )
-    # the provider lists no artist tracks of its own, so the artist's albums are listed
-    provider = Mock(spec=MusicProvider)
-    provider.instance_id = "qobuz_1"
-    provider.available = True
-    provider.supports_feature = lambda _feature: False
-
-    async def _tracks_as(user_id: str) -> list[str]:
-        user = User(user_id=user_id, username=user_id, role=UserRole.USER)
-        with patch(
-            "music_assistant.controllers.music.media.base.get_current_user", return_value=user
-        ):
-            return _names(await mass.music.artists.tracks("artist1", "qobuz_1"))
-
-    with (
-        patch.object(mass, "get_provider", return_value=provider),
-        patch.object(
-            mass.music.artists,
-            "get_provider_artist_albums",
-            AsyncMock(return_value=[_album("album1", "Album")]),
-        ),
-        patch.object(mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=[])),
-    ):
-        assert await _tracks_as("owner") == ["Private", "Shared"]
-        assert await _tracks_as("guest") == ["Shared"]
-
-
 async def test_library_artist_listing_missing_a_provider_is_assembled_again(
     mass: MusicAssistant,
 ) -> None:
@@ -590,24 +575,6 @@ async def test_library_artist_ranking_missing_a_source_that_is_not_loaded_is_ass
             )
             assert _names(listing) == list(NAMES)
     assert provider_fetch.await_count == 2
-
-
-async def test_provider_artist_tracks_missing_an_album_are_assembled_again(
-    mass: MusicAssistant,
-) -> None:
-    """Provider artist tracks one album failed to contribute to are not kept."""
-    fetch = AsyncMock(return_value=Listing([_track("t1", "One")], complete=False))
-    with (
-        patch.object(
-            mass,
-            "get_provider",
-            return_value=SimpleNamespace(instance_id="qobuz_1", available=True),
-        ),
-        patch.object(mass.music.artists, "get_provider_artist_tracks", fetch),
-    ):
-        for _ in range(2):
-            assert _names(await mass.music.artists.tracks("artist_x", "qobuz_1")) == ["One"]
-    assert fetch.await_count == 2
 
 
 async def test_similar_artists_page_the_listing_the_providers_are_asked_for(

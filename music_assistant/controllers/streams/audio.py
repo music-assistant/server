@@ -44,6 +44,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    PlayerType,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -57,9 +58,11 @@ from music_assistant_models.errors import (
     ProviderPermissionDenied,
     ProviderUnavailableError,
     QueueEmpty,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
-from music_assistant_models.media_items import Album, AudioFormat, Track
+from music_assistant_models.media_items import Album, AudioFormat, Playlist, Track
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import MultiPartPath, StreamMetadata
 
@@ -79,6 +82,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
     DSP_IRS_DIRNAME,
+    EXTERNAL_ID_PROVIDER,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -106,9 +110,13 @@ from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     HLS_RADIO_INPUT_BURST,
+    HLS_RADIO_LIVE_START_SECONDS,
+    HLS_RADIO_MIN_START_SEGMENTS,
+    HLS_RADIO_SEGMENT_RETRIES,
     ICY_PLACEHOLDER_IMAGE_URLS,
     MIN_VOICE_OVER_DURATION,
     NO_TRACK_MATCH_EXPIRATION,
+    NORMALIZATION_LIMITER_CEILING_DB,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
@@ -197,7 +205,7 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.player import Player
+    from music_assistant.models.player_protocol import PlayerProtocol
     from music_assistant.models.provider import Provider
 
 # ruff: noqa: PLR0915
@@ -221,6 +229,11 @@ PREFETCH_HANDOVER_TIMEOUT = 5.0
 # the current track buffered meanwhile.
 CROSSFADE_HANDOFF_WAIT = 30.0
 
+# The same wait for an incoming item with a realtime source. A speaker gives up on a
+# request that sends no audio for about 10 s (seen on Sonos) and drops the item, which
+# aborts that source: its single stream slot then has to start over for the next item.
+REALTIME_CROSSFADE_HANDOFF_WAIT = 5.0
+
 # Size of the tail slices played out while a fade waits for the incoming track's
 # audio. The fade is sized on what is left of the tail once that audio shows up,
 # so a small slice keeps it from losing more of the tail than the wait took.
@@ -242,6 +255,10 @@ RADIO_MIRROR_FAILOVER_ERRORS = (
     RetriesExhausted,
     InvalidDataError,
 )
+
+HLS_RADIO_PLAYLIST_TIMEOUT = 10
+STREAMDETAILS_HLS_START_SECONDS_KEY = "hls_start_seconds"
+_EXTINF_DURATION = re.compile(r"^#EXTINF:\s*(\d+(?:\.\d+)?)", re.MULTILINE)
 
 # Signed radio urls expire, so a failing station restarts on fresh stream details. Runs
 # shorter than the minimum playtime count toward the limit so its provider is not hammered.
@@ -614,6 +631,21 @@ class _IncomingFadePrefetcher:
                 yield chunk
 
 
+def _segments_for_seconds(durations: list[float], seconds: float) -> int:
+    """
+    Return how many segments from the end of a playlist cover the given seconds.
+
+    :param durations: The durations of the segments of the playlist, oldest first.
+    :param seconds: The seconds to cover, all segments are returned when they cover less.
+    """
+    covered = 0.0
+    for count, duration in enumerate(reversed(durations), start=1):
+        covered += duration
+        if covered >= seconds:
+            return count
+    return len(durations)
+
+
 class StreamsAudio:
     """Audio stream acquisition and processing for the streams controller."""
 
@@ -690,6 +722,11 @@ class StreamsAudio:
             details_lock = asyncio.Lock()
             self._stream_details_locks[lock_key] = details_lock
         async with details_lock:
+            media_item = queue_item.media_item
+            if media_item is not None and media_item.provider == EXTERNAL_ID_PROVIDER:
+                # a player that addresses the queue by position asks for items the queue
+                # did not load, and a track known only by an external id has no source
+                await self.mass.player_queues.look_up_external_track(queue_item)
             streamdetails = await self._get_stream_details(
                 queue_item,
                 seek_position,
@@ -729,6 +766,8 @@ class StreamsAudio:
             connected; once it reports False, no source is opened for it.
         :return: The buffer, or None when the consumer reported it left.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
+        :raises ProviderStreamHeldError: If another player's realtime playback holds the only
+            slot of the source and the item needs a new one, refused without waiting.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
         if (buffer_lock := self._audio_buffer_locks.get(lock_key)) is None:
@@ -1229,7 +1268,7 @@ class StreamsAudio:
 
     def get_player_output_plan(
         self,
-        player_id: str,
+        protocol_id: str,
         input_format: AudioFormat,
         output_format: AudioFormat,
         *,
@@ -1242,21 +1281,20 @@ class StreamsAudio:
         """
         Return executable filters and matching output details for a player.
 
-        :param player_id: Destination player identifier.
+        :param protocol_id: ID of the protocol that renders the audio.
         :param input_format: PCM format entering player-specific processing.
         :param output_format: Furthest downstream output format known to the server.
-        :param shared_player_ids: Additional players receiving this identical output path.
-            An empty iterable marks a path that can gain shared destinations later.
+        :param shared_player_ids: The other protocols receiving this identical output path, as
+            the rendering protocol names its group members. An empty iterable marks a path that
+            can gain shared destinations later.
         :param handoff_format: Earlier provider handoff format when it differs.
         :param queue_id: Explicit queue identifier for the processing snapshot.
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
         """
         filter_params: list[str | ComplexFilter] = []
-        player = self.mass.players.get_player(player_id)
-        destination_player_id = (
-            player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        )
+        player = self.mass.players.get_output_protocol(protocol_id)
+        destination_player_id = player.player.player_id if player and player.player else protocol_id
         resolved_shared_player_ids = (
             resolve_output_player_ids(self.mass, shared_player_ids) - {destination_player_id}
             if shared_player_ids is not None
@@ -1272,8 +1310,8 @@ class StreamsAudio:
             else:
                 dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
         else:
-            dsp_config_id = player_id
-            dsp = self.mass.config.get_player_dsp_config(player_id)
+            dsp_config_id = protocol_id
+            dsp = self.mass.config.get_player_dsp_config(protocol_id)
             dsp_state = DSPState.ENABLED if dsp.enabled else DSPState.DISABLED
 
         enabled_filters = [dsp_filter for dsp_filter in dsp.filters if dsp_filter.enabled]
@@ -1293,7 +1331,7 @@ class StreamsAudio:
                         self.logger.warning(
                             "Skipping the convolution filter of player %s: "
                             "impulse response %s is not stored",
-                            player_id,
+                            protocol_id,
                             dsp_filter.ir_id,
                         )
                         continue
@@ -1305,7 +1343,7 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self._get_output_channels(player, player_id)
+        channel_value = self._get_output_channels(player, protocol_id)
         source_channel = None
         channel_mix = ""
         # a single channel source is already the downmix and holds no FL/FR to select
@@ -1362,7 +1400,7 @@ class StreamsAudio:
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Generated ffmpeg params for player %s: %s",
-            player_id,
+            protocol_id,
             filter_params,
         )
         return output_plan
@@ -1370,7 +1408,7 @@ class StreamsAudio:
     async def get_output_format(
         self,
         output_format_str: str,
-        player: Player,
+        player: PlayerProtocol,
         content_sample_rate: int,
         content_bit_depth: int,
         media_type: MediaType = MediaType.UNKNOWN,
@@ -1416,7 +1454,7 @@ class StreamsAudio:
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
 
-        output_channels_str = self._get_output_channels(player, player.player_id)
+        output_channels_str = self._get_output_channels(player, player.protocol_id)
         fmt = AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
@@ -1428,7 +1466,7 @@ class StreamsAudio:
 
     async def select_pcm_format(
         self,
-        player: Player,
+        player: PlayerProtocol,
         streamdetails: StreamDetails,
         crossfade_enabled: bool,
         overlay_active: bool = False,
@@ -1481,12 +1519,12 @@ class StreamsAudio:
 
     async def select_flow_pcm_format(
         self,
-        player: Player,
+        player: PlayerProtocol,
         start_streamdetails: StreamDetails | None = None,
         crossfade_enabled: bool = False,
         overlay_active: bool = False,
         fallback_sample_rate: int | None = None,
-        output_players: Iterable[Player] | None = None,
+        output_players: Iterable[PlayerProtocol] | None = None,
     ) -> AudioFormat:
         """
         Select the internal PCM format for a Queue Flow Mode stream.
@@ -1804,6 +1842,16 @@ class StreamsAudio:
             gain_correct = round(gain_correct, 2)
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
+        # a positive gain can push peaks past full scale; a player's DSP chain owns its limiting
+        if (
+            gain_correct is not None
+            and gain_correct > 0
+            and not self._is_dsp_active_for_queue(streamdetails.queue_id)
+        ):
+            filter_params.append(
+                f"alimiter=limit={NORMALIZATION_LIMITER_CEILING_DB}dB"
+                ":level=false:asc=true:latency=true"
+            )
 
         # handle playback speed
         if playback_speed != 1.0:
@@ -1942,7 +1990,7 @@ class StreamsAudio:
 
     async def get_queue_item_stream_with_smartfade(  # noqa: C901, PLR0912
         self,
-        player: Player,
+        player: PlayerProtocol,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         crossfade_mode: CrossfadeMode = CrossfadeMode.SMART_CROSSFADE,
@@ -2237,7 +2285,7 @@ class StreamsAudio:
                 crossfade_allowed = self.crossfade_allowed(
                     queue_item,
                     crossfade_mode=crossfade_mode,
-                    player_id=player.player_id,
+                    protocol_id=player.protocol_id,
                     flow_mode=False,
                     next_queue_item=next_queue_item,
                     sample_rate=pcm_format.sample_rate,
@@ -2497,7 +2545,7 @@ class StreamsAudio:
         start_queue_item: QueueItem,
         pcm_format: AudioFormat,
         session_id: str | None = None,
-        protocol_player: Player | None = None,
+        protocol_player: PlayerProtocol | None = None,
         consumer_connected: Callable[[], bool] | None = None,
     ) -> AsyncGenerator[bytes]:
         """
@@ -2509,10 +2557,11 @@ class StreamsAudio:
         :param start_queue_item: First queue item in the flow stream.
         :param pcm_format: Shared PCM format for the complete flow stream.
         :param session_id: Queue session that owns processing-detail updates.
-        :param protocol_player: The protocol player actually consuming the flow stream.
-            Must be the same player that was used to select ``pcm_format`` so
+        :param protocol_player: The protocol actually consuming the flow stream.
+            Must be the same protocol that was used to select ``pcm_format`` so
             restart decisions are made against the correct supported sample rates
-            and flow mode configuration. Falls back to the queue's player when omitted.
+            and flow mode configuration. Falls back to the protocol that renders for the
+            queue's player when omitted.
         :param consumer_connected: Reports whether the consumer of this stream is still
             connected; once it reports False, the stream ends before its next item and
             does not report the queue completed.
@@ -3167,7 +3216,6 @@ class StreamsAudio:
                 if len(crossfade_buffer) >= min_fade_out_size and self.crossfade_allowed(
                     queue_track,
                     crossfade_mode=item_crossfade_mode,
-                    player_id=queue.queue_id,
                     flow_mode=True,
                 ):
                     last_fadeout_part = bytes(crossfade_buffer[-crossfade_buffer_size:])
@@ -3308,13 +3356,24 @@ class StreamsAudio:
         self,
         queue_item: QueueItem,
         crossfade_mode: CrossfadeMode,
-        player_id: str,
+        protocol_id: str | None = None,
         flow_mode: bool = False,
         next_queue_item: QueueItem | None = None,
         sample_rate: int | None = None,
         next_sample_rate: int | None = None,
     ) -> bool:
-        """Get the crossfade config for a queue item."""
+        """
+        Return whether a queue item may be mixed into the item after it.
+
+        :param queue_item: The queue item that ends.
+        :param crossfade_mode: The crossfade mode of the queue.
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
+        :param flow_mode: Whether the items play on one flow stream.
+        :param next_queue_item: The item that follows, when it is loaded already.
+        :param sample_rate: PCM sample rate of the outgoing item, when known.
+        :param next_sample_rate: PCM sample rate of the incoming item, when known.
+        """
         if queue_item.streamdetails and (tail_overlap := queue_item.streamdetails.tail_overlap):
             # a declared overlap plays only into the track it was planned against
             next_item = next_queue_item or self.mass.player_queues.get_next_item(
@@ -3332,7 +3391,7 @@ class StreamsAudio:
                 )
                 return False
             if not self._may_mix_across_sample_rates(
-                player_id, flow_mode, sample_rate, next_sample_rate
+                protocol_id, flow_mode, sample_rate, next_sample_rate
             ):
                 self.logger.info(
                     "Skipping the tail overlap of %s: the player does not play gapless across "
@@ -3346,8 +3405,6 @@ class StreamsAudio:
         if crossfade_mode == CrossfadeMode.DISABLED:
             return False
         if not (self.mass.player_queues.get(queue_item.queue_id)):
-            return False  # just a guard
-        if not (self.mass.players.get_player(player_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:
             self.logger.debug("Skipping crossfade: current item is not a track")
@@ -3375,7 +3432,7 @@ class StreamsAudio:
 
         # check if we're allowed to crossfade on different sample rates
         if not self._may_mix_across_sample_rates(
-            player_id, flow_mode, sample_rate, next_sample_rate
+            protocol_id, flow_mode, sample_rate, next_sample_rate
         ):
             self.logger.debug(
                 "Skipping crossfade: player(protocol) does not support gapless playback "
@@ -3415,6 +3472,28 @@ class StreamsAudio:
         # and release anything waiting on a fade this queue will never finish mixing
         if pending := self._crossfade_pending.pop(queue_id, None):
             pending[1].set()
+
+    def get_stream_providers(
+        self, mapping: ProviderMapping, allowed: list[str] | None
+    ) -> list[Provider]:
+        """
+        Return the loaded providers that can stream the item a provider mapping points to.
+
+        :param mapping: The provider mapping of the item.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._get_mapping_providers(mapping, allowed)
+
+    def has_alternative_match_providers(
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
+    ) -> bool:
+        """
+        Return whether a streaming provider the item has no mapping on could stream a match.
+
+        :param media_item: The item whose own mappings define the providers it is known on.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        return self._has_alternative_match_providers(media_item, allowed)
 
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
@@ -3943,10 +4022,18 @@ class StreamsAudio:
                         prefer_album_loudness=prefer_album_loudness,
                         excluded_provider_instances=busy_instances,
                     )
-                except (AudioError, MediaNotFoundError) as err:
+                except (
+                    AudioError,
+                    MediaNotFoundError,
+                    ResourceTemporarilyUnavailable,
+                    RetriesExhausted,
+                ) as err:
                     if last_capacity_error is None:
                         raise
                     if final_pass:
+                        if isinstance(err, (ResourceTemporarilyUnavailable, RetriesExhausted)):
+                            # no source resolved while a provider asks us to back off
+                            raise
                         # capacity was the root cause, surface the typed (actionable) error
                         raise last_capacity_error from err
                     # no usable alternative mapping: restore the capacity-blocked details
@@ -3984,14 +4071,24 @@ class StreamsAudio:
             # probe (0s) whenever a reselection can still follow: a free slot is still
             # acquired instantly, while a busy one fails fast instead of spending the
             # whole budget on this candidate. Block only on the last resort.
-            source_wait = (
-                0.0
-                if (
-                    not final_pass
-                    and (alternatives_left or busy_instances or match_pending or paused_holder)
-                )
-                else remaining
+            last_resort = final_pass or not (
+                alternatives_left or busy_instances or match_pending or paused_holder
             )
+            # an item that resumes from its own buffer (the reuse check of get_buffer) opens
+            # no new source, so a held slot is nothing to refuse it over
+            own_buffer = streamdetails.buffer
+            resumes = (
+                own_buffer is not None
+                and not own_buffer.has_error
+                and own_buffer.is_valid(seek_position_ms)
+            )
+            if last_resort and not resumes:
+                # a realtime source keeps its slot until its item ends, so the budget would
+                # run out with nothing to show for it: refuse right away instead
+                self.mass.player_queues.refuse_held_stream_slot(
+                    streamdetails.provider, queue_item.queue_id
+                )
+            source_wait = remaining if last_resort else 0.0
             # record whose audio this is before it exists: a queue stop releases only the
             # buffers of the session it is tearing down, and details resolved by an earlier
             # session are reused as they are, so the claim has to be made where the buffer
@@ -4236,12 +4333,12 @@ class StreamsAudio:
         )
 
     def _has_alternative_match_providers(
-        self, media_item: Track, allowed: list[str] | None
+        self, media_item: Playlist | Album | Track, allowed: list[str] | None
     ) -> bool:
         """
         Return whether any configured streaming provider could carry an unmapped match.
 
-        :param media_item: Track whose existing mappings define the known provider domains.
+        :param media_item: Item whose existing mappings define the known provider domains.
         :param allowed: Music sources the playback user may use, or None for all of them.
         """
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
@@ -4461,9 +4558,12 @@ class StreamsAudio:
         :param candidates: Candidates in mapping and compatible-instance order.
         :param media_item: The media item the candidates belong to.
         :return: The first resolved stream details, or None when every candidate failed.
+        :raises RateLimited: When no candidate resolved and a provider is rate limited.
+        :raises RetriesExhausted: When no candidate resolved and a provider gave up retrying.
         :raises AudioError: The last (actionable) audio error when no candidate resolved.
         """
         last_audio_error: AudioError | None = None
+        temporary_error: RateLimited | RetriesExhausted | None = None
         for mapping, provider in candidates:
             # any provider that streams its own items can own the mapping
             try:
@@ -4483,8 +4583,14 @@ class StreamsAudio:
                     self.mass.create_task(
                         self.mass.music.mark_provider_mapping_unavailable(media_item, mapping)
                     )
+            except (RateLimited, RetriesExhausted) as err:
+                # the provider asked us to back off, the item may well play once it clears
+                temporary_error = err
+                self.logger.warning("%s", err)
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
+        if temporary_error is not None:
+            raise temporary_error
         if last_audio_error is not None:
             raise last_audio_error
         return None
@@ -4918,15 +5024,17 @@ class StreamsAudio:
         if pending is None or pending[0] != queue_item.queue_item_id:
             return None
         handoff = pending[1]
+        realtime = queue_item.streamdetails is not None and queue_item.streamdetails.is_realtime
+        max_wait = REALTIME_CROSSFADE_HANDOFF_WAIT if realtime else CROSSFADE_HANDOFF_WAIT
         self.logger.debug(
             "Waiting up to %.1fs for the fade into %s being mixed for queue %s",
-            CROSSFADE_HANDOFF_WAIT,
+            max_wait,
             queue_item.name,
             queue.display_name,
         )
         waited_from = asyncio.get_event_loop().time()
         with suppress(TimeoutError):
-            await asyncio.wait_for(handoff.wait(), CROSSFADE_HANDOFF_WAIT)
+            await asyncio.wait_for(handoff.wait(), max_wait)
         # claimed (popped) only when it is this item's own boundary; a stale entry
         # for another item stays for its own request
         handover = await self._claim_crossfade_handover(queue, queue_item, session_id)
@@ -5007,7 +5115,7 @@ class StreamsAudio:
 
     def _may_mix_across_sample_rates(
         self,
-        player_id: str,
+        protocol_id: str | None,
         flow_mode: bool,
         sample_rate: int | None,
         next_sample_rate: int | None,
@@ -5015,7 +5123,8 @@ class StreamsAudio:
         """
         Return whether a boundary mix may span two items that stream at different rates.
 
-        :param player_id: The player the items play on.
+        :param protocol_id: The protocol that plays the item streams; not needed for a flow
+            stream.
         :param flow_mode: Whether the items play on one flow stream.
         :param sample_rate: PCM sample rate of the outgoing item, when known.
         :param next_sample_rate: PCM sample rate of the incoming item, when known.
@@ -5024,9 +5133,10 @@ class StreamsAudio:
         # switch lands inside the mix, so the player has to play gapless across rates
         if flow_mode or not sample_rate or not next_sample_rate or sample_rate == next_sample_rate:
             return True
+        assert protocol_id is not None
         return bool(
-            self.mass.config.get_raw_player_config_value(
-                player_id,
+            self.mass.config.get_protocol_value(
+                protocol_id,
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key,
                 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.default_value,
             )
@@ -5201,9 +5311,18 @@ class StreamsAudio:
                 # HLS streams (especially the BBC) struggle when they're played directly
                 # with ffmpeg, where they just stop after some minutes,
                 # so we tell ffmpeg to loop around in this case.
+                start_segments, start_seconds = await self._get_hls_radio_start(substream.path)
+                if streamdetails.data is None:
+                    streamdetails.data = {}
+                if isinstance(streamdetails.data, dict):
+                    streamdetails.data[STREAMDETAILS_HLS_START_SECONDS_KEY] = start_seconds
                 extra_input_args += [
                     "-stream_loop",
                     "-1",
+                    "-live_start_index",
+                    str(-start_segments),
+                    "-seg_max_retry",
+                    str(HLS_RADIO_SEGMENT_RETRIES),
                     "-readrate",
                     "1",
                     "-readrate_initial_burst",
@@ -5485,66 +5604,97 @@ class StreamsAudio:
             self.logger.debug("Invalid response encoding during Shoutcast validation for %s", url)
             return False
 
-    def _resolve_player_dsp_config(self, player: Player) -> DSPConfig:
+    def _resolve_player_dsp_config(self, player: PlayerProtocol) -> DSPConfig:
         """
         Resolve the effective DSP config for a player.
 
         Single source of truth shared by every code path that needs to know
-        whether DSP will run for this player. Protocol wrappers defer to their
-        parent player; single-leg ``player_group`` instances that don't expose
+        whether DSP will run for this player. A protocol uses the config of the
+        player it is attached to; single-leg ``player_group`` instances that don't expose
         ``MULTI_DEVICE_DSP`` defer to their first member; players whose grouping
         context prevents DSP get a disabled config back regardless.
 
-        :param player: The player to resolve DSP config for.
+        :param player: The protocol that renders the audio to resolve DSP config for.
         """
         dsp_player_id = self._resolve_player_dsp_config_id(player)
         dsp = self.mass.config.get_player_dsp_config(dsp_player_id)
         if is_grouping_preventing_dsp(player):
             dsp.enabled = False
         elif player.provider.domain == "player_group" and (
-            PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
+            PlayerFeature.MULTI_DEVICE_DSP not in player.supported_features
         ):
-            if not player.state.group_members:
+            if not player.group_members:
                 dsp.enabled = False
         return dsp
 
-    def _resolve_player_dsp_config_id(self, player: Player) -> str:
+    def _resolve_player_dsp_config_id(self, player: PlayerProtocol) -> str:
         """
         Return the player identifier that supplies the effective DSP config.
 
-        :param player: Player whose DSP config source should be resolved.
+        :param player: The protocol whose DSP config source should be resolved.
         """
-        dsp_player_id = player.protocol_parent_id or player.player_id
+        dsp_player_id = player.player.player_id if player.player else player.protocol_id
         if (
             not is_grouping_preventing_dsp(player)
             and player.provider.domain == "player_group"
-            and PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
-            and player.state.group_members
+            and PlayerFeature.MULTI_DEVICE_DSP not in player.supported_features
+            and player.group_members
         ):
-            child_player = self.mass.players.get_player(player.state.group_members[0])
+            child_player = self.mass.players.get_player_by_protocol(player.group_members[0])
             assert child_player is not None
             dsp_player_id = child_player.player_id
         return dsp_player_id
 
-    def _get_output_channels(self, player: Player | None, player_id: str) -> str:
+    def _is_dsp_active_for_queue(self, queue_id: str | None) -> bool:
         """
-        Return the configured output channels for the rendering player.
+        Return whether DSP runs on the queue's player and on every member of its group.
 
-        The value may be stored on the rendering player(protocol) itself (the
-        protocol section of the config UI) or on its visible parent player (the
-        native section); the rendering player's own stored value wins.
+        :param queue_id: The queue to check; an unknown queue or player counts as no DSP.
         """
-        parent_id = player.protocol_parent_id if player and player.protocol_parent_id else player_id
-        parent_value = self.mass.config.get_raw_player_config_value(
-            parent_id, CONF_OUTPUT_CHANNELS, "stereo"
+        if not queue_id or not (player := self.mass.players.get_player(queue_id)):
+            return False
+        output_players = [
+            member
+            for member_id in player.group_members
+            if (member := self.mass.players.get_player(member_id))
+        ]
+        # a group player that hands DSP to its members has no DSP config of its own
+        if not (
+            player.type == PlayerType.GROUP
+            and PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
+        ):
+            output_players.append(player)
+        # a player whose output is not selected yet has no DSP established, which keeps the limiter
+        return bool(output_players) and all(
+            (protocol := output_player.resolve_output_protocol()) is not None
+            and self._resolve_player_dsp_config(protocol).enabled
+            for output_player in output_players
         )
-        return self.mass.config.get_raw_player_config_value(
-            player.player_id if player else player_id, CONF_OUTPUT_CHANNELS, parent_value
+
+    def _get_output_channels(self, player: PlayerProtocol | None, protocol_id: str) -> str:
+        """
+        Return the configured output channels for the rendering protocol.
+
+        The value may be stored on the rendering protocol itself (the protocol
+        section of the config UI) or on the own protocol of its player (the
+        native section); the rendering protocol's own stored value wins.
+
+        :param player: The protocol that renders the audio, if it is attached.
+        :param protocol_id: The id of the protocol that renders the audio.
+        """
+        own = player.player.own_protocol if player and player.player else None
+        own_value = (
+            self.mass.config.get_protocol_value(own.protocol_id, CONF_OUTPUT_CHANNELS, "stereo")
+            if own
+            else "stereo"
+        )
+        return self.mass.config.get_protocol_value(
+            player.protocol_id if player else protocol_id, CONF_OUTPUT_CHANNELS, own_value
         )
 
     def _pick_pcm_bit_depth(
         self,
-        players: Iterable[Player],
+        players: Iterable[PlayerProtocol],
         streamdetails: StreamDetails | None,
         crossfade_enabled: bool,
         overlay_active: bool = False,
@@ -5578,7 +5728,7 @@ class StreamsAudio:
 
     def _select_audio_source_pcm_format(
         self,
-        player: Player,
+        player: PlayerProtocol,
         streamdetails: StreamDetails,
         supported_sample_rates: Iterable[int] | None = None,
     ) -> AudioFormat:
@@ -5624,21 +5774,18 @@ class StreamsAudio:
         )
 
     def _flow_restart_context(
-        self, queue_id: str, protocol_player: Player | None
+        self, queue_id: str, protocol_player: PlayerProtocol | None
     ) -> tuple[str, list[int]]:
         """
         Resolve the flow mode config and supported sample rates for restart decisions.
 
-        Prefers the protocol player actually consuming the flow stream over the
-        queue's (wrapper) player, whose config may lack the audio specific entries.
+        Prefers the protocol actually consuming the flow stream over the one that
+        renders for the queue's player now.
         """
+        if protocol_player is None and (player := self.mass.players.get_player(queue_id)):
+            protocol_player = player.resolve_output_protocol()
         if protocol_player is None:
-            protocol_player = self.mass.players.get_player(queue_id)
-        if protocol_player is None:
-            flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
-                queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
-            )
-            return flow_mode_sample_rate_conf, []
+            return FLOW_MODE_SAMPLE_RATE_SMART, []
         flow_mode_sample_rate_conf = cast(
             "str",
             protocol_player.config.get_value(
@@ -5755,6 +5902,33 @@ class StreamsAudio:
             ) as resp:
                 yield resp
 
+    async def _get_hls_radio_start(self, media_playlist_url: str) -> tuple[int, float | None]:
+        """
+        Return the segments behind the live edge an HLS radio stream starts and their seconds.
+
+        The seconds are None when the playlist gave no usable segment durations.
+
+        :param media_playlist_url: The url of the media playlist of the stream.
+        """
+        try:
+            async with self.mass.http_session_no_ssl.get(
+                encoded_request_url(media_playlist_url),
+                headers=HTTP_HEADERS,
+                timeout=ClientTimeout(total=HLS_RADIO_PLAYLIST_TIMEOUT),
+            ) as resp:
+                resp.raise_for_status()
+                playlist = (await resp.read()).decode("utf-8", errors="replace")
+        except (aiohttp.ClientError, TimeoutError) as err:
+            self.logger.debug("Could not read the HLS radio playlist: %s", err)
+            return HLS_RADIO_MIN_START_SEGMENTS, None
+        durations = [float(value) for value in _EXTINF_DURATION.findall(playlist)]
+        if not any(durations):
+            return HLS_RADIO_MIN_START_SEGMENTS, None
+        needed = _segments_for_seconds(durations, HLS_RADIO_LIVE_START_SECONDS)
+        # ffmpeg starts at the first segment of a playlist that is shorter than this
+        segments = min(max(needed, HLS_RADIO_MIN_START_SEGMENTS), len(durations))
+        return segments, sum(durations[-segments:])
+
     async def _update_hls_radio_metadata(
         self,
         streamdetails: StreamDetails,
@@ -5801,49 +5975,52 @@ class StreamsAudio:
                     streamdetails.data.pop("hls_media_playlist_url", None)
                 raise
 
-            # Parse the playlist and look for EXTINF metadata
-            # The most recent segment usually has the current metadata
+            # The audio stays as far behind the live edge as the stream started, so the
+            # metadata of what plays now is that far back in the playlist
             lines = playlist_content.strip().split("\n")
-            for line in reversed(lines):
-                if line.startswith("#EXTINF:"):
-                    # Extract metadata from EXTINF line
-                    metadata = parse_extinf_metadata(line)
+            entries = [line for line in lines if line.startswith("#EXTINF:")]
+            if not entries:
+                return
+            line = entries[-1]
+            start_seconds = streamdetails.data.get(STREAMDETAILS_HLS_START_SECONDS_KEY)
+            if start_seconds:
+                durations = [float(value) for value in _EXTINF_DURATION.findall("\n".join(entries))]
+                if len(durations) == len(entries):
+                    line = entries[-_segments_for_seconds(durations, start_seconds)]
 
-                    # Build stream title from title and artist
-                    title = metadata.get("title", "")
-                    artist = metadata.get("artist", "")
-                    image_url = (
-                        metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
+            # Extract metadata from EXTINF line
+            metadata = parse_extinf_metadata(line)
+
+            # Build stream title from title and artist
+            title = metadata.get("title", "")
+            artist = metadata.get("artist", "")
+            image_url = metadata.get("image") or metadata.get("artwork") or metadata.get("cover")
+            if not artist and " - " in title:
+                artist, title = title.split(" - ", 1)
+            if title or artist:
+                # Format as "Artist - Title"
+                if artist and title:
+                    stream_title = f"{artist} - {title}"
+                elif title:
+                    stream_title = title
+                else:
+                    stream_title = artist
+
+                # Clean the stream title
+                cleaned_title = clean_stream_title(stream_title)
+
+                # Only update if changed
+                if cleaned_title != streamdetails.stream_title and cleaned_title:
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL, "HLS Radio metadata updated: %s", cleaned_title
                     )
-                    if not artist and " - " in title:
-                        artist, title = title.split(" - ", 1)
-                    if title or artist:
-                        # Format as "Artist - Title"
-                        if artist and title:
-                            stream_title = f"{artist} - {title}"
-                        elif title:
-                            stream_title = title
-                        else:
-                            stream_title = artist
-
-                        # Clean the stream title
-                        cleaned_title = clean_stream_title(stream_title)
-
-                        # Only update if changed
-                        if cleaned_title != streamdetails.stream_title and cleaned_title:
-                            self.logger.log(
-                                VERBOSE_LOG_LEVEL, "HLS Radio metadata updated: %s", cleaned_title
-                            )
-                            streamdetails.stream_title = cleaned_title
-                            self._update_radio_stream_metadata(
-                                streamdetails,
-                                artist=artist or None,
-                                title=title or cleaned_title,
-                                image_url=image_url,
-                            )
-
-                    # Only check the most recent EXTINF
-                    break
+                    streamdetails.stream_title = cleaned_title
+                    self._update_radio_stream_metadata(
+                        streamdetails,
+                        artist=artist or None,
+                        title=title or cleaned_title,
+                        image_url=image_url,
+                    )
 
         except Exception as err:
             self.logger.debug("Error fetching HLS metadata: %s", err)

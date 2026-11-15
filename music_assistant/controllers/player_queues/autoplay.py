@@ -199,11 +199,16 @@ class Autoplay:
         return self.mass.config.get_raw_player_queue_config_value(queue_id, CONF_AUTOPLAY_PLAYLIST)
 
     async def _collect_genre_ids(self, queue: PlayerQueue) -> list[int]:
-        """Collect library genre ids from the queue's most recently enqueued items."""
+        """
+        Collect library genre ids from the queue's most recently enqueued items.
+
+        The genres the playback user disliked are left out.
+        """
         genre_ids: set[int] = set()
+        queue_data = self.queues.queue_data(queue.queue_id)
         seeds = [
             item
-            for item in reversed(self.queues.queue_data(queue.queue_id).enqueued_media_items)
+            for item in reversed(queue_data.enqueued_media_items)
             if item.media_type in GENRE_SEED_MEDIA_TYPES
         ][:GENRE_SEED_ITEM_COUNT]
         for seed in seeds:
@@ -218,6 +223,8 @@ class Autoplay:
                 ):
                     with suppress(ValueError, TypeError):
                         genre_ids.add(int(genre.item_id))
+        if genre_ids and queue_data.userid:
+            genre_ids -= await self.mass.music.favorites.disliked_genre_ids(queue_data.userid)
         return list(genre_ids)
 
     async def _resolve_library_id(

@@ -25,6 +25,9 @@ from music_assistant_models.errors import (
     RetriesExhausted,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.errors import (
+    ProviderStreamHeldError as ProviderStreamHeldErrorBase,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -64,6 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -77,6 +81,9 @@ if TYPE_CHECKING:
 
 CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 DEFAULT_MAX_CONCURRENT_STREAMS: Final[int] = 5
+# a music service stops paging through an artist's discography at this many releases, so
+# one user action never costs a number of requests that grows with the catalogue (usage policy)
+ARTIST_ALBUMS_LIMIT: Final[int] = 100
 # a provider-wide payload change fails every single item, so only the first failures
 # of a sync run are logged in full to keep the (rotating) log file usable
 MAX_LOGGED_SYNC_FAILURES: Final[int] = 25
@@ -172,6 +179,43 @@ class ProviderStreamLimitError(AudioError):
             f"{provider.name} has reached its limit of {limit} "
             f"concurrent source streams{wait_text}.",
             translation_args=[provider.name, limit],
+        )
+        self.provider_instance = provider.instance_id
+        self.limit = limit
+
+
+class ProviderStreamHeldError(ProviderStreamLimitError, ProviderStreamHeldErrorBase):
+    """
+    Raised when another player's playback holds the last source-stream slot of a provider.
+
+    A realtime source keeps its slot until its item ends, so waiting for one is pointless:
+    the request is refused right away, naming the player to stop. Callers handle it like any
+    ProviderStreamLimitError; API clients get its own error code and ``data`` naming the
+    holding player.
+    """
+
+    translation_key = "provider_stream_held"
+
+    def __init__(self, provider: MusicProvider, holder: PlayerQueue) -> None:
+        """
+        Initialize the error.
+
+        :param provider: Provider instance whose source-stream slots are all held.
+        :param holder: The queue whose playback holds the slot.
+        """
+        limit = provider.max_concurrent_streams
+        assert limit is not None
+        # skips ProviderStreamLimitError.__init__, which phrases the message in terms
+        # of the budget and the time spent waiting for it
+        MusicAssistantError.__init__(
+            self,
+            f"{provider.name} is already playing on {holder.display_name}",
+            translation_args=[provider.name, holder.display_name],
+            data={
+                "queue_id": holder.queue_id,
+                "player_name": holder.display_name,
+                "provider_instance": provider.instance_id,
+            },
         )
         self.provider_instance = provider.instance_id
         self.limit = limit
@@ -346,8 +390,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         Return all supported artist types by this provider.
 
-        Note, that this property currently is only used, to verify support of artists with
-        ArtistType.AUTHOR or ArtistType.NARRATOR.
+        Sent to clients with the provider; with ArtistType.AUTHOR or ArtistType.NARRATOR the
+        provider's audiobooks must list those as Artist objects instead of strings.
         """
         return {ArtistType.SINGER}
 
@@ -400,8 +444,9 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
-        Get a list of all albums for the given artist.
+        Get a list of albums for the given artist.
 
+        A music service stops paging through the discography at ARTIST_ALBUMS_LIMIT releases.
         Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
         """
         raise NotImplementedError
@@ -826,6 +871,19 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         A playback that triggers this callback is followed by at least one on_streamed.
         """
 
+    async def hint_next_item(self, playing: StreamDetails, upcoming: StreamDetails) -> None:
+        """
+        Handle a hint about the item that follows the one being streamed.
+
+        Called instead of preparing the upcoming item when the streamed item holds
+        this provider's only stream slot, so a provider that plays a queue itself
+        can line the upcoming item up. It may be called more than once for the same
+        pair; a call for a different upcoming item means the queue changed.
+
+        :param playing: Stream details of the item being streamed.
+        :param upcoming: Stream details of the item that follows it.
+        """
+
     async def on_streamed(
         self,
         streamdetails: StreamDetails,
@@ -978,6 +1036,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
             raise KeyError(msg)
 
         # no subpath: return main listing
+        # artists, albums and playlists folders are not playable: playing one would fetch
+        # the tracks of every item in the library, one request each
         folders: list[BrowseFolder] = []
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             folders.append(
@@ -987,7 +1047,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "artists",
                     name="",
                     translation_key="artists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
@@ -998,7 +1057,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "albums",
                     name="",
                     translation_key="albums",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
@@ -1020,7 +1078,6 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                     path=path + "playlists",
                     name="",
                     translation_key="playlists",
-                    is_playable=True,
                 )
             )
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
@@ -1670,37 +1727,23 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
                             prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
-                    elif self._library_item_needs_update(
-                        sync_details, prov_item
-                    ) or sync_details.authors_narrators_changed(prov_item):
+                    elif (
+                        self._library_item_needs_update(sync_details, prov_item)
+                        or sync_details.authors_narrators_changed(prov_item)
+                        or sync_details.resume_point_changed(prov_item)
+                    ):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
                         db_id = int(library_item.item_id)
-                        lib_fully_played = library_item.fully_played
-                        lib_resume_position_ms = library_item.resume_position_ms
                     else:
                         db_id = sync_details.item_id
-                        lib_fully_played = sync_details.fully_played
-                        lib_resume_position_ms = sync_details.resume_position_ms
 
                     cur_db_ids.add(db_id)
                     if prov_item.favorite is not None:
                         await self.mass.music.favorites.record_from_provider(
                             self.instance_id, MediaType.AUDIOBOOK, db_id, prov_item.favorite
                         )
-                    # check if resume_position_ms or fully_played changed
-                    if (
-                        prov_item.resume_position_ms is not None
-                        and prov_item.fully_played is not None
-                        and (
-                            lib_resume_position_ms != prov_item.resume_position_ms
-                            or lib_fully_played != prov_item.fully_played
-                        )
-                    ):
-                        await self.mass.music.audiobooks.update_item_in_library(db_id, prov_item)
 
                     fallback_genres = (
                         set(prov_item.metadata.genres)

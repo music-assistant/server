@@ -22,6 +22,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.streams.audio_analysis import (
+    LOUDNESS_ANALYSIS_DOMAIN,
     PROVIDER_LOUDNESS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
     SONIC_ANALYSIS_DOMAIN,
@@ -621,7 +622,7 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
         (128.0, "D"),
         (None, "F# minor"),
         None,
-        None,
+        (90.0, None),
         None,
         None,
         (140.0, None),
@@ -629,6 +630,35 @@ async def test_tracks_audio_metadata_matches_single_track_lookup(
         (110.0, "A"),
         (128.0, "D"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_tracks_audio_metadata_energy_level_matches_single_track_lookup(
+    ctrl: AudioAnalysisController,
+) -> None:
+    """Both lookups take the loudness for the energy level from the first-listed provider."""
+    await _setup_metadata_fixture(ctrl)
+    domains = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
+    ctrl.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[_aa_provider(domain) for domain in domains]
+    )
+    stored = [
+        (
+            SONIC_ANALYSIS_DOMAIN,
+            AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-30.0),
+        ),
+        (LOUDNESS_ANALYSIS_DOMAIN, AudioAnalysisData(loudness_integrated=-20.0)),
+        (PROVIDER_LOUDNESS_DOMAIN, AudioAnalysisData(loudness_integrated=-8.0)),
+    ]
+    for aa_domain, analysis in stored:
+        await ctrl.set_audio_analysis("e1", "fs--a", aa_domain, analysis)
+    tracks = [_track(("e1", "fs--a", ContentType.MP3))]
+
+    batched_result = await ctrl.get_tracks_audio_metadata(tracks)
+
+    assert batched_result == [await ctrl.get_track_audio_metadata(tracks[0])]
+    assert batched_result[0] is not None
+    assert batched_result[0].energy_level == 7
 
 
 @pytest.mark.asyncio

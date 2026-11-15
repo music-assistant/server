@@ -1,14 +1,19 @@
 """Helpers for creating/parsing URI's."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import re
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from urllib.parse import parse_qs, urlsplit
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 from music_assistant_models.helpers import create_uri as create_uri_org
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import ProviderMapping
 
 base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
 
@@ -175,6 +180,19 @@ def canonical_provider_url(
     if provider_domain == "qobuz" and media_type == MediaType.ARTIST and item_id.isdigit():
         return f"https://open.qobuz.com/artist/{item_id}"
     return None
+
+
+def canonical_mapping_url(mapping: ProviderMapping, media_type: MediaType) -> str | None:
+    """
+    Return the public URL of a provider mapping in the form MusicBrainz links to it.
+
+    :param mapping: The provider mapping of the item.
+    :param media_type: Media type of the item.
+    :return: The URL, or None when the provider has no canonical URL for this kind of item.
+    """
+    # a storefront-scoped share URL carries the storefront MusicBrainz stores it under
+    storefront = apple_storefront_from_url(mapping.url) if mapping.url else None
+    return canonical_provider_url(mapping.provider_domain, media_type, mapping.item_id, storefront)
 
 
 def apple_storefront_from_url(url: str) -> str | None:

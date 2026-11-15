@@ -1,13 +1,15 @@
 """Test the ytmusicapi call wrapper's handling of a signed-out session."""
 
+from collections.abc import Awaitable, Callable
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, RetriesExhausted
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicServerError
+from ytmusicapi.models.content.enums import PlaylistSortOrder
 
 from music_assistant.providers.ytmusic import helpers
 
@@ -167,3 +169,85 @@ async def test_rate_track_passes_auth_headers_and_user() -> None:
         )
     mock_ytmusic.assert_called_once_with(auth=headers, user="123")
     mock_ytm.rate_song.assert_called_once_with(videoId="video", rating=LikeStatus.DISLIKE)
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"playerConfig": {"playbackStartConfig": {"startSeconds": 1007}}}, 1007),
+        ({"playerConfig": {"playbackStartConfig": {}}}, 0),
+        ({}, 0),
+    ],
+)
+async def test_get_episode_start_seconds_reads_the_player_response(
+    response: dict[str, Any], expected: int
+) -> None:
+    """The resume second comes from the player response, 0 when YouTube sends none."""
+    ytm = MagicMock()
+    ytm._send_request.return_value = response
+    with patch.object(ytmusicapi, "YTMusic", return_value=ytm):
+        assert await helpers.get_episode_start_seconds("v1", headers={}) == expected
+
+    assert ytm._send_request.call_args.args[0] == "player"
+    assert ytm._send_request.call_args.args[1]["video_id"] == "v1"
+
+
+@pytest.mark.parametrize(
+    ("successor", "placement"),
+    [
+        ("D", {"movedSetVideoIdSuccessor": "D"}),
+        (None, {}),
+    ],
+)
+async def test_move_playlist_entries_orders_manually_then_moves_in_one_request(
+    successor: str | None, placement: dict[str, str]
+) -> None:
+    """The playlist is ordered manually first, then all entries move in one request."""
+    mock_ytm = MagicMock()
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        await helpers.move_playlist_entries(
+            headers={}, prov_playlist_id="PL1", set_video_ids=["A", "C"], successor=successor
+        )
+
+    assert mock_ytm.mock_calls == [
+        call.edit_playlist("PL1", sortOrder=PlaylistSortOrder.MANUAL),
+        call._send_request(
+            "browse/edit_playlist",
+            {
+                "playlistId": "PL1",
+                "actions": [
+                    {"action": "ACTION_MOVE_VIDEO_BEFORE", "setVideoId": svid, **placement}
+                    for svid in ("A", "C")
+                ],
+            },
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "make_call",
+    [
+        lambda: helpers.get_home(headers={}),
+        lambda: helpers.search("query"),
+        helpers.get_visitor_id,
+    ],
+    ids=["account", "search", "visitor_id"],
+)
+async def test_no_call_reaches_youtube_during_a_rate_limit_cooldown(
+    make_call: Callable[[], Awaitable[Any]],
+) -> None:
+    """All calls share one throttler, so its rate limit cooldown holds back every call."""
+    helpers._YTMusicGate.throttler.set_cooldown(3600)
+    with patch.object(ytmusicapi, "YTMusic") as mock_ytmusic, pytest.raises(RetriesExhausted):
+        await make_call()
+
+    mock_ytmusic.assert_not_called()
+
+
+async def test_http_429_arms_the_shared_rate_limit_cooldown() -> None:
+    """An HTTP 429 from YouTube Music is a rate limit that holds back every later call."""
+    error = YTMusicServerError("Server returned HTTP 429: Too Many Requests.\nQuota exceeded.")
+    with _patch_get_home(error), pytest.raises(RetriesExhausted):
+        await helpers.get_home(headers={})
+
+    assert helpers._YTMusicGate.throttler.cooldown_remaining > 0

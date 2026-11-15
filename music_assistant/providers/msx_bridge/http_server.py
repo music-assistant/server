@@ -482,7 +482,7 @@ class MSXHTTPServer:
 
     async def _handle_root(self, request: web.Request) -> web.Response:
         """Serve status dashboard."""
-        players = self.provider.players
+        players = self.provider.protocols
         # base is derived from the Host header, so escape it before embedding in HTML
         prefix = self._get_prefix(request)
         base = html_escape(prefix)
@@ -493,7 +493,9 @@ class MSXHTTPServer:
                 f"{html_escape(p.display_name)} — {html_escape(p.playback_state.value)}"
                 f"</span>"
             )
-            row += f'<form method="post" action="{base}/api/quick-stop/{html_escape(p.player_id)}" '
+            row += (
+                f'<form method="post" action="{base}/api/quick-stop/{html_escape(p.protocol_id)}" '
+            )
             row += 'style="display:inline">'
             row += '<button type="submit" class="btn">Quick stop</button></form></li>'
             player_rows.append(row)
@@ -1137,8 +1139,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         from_playlist = request.query.get("from_playlist") == "1"
         requested_queue_item_id = request.query.get("queue_item_id")
 
-        player = self.provider.mass.players.get_player(player_id)
-        if not player or not isinstance(player, MSXPlayer) or not player.config.enabled:
+        player = self.provider.get_protocol(player_id)
+        if not player or not isinstance(player, MSXPlayer) or player.player is None:
             return web.Response(status=404, text="Player not found")
         if rejected := self._reject_invalid_stream_token(request, player_id):
             return rejected
@@ -1179,7 +1181,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             {
                 "status": "ok",
                 "provider": "msx_bridge",
-                "players": len(self.provider.players),
+                "players": len(self.provider.protocols),
             }
         )
 
@@ -1213,7 +1215,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         await ws.send_json(
             {
                 "type": "state_sync",
-                "enabled": player.config.enabled,
+                "enabled": player.player is not None,
                 "state": player.playback_state.value,
                 "position": player.decoder_position(),
                 **player.clock_context(),
@@ -1230,7 +1232,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 self._ws_clients.pop(player_id, None)
                 self._client_prefixes.pop(player_id, None)
                 # Notify the player that its last WS client disconnected
-                offline_player = self.provider.mass.players.get_player(player_id)
+                offline_player = self.provider.get_protocol(player_id)
                 if offline_player and isinstance(offline_player, MSXPlayer):
                     offline_player.on_ws_disconnected()
             logger.debug("WebSocket client disconnected for player %s", player_id)
@@ -1247,19 +1249,19 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
 
     async def _cmd_pause_no_echo(self, player_id: str) -> None:
         """Pause player without echoing back to MSX."""
-        player = self.provider.mass.players.get_player(player_id)
+        player = self.provider.get_protocol(player_id)
         if not (player and isinstance(player, MSXPlayer)):
             return
         with player.suppress_ws_notify():
-            await self.provider.mass.players.cmd_pause(player_id)
+            await self.provider.mass.players.cmd_pause(self.provider.get_player_id(player_id))
 
     async def _cmd_play_no_echo(self, player_id: str) -> None:
         """Resume player without echoing back to MSX."""
-        player = self.provider.mass.players.get_player(player_id)
+        player = self.provider.get_protocol(player_id)
         if not (player and isinstance(player, MSXPlayer)):
             return
         with player.suppress_ws_notify():
-            await self.provider.mass.players.cmd_play(player_id)
+            await self.provider.mass.players.cmd_play(self.provider.get_player_id(player_id))
 
     async def _cmd_seek_for_generation(
         self,
@@ -1303,7 +1305,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 return
             position = msg.get("position")
             if _is_finite_position(position):
-                queue = self.provider.mass.player_queues.get_active_queue(player_id)
+                queue = self.provider.mass.player_queues.get_active_queue(
+                    self.provider.get_player_id(player_id)
+                )
                 if queue and queue.active:
                     self.provider.mass.create_task(
                         self._cmd_seek_for_generation(
@@ -1317,12 +1321,12 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if msg_type == "position":
             position = msg.get("position")
             if _is_finite_position(position):
-                player = self.provider.mass.players.get_player(player_id)
+                player = self.provider.get_protocol(player_id)
                 if player and isinstance(player, MSXPlayer):
                     player.update_position(float(position))
                     self.provider.on_player_activity(player_id)
         elif msg_type == "pause":
-            player = self.provider.mass.players.get_player(player_id)
+            player = self.provider.get_protocol(player_id)
             if player and isinstance(player, MSXPlayer):
                 position = msg.get("position")
                 if _is_finite_position(position):
@@ -1330,13 +1334,13 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 self.provider.mass.create_task(self._cmd_pause_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "resume":
-            player = self.provider.mass.players.get_player(player_id)
+            player = self.provider.get_protocol(player_id)
             if player and isinstance(player, MSXPlayer):
                 self.provider.mass.create_task(self._cmd_play_no_echo(player_id))
                 self.provider.on_player_activity(player_id)
         elif msg_type == "seek":
             position = msg.get("position")
-            player = self.provider.mass.players.get_player(player_id)
+            player = self.provider.get_protocol(player_id)
             if player and isinstance(player, MSXPlayer) and _is_finite_position(position):
                 player.note_tv_seek(float(position))
                 self.provider.on_player_activity(player_id)
@@ -1349,8 +1353,8 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         """Stream audio from MA to the TV using internal API."""
         player_id = _strip_known_extension(request.match_info["player_id"])
 
-        player = self.provider.mass.players.get_player(player_id)
-        if not player or not isinstance(player, MSXPlayer) or not player.config.enabled:
+        player = self.provider.get_protocol(player_id)
+        if not player or not isinstance(player, MSXPlayer) or player.player is None:
             return web.Response(status=404, text="Player not found")
         if rejected := self._reject_invalid_stream_token(request, player_id):
             return rejected
@@ -1617,7 +1621,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         try:
             with player.suppress_ws_notify():
                 await self.provider.mass.player_queues.play_media(
-                    player_id, uri, option=QueueOption.REPLACE
+                    self.provider.get_player_id(player_id), uri, option=QueueOption.REPLACE
                 )
                 await self._start_play_context(player_id, player, track_uri=track_uri, start=start)
         except MusicAssistantError, OSError, TimeoutError:
@@ -1649,7 +1653,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
 
-        await self.provider.mass.player_queues.play_media(player_id, track_uri)
+        await self.provider.mass.player_queues.play_media(
+            self.provider.get_player_id(player_id), track_uri
+        )
         return web.json_response({"status": "ok"})
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
@@ -1660,7 +1666,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
-        await self.provider.mass.players.cmd_pause(player_id)
+        await self.provider.mass.players.cmd_pause(self.provider.get_player_id(player_id))
         return web.json_response({"status": "ok"})
 
     async def _handle_stop(self, request: web.Request) -> web.Response:
@@ -1671,7 +1677,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
-        await self.provider.mass.players.cmd_stop(player_id)
+        await self.provider.mass.players.cmd_stop(self.provider.get_player_id(player_id))
         return web.json_response({"status": "ok"})
 
     async def _handle_quick_stop(self, request: web.Request) -> web.Response:
@@ -1682,7 +1688,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         if self._get_msx_player(player_id) is None:
             return web.json_response({"error": "Unknown MSX player"}, status=404)
         self.provider.on_player_activity(player_id)
-        await self.provider.mass.players.cmd_stop(player_id)
+        await self.provider.mass.players.cmd_stop(self.provider.get_player_id(player_id))
         self.provider.notify_play_stopped(player_id)
         accept = request.headers.get("Accept", "")
         if "text/html" in accept:
@@ -1700,7 +1706,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         self.provider.on_player_activity(player_id)
         before = self._queue_index(player_id)
         with player.suppress_ws_notify():
-            await self.provider.mass.players.cmd_next_track(player_id)
+            await self.provider.mass.players.cmd_next_track(self.provider.get_player_id(player_id))
         if not self._queue_advanced(player_id, before):
             return _msx_execute_ok()
         return _msx_execute_ok(self._queue_playlist_action(request, player_id))
@@ -1715,7 +1721,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             return web.json_response({"error": "Unknown MSX player"}, status=404)
         async with player.prepare_lock:
             media = player.current_media
-            queue = self.provider.mass.player_queues.get_active_queue(player_id)
+            queue = self.provider.mass.player_queues.get_active_queue(
+                self.provider.get_player_id(player_id)
+            )
             if (
                 media is None
                 or queue is None
@@ -1737,7 +1745,7 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
                 await self.provider.mass.player_queues.play_index(
                     queue.queue_id, next_item.queue_item_id
                 )
-            if not player.config.enabled or player.playback_state != PlaybackState.PLAYING:
+            if player.player is None or player.playback_state != PlaybackState.PLAYING:
                 return _msx_execute_ok()
             return _msx_execute_ok(self._queue_playlist_action(request, player_id))
 
@@ -1752,7 +1760,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         self.provider.on_player_activity(player_id)
         before = self._queue_index(player_id)
         with player.suppress_ws_notify():
-            await self.provider.mass.players.cmd_previous_track(player_id)
+            await self.provider.mass.players.cmd_previous_track(
+                self.provider.get_player_id(player_id)
+            )
         if not self._queue_advanced(player_id, before):
             return _msx_execute_ok()
         return _msx_execute_ok(self._queue_playlist_action(request, player_id))
@@ -1768,7 +1778,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
         start: int,
     ) -> None:
         """Jump to the selected track after enqueuing a container."""
-        queue = self.provider.mass.player_queues.get_active_queue(player_id)
+        queue = self.provider.mass.player_queues.get_active_queue(
+            self.provider.get_player_id(player_id)
+        )
         if queue is None:
             return
         items = list(self.provider.mass.player_queues.items(queue.queue_id, limit=queue.items))
@@ -1778,7 +1790,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             if candidate.media_item is not None and candidate.media_item.uri == track_uri:
                 target_id = candidate.queue_item_id
         if target_id is None and track_uri:
-            found = find_uri_in_active_queue(self.provider.mass, player_id, track_uri)
+            found = find_uri_in_active_queue(
+                self.provider.mass, self.provider.get_player_id(player_id), track_uri
+            )
             if found:
                 target_id = found[1]
         if target_id is None and start > 0 and start < len(items):
@@ -1789,14 +1803,18 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
 
     def _queue_index(self, player_id: str) -> int | None:
         """Return the active queue's current index, if any."""
-        queue = self.provider.mass.player_queues.get_active_queue(player_id)
+        queue = self.provider.mass.player_queues.get_active_queue(
+            self.provider.get_player_id(player_id)
+        )
         if queue is None:
             return None
         return queue.current_index
 
     def _queue_advanced(self, player_id: str, before: int | None) -> bool:
         """Return whether next/previous changed the item, or repeat-one restarted it."""
-        queue = self.provider.mass.player_queues.get_active_queue(player_id)
+        queue = self.provider.mass.player_queues.get_active_queue(
+            self.provider.get_player_id(player_id)
+        )
         after = queue.current_index if queue is not None else None
         if before != after:
             return True
@@ -1805,7 +1823,9 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
     def _queue_playlist_action(self, request: web.Request, player_id: str) -> str:
         """Build a playlist: action rotated so the current MA item is index 0."""
         prefix = self._get_prefix(request)
-        queue = self.provider.mass.player_queues.get_active_queue(player_id)
+        queue = self.provider.mass.player_queues.get_active_queue(
+            self.provider.get_player_id(player_id)
+        )
         queue_id = queue.queue_id if queue is not None else player_id
         start = queue.current_index or 0 if queue is not None else 0
         url = f"{prefix}/msx/queue-playlist/{player_id}.json?start={start}&queue_id={queue_id}"
@@ -1816,11 +1836,11 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
 
     def _get_msx_player(self, player_id: str) -> MSXPlayer | None:
         """Return the MSXPlayer for player_id if it belongs to this provider, else None."""
-        player = self.provider.mass.players.get_player(player_id, raise_unavailable=False)
+        player = self.provider.get_protocol(player_id)
         if (
             isinstance(player, MSXPlayer)
             and player.provider == self.provider
-            and player.config.enabled
+            and player.player is not None
         ):
             return player
         return None
@@ -1873,7 +1893,10 @@ code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; word-break: b
             player_id, prefix_label=prefix_label, remote_ip=remote_ip
         )
         player = await self.provider.get_or_register_player(
-            player_id, display_name=display_name, ip_address=remote_ip
+            player_id,
+            display_name=display_name,
+            ip_address=remote_ip,
+            device_id=request.query.get("device_id", "")[:64] or None,
         )
         return player_id, device_param, player
 

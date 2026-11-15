@@ -6,7 +6,8 @@ Sendspin visualization pipeline and the Hue Entertainment API (DTLS streaming).
 
 Each Entertainment Area on a paired Hue bridge appears as a virtual player
 in Music Assistant. Playing music to the player activates entertainment mode
-and makes the lights react to the music in real time.
+and makes the lights react to the music in real time. Without a Hue bridge,
+a chosen set of Hue lamps on ZHA (via Ziggurat) appears as one such player.
 """
 
 from __future__ import annotations
@@ -38,9 +39,9 @@ async def setup(
     module = await import_module_in_thread(
         ".provider", "music_assistant.providers.hue_entertainment"
     )
-    # bridge pairing (and thus the credentials) is handled by the setup flow; an
-    # instance only exists once pairing succeeded. A provider that somehow lacks
-    # credentials degrades to unavailable in loaded_in_mass rather than failing here.
+    # bridge pairing (and thus the credentials) or the choice of ZHA lamps is handled
+    # by the setup flow; an instance only exists once that succeeded. A provider that
+    # somehow lacks them degrades to unavailable in loaded_in_mass rather than failing here.
     return cast(
         "ProviderInstanceType",
         module.HueEntertainmentProvider(mass, manifest, config, SUPPORTED_FEATURES),

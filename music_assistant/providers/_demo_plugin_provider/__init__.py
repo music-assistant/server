@@ -222,7 +222,8 @@ class MyDemoPluginprovider(PluginProvider):
         # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
         # plus a path when audio comes from a named pipe / file. stream_metadata
         # carries the initial track info; update it at runtime via
-        # mass.players.update_source_metadata(player_id, ...).
+        # mass.players.update_source_metadata(owner_player_id, ...), with the
+        # owner_player_id that on_source_selected received.
         #
         # Silence-during-pause contract:
         # - stream_type=CUSTOM: the server wraps your audio generator with a
@@ -333,19 +334,26 @@ class MyDemoPluginprovider(PluginProvider):
         #
         # Plugins MUST store stream_session_id so the matching
         # on_source_unselected callback can reject stale teardowns from
-        # superseded same-queue requests. Typical pattern for exclusive
-        # sources:
+        # superseded same-queue requests. Store owner_player_id for anything you
+        # act on later: it is the user-facing player, while player_id is the id
+        # the stream is fetched under (that of the output protocol that renders
+        # the audio), no player or queue id; mass.players.get_player_by_protocol
+        # returns its player. To read the owner, look it up with
+        # mass.players.get_player(owner_player_id) and read its published state
+        # (player.state). Typical pattern for exclusive sources:
         #
-        #     if self._active_player_id and self._active_player_id != player_id:
-        #         await self.mass.players.cmd_stop(self._active_player_id)
+        #     if self._in_use_by_player and self._in_use_by_player != owner_player_id:
+        #         await self.mass.players.cmd_stop(self._in_use_by_player)
         #     self._in_use_by_player = owner_player_id  # claim (overwrites prior queue's)
         #     self._active_session_id = stream_session_id
-        #     self._active_player_id = player_id
         #
         # If allow_player_switch is False and the requesting player is not the
         # configured target, redirect via mass.player_queues.play_media(target,
         # uri) and then RAISE so the original (disallowed) request does not
         # continue into get_stream_details and stream to the wrong player.
+        # A player id stored in the config can be a legacy id of a player that was
+        # merged into another one: resolve it with mass.players.resolve_player_id()
+        # where you read it (see DEVELOPMENT.md, "Building your own Plugin Provider").
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str
