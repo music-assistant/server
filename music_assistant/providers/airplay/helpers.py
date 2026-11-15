@@ -158,7 +158,7 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     Check if a device is a (standalone) Apple device with native AirPlay support.
 
     Apple devices (HomePod, HomeView, Apple TV) have native AirPlay support
-    and should be exposed as PlayerType.PLAYER.
+    and a control plane of their own, so their AirPlay protocol is the native one.
     We don't include MacBooks etc. here as they are not standalone devices
     and may also be used for other protocols.
     """

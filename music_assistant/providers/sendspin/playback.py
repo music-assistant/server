@@ -355,7 +355,7 @@ class SendspinPlaybackSession:
 
         :param new_player: The SendspinPlayer that will take over as session owner.
         """
-        old_leader_id = self.player.player_id
+        old_leader_id = self.player.protocol_id
         self.player = new_player
         # Release the old leader's DSP pipeline -- it's no longer in the group
         # and _refresh_member_mappings won't touch it since it only iterates
@@ -365,7 +365,7 @@ class SendspinPlaybackSession:
             self._pipeline_config_cache.pop(old_leader_id, None)
             self._preassigned_channels.pop(old_leader_id, None)
             # Members exclude the leader, so the new leader's next sync_members won't remove it.
-            self._members.discard(new_player.player_id)
+            self._members.discard(new_player.protocol_id)
             self._mapping_dirty = True
         if pipeline is not None and pipeline.processor is not None:
             await self._close_member_ffmpeg(pipeline.processor)
@@ -509,7 +509,7 @@ class SendspinPlaybackSession:
         """Return (join_pending_ids, active_pipelines) under lock."""
         async with self._state_lock:
             members = self._members
-            leader_id = self.player.player_id
+            leader_id = self.player.protocol_id
             return set(self._join_catchup), tuple(
                 (mid, p)
                 for mid, p in self._member_pipelines.items()
@@ -726,7 +726,7 @@ class SendspinPlaybackSession:
             # A line-in has no queue item, so it is opened first to learn its format.
             if media.media_type == MediaType.AUDIO_SOURCE:
                 source_stream = await self.player.mass.streams.open_audio_source_stream(
-                    media, self.player.player_id
+                    media, self.player.protocol_id
                 )
             # let automatic Sendspin formats follow the first item's sample rate, then
             # refresh the session PCM format from the leader's preferred output before
@@ -787,7 +787,7 @@ class SendspinPlaybackSession:
                 source_stream.stream(self._pcm_format)
                 if source_stream is not None
                 else self.player.mass.streams.get_stream(
-                    media, self._pcm_format, self.player.player_id
+                    media, self._pcm_format, self.player.protocol_id
                 )
             )
             completed = False
@@ -1212,7 +1212,7 @@ class SendspinPlaybackSession:
         for member_id in member_ids:
             await self._sync_member_pipeline(member_id)
         # Keep leader pipeline in sync so leader DSP can be applied when required.
-        await self._sync_member_pipeline(self.player.player_id)
+        await self._sync_member_pipeline(self.player.protocol_id)
 
     async def _sync_member_pipeline(self, player_id: str) -> _MemberPipeline:
         """Create/update pipeline state for one member from current MA config."""
@@ -1275,9 +1275,13 @@ class SendspinPlaybackSession:
 
     def _read_pipeline_config(self, player_id: str) -> _PipelineConfig:
         """Read MA config and determine if member needs a dedicated DSP channel."""
-        dsp_config = self.player.mass.config.get_player_dsp_config(player_id)
+        # the DSP settings are those of the player the member's protocol belongs to
+        member = self.player.mass.players.get_player_by_protocol(player_id)
+        dsp_config = self.player.mass.config.get_player_dsp_config(
+            member.player_id if member else player_id
+        )
         dsp_enabled = bool(dsp_config.enabled)
-        raw_output_channels = self.player.mass.config.get_raw_player_config_value(
+        raw_output_channels = self.player.mass.config.get_protocol_value(
             player_id,
             CONF_OUTPUT_CHANNELS,
             "stereo",
@@ -1331,7 +1335,7 @@ class SendspinPlaybackSession:
         from .player import SendspinPlayer  # noqa: PLC0415 - player.py imports this module
 
         for player_id in player_ids:
-            player = self.player.mass.players.get_player(player_id)
+            player = self.player.provider.get_protocol(player_id)
             if isinstance(player, SendspinPlayer):
                 await player.follow_session_sample_rate(self._start_streamdetails)
 
@@ -1345,7 +1349,7 @@ class SendspinPlaybackSession:
         clients with a different preferred rate up/down-sample in their own DSP
         step on the receiving side.
         """
-        leader_output = self._get_member_output_format(self.player.player_id)
+        leader_output = self._get_member_output_format(self.player.protocol_id)
         sample_rate = int(leader_output.sample_rate) or _DEFAULT_PCM_FORMAT.sample_rate
         if leader_output.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
             sample_rate = min(sample_rate, _LOSSY_MAX_SAMPLE_RATE)
@@ -1537,7 +1541,7 @@ class SendspinPlaybackSession:
             return pipeline.channel_id
         # Force a fresh config read for pending/unknown joiners so the very
         # first resolution (triggered by add_client) uses up-to-date DSP settings.
-        force = player_id not in self._members and player_id != self.player.player_id
+        force = player_id not in self._members and player_id != self.player.protocol_id
         config = self._get_pipeline_config_cached(player_id, force_refresh=force)
         if not config.requires_transform:
             return MAIN_CHANNEL

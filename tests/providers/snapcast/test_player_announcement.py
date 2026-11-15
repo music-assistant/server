@@ -14,13 +14,13 @@ from music_assistant.providers.snapcast.player import SnapCastPlayer
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.player import Player
     from music_assistant.providers.snapcast.provider import SnapCastProvider
     from music_assistant.providers.snapcast.snap_cntrl_proto import SnapclientProto
 
 
 def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
     player = SnapCastPlayer.__new__(SnapCastPlayer)
-    player._extra_data = {}
     player._snap_ma_stream = None
     player._announcement_clip_playing = False
     player.poke_player_update = MagicMock()  # type: ignore[method-assign]
@@ -49,7 +49,9 @@ def _make_player(queue: SimpleNamespace) -> tuple[SnapCastPlayer, MagicMock]:
 
     mass.player_queues.play_index = AsyncMock(side_effect=play_index)
     player.mass = cast("MusicAssistant", mass)
-    player._player_id = "kitchen"
+    player._protocol_id = "ma_kitchen"
+    # the queue of the player the protocol is attached to
+    player._player = cast("Player", SimpleNamespace(player_id="kitchen"))
     return player, group
 
 
@@ -73,6 +75,8 @@ async def test_announcement_resumes_music_where_it_began() -> None:
 
     await player.play_announcement(PlayerMedia(uri="announce.mp3"))
 
+    # the queue is the one of the player, whose id differs from the protocol id
+    player.mass.player_queues.get.assert_called_once_with("kitchen")  # type: ignore[attr-defined]
     player.mass.player_queues.play_index.assert_awaited_once_with(  # type: ignore[attr-defined]
         "kitchen", "item-1", 5
     )

@@ -214,10 +214,10 @@ def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
     """Create a reusable configentry to specify a player list for scrobbling providers."""
     ma_player_list = sorted(
         mass.players.all_players(return_unavailable=True, return_disabled=False),
-        key=lambda player: player.display_name.lower(),
+        key=lambda player: player.name.lower(),
     )
     player_options = [
-        ConfigValueOption(player.player_id, title=player.display_name)
+        ConfigValueOption(player.player_id, title=player.name)
         for player in ma_player_list
         if player.type in PLAYBACK_TARGET_TYPES
     ]

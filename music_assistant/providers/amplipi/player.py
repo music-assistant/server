@@ -11,7 +11,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from pyamplipi.models import MultiZoneUpdate, SourceUpdate, ZoneUpdate
 
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .constants import (
     AMPLIPI_API_ERRORS,
@@ -25,6 +25,8 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from pyamplipi.models import Source, Status, Zone
     from pyamplipi.models import Stream as AmpliPiStream
 
@@ -36,6 +38,16 @@ if TYPE_CHECKING:
 # before pausing and, on resume, re-issues play_media; in flow mode that re-resolves the
 # stream URL at the resume offset, so playback continues from where it was paused. This
 # relies on the player self-clocking its position (AmpliPi reports none) - see play_media.
+def zone_protocol_id(instance_id: str, zone_id: int) -> str:
+    """
+    Return the protocol id of a zone of an AmpliPi controller.
+
+    :param instance_id: Instance id of the provider of the controller.
+    :param zone_id: ID of the AmpliPi zone.
+    """
+    return f"{instance_id}_zone_{zone_id}"
+
+
 PLAYER_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
     PlayerFeature.PAUSE,
@@ -47,12 +59,12 @@ PLAYER_FEATURES = {
 }
 
 
-class AmpliPiZonePlayer(Player):
+class AmpliPiZonePlayer(PlayerProtocol):
     """Representation of a single AmpliPi zone as a Music Assistant player."""
 
     def __init__(self, provider: AmpliPiPlayerProvider, zone_id: int) -> None:
         """Initialize the AmpliPi zone player."""
-        super().__init__(provider, f"{provider.instance_id}_zone_{zone_id}")
+        super().__init__(provider, zone_protocol_id(provider.instance_id, zone_id))
         self._zone_id = zone_id
         self._source_id: int | None = None
         # default the player name to the zone's AmpliPi name (e.g. "Living Room"); this is
@@ -118,9 +130,9 @@ class AmpliPiZonePlayer(Player):
         # AmpliPi has no native unpause: pause() stopped the stream, so a play/unpause of a
         # Music Assistant queue must re-resolve playback from the saved resume position
         # rather than replay the (stale) stream, which would restart from the stream's start.
-        queue = self.mass.player_queues.get(self.player_id)
+        queue = self.mass.player_queues.get(self.player.player_id) if self.player else None
         if self._attr_playback_state == PlaybackState.PAUSED and queue is not None and queue.active:
-            await self.mass.player_queues.resume(self.player_id)
+            await self.mass.player_queues.resume(queue.queue_id)
             return
         if (stream_id := await self._active_stream_id()) is not None:
             await self._prov.api.play_stream(stream_id)
@@ -129,7 +141,8 @@ class AmpliPiZonePlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        self.mark_stop_called()
+        if self.player is not None:
+            self.player.mark_stop_called()
         if (stream_id := await self._active_stream_id()) is not None:
             await self._prov.api.stop_stream(stream_id)
         self._attr_playback_state = PlaybackState.IDLE
@@ -147,7 +160,7 @@ class AmpliPiZonePlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on the player."""
-        url = await self.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.mass.streams.resolve_stream_url(self.protocol_id, media)
         source = await self._acquire_source()
         if source is None or source.id is None:
             raise PlayerCommandFailed("All AmpliPi sources are currently in use.")
@@ -173,7 +186,7 @@ class AmpliPiZonePlayer(Player):
         )
         await self._attach_only_zones(source.id, zone_ids)
         await self._prov.api.play_stream(stream_id)
-        self._attr_active_source = self.player_id
+        self._attr_active_source = self.protocol_id
         self._attr_current_media = media
         self._attr_powered = True
         self._attr_volume_muted = False
@@ -245,7 +258,7 @@ class AmpliPiZonePlayer(Player):
                         update=ZoneUpdate(source_id=self._source_id, mute=False),
                     )
                 )
-            members = self._attr_group_members or [self.player_id]
+            members = self._attr_group_members or [self.protocol_id]
             for player_id in player_ids_to_add:
                 if player_id not in members:
                     members.append(player_id)
@@ -260,12 +273,15 @@ class AmpliPiZonePlayer(Player):
                     )
                 )
             members = [m for m in self._attr_group_members if m not in player_ids_to_remove]
-            self._attr_group_members = [] if members == [self.player_id] else members
+            self._attr_group_members = [] if members == [self.protocol_id] else members
             affected.update(player_ids_to_remove)
         self.update_state()
         # refresh the state of the affected member players so their sync state updates
-        for player_id in affected:
-            self.mass.players.trigger_player_update(player_id)
+        self._update_members(affected)
+
+    async def on_remove(self) -> None:
+        """Let the provider go of this player, so that it registers the zone as a new one."""
+        self._prov.forget_zone(self._zone_id)
 
     def set_unavailable(self) -> None:
         """Mark the player as (temporarily) unavailable."""
@@ -293,11 +309,11 @@ class AmpliPiZonePlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_active_source = None
         else:
-            # connected to a source: default to MA playback (active_source == player_id),
+            # connected to a source: default to MA playback (active_source == protocol_id),
             # then, if a user-selectable AmpliPi source (native stream / RCA input) is the
             # connected input, reflect that instead. Resetting first avoids leaving a stale
             # external source selected after the input changes back to our own MA stream.
-            self._attr_active_source = self.player_id
+            self._attr_active_source = self.protocol_id
             self._reflect_external_active_source(status)
         # NOTE: while the zone is connected to a source we deliberately keep the
         # playback_state set by our play/stop commands and do NOT derive it from the
@@ -315,6 +331,12 @@ class AmpliPiZonePlayer(Player):
         """Return the (typed) AmpliPi provider for this player."""
         return cast("AmpliPiPlayerProvider", self.provider)
 
+    def _update_members(self, protocol_ids: Iterable[str]) -> None:
+        """Publish the state of the given zones of this controller again."""
+        for protocol_id in protocol_ids:
+            if member := self._prov.get_protocol(protocol_id):
+                member.update_state()
+
     def _zone_ids_for(self, player_ids: list[str]) -> list[int]:
         """Return the AmpliPi zone ids for the given Music Assistant player_ids."""
         zone_ids: list[int] = []
@@ -327,7 +349,7 @@ class AmpliPiZonePlayer(Player):
         """Return this zone's id plus the zone ids of any grouped members."""
         zone_ids = [self._zone_id]
         for player_id in self._attr_group_members:
-            if player_id == self.player_id:
+            if player_id == self.protocol_id:
                 continue
             if (zone_id := self._prov.zone_id_for(player_id)) is not None:
                 zone_ids.append(zone_id)
@@ -363,25 +385,24 @@ class AmpliPiZonePlayer(Player):
 
     def _dissolve_group(self) -> None:
         """Clear this player's group and refresh any former members."""
-        former_members = [m for m in self._attr_group_members if m != self.player_id]
+        former_members = [m for m in self._attr_group_members if m != self.protocol_id]
         self._attr_group_members = []
-        for player_id in former_members:
-            self.mass.players.trigger_player_update(player_id)
+        self._update_members(former_members)
 
     def _prune_group_members(self, status: Status) -> None:
         """Drop group members that are no longer connected to this zone's source."""
         if self._source_id is None:
             self._dissolve_group()
             return
-        valid = [self.player_id]
+        valid = [self.protocol_id]
         for player_id in self._attr_group_members:
-            if player_id == self.player_id:
+            if player_id == self.protocol_id:
                 continue
             zone_id = self._prov.zone_id_for(player_id)
             zone = next((z for z in status.zones if z.id == zone_id), None)
             if zone is not None and zone.source_id == self._source_id:
                 valid.append(player_id)
-        self._attr_group_members = [] if valid == [self.player_id] else valid
+        self._attr_group_members = [] if valid == [self.protocol_id] else valid
 
     async def _acquire_source(self) -> Source | None:
         """

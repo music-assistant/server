@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, patch
 
 from music_assistant.constants import (
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
-    CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_RETIRED_LOCAL_AUDIO_CLEANED,
     DB_TABLE_MEDIA_PROGRESS,
@@ -72,17 +72,29 @@ def _store_install(mass: MusicAssistant, provider_enabled: bool = True) -> None:
                 "values": {},
             },
         )
+        mass.config.set(
+            f"{CONF_PLAYER_PROTOCOLS}/{player_id}",
+            {
+                "protocol_id": player_id,
+                "provider": "local_audio",
+                "player_id": player_id,
+                "role": "native",
+                "enabled": True,
+                "values": {},
+            },
+        )
         mass.config.set(f"{CONF_PLAYER_QUEUES}/{player_id}", {"queue_id": player_id, "values": {}})
         mass.config.set(f"{CONF_PLAYER_DSP}/{player_id}", {"enabled": True})
-    # the sendspin bridge child that the local audio player was linked to
+    # the sendspin bridge protocol of the local audio player
     mass.config.set(
-        f"{CONF_PLAYERS}/{BRIDGE_ID}",
+        f"{CONF_PLAYER_PROTOCOLS}/{BRIDGE_ID}",
         {
-            "player_id": BRIDGE_ID,
+            "protocol_id": BRIDGE_ID,
             "provider": "sendspin",
-            "player_type": "protocol",
+            "player_id": ANALOG_ID,
+            "role": "audio",
             "enabled": True,
-            "values": {CONF_PROTOCOL_PARENT_ID: ANALOG_ID},
+            "values": {},
         },
     )
     # an unrelated player that must survive untouched
@@ -185,8 +197,9 @@ async def test_unused_install_is_torched(mass: MusicAssistant) -> None:
         assert mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None
         assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{player_id}") is None
         assert mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}") is None
-    # the orphaned sendspin bridge child follows its dead parent
-    assert mass.config.get(f"{CONF_PLAYERS}/{BRIDGE_ID}") is None
+    # the sendspin bridge protocol goes with its player
+    for protocol_id in (ANALOG_ID, HDMI_ID, BRIDGE_ID):
+        assert mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{protocol_id}") is None
     assert mass.config.get(f"{CONF_PLAYERS}/{OTHER_PLAYER_ID}") is not None
     assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is True
     await _wait_for_queue_cache_purge(mass, ANALOG_ID)
@@ -228,7 +241,7 @@ async def test_playlog_entry_keeps_the_config(mass: MusicAssistant) -> None:
     await cleanup_retired_local_audio(mass)
 
     _assert_kept(mass)
-    assert mass.config.get(f"{CONF_PLAYERS}/{BRIDGE_ID}") is not None
+    assert mass.config.get(f"{CONF_PLAYER_PROTOCOLS}/{BRIDGE_ID}") is not None
     assert mass.config.get(CONF_RETIRED_LOCAL_AUDIO_CLEANED) is True
 
 
@@ -405,10 +418,10 @@ async def test_a_failing_removal_never_escapes_startup(
     """
     _store_install(mass)
 
-    def _raise(*_args: Any, **_kwargs: Any) -> None:
+    async def _raise(*_args: Any, **_kwargs: Any) -> None:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(mass.players, "delete_player_config", _raise)
+    monkeypatch.setattr(mass.players, "remove", _raise)
 
     await cleanup_retired_local_audio(mass)
 

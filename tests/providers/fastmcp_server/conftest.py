@@ -29,6 +29,9 @@ import pytest
 
 from music_assistant.providers.fastmcp_server.debug import log_reader
 
+# the real server with fake providers, for the tests that need the players controller
+from tests.scenarios.conftest import scenario  # noqa: F401
+
 
 class FakeWebserver:
     """
