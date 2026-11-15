@@ -96,7 +96,6 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.music_provider import ProviderStreamLimitError
 
 from .api_docs import generate_commands_json, generate_openapi_spec, generate_schemas_json
 from .auth import AuthenticationManager
@@ -1598,6 +1597,9 @@ def _error_status(error: MusicAssistantError) -> int:
 
     :param error: The error the command raised.
     """
+    # music_provider imports this module through the tasks controller
+    from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
     if isinstance(error, InsufficientPermissions):
         return 403
     if isinstance(error, (MediaNotFoundError, PlayerUnavailableError)):
