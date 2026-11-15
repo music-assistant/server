@@ -3,7 +3,7 @@
   "domain": "bluesound",
   "stage": "stable",
   "name": "Bluesound",
-  "description": "Send high-resolution audio to Bluesound speakers and multiroom systems.",
+  "description": "Send high-resolution audio to Bluesound (BluOS) speakers and multiroom systems.",
   "codeowners": ["@cyanogenbot"],
   "credits": ["[pyblu](https://github.com/LouisChrist/pyblu)"],
   "requirements": ["pyblu==2.1.0"],
