@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -80,7 +79,12 @@ from music_assistant.providers.musicbrainz.provider import (
 )
 
 from .album_tracks import AlbumListing, album_listing, album_track_backfills, mapped_album_listing
-from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
+from .base import (
+    EXTERNAL_ID_LOOKUP_ERRORS,
+    MAX_EXTERNAL_ID_MATCH_LOOKUPS,
+    TEMPORARY_LOOKUP_ERRORS,
+    MediaControllerBase,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -661,6 +665,9 @@ class AlbumsController(MediaControllerBase[Album]):
         :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
         :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
         :raises MediaNotFoundError: None of the user's music providers has the album.
+        :raises ResourceTemporarilyUnavailable: The album was not found while a music
+            provider or MusicBrainz could not answer.
+        :raises RetriesExhausted: As above, after the retries ran out.
         """
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
@@ -692,6 +699,7 @@ class AlbumsController(MediaControllerBase[Album]):
             ),
             key=lambda edition: _streaming_edition_rank(edition, services),
         )
+        could_not_answer: MusicAssistantError | None = None
         for edition in ranked[:_MAX_EDITION_LOOKUPS]:
             try:
                 release = await musicbrainz.get_release_details(edition.id)
@@ -699,8 +707,14 @@ class AlbumsController(MediaControllerBase[Album]):
                 # a stale edition costs nothing but its turn
                 self.logger.debug("Release %s could not be looked up: %s", edition.id, err)
                 continue
-            if album := await self._album_of_release(release, allow_update_metadata):
-                return album
+            try:
+                if album := await self._album_of_release(release, allow_update_metadata):
+                    return album
+            except TEMPORARY_LOOKUP_ERRORS as err:
+                # another edition may still be found
+                could_not_answer = err
+        if could_not_answer is not None:
+            raise could_not_answer
         msg = f"Release group {release_group_id} is not available on any music provider"
         raise MediaNotFoundError(
             msg,
@@ -1439,54 +1453,6 @@ class AlbumsController(MediaControllerBase[Album]):
                 return list(prov_album.provider_mappings)
         return []
 
-    async def _album_candidates_by_barcode(
-        self, release: MusicBrainzRelease
-    ) -> list[ProviderMapping]:
-        """
-        Return the mappings of the albums the music providers find by a release's barcode.
-
-        Only an album that is the release, by title and primary artist, counts.
-
-        :param release: The MusicBrainz release, with its barcode and artist credits.
-        """
-        if not release.barcode or not is_valid_barcode(release.barcode):
-            return []
-        upc = barcode_to_upc(release.barcode)
-        providers = [
-            provider
-            for provider in self.mass.music.providers
-            if provider.supports_feature(ProviderFeature.ALBUM_BY_EXTERNAL_ID)
-        ]
-        hits = await asyncio.gather(
-            *(self._album_by_barcode(provider, upc) for provider in providers)
-        )
-        candidates: list[ProviderMapping] = []
-        for provider, hit in zip(providers, hits, strict=True):
-            if hit is None:
-                continue
-            # a barcode gets reused, and a provider answers with the first album carrying it
-            if not release_matches_album(release, hit):
-                self.logger.debug(
-                    "Barcode %s on provider %s is album %s, not %s",
-                    upc,
-                    provider.name,
-                    hit.name,
-                    release.title,
-                )
-                continue
-            candidates.extend(hit.provider_mappings)
-        return candidates
-
-    async def _album_by_barcode(self, provider: MusicProvider, upc: str) -> Album | None:
-        """Return the album a provider finds by a barcode, if it has one and answers."""
-        try:
-            return await provider.get_album_by_external_id(upc, ExternalID.BARCODE)
-        except EXTERNAL_ID_LOOKUP_ERRORS as err:
-            self.logger.debug(
-                "Barcode %s lookup on provider %s failed: %s", upc, provider.name, err
-            )
-            return None
-
     async def _resolve_external_id(
         self, external_id: str, external_id_type: ExternalID
     ) -> Album | None:
@@ -1497,6 +1463,8 @@ class AlbumsController(MediaControllerBase[Album]):
         :param external_id_type: Type of the identifier.
         :raises ProviderUnavailableError: A MusicBrainz id is asked for while the MusicBrainz
             provider is not loaded.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the album was not
+            found while a music provider or MusicBrainz could not answer.
         """
         if external_id_type == ExternalID.MB_RELEASEGROUP:
             with contextlib.suppress(MediaNotFoundError):
@@ -1514,6 +1482,8 @@ class AlbumsController(MediaControllerBase[Album]):
 
         :param release_id: MusicBrainz release id.
         :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the album was not
+            found while a music provider or MusicBrainz could not answer.
         """
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
@@ -1536,14 +1506,52 @@ class AlbumsController(MediaControllerBase[Album]):
 
         :param release: The MusicBrainz release, with its links, barcode and artist credits.
         :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the album was not
+            found while a music provider could not answer.
         """
+        could_not_answer: MusicAssistantError | None = None
         linked = await self._linked_provider_mappings(release.relations)
-        if album := await self._first_available_album(linked, release.id, allow_update_metadata):
-            return album
-        # a barcode lookup fans out over every provider, so it is spent only when none
-        # of the links resolves; a linked provider is asked too, as its link may be stale
-        by_barcode = await self._album_candidates_by_barcode(release)
-        return await self._first_available_album(by_barcode, release.id, allow_update_metadata)
+        try:
+            if album := await self._first_available_album(
+                linked, release.id, allow_update_metadata
+            ):
+                return album
+        except TEMPORARY_LOOKUP_ERRORS as err:
+            # a linked provider in trouble is still asked by barcode, as are the others
+            could_not_answer = err
+        # a barcode lookup asks the providers in turn, so it is spent only when none of the
+        # links resolves; a linked provider is asked too, as its link may be stale
+        album = await self._album_by_release_barcode(release, allow_update_metadata)
+        if album is None and could_not_answer is not None:
+            raise could_not_answer
+        return album
+
+    async def _album_by_release_barcode(
+        self, release: MusicBrainzRelease, allow_update_metadata: bool
+    ) -> Album | None:
+        """
+        Return the album the first music provider finds by a release's barcode, if any.
+
+        Only an album that is the release, by title and primary artist, counts.
+
+        :param release: The MusicBrainz release, with its barcode and artist credits.
+        :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the album was not
+            found while a music provider could not answer.
+        """
+        if not release.barcode or not is_valid_barcode(release.barcode):
+            return None
+        # a barcode gets reused, and a provider answers with the first album carrying it
+        found = await self._provider_item_by_external_id(
+            barcode_to_upc(release.barcode),
+            ExternalID.BARCODE,
+            accept=lambda album: release_matches_album(release, album),
+        )
+        if found is None:
+            return None
+        return await self._first_available_album(
+            list(found.provider_mappings), release.id, allow_update_metadata
+        )
 
     async def _first_available_album(
         self,
@@ -1551,7 +1559,16 @@ class AlbumsController(MediaControllerBase[Album]):
         release_id: str,
         allow_update_metadata: bool,
     ) -> Album | None:
-        """Return the first candidate its provider still serves as an album, if any."""
+        """
+        Return the first candidate its provider still serves as an album, if any.
+
+        :param candidates: The albums on the user's music sources, in the order to try them.
+        :param release_id: MusicBrainz id of the release the candidates are, for the log.
+        :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when no candidate is
+            served while a music provider could not answer.
+        """
+        could_not_answer: MusicAssistantError | None = None
         for candidate in candidates:
             try:
                 if library_album := await self.get_library_item_by_prov_id(
@@ -1578,6 +1595,10 @@ class AlbumsController(MediaControllerBase[Album]):
                     candidate.provider_instance,
                     err,
                 )
+                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+                    could_not_answer = err
+        if could_not_answer is not None:
+            raise could_not_answer
         return None
 
     async def _resolve_album_evidence(

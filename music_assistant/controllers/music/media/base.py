@@ -32,6 +32,8 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, create_uri, get_global_cache_value
@@ -188,6 +190,12 @@ MAX_EXTERNAL_ID_MATCH_LOOKUPS = 3
 EXTERNAL_ID_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
     NotImplementedError,
     *PROVIDER_FETCH_ERRORS,
+)
+# a provider or MusicBrainz that could not answer a lookup, which says nothing about
+# whether it has the item
+TEMPORARY_LOOKUP_ERRORS: Final[tuple[type[MusicAssistantError], ...]] = (
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 # expected failures of re-reading a library item from one of its providers. On top of the
 # fetch failures: a file that can not be read from a (network) share
@@ -806,6 +814,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             Set to False when fetching items in bulk (e.g. provider sync).
         :raises InvalidProviderID: The item id is no valid external item id.
         :raises MediaNotFoundError: The item is not in the library or on a music provider.
+        :raises ResourceTemporarilyUnavailable: An external item was not found while a
+            music provider or MusicBrainz could not answer.
+        :raises RetriesExhausted: As above, after the retries ran out.
         """
         if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
             return await self._get_external_item(item_id, allow_update_metadata)
@@ -1185,6 +1196,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param external_id: External identifier value to look up.
         :param external_id_type: Type of the identifier; only the library is searched without.
+        :raises ResourceTemporarilyUnavailable: The item was not found while a music
+            provider or MusicBrainz could not answer.
+        :raises RetriesExhausted: As above, after the retries ran out.
         """
         # an external id is not unique, so the first library item on the user's sources wins
         for library_item in await self.get_library_items_by_external_id(
@@ -1200,9 +1214,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 return None
             external_id = normalize_external_id(external_id_type, external_id)
 
-        if remembered := await self._remembered_external_id(external_id, external_id_type):
-            return remembered
+        could_not_answer: MusicAssistantError | None = None
+        try:
+            if remembered := await self._remembered_external_id(external_id, external_id_type):
+                return remembered
+        except TEMPORARY_LOOKUP_ERRORS as err:
+            # another provider may still have the item
+            could_not_answer = err
         result = await self._resolve_external_id(external_id, external_id_type)
+        if result is None and could_not_answer is not None:
+            raise could_not_answer
         if result is None or result.provider == "library":
             return result
         await self._remember_external_id(external_id, external_id_type, result)
@@ -2370,6 +2391,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param allow_update_metadata: Schedule a metadata refresh of a library item.
         :raises InvalidProviderID: The item id is no valid external item id.
         :raises MediaNotFoundError: The item is not in the library or on a music provider.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the item was not
+            found while a music provider or MusicBrainz could not answer.
         """
         external_id_type, external_id = parse_external_item_id(item_id)
         item = await self.get_item_by_external_id(external_id, external_id_type)
@@ -2394,6 +2417,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param external_id: The external identifier.
         :param external_id_type: Type of the identifier.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the item was not
+            found while a music provider or MusicBrainz could not answer.
         """
         return await self._provider_item_by_external_id(external_id, external_id_type)
 
@@ -2411,9 +2436,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param external_id_type: Type of the identifier.
         :param accept: Tells whether a provider's answer is the item looked for; every answer
             is when omitted.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when no provider has
+            the item while one of them could not answer.
         """
         if (feature := PROVIDER_FEATURE_BY_MEDIA_TYPE.get(self.media_type)) is None:
             return None
+        could_not_answer: MusicAssistantError | None = None
         for prov in self.mass.music.providers:
             if feature not in prov.supported_features:
                 continue
@@ -2443,9 +2471,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     prov.domain,
                     err,
                 )
+                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+                    could_not_answer = err
                 continue
             if result and (accept is None or accept(result)):
                 return result
+        if could_not_answer is not None:
+            raise could_not_answer
         return None
 
     @final
@@ -2457,6 +2489,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param external_id: The external identifier.
         :param external_id_type: Type of the identifier.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the provider
+            could not hand the item over; what was found before stays kept.
         """
         cache_key = self._external_id_cache_key(external_id, external_id_type)
         found = await self.mass.cache.get(
@@ -2493,6 +2527,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider.instance_id,
                 err,
             )
+            if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+                raise
         return None
 
     @final

@@ -77,6 +77,7 @@ from music_assistant.providers.musicbrainz.provider import recording_matches_tra
 from .base import (
     EXTERNAL_ID_LOOKUP_ERRORS,
     MAX_EXTERNAL_ID_MATCH_LOOKUPS,
+    TEMPORARY_LOOKUP_ERRORS,
     MediaControllerBase,
     TrackSyncDetails,
 )
@@ -1807,6 +1808,8 @@ class TracksController(MediaControllerBase[Track]):
         :param external_id_type: Type of the identifier.
         :raises ProviderUnavailableError: A MusicBrainz id is asked for while the MusicBrainz
             provider is not loaded.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the track was not
+            found while a music provider or MusicBrainz could not answer.
         """
         if external_id_type == ExternalID.MB_RECORDING:
             return await self._track_by_recording_id(external_id)
@@ -1818,6 +1821,8 @@ class TracksController(MediaControllerBase[Track]):
 
         :param recording_id: MusicBrainz recording id.
         :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises MusicAssistantError: One of TEMPORARY_LOOKUP_ERRORS, when the track was not
+            found while a music provider or MusicBrainz could not answer.
         """
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
@@ -1844,20 +1849,26 @@ class TracksController(MediaControllerBase[Track]):
                     recording, library_track
                 ):
                     return library_track
+        could_not_answer: MusicAssistantError | None = None
         try:
             if track := await self.resolve_musicbrainz_recording(recording):
                 return track
         except EXTERNAL_ID_LOOKUP_ERRORS as err:
             # a linked provider in trouble is still asked by ISRC, as are the others
             self.logger.debug("Linked track of recording %s not fetched: %s", recording_id, err)
-        if not isrcs:
-            return None
-        # one ISRC keeps this to a single request per provider
-        return await self._provider_item_by_external_id(
-            isrcs[0],
-            ExternalID.ISRC,
-            accept=lambda track: recording_matches_track(recording, track),
-        )
+            if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+                could_not_answer = err
+        track = None
+        if isrcs:
+            # one ISRC keeps this to a single request per provider
+            track = await self._provider_item_by_external_id(
+                isrcs[0],
+                ExternalID.ISRC,
+                accept=lambda track: recording_matches_track(recording, track),
+            )
+        if track is None and could_not_answer is not None:
+            raise could_not_answer
+        return track
 
     async def _verify_musicbrainz_mapping(self, db_item: Track, mapping: ProviderMapping) -> bool:
         """Return True if a linked track may be added, checked while remasters are kept apart."""

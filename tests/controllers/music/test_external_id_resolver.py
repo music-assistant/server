@@ -21,13 +21,16 @@ from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderID,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
+    RateLimited,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import Album, Track
 
 from music_assistant.constants import EXTERNAL_ID_PROVIDER
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_EXTERNAL_IDS
 from music_assistant.helpers.external_ids import external_item_id, normalize_external_id
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -65,6 +68,18 @@ MINE = "tidal_mine"
 MY_SPOTIFY = "spotify_mine"
 OWNER = User(user_id="user-owner", username="owner", role=UserRole.USER)
 MEMBER = User(user_id="user-member", username="member", role=UserRole.USER)
+
+# a provider or MusicBrainz that could not answer, which says nothing about the item
+COULD_NOT_ANSWER = [
+    RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    RateLimited("slow down", backoff_time=3600),
+]
+# a provider that answered, or can not be asked: it does not have the item
+TRUE_MISSES = [
+    MediaNotFoundError("gone"),
+    NotImplementedError("no lookup by this id"),
+    InvalidDataError("not a usable answer"),
+]
 
 # every request a music provider can be sent on the way
 PROVIDER_REQUESTS = (
@@ -792,3 +807,202 @@ async def test_remembered_item_on_a_hidden_service_is_not_handed_out(
     assert found is not None
     assert (found.provider, found.item_id) == (MINE, "t9")
     assert _requests(theirs) == 1
+
+
+# ---------------------------------------------------------------------------
+# a provider or MusicBrainz that could not answer
+# ---------------------------------------------------------------------------
+
+
+async def _remembered(music: MusicController) -> dict[str, str] | None:
+    """Return what is kept for the recording under test."""
+    kept: dict[str, str] | None = await music.mass.cache.get(
+        music.tracks._external_id_cache_key(RECORDING_ID, ExternalID.MB_RECORDING),
+        provider=music.domain,
+        category=CACHE_CATEGORY_EXTERNAL_IDS,
+    )
+    return kept
+
+
+@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+async def test_provider_that_could_not_answer_is_not_a_miss(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A track no provider has, while one of them could not say, is not "not available"."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    spotify.get_track_by_external_id = AsyncMock(side_effect=error)
+    _load(music, spotify, tidal, recording=_recording())
+
+    with pytest.raises(type(error)) as excinfo:
+        await _resolve_recording(music)
+    assert excinfo.value is error
+    # every provider was still asked, and the command for an external item says the same
+    tidal.get_track_by_external_id.assert_awaited_once()
+    with pytest.raises(type(error)):
+        await music.get_item(MediaType.TRACK, RECORDING_ITEM_ID, EXTERNAL_ID_PROVIDER)
+    assert await _remembered(music) is None
+
+    # nothing was concluded, so the track is found once the provider answers again
+    spotify_track = create_track("spotify_1", "s9")
+    spotify.get_track_by_external_id = _has(spotify_track)
+    assert await _resolve_recording(music) is spotify_track
+
+
+@pytest.mark.parametrize("error", TRUE_MISSES)
+async def test_provider_without_the_item_stays_a_miss(
+    music: MusicController, error: Exception
+) -> None:
+    """A provider that does not have the track, or can not look it up, leaves it not found."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    spotify.get_track = AsyncMock(side_effect=error)
+    spotify.get_track_by_external_id = AsyncMock(side_effect=error)
+    _load(music, spotify, tidal, recording=_recording(urls=[SPOTIFY_TRACK_URL]))
+
+    assert await _resolve_recording(music) is None
+    spotify.get_track.assert_awaited_once()
+    tidal.get_track_by_external_id.assert_awaited_once()
+
+
+@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+async def test_linked_track_that_could_not_be_fetched_is_not_a_miss(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A linked provider that could not answer is reported unless the ISRC finds the track."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    spotify.get_track = AsyncMock(side_effect=error)
+    _load(music, spotify, tidal, recording=_recording(urls=[SPOTIFY_TRACK_URL]))
+
+    with pytest.raises(type(error)) as excinfo:
+        await _resolve_recording(music)
+    assert excinfo.value is error
+    tidal.get_track_by_external_id.assert_awaited_once()
+
+    # without an ISRC to fall back on the outcome is the same
+    _load(music, spotify, tidal, recording=_recording(isrcs=[], urls=[SPOTIFY_TRACK_URL]))
+    with pytest.raises(type(error)):
+        await _resolve_recording(music)
+    assert await _remembered(music) is None
+
+    tidal_track = create_track("tidal_1", "t9")
+    tidal.get_track_by_external_id = _has(tidal_track)
+    _load(music, spotify, tidal, recording=_recording(urls=[SPOTIFY_TRACK_URL]))
+    assert await _resolve_recording(music) is tidal_track
+
+
+@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+async def test_musicbrainz_that_could_not_answer_is_not_a_miss(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A recording MusicBrainz could not be asked for is not "not available"."""
+    spotify = _track_provider("spotify_1")
+    musicbrainz = _load(music, spotify, recording=_recording())
+    musicbrainz.get_recording_details = AsyncMock(side_effect=error)
+
+    with pytest.raises(type(error)) as excinfo:
+        await _resolve_recording(music)
+
+    assert excinfo.value is error
+    assert _requests(spotify) == 0
+    assert await _remembered(music) is None
+
+
+@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+async def test_remembered_item_that_could_not_be_fetched_stays_remembered(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A remembered item its service could not hand over is reported, and kept for later."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    tidal_track = create_track("tidal_1", "t9")
+    tidal.get_track_by_external_id = _has(tidal_track)
+    musicbrainz = _load(music, spotify, tidal, recording=_recording())
+    assert await _resolve_recording(music) is tidal_track
+    kept = await _remembered(music)
+    assert kept == {"provider_domain": "tidal", "item_id": "t9"}
+
+    # Tidal can not answer and nobody else has the track
+    tidal.get_track = AsyncMock(side_effect=error)
+    tidal.get_track_by_external_id = AsyncMock(return_value=None)
+    with pytest.raises(type(error)) as excinfo:
+        await _resolve_recording(music)
+    assert excinfo.value is error
+    assert await _remembered(music) == kept
+
+    # once Tidal answers again the track is fetched by its own id, with no lookup
+    tidal.get_track = AsyncMock(return_value=tidal_track)
+    lookups = musicbrainz.get_recording_details.await_count
+    assert await _resolve_recording(music) is tidal_track
+    assert musicbrainz.get_recording_details.await_count == lookups
+    tidal.get_track.assert_awaited_once_with("t9")
+
+
+@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+async def test_another_provider_has_what_the_remembered_one_could_not_hand_over(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A track another provider has is returned while the remembered one can not answer."""
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    tidal.get_track_by_external_id = _has(create_track("tidal_1", "t9"))
+    _load(music, spotify, tidal, recording=_recording())
+    assert await _resolve_recording(music) is not None
+
+    tidal.get_track = AsyncMock(side_effect=error)
+    tidal.get_track_by_external_id = AsyncMock(side_effect=error)
+    spotify_track = create_track("spotify_1", "s9")
+    spotify.get_track_by_external_id = _has(spotify_track)
+
+    assert await _resolve_recording(music) is spotify_track
+
+
+@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+async def test_release_a_provider_could_not_answer_for_is_not_a_miss(
+    music: MusicController, error: MusicAssistantError
+) -> None:
+    """A release no provider has, while one of them could not say, is not "not available"."""
+    spotify, tidal = _album_provider("spotify_1"), _album_provider("tidal_1")
+    spotify.get_album = AsyncMock(side_effect=error)
+    _load(music, spotify, tidal, release=_release(urls=[SPOTIFY_ALBUM_URL]))
+
+    # the linked album could not be fetched and the barcode finds nothing
+    with pytest.raises(type(error)) as excinfo:
+        await _resolve_release(music)
+    assert excinfo.value is error
+    tidal.get_album_by_external_id.assert_awaited_once_with(BARCODE, ExternalID.BARCODE)
+
+    # the barcode could not be looked up
+    spotify.get_album = AsyncMock(side_effect=MediaNotFoundError("gone"))
+    spotify.get_album_by_external_id = AsyncMock(side_effect=error)
+    with pytest.raises(type(error)):
+        await _resolve_release(music)
+
+    # a provider that has the release settles it, whatever the one asked before it did
+    tidal_album = create_album("tidal_1", TIDAL_ALBUM_ID)
+    tidal.get_album_by_external_id = _has(tidal_album)
+    tidal.get_album = AsyncMock(return_value=tidal_album)
+    found = await _resolve_release(music)
+    assert found is not None
+    assert (found.provider, found.item_id) == ("tidal_1", TIDAL_ALBUM_ID)
+
+
+async def test_release_barcode_is_asked_for_until_a_provider_has_the_release(
+    music: MusicController,
+) -> None:
+    """The providers are asked by barcode in turn, and no further once one has the release."""
+    spotify, tidal, deezer = (
+        _album_provider(instance_id) for instance_id in ("spotify_1", "tidal_1", "deezer_1")
+    )
+    spotify.get_album_by_external_id = _has(create_album("spotify_1", "s1", name="Another Album"))
+    tidal_album = create_album("tidal_1", TIDAL_ALBUM_ID)
+    tidal.get_album_by_external_id = _has(tidal_album)
+    tidal.get_album = AsyncMock(return_value=tidal_album)
+    deezer.get_album_by_external_id = _has(create_album("deezer_1", "d1"))
+    _load(music, spotify, tidal, deezer, release=_release())
+
+    found = await _resolve_release(music)
+
+    assert found is not None
+    assert (found.provider, found.item_id) == ("tidal_1", TIDAL_ALBUM_ID)
+    spotify.get_album_by_external_id.assert_awaited_once_with(BARCODE, ExternalID.BARCODE)
+    deezer.get_album_by_external_id.assert_not_awaited()
+    # the lookup that had it, and the fetch of the album it named
+    assert _requests(tidal) == 2
+    assert _requests(spotify, tidal, deezer) == 3
