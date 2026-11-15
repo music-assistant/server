@@ -136,3 +136,65 @@ def test_find_violations_scoped_to_given_manifest() -> None:
     """Validating a single explicit manifest only inspects that manifest."""
     manifest = PROVIDERS_PATH / "_demo_music_provider" / "manifest.json"
     assert find_violations([manifest]) == []
+
+
+def _menu_action(**overrides: object) -> dict[str, object]:
+    """Return a valid declared menu action of the ``demo`` provider, with fields changed."""
+    return {
+        "id": "send_to_frame",
+        "label": "Show on the picture frame",
+        "media_types": ["album", "playlist"],
+        "icon": "mdi-image-frame",
+        "command": "demo/send_to_frame",
+        "plays": False,
+        **overrides,
+    }
+
+
+def test_valid_menu_actions_accepted() -> None:
+    """Declared menu actions that follow the rules produce no issues."""
+    without_icon = _menu_action(id="play", plays=True)
+    del without_icon["icon"]
+    manifest = _valid_manifest()
+    manifest["menu_actions"] = [_menu_action(), without_icon]
+    assert _validate(manifest, "demo") == []
+
+
+def test_menu_actions_with_wrong_types_rejected() -> None:
+    """Menu actions of the wrong type are reported instead of parsed leniently."""
+    manifest = _valid_manifest()
+    manifest["menu_actions"] = {"id": "send_to_frame"}
+    assert _validate(manifest, "demo") == ["'menu_actions' must be a list"]
+    bad_actions = (
+        "send_to_frame",
+        _menu_action(label=None),
+        _menu_action(id=5),
+        _menu_action(media_types="album"),
+        _menu_action(media_types=[1]),
+        _menu_action(icon=["mdi-image-frame"]),
+        _menu_action(plays="yes"),
+        {key: value for key, value in _menu_action().items() if key != "command"},
+    )
+    for bad_action in bad_actions:
+        manifest["menu_actions"] = [bad_action]
+        issues = _validate(manifest, "demo")
+        assert len(issues) == 1
+        assert issues[0].startswith("menu action 0 must have string id, label and command")
+
+
+def test_menu_actions_breaking_the_rules_rejected() -> None:
+    """A built-in manifest whose menu actions break the server's rules fails the check."""
+    manifest = _valid_manifest()
+    manifest["menu_actions"] = [
+        _menu_action(command="other/send_to_frame"),
+        _menu_action(id="unknown_type", media_types=["genre"]),
+        _menu_action(id="twice"),
+        _menu_action(id="twice"),
+    ]
+    assert _validate(manifest, "demo") == [
+        "menu action 'send_to_frame': needs a command in the namespace of its provider "
+        "('demo/...')",
+        "menu action 'unknown_type': needs media_types from: album, artist, audiobook, "
+        "playlist, podcast, podcast_episode, radio, track",
+        "menu action 'twice': another menu action of this provider has the same id",
+    ]
