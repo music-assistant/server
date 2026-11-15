@@ -429,13 +429,13 @@ def _has_artist_details(artist_obj: dict[str, Any]) -> bool:
 
 def _is_available(attributes: dict[str, Any]) -> bool:
     """
-    Return whether Apple will actually serve a stream for this item.
+    Return whether Apple will serve a stream for this item, judged on its metadata alone.
 
-    ``playParams`` is absent entirely for items Apple has withdrawn. It is present
-    but carries a ``purchasedId`` with no ``catalogId`` for purchase-only items
-    (iTunes purchases, and the 2014 U2 giveaway), which the stream endpoint also
-    refuses. Uploads carry neither marker, so they stay available - see
-    music-assistant/support#6032 and #4108.
+    ``playParams`` is absent entirely for items Apple has withdrawn. It is present but
+    carries a ``purchasedId`` with no ``catalogId`` for purchase-only items (iTunes
+    purchases, and the 2014 U2 giveaway), which are reported unavailable here; the ones
+    Apple still sells are marked available by ``mark_purchases_on_sale``. Uploads carry
+    neither marker, so they stay available - see music-assistant/support#6032 and #4108.
     """
     play_params = attributes.get("playParams") or {}
     if play_params.get("id") is None:
