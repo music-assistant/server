@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from music_assistant_models.enums import ProviderStatus
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, ResourceTemporarilyUnavailable
 
 from music_assistant.controllers.community_catalog import controller as controller_module
 from music_assistant.controllers.community_catalog.constants import CONF_ENABLED
@@ -197,6 +197,28 @@ async def test_waits_until_it_can_be_installed(
 
             _assert_loaded(mass, folder, MOVED)
             assert await _notice(mass) == "moved"
+
+
+@pytest.mark.usefixtures("moved")
+async def test_refresh_installs_before_it_says_the_catalog_cannot_be_reached(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A refresh that cannot fetch the index still installs a waiting moved provider first."""
+    folder = tmp_path / "data" / "community_providers"
+    registry.document = _index({MOVED: _publish(github, MOVED)})
+    _seed_instance(tmp_path, MOVED)
+    github.status = 503
+
+    async with _server(tmp_path) as mass:
+        assert mass.get_provider(MOVED) is None
+        github.status, registry.status = 200, 503
+
+        with pytest.raises(ResourceTemporarilyUnavailable) as refused:
+            await mass.community_catalog.refresh()
+
+        assert_refused(refused, "unreachable")
+        _assert_loaded(mass, folder, MOVED)
+        assert await _notice(mass) == "moved"
 
 
 @pytest.mark.usefixtures("moved")
