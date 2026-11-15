@@ -27,9 +27,9 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.roles import AudioChunk
 from aioslimproto.client import SlimClient
+from aioslimproto.models import ButtonCode, PlayerStatus, RemoteCode, SlimEvent
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
-from aioslimproto.models import PlayerStatus, SlimEvent
 from music_assistant_models.enums import ContentType, IdentifierType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
@@ -41,6 +41,8 @@ from music_assistant.providers.squeezelite.bridge_role import (
     SlimprotoBridgeRole,
 )
 from music_assistant.providers.squeezelite.bridge_sync import MAX_START_JUMP_MS
+from music_assistant.providers.squeezelite.player import SqueezelitePlayer
+from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 from music_assistant.providers.squeezelite.sendspin_bridge import (
     BRIDGE_MIN_BUFFER_MS,
     BRIDGE_REQUIRED_LEAD_MS,
@@ -225,6 +227,52 @@ async def _player_reports(reader: asyncio.StreamReader, event: bytes) -> None:
     payload = event + bytes(47)
     reader.feed_data(b"STAT" + struct.pack("!I", len(payload)) + payload)
     await _settle()
+
+
+async def _player_presses(reader: asyncio.StreamReader, kind: str, key: str) -> None:
+    """
+    Let a player report a press of its play or pause key to its real slimproto client.
+
+    :param reader: The reader of the client.
+    :param kind: ``butn`` for a button of the player, ``ir`` for its remote.
+    :param key: The name of the key: PLAY or PAUSE.
+    """
+    if kind == "butn":
+        packet = b"BUTN" + struct.pack("!ILL", 8, 1000, ButtonCode[key])
+    else:
+        packet = b"IR  " + struct.pack("!ILBBL", 10, 1000, 0, 32, RemoteCode[key])
+    reader.feed_data(packet)
+    await _settle()
+
+
+def _player_of(rig: _Rig) -> SqueezelitePlayer:
+    """
+    Return the squeezelite player of a rig with a real slimproto client.
+
+    What the client reports goes through the event handling of the provider: to the
+    bridge first, then to the player.
+
+    :param rig: The rig whose client reports to the player.
+    """
+    player = SqueezelitePlayer.__new__(SqueezelitePlayer)
+    player.mass = rig.mass
+    player.logger = rig.provider.logger
+    player._protocol_id = PLAYER_ID
+    player._player = MagicMock(player_id="kitchen")
+    player.client = rig.client
+    player.sendspin_bridge = rig.bridge
+    # what the player makes of the state of its client is not what these tests are about
+    for method in ("update_attributes", "update_state", "_store_volume"):
+        setattr(player, method, MagicMock())
+    provider = MagicMock(mass=rig.mass)
+    provider.get_protocol.side_effect = {PLAYER_ID: player}.get
+
+    def _report(_client: SlimClient, event_type: SlimEventType, data: Any = None) -> None:
+        event = SlimEvent(event_type, PLAYER_ID, data)
+        SqueezelitePlayerProvider._handle_slimproto_event(provider, event)
+
+    rig.client.callback = _report
+    return player
 
 
 def _stream_commands(sent: list[tuple[bytes, bytes]]) -> list[tuple[bytes, int]]:
@@ -2647,6 +2695,103 @@ async def test_a_pause_that_fails_is_logged(rig: _Rig, caplog: pytest.LogCapture
     await _settle()
 
     assert "Failed to handle the pause of Kitchen" in caplog.text
+
+
+@pytest.mark.parametrize("resume_key", ["PLAY", "PAUSE"])
+@pytest.mark.parametrize("kind", ["butn", "ir"])
+async def test_the_keys_of_the_player_pause_and_resume_its_sendspin_group(
+    rig: _Rig, kind: str, resume_key: str
+) -> None:
+    """
+    Pause on the player pauses its Sendspin group, which ends the stream of the bridge.
+
+    The player has nothing of its own to resume then: its next press resumes the group.
+    """
+    reader, sent = _real_client(rig)
+    client = rig.client
+    _player_of(rig)
+    await rig.bridge.start()
+    bridge_client = MagicMock(synced_to="spb_leader")
+    bridge_client.player.player_id = "kitchen"
+    rig.mass.players.get_protocol.side_effect = {CLIENT_ID: bridge_client}.get
+    leader = MagicMock(player_id="living_room")
+    rig.mass.players.get_player_by_protocol.side_effect = {"spb_leader": leader}.get
+    rig.mass.players.cmd_play = AsyncMock()
+
+    async def _pause_group(_player_id: str) -> None:
+        # Sendspin has no pause: the stream of every bridge in the group ends
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+
+    rig.mass.players.cmd_pause.side_effect = _pause_group
+    try:
+        await rig.start_playing()
+        await _player_reports(reader, b"STMs")
+        assert client.state == SlimPlayerState.PLAYING
+        sent.clear()
+
+        await _player_presses(reader, kind, "PAUSE")
+
+        rig.mass.players.cmd_pause.assert_awaited_once_with("living_room")
+        assert [command for command, _ in _stream_commands(sent)] == [b"p", b"q"]
+        assert client.state == SlimPlayerState.STOPPED
+        rig.mass.players.cmd_play.assert_not_called()
+        sent.clear()
+
+        await _player_presses(reader, kind, resume_key)
+
+        # the player of the bridge, which Music Assistant hands on to the player that
+        # owns its playback
+        rig.mass.players.cmd_play.assert_awaited_once_with("kitchen")
+        assert _stream_commands(sent) == []
+        rig.mass.players.cmd_pause.assert_awaited_once()
+    finally:
+        client._reader_task.cancel()
+
+
+@pytest.mark.parametrize("kind", ["butn", "ir"])
+async def test_a_player_that_plays_on_its_own_pauses_and_resumes_itself(
+    rig: _Rig, kind: str
+) -> None:
+    """Outside a Sendspin group, pause and play on the player stay with its client."""
+    reader, sent = _real_client(rig)
+    client = rig.client
+    _player_of(rig)
+    await rig.bridge.start()
+    rig.mass.players.cmd_play = AsyncMock()
+    try:
+        await client.play_url(f"{BASE_URL}/track.flac")
+        await _player_reports(reader, b"STMs")
+        sent.clear()
+
+        await _player_presses(reader, kind, "PAUSE")
+        assert client.state == SlimPlayerState.PAUSED
+        await _player_presses(reader, kind, "PLAY")
+
+        assert client.state == SlimPlayerState.PLAYING
+        assert _stream_commands(sent) == [(b"p", 0), (b"u", 0)]
+        rig.mass.players.cmd_pause.assert_not_called()
+        rig.mass.players.cmd_play.assert_not_called()
+    finally:
+        client._reader_task.cancel()
+
+
+@pytest.mark.parametrize("kind", ["butn", "ir"])
+async def test_play_on_a_stopped_player_plays_its_player(rig: _Rig, kind: str) -> None:
+    """A stopped player has nothing to resume: Music Assistant decides what it plays."""
+    reader, sent = _real_client(rig)
+    client = rig.client
+    _player_of(rig)
+    await rig.bridge.start()
+    rig.mass.players.cmd_play = AsyncMock()
+    try:
+        await _player_presses(reader, kind, "PLAY")
+
+        rig.mass.players.cmd_play.assert_awaited_once_with("kitchen")
+        assert _stream_commands(sent) == []
+        assert client.state == SlimPlayerState.STOPPED
+    finally:
+        client._reader_task.cancel()
 
 
 async def test_a_state_before_the_stream_was_requested_is_not_followed(rig: _Rig) -> None:

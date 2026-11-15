@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
+from aioslimproto.models import ButtonCode, RemoteCode, SlimEvent
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
-from aioslimproto.models import SlimEvent
 from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     ProtocolRole,
     RepeatMode,
 )
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -939,6 +940,81 @@ async def test_buttons_act_on_the_player_that_leads_the_sendspin_group(
 
     mass.player_queues.get_active_queue.assert_called_once_with(queue_of)
     mass.player_queues.next.assert_awaited_once_with(queue.queue_id)
+
+
+def _button_event(data: dict[str, int | str]) -> SlimEvent:
+    """Return a button event aioslimproto passes on for the device."""
+    return SlimEvent(type=SlimEventType.PLAYER_BTN_EVENT, player_id="p1", data=data)
+
+
+@pytest.mark.parametrize(
+    ("data", "target", "played"),
+    [
+        ({"type": "butn", "timestamp": 1, "button": ButtonCode.PLAY}, None, "kitchen"),
+        ({"type": "ir", "timestamp": 1, "code": RemoteCode.PAUSE}, None, "kitchen"),
+        (
+            {"type": "butn", "timestamp": 1, "button": ButtonCode.PAUSE},
+            "living_room",
+            "living_room",
+        ),
+    ],
+)
+async def test_play_or_pause_passed_on_by_the_device_plays_its_player(
+    data: dict[str, int | str], target: str | None, played: str
+) -> None:
+    """While the player plays for its bridge, the press plays the leader of its group."""
+    player, bridge = _player_with_bridge()
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    bridge.transport_command_target.return_value = target
+    mass.players.cmd_play = AsyncMock()
+
+    await player._handle_player_button_event(_button_event(data))
+
+    mass.players.cmd_play.assert_awaited_once_with(played)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"type": "knob", "timestamp": 1, "position": 5, "sync": 0},
+        {"type": "butn", "timestamp": 1, "button": ButtonCode.PRESET_1},
+        {"type": "ir", "timestamp": 1, "code": RemoteCode.FORWARD},
+    ],
+)
+async def test_other_buttons_of_the_device_do_nothing(
+    data: dict[str, int | str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A knob or a button without a meaning for Music Assistant is no failure either."""
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player._player = MagicMock(player_id="kitchen")
+    player.logger = MagicMock()
+    player.sendspin_bridge = None
+    mass.players.cmd_play = AsyncMock()
+
+    player.handle_slim_event(_button_event(data))
+    await asyncio.sleep(0)
+
+    mass.players.cmd_play.assert_not_called()
+    assert "Exception in task" not in caplog.text
+
+
+async def test_a_play_from_the_device_that_fails_is_logged() -> None:
+    """A play the player controller refuses does not fail the event of the device."""
+    player, mass = _player_with_mocked_mass()
+    player._player = MagicMock(player_id="kitchen")
+    player._player.name = "Kitchen"
+    player.logger = MagicMock()
+    player.sendspin_bridge = None
+    mass.players.cmd_play = AsyncMock(side_effect=PlayerUnavailableError("unavailable"))
+
+    await player._handle_player_button_event(
+        _button_event({"type": "butn", "timestamp": 1, "button": ButtonCode.PLAY})
+    )
+
+    player.logger.warning.assert_called_once()
+    assert player.logger.warning.call_args.args[1] == "Kitchen"
 
 
 async def test_the_bridge_is_evaluated_when_the_config_of_the_protocol_is_loaded() -> None:

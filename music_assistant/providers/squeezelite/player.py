@@ -7,10 +7,10 @@ import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
+from aioslimproto.models import ButtonCode, RemoteCode, SlimEvent
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
-from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
 from aioslimproto.sync import SyncGroup
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -535,7 +535,11 @@ class SqueezelitePlayer(PlayerProtocol):
                 self._handle_player_heartbeat()
             return
 
-        if event.type in (SlimEventType.PLAYER_BTN_EVENT, SlimEventType.PLAYER_CLI_EVENT):
+        if event.type == SlimEventType.PLAYER_BTN_EVENT:
+            self.mass.create_task(self._handle_player_button_event(event))
+            return
+
+        if event.type == SlimEventType.PLAYER_CLI_EVENT:
             self.mass.create_task(self._handle_player_cli_event(event))
             return
 
@@ -777,6 +781,32 @@ class SqueezelitePlayer(PlayerProtocol):
             if param.isnumeric():
                 await self.mass.player_queues.seek(queue.queue_id, int(param))
         self.logger.log(VERBOSE_LOG_LEVEL, "CLI Event: %s", event_data)
+
+    async def _handle_player_button_event(self, event: SlimEvent) -> None:
+        """
+        Handle a button or remote key of the device that aioslimproto passed on.
+
+        aioslimproto passes play and pause on when the device can not act on them itself,
+        such as on a stopped device: those start playback on the player, which resumes the
+        group that owns its playback. Other buttons are ignored.
+
+        :param event: The button event of the device.
+        """
+        match event.data:
+            case {"type": "butn", "button": ButtonCode.PLAY | ButtonCode.PAUSE} | {
+                "type": "ir",
+                "code": RemoteCode.PLAY | RemoteCode.PAUSE,
+            } if self.player is not None:
+                bridge = self.sendspin_bridge
+                player_id = (
+                    bridge.transport_command_target() if bridge else None
+                ) or self.player.player_id
+                try:
+                    await self.mass.players.cmd_play(player_id)
+                except MusicAssistantError as err:
+                    self.logger.warning(
+                        "Failed to handle the play button of %s: %s", self.display_name, err
+                    )
 
     @property
     def _plays_for_bridge(self) -> bool:
