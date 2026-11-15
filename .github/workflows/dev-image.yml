@@ -1,0 +1,123 @@
+name: Development image
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - Dockerfile.dev
+      - scripts/dev-image/**
+      - .github/workflows/dev-image.yml
+  pull_request:
+    paths:
+      - Dockerfile.dev
+      - scripts/dev-image/**
+      - .github/workflows/dev-image.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: music-assistant-server-dev:ci
+  PROVIDER_REPO: music-assistant/community-provider-template
+  PROVIDER_DOMAIN: example_music
+
+jobs:
+  check:
+    name: Build and start the development image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Build development image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.dev
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}
+          load: true
+          push: false
+
+      # Refused before anything is installed, so it stops within seconds and needs no network.
+      - name: Refuse an invalid provider repository
+        run: |
+          code=0
+          output=$(timeout 120 docker run --rm --network none \
+            -e PROVIDER_REPO=not-a-repository "$IMAGE" 2>&1) || code=$?
+          printf '%s\n' "$output"
+          if [ "$code" -ne 1 ]; then
+            echo "::error::Expected exit code 1, got $code"
+            exit 1
+          fi
+          if ! grep -q "ERROR: 'not-a-repository' does not name a provider repository" <<< "$output"; then
+            echo "::error::The refusal does not say why"
+            exit 1
+          fi
+
+      - name: Start with the provider template
+        run: |
+          docker run -d --name dev-server --network host \
+            -e PROVIDER_REPO="$PROVIDER_REPO" "$IMAGE"
+
+      - name: Wait for the server
+        run: |
+          for attempt in {1..60}; do
+            if curl -fs -o /dev/null http://localhost:8095/info; then
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' dev-server)" != "true" ]; then
+              echo "::error::The server stopped before it answered"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::The server did not answer within five minutes"
+          exit 1
+
+      # The server has no line in its log for a provider it loads, so ask it: the provider is
+      # registered as a community provider only when it came from the local provider folder.
+      - name: Check that the template provider loaded
+        run: |
+          token=$(curl -fsS -X POST http://localhost:8095/setup \
+            -H "Content-Type: application/json" \
+            -d '{"username": "ci", "password": "ci-only-password"}' | jq -r '.token')
+          echo "::add-mask::$token"
+          request=$(jq -cn --arg domain "$PROVIDER_DOMAIN" '{
+            command: "providers/manifests/get",
+            message_id: "1",
+            args: {instance_id_or_domain: $domain}
+          }')
+          # community providers load after the server's own providers
+          for attempt in {1..36}; do
+            if manifest=$(curl -fsS -X POST http://localhost:8095/api \
+              -H "Authorization: Bearer $token" \
+              -H "Content-Type: application/json" \
+              -d "$request" 2>/dev/null); then
+              printf '%s\n' "$manifest" | jq '{domain, tier}'
+              if jq -e --arg domain "$PROVIDER_DOMAIN" \
+                '.domain == $domain and .tier == "community"' <<< "$manifest" > /dev/null; then
+                exit 0
+              fi
+              echo "::error::$PROVIDER_DOMAIN is not loaded as a community provider"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::$PROVIDER_DOMAIN did not load within three minutes"
+          exit 1
+
+      - name: Show server log
+        if: always()
+        run: docker logs dev-server 2>&1 || true

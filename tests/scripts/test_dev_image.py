@@ -1,4 +1,4 @@
-"""Tests for the development image: its repository references."""
+"""Tests for the development image: its repository references and its check."""
 
 from __future__ import annotations
 
@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).parents[2]
 REPO_REF_SCRIPT = ROOT / "scripts" / "dev-image" / "repo_ref.sh"
+DEV_IMAGE_WORKFLOW = ROOT / ".github" / "workflows" / "dev-image.yml"
 
 # answers the two lookups of repo_ref.sh and logs every call
 STUB_GIT = """#!/bin/sh
@@ -214,3 +216,20 @@ def test_dev_image_builds_on_the_base_image_argument() -> None:
 
     assert "ARG BASE_IMAGE=ghcr.io/music-assistant/server:nightly" in dockerfile
     assert re.findall(r"^FROM .*$", dockerfile, re.MULTILINE) == ["FROM $BASE_IMAGE"]
+
+
+def test_dev_image_check_needs_no_write_access() -> None:
+    """The check of the image on pull requests reads the repository and nothing more."""
+    workflow = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))
+
+    assert workflow["permissions"] == {"contents": "read"}
+    for job in workflow["jobs"].values():
+        assert "permissions" not in job
+        assert job["timeout-minutes"] > 0
+    triggers = workflow.get("on", workflow.get(True))
+    for event in ("pull_request", "push"):
+        assert set(triggers[event]["paths"]) == {
+            "Dockerfile.dev",
+            "scripts/dev-image/**",
+            ".github/workflows/dev-image.yml",
+        }
