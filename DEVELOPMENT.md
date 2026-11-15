@@ -130,7 +130,7 @@ volumes:
   ma-dev-data:
 ```
 
-A restart fetches and installs the named references again, so it picks up new commits. Pull the image again for a newer nightly. The Music Assistant DEV SERVER app for Home Assistant works the same way once it uses this image, with the options `server_repo`, `frontend_repo` and `provider_repo`.
+Further arguments go to the server, as with the server image: `docker run … ghcr.io/music-assistant/server:dev --log-level debug`. A restart fetches and installs the named references again, so it picks up new commits. Pull the image again for a newer nightly. The Music Assistant DEV SERVER app for Home Assistant runs this image, and its options `server_repo`, `frontend_repo` and `provider_repo` are the three variables.
 
 ## Listing random order
 
