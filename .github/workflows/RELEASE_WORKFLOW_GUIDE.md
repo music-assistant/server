@@ -35,10 +35,13 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
    token with Administration read access.
 3. If the version is not already published, run the full test workflow against
    `source_sha`.
-4. Build the source distribution, then provision the app secrets and build the wheel,
-   or recover the exact two verified assets from a matching draft. `verify-app-secrets`
-   then requires the secrets bundle in the wheel and its absence from the source
-   distribution; a draft that fails this check needs its assets deleted to be rebuilt.
+4. Record which providers are new in the release line (`new-providers`: those the newest
+   stable release of an earlier line lacks; the Marketplace suggests them, and a failure
+   only leaves that list empty). Build the source distribution, then provision the app
+   secrets and build the wheel, or recover the exact two verified assets from a matching
+   draft. `verify-app-secrets` then requires the secrets bundle in the wheel and its
+   absence from the source distribution; a draft that fails this check needs its assets
+   deleted to be rebuilt.
 5. Create an annotated exact tag with `github-actions[bot]`, then create or update only a
    draft whose version, tag, and target SHA match. Replace incomplete draft assets, then
    verify both asset names, sizes, upload state, and SHA-256 digests.
