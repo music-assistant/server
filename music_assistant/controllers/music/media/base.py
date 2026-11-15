@@ -7,7 +7,7 @@ import logging
 import random
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -135,7 +135,15 @@ from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
+    from collections.abc import (
+        AsyncGenerator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Iterator,
+        Mapping,
+        Sequence,
+    )
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
@@ -198,10 +206,19 @@ EXTERNAL_ID_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_FETCH_ERRORS,
 )
 # a provider or MusicBrainz that could not answer a lookup, which says nothing about
-# whether it has the item
+# whether it has the item; a lookup reports it as one of these
 TEMPORARY_LOOKUP_ERRORS: Final[tuple[type[MusicAssistantError], ...]] = (
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+)
+# a source that timed out, or whose connection or response broke down, could not answer
+# either; a lookup reports it as ResourceTemporarilyUnavailable
+UNREACHABLE_SOURCE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    TimeoutError,
+    aiohttp.ContentTypeError,
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientPayloadError,
 )
 # expected failures of re-reading a library item from one of its providers. On top of the
 # fetch failures: a file that can not be read from a (network) share
@@ -823,6 +840,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: An external item was not found while a
             music provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
             return await self._get_external_item(item_id, allow_update_metadata)
@@ -1257,6 +1275,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: The item was not found while a music
             provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         # an external id is not unique, so the first library item on the user's sources wins
         for library_item in await self.get_library_items_by_external_id(
@@ -2585,8 +2604,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     prov.domain,
                     err,
                 )
-                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                    could_not_answer = err
+                if unanswered := self._unanswered_lookup_error(err, prov.name):
+                    could_not_answer = unanswered
                 continue
             if result:
                 return result
@@ -2641,8 +2660,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider.instance_id,
                 err,
             )
-            if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                raise
+            if unanswered := self._unanswered_lookup_error(err, provider.name):
+                raise unanswered
         return None
 
     @final
@@ -2669,6 +2688,67 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 category=CACHE_CATEGORY_EXTERNAL_IDS,
             )
             return
+
+    @final
+    def _unanswered_lookup_error(
+        self, err: Exception, source: str, named: bool = True
+    ) -> MusicAssistantError | None:
+        """
+        Return the error a lookup reports for a source that failed, if it could not answer.
+
+        A source that could not answer says nothing about whether it has the item.
+
+        :param err: The error the source failed with.
+        :param source: The source, for the error a timeout or a broken connection becomes.
+        :param named: Whether source is the name the user knows the source by; a source that
+            is only described gets the standard text for a temporarily unavailable resource.
+        :returns: The source's own error, or ResourceTemporarilyUnavailable for a timeout or a
+            broken connection; None when the failure means the source can not supply the item.
+        """
+        if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+            return err
+        if isinstance(err, UNREACHABLE_SOURCE_ERRORS):
+            return self._unreachable_source_error(source, err, named)
+        return None
+
+    @final
+    @contextmanager
+    def _musicbrainz_request(self) -> Iterator[None]:
+        """
+        Run a request of a lookup to MusicBrainz.
+
+        :raises ResourceTemporarilyUnavailable: MusicBrainz timed out, could not be reached or
+            answered with a server error.
+        """
+        try:
+            yield
+        except UNREACHABLE_SOURCE_ERRORS as err:
+            raise self._unreachable_source_error("MusicBrainz", err) from err
+        except aiohttp.ClientResponseError as err:
+            if err.status < 500:
+                raise
+            raise self._unreachable_source_error("MusicBrainz", err) from err
+
+    @final
+    def _unreachable_source_error(
+        self, source: str, err: Exception, named: bool = True
+    ) -> ResourceTemporarilyUnavailable:
+        """
+        Return the error a lookup reports for a source that timed out or could not be reached.
+
+        :param source: The source.
+        :param err: The error the source failed with, which becomes the cause.
+        :param named: Whether source is the name the user knows the source by, which the
+            translated text then shows.
+        """
+        error = ResourceTemporarilyUnavailable(
+            f"Could not reach {source}",
+            translation_key="service_could_not_be_reached" if named else None,
+            translation_args=[source] if named else None,
+            translation_owner=self.translation_owner if named else None,
+        )
+        error.__cause__ = err
+        return error
 
     @final
     def _external_id_cache_key(self, external_id: str, external_id_type: ExternalID) -> str:

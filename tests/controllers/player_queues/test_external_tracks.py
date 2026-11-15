@@ -32,7 +32,9 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     RateLimited,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import (
@@ -720,6 +722,36 @@ async def test_service_that_could_not_answer_leaves_the_track_available(
     spotify.get_track_by_external_id = AsyncMock(return_value=found)
     assert await ctrl.load_next_queue_item(QUEUE_ID, current.queue_item_id) is limited
     assert limited.media_item is found
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ProviderUnavailableError("Qobuz is temporarily unavailable"), TimeoutError()],
+    ids=["unavailable", "timeout"],
+)
+async def test_service_that_could_not_be_reached_leaves_the_track_available(
+    music: MusicController, error: Exception
+) -> None:
+    """An unavailable or timed out provider stops the load as one that asks to back off."""
+    spotify = _provider("spotify--1")
+    spotify.get_track_by_external_id = AsyncMock(side_effect=error)
+    _load_providers(music, spotify)
+    ctrl = _controller(music)
+    current, unanswered = _queue(
+        ctrl, _provider_track("spotify--1", "s1"), _external_track(RECORDING_IDS[1])
+    )
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as excinfo:
+        await ctrl._load_item(unanswered)
+    assert excinfo.value.__cause__ is error
+    ctrl.mass.streams.audio.get_stream_details.assert_not_awaited()
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await ctrl.load_next_queue_item(QUEUE_ID, current.queue_item_id)
+
+    assert unanswered.available is True
+    assert cast("Track", unanswered.media_item).provider == EXTERNAL_ID_PROVIDER
+    assert await _remembered(music, RECORDING_IDS[1]) is None
 
 
 @pytest.mark.parametrize("acting_as_owner", [False, True], ids=["as itself", "acting as"])
