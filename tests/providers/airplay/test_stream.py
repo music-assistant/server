@@ -1489,6 +1489,25 @@ async def test_start_progress_anchor_uses_rebased_position() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_progress_anchor_without_an_acked_instant() -> None:
+    """An ASAP start without a usable ack anchors at the start position, not the epoch."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = _make_cli_proc()
+    stream._connected.set()
+    stream._start_position = 12.0
+    with (
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send,
+        patch("music_assistant.providers.airplay.stream.asyncio.sleep", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream.time.time",
+            return_value=START_UNIX_MS / 1000,
+        ),
+    ):
+        await stream._send_start_progress_anchor(0, 0)
+    send.assert_awaited_once_with("PROGRESS=12")
+
+
+@pytest.mark.asyncio
 async def test_airplay2_start_does_not_schedule_raop_progress() -> None:
     """Native AirPlay 2 starts keep their existing metadata scheduling."""
     player = _make_player()

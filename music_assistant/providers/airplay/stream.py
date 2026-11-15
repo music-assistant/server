@@ -1786,9 +1786,12 @@ class AirPlayStream:
         """
         # Live inputs do not necessarily have media metadata, so the normal
         # media-updated push can omit PROGRESS. Some RAOP receivers then remain
-        # silent after a restart despite accepting audio. Wait until the audible
-        # instant, and discard updates belonging to a stopped/flushed/old start.
-        await asyncio.sleep(max(0, audible_unix_ms / 1000 - time.time()) + 0.1)
+        # silent after a restart despite accepting audio. The binary drops a
+        # PROGRESS that arrives before the session streams, so wait until the
+        # audible instant, and discard updates belonging to a stopped/flushed/old
+        # start. An ASAP start without a usable ack reports 0: treat it as now.
+        audible = audible_unix_ms / 1000 if audible_unix_ms > 0 else time.time()
+        await asyncio.sleep(max(0, audible - time.time()) + 0.1)
         async with self._metadata_lock:
             if (
                 generation != self._progress_anchor_generation
@@ -1796,7 +1799,7 @@ class AirPlayStream:
                 or not self.connected
             ):
                 return
-            progress = int(self._start_position + max(0, time.time() - audible_unix_ms / 1000))
+            progress = int(self._start_position + max(0, time.time() - audible))
             if await self.send_cli_command(f"PROGRESS={progress}"):
                 self._last_progress_sent = progress
 
