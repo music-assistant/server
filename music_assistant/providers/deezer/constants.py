@@ -25,6 +25,13 @@ PERSONAL_ALBUM_PREFIX = "personal_album_"
 # Bump when personal-item parsing changes to invalidate cached parsed items.
 PERSONAL_METADATA_VERSION = "2"
 
+# -- Audiobook authors --
+
+# keeps the author apart from the music artist with the same Deezer id
+AUTHOR_ARTIST_PREFIX = "author_"
+# Deezer's placeholder artist "Unknown"
+UNKNOWN_ARTIST_ID = "8592"
+
 # -- Pagination page sizes --
 
 FAVORITES_PAGE_SIZE = 50

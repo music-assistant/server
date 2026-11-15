@@ -26,6 +26,7 @@ from deezer_python_gql.generated.get_recently_played import (
 from deezer_python_gql.generated.get_track import GetTrackTrack
 from music_assistant_models.enums import (
     AlbumType,
+    ArtistType,
     ContentType,
     ExternalID,
     ImageType,
@@ -54,11 +55,13 @@ from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_A
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 from .constants import (
+    AUTHOR_ARTIST_PREFIX,
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
     SMART_TRACKLIST_PREFIX,
+    UNKNOWN_ARTIST_ID,
 )
 from .helpers import (
     create_virtual_playlist,
@@ -335,6 +338,25 @@ def parse_artist(
     return item
 
 
+def parse_author(
+    provider: DeezerProvider,
+    artist_id: str,
+    name: str,
+    metadata: MediaItemMetadata | None = None,
+) -> Artist:
+    """Parse a Deezer artist as the author of audiobooks."""
+    item_id = f"{AUTHOR_ARTIST_PREFIX}{artist_id}"
+    return Artist(
+        item_id=item_id,
+        provider=provider.instance_id,
+        name=name,
+        artist_type=ArtistType.AUTHOR,
+        media_type=MediaType.ARTIST,
+        provider_mappings={_provider_mapping(provider, item_id)},
+        metadata=metadata or MediaItemMetadata(),
+    )
+
+
 def parse_album(
     provider: DeezerProvider, album: AlbumFields | SearchSearchResultsAlbumsEdgesNode
 ) -> Album:
@@ -560,8 +582,8 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     for edge in audiobook.contributors.edges:
         if AudiobookContributorRoles.NARRATOR in edge.roles:
             narrators.append(edge.node.name)
-        else:
-            authors.append(edge.node.name)
+        elif edge.node.id != UNKNOWN_ARTIST_ID:
+            authors.append(parse_author(provider, edge.node.id, edge.node.name))
 
     item = Audiobook(
         item_id=audiobook.id,
@@ -598,8 +620,8 @@ def parse_audiobook_from_album(
 
     authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
     for edge in album.contributors.edges:
-        if edge.node is not None:
-            authors.append(edge.node.name)
+        if edge.node is not None and edge.node.id != UNKNOWN_ARTIST_ID:
+            authors.append(parse_author(provider, edge.node.id, edge.node.name))
 
     return Audiobook(
         item_id=album.id,
@@ -719,8 +741,9 @@ def parse_gw_audiobook(provider: DeezerProvider, data: dict[str, Any]) -> Audiob
         )
 
     authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
-    if art_name := data.get("ART_NAME"):
-        authors.append(art_name)
+    art_id = str(data.get("ART_ID", ""))
+    if art_id and art_id != UNKNOWN_ARTIST_ID and (art_name := data.get("ART_NAME")):
+        authors.append(parse_author(provider, art_id, art_name))
 
     return Audiobook(
         item_id=album_id,
