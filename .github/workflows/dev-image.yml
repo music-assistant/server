@@ -73,7 +73,7 @@ jobs:
 
       - name: Wait for the server
         run: |
-          for attempt in {1..60}; do
+          for _ in {1..60}; do
             if curl -fs -o /dev/null http://localhost:8095/info; then
               exit 0
             fi
@@ -100,7 +100,7 @@ jobs:
             args: {instance_id_or_domain: $domain}
           }')
           # community providers load after the server's own providers
-          for attempt in {1..36}; do
+          for _ in {1..36}; do
             if manifest=$(curl -fsS -X POST http://localhost:8095/api \
               -H "Authorization: Bearer $token" \
               -H "Content-Type: application/json" \
