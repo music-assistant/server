@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from music_assistant.constants import CONF_UNDERLYING_PLAYER_ID
 from music_assistant.providers.sendspin.bridge_manager import (
     SendspinBridgeManagerBase,
     evaluate_bridge_of,
 )
+from tests.common import use_real_bridge_holders
 
 BASE_ID = "base_1"
 CLIENT_ID = f"spb_{BASE_ID}"
@@ -78,8 +81,7 @@ class _Environment:
             side_effect=lambda coro, **_kwargs: asyncio.get_running_loop().create_task(coro)
         )
         self.sendspin_provider = MagicMock()
-        # no other bridge registered a client of this device
-        self.sendspin_provider.server_api.is_external_player.return_value = False
+        use_real_bridge_holders(self.sendspin_provider)
         mass.get_provider = MagicMock(
             side_effect=lambda domain: self.sendspin_provider if domain == "sendspin" else None
         )
@@ -370,3 +372,18 @@ async def test_provider_change_evaluates_the_attached_protocols_only() -> None:
 
     assert env.manager.get_bridge(BASE_ID) is not None
     assert env.manager.get_bridge("base_2") is None
+
+
+@pytest.mark.parametrize("claimed", [False, True], ids=["registered", "claimed"])
+async def test_the_bridge_that_registers_or_claims_its_client_holds_it(claimed: bool) -> None:
+    """The bridge that registered or claimed a client holds it until its bridge goes."""
+    env = _Environment()
+
+    with patch.object(env.manager, "_try_claim_existing", AsyncMock(return_value=claimed)):
+        await env.manager.evaluate_bridge(env.protocol)
+
+    assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) == BASE_ID
+
+    await env.manager.remove_bridge(BASE_ID)
+
+    assert env.sendspin_provider.get_bridge_holder(CLIENT_ID) is None

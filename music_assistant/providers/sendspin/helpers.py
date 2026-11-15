@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.types import PairAbortReason, PairingCodeFormat, PairMethod
 from aiosendspin.noise.driver import HandshakeAbortedError
@@ -20,8 +20,10 @@ if TYPE_CHECKING:
         PairMethodDescriptor,
     )
     from aiosendspin.models.management import ManagementResultData
-    from aiosendspin.server import SendspinClient
-    from aiosendspin.server.roles import Role
+
+    from music_assistant.mass import MusicAssistant
+
+    from .provider import SendspinProvider
 
 
 class SecurityActionError(Exception):
@@ -189,24 +191,21 @@ def bridge_client_id_variants(client_id: str) -> list[str]:
     return [client_id, f"{BRIDGE_PREFIX}{toggled:02x}{mac_hex[2:]}"]
 
 
-def holds_bridge_client(client: SendspinClient, role: Role | None) -> bool:
+def holds_bridge_client(mass: MusicAssistant, client_id: str, protocol_id: str) -> bool:
     """
-    Return whether a bridge still holds the Sendspin client it registered.
+    Return whether the bridge of a protocol holds a bridge client: it registered it last.
 
-    Another bridge of the device can register the same client id while no connection is
-    attached to the client: the server then hands that bridge the client, with roles of its
-    own. A connection that attaches, such as that of the Sendspin Cast receiver, brings roles
-    of its own too, but leaves the client to the bridge that registered it. A bridge that
-    stops only removes a client it still holds.
+    Another bridge of the device can register the same client id while it is registered, and
+    holds it from then on. A bridge that stops only removes a client it holds.
 
-    :param client: The client the registration of the bridge returned.
-    :param role: The role the bridge got with that client, if any.
+    :param mass: The Music Assistant instance.
+    :param client_id: The bridge client id.
+    :param protocol_id: The id of the protocol the bridge rides on.
     """
-    # nobody can register an id while a connection is attached to its client
+    sendspin_provider = cast("SendspinProvider | None", mass.get_provider("sendspin"))
     return (
-        role is None
-        or client.connection is not None
-        or role in client.roles_by_family(role.role_family)
+        sendspin_provider is not None
+        and sendspin_provider.get_bridge_holder(client_id) == protocol_id
     )
 
 

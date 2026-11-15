@@ -496,8 +496,8 @@ class SendspinSqueezeliteBridge:
             self._close_session(session, stop_player=True)
         if self.protocol.sendspin_bridge is self:
             self.protocol.sendspin_bridge = None
-        if (client := self._sendspin_client) is not None and (client_id := self._bridge_client_id):
-            holds_client = holds_bridge_client(client, self._bridge_role)
+        if self._sendspin_client is not None and (client_id := self._bridge_client_id):
+            holds_client = holds_bridge_client(self.mass, client_id, self.protocol.protocol_id)
             self._sendspin_client = None
             self._bridge_role = None
             if holds_client:

@@ -31,7 +31,7 @@ from music_assistant.providers.sendspin.bridge_manager import (
 from music_assistant.providers.squeezelite.sendspin_bridge import (
     SendspinBridgeManager as SqueezeliteSendspinBridgeManager,
 )
-from tests.common import scheduled_call, use_real_create_task
+from tests.common import scheduled_call, use_real_bridge_holders, use_real_create_task
 
 CAST_ID = "cc_player"
 # the player of the Cast protocol has an id of its own
@@ -62,6 +62,7 @@ def _make_cast_environment() -> tuple[CastSendspinBridgeManager, MagicMock, Magi
     mass.players.subscribe_player_state_update = MagicMock(return_value=MagicMock())
     mass.create_task = MagicMock()
     mass.config.get_protocol_value = MagicMock(return_value=None)
+    use_real_bridge_holders(mass.get_provider.return_value)
     external_clients: set[str] = set()
     sendspin_server = mass.get_provider.return_value.server_api
     sendspin_server.is_external_player = MagicMock(side_effect=external_clients.__contains__)
@@ -350,6 +351,7 @@ class TestCastBridgeYieldsToSqueezelite:
         manager._client_ids[CAST_ID] = client_id
         # the Sendspin Cast receiver connected on its own and was claimed
         manager._claimed_clients[CAST_ID] = client_id
+        mass.get_provider.return_value.hold_bridge_client(client_id, CAST_ID)
         sendspin_server = mass.get_provider.return_value.server_api
         sendspin_server.remove_client = AsyncMock()
         records = {client_id: {"values": {CONF_UNDERLYING_PLAYER_ID: CAST_ID}}}
@@ -365,6 +367,24 @@ class TestCastBridgeYieldsToSqueezelite:
             if permanent
             else "a removal that is not for good frees nothing"
         )
+
+    async def test_a_claimed_client_another_bridge_registered_since_is_left_alone(self) -> None:
+        """Test the Cast manager leaves a client the AirPlay bridge registered after its claim."""
+        manager, mass, cast_protocol = _make_cast_environment()
+        client_id = manager._bridge_client_id(cast_protocol)
+        assert client_id is not None
+        manager._client_ids[CAST_ID] = client_id
+        manager._claimed_clients[CAST_ID] = client_id
+        sendspin = mass.get_provider.return_value
+        sendspin.hold_bridge_client(client_id, CAST_ID)
+        # the receiver left, and the AirPlay bridge of the device registered the client id
+        sendspin.hold_bridge_client(client_id, "apaabbccddeeff")
+        sendspin.server_api.remove_client = AsyncMock()
+
+        await manager.remove_bridge(CAST_ID)
+
+        sendspin.server_api.remove_client.assert_not_awaited()
+        assert sendspin.get_bridge_holder(client_id) == "apaabbccddeeff"
 
     def test_the_cast_bridge_returns_when_the_squeezelite_player_disconnects(self) -> None:
         """Test the Cast bridge is wanted again once the squeezelite protocol is detached."""

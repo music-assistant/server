@@ -478,7 +478,7 @@ class SendspinChromecastBridge:
             self._event_unsub = None
 
         if self._sendspin_client:
-            if holds_bridge_client(self._sendspin_client, self._bridge_role):
+            if holds_bridge_client(self.mass, self._bridge_client_id, self.cast_player.protocol_id):
                 await self.sendspin_server.remove_client(self._bridge_client_id)
             self._sendspin_client = None
             self._bridge_role = None
@@ -885,7 +885,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             if unsub := self._rebridge_unsubs.pop(claimed_client_id, None):
                 with suppress(Exception):
                     unsub()
-            if sendspin_server := self.sendspin_server:
+            if (sendspin_server := self.sendspin_server) and holds_bridge_client(
+                self.mass, claimed_client_id, protocol_id
+            ):
                 with suppress(Exception):
                     await sendspin_server.remove_client(claimed_client_id)
             if permanent:

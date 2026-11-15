@@ -49,6 +49,7 @@ from music_assistant.models.player_state import (
     ProtocolSnapshot,
     StateInputs,
 )
+from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderAccess
@@ -204,6 +205,18 @@ def scheduled_call(coro: CoroutineType[Any, Any, Any]) -> tuple[str, dict[str, A
 
 
 # Mock classes for testing
+
+
+def use_real_bridge_holders(sendspin_provider: Any) -> None:
+    """
+    Give a stand-in of the Sendspin provider its real record of which bridge holds a client.
+
+    :param sendspin_provider: The mocked or fake Sendspin provider.
+    """
+    sendspin_provider._bridge_holders = {}
+    for name in ("hold_bridge_client", "get_bridge_holder", "release_bridge_client"):
+        method = MethodType(getattr(SendspinProvider, name), sendspin_provider)
+        setattr(sendspin_provider, name, method)
 
 
 def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:

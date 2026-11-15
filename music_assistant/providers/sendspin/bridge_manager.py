@@ -26,8 +26,6 @@ from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_PLAYERS, CONF_UNDERLYING_PLAYER_ID
 
-from .helpers import bridge_client_id_variants
-
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
@@ -160,7 +158,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             await self.remove_bridge(protocol_id)
         if not self._has_bridge(protocol_id):
             if client_id:
-                await self._remove_outputs_of_switched_off_protocols(client_id)
+                await self._remove_outputs_left_by_other_bridges(protocol, client_id)
             await self.setup_bridge(protocol)
 
     async def setup_bridge(self, protocol: PlayerProtocol) -> None:
@@ -180,6 +178,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             if not (self._should_have_bridge(protocol) and self._lifecycle_allows_bridge(protocol)):
                 return
             if await self._try_claim_existing(protocol):
+                self._hold_client(protocol)
                 self._remove_bridge_on_detach(protocol)
                 return
             bridge: BridgeT | None = None
@@ -194,6 +193,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                 return
             if not bridge.is_registered:
                 return
+            self._hold_client(protocol)
             self._bridges[protocol_id] = bridge
             self._remove_bridge_on_detach(protocol)
             self.logger.info("Sendspin bridge created for %s", protocol.display_name)
@@ -215,8 +215,11 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                 with suppress(Exception):
                     await bridge.stop()
         removed_any = bridge is not None
-        if permanent and (client_id := self._client_ids.get(protocol_id)):
+        client_id = self._client_ids.get(protocol_id)
+        if permanent and client_id:
             removed_any = await self._remove_client_protocol(protocol_id, client_id) or removed_any
+        if client_id and (sendspin_provider := self.sendspin_provider):
+            sendspin_provider.release_bridge_client(client_id, protocol_id)
         if removed_any:
             self.logger.debug("Sendspin bridge removed for protocol %s", protocol_id)
             if permanent:
@@ -236,6 +239,10 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             for bridge in list(self._bridges.values()):
                 with suppress(Exception):
                     await bridge.stop()
+            if sendspin_provider := self.sendspin_provider:
+                for protocol_id in self._bridges:
+                    if client_id := self._client_ids.get(protocol_id):
+                        sendspin_provider.release_bridge_client(client_id, protocol_id)
             self._bridges.clear()
         self.logger.debug("All Sendspin bridges stopped")
 
@@ -291,6 +298,17 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
     def _has_bridge(self, protocol_id: str) -> bool:
         """Return whether a bridge is currently in place for the protocol."""
         return protocol_id in self._bridges
+
+    def _hold_client(self, protocol: PlayerProtocol) -> None:
+        """
+        Record that the bridge of a protocol registered or claimed its client last.
+
+        :param protocol: The bridged protocol.
+        """
+        if (client_id := self._bridge_client_id(protocol)) and (
+            sendspin_provider := self.sendspin_provider
+        ):
+            sendspin_provider.hold_bridge_client(client_id, protocol.protocol_id)
 
     def _has_switched_on_output(self, player: Player, protocol_domain: str) -> bool:
         """
@@ -355,8 +373,8 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
 
         Another bridge manager can compute the same client id for the same device (an
         AirPlay id equal to the Cast MAC), so only a client riding on this protocol goes. A
-        client another bridge registered meanwhile keeps its output, which is attached again
-        riding on the protocol of that bridge.
+        client the bridge of another protocol holds keeps its output, which is attached again
+        riding on that protocol.
 
         :param protocol_id: The id of the bridged protocol.
         :param client_id: The client id of its bridge.
@@ -370,32 +388,41 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             return False
         if underlying_id != protocol_id:
             return False
-        if (server := self.sendspin_server) and server.is_external_player(client_id):
-            # Sendspin tells nothing when a bridge registers an id that is registered
-            # already, so the output still rides on this protocol until it attaches again
-            await self.mass.players.unregister(client_id)
-            if sendspin_provider := self.sendspin_provider:
-                await sendspin_provider.discover_players()
+        if (sendspin_provider := self.sendspin_provider) and sendspin_provider.get_bridge_holder(
+            client_id
+        ) not in (None, protocol_id):
+            sendspin_provider.refresh_bridge_client(client_id)
             return False
         await self.mass.players.remove_protocol(client_id)
         return True
 
-    async def _remove_outputs_of_switched_off_protocols(self, client_id: str) -> None:
+    async def _remove_outputs_left_by_other_bridges(
+        self, protocol: PlayerProtocol, client_id: str
+    ) -> None:
         """
-        Remove the Sendspin outputs of a device that ride on a protocol the user switched off.
+        Remove the Sendspin outputs other bridges left on the player of a protocol.
 
-        Such an output, stored under another form of the device's client id, can not return
-        while that protocol is switched off, yet keeps the place of the Sendspin output of the
-        device from the bridge that registers under the given client id.
+        Those ride on a protocol of the player that is switched off or not attached, so they
+        carry no Sendspin output now, yet keep the place of the Sendspin output of the device
+        from the bridge of the given protocol, which its policy allows to register.
 
-        :param client_id: The client id of the bridge that is about to register.
+        :param protocol: The protocol whose bridge is about to register.
+        :param client_id: The client id that bridge registers under.
         """
-        for other_id in bridge_client_id_variants(client_id)[1:]:
-            underlying_id = self.mass.config.get_protocol_value(other_id, CONF_UNDERLYING_PLAYER_ID)
-            if isinstance(underlying_id, str) and not self.mass.config.is_protocol_switched_on(
-                underlying_id
+        if (player := protocol.player) is None or (sendspin := self.sendspin_provider) is None:
+            return
+        for other_id in self.mass.config.get_protocol_ids_of_player(player.player_id):
+            record = self.mass.config.get_protocol_record(other_id) or {}
+            if other_id == client_id or record.get("provider") != sendspin.instance_id:
+                continue
+            underlying_id = (record.get("values") or {}).get(CONF_UNDERLYING_PLAYER_ID)
+            if not isinstance(underlying_id, str):
+                continue
+            if underlying_id in player.attached_protocols and (
+                self.mass.config.is_protocol_switched_on(underlying_id)
             ):
-                await self.mass.players.remove_protocol(other_id)
+                continue
+            await self.mass.players.remove_protocol(other_id)
 
     def _let_other_bridges_take_over(self, protocol_id: str) -> None:
         """

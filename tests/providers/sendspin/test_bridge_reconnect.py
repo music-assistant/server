@@ -44,6 +44,10 @@ _CLIENT_CODE = (
     "register_bridge_identifiers",
     "register_bridge_underlying_protocol",
     "register_bridge_static_delay_default",
+    "hold_bridge_client",
+    "get_bridge_holder",
+    "release_bridge_client",
+    "refresh_bridge_client",
     "_begin_client_event",
     "_finish_client_event",
     "_is_current_client_event",
@@ -91,6 +95,7 @@ def _sendspin(scenario: Scenario) -> Any:
     provider._bridge_underlying_protocols = {}
     provider._bridge_static_delay_defaults = {}
     provider._bridge_player_types = {}
+    provider._bridge_holders = {}
     return provider
 
 
@@ -365,3 +370,41 @@ async def test_a_cast_device_claims_the_receiver_app_that_connected_before_it(
     other = (await scenario.add_provider("sonos")).protocol("RINCON_OTHER", "Speaker B")
     await _register_or_fail(scenario, other)
     assert scenario.player_of(other) is not None
+
+
+async def test_a_client_another_bridge_registered_rides_on_that_bridge_once_refreshed(
+    scenario: Scenario,
+) -> None:
+    """A client the AirPlay bridge registered again moves its output over to AirPlay."""
+    player_id, _records = await _bridged_device(scenario, "chromecast")
+    await scenario.add_provider("airplay")
+    airplay = _carrier(scenario, "airplay")
+    await scenario.mass.players.register(airplay)
+    await scenario.settle()
+    assert airplay.player is not None
+    assert airplay.player.player_id == player_id
+    # the provider _bridged_device prepared, with the client it connected
+    sendspin: Any = scenario.provider("sendspin")
+    scenario.mass.config.set_protocol_value(BRIDGE_ID, "static_delay", 120)
+    # an add of the client that started before the AirPlay bridge registered it
+    stale_add = sendspin._begin_client_event(BRIDGE_ID)
+    # the AirPlay bridge registers the same client id, which Sendspin reports no event for
+    sendspin.register_bridge_identifiers(BRIDGE_ID, {IdentifierType.AIRPLAY_ID: AIRPLAY_ID})
+    sendspin.register_bridge_underlying_protocol(BRIDGE_ID, AIRPLAY_ID)
+
+    sendspin.refresh_bridge_client(BRIDGE_ID)
+    await scenario.settle()
+
+    bridge = scenario.mass.players.get_protocol(BRIDGE_ID)
+    assert bridge is not None
+    assert bridge.underlying_protocol_id == AIRPLAY_ID
+    assert bridge.player is airplay.player
+    record = scenario.mass.config.get_protocol_record(BRIDGE_ID)
+    assert record is not None
+    assert record["values"]["underlying_player_id"] == AIRPLAY_ID
+    assert record["values"]["static_delay"] == 120
+
+    await sendspin._handle_client_added(BRIDGE_ID, stale_add)
+    await scenario.settle()
+
+    assert scenario.mass.players.get_protocol(BRIDGE_ID) is bridge, "the stale add replaced it"

@@ -378,6 +378,7 @@ class SendspinProvider(PlayerProvider):
     _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
     _bridge_underlying_protocols: dict[str, str]
+    _bridge_holders: dict[str, str]
     _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
@@ -407,6 +408,8 @@ class SendspinProvider(PlayerProvider):
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
         self._bridge_underlying_protocols = {}
+        # bridge client id -> the protocol whose bridge registered or claimed it last
+        self._bridge_holders = {}
         self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
@@ -621,6 +624,51 @@ class SendspinProvider(PlayerProvider):
         :param underlying_protocol_id: The id of the protocol the bridge rides on.
         """
         self._bridge_underlying_protocols[client_id] = underlying_protocol_id
+
+    def hold_bridge_client(self, client_id: str, protocol_id: str) -> None:
+        """
+        Record the protocol whose bridge registered or claimed a bridge client last.
+
+        Called by the bridge managers once a bridge registered its client, or claimed one that
+        connected on its own. That bridge holds the client until another one registers it.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol the bridge rides on.
+        """
+        self._bridge_holders[client_id] = protocol_id
+
+    def get_bridge_holder(self, client_id: str) -> str | None:
+        """
+        Return the id of the protocol whose bridge holds a bridge client, if any.
+
+        :param client_id: The bridge client id.
+        """
+        return self._bridge_holders.get(client_id)
+
+    def release_bridge_client(self, client_id: str, protocol_id: str) -> None:
+        """
+        Forget the holder of a bridge client once its bridge is gone.
+
+        Nothing happens while the bridge of another protocol holds the client.
+
+        :param client_id: The bridge client id.
+        :param protocol_id: The id of the protocol whose bridge is gone.
+        """
+        if self._bridge_holders.get(client_id) == protocol_id:
+            del self._bridge_holders[client_id]
+
+    def refresh_bridge_client(self, client_id: str) -> None:
+        """
+        Give a bridge client its Sendspin protocol again, riding on the protocol of its holder.
+
+        For a client id another bridge registered while the client was registered already:
+        Sendspin reports no event for that, so its protocol still rides on the protocol of the
+        bridge before.
+
+        :param client_id: The bridge client id.
+        """
+        event_version = self._begin_client_event(client_id)
+        self.mass.create_task(self._handle_client_added(client_id, event_version))
 
     def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
         """
