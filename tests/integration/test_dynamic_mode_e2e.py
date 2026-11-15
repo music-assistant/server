@@ -178,10 +178,12 @@ async def test_shuffle_and_repeat_locked_while_dynamic(e2e_mass: MusicAssistant)
     """A genuine shuffle/repeat change is rejected while dynamic, but a redundant set is a no-op."""
     queue_id = demo_players(e2e_mass)[0].player_id
     await _play_finite_album(e2e_mass, queue_id)
+    await e2e_mass.player_queues.set_repeat(queue_id, RepeatMode.ONE)
     await _add_dynamic_playlist(e2e_mass, queue_id)
     queue = e2e_mass.player_queues.get(queue_id)
     assert queue is not None
     assert queue.is_dynamic is True
+    assert queue.repeat_mode == RepeatMode.OFF
 
     # a genuine change to a locked setting is refused
     with pytest.raises(InvalidCommand):

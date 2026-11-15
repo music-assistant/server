@@ -1351,8 +1351,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle state
+        # a dynamic queue is an always-on smart mix; reflect that in the (now locked) shuffle
+        # and repeat states
         queue.shuffle_enabled = True
+        queue.repeat_mode = RepeatMode.OFF
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         # rebuild from the buffered position so the already-prepared next track is kept and the
         # crossfade isn't disturbed; fall back to the current index (or the front when idle/empty)
