@@ -9,11 +9,12 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from itertools import batched
 from os import PathLike
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import parse_qs, urlparse
 
 import audible
@@ -98,7 +99,17 @@ NARRATOR_ID_PREFIX = "narrator:"
 API_RATE_LIMIT = 4
 API_RATE_PERIOD = 1
 
+# audible refuses a lastpositions request for more asins
+LAST_POSITIONS_BATCH_SIZE = 25
+
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
+
+
+class LastPosition(NamedTuple):
+    """Last heard position of an audiobook on Audible."""
+
+    position_ms: int
+    timestamp: datetime | None
 
 
 async def refresh_access_token_compat(
@@ -417,13 +428,36 @@ class AudibleHelper:
             "product_details",
             "product_extended_attrs",
             "series",
+            "is_finished",
+            "percent_complete",
         ]
 
+        started: list[Audiobook] = []
         async for item in self._fetch_library_items(
             ",".join(response_groups), AUDIOBOOK_CONTENT_TYPES, use_cache=False
         ):
-            if album := await self._process_audiobook_item(item):
-                yield album
+            if not (book := await self._process_audiobook_item(item)):
+                continue
+            if item.get("is_finished"):
+                book.fully_played = True
+            elif item.get("percent_complete"):
+                # yielded below, once its position is known
+                started.append(book)
+                continue
+            yield book
+
+        # only started books need their position, asked for many books at once
+        for batch in batched(started, LAST_POSITIONS_BATCH_SIZE, strict=False):
+            try:
+                positions = await self._fetch_last_positions([book.item_id for book in batch])
+            except (ProviderUnavailableError, TypeError, ValueError) as exc:
+                self.logger.warning("Could not fetch Audible listening positions: %s", exc)
+                positions = {}
+            for book in batch:
+                if position := positions.get(book.item_id):
+                    book.resume_position_ms = position.position_ms
+                    book.resume_position_timestamp = position.timestamp
+                yield book
 
     async def get_audiobook(self, asin: str) -> Audiobook:
         """
@@ -654,7 +688,7 @@ class AudibleHelper:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed
 
-    async def _fetch_last_position(self, asin: str) -> tuple[int, datetime | None] | None:
+    async def _fetch_last_position(self, asin: str) -> LastPosition | None:
         """
         Fetch the last-heard position for a single ASIN from Audible.
 
@@ -668,25 +702,7 @@ class AudibleHelper:
         if not annotations or not isinstance(annotations, list):
             return None
 
-        annotation = annotations[0]
-        if not isinstance(annotation, dict):
-            return None
-
-        last_position = annotation.get("last_position_heard")
-        if not isinstance(last_position, dict):
-            return None
-
-        position_ms = int(last_position.get("position_ms", 0))
-
-        timestamp: datetime | None = None
-        for field in ("last_updated", "reported_time", "last_updated_time", "timestamp"):
-            timestamp = self._parse_audible_timestamp(
-                last_position.get(field) or annotation.get(field)
-            )
-            if timestamp is not None:
-                break
-
-        return position_ms, timestamp
+        return self._parse_last_position(annotations[0])
 
     async def get_last_position(self, asin: str) -> int:
         """
@@ -701,7 +717,7 @@ class AudibleHelper:
         except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
             self.logger.error("Error getting last position for ASIN %s: %s", asin, exc)
             return 0
-        return result[0] if result else 0
+        return result.position_ms if result else 0
 
     async def set_last_position(
         self, asin: str, pos: int, media_type: MediaType = MediaType.AUDIOBOOK
@@ -761,10 +777,9 @@ class AudibleHelper:
         except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
             self.logger.debug("Audible lastpositions fetch failed for %s: %s", asin, exc)
             raise NotImplementedError from exc
-        if not result or result[0] == 0:
+        if not result or result.position_ms == 0:
             raise NotImplementedError
-        position_ms, timestamp = result
-        return False, position_ms, timestamp
+        return False, result.position_ms, result.timestamp
 
     async def _call_api(self, path: str, **kwargs: Any) -> Any:
         response = None
@@ -1453,6 +1468,31 @@ class AudibleHelper:
                 "Audible rate limit",
                 backoff_time=parse_retry_after(err.response.headers.get("Retry-After")),
             ) from err
+
+    async def _fetch_last_positions(self, asins: Sequence[str]) -> dict[str, LastPosition]:
+        response = await self._call_api("annotations/lastpositions", asins=",".join(asins))
+        positions: dict[str, LastPosition] = {}
+        for annotation in (response or {}).get("asin_last_position_heard_annots") or []:
+            if (position := self._parse_last_position(annotation)) and (
+                asin := annotation.get("asin")
+            ):
+                positions[asin] = position
+        return positions
+
+    def _parse_last_position(self, annotation: Any) -> LastPosition | None:
+        if not isinstance(annotation, dict):
+            return None
+        last_position = annotation.get("last_position_heard")
+        if not isinstance(last_position, dict):
+            return None
+        timestamp: datetime | None = None
+        for field in ("last_updated", "reported_time", "last_updated_time", "timestamp"):
+            timestamp = self._parse_audible_timestamp(
+                last_position.get(field) or annotation.get(field)
+            )
+            if timestamp is not None:
+                break
+        return LastPosition(int(last_position.get("position_ms", 0)), timestamp)
 
 
 def _contributor_id(contributor: dict[str, Any]) -> str | None:

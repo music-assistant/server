@@ -125,6 +125,60 @@ async def test_pagination_get_library(helper: AudibleHelper) -> None:
         assert calls[1].kwargs["page"] == 2
 
 
+async def test_library_sync_carries_the_listening_progress(helper: AudibleHelper) -> None:
+    """The library sync used to leave out what was finished or started on Audible."""
+    library = [
+        {"asin": "book_finished", "is_finished": True, "percent_complete": 100},
+        {"asin": "book_new", "is_finished": False, "percent_complete": 0},
+        {"asin": "book_1", "is_finished": False, "percent_complete": 10},
+        {"asin": "book_2", "is_finished": False, "percent_complete": 50},
+        {"asin": "book_3", "is_finished": False, "percent_complete": 90},
+    ]
+    for item in library:
+        item |= {"title": item["asin"], "content_delivery_type": "SinglePartBook", "authors": []}
+    lookups: list[str] = []
+
+    async def call_api(path: str, **kwargs: Any) -> dict[str, Any]:
+        if path == "library":
+            return {"items": library if kwargs["page"] == 1 else []}
+        lookups.append(kwargs["asins"])
+        if kwargs["asins"] == "book_3":
+            raise ProviderUnavailableError("Audible API request failed")
+        return {
+            "asin_last_position_heard_annots": [
+                {
+                    "asin": asin,
+                    "last_position_heard": {
+                        "position_ms": position_ms,
+                        "last_updated": "2026-11-14T10:00:00+00:00",
+                    },
+                }
+                for asin, position_ms in (("book_1", 60000), ("book_2", 120000))
+            ]
+        }
+
+    with (
+        patch.object(helper, "_call_api", side_effect=call_api),
+        patch("music_assistant.providers.audible.audible_helper.LAST_POSITIONS_BATCH_SIZE", 2),
+    ):
+        books = {book.item_id: book async for book in helper.get_library()}
+
+    updated = datetime(2026, 11, 14, 10, tzinfo=UTC)
+    assert {
+        asin: (book.fully_played, book.resume_position_ms, book.resume_position_timestamp)
+        for asin, book in books.items()
+    } == {
+        "book_finished": (True, None, None),
+        "book_new": (None, None, None),
+        "book_1": (None, 60000, updated),
+        "book_2": (None, 120000, updated),
+        # a failed lookup leaves the progress to the next sync
+        "book_3": (None, None, None),
+    }
+    # only started books are looked up, many at once
+    assert lookups == ["book_1,book_2", "book_3"]
+
+
 async def test_pagination_browse_helpers(helper: AudibleHelper) -> None:
     """Test browse helpers (like get_authors) use pagination."""
     # Mock _call_api to return items across pages
