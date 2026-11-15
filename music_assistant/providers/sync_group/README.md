@@ -118,7 +118,7 @@ Players can only be grouped if they support the same sync protocol. This is enfo
 
 - AirPlay players can group with other AirPlay players
 - Sonos players can group with other Sonos players
-- Squeezelite players can group with other Squeezelite players
+- Squeezelite players can group with other Squeezelite players, through their Sendspin outputs
 - **Cross-protocol grouping is NOT supported**
 
 ## Protocol Linking Integration

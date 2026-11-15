@@ -1326,7 +1326,7 @@ added to, waits until its device is back (GROUP-22 and on).
 The user adds Office to Kitchen. Kitchen's own protocol is asked to add Office, by the id its
 provider knows Office by. Office shows as synced to Kitchen, and Kitchen lists both as members.
 
-- End-to-end: **yes**. Two Squeezelite players.
+- End-to-end: **yes**. Two Sonos speakers.
 - Proven by: `test_grouping.py::test_speakers_of_one_make_group_on_their_own_protocol`
 
 ### GROUP-2 · A speaker that can not join is left out, and the rest join
@@ -1335,8 +1335,7 @@ The user adds Garden and Office to Kitchen, but Kitchen can not group with Garde
 Garden stays out, and that is logged. A speaker that can not be reached right now is left out the
 same way; one that is only switched off at its power control is switched on first (GROUP-28).
 
-- End-to-end: **yes**. Add a stopped player, or a player of another kind, next to a Squeezelite
-  player.
+- End-to-end: **yes**. Add a stopped player, or a Snapcast client, next to a Squeezelite player.
 - Proven by:
   - `test_grouping.py::test_a_speaker_that_can_not_group_with_the_leader_is_left_out`
   - `test_grouping.py::test_an_unavailable_speaker_is_left_out`
