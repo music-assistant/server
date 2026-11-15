@@ -15,7 +15,7 @@ import logging
 import struct
 from collections.abc import AsyncGenerator, Callable
 from itertools import pairwise
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -23,47 +23,49 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 from aiosendspin.clock import ManualClock, RawMonotonicClock
 from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.roles import AudioChunk
 from aioslimproto.client import SlimClient
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import PlayerStatus, SlimEvent
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import ContentType, IdentifierType
 from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.providers.sendspin.bridge_role import (
-    BRIDGE_ROLE_ID,
-    BRIDGE_SAMPLE_RATE,
-    BridgePlayerRole,
+from music_assistant.providers.sendspin.bridge_role import BRIDGE_SAMPLE_RATE
+from music_assistant.providers.squeezelite.bridge_role import (
+    SLIMPROTO_BRIDGE_ROLE_ID,
+    SlimprotoBridgeRole,
 )
 from music_assistant.providers.squeezelite.bridge_sync import MAX_START_JUMP_MS
 from music_assistant.providers.squeezelite.sendspin_bridge import (
-    BRIDGE_MIME_TYPE,
     BRIDGE_MIN_BUFFER_MS,
     BRIDGE_REQUIRED_LEAD_MS,
     BRIDGE_STREAM_PATH,
     CLOCK_MAX_AGE_US,
-    FRAME_SIZE,
-    MAX_BLOCK_FRAMES,
+    MAX_BLOCK_US,
     MAX_PENDING_AUDIO_US,
     MAX_PENDING_CHUNKS,
     MAX_PENDING_STATUS,
     MAX_START_AHEAD_US,
     MIN_START_AHEAD_US,
     OUTPUT_THRESHOLD,
-    PREROLL_FRAMES,
     PREROLL_US,
     RECONNECT_REJOIN_WINDOW,
     RECOVERY_GUARD_US,
-    STARVED_LEAD_FRAMES,
+    STARVED_LEAD_US,
     STATUS_TOKEN_BIT,
-    STREAM_LEAD_FRAMES,
+    STREAM_LEAD_US,
     STREAM_THRESHOLD_KB,
     BridgeSession,
     SendspinBridgeManager,
     SendspinSqueezeliteBridge,
 )
 from tests.common import use_real_create_task
+
+if TYPE_CHECKING:
+    from aiosendspin.models.core import ClientHelloPayload
 
 MODULE = "music_assistant.providers.squeezelite.sendspin_bridge"
 
@@ -74,10 +76,21 @@ JIFFIES_AT_EPOCH = 7_000_000
 PLAYER_ID = "aa:bb:cc:dd:ee:ff"
 CLIENT_ID = "spb_aabbccddeeff"
 BASE_URL = "http://192.168.1.10:8097"
+# The format of a stream in these tests, unless a test is about another one: what a
+# player that plays nothing else gets.
+CD_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE, sample_rate=BRIDGE_SAMPLE_RATE, bit_depth=16, channels=2
+)
+MIME_TYPE = "audio/pcm;rate=44100;bitrate=16;channels=2"
+FRAME_SIZE = 4
 # 10 ms of audio: chunks of a multiple of it have timestamps in whole microseconds
 TEN_MS = BRIDGE_SAMPLE_RATE // 100
 # what the player is sent of a second of audio
 SECOND = BRIDGE_SAMPLE_RATE
+PREROLL_FRAMES = SECOND * PREROLL_US // 1_000_000
+STREAM_LEAD_FRAMES = SECOND * STREAM_LEAD_US // 1_000_000
+STARVED_LEAD_FRAMES = SECOND * STARVED_LEAD_US // 1_000_000
+MAX_BLOCK_FRAMES = SECOND * MAX_BLOCK_US // 1_000_000
 
 
 # ---------------------------------------------------------------- helpers
@@ -124,6 +137,36 @@ def _chunk(origin_us: int, first: int, count: int, *, shift_us: int = 0) -> Audi
 def _frames(pcm: bytes) -> list[int]:
     """Return the source frame number of every frame of PCM, -1 for silence."""
     return [value - 1 for (value,) in struct.iter_unpack("<I", pcm)]
+
+
+def _chunk_24(origin_us: int, first: int, count: int) -> AudioChunk:
+    """
+    Return a 48 kHz chunk of 24-bit audio as Sendspin delivers it: 32 bits per sample.
+
+    Both samples of a frame hold its source frame number plus one, in their upper 24 bits.
+
+    :param origin_us: The timestamp of source frame 0.
+    :param first: The first source frame of the chunk.
+    :param count: The number of frames of the chunk.
+    """
+    samples = [number << 8 for number in range(first + 1, first + count + 1) for _ in range(2)]
+    data = struct.pack(f"<{2 * count}i", *samples)
+    return AudioChunk(
+        data=data,
+        timestamp_us=origin_us + first * 1_000_000 // 48000,
+        duration_us=count * 1_000_000 // 48000,
+        byte_count=len(data),
+    )
+
+
+def _frames_24(pcm: bytes) -> list[int]:
+    """Return the source frame number of every frame of 24-bit stereo PCM, -1 for silence."""
+    assert len(pcm) % 6 == 0
+    frames = []
+    for at in range(0, len(pcm), 6):
+        assert pcm[at : at + 3] == pcm[at + 3 : at + 6]
+        frames.append(int.from_bytes(pcm[at : at + 3], "little") - 1)
+    return frames
 
 
 def _slim_client(device_type: str = "squeezeplay") -> MagicMock:
@@ -208,8 +251,9 @@ class _Rig:
         server.clock = self.clock
         server.remove_client = AsyncMock()
         server.is_external_player.return_value = False
-        self.role = BridgePlayerRole(client=MagicMock())
         self.sendspin_client = server.register_external_player.return_value
+        server.register_external_player.side_effect = self._register
+        self.role = SlimprotoBridgeRole(client=self.sendspin_client)
         self.sendspin_client.roles_by_family.return_value = [self.role]
         mass.get_provider.return_value = self.sendspin
         # the squeezelite provider, its player and the slimproto client of that player
@@ -226,6 +270,7 @@ class _Rig:
         protocol.client = self.client
         protocol.provider = provider
         protocol.config.get_value = MagicMock(return_value=sync_adjust)
+        protocol.get_supported_sample_rates.return_value = [(44100, 16)]
         protocol.volume_set = AsyncMock()
         protocol.release_native_playback = AsyncMock()
         protocol.sendspin_bridge = None
@@ -234,6 +279,12 @@ class _Rig:
         provider.get_protocol.side_effect = {PLAYER_ID: protocol}.get
         provider.protocols = [protocol]
         self.bridge = SendspinSqueezeliteBridge(provider, protocol, server)
+
+    def _register(self, hello: ClientHelloPayload, **_kwargs: Any) -> MagicMock:
+        """Stand in for the registration with Sendspin: its client knows the hello from then on."""
+        client: MagicMock = self.server.register_external_player.return_value
+        client.info = hello
+        return client
 
     @property
     def session(self) -> BridgeSession:
@@ -297,7 +348,11 @@ class _Rig:
         return self.session
 
     async def start_playing(
-        self, *, first_chunk_ahead_us: int = 2_000_000, frames: int = 4 * SECOND
+        self,
+        *,
+        first_chunk_ahead_us: int = 2_000_000,
+        frames: int = 4 * SECOND,
+        chunk: Callable[[int, int, int], AudioChunk] = _chunk,
     ) -> BridgeSession:
         """
         Start a Sendspin stream and take it up to the start of the player.
@@ -307,15 +362,28 @@ class _Rig:
 
         :param first_chunk_ahead_us: How far ahead of now the first chunk is due.
         :param frames: The number of frames of that chunk.
+        :param chunk: What makes that chunk, in the format of the stream.
         """
         session = await self.start_stream()
         self.map_clock()
         self.fetched(session)
         self.origin_us = self.now_us + first_chunk_ahead_us
-        self.bridge._on_audio_chunk(_chunk(self.origin_us, 0, frames))
+        self.bridge._on_audio_chunk(chunk(self.origin_us, 0, frames))
         self.event(SlimEventType.PLAYER_BUFFER_READY)
         await _settle()
         return session
+
+    async def start_hires(self) -> None:
+        """Register the bridge of a player that plays up to 48 kHz / 24 bit, which Sendspin picks."""
+        self.protocol.get_supported_sample_rates.return_value = [
+            (44100, 16),
+            (44100, 24),
+            (48000, 16),
+            (48000, 24),
+        ]
+        await self.bridge.start()
+        picked = SendspinAudioFormat(sample_rate=48000, bit_depth=24, channels=2)
+        assert self.role.set_preferred_format(picked, AudioCodec.PCM)
 
     def fetched(self, session: BridgeSession) -> None:
         """Let the player have fetched the stream of a session and have got its preroll."""
@@ -527,7 +595,7 @@ async def test_registration_hands_sendspin_what_it_needs_in_order(rig: _Rig) -> 
         "register",
         "register().roles_by_family",
         "role.set_callbacks",
-        "role.setup_audio_requirements",
+        "role.set_preferred_format",
         "role.set_timing",
     ]
     role.set_timing.assert_called_once_with(required_lead_time_ms=2000, min_buffer_ms=2000)
@@ -550,7 +618,7 @@ async def test_the_hello_offers_volume_and_no_mute(rig: _Rig) -> None:
     hello = rig.server.register_external_player.call_args.args[0]
     assert hello.client_id == CLIENT_ID
     assert hello.name == "Kitchen (Squeezelite)"
-    assert hello.supported_roles == [BRIDGE_ROLE_ID, "player@v1"]
+    assert hello.supported_roles == [SLIMPROTO_BRIDGE_ROLE_ID, "player@v1"]
     assert hello.player_support.supported_commands == [PlayerCommand.VOLUME]
     (audio_format,) = hello.player_support.supported_formats
     assert (audio_format.codec, audio_format.sample_rate) == (AudioCodec.PCM, 44100)
@@ -668,7 +736,7 @@ async def test_the_stream_request_flushes_the_player_and_powers_it_on() -> None:
     try:
         await client.play_url(
             url=f"{BASE_URL}{BRIDGE_STREAM_PATH}?player_id={PLAYER_ID}&sid=0123456789abcdef",
-            mime_type=BRIDGE_MIME_TYPE,
+            mime_type=MIME_TYPE,
             send_flush=True,
             autostart=False,
             stream_threshold=STREAM_THRESHOLD_KB,
@@ -747,8 +815,7 @@ async def test_the_stream_has_the_pcm_format_in_its_content_type(rig: _Rig) -> N
         rig.bridge._on_stream_end()
         await serving
 
-    assert response.call_args.kwargs["headers"] == {"Content-Type": BRIDGE_MIME_TYPE}
-    assert BRIDGE_MIME_TYPE == "audio/pcm;rate=44100;bitrate=16;channels=2"
+    assert response.call_args.kwargs["headers"] == {"Content-Type": MIME_TYPE}
 
 
 async def test_a_request_for_another_session_is_not_found(rig: _Rig) -> None:
@@ -776,11 +843,13 @@ async def test_a_request_for_another_session_is_not_found(rig: _Rig) -> None:
 
 async def test_a_session_is_fetched_once_by_the_request_that_names_it() -> None:
     """The id in the query has to be that of the session, which is open and not fetched yet."""
-    session = BridgeSession(0)
+    session = BridgeSession(CD_FORMAT, 0)
     request = MagicMock(query={"sid": session.session_id})
 
     assert session.is_fetched_by(request)
-    assert not session.is_fetched_by(MagicMock(query={"sid": BridgeSession(0).session_id}))
+    assert not session.is_fetched_by(
+        MagicMock(query={"sid": BridgeSession(CD_FORMAT, 0).session_id})
+    )
     assert not session.is_fetched_by(MagicMock(query={}))
     session.claimed = True
     assert not session.is_fetched_by(request)
@@ -824,7 +893,7 @@ async def test_the_stream_is_a_plain_http_body(rig: _Rig) -> None:
         writer.close()
 
     assert " 200 " in head.splitlines()[0]
-    assert f"content-type: {BRIDGE_MIME_TYPE}" in head
+    assert f"content-type: {MIME_TYPE}" in head
     assert "transfer-encoding" not in head
     assert "content-length" not in head
     assert preroll == bytes(PREROLL_FRAMES * FRAME_SIZE)
@@ -857,12 +926,208 @@ async def test_a_positive_sync_delay_plays_earlier(sync_adjust: int, shift_us: i
         await rig.close()
 
 
+# ---------------------------------------------------------------- format
+
+
+@pytest.mark.parametrize(
+    ("plays", "listed"),
+    [
+        (
+            [(48000, 16), (44100, 16), (96000, 24), (44100, 24), (48000, 24), (96000, 16)],
+            [(44100, 24), (44100, 16), (48000, 24), (48000, 16), (96000, 24), (96000, 16)],
+        ),
+        # a player without the CD sample rate plays its lowest one by default
+        ([(96000, 24), (48000, 16), (48000, 24)], [(48000, 24), (48000, 16), (96000, 24)]),
+        ([], [(44100, 16)]),
+    ],
+)
+async def test_the_hello_lists_the_formats_of_the_player(
+    rig: _Rig, plays: list[tuple[int, int]], listed: list[tuple[int, int]]
+) -> None:
+    """Sendspin picks from what the player plays, and the bridge plays the first by default."""
+    rig.protocol.get_supported_sample_rates.return_value = plays
+
+    await rig.bridge.start()
+
+    hello = rig.server.register_external_player.call_args.args[0]
+    formats = hello.player_support.supported_formats
+    assert [(fmt.sample_rate, fmt.bit_depth) for fmt in formats] == listed
+    assert {(fmt.codec, fmt.channels) for fmt in formats} == {(AudioCodec.PCM, 2)}
+    requirements = rig.role.get_audio_requirements()
+    assert requirements is not None
+    assert (requirements.sample_rate, requirements.bit_depth) == listed[0]
+
+
+async def test_a_stream_is_in_the_format_sendspin_prefers(rig: _Rig) -> None:
+    """The player is asked for and served the format the role has when the stream starts."""
+    await rig.start_hires()
+
+    session = await rig.start_stream()
+
+    mime_type = "audio/pcm;rate=48000;bitrate=24;channels=2"
+    assert rig.client.play_url.await_args.kwargs["mime_type"] == mime_type
+    assert (session.sample_rate, session.frame_size) == (48000, 6)
+    response = _Response()
+    request = MagicMock(method="GET", query={"sid": session.session_id})
+    with patch("aiohttp.web.StreamResponse", return_value=response) as response_class:
+        serving = asyncio.create_task(rig.bridge.serve_stream(request))
+        await _settle()
+        rig.bridge._on_stream_end()
+        await serving
+    assert response_class.call_args.kwargs["headers"] == {"Content-Type": mime_type}
+    # the preroll is a quarter of a second of that format
+    assert bytes(response.body) == bytes(12000 * 6)
+    assert bytes(response.body) == session.preroll
+
+
+@pytest.mark.parametrize(
+    ("sample_rate", "bit_depth", "codec"),
+    [
+        (44100, 16, b"p1321"),
+        (44100, 24, b"p2321"),
+        (48000, 16, b"p1421"),
+        (48000, 24, b"p2421"),
+        (88200, 24, b"p2:21"),
+        (96000, 24, b"p2921"),
+        (176400, 24, b"p2;21"),
+        (192000, 24, b"p2<21"),
+    ],
+)
+async def test_the_stream_request_tells_the_player_the_format(
+    sample_rate: int, bit_depth: int, codec: bytes
+) -> None:
+    """What aioslimproto makes of the format of a session: little endian stereo PCM."""
+    session = BridgeSession(
+        AudioFormat(
+            content_type=ContentType.from_bit_depth(bit_depth),
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            channels=2,
+        ),
+        0,
+    )
+    sent: list[tuple[bytes, bytes]] = []
+    writer = MagicMock(drain=AsyncMock())
+    writer.is_closing.return_value = False
+    writer.write.side_effect = lambda packet: sent.append((packet[2:6], packet[6:]))
+    client = SlimClient(asyncio.StreamReader(), writer, MagicMock())
+    try:
+        await client.play_url(
+            url=f"{BASE_URL}{BRIDGE_STREAM_PATH}?player_id={PLAYER_ID}&sid={session.session_id}",
+            mime_type=session.mime_type,
+            autostart=False,
+        )
+    finally:
+        client._reader_task.cancel()
+
+    command, start = sent[-1]
+    assert command == b"strm"
+    assert start[:1] == b"s"
+    assert start[2:7] == codec
+    assert session.frame_size == 2 * bit_depth // 8
+    assert len(session.preroll) == sample_rate // 4 * session.frame_size
+
+
+async def test_24_bit_audio_reaches_the_player_in_3_bytes_per_sample(rig: _Rig) -> None:
+    """Sendspin delivers a 24-bit sample in 32 bits, of which a slimproto player takes 24."""
+    await rig.start_hires()
+
+    session = await rig.start_playing(frames=4 * 48000, chunk=_chunk_24)
+
+    # on the timeline as any stream: its first frame a preroll after its start
+    assert session.start_us == rig.origin_us - PREROLL_US
+    assert session.loop is not None
+    assert session.loop.frames_sent == 12000
+    # the lead of a second and a half in frames of this stream, less the preroll
+    lead = rig.drain(session)
+    assert _frames_24(lead) == list(range(72000 - 12000))
+    # and a second more for every second that it plays
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+    assert _frames_24(rig.drain(session)) == list(range(60000, 108000))
+
+
+async def test_corrections_are_frames_of_the_format_of_the_stream(rig: _Rig) -> None:
+    """The sync loop counts in frames of the stream: a start error is that many of them."""
+    await rig.start_hires()
+    session = await rig.start_playing(frames=4 * 48000, chunk=_chunk_24)
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+
+    rig.play(session, 1.5, late_ms=50)
+
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 49_500
+    assert session.loop is not None
+    session.loop.process(bytes(48000 * 6))
+    assert session.loop.frames_consumed - session.loop.frames_sent == round(49.5 * 48)
+    assert session.loop.frames_sent == 12000 + 48000 - round(49.5 * 48)
+
+
+def test_a_hole_is_silence_in_the_format_of_the_stream() -> None:
+    """Chunks are placed by the sample rate of their stream, in frames of its size."""
+    hires = AudioFormat(
+        content_type=ContentType.PCM_S24LE, sample_rate=96000, bit_depth=24, channels=2
+    )
+    session = BridgeSession(hires, 0)
+    session.start_us = EPOCH_US
+    frame = bytes(range(1, 7))
+    for first in (0, 960):
+        session.add(
+            AudioChunk(
+                data=frame * 480,
+                timestamp_us=EPOCH_US + first * 1_000_000 // 96000,
+                duration_us=5000,
+                byte_count=6 * 480,
+            )
+        )
+
+    assert session.frames(10_000) == 960
+    assert session.take(0, 9999) == frame * 480 + bytes(6 * 480) + frame * 480
+
+
+async def test_a_stream_keeps_its_format_when_it_is_restarted(rig: _Rig) -> None:
+    """A restart carries on with the chunks of the stream, which came in its format."""
+    await rig.start_hires()
+    first = await rig.start_playing(frames=4 * 48000, chunk=_chunk_24)
+    # Sendspin prefers another format meanwhile, for the stream it starts next
+    assert rig.role.set_preferred_format(None)
+
+    rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+
+    restarted = rig.session
+    assert restarted is not first
+    assert restarted.audio_format is first.audio_format
+    assert restarted.chunks
+    assert rig.client.play_url.await_args.kwargs["mime_type"] == first.mime_type
+
+
+async def test_another_format_starts_the_stream_again(rig: _Rig) -> None:
+    """Sendspin starts the stream of a role anew for a format that changed while it plays."""
+    await rig.start_hires()
+    rig.sendspin_client.group.on_role_format_changed.reset_mock()
+    first = await rig.start_stream()
+    rig.bridge._on_audio_chunk(_chunk_24(rig.now_us + 2_000_000, 0, 4800))
+
+    assert rig.role.set_preferred_format(None)
+    rig.sendspin_client.group.on_role_format_changed.assert_called_once_with(rig.role)
+    # which Sendspin answers with a new start of the stream of the role
+    rig.role.on_stream_start()
+    await _settle()
+
+    assert rig.session is not first
+    assert first.ended
+    assert (first.sample_rate, first.frame_size) == (48000, 6)
+    assert (rig.session.sample_rate, rig.session.frame_size) == (44100, 6)
+    assert rig.client.play_url.await_args.kwargs["mime_type"] == (
+        "audio/pcm;rate=44100;bitrate=24;channels=2"
+    )
+
+
 # ---------------------------------------------------------------- chunk placement
 
 
 def _session(origin_us: int) -> BridgeSession:
     """Return a session whose timeline starts at the first frame of its source."""
-    session = BridgeSession(0)
+    session = BridgeSession(CD_FORMAT, 0)
     session.start_us = origin_us
     return session
 
@@ -1814,7 +2079,7 @@ async def test_the_bridge_of_a_reconnected_player_returns_to_its_group(rig: _Rig
     # its new connection: a new client, which Sendspin puts in a group of its own
     new_client = MagicMock()
     new_client.group = MagicMock(clients=[new_client], has_active_stream=False)
-    new_client.roles_by_family.return_value = [BridgePlayerRole(client=MagicMock())]
+    new_client.roles_by_family.return_value = [SlimprotoBridgeRole(client=new_client)]
     rig.server.register_external_player.return_value = new_client
     rig.protocol.player = MagicMock()
     rig.protocol.player.get_output_protocol_by_domain.return_value = None
@@ -1852,7 +2117,7 @@ async def test_a_group_is_only_returned_to_after_a_reconnect(rig: _Rig, case: st
     # the bridge that follows has a client of its own, in a group of its own
     new_client = MagicMock()
     new_client.group = MagicMock(clients=[new_client], has_active_stream=False)
-    new_client.roles_by_family.return_value = [BridgePlayerRole(client=MagicMock())]
+    new_client.roles_by_family.return_value = [SlimprotoBridgeRole(client=new_client)]
     rig.server.register_external_player.return_value = new_client
     rig.protocol.player = MagicMock()
     rig.protocol.player.get_output_protocol_by_domain.return_value = None

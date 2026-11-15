@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections import deque
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
@@ -30,25 +31,24 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aioslimproto.models import SQUEEZEBOX2_PLAYER_TYPES, PlayerStatus
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import ContentType, IdentifierType
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
-    BRIDGE_BYTES_PER_SAMPLE,
     BRIDGE_CHANNELS,
-    BRIDGE_ROLE_ID,
     BRIDGE_SAMPLE_RATE,
-    BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
     bridge_client_id_variants,
 )
 
+from .bridge_role import SLIMPROTO_BRIDGE_ROLE_ID, SlimprotoBridgeRole
 from .bridge_sync import MAX_START_JUMP_MS, PlayerClock, SyncLoop
 
 if TYPE_CHECKING:
@@ -70,25 +70,18 @@ if TYPE_CHECKING:
     from .provider import SqueezelitePlayerProvider
 
 
-FRAME_SIZE: int = BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
-
 # The stream of a session is served on this path, to the player and session of its query.
 BRIDGE_STREAM_PATH = "/slimproto/bridge"
-# Players take the PCM format from the content type, which goes in the stream request too.
-BRIDGE_MIME_TYPE = (
-    f"audio/pcm;rate={BRIDGE_SAMPLE_RATE};bitrate={BRIDGE_BIT_DEPTH};channels={BRIDGE_CHANNELS}"
-)
 
 # Audio the stream is kept ahead of what the player plays. A correction of the sync loop
 # is only heard once this much has played, so it is short; it still has to ride out a
 # hiccup of the network.
-STREAM_LEAD_FRAMES: int = BRIDGE_SAMPLE_RATE * 3 // 2
+STREAM_LEAD_US: int = 1_500_000
 
 # Silence the stream opens with. A player only reports its buffer ready once it holds
 # more than the stream threshold, and the instant its first audio is heard can only be
 # decided then: the silence is what it holds by that time.
-PREROLL_FRAMES: int = BRIDGE_SAMPLE_RATE // 4
-PREROLL_US: int = PREROLL_FRAMES * 1_000_000 // BRIDGE_SAMPLE_RATE
+PREROLL_US: int = 250_000
 # Buffer levels a player waits for: kilobytes of the stream before it reports its buffer
 # ready, and tenths of a second of decoded audio before a Squeezebox Radio or Touch starts.
 STREAM_THRESHOLD_KB: int = 16
@@ -124,12 +117,12 @@ STATUS_TOKEN_BIT: int = 1 << 31
 CLOCK_MAX_AGE_US: int = 10_000_000
 
 # The writer hands the player what it is allowed this often (seconds), at most this
-# many frames at a time.
+# much audio at a time.
 WRITE_INTERVAL: float = 0.02
-MAX_BLOCK_FRAMES: int = BRIDGE_SAMPLE_RATE // 2
+MAX_BLOCK_US: int = 500_000
 # While Sendspin has nothing to play, silence keeps the stream this far ahead, so the
 # player does not run dry and stays on the timeline.
-STARVED_LEAD_FRAMES: int = BRIDGE_SAMPLE_RATE // 2
+STARVED_LEAD_US: int = 500_000
 
 # Caps on the audio that waits for its turn. Sendspin delivers a buffered source up to
 # 30 seconds ahead; beyond the caps the oldest chunks go. The count bounds a run of
@@ -161,10 +154,6 @@ RECONNECT_REJOIN_WINDOW: float = 60.0
 # Player state fields the bridge policy depends on: an AirPlay output denies the bridge.
 _BRIDGE_POLICY_STATE_FIELDS: frozenset[str] = frozenset({"output_protocols"})
 
-_SILENCE_FRAMES: int = BRIDGE_SAMPLE_RATE
-_SILENCE = memoryview(bytes(_SILENCE_FRAMES * FRAME_SIZE))
-_PREROLL: bytes = bytes(PREROLL_FRAMES * FRAME_SIZE)
-
 
 def get_bridge_client_id(player: SqueezelitePlayer) -> str | None:
     """
@@ -188,17 +177,29 @@ class BridgeSession:
 
     def __init__(
         self,
+        audio_format: AudioFormat,
         timeline_shift_us: int,
         chunks: deque[AudioChunk] | None = None,
     ) -> None:
         """
         Initialize a session that waits for its player and its first chunk.
 
+        :param audio_format: The PCM format of the stream, which its chunks come in.
         :param timeline_shift_us: How much later than its Sendspin timestamp audio is due
             on this player.
         :param chunks: Chunks a session before this one did not play yet.
         """
         self.session_id = secrets.token_hex(8)
+        self.audio_format = audio_format
+        self.sample_rate = audio_format.sample_rate
+        self.frame_size = audio_format.channels * audio_format.bit_depth // 8
+        # Players take the PCM format from the content type, which goes in the stream
+        # request too.
+        self.mime_type = (
+            f"audio/pcm;rate={audio_format.sample_rate};bitrate={audio_format.bit_depth}"
+            f";channels={audio_format.channels}"
+        )
+        self.preroll = bytes(self.frames(PREROLL_US) * self.frame_size)
         self.chunks: deque[AudioChunk] = deque()
         self.pending_us = 0
         # instant the first chunk of the stream is due
@@ -245,6 +246,14 @@ class BridgeSession:
         ):
             self._drop_first()
 
+    def frames(self, duration_us: int) -> int:
+        """
+        Return the number of frames of the stream that play in a duration.
+
+        :param duration_us: The duration in microseconds.
+        """
+        return duration_us * self.sample_rate // 1_000_000
+
     def take(self, cursor: int, frames: int) -> bytes:
         """
         Return the audio of the timeline from a frame on, as far as it is known.
@@ -255,17 +264,18 @@ class BridgeSession:
         :param cursor: The timeline frame the audio has to start at.
         :param frames: The most frames to return.
         """
-        parts: list[memoryview] = []
+        size = self.frame_size
+        parts: list[bytes | memoryview] = []
         while frames > 0 and self.chunks:
             chunk = self.chunks[0]
-            chunk_frames = len(chunk.data) // FRAME_SIZE
+            chunk_frames = len(chunk.data) // size
             first = self._head_taken
             if not first:
                 audible_us = chunk.timestamp_us + self._shift_us - self.start_us
-                behind = cursor - round(audible_us * BRIDGE_SAMPLE_RATE / 1_000_000)
+                behind = cursor - round(audible_us * self.sample_rate / 1_000_000)
                 if behind < -1:
-                    count = min(-behind, frames, _SILENCE_FRAMES)
-                    parts.append(_SILENCE[: count * FRAME_SIZE])
+                    count = min(-behind, frames)
+                    parts.append(bytes(count * size))
                     cursor += count
                     frames -= count
                     continue
@@ -274,7 +284,7 @@ class BridgeSession:
             count = min(chunk_frames - first, frames)
             if count > 0:
                 data = memoryview(chunk.data)
-                parts.append(data[first * FRAME_SIZE : (first + count) * FRAME_SIZE])
+                parts.append(data[first * size : (first + count) * size])
                 cursor += count
                 frames -= count
             if first + count >= chunk_frames:
@@ -338,7 +348,7 @@ class SendspinSqueezeliteBridge:
         self._clock = provider.clock
         self._sendspin_client: SendspinClient | None = None
         self._bridge_client_id: str | None = None
-        self._bridge_role: BridgePlayerRole | None = None
+        self._bridge_role: SlimprotoBridgeRole | None = None
         # the mapping of the player's clock is kept for as long as its connection lasts
         self._player_clock = PlayerClock()
         # time of the last reply that went into it
@@ -404,20 +414,13 @@ class SendspinSqueezeliteBridge:
             version=1,
             # While the player@v1 role will never be used for bridges, it is required by
             # aiosendspin to parse the player@v1_support/ClientHelloPlayerSupport object
-            supported_roles=[BRIDGE_ROLE_ID, "player@v1"],
+            supported_roles=[SLIMPROTO_BRIDGE_ROLE_ID, "player@v1"],
             device_info=SendspinDeviceInfo(
                 product_name=self.protocol.device_info.model,
                 manufacturer=self.protocol.device_info.manufacturer,
             ),
             player_support=ClientHelloPlayerSupport(
-                supported_formats=[
-                    SupportedAudioFormat(
-                        codec=AudioCodec.PCM,
-                        channels=BRIDGE_CHANNELS,
-                        sample_rate=BRIDGE_SAMPLE_RATE,
-                        bit_depth=BRIDGE_BIT_DEPTH,
-                    )
-                ],
+                supported_formats=_supported_formats(self.protocol),
                 buffer_capacity=1_000,
                 # no mute: muting a slimproto player switches its output off, which
                 # stops its playback
@@ -450,7 +453,7 @@ class SendspinSqueezeliteBridge:
         # Retrieve it and wire up the bridge callbacks.
         roles = self._sendspin_client.roles_by_family("player")
         if roles:
-            self._bridge_role = cast("BridgePlayerRole", roles[0])
+            self._bridge_role = cast("SlimprotoBridgeRole", roles[0])
             self._bridge_role.set_callbacks(
                 on_audio_chunk=self._on_audio_chunk,
                 on_volume_change=self._on_volume_change,
@@ -460,7 +463,8 @@ class SendspinSqueezeliteBridge:
                 on_explicit_stop=self._on_explicit_stop,
                 initial_volume=self._client.volume_level,
             )
-            self._bridge_role.setup_audio_requirements()
+            # its default format, until Sendspin prefers another one for a session
+            self._bridge_role.set_preferred_format(None)
             self._bridge_role.set_timing(
                 required_lead_time_ms=BRIDGE_REQUIRED_LEAD_MS,
                 min_buffer_ms=BRIDGE_MIN_BUFFER_MS,
@@ -581,7 +585,7 @@ class SendspinSqueezeliteBridge:
         # no content length and no chunked encoding (the request is HTTP/1.0): players
         # read the plain body until the connection closes
         resp = web.StreamResponse(
-            status=200, reason="OK", headers={"Content-Type": BRIDGE_MIME_TYPE}
+            status=200, reason="OK", headers={"Content-Type": session.mime_type}
         )
         if request.method != "GET":
             await resp.prepare(request)
@@ -589,7 +593,7 @@ class SendspinSqueezeliteBridge:
         session.claimed = True
         try:
             await resp.prepare(request)
-            await resp.write(_PREROLL)
+            await resp.write(session.preroll)
             session.preroll_sent = True
             while not session.ended:
                 if block := self._next_block(session):
@@ -640,6 +644,9 @@ class SendspinSqueezeliteBridge:
         session = self._session
         if session is None or session.ended:
             return
+        if session.audio_format.bit_depth == 24:
+            # Sendspin delivers a 24-bit sample in 32 bits, the player takes it in 24
+            chunk = replace(chunk, data=_pack_24_bit(chunk.data))
         first = session.first_audible_us is None
         session.add(chunk)
         if first:
@@ -681,12 +688,18 @@ class SendspinSqueezeliteBridge:
         if muted and self._bridge_role is not None:
             self._bridge_role.update_player_state(muted=False)
 
-    def _begin_session(self, chunks: deque[AudioChunk] | None = None) -> None:
+    def _begin_session(
+        self,
+        chunks: deque[AudioChunk] | None = None,
+        audio_format: AudioFormat | None = None,
+    ) -> None:
         """
         Begin a new session, which replaces the current one.
 
         :param chunks: Chunks of the stream the current session did not play yet, for a
             session that carries on with the same stream.
+        :param audio_format: The PCM format of that stream. A new stream comes in the
+            format the role of the bridge asks Sendspin for.
         """
         if (old := self._session) is not None:
             # no stop for the player: the stream request of the new session flushes it
@@ -703,7 +716,15 @@ class SendspinSqueezeliteBridge:
         # A positive sync adjust plays earlier, as it does for the squeezelite protocol
         # itself, where it is the time the player takes to make its audio heard.
         shift_us = -sync_adjust * 1000 if isinstance(sync_adjust, int) else 0
-        self._session = session = BridgeSession(shift_us, chunks)
+        if audio_format is None:
+            audio_format = self._role_format()
+        self._session = session = BridgeSession(audio_format, shift_us, chunks)
+        self.logger.debug(
+            "Sendspin stream on %s is %d Hz / %d bit",
+            self.protocol.display_name,
+            audio_format.sample_rate,
+            audio_format.bit_depth,
+        )
         # Started on the next loop iteration, when the session is in place.
         session.tasks = [
             self.mass.create_task(self._start_session(session), eager_start=False),
@@ -725,6 +746,18 @@ class SendspinSqueezeliteBridge:
             # never a power or mute command: those switch the output of the player off
             self.mass.create_task(self._client.stop())
 
+    def _role_format(self) -> AudioFormat:
+        """Return the PCM format the role of the bridge asks Sendspin for."""
+        requirements = self._bridge_role.preferred_format if self._bridge_role else None
+        sample_rate = requirements.sample_rate if requirements else BRIDGE_SAMPLE_RATE
+        bit_depth = requirements.bit_depth if requirements else BRIDGE_BIT_DEPTH
+        return AudioFormat(
+            content_type=ContentType.from_bit_depth(bit_depth),
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            channels=BRIDGE_CHANNELS,
+        )
+
     async def _start_session(self, session: BridgeSession) -> None:
         """Put the stream of a session on the player and start it at its instant."""
         try:
@@ -736,7 +769,7 @@ class SendspinSqueezeliteBridge:
             # flushes what the player holds and powers it on
             await self._client.play_url(
                 url=url,
-                mime_type=BRIDGE_MIME_TYPE,
+                mime_type=session.mime_type,
                 send_flush=True,
                 autostart=False,
                 stream_threshold=STREAM_THRESHOLD_KB,
@@ -777,9 +810,9 @@ class SendspinSqueezeliteBridge:
         session.start_us = start_us
         # the player starts a little later than it is told to, which was learned before
         session.command_us = start_us - offset_us
-        session.loop = SyncLoop(BRIDGE_SAMPLE_RATE, FRAME_SIZE, start_us)
+        session.loop = SyncLoop(session.sample_rate, session.frame_size, start_us)
         # the preroll went out before the timeline was known: it holds frame 0 and on
-        session.loop.process(_PREROLL)
+        session.loop.process(session.preroll)
         session.start_decided.set()
         self.logger.debug(
             "Sendspin stream on %s starts in %.0f ms, %.0f ms into its audio",
@@ -793,14 +826,16 @@ class SendspinSqueezeliteBridge:
         if (loop := session.loop) is None:
             return b""
         elapsed_us = max(0, self._clock.now_us() - session.start_us)
-        played = elapsed_us * BRIDGE_SAMPLE_RATE // 1_000_000
+        played = session.frames(elapsed_us)
         cursor = loop.frames_consumed
-        if (frames := min(played + STREAM_LEAD_FRAMES - cursor, MAX_BLOCK_FRAMES)) <= 0:
+        max_frames = session.frames(MAX_BLOCK_US)
+        if (frames := min(played + session.frames(STREAM_LEAD_US) - cursor, max_frames)) <= 0:
             return b""
         if not (pcm := session.take(cursor, frames)):
-            if (frames := min(played + STARVED_LEAD_FRAMES - cursor, MAX_BLOCK_FRAMES)) <= 0:
+            starved_lead = session.frames(STARVED_LEAD_US)
+            if (frames := min(played + starved_lead - cursor, max_frames)) <= 0:
                 return b""
-            pcm = bytes(_SILENCE[: frames * FRAME_SIZE])
+            pcm = bytes(frames * session.frame_size)
         return loop.process(pcm)
 
     async def _poll_status(self, session: BridgeSession) -> None:
@@ -928,7 +963,7 @@ class SendspinSqueezeliteBridge:
             "Sendspin stream on %s is restarted: %s", self.protocol.display_name, reason
         )
         chunks, session.chunks = session.chunks, deque()
-        self._begin_session(chunks)
+        self._begin_session(chunks, session.audio_format)
 
     async def _leave_sendspin_session(self, *, rejoin: bool = True) -> None:
         """
@@ -1218,3 +1253,39 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
         for protocol in list(updated_player.attached_protocols.values()):
             if protocol.provider is self.provider:
                 self.mass.create_task(self.evaluate_bridge(protocol))
+
+
+def _supported_formats(protocol: SqueezelitePlayer) -> list[SupportedAudioFormat]:
+    """
+    Return the PCM formats of a player, for the hello of its bridge client.
+
+    The first one is what the bridge plays when Sendspin prefers no format: the CD sample
+    rate where the player plays it, at its highest bit depth.
+
+    :param protocol: The squeezelite player the bridge is for.
+    """
+    formats = protocol.get_supported_sample_rates() or [(BRIDGE_SAMPLE_RATE, BRIDGE_BIT_DEPTH)]
+    return [
+        SupportedAudioFormat(
+            codec=AudioCodec.PCM,
+            channels=BRIDGE_CHANNELS,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+        )
+        for sample_rate, bit_depth in sorted(
+            formats, key=lambda fmt: (fmt[0] != BRIDGE_SAMPLE_RATE, fmt[0], -fmt[1])
+        )
+    ]
+
+
+def _pack_24_bit(pcm: bytes) -> bytes:
+    """
+    Return 24-bit samples in 3 bytes each.
+
+    :param pcm: The samples in 4 bytes each, little endian, the lowest byte unused.
+    """
+    packed = bytearray(len(pcm) // 4 * 3)
+    packed[0::3] = pcm[1::4]
+    packed[1::3] = pcm[2::4]
+    packed[2::3] = pcm[3::4]
+    return bytes(packed)
