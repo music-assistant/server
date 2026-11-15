@@ -1356,15 +1356,23 @@ async def test_a_start_that_is_far_off_restarts_the_stream(rig: _Rig) -> None:
     assert rig.manager.get_start_offset_us(PLAYER_ID) == 0
 
 
-async def test_a_player_that_falls_behind_mid_stream_has_its_stream_restarted(rig: _Rig) -> None:
+@pytest.mark.parametrize("late_ms", [3000, -3000])
+async def test_a_player_that_stays_off_its_timeline_has_its_stream_restarted(
+    rig: _Rig, late_ms: int
+) -> None:
     """A player that stalled without running dry stays off its timeline: it gets a new stream."""
     session = await rig.start_playing()
-    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+    rig.clock.advance_us(session.start_us - rig.now_us + 4_000_000)
     rig.play(session, 10)
     await _settle()
     assert rig.session is session
 
-    rig.play(session, 5, late_ms=3000)
+    # four seconds of reports that are all far off
+    rig.play(session, 4.25, late_ms=late_ms)
+    await _settle()
+    assert rig.session is session
+
+    rig.play(session, 0.25, late_ms=late_ms)
     await _settle()
 
     assert rig.session is not session
@@ -1377,7 +1385,28 @@ async def test_a_start_that_is_corrected_in_a_jump_is_no_reason_to_restart(rig: 
     session = await rig.start_playing()
     rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
 
-    rig.play(session, 10, late_ms=500)
+    for _ in range(40):
+        # the writer runs on: the jump goes out, and is heard once the lead has played
+        rig.drain(session)
+        rig.play(session, 0.25, late_ms=500)
+    await _settle()
+
+    assert rig.session is session
+    assert rig.client.play_url.await_count == 1
+    assert session.loop is not None
+    assert session.loop.error_ms == pytest.approx(0.0, abs=1.0)
+
+
+async def test_reports_that_are_off_now_and_then_are_no_reason_to_restart(rig: _Rig) -> None:
+    """Only a player that is off its timeline in every report for seconds is restarted."""
+    session = await rig.start_playing()
+    rig.clock.advance_us(session.start_us - rig.now_us + 1_000_000)
+    rig.play(session, 2)
+
+    # two reports that are a second off, five seconds apart
+    for _ in range(2):
+        rig.play(session, 0.25, late_ms=1000)
+        rig.play(session, 4.75)
     await _settle()
 
     assert rig.session is session

@@ -49,7 +49,7 @@ from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_variants,
 )
 
-from .bridge_sync import MAX_RATE_PPM, MAX_START_JUMP_MS, PlayerClock, SyncLoop
+from .bridge_sync import MAX_START_JUMP_MS, PlayerClock, SyncLoop
 
 if TYPE_CHECKING:
     from aiosendspin.server import (
@@ -137,10 +137,12 @@ STARVED_LEAD_FRAMES: int = BRIDGE_SAMPLE_RATE // 2
 MAX_PENDING_AUDIO_US: int = 45_000_000
 MAX_PENDING_CHUNKS: int = 4_000
 
-# A player that is this far off its timeline (ms) while the sync loop corrects as fast
-# as it may would stay off for minutes: its stream is restarted. A player that stalled
-# without running out of audio ends up like that.
+# A player that stays this far off its timeline (ms) for this long has its stream
+# restarted: the sync loop would need minutes to pull it back. A player that stalled
+# without running out of audio ends up like that. The time covers a start error that is
+# corrected in a jump, which is only heard once the stream lead has played.
 MAX_TIMELINE_ERROR_MS: float = 100.0
+MAX_OFF_TIMELINE_US: int = 4_000_000
 
 # A session that fails again this soon after it was restarted is not going to work by
 # restarting it once more: the bridge leaves the Sendspin session instead. The same
@@ -218,6 +220,8 @@ class BridgeSession:
         # no more audio goes to the player: its stream ends
         self.ended = False
         self.start_error_taken = False
+        # report time since which every report was far off the timeline
+        self.off_timeline_since_us: int | None = None
         self.pause_forwarded = False
         self.tasks: list[asyncio.Task[None]] = []
         self._shift_us = timeline_shift_us
@@ -830,7 +834,9 @@ class SendspinSqueezeliteBridge:
             return
         if (server_us := self._player_clock.to_server_us(status.jiffies)) is None:
             return
-        loop.on_report(server_us, status.elapsed_milliseconds, self._player_clock.generation)
+        report_ms = loop.on_report(
+            server_us, status.elapsed_milliseconds, self._player_clock.generation
+        )
         self._reports += 1
         if self._reports % 40 == 0 and (error_ms := loop.error_ms) is not None:
             self.logger.log(
@@ -843,16 +849,15 @@ class SendspinSqueezeliteBridge:
                 loop.drift_ppm,
                 self._player_clock.drift_ppm,
             )
-        if session.start_error_taken:
-            if (
-                (error_ms := loop.error_ms) is not None
-                and abs(error_ms) > MAX_TIMELINE_ERROR_MS
-                # a start error that is corrected in a jump is not chased by the loop
-                and abs(loop.rate_ppm) >= MAX_RATE_PPM
-            ):
-                self._recover(session, f"it is {error_ms:.0f} ms off its timeline")
-            return
-        if (start_error_ms := loop.start_error_ms) is None:
+        if report_ms is not None:
+            if abs(report_ms) <= MAX_TIMELINE_ERROR_MS:
+                session.off_timeline_since_us = None
+            elif session.off_timeline_since_us is None:
+                session.off_timeline_since_us = server_us
+            elif server_us - session.off_timeline_since_us > MAX_OFF_TIMELINE_US:
+                self._recover(session, f"it stays {report_ms:.0f} ms off its timeline")
+                return
+        if session.start_error_taken or (start_error_ms := loop.start_error_ms) is None:
             return
         session.start_error_taken = True
         if abs(start_error_ms) > MAX_START_JUMP_MS:
