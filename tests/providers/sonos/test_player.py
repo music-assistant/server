@@ -469,6 +469,82 @@ async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistan
     assert timer_mass._tracked_timers == {}
 
 
+@pytest.mark.asyncio
+async def test_a_device_check_of_a_speaker_that_answers_keeps_its_connection(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a speaker that answers the request of a device check stays connected."""
+    player, client = _bind_player(timer_mass)
+    await _connect_player(player, client)
+    client.player_id = "RINCON_DEN"
+    client.api.player_volume.get_volume = AsyncMock(return_value={"volume": 20})
+
+    assert await player.check_device() is True
+
+    client.api.player_volume.get_volume.assert_awaited_once_with("RINCON_DEN")
+    assert (player.connected, player._attr_available) == (True, True)
+    assert f"sonos_reconnect_{player.protocol_id}" not in timer_mass._tracked_timers
+    await player.on_detach()
+
+
+@pytest.mark.asyncio
+async def test_a_device_check_without_an_answer_drops_the_connection_and_reconnects(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a speaker that does not answer a device check reads unavailable at once."""
+    player, client = _bind_player(timer_mass)
+    player._attr_name = "Den"
+    await _connect_player(player, client)
+    listener = player._listen_task
+    assert listener is not None
+
+    async def _no_answer(_player_id: str) -> None:
+        await asyncio.Event().wait()
+
+    client.api.player_volume.get_volume = _no_answer
+    with patch("music_assistant.providers.sonos.player.DEVICE_CHECK_TIMEOUT", 0.01):
+        assert await player.check_device() is False
+
+    assert (player.connected, player._attr_available) == (False, False)
+    player.update_state.assert_called()  # type: ignore[attr-defined]
+    client.disconnect.assert_awaited_once()
+    # the listener goes without reconnecting by itself: the check schedules that
+    with pytest.raises(asyncio.CancelledError):
+        await listener
+    reconnect = timer_mass._tracked_timers[f"sonos_reconnect_{player.protocol_id}"]
+    assert reconnect.when() - timer_mass.loop.time() == pytest.approx(5, abs=0.5)
+    await player.on_detach()
+
+
+@pytest.mark.asyncio
+async def test_a_device_check_connects_at_once_to_a_speaker_that_is_back() -> None:
+    """Test a device check connects to a disconnected speaker once its API port answers."""
+    player, _ = _make_player()
+    player._is_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    async def _connect(_retry_on_fail: int = 0) -> None:
+        player.connected = True
+
+    player._connect = AsyncMock(side_effect=_connect)  # type: ignore[method-assign]
+
+    assert await player.check_device() is True
+
+    player._connect.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_a_device_check_does_not_connect_to_a_speaker_that_is_not_up() -> None:
+    """Test a device check leaves a speaker whose API port does not answer to its reconnects."""
+    player, mass = _make_player()
+    player._is_reachable = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    player._connect = AsyncMock()  # type: ignore[method-assign]
+
+    assert await player.check_device() is False
+
+    player._connect.assert_not_awaited()
+    mass.call_later.assert_not_called()
+
+
 def _make_externally_paused_player() -> tuple[SonosPlayer, MagicMock, MagicMock]:
     """Create a player reporting a paused external source, as Sonos does for Spotify Connect."""
     mass = MagicMock()
