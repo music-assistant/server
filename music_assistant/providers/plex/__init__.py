@@ -31,6 +31,7 @@ from music_assistant_models.enums import (
     EventType,
     ImageType,
     MediaType,
+    PlaybackState,
     ProviderFeature,
     StreamType,
 )
@@ -155,6 +156,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
     from plexapi.library import LibraryMediaTag as PlexCollection
     from plexapi.library import MusicSection as PlexMusicSection
@@ -432,8 +434,6 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
-        if self._get_library_type() == LIBRARY_TYPE_MUSIC:
-            self.playback_reporter.start()
         if self.config.get_value(CONF_SYNC_ON_LIBRARY_CHANGE):
             self._content_changed_at = await self._get_content_changed_at()
             self._notification_task = self.mass.create_task(self._watch_library_changes())
@@ -767,6 +767,22 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
         resume_position_ms = await self._calc_resume_position_ms(plex_album, fully_played)
         return fully_played, resume_position_ms, timestamp
+
+    async def on_playback_progress(
+        self,
+        report: MediaItemPlaybackProgressReport,
+        prov_item_id: str,
+        state: PlaybackState,
+    ) -> None:
+        """
+        Report the playback of a track this provider streamed to the Plex server.
+
+        :param report: The playback progress report; ``player_id`` names the playing player.
+        :param prov_item_id: The Plex key of the streamed item.
+        :param state: The playback state of the item on the player.
+        """
+        if report.media_type == MediaType.TRACK:
+            await self.playback_reporter.report(report, prov_item_id, state)
 
     async def on_played(
         self,

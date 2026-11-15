@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 from music_assistant.providers.plex_connect.timeline import TimelineMixin
@@ -25,6 +25,14 @@ class _TimelineHandler(TimelineMixin):
 
 def _make_queue(current_index: int) -> SimpleNamespace:
     return SimpleNamespace(current_index=current_index)
+
+
+def _play_queue_params(handler: _TimelineHandler, current_index: int) -> dict[str, str]:
+    get_queue = cast("Mock", handler.provider.mass.player_queues.get)
+    get_queue.return_value = _make_queue(current_index)
+    params = handler._play_queue_params()
+    get_queue.assert_called_with("player1")
+    return params
 
 
 def _build_attrs(handler: _TimelineHandler, queue: Any) -> list[str]:
@@ -82,14 +90,14 @@ def test_server_timeline_omits_fabricated_item_id() -> None:
     """The play queue of the server timeline report is dropped for unmapped tracks."""
     handler = _TimelineHandler()
     handler.play_queue_item_ids = {i: 900000 + i for i in range(21)}
-    assert handler._play_queue_params(_make_queue(current_index=21)) == {}
+    assert _play_queue_params(handler, current_index=21) == {}
 
 
 def test_server_timeline_reports_known_item_id() -> None:
     """The server timeline report places a mapped track in its play queue."""
     handler = _TimelineHandler()
     handler.play_queue_item_ids = {21: 900021}
-    assert handler._play_queue_params(_make_queue(current_index=21)) == {
+    assert _play_queue_params(handler, current_index=21) == {
         "containerKey": "/playQueues/77",
         "playQueueItemID": "900021",
     }
@@ -100,4 +108,4 @@ def test_server_timeline_without_play_queue() -> None:
     handler = _TimelineHandler()
     handler.play_queue_id = None
     handler.play_queue_item_ids = {0: 900000}
-    assert handler._play_queue_params(_make_queue(current_index=0)) == {}
+    assert _play_queue_params(handler, current_index=0) == {}

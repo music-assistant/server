@@ -229,17 +229,19 @@ class TimelineMixin:
         except Exception as e:
             LOGGER.debug(f"Failed to send timeline to {client_id}: {e}")
 
-    def _play_queue_params(self, queue: Any) -> dict[str, str]:
+    def _play_queue_params(self) -> dict[str, str]:
         """
         Return the timeline params that place the current track of the queue in its play queue.
 
         The Plex provider adds these to the playback it reports to the Plex server.
-
-        :param queue: The MA queue that is mirrored to the Plex play queue.
         """
+        queue = (
+            self.provider.mass.player_queues.get(self._ma_player_id) if self._ma_player_id else None
+        )
         # playQueueItemIDs are server-global, so a guessed one points at an unrelated item
         if (
             self.play_queue_id
+            and queue
             and queue.current_index is not None
             and (play_queue_item_id := self.play_queue_item_ids.get(queue.current_index))
         ):

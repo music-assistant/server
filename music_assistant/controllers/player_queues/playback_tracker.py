@@ -59,6 +59,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.util import get_changed_keys, percentage
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
 from music_assistant.models.plugin import PluginProvider
 
@@ -304,6 +305,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             or int(queue.elapsed_time) % PLAYBACK_REPORT_INTERVAL_SECONDS == 0
         ):
             self._handle_playback_progress_report(queue, prev_state, new_state)
+            if prev_state["current_item_id"] not in (None, new_state["current_item_id"]):
+                # the report above was the previous item's, the streaming provider also
+                # learns at once that the next one started
+                self._handle_playback_progress_report(
+                    queue, new_state, new_state, record_play=False
+                )
 
         # stop at the point a sleep timer waits for, before the end of queue check below reads
         # a stopped queue as one that ran out of items
@@ -817,9 +824,20 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         self._update_player_sleep_timer(queue)
 
     def _handle_playback_progress_report(
-        self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
+        self,
+        queue: PlayerQueue,
+        prev_state: CompareState,
+        new_state: CompareState,
+        record_play: bool = True,
     ) -> None:
-        """Handle playback progress report."""
+        """
+        Handle playback progress report.
+
+        :param queue: The queue whose playback progressed.
+        :param prev_state: The queue state before this update.
+        :param new_state: The queue state after this update.
+        :param record_play: False to only report to the provider that streamed the item.
+        """
         queue_data = self._queue_data[queue.queue_id]
         # detect change in current index to report that a item has been played
         prev_item_id = prev_state["current_item_id"]
@@ -874,7 +892,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # ignore items that have been played less than 5 seconds
             # this also filters out a bounce effect where the previous item
             # gets reported with 0 elapsed seconds after a new item starts playing
-            return
+            record_play = False
 
         if (
             prev_state.get("state") != PlaybackState.PLAYING.value
@@ -887,7 +905,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             # started in MA on that queue. This triggers a progress report with the old position
             # overwriting the newest one.
             # We still want to report when transitioning to pause or idle.
-            return
+            record_play = False
 
         # determine if item is fully played
         # for podcasts and audiobooks we account for the last 60 seconds
@@ -905,7 +923,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
         is_playing = is_current_item and queue.state == PlaybackState.PLAYING
 
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        if record_play and self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.debug(
                 "%s %s '%s' (%s) - Fully played: %s - Progress: %s (%s/%ss)",
                 queue.display_name,
@@ -918,7 +936,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 duration,
             )
         # add entry to playlog - this also handles resume of podcasts/audiobooks
-        if self._should_mark_played(
+        if record_play and self._should_mark_played(
             queue.queue_id, item_to_report.queue_item_id, fully_played, is_playing
         ):
             self.mass.create_task(
@@ -982,14 +1000,21 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             userid=queue_data.userid,
             player_id=queue.queue_id,
         )
-        # signal 'media item played' event for external clients (e.g. Home Assistant);
-        # scrobbler plugins receive the same report through their own hook
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_PLAYED,
-            object_id=media_item.uri,
-            data=report,
+        if record_play:
+            # signal 'media item played' event for external clients (e.g. Home Assistant);
+            # scrobbler plugins receive the same report through their own hook
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_PLAYED,
+                object_id=media_item.uri,
+                data=report,
+            )
+            self._report_to_scrobblers(report)
+        state = (
+            queue.state
+            if is_current_item and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            else PlaybackState.IDLE
         )
-        self._report_to_scrobblers(report)
+        self._report_to_streaming_provider(item_to_report, report, state)
 
     def _report_to_scrobblers(self, report: MediaItemPlaybackProgressReport) -> None:
         """Hand a playback progress report to every loaded scrobbler plugin."""
@@ -1006,6 +1031,17 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 continue
             # one task per plugin, so a slow or failing scrobbler never holds up the others
             self.mass.create_task(scrobbler.on_media_item_played(report))
+
+    def _report_to_streaming_provider(
+        self, item: QueueItem, report: MediaItemPlaybackProgressReport, state: PlaybackState
+    ) -> None:
+        """Hand a playback progress report to the music provider that streamed the item."""
+        if self.mass.closing or not (streamdetails := item.streamdetails):
+            return
+        music_prov = self.mass.get_provider(streamdetails.provider)
+        if not isinstance(music_prov, MusicProvider) or music_prov.unloading:
+            return
+        self.mass.create_task(music_prov.on_playback_progress(report, streamdetails.item_id, state))
 
     def _claim_album_credit(
         self, queue_data: PlayerQueueData, queue_item: QueueItem
