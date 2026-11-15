@@ -14,7 +14,7 @@ from music_assistant_models.provider import (
 )
 
 # the number of menu actions a provider may declare
-MAX_MENU_ACTIONS: Final = 5
+MAX_MENU_ACTIONS: Final = 10
 MAX_MENU_ACTION_ID_LENGTH: Final = 32
 MAX_MENU_ACTION_ICON_LENGTH: Final = 64
 MENU_ACTION_ID_PATTERN: Final = re.compile(rf"[a-z0-9_]{{1,{MAX_MENU_ACTION_ID_LENGTH}}}")
