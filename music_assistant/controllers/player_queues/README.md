@@ -234,6 +234,15 @@ else goes, including what sessions that ended earlier left behind: sessions rota
 so a claim that is no longer current marks audio nobody will come back for. A clear or a replace
 drops the items themselves, so all of their audio goes with them.
 
+A buffer that is still filling holds one of its provider's stream slots. Every change of the items
+goes through `update_items`, which releases the sources the change leaves unused: those of the items
+that left the queue, and that of the prepared next track when it no longer plays next and its
+provider has no free slot. An item a player has an open stream request for keeps its source, and so
+does the prepared track once the player has taken it. A fade still being mixed into a track that
+left the queue is let finish first, as the stream before it plays the start of that mix; what the
+fade leaves for the track's own stream is dropped with it. A prepared track moved back that a fade
+leads into keeps its source.
+
 A paused queue keeps its session and its buffers until the pause watcher stops it once the
 configured pause timeout passes (30 seconds by default, at most 4 minutes, so before an unread
 buffer releases its audio).

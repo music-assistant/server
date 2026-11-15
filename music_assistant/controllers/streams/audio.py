@@ -3459,6 +3459,24 @@ class StreamsAudio:
         pending = self._crossfade_pending.get(queue_id)
         return pending is not None and pending[0] == queue_item_id
 
+    async def drop_fade_into(self, queue_id: str, queue_item_id: str) -> None:
+        """
+        Drop the fade into a queue item that left its queue.
+
+        A fade that is still being mixed is waited for first: the stream of the item before it
+        plays the start of that mix, which reads the item's audio until it is done.
+
+        :param queue_id: The queue the item belonged to.
+        :param queue_item_id: The item the fade leads into.
+        """
+        pending = self._crossfade_pending.get(queue_id)
+        if pending is not None and pending[0] == queue_item_id:
+            await pending[1].wait()
+        handover = self._crossfade_handover.get(queue_id)
+        if handover is not None and handover.queue_item_id == queue_item_id:
+            del self._crossfade_handover[queue_id]
+            await handover.close()
+
     def clear_crossfade_handover(self, queue_id: str) -> None:
         """
         Clear any pending crossfade data for a queue.
