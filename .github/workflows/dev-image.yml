@@ -330,3 +330,89 @@ jobs:
               '.config.Labels["org.opencontainers.image.base.digest"] == $base' \
               "$RUNNER_TEMP/dev-image.json" > /dev/null
           done
+
+  # The Supervisor builds the Dev app locally on :dev, so moving the app's version to the nightly
+  # the image now sits on is what offers its users the rebuild. Only a verified push gets here.
+  update_app:
+    name: Update the Dev app
+    runs-on: ubuntu-latest
+    needs: [resolve, publish]
+    timeout-minutes: 10
+    env:
+      EXPECTED_APP_SLUG: musicassistant-bot
+      EXPECTED_APP_INSTALLATION_ID: "146062122"
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: server
+          persist-credentials: false
+
+      - name: Create app repository token
+        id: app_token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: home-assistant-addon
+          permission-contents: write
+
+      - name: Verify GitHub App identity
+        id: bot
+        env:
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+          user_id=$(gh api "/users/$APP_SLUG%5Bbot%5D" --jq '.id')
+          echo "slug=$APP_SLUG" >> "$GITHUB_OUTPUT"
+          echo "user_id=$user_id" >> "$GITHUB_OUTPUT"
+
+      # no ref: the default branch, which the bump is pushed to
+      - name: Check out the app repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: music-assistant/home-assistant-addon
+          token: ${{ steps.app_token.outputs.token }}
+          path: addon-repo
+          fetch-depth: 0
+
+      - name: Bump the Dev app
+        env:
+          APP_SLUG: ${{ steps.bot.outputs.slug }}
+          APP_USER_ID: ${{ steps.bot.outputs.user_id }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          python3 server/scripts/release_workflow.py set-addon-version \
+            --config addon-repo/music_assistant_dev/config.yaml \
+            --version "$VERSION"
+          cd addon-repo
+          git add music_assistant_dev/config.yaml
+          if git diff --cached --quiet; then
+            echo "The Dev app already references $VERSION"
+            exit 0
+          fi
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email \
+            "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git commit -m "🤖 Bump dev add-on to version $VERSION"
+          branch=$(git branch --show-current)
+          for attempt in {1..3}; do
+            if git pull --rebase origin "$branch" &&
+               git push origin "HEAD:$branch"; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            if [ "$attempt" -eq 3 ]; then
+              echo "Unable to push the Dev app update after three attempts" >&2
+              exit 1
+            fi
+            sleep 5
+          done

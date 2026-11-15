@@ -162,6 +162,8 @@ A Music Provider is the provider type that adds support for a 'source of music' 
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
 
+Before you start, read [what a provider in the server asks of you](#-contributing-a-provider).
+
 
 **Adding the necessary files for a new Music Provider**
 
@@ -236,6 +238,8 @@ All Providers (of all types) can be found in the `music_assistant/providers` fol
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_player_provider` to get you started fast!
 
+Before you start, read [what a provider in the server asks of you](#-contributing-a-provider).
+
 A player provider implements one `PlayerProtocol` (`music_assistant/models/player_protocol.py`) per device and registers it with `mass.players.register()`. The server builds the `Player` that users see from the protocols of a device, and attaches the protocol to it: the protocol finds it as `self.player`. The contract between the two:
 
 * A protocol reports its own values (`_attr_*` or its properties) and reads them back from itself, never from a published state.
@@ -291,8 +295,19 @@ A provider's config entries are not declared in the manifest. They are built in 
 
 Three more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG), `has_setup_flow` (set when the provider folder contains a `setup_flow.py`) and `tier` (`core`, built-in, for every provider that ships with the server).
 
-## 🤝 Community providers
-Every provider ships in this repository and is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
+## 🤝 Contributing a provider
+**Consider the community catalog first.** Instead of adding a provider to the server itself, which comes with the expectations below and a longer wait for reviews, you can publish it in the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md), especially when it covers a limited use case or a small group of users. There you keep it in your own repository and release whenever you want, and users install it from the Marketplace in Music Assistant. The [provider template](https://github.com/music-assistant/community-provider-template) gets you started.
+
+A provider that ships with Music Assistant is installed for every user and supported by the project. A new one therefore asks for more than working code:
+
+* **People ask for it.** Link the feature request or discussion that shows the demand.
+* **It is documented.** A pull request on the [documentation](https://github.com/music-assistant/music-assistant.io/blob/main/CONTRIBUTING.md) comes with it.
+* **It meets the standards.** It follows this guide and the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md), passes `lint` and `test`, and has tests of its own.
+* **You maintain it.** You are listed in `codeowners` and keep following up on bug reports and on changes in the service, the device or the server.
+
+A provider whose maintainer no longer follows up may be moved out of the server to the [community catalog](https://github.com/music-assistant/.github/blob/main/COMMUNITY_CATALOG_RULES.md). That is announced first, so that someone can take it over.
+
+Every provider in this repository is reviewed against the same usage policy, whoever maintains it. The people listed in `codeowners` maintain the provider. Set `support_url` if you want bug reports and questions somewhere other than the support repository.
 
 **Getting your changes merged**
 
