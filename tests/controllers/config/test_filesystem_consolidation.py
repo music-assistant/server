@@ -87,8 +87,8 @@ from music_assistant.providers.filesystem_local.constants import (
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
 )
+from music_assistant.testing import full_mass_context
 from tests.common import capture_log_records
-from tests.conftest import full_mass_context
 from tests.controllers.storage.conftest import (
     SUPERVISOR_TOKEN,
     FakeSupervisor,

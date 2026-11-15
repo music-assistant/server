@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -51,7 +49,7 @@ def test_missing_media_elapsed_falls_back_to_player() -> None:
 def test_metadata_builder_preserves_unknown_duration_progress() -> None:
     """Unknown duration uses zero while progress remains populated."""
     player = MagicMock()
-    player.state.playback_state = PlaybackState.PAUSED
+    player._player_playing = False
     player.corrected_elapsed_time = None
     player.elapsed_time = None
     player._compute_track_progress_ms = SendspinPlayer._compute_track_progress_ms.__get__(
@@ -67,7 +65,7 @@ def test_metadata_builder_preserves_unknown_duration_progress() -> None:
 def test_metadata_builder_clamps_progress_to_duration() -> None:
     """Extrapolation never reports a position past the end of the track."""
     player = MagicMock()
-    player.state.playback_state = PlaybackState.PLAYING
+    player._player_playing = True
     player._compute_track_progress_ms = SendspinPlayer._compute_track_progress_ms.__get__(
         player, SendspinPlayer
     )
@@ -95,14 +93,14 @@ async def test_push_pairs_the_position_with_the_playing_state() -> None:
     player._send_beat_schedule = AsyncMock()
     idle_media = _media(74, updated_ago=360.0)
     idle_media.duration = 309
-    player.state = SimpleNamespace(current_media=idle_media, playback_state=PlaybackState.IDLE)
+    player._player_media = idle_media
+    player._player_playing = False
 
     async def resume_during_lookup(*_args: object, **_kwargs: object) -> None:
         playing_media = _media(74, updated_ago=0.0)
         playing_media.duration = 309
-        player.state = SimpleNamespace(
-            current_media=playing_media, playback_state=PlaybackState.PLAYING
-        )
+        player._player_media = playing_media
+        player._player_playing = True
 
     player._send_album_artwork = AsyncMock(side_effect=resume_during_lookup)
 

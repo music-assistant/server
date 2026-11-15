@@ -17,7 +17,7 @@ from niconico.objects.nvapi import (
 )
 from niconico.objects.user import NicoUser, UserMylistItem, UserSeriesItem
 from niconico.objects.video import Mylist
-from niconico.objects.video.watch import WatchData
+from niconico.objects.video.watch import WatchData, WatchLazyData
 
 from .shared_types import StreamFixtureData
 
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 FIXTURE_TYPE_MAPPINGS: dict[str, type[BaseModel]] = {
     "tracks/own_videos.json": OwnVideosData,
     "tracks/watch_data.json": WatchData,
+    "tracks/watch_lazy_data.json": WatchLazyData,
     "tracks/user_videos.json": UserVideosData,
     "playlists/own_mylists.json": UserMylistItem,
     "playlists/following_mylists.json": FollowingMylistsData,

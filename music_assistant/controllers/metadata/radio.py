@@ -18,6 +18,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -205,6 +206,7 @@ class RadioArtworkMixin:
             except (
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 InvalidDataError,
             ):
                 pass
@@ -495,6 +497,7 @@ class RadioArtworkMixin:
             except (
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
+                RetriesExhausted,
                 InvalidDataError,
             ):
                 pass
@@ -564,8 +567,18 @@ class RadioArtworkMixin:
         if not metadata.images:
             return None
         for img in metadata.images:
-            if img.type == ImageType.THUMB:
+            if img.type != ImageType.THUMB:
+                continue
+            if img.remotely_accessible:
                 return MediaItemMetadata(images=UniqueList([img]))
+            # a local file reaches the stream only through the image proxy
+            proxied = MediaItemImage(
+                type=ImageType.THUMB,
+                path=self.get_image_url(img, prefer_proxy=True),
+                provider="library",
+                remotely_accessible=True,
+            )
+            return MediaItemMetadata(images=UniqueList([proxied]))
         return None
 
     async def _get_library_track_metadata(

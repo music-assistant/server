@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import math
-from typing import Any, cast
+import time
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import aiohttp
 import pytest
+from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers import alexa
-from music_assistant.providers.alexa import AlexaPlayer, get_playback_state
-from tests.common import MockProvider, create_mock_config
+from music_assistant.providers.alexa import (
+    AlexaDevice,
+    AlexaPlayer,
+    AlexaProvider,
+    get_playback_state,
+)
+from tests.common import MockProvider
+from tests.scenarios.harness import Scenario
+
+if TYPE_CHECKING:
+    import pathlib
 
 NOW = 1_000_000.0
 
@@ -29,7 +40,9 @@ def _setup_value(key: str) -> str | None:
 def _player(state: PlaybackState = PlaybackState.PLAYING) -> tuple[AlexaPlayer, Any]:
     """Return a player on an Echo, in the given state, and its provider."""
     provider = cast("Any", MockProvider("alexa", instance_id="alexa--1"))
-    provider.mass.config.get_base_player_config.return_value = create_mock_config("Echo")
+    provider.mass.config.get_base_protocol_config.return_value = PlayerConfig(
+        values={}, provider="alexa--1", player_id="Echo", default_name="Echo"
+    )
     provider.mass.loop.time.return_value = 100.0
     provider.get_setup_value = MagicMock(side_effect=_setup_value)
     provider.get_volumes = AsyncMock(return_value={"SERIAL": 20})
@@ -72,7 +85,7 @@ async def test_reported_offset_replaces_the_clock_estimate() -> None:
     assert player._attr_elapsed_time_last_updated == NOW - 2.0
     assert player.playback_state == PlaybackState.PLAYING
     # MA extrapolates from the anchor while playing: 125 s plus the 2 s since the report.
-    with patch("music_assistant.models.player.time.time", return_value=NOW):
+    with patch("music_assistant.models.player_protocol.time.time", return_value=NOW):
         assert player.corrected_elapsed_time == pytest.approx(127)
     update_state.assert_called_once()
 
@@ -296,42 +309,69 @@ async def test_report_requested_during_a_playback_command_is_discarded(method: s
     assert position == (600 if method in ("play", "pause") else 0)
 
 
-async def test_paused_report_moves_the_queue_without_a_playing_blip() -> None:
+async def test_paused_report_moves_the_queue_without_a_playing_blip(
+    tmp_path: pathlib.Path,
+) -> None:
     """MA's real update path sees one paused jump to the Echo's offset, vouched for."""
-    player, provider = _player()
-    # Let the player's own position count: no audio-source session or other player to mirror.
-    provider.mass.players.get_audio_source_session.return_value = None
-    provider.mass.players.get_player.return_value = None
-    jumps: list[tuple[PlaybackState, float | None, bool]] = []
-    provider.mass.players.on_player_position_jumped.side_effect = lambda p: jumps.append(
-        (p.state.playback_state, p.state.corrected_elapsed_time, p.paused_position_reliable)
-    )
-    published: list[PlaybackState] = []
-    provider.mass.players.signal_player_state_update.side_effect = lambda p, *_args, **_kwargs: (
-        published.append(p.state.playback_state)
-    )
-    with patch("music_assistant.models.player.time.time", return_value=NOW):
-        player.update_state()  # settle the initial state (clock estimate at 600 s)
-    jumps.clear()
-    published.clear()
-    with (
-        patch.object(
-            alexa,
-            "get_playback_state",
-            AsyncMock(return_value=_report(activity="STOPPED", offsetMs=90_500)),
-        ),
-        patch("music_assistant.providers.alexa.time.time", return_value=NOW),
-        patch("music_assistant.models.player.time.time", return_value=NOW),
-    ):
-        await player._correct_position()
-    assert len(jumps) == 1
-    state, elapsed, vouched = jumps[0]
-    assert state == PlaybackState.PAUSED
-    assert elapsed == pytest.approx(90.5)
-    assert vouched
-    assert PlaybackState.PLAYING not in published
-    assert player.playback_state == PlaybackState.PAUSED
-    assert player.state.corrected_elapsed_time == pytest.approx(90.5)
+    scenario = Scenario(tmp_path)
+    try:
+        await scenario.start()
+        fake: Any = await scenario.add_provider("alexa")
+        provider = AlexaProvider(scenario.mass, fake.manifest, fake.config, set())
+        await provider.handle_async_init()
+        provider.devices = {"Echo": AlexaDevice()}
+        provider.devices["Echo"].device_serial_number = "SERIAL"
+        provider.get_volumes = AsyncMock(return_value={})  # type: ignore[method-assign]
+        provider.available = True
+        scenario.mass._providers[provider.instance_id] = provider
+        await provider.discover_players()
+        await scenario.settle()
+        protocol = provider.get_protocol("Echo")
+        assert isinstance(protocol, AlexaPlayer)
+        player = protocol.player
+        assert player is not None
+        # playing for 600 s by MA's clock
+        protocol._attr_playback_state = PlaybackState.PLAYING
+        protocol._attr_elapsed_time = 0
+        protocol._attr_elapsed_time_last_updated = time.time() - 600
+        protocol.update_state()
+        await scenario.settle()
+
+        jumps: list[tuple[PlaybackState, float | None, bool]] = []
+        published: list[PlaybackState] = []
+
+        def _jumped(p: Any) -> None:
+            output = p.resolve_output_protocol()
+            jumps.append(
+                (p.playback_state, p.corrected_elapsed_time, output.paused_position_reliable)
+            )
+
+        def _published(p: Any, *_args: Any, **_kwargs: Any) -> None:
+            published.append(p.playback_state)
+
+        with (
+            patch.object(
+                alexa,
+                "get_playback_state",
+                AsyncMock(return_value=_report(activity="STOPPED", offsetMs=90_500, ageSeconds=0)),
+            ),
+            patch.object(scenario.mass.players, "on_player_position_jumped", side_effect=_jumped),
+            patch.object(
+                scenario.mass.players, "signal_player_state_update", side_effect=_published
+            ),
+        ):
+            await protocol._correct_position()
+        assert len(jumps) == 1
+        state, elapsed, vouched = jumps[0]
+        assert state == PlaybackState.PAUSED
+        assert elapsed == pytest.approx(90.5)
+        assert vouched
+        assert published
+        assert PlaybackState.PLAYING not in published
+        assert player.playback_state == PlaybackState.PAUSED
+        assert player.corrected_elapsed_time == pytest.approx(90.5)
+    finally:
+        await scenario.close()
 
 
 async def test_playing_report_is_not_a_vouched_paused_position() -> None:

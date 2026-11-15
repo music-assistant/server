@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from niconico.objects.video.watch import WatchData, WatchLazyData
 
 from tests.providers.nicovideo.helpers import (
     to_dict_for_snapshot,
@@ -131,6 +132,9 @@ class ConverterTestRunner:
     def _process_single_fixture(self, fixture_id: str, fixture: BaseModel) -> None:
         """Process a single fixture within a fixture file."""
         try:
+            if self.mapping_registry.is_companion_type(type(fixture)):
+                return
+
             # Get mapping directly by type
             mapping = self.mapping_registry.get_by_type(type(fixture))
             if mapping is None:
@@ -218,3 +222,22 @@ def test_converter_with_fixture(
     )
 
     runner.run_all_tests()
+
+
+def test_convert_by_watch_data_with_lazy_data(
+    converter_manager: NicovideoConverterManager,
+    fixture_loader: FixtureLoader,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """Convert WatchData together with its lazy data, which provides the artist and album."""
+    watch_data = fixture_loader.load_fixture(Path("tracks/watch_data.json"))
+    watch_lazy_data = fixture_loader.load_fixture(Path("tracks/watch_lazy_data.json"))
+    assert isinstance(watch_data, WatchData)
+    assert isinstance(watch_lazy_data, WatchLazyData)
+
+    track = converter_manager.track.convert_by_watch_data(watch_data, watch_lazy_data)
+
+    assert track is not None
+    assert track.artists
+    assert track.album is not None
+    assert to_dict_for_snapshot(track) == snapshot

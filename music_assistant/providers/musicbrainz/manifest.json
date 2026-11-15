@@ -6,7 +6,7 @@
   "description": "MusicBrainz is an open music encyclopedia that collects music metadata and makes it available to the public. Music Assistant uses MusicBrainz to identify library items, link them to other music services and fill in missing genres, label and release date, therefore this provider can not be disabled.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://www.music-assistant.io/metadata-providers/musicbrainz/",
   "multi_instance": false,
   "builtin": true,
   "allow_disable": false,

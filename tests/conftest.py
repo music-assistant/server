@@ -8,27 +8,23 @@ import tempfile
 import threading
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models import helpers as models_helpers
-from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
+from music_assistant.controllers.community_catalog import CommunityCatalogController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.statistics import StatisticsController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.controllers.translations import TranslationController
 from music_assistant.helpers.compare import set_keep_remasters_apart
 from music_assistant.mass import MusicAssistant
-from tests.common import (
-    adopt_bound_sendspin_port,
-    suppress_auto_loaded_providers,
-    suppress_initial_library_sync,
-    use_ephemeral_server_ports,
-    utf8_safe,
-    wait_for_boot_to_settle,
-)
+from music_assistant.testing import full_mass_context
+from tests.common import utf8_safe
 
 NUMBA_CACHE_DIR = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
 
@@ -109,27 +105,6 @@ def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
     return caplog
 
 
-def _create_mock_zeroconf() -> MagicMock:
-    """
-    Create a mock AsyncZeroconf that prevents real network I/O.
-
-    Uses spec=AsyncZeroconf to ensure the mock only has valid attributes,
-    preventing it from being mistakenly registered as an API handler.
-    """
-    mock_zc = MagicMock(spec=AsyncZeroconf)
-    # Set up nested zeroconf object with proper spec
-    mock_inner_zc = NonCallableMagicMock()
-    mock_inner_zc.cache = NonCallableMagicMock()
-    mock_inner_zc.cache.cache = {}  # Empty cache - no discovered services
-    mock_zc.zeroconf = mock_inner_zc
-    # Set up async methods
-    mock_zc.async_register_service = AsyncMock()
-    mock_zc.async_update_service = AsyncMock()
-    mock_zc.async_unregister_service = AsyncMock()
-    mock_zc.async_close = AsyncMock()
-    return mock_zc
-
-
 @pytest.fixture
 async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """
@@ -139,71 +114,6 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """
     async with full_mass_context(tmp_path) as mass_instance:
         yield mass_instance
-
-
-@asynccontextmanager
-async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
-    """
-    Boot a full server on the given temporary directory.
-
-    Exposed next to the ``mass`` fixture so a test that needs to seed ``data/settings.json``
-    (or the cache) before the boot can prepare the directory itself and boot it here.
-
-    :param tmp_path: Temporary directory for test data.
-    """
-    storage_path = tmp_path / "data"
-    cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True, exist_ok=True)
-    cache_path.mkdir(parents=True, exist_ok=True)
-
-    logging.getLogger("aiosqlite").level = logging.INFO
-
-    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
-
-    # Mock zeroconf to prevent real network I/O during tests
-    mock_zc = _create_mock_zeroconf()
-    mock_browser = NonCallableMagicMock()  # Use NonCallable to avoid api_cmd issues
-
-    with (
-        use_ephemeral_server_ports(),
-        patch(
-            "music_assistant.controllers.discovery.controller.AsyncZeroconf",
-            return_value=mock_zc,
-        ),
-        patch(
-            "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
-            return_value=mock_browser,
-        ),
-        # the Sendspin server runs its own zeroconf instance: keep it off the network,
-        # its mDNS probing alone also holds up every boot for over a second
-        patch("aiosendspin.server.server.AsyncZeroconf", return_value=_create_mock_zeroconf()),
-        patch(
-            "aiosendspin.server.server.AsyncServiceBrowser",
-            return_value=MagicMock(spec=AsyncServiceBrowser),
-        ),
-        # Booting the server runs an ffmpeg presence check; mock it so tests can boot
-        # without the binary. Tests that actually spawn ffmpeg still use the real one.
-        patch(
-            "music_assistant.controllers.streams.controller.check_ffmpeg_version",
-            new=AsyncMock(),
-        ),
-        # keep the fixture isolated from the developer's machine: no auto-loaded
-        # device providers
-        suppress_auto_loaded_providers(),
-        # keep the booted instance quiet: no library sync firing into a running test
-        suppress_initial_library_sync(),
-    ):
-        try:
-            await mass_instance.start()
-            await wait_for_boot_to_settle(mass_instance)
-            adopt_bound_sendspin_port(mass_instance)
-            yield mass_instance
-        finally:
-            # also stop after a failed boot: pytest holds on to the setup traceback,
-            # which keeps the half-started server (and the non-daemon threads of its
-            # open database connections) alive until the interpreter exits, where
-            # joining those threads then hangs the whole test process
-            await mass_instance.stop()
 
 
 @pytest.fixture
@@ -268,6 +178,8 @@ async def _minimal_mass_context(
     await mass_instance.config.setup()
     mass_instance.discovery = DiscoveryController(mass_instance)
     mass_instance.cache = CacheController(mass_instance)
+    mass_instance.translations = TranslationController(mass_instance)
+    mass_instance.community_catalog = CommunityCatalogController(mass_instance)
 
     try:
         yield mass_instance
@@ -292,6 +204,7 @@ async def _music_mass_context(
         mass_instance.webserver = MagicMock()
         mass_instance.webserver.auth.list_users = AsyncMock(return_value=[])
 
+        mass_instance.statistics = StatisticsController(mass_instance)
         mass_instance.music = MusicController(mass_instance)
         music_config = await mass_instance.config.get_core_config(mass_instance.music.domain)
         await mass_instance.music.setup(music_config)

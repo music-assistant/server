@@ -14,6 +14,9 @@ from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
 from aioaudiobookshelf.exceptions import NotFoundError as AbsNotFoundError
 from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.exceptions import ServiceUnavailableError as AbsServiceUnavailableError
+from aioaudiobookshelf.exceptions import (
+    UnsupportedServerVersionError as AbsUnsupportedServerVersionError,
+)
 from aiohttp import ClientConnectionError, web
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -21,6 +24,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    SetupFailedError,
 )
 
 from music_assistant.models.music_provider import MusicProvider
@@ -120,6 +124,23 @@ async def test_async_init_unreachable_server(
         pytest.raises(ProviderUnavailableError),
     ):
         await provider.handle_async_init()
+
+
+@pytest.mark.asyncio
+async def test_async_init_abs_too_old(provider: Audiobookshelf) -> None:
+    """An abs the lib does not support fails the setup and names the version it needs."""
+    with (
+        patch.object(provider, "get_setup_value", return_value=None),
+        patch(
+            "music_assistant.providers.audiobookshelf.aioabs.get_user_and_socket_client",
+            AsyncMock(side_effect=AbsUnsupportedServerVersionError("Audiobookshelf 2.5.0")),
+        ),
+        pytest.raises(SetupFailedError) as excinfo,
+    ):
+        await provider.handle_async_init()
+
+    assert excinfo.value.translation_key == "unsupported_server_version"
+    assert excinfo.value.translation_args[1] == "2.6.0"
 
 
 @pytest.mark.parametrize(

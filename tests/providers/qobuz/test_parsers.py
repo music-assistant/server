@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from aiohttp import client_exceptions
-from music_assistant_models.enums import AlbumType, ExternalID, ImageType, ProviderFeature
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -164,6 +170,12 @@ class TestParseArtist:
         assert result.name == "Minimal Artist"
         assert result.metadata.description is None
         assert result.metadata.images is None or len(result.metadata.images) == 0
+
+    def test_parse_artist_strips_name(self, mock_provider: QobuzProvider) -> None:
+        """Test surrounding spaces in the artist name are removed."""
+        result = mock_provider._parse_artist({"id": 999, "name": "Oasis "})
+
+        assert result.name == "Oasis"
 
     def test_parse_artist_missing_optional_image(self, mock_provider: QobuzProvider) -> None:
         """Test parsing artist without image."""
@@ -448,6 +460,18 @@ class TestParseTrack:
 
         assert isinstance(result, Track)
         assert len(result.artists) == 0
+
+    async def test_parse_track_hyphenated_performer(self, mock_provider: QobuzProvider) -> None:
+        """Test a hyphenated performer name is kept whole."""
+        track = deepcopy(TRACK_OBJ)
+        track["performers"] = "Jean-Yves Thibaudet, Piano - Test Artist, MainArtist"
+
+        result = await mock_provider._parse_track(track)
+
+        assert result.metadata.performers == {
+            "Jean-Yves Thibaudet, Piano",
+            "Test Artist, MainArtist",
+        }
 
     async def test_parse_track_explicit_flag(self, mock_provider: QobuzProvider) -> None:
         """Test parsing track with parental_warning sets explicit flag."""
@@ -782,3 +806,64 @@ class TestExternalIDLookup:
         assert ProviderFeature.TRACK_BY_EXTERNAL_ID in SUPPORTED_FEATURES
         assert ProviderFeature.ALBUM_BY_EXTERNAL_ID in SUPPORTED_FEATURES
         assert ProviderFeature.ARTIST_BY_EXTERNAL_ID not in SUPPORTED_FEATURES
+
+
+class TestGetAllItems:
+    """Test _get_all_items paging."""
+
+    async def test_capped_pages_return_every_item_once(self, mock_provider: QobuzProvider) -> None:
+        """Test every item is returned exactly once when Qobuz caps the page size."""
+        items = [{"id": idx} for idx in range(5)]
+
+        async def get_data(_endpoint: str, **kwargs: Any) -> dict[str, Any]:
+            offset = kwargs["offset"]
+            return {"tracks": {"items": items[offset : offset + 2], "total": len(items)}}
+
+        mock_provider._get_data = AsyncMock(side_effect=get_data)  # type: ignore[method-assign]
+
+        result = await mock_provider._get_all_items("favorite/getUserFavorites")
+
+        assert result == items
+        assert [c.kwargs["offset"] for c in mock_provider._get_data.await_args_list] == [0, 2, 4]
+
+
+class TestArtistIdGuard:
+    """Test artists whose id is their name are never sent to the API."""
+
+    async def test_get_artist_name_id(self, mock_provider: QobuzProvider) -> None:
+        """Test get_artist raises without a request for a name id."""
+        mock_provider._get_data = AsyncMock()  # type: ignore[method-assign]
+        get_artist: Any = QobuzProvider.get_artist.__wrapped__  # type: ignore[attr-defined]
+
+        with pytest.raises(MediaNotFoundError):
+            await get_artist(mock_provider, "Unknown Artist")
+
+        mock_provider._get_data.assert_not_awaited()
+
+    async def test_get_artist_albums_and_toptracks_name_id(
+        self, mock_provider: QobuzProvider
+    ) -> None:
+        """Test artist albums and top tracks are empty without a request for a name id."""
+        mock_provider._get_data = AsyncMock()  # type: ignore[method-assign]
+        get_albums: Any = QobuzProvider.get_artist_albums.__wrapped__  # type: ignore[attr-defined]
+        get_toptracks: Any = QobuzProvider.get_artist_toptracks.__wrapped__  # type: ignore[attr-defined]
+
+        assert await get_albums(mock_provider, "Unknown Artist") == []
+        assert await get_toptracks(mock_provider, "Unknown Artist") == []
+
+        mock_provider._get_data.assert_not_awaited()
+
+    async def test_library_add_remove_name_id(self, mock_provider: QobuzProvider) -> None:
+        """Test library add and remove skip an artist with a name id."""
+        mock_provider._get_data = AsyncMock()  # type: ignore[method-assign]
+        artist = Artist(
+            item_id="Unknown Artist",
+            provider="qobuz_test",
+            name="Unknown Artist",
+            provider_mappings=set(),
+        )
+
+        assert await mock_provider.library_add(artist) is False
+        assert await mock_provider.library_remove("Unknown Artist", MediaType.ARTIST) is False
+
+        mock_provider._get_data.assert_not_awaited()

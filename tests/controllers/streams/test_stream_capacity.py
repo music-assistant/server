@@ -20,7 +20,10 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     AudioError,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
+    RateLimited,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
@@ -28,7 +31,11 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from music_assistant.models.music_provider import (
+    MusicProvider,
+    ProviderStreamHeldError,
+    ProviderStreamLimitError,
+)
 from tests.common import set_music_source_access
 
 BUSY_INSTANCE = "service--busy"
@@ -87,6 +94,23 @@ def _limit_error(instance: str) -> ProviderStreamLimitError:
     return ProviderStreamLimitError(provider, 0)
 
 
+def _held_error(instance: str) -> ProviderStreamHeldError:
+    """Build the refusal for a provider instance whose only slot a realtime playback holds."""
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.name = "Limited"
+    provider.instance_id = instance
+    holder = MagicMock(queue_id="living_room")
+    holder.display_name = "Living Room"
+    return ProviderStreamHeldError(provider, holder)
+
+
+def _refuse_busy(instance: str, _queue_id: str) -> None:
+    """Stand in for the queues controller refusing the busy instance's held slot."""
+    if instance == BUSY_INSTANCE:
+        raise _held_error(instance)
+
+
 def _music_provider(instance: str, has_slot: bool) -> MagicMock:
     """Build a loaded streaming provider instance that resolves its own stream details."""
     provider = MagicMock(spec=MusicProvider)
@@ -119,6 +143,7 @@ def _mass(
         mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
     mass.player_queues.has_paused_stream_slot_holder.return_value = False
+    mass.player_queues.refuse_held_stream_slot.return_value = None
     if access is not None:
         mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
         mass.webserver.auth.get_user = AsyncMock(
@@ -425,6 +450,65 @@ async def test_all_candidates_busy_ends_in_one_blocking_pass_on_the_best_one(
     assert probed == [BUSY_INSTANCE, FALLBACK_INSTANCE, BUSY_INSTANCE]
 
 
+async def test_a_held_account_still_lets_another_account_play_the_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A realtime holder on one account refuses nothing while another account can serve."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
+    }
+    mass = _mass(providers)
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_busy
+    audio = StreamsAudio(mass)
+    expected_buffer = MagicMock(spec=AudioBuffer)
+    get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    result = await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert result is expected_buffer
+    assert queue_item.streamdetails is not None
+    assert queue_item.streamdetails.provider == FALLBACK_INSTANCE
+
+
+async def test_every_account_held_is_refused_instead_of_the_blocking_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a realtime holder on every account, the final pass refuses rather than waits."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=False),
+    }
+    mass = _mass(providers)
+    mass.player_queues.refuse_held_stream_slot.side_effect = _refuse_busy
+    audio = StreamsAudio(mass)
+    get_buffer = AsyncMock(
+        side_effect=[_limit_error(BUSY_INSTANCE), _limit_error(FALLBACK_INSTANCE)]
+    )
+    monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
+
+    with pytest.raises(ProviderStreamHeldError) as exc_info:
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    # both candidates were probed; the blocking wait on the best one was never spent
+    waits = [call.kwargs["source_wait_timeout"] for call in get_buffer.await_args_list]
+    assert waits == [0, 0]
+    assert exc_info.value.provider_instance == BUSY_INSTANCE
+    assert exc_info.value.data is not None
+    assert exc_info.value.data["queue_id"] == "living_room"
+
+
 async def test_exhausted_budget_raises_typed_error_and_keeps_the_item_playable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -479,8 +563,18 @@ async def test_capacity_reselection_is_shared_by_concurrent_waiters(
     assert audio.get_stream_details.await_count == 1
 
 
+@pytest.mark.parametrize(
+    "reselection_error",
+    [
+        MediaNotFoundError("not here"),
+        RateLimited("slow down", backoff_time=3600),
+        RetriesExhausted("Not retrying, asked to wait 3600 seconds"),
+    ],
+    ids=["not_found", "rate_limited", "retries_exhausted"],
+)
 async def test_a_failed_reselection_spends_the_budget_on_the_blocked_provider(
     monkeypatch: pytest.MonkeyPatch,
+    reselection_error: MusicAssistantError,
 ) -> None:
     """An unplayable alternative falls back to waiting out the budget on the busy source."""
     queue_item = _queue_item(
@@ -494,8 +588,8 @@ async def test_a_failed_reselection_spends_the_budget_on_the_blocked_provider(
         FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=True),
     }
     audio = StreamsAudio(_mass(providers))
-    # the alternative mapping exists but can not be resolved (e.g. region locked)
-    audio.get_stream_details = AsyncMock(side_effect=MediaNotFoundError("not here"))  # type: ignore[method-assign]
+    # the alternative mapping exists but can not be resolved (e.g. region locked or rate limited)
+    audio.get_stream_details = AsyncMock(side_effect=reselection_error)  # type: ignore[method-assign]
     expected_buffer = MagicMock(spec=AudioBuffer)
     get_buffer = AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), expected_buffer])
     monkeypatch.setattr(AudioBuffer, "get_buffer", get_buffer)
@@ -579,6 +673,36 @@ async def test_the_final_pass_surfaces_the_blocked_sources_own_error(
         await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
 
     assert queue_item.streamdetails is busy_details
+
+
+async def test_a_provider_backing_off_in_the_final_pass_surfaces_its_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A final pass that resolves no source while a provider backs off reports the back-off."""
+    queue_item = _queue_item(
+        _mapping(BUSY_INSTANCE, ContentType.FLAC),
+        _mapping(FALLBACK_INSTANCE),
+    )
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        FALLBACK_INSTANCE: _music_provider(FALLBACK_INSTANCE, has_slot=False),
+    }
+    audio = StreamsAudio(_mass(providers))
+    fallback_details = _streamdetails(FALLBACK_INSTANCE)
+    back_off = RetriesExhausted("Not retrying, asked to wait 3600 seconds")
+    audio.get_stream_details = AsyncMock(side_effect=[fallback_details, back_off])  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        AudioBuffer,
+        "get_buffer",
+        AsyncMock(side_effect=[_limit_error(BUSY_INSTANCE), _limit_error(FALLBACK_INSTANCE)]),
+    )
+
+    with pytest.raises(RetriesExhausted) as exc_info:
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=1)
+
+    assert exc_info.value is back_off
+    assert queue_item.streamdetails is fallback_details
 
 
 @pytest.mark.parametrize(

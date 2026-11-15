@@ -7,6 +7,10 @@
     "port": {
       "label": "Raumfeld host port",
       "description": "Port of the Raumfeld host webservice. Only change this if you run the host on a non-default port."
+    },
+    "restart_on_join": {
+      "label": "Restart playback when a room joins",
+      "description": "A room added to a group that is already playing can play slightly behind the others. With this on, playback starts again where it is when a room joins, so every room is in sync, at the cost of a short pause. Switch it on for the room that plays behind, or for the room that leads the group."
     }
   },
   "manifest": {

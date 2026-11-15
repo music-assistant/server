@@ -7,6 +7,9 @@ from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC
 
 RECONNECT_DELAY = 5  # seconds between reconnect attempts
 ELAPSED_POLL_INTERVAL = 5  # seconds between elapsed time polls while playing
+HEALTHCHECK_POLL_INTERVAL = 30  # seconds between liveness polls while the player is idle
+COMMAND_TIMEOUT = 10  # seconds before an unanswered MPD command counts as a lost connection
+CONNECT_TIMEOUT = 10  # seconds before a connect attempt is given up and retried
 
 # FLAC does not work for infinite HTTP streams - MPD cannot probe the header.
 # Offer MP3, AAC, WAV only, with MP3 as default.

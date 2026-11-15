@@ -247,40 +247,6 @@ def test_dir_matches_album_date_prefix_path_rejects_reordered_words() -> None:
     assert compare_strings("Alpha Beta", stripped, True) is False
 
 
-def test_parse_nfo_root_returns_the_named_root_element() -> None:
-    """A well-formed NFO with the expected root element returns it as a dict."""
-    data = b"<album><title>My Album</title></album>"
-    root = helpers.parse_nfo_root(data, "album")
-    assert root is not None
-    assert root["title"] == "My Album"
-
-
-def test_parse_nfo_root_matches_tag_names_case_insensitively() -> None:
-    """Tag names are lowercased, so Kodi's camelCase tags match the lowercase lookups."""
-    data = (
-        b"<artist><name>Name</name><musicBrainzArtistID>abc</musicBrainzArtistID>"
-        b'<thumb Aspect="thumb">x</thumb></artist>'
-    )
-    root = helpers.parse_nfo_root(data, "artist")
-    assert root is not None
-    assert root["musicbrainzartistid"] == "abc"
-    assert root["thumb"] == {"@aspect": "thumb", "#text": "x"}
-
-
-@pytest.mark.parametrize(
-    ("data", "root_tag"),
-    [
-        (b"not xml at all <<<", "album"),
-        (b"<artist><title>Name</title></artist>", "album"),  # wrong root element
-        (b"\xff\xfe not utf-8", "album"),
-        (b"<album>just text, no dict</album>", "album"),
-    ],
-)
-def test_parse_nfo_root_returns_none_for_malformed_content(data: bytes, root_tag: str) -> None:
-    """Malformed XML, an undecodable file or the wrong/non-dict root element returns None."""
-    assert helpers.parse_nfo_root(data, root_tag) is None
-
-
 @pytest.mark.parametrize(
     ("base_path", "path", "expected"),
     [

@@ -1,4 +1,4 @@
-"""AudioAnalysisData: typed array fields and the legacy extra_data lift."""
+"""AudioAnalysisData: typed array fields, the legacy extra_data lift and the energy level."""
 
 from __future__ import annotations
 
@@ -127,3 +127,43 @@ def test_lift_keeps_unknown_band_rms_entries() -> None:
     )
     assert data.band_rms_low == [0.1] * 1800
     assert data.extra_data == {"band_rms": {"sub": [0.2] * 1800}}
+
+
+@pytest.mark.parametrize(
+    ("brightness", "arousal", "loudness", "level"),
+    [
+        (0.1404, 0.2405, -11.4158, 5.5),
+        (0.2, 0.6, -8.0, 7.1193),
+        (0.07, 0.1, -18.0, 3.3796),
+        (0.3, 0.95, -5.0, 9.2953),
+        (0.0, 0.0, -40.0, 1.4145),
+        (1.0, 1.0, 0.0, 10.0),
+    ],
+)
+def test_energy_level(brightness: float, arousal: float, loudness: float, level: float) -> None:
+    """energy_level matches the reference values."""
+    data = AudioAnalysisData(brightness=brightness, arousal=arousal, loudness_integrated=loudness)
+    assert data.energy_level == pytest.approx(level, abs=1e-3)
+
+
+@pytest.mark.parametrize("missing", ["brightness", "arousal", "loudness_integrated"])
+def test_energy_level_needs_all_inputs(missing: str) -> None:
+    """Without brightness, arousal or loudness_integrated there is no level."""
+    values: dict[str, Any] = {"brightness": 0.2, "arousal": 0.6, "loudness_integrated": -8.0}
+    values[missing] = None
+    assert AudioAnalysisData(**values).energy_level is None
+
+
+def test_energy_level_is_not_serialised() -> None:
+    """energy_level is derived, not stored."""
+    data = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0)
+    assert "energy_level" not in data.to_dict()
+
+
+def test_as_audio_metadata_carries_rounded_energy_level() -> None:
+    """The energy level alone yields AudioMetadata, rounded to a whole number."""
+    data = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0)
+    metadata = data.as_audio_metadata()
+    assert metadata is not None
+    assert metadata.energy_level == 7
+    assert metadata.bpm is None

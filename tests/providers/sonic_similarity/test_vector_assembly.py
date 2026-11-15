@@ -16,6 +16,7 @@ from music_assistant.providers.sonic_similarity.vectors import (
     compute_corpus_stats,
     compute_weighted_distance,
     compute_weighted_distance_vec,
+    compute_weighted_distances,
     encode_key_mode,
     normalize_features,
 )
@@ -467,6 +468,28 @@ class TestComputeWeightedDistance:
         assert compute_weighted_distance_vec(a, b, dim_weights) == pytest.approx(
             compute_weighted_distance(a, b, weights)
         )
+
+    def test_row_wise_distances_match_scalar_path(self) -> None:
+        """compute_weighted_distances gives each row the distance of compute_weighted_distance_vec."""
+        rng = np.random.default_rng(11)
+        rows = rng.standard_normal((5, VECTOR_DIMENSIONS))
+        rows[3] = rows[1]
+        target = rng.standard_normal(VECTOR_DIMENSIONS)
+        dim_weights = build_dimension_weights({"rhythm": 2.0, "dynamics": 0.0})
+        distances = compute_weighted_distances(rows, target, dim_weights)
+        for row, distance in zip(rows, distances, strict=True):
+            assert distance == pytest.approx(
+                compute_weighted_distance_vec(row, target, dim_weights)
+            )
+        # identical rows must tie exactly, so MMR tie-breaking stays in input order
+        assert distances[3] == distances[1]
+
+    def test_row_wise_distances_all_zero_weights(self) -> None:
+        """Every row is at distance 0.0 when every group weight is 0."""
+        rows = np.ones((3, VECTOR_DIMENSIONS))
+        dim_weights = build_dimension_weights(dict.fromkeys(FEATURE_GROUPS, 0.0))
+        target = np.zeros(VECTOR_DIMENSIONS)
+        assert compute_weighted_distances(rows, target, dim_weights).tolist() == [0.0] * 3
 
     def test_build_dimension_weights_expands_groups(self) -> None:
         """Each group's weight lands on its dimensions; absent groups default to 1.0."""

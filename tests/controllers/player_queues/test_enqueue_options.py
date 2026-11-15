@@ -143,6 +143,38 @@ async def test_play_on_active_queue_inserts_after_current() -> None:
     play_index.assert_awaited_once_with("q1", 3)
 
 
+async def test_replace_next_on_active_queue_keeps_the_buffered_item() -> None:
+    """REPLACE_NEXT leaves the track the player already fetched in place and replaces the rest."""
+    ctrl = _controller()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
+    existing = _items("q1", ["e0", "e1", "e2", "e3", "e4"])
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=2,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
+    new_items = _items("q1", ["n0", "n1"])
+
+    await ctrl._enqueue_with_option("q1", new_items, QueueOption.REPLACE_NEXT)
+
+    # the player plays e1 and has e2 fetched: both stay, the new items follow e2
+    assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == [
+        "e0",
+        "e1",
+        "e2",
+        "n0",
+        "n1",
+    ]
+    ctrl.play_index.assert_not_awaited()
+
+
 async def test_next_shuffle_pins_first_item_and_shuffles_rest() -> None:
     """NEXT with shuffle on pins the first new item after the buffered index, shuffles the rest."""
     ctrl = _controller()

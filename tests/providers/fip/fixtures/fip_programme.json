@@ -1,0 +1,34 @@
+{
+  "prev": [
+    {
+      "firstLine": "Le direct",
+      "secondLine": "La radio la plus éclectique du monde",
+      "thirdLine": "FIP",
+      "songUuid": null,
+      "cover": "34e98566-058b-428f-a39e-d74bdef1cf77",
+      "startTime": null,
+      "endTime": null
+    }
+  ],
+  "now": {
+    "firstLine": "Club Jazzafip",
+    "secondLine": "La radio la plus éclectique du monde",
+    "thirdLine": "FIP",
+    "songUuid": null,
+    "cover": "34e98566-058b-428f-a39e-d74bdef1cf77",
+    "startTime": 1792774800,
+    "endTime": 1792778400
+  },
+  "next": [
+    {
+      "firstLine": "Le direct",
+      "secondLine": "La radio la plus éclectique du monde",
+      "thirdLine": "FIP",
+      "songUuid": null,
+      "cover": "34e98566-058b-428f-a39e-d74bdef1cf77",
+      "startTime": null,
+      "endTime": null
+    }
+  ],
+  "delayToRefresh": 10000
+}

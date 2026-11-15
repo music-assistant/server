@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from aiohttp import web
+from music_assistant_models.auth import UserRole
 
 from ._revoke import list_user_tokens, revoke_token_by_id
 from .clients import clients_to_json, lookup_client
@@ -402,6 +403,13 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
 
         if user is None or not getattr(user, "enabled", True):
             return web.json_response({"error": "session invalid"}, status=401)
+
+        # MA enforces this rule only in its auth/token/create command, not in the
+        # internal create_token used below, so the wizard has to apply it itself.
+        if getattr(user, "role", None) == UserRole.GUEST:
+            return web.json_response(
+                {"error": "Long-lived tokens cannot be created for guest accounts"}, status=403
+            )
 
         new_name = f"MCP — {spec.label}"
 

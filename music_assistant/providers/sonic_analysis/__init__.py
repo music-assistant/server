@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType
 from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
 from music_assistant.helpers.datetime import utc
@@ -506,6 +506,10 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param streamdetails: Stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
+        if streamdetails.media_type != MediaType.TRACK:
+            # the embeddings only serve music similarity, nothing reads them for
+            # audiobooks, podcasts or radio
+            return False
         if self._clap_model is None:
             self.logger.debug(
                 "Skipping analysis for %s: CLAP model not yet available",

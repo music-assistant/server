@@ -129,17 +129,17 @@ class NativeGroupCoordinator:
 
         :param player: The player requesting its grouping candidates.
         """
-        if not player.native_available or self._is_unknown_leader_follower(player.player_id):
+        if not player.native_available or self._is_unknown_leader_follower(player.protocol_id):
             # the requesting device cannot lead a native group right now (its grouping API is
             # unreachable, or it follows a group MA has not discovered and cannot be moved),
             # so it offers no native candidates of its own.
             return set()
         return {
-            peer.player_id
+            peer.protocol_id
             for peer in self._native_players()
             if peer.native_available
-            and peer.player_id != player.player_id
-            and not self._is_unknown_leader_follower(peer.player_id)
+            and peer.protocol_id != player.protocol_id
+            and not self._is_unknown_leader_follower(peer.protocol_id)
             and self._offerable_pair(player, peer)
         }
 
@@ -204,11 +204,11 @@ class NativeGroupCoordinator:
             # no reachable address to command yet (never seen or currently unavailable);
             # keep the cached topology instead of doing a request that will only time out.
             return False
-        lock = self._refresh_locks.setdefault(player.player_id, asyncio.Lock())
+        lock = self._refresh_locks.setdefault(player.protocol_id, asyncio.Lock())
         async with lock:
             # re-check the TTL inside the lock: a concurrent refresh may have just run
             if not force and (
-                time.monotonic() - self._refreshed_at.get(player.player_id, 0.0) < SLAVE_TTL
+                time.monotonic() - self._refreshed_at.get(player.protocol_id, 0.0) < SLAVE_TTL
             ):
                 return False
             client = player.make_command_client()
@@ -230,18 +230,18 @@ class NativeGroupCoordinator:
                     raw = self._normalize_slave_uuids(await client.get_slaves_info())
             except WiiMError as err:
                 self._provider.logger.debug(
-                    "Failed to read group state for %s: %s", player.player_id, err
+                    "Failed to read group state for %s: %s", player.protocol_id, err
                 )
                 return False
-            # the player may have been unregistered/replaced during the await; never apply
+            # the player may have been detached/replaced during the await; never apply
             # a stale device response to a different registered instance
-            if self._mass.players.get_player(player.player_id) is not player:
+            if self._provider.get_protocol(player.protocol_id) is not player:
                 return False
             # reuse the capabilities this read detected so a later fresh command client (the
             # official backend builds one per call) does not re-probe the device
             player.store_command_capabilities(client.capabilities)
-            self.set_self_role(player.player_id, is_follower)
-            self.set_leader_slaves(player.player_id, raw, observed_at=observed_at)
+            self.set_self_role(player.protocol_id, is_follower)
+            self.set_leader_slaves(player.protocol_id, raw, observed_at=observed_at)
         await self.reconcile()
         return True
 
@@ -300,11 +300,11 @@ class NativeGroupCoordinator:
         # and joining then immediately removing it is never the intent.
         if len(set(add_ids)) != len(add_ids) or len(set(remove_ids)) != len(remove_ids):
             raise PlayerCommandFailed(
-                f"Duplicate member id in grouping request on {leader.player_id}"
+                f"Duplicate member id in grouping request on {leader.protocol_id}"
             )
         if conflicting := set(add_ids) & set(remove_ids):
             raise PlayerCommandFailed(
-                f"Cannot add and remove the same member on {leader.player_id}: {conflicting}"
+                f"Cannot add and remove the same member on {leader.protocol_id}: {conflicting}"
             )
         # core only locks the command's own leader, so serialize here: a concurrent move of
         # the same member under a different leader must not interleave with this command's
@@ -323,15 +323,17 @@ class NativeGroupCoordinator:
             # poll is validated on live state, never repurposed from a stale cache.
             for player in (leader, *add_members):
                 if not await self.refresh_leader(player, force=True):
-                    raise PlayerCommandFailed(f"Cannot read the group state of {player.player_id}")
+                    raise PlayerCommandFailed(
+                        f"Cannot read the group state of {player.protocol_id}"
+                    )
             # Phase 2: joining a member dissolves the followers that read just revealed, so
             # lock them too before any mutation. The recursive dissolve never re-takes locks.
             followers: list[NativePlayer] = []
             for member in (*add_members, *remove_members):
-                for follower_id in self.members_of(member.player_id):
-                    if follower_id == member.player_id:
+                for follower_id in self.members_of(member.protocol_id):
+                    if follower_id == member.protocol_id:
                         continue
-                    follower = self._mass.players.get_player(follower_id)
+                    follower = self._provider.get_protocol(follower_id)
                     if getattr(follower, "linkplay_backend", None) in _NATIVE_BACKENDS:
                         followers.append(cast("NativePlayer", follower))
             await self._acquire_rebuild_locks(stack, followers, held)
@@ -354,10 +356,10 @@ class NativeGroupCoordinator:
         :param players: The players whose rebuild locks to acquire.
         :param held: The set of player ids whose locks are already held, updated in place.
         """
-        for player in sorted(players, key=lambda candidate: candidate.player_id):
-            if player.player_id in held:
+        for player in sorted(players, key=lambda candidate: candidate.protocol_id):
+            if player.protocol_id in held:
                 continue
-            held.add(player.player_id)
+            held.add(player.protocol_id)
             if (lock := self._rebuild_lock_for(player)) is not None:
                 await stack.enter_async_context(lock)
 
@@ -382,13 +384,13 @@ class NativeGroupCoordinator:
             join_plan: dict[str, tuple[DeviceInfo | None, tuple[NativePlayer, ...]] | None] = {}
             for member in add_members:
                 self._guard_regroupable(member)
-                join_plan[member.player_id] = await self._prevalidate_join(
+                join_plan[member.protocol_id] = await self._prevalidate_join(
                     leader, member, leader_info
                 )
             for member in remove_members:
                 self._prevalidate_leave(leader, member)
             for member in add_members:
-                await self._join(leader, member, join_plan[member.player_id])
+                await self._join(leader, member, join_plan[member.protocol_id])
             for member in remove_members:
                 await self._leave(leader, member)
         finally:
@@ -409,9 +411,9 @@ class NativeGroupCoordinator:
 
         :param player: The leader or member to validate.
         """
-        if self._is_unknown_leader_follower(player.player_id):
+        if self._is_unknown_leader_follower(player.protocol_id):
             raise PlayerCommandFailed(
-                f"Cannot regroup {player.player_id}: it follows a group MA has not discovered"
+                f"Cannot regroup {player.protocol_id}: it follows a group MA has not discovered"
             )
 
     @staticmethod
@@ -445,30 +447,30 @@ class NativeGroupCoordinator:
         if self._is_official_pair(leader, member):
             return None
         if not leader.native_ip:
-            raise PlayerCommandFailed(f"Cannot group {member.player_id}: leader address unknown")
+            raise PlayerCommandFailed(f"Cannot group {member.protocol_id}: leader address unknown")
         member_info = await self._device_info(member)
         if not linkplay_group_compatible(leader_info, member_info):
             raise PlayerCommandFailed(
-                f"Cannot group {member.player_id} with {leader.player_id}: incompatible or "
+                f"Cannot group {member.protocol_id} with {leader.protocol_id}: incompatible or "
                 "legacy Wi-Fi Direct LinkPlay multiroom"
             )
         if self._leads_unmanaged_slave(member):
             raise PlayerCommandFailed(
-                f"Cannot group {member.player_id}: it still leads slaves MA cannot dissolve"
+                f"Cannot group {member.protocol_id}: it still leads slaves MA cannot dissolve"
             )
         followers = tuple(
             self._require_member(follower_id)
-            for follower_id in self.members_of(member.player_id)
-            if follower_id != member.player_id
+            for follower_id in self.members_of(member.protocol_id)
+            if follower_id != member.protocol_id
         )
         return leader_info, followers
 
     def _leads_unmanaged_slave(self, member: NativePlayer) -> bool:
         """Return whether the member's live slave list holds a slave MA cannot resolve."""
-        registered = {player.player_id for player in self._native_players()}
+        registered = {player.protocol_id for player in self._native_players()}
         return any(
             match_slave_uuid_to_player_id(uuid, registered) is None
-            for uuid in self._raw_slaves.get(member.player_id, ())
+            for uuid in self._raw_slaves.get(member.protocol_id, ())
         )
 
     def _prevalidate_leave(self, leader: NativePlayer, member: NativePlayer) -> None:
@@ -486,20 +488,20 @@ class NativeGroupCoordinator:
         :param leader: The leader the member would leave.
         :param member: The member that would leave the leader.
         """
-        if member.player_id not in self.members_of(leader.player_id):
+        if member.protocol_id not in self.members_of(leader.protocol_id):
             return
         if (
             leader.linkplay_backend == BACKEND_GENERIC
             and member.linkplay_backend == BACKEND_GENERIC
             and not member.native_available
         ):
-            raise PlayerCommandFailed(f"{member.player_id} is not reachable to leave its group")
+            raise PlayerCommandFailed(f"{member.protocol_id} is not reachable to leave its group")
 
     def _native_players(self) -> list[NativePlayer]:
         """Return this provider's players that belong to either native backend."""
         return [
             cast("NativePlayer", player)
-            for player in self._provider.players
+            for player in self._provider.protocols
             if getattr(player, "linkplay_backend", None) in _NATIVE_BACKENDS
         ]
 
@@ -536,7 +538,7 @@ class NativeGroupCoordinator:
     def _rebuild(self) -> None:
         """Recompute roles and membership, then push state to every changed player."""
         registered: dict[str, NativePlayer] = {
-            player.player_id: player for player in self._native_players()
+            player.protocol_id: player for player in self._native_players()
         }
         # a fresh topology read for an unregistered player can never arrive, so its cached
         # slave list (and self-reported role) is stale forever: drop it here.
@@ -651,7 +653,7 @@ class NativeGroupCoordinator:
 
         :param player_id: The member id supplied to the grouping command.
         """
-        member = self._mass.players.get_player(player_id)
+        member = self._provider.get_protocol(player_id)
         if getattr(member, "linkplay_backend", None) not in _NATIVE_BACKENDS:
             raise PlayerCommandFailed(f"Cannot group unknown or unsupported player {player_id}")
         return cast("NativePlayer", member)
@@ -669,7 +671,7 @@ class NativeGroupCoordinator:
             try:
                 await self._provider.wiim_controller.async_join_group(leader_udn, [member_udn])
             except WiimException as err:
-                raise PlayerCommandFailed(f"Failed to group {member.player_id}: {err}") from err
+                raise PlayerCommandFailed(f"Failed to group {member.protocol_id}: {err}") from err
         else:
             assert plan is not None  # a low-level join is always prevalidated
             await self._low_level_join(leader, member, plan[0], plan[1])
@@ -678,8 +680,8 @@ class NativeGroupCoordinator:
         # list it cached while it was a leader so a later leave cannot resurrect a ghost
         # group, and record its follower role so it stays suppressed even if its leader is
         # unregistered before the member's next live read (whose TTL was just advanced).
-        self.set_leader_slaves(member.player_id, [])
-        self.set_self_role(member.player_id, True)
+        self.set_leader_slaves(member.protocol_id, [])
+        self.set_self_role(member.protocol_id, True)
 
     async def _low_level_join(
         self,
@@ -690,7 +692,7 @@ class NativeGroupCoordinator:
     ) -> None:
         """Join a member to a leader over the low-level LinkPlay client (generic or mixed)."""
         if not (leader_ip := leader.native_ip):
-            raise PlayerCommandFailed(f"Cannot group {member.player_id}: leader address unknown")
+            raise PlayerCommandFailed(f"Cannot group {member.protocol_id}: leader address unknown")
         # the low-level join_slave (unlike the official SDK) does not disband a member that
         # leads its own group, so dissolve the followers prevalidation captured from its live
         # group first: otherwise they are orphaned once the member becomes a follower itself.
@@ -699,7 +701,7 @@ class NativeGroupCoordinator:
         try:
             await member.make_command_client().join_slave(leader_ip, master_device_info=leader_info)
         except WiiMError as err:
-            raise PlayerCommandFailed(f"Failed to group {member.player_id}: {err}") from err
+            raise PlayerCommandFailed(f"Failed to group {member.protocol_id}: {err}") from err
 
     async def _leave(self, leader: NativePlayer, member: NativePlayer) -> None:
         """Remove a member from a leader over the correct backend path and verify it."""
@@ -708,9 +710,9 @@ class NativeGroupCoordinator:
         # detached (idempotent), so another leader's follower is safe.
         if not await self.refresh_leader(leader, force=True):
             raise PlayerCommandFailed(
-                f"Could not read the group state of leader {leader.player_id}"
+                f"Could not read the group state of leader {leader.protocol_id}"
             )
-        if member.player_id not in self.members_of(leader.player_id):
+        if member.protocol_id not in self.members_of(leader.protocol_id):
             return
         if (
             leader.linkplay_backend == BACKEND_OFFICIAL
@@ -726,7 +728,7 @@ class NativeGroupCoordinator:
             try:
                 await member.make_command_client().leave_group()
             except WiiMError as err:
-                raise PlayerCommandFailed(f"Failed to ungroup {member.player_id}: {err}") from err
+                raise PlayerCommandFailed(f"Failed to ungroup {member.protocol_id}: {err}") from err
         else:
             # a cross-backend follower is kicked from the leader, which is always reachable
             # and knows its address even on a private Wi-Fi Direct network.
@@ -736,7 +738,7 @@ class NativeGroupCoordinator:
         # self-follower flag from its last live read so its state and grouping unblock now
         # instead of on its next poll (a concurrently discovered new leader still wins,
         # because the reverse index outranks the self-follower flag on reconcile).
-        if self.set_self_role(member.player_id, False):
+        if self.set_self_role(member.protocol_id, False):
             await self.reconcile()
 
     async def _official_detach(self, leader: NativePlayer, member: NativePlayer) -> None:
@@ -745,12 +747,12 @@ class NativeGroupCoordinator:
         try:
             await self._provider.wiim_controller.async_ungroup_device(member_udn)
         except WiimException as err:
-            raise PlayerCommandFailed(f"Failed to ungroup {member.player_id}: {err}") from err
+            raise PlayerCommandFailed(f"Failed to ungroup {member.protocol_id}: {err}") from err
         # the SDK ungroups from its own managed cache and can silently no-op on a
         # recovered/external group; if the leader still lists the follower, kick it from the
         # leader (as the mixed path does).
-        if await self.refresh_leader(leader, force=True) and member.player_id in self.members_of(
-            leader.player_id
+        if await self.refresh_leader(leader, force=True) and member.protocol_id in self.members_of(
+            leader.protocol_id
         ):
             await self._leader_side_detach(leader, member)
 
@@ -768,7 +770,7 @@ class NativeGroupCoordinator:
         client = leader.make_command_client()
         if not (slave_ip := await self._leader_slave_ip(client, member)):
             raise PlayerCommandFailed(
-                f"Could not resolve {member.player_id}'s address on leader {leader.player_id}"
+                f"Could not resolve {member.protocol_id}'s address on leader {leader.protocol_id}"
             )
         # a freshly built command client has no cached group role, so prime it as master
         # (state-only, no request) to satisfy kick_slave's master guard; membership was
@@ -777,7 +779,7 @@ class NativeGroupCoordinator:
         try:
             await client.kick_slave(slave_ip)
         except WiiMError as err:
-            raise PlayerCommandFailed(f"Failed to ungroup {member.player_id}: {err}") from err
+            raise PlayerCommandFailed(f"Failed to ungroup {member.protocol_id}: {err}") from err
 
     async def _leader_slave_ip(self, client: WiiMClient, member: NativePlayer) -> str | None:
         """
@@ -790,13 +792,13 @@ class NativeGroupCoordinator:
             slaves = await client.get_slaves_info()
         except WiiMError as err:
             raise PlayerCommandFailed(
-                f"Failed to read the leader's slave list while resolving {member.player_id}: {err}"
+                f"Failed to read the leader's slave list while resolving {member.protocol_id}: {err}"
             ) from err
         for slave in slaves:
             if (
                 isinstance(slave, dict)
-                and match_slave_uuid_to_player_id(slave.get("uuid"), (member.player_id,))
-                == member.player_id
+                and match_slave_uuid_to_player_id(slave.get("uuid"), (member.protocol_id,))
+                == member.protocol_id
             ):
                 ip = slave.get("ip")
                 return ip if isinstance(ip, str) and ip else None
@@ -831,17 +833,17 @@ class NativeGroupCoordinator:
         while True:
             if not await self.refresh_leader(leader, force=True):
                 raise PlayerCommandFailed(
-                    f"Could not confirm grouping of {member.player_id}: "
-                    f"no fresh topology for leader {leader.player_id}"
+                    f"Could not confirm grouping of {member.protocol_id}: "
+                    f"no fresh topology for leader {leader.protocol_id}"
                 )
-            if (member.player_id in self.members_of(leader.player_id)) == joined:
+            if (member.protocol_id in self.members_of(leader.protocol_id)) == joined:
                 return
             if time.monotonic() >= deadline:
                 break
             await asyncio.sleep(VERIFY_POLL_INTERVAL)
         verb = "join" if joined else "leave"
         raise PlayerCommandFailed(
-            f"{member.player_id} did not {verb} the group led by {leader.player_id}"
+            f"{member.protocol_id} did not {verb} the group led by {leader.protocol_id}"
         )
 
     async def _device_info(self, player: NativePlayer) -> DeviceInfo:
@@ -858,5 +860,5 @@ class NativeGroupCoordinator:
             return await player.make_command_client().get_device_info_model()
         except WiiMError as err:
             raise PlayerCommandFailed(
-                f"Could not read device info for {player.player_id}: {err}"
+                f"Could not read device info for {player.protocol_id}: {err}"
             ) from err

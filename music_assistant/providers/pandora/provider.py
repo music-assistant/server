@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
@@ -48,13 +50,21 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ACCOUNT_FLAG_HIGH_QUALITY,
+    ADD_FEEDBACK_ENDPOINT,
+    API_RATE_LIMIT,
+    API_RATE_PERIOD,
+    CACHE_CATEGORY_FEEDBACK,
     CONF_QUALITY,
     CONF_TAKEOVER_ACTION,
+    DELETE_FEEDBACK_ENDPOINT,
+    FEEDBACK_CACHE_EXPIRATION,
+    FEEDBACK_NOT_FOUND_ERROR,
     LOGIN_ENDPOINT,
     PLAYBACK_RESUMED_ENDPOINT,
     PLAYLIST_FRAGMENT_ENDPOINT,
@@ -93,6 +103,10 @@ class PandoraProvider(MusicProvider):
     _sessions: dict[str, PandoraStationSession]
     _socks_proxy: bool = False
     _high_quality_available: bool = False
+    # per instance: Pandora limits the account, and each instance logs in to its own
+    throttler: ThrottlerManager
+    # held across a whole rating or clear, see set_favorite
+    _feedback_lock: asyncio.Lock
 
     @property
     def max_concurrent_streams(self) -> int:
@@ -140,6 +154,9 @@ class PandoraProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._sessions = {}
+        # every request takes a slot, the login included
+        self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
+        self._feedback_lock = asyncio.Lock()
 
         # Authenticate with Pandora
         username = str(self.get_setup_value(CONF_USERNAME) or "")
@@ -155,11 +172,23 @@ class PandoraProvider(MusicProvider):
             self._socks_proxy = True
         else:
             self.http_session = self.mass.http_session
-        await self._authenticate(username, password)
+        try:
+            await self._authenticate(username, password)
+        except MusicAssistantError, TimeoutError:
+            # a provider that fails to initialize is never registered, so unload() will not
+            # run to close the proxy session created above
+            await self.close()
+            raise
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         await self.close()
+        if is_removed:
+            # the cache cleanup for a removed provider skips persistent entries, and the
+            # feedback ids are kept persistently, so they would outlive the instance
+            await self.mass.cache.delete(
+                None, category=CACHE_CATEGORY_FEEDBACK, provider=self.instance_id
+            )
         await super().unload(is_removed)
 
     async def close(self) -> None:
@@ -309,6 +338,52 @@ class PandoraProvider(MusicProvider):
             allow_seek=can_seek,
         )
 
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Send a like or dislike on a station track to Pandora as thumbs up or thumbs down.
+
+        :param prov_item_id: The track's Pandora id (`TR:…`).
+        :param media_type: Media type of the item, only tracks can be rated.
+        :param favorite: True for thumbs up, False for thumbs down, None to remove the thumb.
+        """
+        if media_type != MediaType.TRACK:
+            return
+        # Ratings change one at a time: each reads the kept feedback, waits on Pandora and writes
+        # it back, so an overlapping one (MA runs dislikes and clears as background tasks) would
+        # overwrite what the other kept. The track is looked up before waiting, so a refusal
+        # never waits and the token is the one served when the user rated.
+        if favorite is None:
+            async with self._feedback_lock:
+                await self._clear_feedback(prov_item_id)
+            return
+        # Pandora ties feedback to the trackToken it issued with a fragment, and that token
+        # decides which station the feedback trains, so only a track still held in a retained
+        # fragment can be rated. Pandora has no other way to add a thumb. MA has saved the
+        # rating before calling here, so a rating that cannot be sent is logged, not raised:
+        # an error would undo nothing and only confuse.
+        track = self._find_rated_track(prov_item_id)
+        if track is None:
+            self._log_unsent_rating(
+                prov_item_id,
+                "it is not in any retained Pandora fragment (not playing, or played too long ago)",
+            )
+            return
+        if track.get("allowFeedback") is False:
+            self._log_unsent_rating(prov_item_id, "Pandora does not allow feedback on it")
+            return
+        if not (token := track.get("trackToken")):
+            self._log_unsent_rating(prov_item_id, "Pandora served it without a trackToken")
+            return
+        async with self._feedback_lock:
+            result = await self._api_request(
+                "POST", ADD_FEEDBACK_ENDPOINT, data={"trackToken": token, "isPositive": favorite}
+            )
+            # Pandora removes feedback only by the id it answers with here, and by the time a
+            # rating is cleared the fragment that held the track is long gone, so keep the id
+            await self._remember_feedback(prov_item_id, result)
+
     async def takeover_stream(self) -> None:
         """
         Force Pandora to end any other active session and resume here.
@@ -330,7 +405,8 @@ class PandoraProvider(MusicProvider):
     async def _authenticate(self, username: str, password: str) -> None:
         """Authenticate with Pandora and get auth token."""
         try:
-            self._csrf_token = await get_csrf_token(self.http_session)
+            async with self.throttler.acquire():
+                self._csrf_token = await get_csrf_token(self.http_session)
 
             login_data = {
                 "username": username,
@@ -341,14 +417,16 @@ class PandoraProvider(MusicProvider):
 
             headers = create_auth_headers(self._csrf_token)
 
-            async with self.http_session.post(
-                LOGIN_ENDPOINT,
-                headers=headers,
-                json=login_data,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
+            async with (
+                self.throttler.acquire(),
+                self.http_session.post(
+                    LOGIN_ENDPOINT,
+                    headers=headers,
+                    json=login_data,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response,
+            ):
                 if response.status != 200:
-                    await self.close()
                     raise LoginFailed(f"Login request failed with status {response.status}")
 
                 response_data = await response.json()
@@ -356,7 +434,6 @@ class PandoraProvider(MusicProvider):
 
                 self._auth_token = response_data.get("authToken")
                 if not self._auth_token:
-                    await self.close()
                     raise LoginFailed("No auth token received from Pandora")
 
                 # What this account is entitled to. Pandora sends config and flags as null
@@ -371,7 +448,6 @@ class PandoraProvider(MusicProvider):
                 )
 
         except aiohttp.ClientError as err:
-            await self.close()
             self.logger.exception("Network error during authentication")
             raise ProviderUnavailableError(
                 "Unable to connect to Pandora for authentication"
@@ -394,15 +470,18 @@ class PandoraProvider(MusicProvider):
             Pass a pre-populated set to prevent specific retry strategies from being attempted.
         """
         if not self._csrf_token or not self._auth_token:
-            await self.close()
             raise LoginFailed("Not authenticated with Pandora")
 
         headers = create_auth_headers(self._csrf_token, self._auth_token)
 
         try:
-            async with self.http_session.request(
-                method, url, json=data, headers=headers
-            ) as response:
+            # throttled here rather than with throttle_with_retries: that decorator retries on
+            # ResourceTemporarilyUnavailable, which handle_pandora_error also raises for
+            # parameter errors that no retry fixes, and the writes (feedback) must not repeat
+            async with (
+                self.throttler.acquire(),
+                self.http_session.request(method, url, json=data, headers=headers) as response,
+            ):
                 # Check status BEFORE parsing JSON
                 if response.status == 401:
                     if RETRY_REASON_AUTH not in exhausted_retry_reasons:
@@ -416,10 +495,8 @@ class PandoraProvider(MusicProvider):
                             data,
                             exhausted_retry_reasons=exhausted_retry_reasons | {RETRY_REASON_AUTH},
                         )
-                    await self.close()
                     raise LoginFailed("Pandora authentication failed after retry")
                 if response.status == 404:
-                    await self.close()
                     raise MediaNotFoundError("Resource not found")
                 if response.status == 429:
                     # Another device may already be streaming on this account.
@@ -448,10 +525,19 @@ class PandoraProvider(MusicProvider):
                     # This is some other, not concurrent streaming error kind of 429
                     raise ProviderUnavailableError(f"Pandora rate-limited (HTTP 429): {error_body}")
                 if response.status >= 500:
-                    await self.close()
                     raise ProviderUnavailableError("Pandora server error")
                 if response.status >= 400:
-                    await self.close()
+                    # a clear must tell a thumb removed outside Music Assistant from a delete
+                    # that failed, and only the body says which
+                    try:
+                        body = await response.json()
+                    except aiohttp.ContentTypeError, json.JSONDecodeError:
+                        body = None
+                    error = body.get("errorString") if isinstance(body, dict) else None
+                    if error == FEEDBACK_NOT_FOUND_ERROR:
+                        raise MediaNotFoundError(
+                            f"Pandora feedback not found: {body.get('message')}"
+                        )
                     raise InvalidDataError(f"Pandora API error: HTTP {response.status}")
 
                 result: dict[str, Any] = await response.json()
@@ -459,10 +545,8 @@ class PandoraProvider(MusicProvider):
                 return result
 
         except aiohttp.ClientError as err:
-            await self.close()
             raise ProviderUnavailableError("Unable to connect to Pandora") from err
         except (ValueError, KeyError) as err:
-            await self.close()
             raise InvalidDataError("Invalid response from Pandora") from err
 
     async def _fetch_fragment(self, session: PandoraStationSession) -> PandoraFragment:
@@ -488,9 +572,6 @@ class PandoraProvider(MusicProvider):
                 if is_station_start
                 else frozenset({RETRY_REASON_STREAM_VIOLATION}),
             )
-        except MediaNotFoundError:
-            await self.close()
-            raise
         except StreamViolationError:
             self.logger.warning(
                 "Pandora stream is already active on another device. "
@@ -500,7 +581,6 @@ class PandoraProvider(MusicProvider):
             raise
         except InvalidDataError as err:
             self.logger.error("Invalid fragment data for station %s: %s", session.station_id, err)
-            await self.close()
             raise
         tracks = [
             track
@@ -554,6 +634,128 @@ class PandoraProvider(MusicProvider):
         ]
         freshest = max(holders, key=lambda holder: holder[0].fetched_at, default=None)
         return freshest[1] if freshest is not None else None
+
+    def _find_rated_track(self, prov_track_id: str) -> dict[str, Any] | None:
+        """Return raw track data from the retained fragment that last served it, or None."""
+        # the copy that most recently went to the audio pipeline names the station that played
+        # the song; the freshest fetch would train the wrong station whenever another station
+        # fetches the same song after playback started. With several players on different
+        # stations playing the same song, the latest stream wins: set_favorite gets no player.
+        served = [
+            (fragment.served[prov_track_id], track)
+            for session in self._sessions.values()
+            for fragment in session.fragments
+            if prov_track_id in fragment.served
+            and (track := fragment.find(prov_track_id)) is not None
+        ]
+        if served:
+            return max(served, key=lambda holder: holder[0])[1]
+        # never streamed, e.g. a track rated while still queued
+        return self._find_track(prov_track_id)
+
+    def _log_unsent_rating(self, prov_track_id: str, reason: str) -> None:
+        """Log that a rating stays in Music Assistant without reaching Pandora, and why."""
+        self.logger.warning(
+            "The rating on track %s is kept in Music Assistant but not sent to Pandora: %s",
+            prov_track_id,
+            reason,
+        )
+
+    async def _remember_feedback(self, prov_track_id: str, result: dict[str, Any]) -> None:
+        """
+        Keep the feedback Pandora recorded for a track, so a later clear can delete it.
+
+        :param prov_track_id: The track's Pandora id.
+        :param result: Pandora's addFeedback response.
+        """
+        if not (feedback_id := result.get("feedbackId")):
+            self.logger.warning(
+                "Pandora recorded feedback on track %s without a feedback id; clearing this "
+                "rating will not remove it from Pandora",
+                prov_track_id,
+            )
+            return
+        station_id = result.get("stationId")
+        # Pandora holds one thumb per track and station: a new thumb on the same station
+        # replaces the kept one, a thumb on another station is kept beside it; without a
+        # station the new thumb cannot be matched, so every kept one stays
+        kept = [
+            entry
+            for entry in await self._get_kept_feedback(prov_track_id)
+            if station_id is None or entry.get("stationId") != station_id
+        ]
+        kept.append(
+            {
+                "feedbackId": feedback_id,
+                "stationId": station_id,
+                "isPositive": bool(result.get("isPositive")),
+            }
+        )
+        await self._set_kept_feedback(prov_track_id, kept)
+
+    async def _clear_feedback(self, prov_track_id: str) -> None:
+        """
+        Delete the feedback this provider sent to Pandora for a track, on every station.
+
+        :param prov_track_id: The track's Pandora id.
+        """
+        kept = await self._get_kept_feedback(prov_track_id)
+        if not kept:
+            # rated before feedback ids were kept, or outside Music Assistant
+            self.logger.warning(
+                "No Pandora feedback is known for track %s, so clearing its rating cannot "
+                "remove a thumb on Pandora; remove it in the Pandora app",
+                prov_track_id,
+            )
+            return
+        # every entry is tried, so one that fails does not leave the others on Pandora
+        remaining: list[dict[str, Any]] = []
+        failure: Exception | None = None
+        for entry in kept:
+            try:
+                # Pandora deletes by id whatever isPositive says, so a thumb flipped in the
+                # Pandora app since is deleted too
+                await self._api_request(
+                    "POST",
+                    DELETE_FEEDBACK_ENDPOINT,
+                    data={"feedbackId": entry["feedbackId"], "isPositive": entry["isPositive"]},
+                )
+            except MediaNotFoundError:
+                # removed outside Music Assistant (in the Pandora app, or with its station), so
+                # nothing is left to delete; keeping it would fail every clear from now on
+                self.logger.debug(
+                    "Pandora no longer has feedback %s on track %s",
+                    entry["feedbackId"],
+                    prov_track_id,
+                )
+            except (MusicAssistantError, TimeoutError) as err:
+                # keep what may still be on Pandora, so another clear can retry it
+                remaining.append(entry)
+                failure = failure or err
+        if failure is not None:
+            await self._set_kept_feedback(prov_track_id, remaining)
+            raise failure
+        await self.mass.cache.delete(
+            prov_track_id, category=CACHE_CATEGORY_FEEDBACK, provider=self.instance_id
+        )
+
+    async def _get_kept_feedback(self, prov_track_id: str) -> list[dict[str, Any]]:
+        """Return the feedback kept for a track, one entry per station."""
+        kept = await self.mass.cache.get(
+            prov_track_id, provider=self.instance_id, category=CACHE_CATEGORY_FEEDBACK
+        )
+        return list(kept) if isinstance(kept, list) else []
+
+    async def _set_kept_feedback(self, prov_track_id: str, kept: list[dict[str, Any]]) -> None:
+        """Store the feedback kept for a track, surviving restarts and cache clears."""
+        await self.mass.cache.set(
+            prov_track_id,
+            kept,
+            expiration=FEEDBACK_CACHE_EXPIRATION,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FEEDBACK,
+            persistent=True,
+        )
 
     def _parse_station(self, station: dict[str, Any]) -> Radio:
         """Parse a station object into a dynamic radio station."""

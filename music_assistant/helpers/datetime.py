@@ -5,7 +5,9 @@ from __future__ import annotations
 import datetime
 import os
 from pathlib import Path
-from zoneinfo import available_timezones
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
+
+from music_assistant_models.errors import InvalidDataError
 
 LOCAL_TIMEZONE = datetime.datetime.now(datetime.UTC).astimezone().tzinfo
 
@@ -48,6 +50,14 @@ def iso_from_utc_timestamp(timestamp: float) -> str:
 def from_iso_string(iso_datetime: str) -> datetime.datetime:
     """Return datetime from ISO datetime string."""
     return datetime.datetime.fromisoformat(iso_datetime)
+
+
+def get_timezone(timezone: str) -> ZoneInfo:
+    """Resolve an IANA timezone or reject an invalid name."""
+    try:
+        return ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as err:
+        raise InvalidDataError(f"Invalid timezone: {timezone}") from err
 
 
 def host_timezone_name() -> str:

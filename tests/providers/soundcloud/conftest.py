@@ -38,10 +38,5 @@ def provider() -> SoundcloudMusicProvider:
     prov._soundcloud = AsyncMock()
     prov._soundcloud.client_id = "test-client-id"
     prov._soundcloud.headers = {"Authorization": "OAuth test-token"}
-    prov._soundcloud.get_user_details.return_value = {
-        "id": 1,
-        "username": "Some Artist",
-        "permalink": "some-artist",
-    }
     prov._user_id = "1"
     return prov

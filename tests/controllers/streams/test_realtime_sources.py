@@ -40,6 +40,7 @@ from music_assistant.controllers.streams.audio import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
+    ICY_WRITE_SIZE,
     BufferSize,
     PacingProfile,
     output_pacing_args,
@@ -640,7 +641,7 @@ async def test_smartfade_realtime_current_item_fades_once_its_source_is_done(
         display_name="Queue",
         index_in_buffer=0,
     )
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
@@ -767,7 +768,7 @@ async def _run_smartfade_boundary(
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
-        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", SimpleNamespace(protocol_id="player-1", name="Player")),
         cast("Any", current_item),
         pcm_format,
         crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
@@ -829,7 +830,7 @@ async def test_the_live_post_handover_streams_into_the_next_request(
         available=True,
     )
     queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     # the next item's own boundary has nothing to blend into
@@ -1067,7 +1068,7 @@ def _smartfade_waiting_for_its_source(
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
-        cast("Any", SimpleNamespace(player_id="player-1", name="Player")),
+        cast("Any", SimpleNamespace(protocol_id="player-1", name="Player")),
         cast("Any", current_item),
         pcm_format,
         crossfade_mode=CrossfadeMode.STANDARD_CROSSFADE,
@@ -1198,7 +1199,7 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     )
     audio = StreamsAudio(MagicMock())
     queue = cast("Any", SimpleNamespace(queue_id="queue-1", display_name="Queue"))
-    item = cast("Any", SimpleNamespace(queue_item_id="next", name="Next"))
+    item = cast("Any", SimpleNamespace(queue_item_id="next", name="Next", streamdetails=None))
 
     # nothing being mixed: the caller is told so straight away
     assert await audio._await_pending_crossfade(queue, item, "session-1") is None
@@ -1233,6 +1234,33 @@ async def test_the_incoming_item_waits_for_a_fade_still_being_mixed(
     started = asyncio.get_event_loop().time()
     assert await audio._await_pending_crossfade(queue, item, "session-1") is None
     assert asyncio.get_event_loop().time() - started >= 0.2
+
+
+async def test_a_realtime_item_waits_for_its_fade_within_the_speakers_patience(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A realtime item starts without its fade once the shorter bound has passed."""
+    monkeypatch.setattr("music_assistant.controllers.streams.audio.CROSSFADE_HANDOFF_WAIT", 5.0)
+    monkeypatch.setattr(
+        "music_assistant.controllers.streams.audio.REALTIME_CROSSFADE_HANDOFF_WAIT", 0.1
+    )
+    audio = StreamsAudio(MagicMock())
+    queue = cast("Any", SimpleNamespace(queue_id="queue-1", display_name="Queue"))
+    item = cast(
+        "Any",
+        SimpleNamespace(
+            queue_item_id="next",
+            name="Next",
+            streamdetails=SimpleNamespace(is_realtime=True),
+        ),
+    )
+    audio._crossfade_pending["queue-1"] = ("next", asyncio.Event())
+
+    started = asyncio.get_event_loop().time()
+    assert await audio._await_pending_crossfade(queue, item, "session-1") is None
+    assert asyncio.get_event_loop().time() - started < 2.0
+    # given up: a fade landing later must not play an intro the item plays itself
+    assert "queue-1" not in audio._crossfade_pending
 
 
 async def test_smartfade_a_source_still_delivering_hands_over_gapless(
@@ -1287,7 +1315,7 @@ async def test_smartfade_a_source_still_delivering_hands_over_gapless(
         display_name="Queue",
         index_in_buffer=0,
     )
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
@@ -1409,10 +1437,10 @@ async def test_flow_realtime_item_yields_all_audio_as_plain_concatenation(
     mass.config.get_raw_core_config_value.return_value = 8
     mass.streams.audio_processing.update_item_context = MagicMock()
     mass.player_queues.queue_buffer_completed = MagicMock()
-    player = MagicMock()
-    player.config.get_value.return_value = "fixed_48000"
-    player.get_supported_sample_rates.return_value = []
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
     build = AsyncMock()
@@ -1490,7 +1518,7 @@ async def test_smartfade_unaligned_chunks_still_crossfade(
         available=True,
     )
     queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
@@ -1579,7 +1607,7 @@ async def test_smartfade_short_remainder_still_crossfades(
         available=True,
     )
     queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
@@ -1673,7 +1701,7 @@ async def test_smartfade_stub_remainder_does_not_crossfade(
         available=True,
     )
     queue = SimpleNamespace(queue_id="queue-1", display_name="Queue", index_in_buffer=0)
-    player = SimpleNamespace(player_id="player-1", name="Player")
+    player = SimpleNamespace(protocol_id="player-1", name="Player")
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.load_next_queue_item = AsyncMock(return_value=next_item)
@@ -1762,10 +1790,10 @@ async def test_flow_reports_no_fade_for_a_realtime_item_until_one_renders(
     mass.config.get_raw_core_config_value.return_value = 8
     update_item_context = MagicMock()
     mass.streams.audio_processing.update_item_context = update_item_context
-    player = MagicMock()
-    player.config.get_value.return_value = "fixed_48000"
-    player.get_supported_sample_rates.return_value = []
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
 
@@ -1855,10 +1883,10 @@ async def test_flow_standard_fade_only_holds_back_its_overlap(
     mass.player_queues.get.return_value = queue
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.SMART_CROSSFADE
     mass.config.get_raw_core_config_value.return_value = 8
-    player = MagicMock()
-    player.config.get_value.return_value = "fixed_48000"
-    player.get_supported_sample_rates.return_value = []
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
     audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
@@ -1975,10 +2003,10 @@ def _flow_waiting_for_its_source(
     mass.player_queues.prepare_next_audio_buffer.return_value = preparation
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
     mass.config.get_raw_core_config_value.return_value = 8
-    player = MagicMock()
-    player.config.get_value.return_value = "fixed_48000"
-    player.get_supported_sample_rates.return_value = []
-    mass.players.get_player.return_value = player
+    protocol = MagicMock()
+    protocol.config.get_value.return_value = "fixed_48000"
+    protocol.get_supported_sample_rates.return_value = []
+    mass.players.get_output_protocol.return_value = protocol
     audio = StreamsAudio(cast("Any", mass))
     audio.setup()
     audio.crossfade_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
@@ -2084,9 +2112,6 @@ class _FakeStreamResponse:
         """Record that the connection was ended."""
         self.force_closed = True
 
-    def enable_chunked_encoding(self) -> None:
-        """Accept the chunked-profile branch."""
-
     async def prepare(self, request: Any) -> None:
         """Accept the response start."""
 
@@ -2099,6 +2124,7 @@ def _single_item_handler(
     is_realtime: bool,
     capture_ffmpeg: pytest.MonkeyPatch | None = None,
     player_provider_domain: str = "test",
+    player_needs_gapless_burst: bool = False,
 ) -> tuple[Any, MagicMock, dict[str, Any]]:
     """
     Return a single-item stream handler rigged to stop early.
@@ -2131,15 +2157,15 @@ def _single_item_handler(
     mass = MagicMock()
     mass.player_queues.get.return_value = queue
     mass.player_queues.queue_data.return_value = SimpleNamespace(
-        session_id="session-1", last_served_item_id=None, last_requested_item_id=None
+        session_id="session-1", last_served_item_id=None
     )
     mass.player_queues.get_item.return_value = queue_item
     mass.config.get_raw_core_config_value.return_value = 8
-    player = MagicMock(player_id="player-1", protocol_parent_id=None)
-    player.provider.domain = player_provider_domain
-    player.state.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
-    player.state.name = "Player"
-    mass.players.get_player.return_value = player
+    protocol = MagicMock(protocol_id="player-1", display_name="Player")
+    protocol.provider.domain = player_provider_domain
+    protocol.needs_gapless_burst = player_needs_gapless_burst
+    protocol.supported_features = {PlayerFeature.GAPLESS_PLAYBACK}
+    mass.players.get_output_protocol.return_value = protocol
 
     seen: dict[str, Any] = {}
 
@@ -2175,7 +2201,7 @@ def _single_item_handler(
                 content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2
             )
         )
-        player.get_config_value = MagicMock(return_value="default")
+        protocol.get_config_value = MagicMock(return_value=False)
         controller._update_audio_processing_context = MagicMock()
 
         def _capture_ffmpeg_args(**kwargs: Any) -> None:
@@ -2184,7 +2210,9 @@ def _single_item_handler(
 
         capture_ffmpeg.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
         capture_ffmpeg.setattr(
-            controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse)
+            controller_mod,
+            "web",
+            SimpleNamespace(StreamResponse=_FakeStreamResponse, HTTPNotFound=web.HTTPNotFound),
         )
     return controller, request, seen
 
@@ -2233,20 +2261,31 @@ async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None
 
 
 @pytest.mark.parametrize(
-    ("is_realtime", "profile"),
-    [(False, PacingProfile.DEFAULT), (True, PacingProfile.NEAR_REALTIME)],
-    ids=["default", "realtime"],
+    ("is_realtime", "needs_gapless_burst", "profile"),
+    [
+        (False, False, PacingProfile.REALTIME),
+        (True, False, PacingProfile.REALTIME),
+        (False, True, PacingProfile.GAPLESS_BURST),
+        (True, True, PacingProfile.REALTIME),
+    ],
+    ids=["buffered", "realtime", "gapless-burst-buffered", "gapless-burst-realtime"],
 )
-async def test_single_item_handler_paces_by_source(
+async def test_single_item_handler_paces_by_player_and_source(
     monkeypatch: pytest.MonkeyPatch,
     is_realtime: bool,
+    needs_gapless_burst: bool,
     profile: PacingProfile,
 ) -> None:
-    """A buffered item gets the default; a source that feeds just-in-time a gentler pace."""
+    """
+    A single track gets the realtime pace, whatever its source.
+
+    Only a buffered track for a player that holds a whole opening chunk before it plays
+    gapless gets that chunk up front; a just-in-time source could not deliver it anyway.
+    """
     controller, request, seen = _single_item_handler(
         is_realtime=is_realtime,
         capture_ffmpeg=monkeypatch,
-        player_provider_domain="sonos",
+        player_needs_gapless_burst=needs_gapless_burst,
     )
 
     with pytest.raises(_FfmpegArgsCaptured):
@@ -2309,11 +2348,10 @@ def _flow_handler(
     )
     mass.player_queues.flow_stream_finished.return_value = False
     mass.player_queues.get_item.return_value = start_queue_item
-    mass.config.get_raw_player_config_value.return_value = "disabled"
-    player = MagicMock(player_id="player-1", protocol_parent_id=None)
-    player.get_config_value = MagicMock(return_value="default")
-    player.state.name = "Player"
-    mass.players.get_player.return_value = player
+    mass.config.get_protocol_value.return_value = "disabled"
+    protocol = MagicMock(protocol_id="player-1", display_name="Player", group_members=[])
+    protocol.get_config_value = MagicMock(return_value=False)
+    mass.players.get_output_protocol.return_value = protocol
 
     audio = MagicMock()
     audio.select_flow_pcm_format = AsyncMock(return_value=TEST_PCM_FORMAT)
@@ -2343,7 +2381,11 @@ def _flow_handler(
         raise _FfmpegArgsCaptured
 
     monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _capture_ffmpeg_args)
-    monkeypatch.setattr(controller_mod, "web", SimpleNamespace(StreamResponse=_FakeStreamResponse))
+    monkeypatch.setattr(
+        controller_mod,
+        "web",
+        SimpleNamespace(StreamResponse=_FakeStreamResponse, HTTPNotFound=web.HTTPNotFound),
+    )
 
     request = MagicMock()
     request.method = "GET"
@@ -2374,7 +2416,62 @@ async def test_flow_is_always_paced_close_to_playback(
     with pytest.raises(_FfmpegArgsCaptured):
         await controller.serve_queue_flow_stream(request)
 
-    assert seen["extra_input_args"] == output_pacing_args(PacingProfile.NEAR_REALTIME)
+    assert seen["extra_input_args"] == output_pacing_args()
+
+
+async def test_flow_passes_on_encoded_audio_without_waiting_for_a_full_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flow without ICY framing reads whatever the encoder produced (support#6831)."""
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+    seen: dict[str, Any] = {}
+
+    def _capture_chunk_size(**kwargs: Any) -> None:
+        seen["chunk_size"] = kwargs.get("chunk_size")
+        raise _FfmpegArgsCaptured
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _capture_chunk_size)
+
+    with pytest.raises(_FfmpegArgsCaptured):
+        await controller.serve_queue_flow_stream(request)
+
+    assert seen["chunk_size"] is None
+
+
+async def test_flow_with_icy_framing_writes_small_blocks_and_counts_to_the_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    An ICY flow hands audio on in small writes and inserts metadata by byte count.
+
+    A write per metadata interval held back 1.5s of FLAC at a time, which drained
+    a near-realtime player below its restart threshold (server#7147).
+    """
+    controller, request, _ = _flow_handler(monkeypatch, is_realtime=False)
+    controller.mass.config.get_protocol_value.return_value = "full"
+    request.headers = {"Icy-MetaData": "1"}
+    seen: dict[str, Any] = {}
+    written: list[bytes] = []
+
+    async def _encoded_audio(**kwargs: Any) -> AsyncGenerator[bytes]:
+        seen["chunk_size"] = kwargs.get("chunk_size")
+        for _ in range(3):
+            yield b"a" * 100_000
+
+    async def _record(_self: Any, chunk: bytes) -> None:
+        written.append(chunk)
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _encoded_audio)
+    monkeypatch.setattr(_FakeStreamResponse, "write", _record)
+
+    await controller.serve_queue_flow_stream(request)
+
+    assert seen["chunk_size"] == ICY_WRITE_SIZE
+    stream = b"".join(written)
+    metadata = controller_mod._icy_metadata_block(
+        controller.mass.player_queues.get.return_value, full=True
+    )
+    assert stream == b"a" * 256_000 + metadata + b"a" * 44_000
 
 
 async def test_flow_producer_learns_when_its_player_left(monkeypatch: pytest.MonkeyPatch) -> None:

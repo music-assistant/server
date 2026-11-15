@@ -10,6 +10,7 @@ database in a temporary directory.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -240,16 +241,37 @@ async def test_resume_info_is_scoped_to_the_requesting_user(mass: MusicAssistant
     assert result[1].fully_played is None
 
 
-async def test_native_resume_info_is_not_overwritten(mass: MusicAssistant) -> None:
-    """An episode that arrives with resume info from its provider is left untouched."""
-    user = await mass.webserver.auth.create_user("podcastnative")
+@pytest.mark.parametrize("single_lookup", [False, True])
+@pytest.mark.parametrize(
+    ("provider_timestamp", "expected_fully_played", "expected_position_ms"),
+    [(datetime(2026, 2, 1, tzinfo=UTC), False, 5000), (None, True, 90000)],
+)
+async def test_provider_resume_info_against_the_playlog(
+    mass: MusicAssistant,
+    single_lookup: bool,
+    provider_timestamp: datetime | None,
+    expected_fully_played: bool,
+    expected_position_ms: int,
+) -> None:
+    """The provider's resume info wins when it is newer, otherwise the furthest progress."""
+    user = await mass.webserver.auth.create_user("podcastprovider")
     await _add_playlog_row(mass, "ep-001", user.user_id, seconds_played=90, fully_played=True)
 
-    episode = _episode(1, fully_played=False, resume_position_ms=5000)
-    result = await _list_episodes(mass, [episode], user=user)
+    episodes = [
+        _episode(
+            1,
+            fully_played=False,
+            resume_position_ms=5000,
+            resume_position_timestamp=provider_timestamp,
+        )
+    ]
+    if single_lookup:
+        episode = await _get_episode(mass, episodes, "ep-001", user=user)
+    else:
+        episode = (await _list_episodes(mass, episodes, user=user))[0]
 
-    assert result[0].fully_played is False
-    assert result[0].resume_position_ms == 5000
+    assert episode.fully_played is expected_fully_played
+    assert episode.resume_position_ms == expected_position_ms
 
 
 async def test_listing_uses_a_single_playlog_query(
@@ -265,19 +287,6 @@ async def test_listing_uses_a_single_playlog_query(
     assert count_playlog_queries() == 1
     assert len(result) == 25
     assert result[4].resume_position_ms == 120000
-
-
-async def test_no_playlog_query_when_provider_supplies_resume_info(
-    mass: MusicAssistant, count_playlog_queries: Callable[[], int]
-) -> None:
-    """A provider that reports resume info natively triggers no playlog query at all."""
-    user = await mass.webserver.auth.create_user("podcastnativeonly")
-    episodes = [_episode(index, fully_played=False, resume_position_ms=1000) for index in (1, 2)]
-
-    result = await _list_episodes(mass, episodes, user=user)
-
-    assert count_playlog_queries() == 0
-    assert all(x.resume_position_ms == 1000 for x in result)
 
 
 async def test_resume_info_is_not_capped_by_the_default_row_limit(mass: MusicAssistant) -> None:

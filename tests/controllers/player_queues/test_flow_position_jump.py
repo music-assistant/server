@@ -66,21 +66,20 @@ def _player(
         player_id=QUEUE_ID,
         type=PlayerType.PLAYER,
         extra_data={ATTR_ANNOUNCEMENT_IN_PROGRESS: True} if announcing else {},
-        paused_position_reliable=reported_pause,
-        active_output_protocol=None,
-        current_media=(
-            SimpleNamespace(source_id=QUEUE_ID, queue_item_id=playing_item, uri=None)
-            if playing_item
-            else None
+        resolve_output_protocol=lambda: SimpleNamespace(
+            paused_position_reliable=reported_pause,
+            current_media=(
+                SimpleNamespace(source_id=QUEUE_ID, queue_item_id=playing_item, uri=None)
+                if playing_item
+                else None
+            ),
         ),
-        state=SimpleNamespace(
-            name="P",
-            available=True,
-            playback_state=state,
-            active_source=QUEUE_ID,
-            corrected_elapsed_time=stream_elapsed,
-            group_members=[],
-        ),
+        name="P",
+        available=True,
+        playback_state=state,
+        active_source=QUEUE_ID,
+        corrected_elapsed_time=stream_elapsed,
+        group_members=[],
     )
 
 

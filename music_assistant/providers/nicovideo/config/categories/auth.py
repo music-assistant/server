@@ -11,39 +11,16 @@ class AuthConfigCategory(ConfigCategoryBase):
 
     _auth = ConfigFactory("Authentication")
 
-    mail = _auth.str_config(
-        key="mail",
-        label="Email",
-        default=None,
-        description="Your NicoNico account email address.",
-    )
-
-    password = _auth.secure_str_or_none_config(
-        key="password",
-        label="Password",
-        description="Your NicoNico account password.",
-    )
-
-    mfa = _auth.pairing_code_config(
-        key="mfa",
-        label="MFA Code (One-Time Password)",
-        code_format="######",
-        description="Enter the 6-digit confirmation code from your 2-step verification app.",
-    )
-
     user_session = _auth.secure_str_or_none_config(
         key="user_session",
         label="User Session ( 'user_session' in Cookie)",
         description=(
-            "Enter the user_session cookie value.\n"
-            "If invalid, it will be automatically set from your email and password."
+            "Log in to nicovideo.jp in your browser and copy the value of its "
+            "'user_session' cookie (e.g. from the browser's developer tools). "
+            "Enter a new value here when the session expires."
         ),
     )
 
     def save_user_session(self, value: str) -> None:
         """Save user session to the setup data."""
         self.provider._update_setup_data("user_session", value)
-
-    def clear_mfa_code(self) -> None:
-        """Clear MFA code after successful use (one-time password should not be reused)."""
-        self.provider._update_setup_data("mfa", None)

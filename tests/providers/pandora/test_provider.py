@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Self
 from unittest.mock import AsyncMock, Mock
@@ -11,8 +12,13 @@ from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Radio, SearchResults
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.pandora import provider as provider_module
-from music_assistant.providers.pandora.constants import STATIONS_ENDPOINT
+from music_assistant.providers.pandora.constants import (
+    API_RATE_LIMIT,
+    API_RATE_PERIOD,
+    STATIONS_ENDPOINT,
+)
 from music_assistant.providers.pandora.fragments import (
     FRAGMENT_STALE_SECONDS,
     FRAGMENT_URL_TTL_SECONDS,
@@ -64,6 +70,8 @@ def _provider(
     provider.http_session = Mock(closed=False)
     provider._sessions = {}
     provider._high_quality_available = False
+    provider.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
+    provider._feedback_lock = asyncio.Lock()
     pending = list(payloads or [_tracks()])
     station_list = stations or []
 
@@ -512,8 +520,8 @@ async def test_the_serving_session_is_the_one_marked_as_having_served() -> None:
     assert newer is not None
     older.fetched_at -= 60
     await provider.get_stream_details("TR:S0", MediaType.TRACK)
-    assert newer.served == {"TR:S0"}
-    assert older.served == set()
+    assert set(newer.served) == {"TR:S0"}
+    assert older.served == {}
 
 
 async def test_get_track_uses_the_freshest_fragment() -> None:
