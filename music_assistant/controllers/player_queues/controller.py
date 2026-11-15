@@ -804,8 +804,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             await self.mass.players.select_source(queue_id, source_uri)
             return
         queue_id, option = await self._get_play_media_target(queue_id, media, option, radio_mode)
+        # a request without an option plays or only adds, as the default for its media says
+        effective_option = option
+        if effective_option is None:
+            effective_option = (
+                self._default_enqueue_option(MediaType.PLAYLIST)
+                if radio_mode
+                else await self._get_default_play_option(media)
+            )
         if (
-            option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
+            effective_option not in (QueueOption.ADD, QueueOption.NEXT, QueueOption.REPLACE_NEXT)
             and (player := self.mass.players.get_player(queue_id)) is not None
         ):
             # media that starts to play takes the place of a step (next, previous) that has

@@ -1913,6 +1913,19 @@ it can group with for as long as that plays, keeps leading as well.
   - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
   - `test_grouping.py::test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member`
   - `test_grouping.py::test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group`
+### GROUP-53 · Adding to the queue of a switched-off speaker does not switch it on
+
+The user's default for tracks is to add them, or to play them next. A client plays a track
+without naming an option, on Den, a speaker switched off at its plug, or on Downstairs, a group
+with Den as a member. The track is only added: Den's plug stays off, the request does not wait,
+and nothing plays. With the default to play, the same request switches Den's plug on and waits
+for the device, as any start does.
+
+- End-to-end: **possible with** a power control the lab can switch, and a core setting for the
+  default enqueue option of tracks.
+- Proven by:
+  - `test_group_power_on.py::test_media_that_is_only_added_by_default_switches_nothing_on`
+  - `test_group_power_on.py::test_media_that_plays_by_default_switches_its_power_control_on`
 
 ## Where playback goes
 

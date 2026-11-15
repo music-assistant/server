@@ -21,6 +21,7 @@ def _controller() -> Any:
     ctrl.mass.players._resolve_playback_owner = lambda player: player  # plays on its own
     ctrl.mass.players._power_on_switched_off_player = AsyncMock()
     ctrl._check_player_permission = MagicMock()
+    ctrl._get_default_play_option = AsyncMock(return_value=QueueOption.PLAY)
     ctrl.get = MagicMock(return_value=MagicMock())
     ctrl._handle_play_media = AsyncMock()
     return ctrl
@@ -45,6 +46,20 @@ async def test_enqueued_media_leaves_the_player_switched_off(option: QueueOption
     ctrl = _controller()
 
     await ctrl.play_media("q1", "library://track/1", option=option)
+
+    ctrl.mass.players._power_on_switched_off_player.assert_not_awaited()
+    ctrl._handle_play_media.assert_awaited_once()
+
+
+@pytest.mark.parametrize("default", [QueueOption.ADD, QueueOption.NEXT])
+async def test_media_that_is_only_enqueued_by_default_leaves_the_player_switched_off(
+    default: QueueOption,
+) -> None:
+    """A request without an option whose default only enqueues does not power the player on."""
+    ctrl = _controller()
+    ctrl._get_default_play_option.return_value = default
+
+    await ctrl.play_media("q1", "library://track/1")
 
     ctrl.mass.players._power_on_switched_off_player.assert_not_awaited()
     ctrl._handle_play_media.assert_awaited_once()

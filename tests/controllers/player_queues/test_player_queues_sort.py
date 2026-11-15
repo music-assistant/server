@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, SortDirection, SortField
+from music_assistant_models.enums import MediaType, QueueOption, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -413,6 +413,7 @@ def _controller() -> Any:
     ctrl.logger = MagicMock()
     ctrl.mass.players._resolve_playback_owner = lambda player: player  # plays on its own
     ctrl._check_player_permission = MagicMock()  # type: ignore[method-assign]
+    ctrl._get_default_play_option = AsyncMock(return_value=QueueOption.PLAY)  # type: ignore[method-assign]
     ctrl.get = MagicMock()  # type: ignore[method-assign]
     ctrl._handle_play_media = AsyncMock()  # type: ignore[method-assign]
     return ctrl
