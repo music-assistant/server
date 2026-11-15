@@ -610,7 +610,7 @@ class MusicAssistant:
             discovered={
                 manifest.domain
                 for manifest in manifests
-                if self.discovery.is_seen_on_mdns(manifest)
+                if self.discovery.is_seen_on_mdns(manifest, identifying=True)
             },
             new_domains=self._catalog_new_domains,
             community=await self._get_catalog_community_providers(user),
@@ -1838,7 +1838,7 @@ class MusicAssistant:
             return []
         try:
             return await self.community_catalog.get_providers()
-        except Exception as err:
+        except MusicAssistantError as err:
             # the other recommendations do not depend on it
             LOGGER.warning("Could not list the community catalog for the Marketplace: %s", err)
             return []

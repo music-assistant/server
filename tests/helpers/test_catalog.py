@@ -145,6 +145,30 @@ def test_community_states() -> None:
 
 
 @pytest.mark.parametrize(
+    "state",
+    [
+        CommunityProviderState.WITHDRAWN,
+        CommunityProviderState.BLOCKED,
+        CommunityProviderState.UNAVAILABLE,
+    ],
+)
+def test_no_longer_offered(state: CommunityProviderState) -> None:
+    """An installed provider that the community catalog no longer offers is never suggested."""
+    domains = ("alpha", "plugin_x", "speaker")
+    manifests = [_manifest(domain, tier=ProviderTier.COMMUNITY) for domain in domains]
+    community = [_community(domain, state=state, added=_iso(NOW)) for domain in domains]
+
+    def recommend(community: Collection[CommunityProvider]) -> list[CatalogRecommendation]:
+        return _recommend(
+            manifests, configured={"source_b"}, discovered={"speaker"}, community=community
+        )
+
+    # found, goes well with and popular, for a user who does not see the community catalog
+    assert len(recommend([])) == 3
+    assert recommend(community) == []
+
+
+@pytest.mark.parametrize(
     "overrides",
     [
         {"builtin": True},
@@ -294,7 +318,7 @@ def _recommend(
     can_add: Callable[[ProviderManifest], bool] = lambda _: True,
     discovered: Collection[str] = (),
     new_domains: Collection[str] = (),
-    community: Iterable[CommunityProvider] = (),
+    community: Collection[CommunityProvider] = (),
 ) -> list[CatalogRecommendation]:
     return get_recommendations(
         manifests,

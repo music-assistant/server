@@ -78,7 +78,7 @@ def get_recommendations(
     can_add: Callable[[ProviderManifest], bool],
     discovered: Collection[str],
     new_domains: Collection[str],
-    community: Iterable[CommunityProvider],
+    community: Collection[CommunityProvider],
     now: datetime,
 ) -> list[CatalogRecommendation]:
     """
@@ -88,23 +88,30 @@ def get_recommendations(
     providers come newest first, and the rest comes by name.
 
     Only providers that can be added are suggested: not built-in, not deprecated, of a type
-    the Marketplace offers, allowed for the user, and not set up already unless more than one
-    instance is allowed. A provider may be suggested for more than one reason.
+    the Marketplace offers, allowed for the user, not withdrawn or blocked by the community
+    catalog, and not set up already unless more than one instance is allowed. A provider may
+    be suggested for more than one reason.
 
     :param manifests: The manifests of the providers the server knows.
     :param configured: The domains of the providers that are set up, by anyone.
     :param can_add: Whether the user may add an instance of a provider.
     :param discovered: The domains of the providers seen on the network.
     :param new_domains: The domains of the built-in providers that are new in this release line.
-    :param community: The providers of the community catalog, empty to suggest none of them.
+    :param community: The providers of the community catalog as the user may see them,
+        empty for a user who may not.
     :param now: The current time, timezone aware.
     """
+    # an installed provider keeps its manifest when the community catalog withdraws it
+    unlisted = {
+        provider.domain for provider in community if provider.state not in _LISTED_COMMUNITY_STATES
+    }
 
     def addable(manifest: ProviderManifest) -> bool:
         return (
             not manifest.builtin
             and manifest.stage != ProviderStage.DEPRECATED
             and manifest.type in _CATALOG_TYPES
+            and manifest.domain not in unlisted
             and (manifest.multi_instance or manifest.domain not in configured)
             and can_add(manifest)
         )
@@ -131,7 +138,7 @@ def get_recommendations(
     released: list[tuple[datetime, ProviderManifest]] = []
     since = now - COMMUNITY_RECENT
     for provider in community:
-        if provider.state not in _LISTED_COMMUNITY_STATES or not addable(provider.manifest):
+        if not addable(provider.manifest):
             continue
         if (moment := _moment(provider.added)) and moment >= since:
             added.append((moment, provider.manifest))

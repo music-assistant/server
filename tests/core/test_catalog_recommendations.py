@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import ProviderTier, ProviderType
 from music_assistant_models.errors import ActionUnavailable
@@ -36,7 +37,11 @@ async def test_admin(tmp_path: Path) -> None:
 
     with patch("music_assistant.mass.CATALOG_NEW_FILE", new_file):
         async with full_mass_context(tmp_path) as mass:
-            mass.discovery.aiozc.zeroconf.cache.cache["kitchen._sonos._tcp.local."] = {}
+            cache = mass.discovery.aiozc.zeroconf.cache.cache
+            cache["kitchen._sonos._tcp.local."] = {}
+            # a printer: devices of any kind announce this type, which MusicCast listens for
+            cache["printer._http._tcp.local."] = {}
+            musiccast_seen = mass.discovery.is_seen_on_mdns(mass.get_provider_manifest("musiccast"))
             _set_up(mass, "spotify", "airplay")
             with as_user([], role=UserRole.ADMIN):
                 recommendations = await mass.get_catalog_recommendations()
@@ -51,6 +56,8 @@ async def test_admin(tmp_path: Path) -> None:
         ),
     ]
     reasons = _by_reason(recommendations)
+    assert musiccast_seen
+    assert reasons[CatalogRecommendationReason.DISCOVERED] == ["sonos"]
     # spotify allows more than one account, airplay is set up once
     assert {"spotify", "sonos", "chromecast"} <= set(reasons[CatalogRecommendationReason.POPULAR])
     assert all(rec.domain != "airplay" for rec in recommendations)
@@ -102,6 +109,9 @@ async def test_community(tmp_path: Path) -> None:
                 switched_on = await mass.get_catalog_recommendations()
                 get_providers.side_effect = ActionUnavailable("not now")
                 failing = await mass.get_catalog_recommendations()
+                get_providers.side_effect = RuntimeError("a bug")
+                with pytest.raises(RuntimeError):
+                    await mass.get_catalog_recommendations()
             get_providers.side_effect = None
             # a user does not see the community catalog, even what it may add from there
             with as_user([], role=UserRole.USER):

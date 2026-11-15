@@ -10,7 +10,7 @@ import os
 import re
 from collections import defaultdict
 from ipaddress import IPv4Address
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, EventType
@@ -48,6 +48,9 @@ UPNP_DISCOVERY_INTERVAL = 300
 UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), 1900)
 UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
+
+# mDNS service types that devices of any kind announce: seeing one says nothing about a provider
+GENERIC_MDNS_TYPES: Final = frozenset({"_http._tcp.local."})
 
 # Re-announce daily so the HA integration token rotates before expiry, also on long uptimes
 HA_ANNOUNCE_INTERVAL = 86400
@@ -252,18 +255,21 @@ class DiscoveryController(CoreController):
         finally:
             self._mdns_waiters.remove(event)
 
-    def is_seen_on_mdns(self, manifest: ProviderManifest) -> bool:
+    def is_seen_on_mdns(self, manifest: ProviderManifest, *, identifying: bool = False) -> bool:
         """
         Return whether a service of one of the provider's mDNS types was seen on the network.
 
         :param manifest: The manifest of the provider, with the types in its mdns_discovery.
+        :param identifying: Leave out the types that devices of any kind announce, so that a
+            match means a device of this provider is there.
         """
-        if not manifest.mdns_discovery:
-            return False
+        mdns_types = set(manifest.mdns_discovery or ())
+        if identifying:
+            mdns_types -= GENERIC_MDNS_TYPES
         return any(
             mdns_type in mdns_name
             for mdns_name in set(self.aiozc.zeroconf.cache.cache)
-            for mdns_type in manifest.mdns_discovery
+            for mdns_type in mdns_types
         )
 
     def _configure_library_loggers(self) -> None:
