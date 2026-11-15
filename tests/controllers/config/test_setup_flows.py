@@ -1613,7 +1613,22 @@ async def test_provider_without_account_is_not_bound(flow_mass: MusicAssistant) 
 
     assert step.type == FlowStepType.FINISH, step
     assert flow_mass.get_provider(instance_id) is not None
-    assert _bound_account(flow_mass, instance_id) is None
+    setup_data = flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}/setup_data")
+    assert CONF_BOUND_ACCOUNT_ID not in setup_data
+
+
+async def test_bound_provider_that_stops_reporting_its_account_keeps_the_binding(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A load that cannot tell its account is accepted and leaves the binding in place."""
+    with _use_account_provider():
+        instance_id = _store_account_provider(flow_mass, "", bound_account="account-a")
+        await flow_mass.load_provider_config(
+            await flow_mass.config.get_provider_config(instance_id)
+        )
+
+    assert flow_mass.get_provider(instance_id) is not None
+    assert _bound_account(flow_mass, instance_id) == "account-a"
 
 
 async def test_load_on_another_account_fails_with_the_reason(flow_mass: MusicAssistant) -> None:
