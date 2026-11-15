@@ -1550,13 +1550,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # ICY name or reports no duration
                 return await builtin_prov.get_track(item_id)
             return await builtin_prov.parse_item(item_id, requested_media_type=media_type)
-        if provider_instance_id_or_domain == "musicbrainz":
-            # a release group listed in an artist's discography is resolved, on demand, to
-            # the album on one of the music providers
-            if media_type == MediaType.ALBUM:
-                return await self.albums.resolve_musicbrainz_release_group(
-                    item_id, allow_update_metadata=allow_update_metadata
-                )
+        if provider_instance_id_or_domain == "musicbrainz" and media_type != MediaType.ALBUM:
+            # an album is a release group, which the albums controller resolves on demand;
+            # MusicBrainz names no other item
             raise MediaNotFoundError(
                 f"MusicBrainz {media_type.value} {item_id} can not be resolved"
             )

@@ -26,6 +26,7 @@ from music_assistant.controllers.music.media.albums import (
     _MAX_EDITION_LOOKUPS,
     AlbumsController,
 )
+from music_assistant.helpers.external_ids import external_item_id
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzArtistCredit,
@@ -247,12 +248,13 @@ def _fail_fetch_from(harness: _Harness, instance_id: str, error: Exception) -> N
 
 
 def _music_controller(album: Album | None = None) -> tuple[MusicController, AsyncMock]:
-    """Return a music controller, with the release group resolver that answers with the album."""
+    """Return a music controller, with the external album route that answers with the album."""
     controller = MusicController.__new__(MusicController)
     controller.mass = MagicMock()
     controller.mass.get_provider.return_value = None
+    controller.albums = AlbumsController.__new__(AlbumsController)
     resolve = AsyncMock(return_value=album)
-    controller.albums = MagicMock(resolve_musicbrainz_release_group=resolve)
+    controller.albums._get_external_item = resolve  # type: ignore[method-assign, misc]
     return controller, resolve
 
 
@@ -1014,15 +1016,13 @@ async def test_get_item_resolves_a_musicbrainz_album_on_demand() -> None:
     """A MusicBrainz album, by id or by uri, is the album its release group resolves to."""
     album = create_album("spotify_1", SPOTIFY_ALBUM_ID)
     controller, resolve = _music_controller(album)
+    item_id = external_item_id(ExternalID.MB_RELEASEGROUP, RELEASE_GROUP_ID)
 
     assert await controller.get_item(MediaType.ALBUM, RELEASE_GROUP_ID, "musicbrainz") is album
     assert await controller.get_item_by_uri(f"musicbrainz://album/{RELEASE_GROUP_ID}") is album
 
     # the metadata flag is handed on: a lookup by id refreshes by default, one by uri does not
-    assert resolve.await_args_list == [
-        call(RELEASE_GROUP_ID, allow_update_metadata=True),
-        call(RELEASE_GROUP_ID, allow_update_metadata=False),
-    ]
+    assert resolve.await_args_list == [call(item_id, True), call(item_id, False)]
 
 
 async def test_get_item_knows_no_other_musicbrainz_items() -> None:
