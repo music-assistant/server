@@ -30,6 +30,7 @@ from pychromecast.controllers.media import (
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
+from pychromecast.dial import get_host_from_service
 from pychromecast.error import PyChromecastError
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
@@ -70,6 +71,24 @@ if TYPE_CHECKING:
     from pychromecast.socket_client import ConnectionStatus
 
     from .provider import ChromecastProvider
+
+
+async def _port_answers(host: str, port: int) -> bool:
+    """
+    Return whether a port accepts a connection within DEVICE_CHECK_TIMEOUT.
+
+    :param host: The host to connect to.
+    :param port: The port to connect to.
+    """
+    try:
+        async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
+            _, writer = await asyncio.open_connection(host, port)
+    except OSError, TimeoutError:
+        return False
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+    return True
 
 
 class ChromecastPlayer(PlayerProtocol):
@@ -361,10 +380,20 @@ class ChromecastPlayer(PlayerProtocol):
         else:
             await asyncio.to_thread(disconnect_cast, self.cc, 10)
 
-    async def check_device(self) -> bool:
-        """Probe the cast port of the device, and connect anew when the client is behind."""
-        answers = await self._cast_port_answers()
-        if answers == self.cc.socket_client.is_connected:
+    async def check_device(self) -> bool | None:
+        """
+        Probe the device where its client connects to it, and connect anew when that is behind.
+
+        None for a cast group, which is no device of its own.
+        """
+        if self.cast_info.is_audio_group or (listener := self.status_listener) is None:
+            return None
+        client = self.cc
+        answers = await self._client_endpoint_answers(client)
+        if self.player is None or self.status_listener is not listener:
+            # detached, or connected with another client, meanwhile
+            return answers
+        if answers == client.socket_client.is_connected:
             return answers
         if not answers:
             # the client would only notice on its heartbeat
@@ -1021,17 +1050,25 @@ class ChromecastPlayer(PlayerProtocol):
         disconnect_cast(old_client, 0)
         self._start_client()
 
-    async def _cast_port_answers(self) -> bool:
-        """Return whether the cast port of the device accepts a connection."""
-        try:
-            async with asyncio.timeout(DEVICE_CHECK_TIMEOUT):
-                _, writer = await asyncio.open_connection(self.cast_info.host, self.cast_info.port)
-        except OSError, TimeoutError:
-            return False
-        writer.close()
-        with suppress(OSError):
-            await writer.wait_closed()
-        return True
+    async def _client_endpoint_answers(self, client: Chromecast) -> bool:
+        """
+        Return whether the device accepts a connection where the given client connects to it.
+
+        :param client: The client of the device.
+        """
+        socket_client = client.socket_client
+        if socket_client.is_connected:
+            endpoints = {(socket_client.host, socket_client.port)}
+        else:
+            # the services the client tries, resolved as it resolves them itself
+            resolved = await asyncio.gather(
+                *(
+                    asyncio.to_thread(get_host_from_service, service, socket_client.zconf)
+                    for service in socket_client.services.copy()
+                )
+            )
+            endpoints = {(host, port) for host, port, _ in resolved if host and port}
+        return any(await asyncio.gather(*(_port_answers(*endpoint) for endpoint in endpoints)))
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
