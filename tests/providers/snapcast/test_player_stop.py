@@ -22,7 +22,8 @@ async def _stop(other_groups: list[SimpleNamespace]) -> tuple[SimpleNamespace, M
     provider.get_snap_ma_stream = lambda name: ma_stream if name == "music-1" else None
     provider._snapserver.groups = [group, *other_groups]
     player = SnapCastPlayer.__new__(SnapCastPlayer)
-    player._player_id = "player_1"
+    player._protocol_id = "player_1"
+    player._player = None
     player._provider = provider
     player.snap_client = SimpleNamespace(group=group)
     player.poke_player_update = MagicMock()  # type: ignore[method-assign]

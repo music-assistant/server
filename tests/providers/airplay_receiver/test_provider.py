@@ -13,6 +13,8 @@ from music_assistant_models.enums import ContentType, EventType
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.player import PlayerAvailabilityTracker
+from music_assistant.models.player import Player
 from music_assistant.providers.airplay_receiver import (
     AirPlayReceiverProvider,
     airplay_receiver_ports,
@@ -68,12 +70,17 @@ class _ReconcileMocks:
 def _reconcile_provider(
     assigned: tuple[str, ...],
     registered: dict[str, str],
+    unavailable: set[str] | None = None,
+    legacy_ids: dict[str, str] | None = None,
 ) -> tuple[AirPlayReceiverProvider, _ReconcileMocks]:
     """
     Build a bare provider with the real reconcile logic and mocked daemon control.
 
     :param assigned: The connected player ids the provider was loaded with.
     :param registered: Currently registered player ids mapped to their display name.
+    :param unavailable: Registered player ids that are currently unavailable.
+    :param legacy_ids: The ids of merged players, mapped to the player they went into;
+        the caller may change it afterwards.
     """
     prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
     prov.logger = MagicMock()
@@ -87,21 +94,27 @@ def _reconcile_provider(
     prov._assigned_player_ids = assigned
     prov.get_config_value = MagicMock(return_value="player_mass")  # type: ignore[method-assign]
 
+    legacy = legacy_ids if legacy_ids is not None else {}
+
     def get_player(player_id: str) -> MagicMock | None:
+        player_id = legacy.get(player_id, player_id)
         if player_id not in registered:
             return None
         player = MagicMock()
         player.player_id = player_id
-        player.display_name = registered[player_id]
+        player.name = registered[player_id]
+        player.available = player_id not in (unavailable or set())
         return player
 
     mass.players.get_player.side_effect = get_player
+    mass.players.resolve_player_id.side_effect = lambda player_id: legacy.get(player_id, player_id)
+    prov._availability = PlayerAvailabilityTracker(mass)
 
-    def start_receiver(player: MagicMock, airplay_name: str) -> None:
+    def start_receiver(player_id: str, _player: MagicMock, airplay_name: str) -> None:
         # stop_called / active_player_id are spelled out: a bare MagicMock attribute is
         # truthy, which would trip the stopped-daemon guard and the deselect path
-        prov._daemons[player.player_id] = MagicMock(
-            player_id=player.player_id,
+        prov._daemons[player_id] = MagicMock(
+            player_id=player_id,
             airplay_name=airplay_name,
             stop_called=False,
             active_player_id=None,
@@ -126,7 +139,7 @@ async def test_reconcile_starts_daemon_when_assigned_player_registers() -> None:
     registered["p1"] = "Kitchen"
     await prov._reconcile()
     mocks.start_receiver.assert_called_once()
-    assert mocks.start_receiver.call_args.args[1] == "Kitchen | Music Assistant"
+    assert mocks.start_receiver.call_args.args[2] == "Kitchen | Music Assistant"
     assert "p1" in prov._daemons
 
 
@@ -165,6 +178,19 @@ async def test_reconcile_keeps_daemon_for_temporarily_unavailable_player() -> No
     assert prov._daemons["p1"] is daemon
 
 
+async def test_reconcile_keeps_daemon_for_a_registered_player_turning_unavailable() -> None:
+    """A registered player that turns unavailable keeps its running receiver (stable identity)."""
+    unavailable: set[str] = set()
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"}, unavailable)
+    await prov._reconcile()
+    daemon = prov._daemons["p1"]
+
+    unavailable.add("p1")
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    mocks.stop_receiver.assert_not_awaited()
+    assert prov._daemons["p1"] is daemon
+
+
 async def test_player_removed_event_stops_daemon() -> None:
     """A permanently removed player gets its daemon stopped and dropped."""
     registered = {"p1": "Kitchen"}
@@ -175,6 +201,69 @@ async def test_player_removed_event_stops_daemon() -> None:
     await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p1"))
     mocks.stop_receiver.assert_awaited_once_with(daemon)
     assert not prov._daemons
+
+
+async def test_receiver_of_a_merged_player_runs_once_under_its_stored_id() -> None:
+    """A connected player merged before the load gets one receiver, on the player it went into."""
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Kitchen"}, legacy_ids={"p_old": "p_new"}
+    )
+
+    await prov._reconcile()
+    await prov._reconcile()
+
+    mocks.start_receiver.assert_called_once()
+    assert mocks.start_receiver.call_args.args[1].player_id == "p_new"
+    # the receiver keeps the port the AirPlay provider derives from the stored id
+    assert list(prov._daemons) == ["p_old"]
+    assert prov.get_player_audio_sources("p_new") == [prov._daemons["p_old"].audio_source]
+
+
+async def test_receiver_follows_a_connected_player_that_is_merged_into_another() -> None:
+    """A merge of the connected player keeps its receiver, which plays on the kept player."""
+    registered = {"p_old": "Kitchen"}
+    legacy_ids: dict[str, str] = {}
+    prov, mocks = _reconcile_provider(("p_old",), registered, legacy_ids=legacy_ids)
+    await prov.loaded_in_mass()
+    daemon = prov._daemons["p_old"]
+
+    registered.pop("p_old")
+    registered["p_new"] = "Kitchen"
+    legacy_ids["p_old"] = "p_new"
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_old"))
+
+    mocks.stop_receiver.assert_not_awaited()
+    assert prov._daemons == {"p_old": daemon}
+    # the events of the player it went into are followed from now on
+    assert mocks.mass.subscribe.call_args.kwargs["id_filter"] == ("p_new",)
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_new"))
+    mocks.stop_receiver.assert_awaited_once_with(daemon)
+
+
+async def test_merge_of_two_connected_players_keeps_the_receiver_of_the_one_that_stays() -> None:
+    """Two connected players turn out to be one: one receiver stays, that of the kept player."""
+    registered = {"p_old": "Kitchen", "p_new": "Kitchen"}
+    legacy_ids: dict[str, str] = {}
+    prov, mocks = _reconcile_provider(("p_old", "p_new"), registered, legacy_ids=legacy_ids)
+    await prov.loaded_in_mass()
+    absorbed = prov._daemons["p_old"]
+    kept = prov._daemons["p_new"]
+
+    registered.pop("p_old")
+    legacy_ids["p_old"] = "p_new"
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_REMOVED, object_id="p_old"))
+    await prov._reconcile()
+
+    assert prov._daemons == {"p_new": kept}
+    mocks.stop_receiver.assert_awaited_once_with(absorbed)
+    assert prov.get_player_audio_sources("p_new") == [kept.audio_source]
+
+    restarted, restarted_mocks = _reconcile_provider(
+        ("p_old", "p_new"), registered, legacy_ids=legacy_ids
+    )
+    await restarted._reconcile()
+    assert list(restarted._daemons) == ["p_new"]
+    restarted_mocks.start_receiver.assert_called_once()
 
 
 async def test_player_added_event_triggers_reconcile() -> None:
@@ -267,6 +356,66 @@ async def test_player_added_gives_a_failed_receiver_a_fresh_start() -> None:
     assert "p1" not in prov._failed_player_ids
     mocks.start_receiver.assert_called_once()
     assert "p1" in prov._daemons
+
+
+async def test_reconcile_waits_for_an_unavailable_player() -> None:
+    """A registered but unavailable player gets its receiver once it turns available."""
+    unavailable = {"p1"}
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"}, unavailable)
+
+    await prov._reconcile()
+    mocks.start_receiver.assert_not_called()
+
+    unavailable.clear()
+    await prov._reconcile()
+    mocks.start_receiver.assert_called_once()
+    assert "p1" in prov._daemons
+
+
+async def test_player_turning_available_gives_a_failed_receiver_a_fresh_start() -> None:
+    """A registered player that comes back lifts the block and starts its receiver again."""
+    unavailable = {"p1"}
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"}, unavailable)
+    prov._failed_player_ids = {"p1"}
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+    assert prov._failed_player_ids == {"p1"}
+
+    unavailable.clear()
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+
+    assert "p1" not in prov._failed_player_ids
+    mocks.start_receiver.assert_called_once()
+    assert "p1" in prov._daemons
+
+
+async def test_merged_player_turning_available_gives_its_failed_receiver_a_fresh_start() -> None:
+    """The player a connected one was merged into coming back lifts the block of its receiver."""
+    unavailable = {"p_new"}
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Kitchen"}, unavailable, legacy_ids={"p_old": "p_new"}
+    )
+    prov._failed_player_ids = {"p_old"}
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p_new"))
+
+    unavailable.clear()
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p_new"))
+
+    assert not prov._failed_player_ids
+    mocks.start_receiver.assert_called_once()
+
+
+async def test_update_of_an_available_player_keeps_a_failed_receiver_blocked() -> None:
+    """A player that stayed available does not lift the block of its failed receiver."""
+    prov, mocks = _reconcile_provider(("p1",), {"p1": "Kitchen"})
+    mocks.mass.players.iter_players.return_value = [mocks.mass.players.get_player("p1")]
+    prov._availability = PlayerAvailabilityTracker(mocks.mass)
+    prov._failed_player_ids = {"p1"}
+
+    await prov._on_player_event(MassEvent(event=EventType.PLAYER_UPDATED, object_id="p1"))
+
+    assert prov._failed_player_ids == {"p1"}
+    mocks.start_receiver.assert_not_called()
 
 
 async def test_give_up_on_a_replaced_receiver_is_a_noop() -> None:
@@ -362,6 +511,34 @@ def test_a_fatal_log_line_marks_the_daemon_started() -> None:
     assert daemon.started.is_set()
 
 
+# --- Receiver config ------------------------------------------------------------
+
+
+async def test_receiver_config_starts_at_the_volume_of_the_player(tmp_path: Path) -> None:
+    """The receiver's default volume is the level the player's state shows."""
+    prov = AirPlayReceiverProvider.__new__(AirPlayReceiverProvider)
+    prov.mass = MagicMock()
+    player = MagicMock(spec=Player)
+    player.volume_level = 40
+    prov.mass.players.get_player.return_value = player
+    prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
+    daemon = MagicMock(
+        player_id="pl0123456789ab",
+        airplay_name="Player A",
+        port=7000,
+        config_file=str(tmp_path / "shairport.conf"),
+    )
+    daemon.metadata_pipe.path = str(tmp_path / "metadata")
+    daemon.audio_pipe.path = str(tmp_path / "audio")
+
+    await prov._create_config_file(daemon)
+
+    prov.mass.players.get_player.assert_called_once_with("pl0123456789ab")
+    # 40 % of the -30.0 to 0.0 dB range
+    config = (tmp_path / "shairport.conf").read_text(encoding="utf-8")
+    assert "default_airplay_volume = -18.0;" in config
+
+
 def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
     """The receiver's FIFOs and shairport-sync config are created in the runtime dir."""
     prov, mocks = _reconcile_provider(("p1",), {})
@@ -372,9 +549,10 @@ def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
     prov._ports = {"p1": 7000}
     prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
     prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
-    player = MagicMock(player_id="p1", display_name="Player A")
+    player = MagicMock(player_id="p1")
+    player.name = "Player A"
 
-    AirPlayReceiverProvider._start_receiver(prov, player, "Player A | Music Assistant")
+    AirPlayReceiverProvider._start_receiver(prov, "p1", player, "Player A | Music Assistant")
 
     daemon = prov._daemons["p1"]
     assert {
@@ -386,6 +564,37 @@ def test_receiver_pipes_and_config_live_in_the_runtime_dir() -> None:
         "/ma-runtime/ma_airplay_metadata_airplay_receiver_p1",
         "/ma-runtime/ma_shairport_sync_airplay_receiver_p1.conf",
     }
+
+
+def test_receiver_of_a_merged_player_keeps_the_port_and_pipes_of_its_stored_id() -> None:
+    """A connected player merged into another keeps its port, pipes and config file."""
+    prov, mocks = _reconcile_provider(
+        ("p_old",), {"p_new": "Player A"}, legacy_ids={"p_old": "p_new"}
+    )
+    mocks.mass.runtime_path = "/ma-runtime"
+    prov.config.instance_id = "airplay_receiver"
+    prov.config.name = "AirPlay Receiver"
+    prov.manifest = MagicMock(domain="airplay_receiver")
+    prov._ports = {"p_old": 7000}
+    prov._audio_format = AudioFormat(content_type=ContentType.ALAC)
+    prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
+
+    AirPlayReceiverProvider._start_receiver(
+        prov, "p_old", mocks.mass.players.get_player("p_old"), "Player A | Music Assistant"
+    )
+
+    daemon = prov._daemons["p_old"]
+    assert daemon.port == 7000
+    assert {
+        daemon.audio_pipe.path,
+        daemon.metadata_pipe.path,
+        daemon.config_file,
+    } == {
+        "/ma-runtime/ma_airplay_audio_airplay_receiver_p_old",
+        "/ma-runtime/ma_airplay_metadata_airplay_receiver_p_old",
+        "/ma-runtime/ma_shairport_sync_airplay_receiver_p_old.conf",
+    }
+    assert daemon.audio_source.name == "AirPlay Receiver (Player A)"
 
 
 async def test_session_hooks_reach_a_metadata_pipe_whose_path_has_spaces(tmp_path: Path) -> None:
@@ -402,7 +611,7 @@ async def test_session_hooks_reach_a_metadata_pipe_whose_path_has_spaces(tmp_pat
     prov._setup_shairport_daemon = MagicMock()  # type: ignore[method-assign]
     prov._get_mdns_interface_line = AsyncMock(return_value="")  # type: ignore[method-assign]
     AirPlayReceiverProvider._start_receiver(
-        prov, MagicMock(player_id="p1"), "Player A | Music Assistant"
+        prov, "p1", MagicMock(player_id="p1"), "Player A | Music Assistant"
     )
     daemon = prov._daemons["p1"]
 

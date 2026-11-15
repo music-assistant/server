@@ -343,8 +343,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
             player = self.mass.players.get_player(queue_id)
             if (
                 player is None
-                or player.state.playback_state != PlaybackState.PLAYING
-                or player.state.active_source not in (queue.queue_id, None)
+                or player.playback_state != PlaybackState.PLAYING
+                or player.active_source not in (queue.queue_id, None)
                 or queue_data.session_id != session_id
                 or queue.flow_mode
             ):
@@ -355,8 +355,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     "(state: %s, source: %s, same session: %s, flow mode: %s)",
                     next_item.name,
                     queue.display_name,
-                    player.state.playback_state if player else "player unavailable",
-                    player.state.active_source if player else None,
+                    player.playback_state if player else "player unavailable",
+                    player.active_source if player else None,
                     queue_data.session_id == session_id,
                     queue.flow_mode,
                 )
@@ -397,9 +397,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # so they only run once this holds the lock too. A handover that cannot get it
             # in time is dropped: a changed queue schedules a fresh one, replacing this one.
             try:
-                async with self.mass.players.get_player_lock(
-                    queue_id, PlayerLockPurpose.PLAYBACK, strict=True
-                ):
+                async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
                     await _hand_over_to_player(next_item)
             except ResourceBusyError:
                 self.logger.debug(
@@ -649,7 +647,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             queue_data is not None
             and queue_data.queue.state == PlaybackState.PAUSED
             and player is not None
-            and player.state.playback_state == PlaybackState.PAUSED
-            and player.state.active_source == queue_id
+            and player.playback_state == PlaybackState.PAUSED
+            and player.active_source == queue_id
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )

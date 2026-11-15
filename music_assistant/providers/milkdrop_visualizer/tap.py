@@ -290,7 +290,7 @@ class TapManager:
             tap = Tap(player.player_id)
             self._taps[player.player_id] = tap
             tap.task = self.mass.create_task(self._run(tap))
-            self.logger.info("Waveform tap following %s", player.display_name)
+            self.logger.info("Waveform tap following %s", player.name)
             return tap
 
     def schedule_release(self, player_id: str) -> None:
@@ -510,7 +510,7 @@ class TapManager:
     def _sync_color(self, tap: Tap) -> None:
         """Fan out the track palette whenever it changes (once per track, in practice)."""
         player = self.mass.players.get_player(tap.player_id)
-        media = player.state.current_media if player is not None else None
+        media = player.current_media if player is not None else None
         payload = palette_payload(media.palette if media is not None else None)
         if payload != tap.last_color:
             tap.apply_color(payload)

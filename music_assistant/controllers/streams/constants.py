@@ -119,7 +119,7 @@ class PacingProfile(StrEnum):
     # one: a Samsung Music Frame restarts its Cast service on 6 s.
     REALTIME = "realtime"
     # a single track for a player that must hold a whole opening chunk before it plays
-    # gapless, see Player.needs_gapless_burst
+    # gapless, see PlayerProtocol.needs_gapless_burst
     GAPLESS_BURST = "gapless_burst"
     # live AudioSource streams, where whatever the burst hands over sits in the
     # player's buffer as listening delay

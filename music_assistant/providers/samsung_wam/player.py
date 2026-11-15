@@ -14,7 +14,7 @@ from music_assistant.constants import (
     CONF_ENTRY_REQUIRES_FIXED_CONTENT_LENGTH_DEFAULT_ENABLED,
 )
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 
 from .consts import (
     MANUFACTURER_NAME,
@@ -31,10 +31,12 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
     from pywam.speaker import Speaker
 
+    from music_assistant.models.player import Player
+
     from .provider import SamsungWamProvider
 
 
-class WamPlayer(Player):
+class WamPlayer(PlayerProtocol):
     """Representation of a Samsung WAM speaker."""
 
     def __init__(
@@ -64,9 +66,9 @@ class WamPlayer(Player):
         self.connection_lock = asyncio.Lock()
         self.synced_to_internal: str | None = None
 
-        super().__init__(provider=prov, player_id=mac)
+        super().__init__(provider=prov, protocol_id=mac)
 
-        self.logger = self.prov.logger.getChild(self.player_id)
+        self.logger = self.prov.logger.getChild(self.protocol_id)
         self._attr_supported_features = set(PLAYER_FEATURES_BASE)
         self._attr_supported_sample_rates = [
             (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
@@ -76,9 +78,10 @@ class WamPlayer(Player):
         self._attr_poll_interval = POLL_INTERVAL
 
         self._attr_device_info = DeviceInfo(model="Unknown Model", manufacturer=MANUFACTURER_NAME)
-        if is_valid_mac_address(self.player_id):
-            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.player_id)
+        if is_valid_mac_address(self.protocol_id):
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, self.protocol_id)
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, self.ip_address)
+        self._attr_device_info.add_identifier(IdentifierType.UUID, udn)
 
         self.state_sync = StateSyncHandler(self)
         self.playback = PlaybackHandler(self)
@@ -133,7 +136,7 @@ class WamPlayer(Player):
 
     async def on_config_updated(self) -> None:
         """Handle player config updates."""
-        if new_name := self.config.name:
+        if self.player is not None and (new_name := self.player.config.name):
             if self.connected and new_name != self._attr_name:
                 self.mass.create_task(self.device_config.set_name(new_name))
 
@@ -143,9 +146,14 @@ class WamPlayer(Player):
         """Poll the player."""
         await self.state_sync.poll()
 
-    async def on_unload(self) -> None:
-        """Handle cleanup when player is removed."""
-        await super().on_unload()
+    async def on_attach(self, player: Player) -> None:
+        """Follow the speaker's events and groups while the protocol is attached."""
+        self.state_sync.subscribe_speaker_events()
+        self.prov.groups.register_player(self)
+
+    async def on_detach(self) -> None:
+        """Stop following the speaker and disconnect from it."""
+        await super().on_detach()
         await self.state_sync.unload()
 
     async def play(self) -> None:
@@ -214,8 +222,8 @@ class WamPlayer(Player):
         if volume_level is not None and prev_volume is not None and volume_level != prev_volume:
             await self.volume.set_volume(prev_volume)
 
-        if prev_state == PlaybackState.PLAYING:
-            await self.mass.player_queues.resume(self.player_id)
+        if prev_state == PlaybackState.PLAYING and self.player is not None:
+            await self.mass.player_queues.resume(self.player.player_id)
 
     async def select_source(self, source: str) -> None:
         """
@@ -253,7 +261,7 @@ class WamPlayer(Player):
         :param player_ids_to_remove: List of player IDs to remove from the group.
         """
         await self.prov.groups.set_members(
-            self.player_id,
+            self.protocol_id,
             player_ids_to_add,
             player_ids_to_remove,
         )
