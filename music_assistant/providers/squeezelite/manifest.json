@@ -3,7 +3,7 @@
   "domain": "squeezelite",
   "stage": "stable",
   "name": "Squeezelite",
-  "description": "Stream music to Squeezelite players such as piCorePlayer and some legacy Squeezebox players over slimproto, taking the place of Lyrion (Logitech Media Server).",
+  "description": "Stream music to Squeezelite players such as piCorePlayer and some legacy Squeezebox players, as known from Lyrion (Logitech Media Server).",
   "codeowners": ["@music-assistant"],
   "credits": [
     "[aioslimproto](https://github.com/music-assistant/aioslimproto)"

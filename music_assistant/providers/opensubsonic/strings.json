@@ -69,7 +69,7 @@
     }
   },
   "manifest": {
-    "description": "Stream music from your OpenSubsonic compatible server, such as Navidrome, Gonic or Nextcloud Music."
+    "description": "Stream music from your OpenSubsonic compatible server, such as Navidrome or Gonic."
   },
   "errors": {
     "certificate_not_trusted": "The certificate of {0} is not trusted.",
