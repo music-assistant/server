@@ -11,8 +11,8 @@
       "id": "show_item",
       "label": "Ask the demo plugin about this",
       "media_types": ["track", "album", "artist", "playlist"],
-      "icon": "mdi-information-outline",
-      "command": "_demo_plugin_provider/show_item"
+      "scope": "library.read",
+      "icon": "mdi-information-outline"
     }
   ]
 }

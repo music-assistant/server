@@ -8,10 +8,9 @@ provider type, or whose ``codeowners`` are malformed — only fails once the ser
 provider. This pre-commit/CI guard scans every provider manifest up front and prints each problem.
 
 A manifest must not contain ``tier``: the server sets it from where the provider loads. An optional
-``support_url`` must be an ``https`` URL with a host. Declared ``menu_actions`` must have the right
-types and follow the rules the server applies when it loads a manifest
-(``music_assistant.helpers.menu_actions``); the server leaves out an action that breaks them, here
-it is an error.
+``support_url`` must be an ``https`` URL with a host. Declared ``menu_actions`` must follow the
+rules the server applies when it reads a manifest (``music_assistant.helpers.menu_actions``); the
+server leaves out an action that breaks them, here it is an error.
 
 When invoked with file or folder arguments (as pre-commit does for the changed files) only the
 manifests in scope are validated; with no arguments every provider manifest is scanned.
@@ -28,9 +27,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from music_assistant_models.provider import ProviderMenuAction
-
-from music_assistant.helpers.menu_actions import check_menu_actions
+from music_assistant.helpers.menu_actions import read_menu_actions
 
 # ruff: noqa: T201
 
@@ -140,7 +137,7 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
     if "support_url" in data and not _is_https_url(data["support_url"]):
         issues.append("'support_url' must be an https URL with a host")
     if "menu_actions" in data:
-        issues.extend(_validate_menu_actions(data["menu_actions"], folder_name))
+        issues.extend(read_menu_actions(data["menu_actions"])[1])
     return issues
 
 
@@ -153,41 +150,6 @@ def _validate_codeowners(codeowners: object) -> list[str]:
         for owner in codeowners
         if not (isinstance(owner, str) and owner.startswith("@"))
     ]
-
-
-def _validate_menu_actions(menu_actions: object, domain: str) -> list[str]:
-    """
-    Return problems with the ``menu_actions`` field.
-
-    :param menu_actions: The declared menu actions.
-    :param domain: The domain of the provider that declares them.
-    """
-    if not isinstance(menu_actions, list):
-        return ["'menu_actions' must be a list"]
-    issues: list[str] = []
-    actions: list[ProviderMenuAction] = []
-    for index, action in enumerate(menu_actions):
-        if not isinstance(action, dict) or not _has_menu_action_types(action):
-            issues.append(
-                f"menu action {index} must have string id, label and command, a list of string "
-                "media_types, and optionally a string icon and a boolean plays"
-            )
-            continue
-        actions.append(ProviderMenuAction.from_dict(action))
-    issues.extend(check_menu_actions(domain, actions)[1])
-    return issues
-
-
-def _has_menu_action_types(action: dict[str, object]) -> bool:
-    """Return True when a declared menu action has the types its fields need."""
-    media_types = action.get("media_types")
-    return (
-        all(isinstance(action.get(key), str) for key in ("id", "label", "command"))
-        and isinstance(media_types, list)
-        and all(isinstance(media_type, str) for media_type in media_types)
-        and isinstance(action.get("icon", ""), str)
-        and isinstance(action.get("plays", False), bool)
-    )
 
 
 def _is_https_url(value: object) -> bool:

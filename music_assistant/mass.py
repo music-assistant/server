@@ -44,7 +44,6 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.event import MassEvent
 from music_assistant_models.helpers import set_global_cache_values
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant import providers as providers_package
 from music_assistant.constants import (
@@ -105,8 +104,8 @@ from music_assistant.helpers.catalog import (
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
-from music_assistant.helpers.menu_actions import check_menu_actions
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.helpers.provider_manifest import read_manifest_file
 from music_assistant.helpers.runtime_dir import prepare_runtime_dir
 from music_assistant.helpers.util import (
     TaskManager,
@@ -128,6 +127,7 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.controllers.community_catalog.models import CommunityProvider
     from music_assistant.models.core_controller import CoreController
@@ -1762,9 +1762,11 @@ class MusicAssistant:
         :param provider_path: Folder of the provider, holding its manifest.json.
         :param tier: Who maintains the provider, which follows from where it loads.
         """
-        provider_manifest: ProviderManifest = await ProviderManifest.parse(
+        provider_manifest, problems = await read_manifest_file(
             os.path.join(provider_path, "manifest.json")
         )
+        for problem in problems:
+            LOGGER.warning("Provider %s: left out %s", provider_manifest.domain, problem)
         # the tier follows from where a provider loads, not from its manifest file
         set_provider_tier(provider_manifest, tier)
         if tier == ProviderTier.COMMUNITY:
@@ -1786,11 +1788,6 @@ class MusicAssistant:
         provider_manifest.has_setup_flow = await isfile(
             os.path.join(provider_path, "setup_flow.py")
         )
-        provider_manifest.menu_actions, problems = check_menu_actions(
-            provider_manifest.domain, provider_manifest.menu_actions
-        )
-        for problem in problems:
-            LOGGER.warning("Provider %s: left out %s", provider_manifest.domain, problem)
         # override Home Assistant provider if we're running as add-on
         if provider_manifest.domain == "hass" and self.running_as_hass_addon:
             provider_manifest.builtin = True
