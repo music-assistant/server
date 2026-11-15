@@ -328,11 +328,11 @@ Data flow: media item → Music/Metadata controller lookups → `Track`/`QueueIt
 A track known only by an external id (a MusicBrainz recording id or an ISRC, its `provider`
 set to `external`) is the exception. It goes onto the queue as it is and is looked up on the
 music providers only when the queue loads it, or when a player asks for its stream, on the
-music sources of the user the queue plays for. A list of such tracks then costs a lookup per
+music sources the queue's stream may use. A list of such tracks then costs a lookup per
 track that is reached, never one per track of the list for a single play request. Until it is
 looked up it is on no music source: it still counts as enqueueable
-(`helpers.can_be_enqueued`), seeds no similar-tracks refill and is left out of a playlist made
-of the queue.
+(`helpers.can_be_enqueued`), seeds no similar-tracks refill, and a queue that holds one can
+not be saved as a playlist.
 
 ## Queue Item Origin
 

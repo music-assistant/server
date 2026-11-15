@@ -8,7 +8,8 @@ user the queue plays for.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -32,8 +33,11 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 from music_assistant_models.media_items import (
+    Artist,
+    AudioFormat,
     ItemMapping,
     MediaItemImage,
+    ProviderMapping,
     Track,
     UniqueList,
 )
@@ -51,6 +55,8 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
+    set_current_user,
+    set_impersonated_user,
     user_auth_context,
 )
 from music_assistant.helpers.external_ids import external_item_id
@@ -64,7 +70,7 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzUrl,
 )
 from tests.common import set_music_source_access
-from tests.controllers.music.helpers import ISRC, create_album, create_track
+from tests.controllers.music.helpers import ISRC, create_album
 
 GET_CURRENT_USER = "music_assistant.controllers.player_queues.queue_loader.get_current_user"
 QUEUE_ID = "q1"
@@ -75,9 +81,11 @@ RELEASE_ID = "6b47c9a0-b9e1-3df9-a5e7-50a6ce0dbdbd"
 SPOTIFY_TRACK_ID = "4uLU6hMCjMI75M1A2tKUQC"
 SPOTIFY_TRACK_URL = f"https://open.spotify.com/track/{SPOTIFY_TRACK_ID}"
 
-# the owner's private Spotify account and the member's own Tidal account
+# the owner's private Spotify account, the member's own Tidal account and a Tidal account
+# the owner shares with everyone
 THEIRS = "spotify--theirs"
 MINE = "tidal--mine"
+SHARED = "tidal--shared"
 OWNER = User(user_id="user-owner", username="owner", role=UserRole.USER)
 MEMBER = User(user_id="user-member", username="member", role=UserRole.USER)
 USERS = {user.user_id: user for user in (OWNER, MEMBER)}
@@ -138,25 +146,59 @@ def _provider(instance_id: str) -> MagicMock:
     return provider
 
 
-def _provider_track(instance_id: str, item_id: str, name: str = "Test Track") -> Track:
-    """Return a track as a provider serves it, with a cover and an album of its own."""
-    track = create_track(instance_id.replace("--", "_"), item_id, name=name, duration=215)
-    domain = instance_id.split("--", maxsplit=1)[0]
-    track.provider = instance_id
-    for mapping in track.provider_mappings:
-        mapping.provider_instance = instance_id
-        mapping.provider_domain = domain
-    track.album = ItemMapping(
-        item_id=f"{item_id}_album", provider=instance_id, name="Album", media_type=MediaType.ALBUM
-    )
-    track.metadata.add_image(
-        MediaItemImage(
-            type=ImageType.THUMB,
-            path=f"https://covers.example/{item_id}.jpg",
-            provider=instance_id,
-            remotely_accessible=True,
+def _provider_track(
+    instance_id: str, item_id: str, name: str = "Test Track", image: bool = True
+) -> Track:
+    """
+    Return a track as a provider serves it, with an artist and an album of that provider.
+
+    :param instance_id: The provider instance the track, its artist and its album are on.
+    :param item_id: The item id of the track on that provider.
+    :param name: The name of the track.
+    :param image: Whether the track comes with a cover.
+    """
+
+    def _mapping(mapped_item_id: str) -> ProviderMapping:
+        return ProviderMapping(
+            item_id=mapped_item_id,
+            provider_domain=instance_id.split("--", maxsplit=1)[0],
+            provider_instance=instance_id,
+            audio_format=AudioFormat(),
         )
+
+    track = Track(
+        item_id=item_id,
+        provider=instance_id,
+        name=name,
+        duration=215,
+        external_ids={(ExternalID.ISRC, ISRC)},
+        provider_mappings={_mapping(item_id)},
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id=f"{item_id}_artist",
+                    provider=instance_id,
+                    name="Test Artist",
+                    provider_mappings={_mapping(f"{item_id}_artist")},
+                )
+            ]
+        ),
+        album=ItemMapping(
+            item_id=f"{item_id}_album",
+            provider=instance_id,
+            name="Album",
+            media_type=MediaType.ALBUM,
+        ),
     )
+    if image:
+        track.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=f"https://covers.example/{item_id}.jpg",
+                provider=instance_id,
+                remotely_accessible=True,
+            )
+        )
     return track
 
 
@@ -189,9 +231,13 @@ def _load_providers(music: MusicController, *providers: MagicMock, linked: bool 
     musicbrainz.instance_id = musicbrainz.domain = "musicbrainz"
     musicbrainz.type = ProviderType.METADATA
     musicbrainz.available = True
-    musicbrainz.get_recording_details = AsyncMock(
-        side_effect=lambda recording_id: _recording(recording_id, linked)
-    )
+
+    async def _recording_details(recording_id: str) -> MusicBrainzRecording:
+        # a request takes a moment, in which another load of the same item can start
+        await asyncio.sleep(0)
+        return _recording(recording_id, linked)
+
+    musicbrainz.get_recording_details = AsyncMock(side_effect=_recording_details)
     musicbrainz.get_release_details = AsyncMock(side_effect=InvalidDataError("unknown id"))
     music.mass._providers = {
         "musicbrainz": musicbrainz,
@@ -255,6 +301,7 @@ def _controller(music: MusicController, userid: str | None = None) -> Any:
     ctrl.mass.config = music.mass.config
     ctrl.mass.providers = []
     ctrl.mass.player_queues = ctrl
+    ctrl.mass.create_task = music.mass.create_task
     ctrl.mass.webserver.auth.get_user = AsyncMock(side_effect=USERS.get)
     ctrl.mass.streams.audio.get_stream_details = AsyncMock(return_value=MagicMock(duration=None))
     ctrl.mass.players.get_player = Mock(
@@ -310,9 +357,9 @@ async def _remembered(music: MusicController, recording_id: str = RECORDING_ID) 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("as_uris", [True, False], ids=["bare uris", "objects"])
+@pytest.mark.parametrize("entry_form", ["bare uris", "objects", "item mappings"])
 async def test_playing_a_list_looks_nothing_up_until_an_item_is_loaded(
-    music: MusicController, as_uris: bool
+    music: MusicController, entry_form: str
 ) -> None:
     """A list of external tracks costs no request when played, and one lookup per loaded item."""
     spotify = _provider("spotify--1")
@@ -321,10 +368,12 @@ async def test_playing_a_list_looks_nothing_up_until_an_item_is_loaded(
     )
     musicbrainz = _load_providers(music, spotify, linked=True)
     ctrl = _controller(music)
-    entries: list[Any] = [
-        _uri(recording_id) if as_uris else _external_track(recording_id)
-        for recording_id in RECORDING_IDS
-    ]
+    entry_of: dict[str, Callable[[str], Any]] = {
+        "bare uris": _uri,
+        "objects": _external_track,
+        "item mappings": lambda recording_id: ItemMapping.from_item(_external_track(recording_id)),
+    }
+    entries = [entry_of[entry_form](recording_id) for recording_id in RECORDING_IDS]
 
     await ctrl.play_media(QUEUE_ID, entries, QueueOption.REPLACE)
 
@@ -410,7 +459,7 @@ async def test_external_album_and_radio_mode_are_resolved_at_once(music: MusicCo
     ctrl = _controller(music)
     album_uri = f"{EXTERNAL_ID_PROVIDER}://album/musicbrainz_albumid:{RELEASE_ID}"
     album = create_album("spotify_1", "a1")
-    seed_track = create_track("spotify_1", "t1")
+    seed_track = _provider_track("spotify--1", "t1")
     # what the album and the radio expand to is of no concern here
     ctrl._media_resolver._resolve_media_items = AsyncMock(
         return_value=[ResolvedItem(_provider_track("spotify--1", "s1"))]
@@ -475,10 +524,10 @@ async def test_found_track_replaces_the_external_track(music: MusicController) -
 
 async def test_track_in_the_library_is_played_from_the_library(music: MusicController) -> None:
     """An external track the library holds costs no request and plays as the library track."""
-    track = create_track("spotify_1", "t1")
+    track = _provider_track("spotify--1", "t1")
     track.external_ids.add((ExternalID.MB_RECORDING, RECORDING_ID))
     library_track = await music.tracks.add_item_to_library(track)
-    spotify = _provider("spotify_1")
+    spotify = _provider("spotify--1")
     musicbrainz = _load_providers(music, spotify)
     ctrl = _controller(music)
     (item,) = _queue(ctrl, _external_track())
@@ -572,8 +621,9 @@ async def test_service_that_could_not_answer_leaves_the_track_available(
     assert limited.media_item is found
 
 
+@pytest.mark.parametrize("acting_as_owner", [False, True], ids=["as itself", "acting as"])
 async def test_track_is_looked_up_on_the_sources_of_the_queue_user(
-    music: MusicController,
+    music: MusicController, acting_as_owner: bool
 ) -> None:
     """The track comes from a source of the user the queue plays for, whoever has it loaded."""
     theirs, mine = _provider(THEIRS), _provider(MINE)
@@ -592,14 +642,154 @@ async def test_track_is_looked_up_on_the_sources_of_the_queue_user(
     ctrl = _controller(music, userid=MEMBER.user_id)
     (item,) = _queue(ctrl, _external_track())
 
-    # the owner skips to the track on the queue the member started
-    with user_auth_context(OWNER):
-        await ctrl._load_item(item)
-        assert get_current_user() is OWNER
+    # the owner skips to the track on the queue the member started, as itself or through a
+    # service account that acts for it
+    if acting_as_owner:
+        set_current_user(User(user_id="service", username="service", role=UserRole.SERVICE))
+        set_impersonated_user(OWNER)
+    else:
+        set_current_user(OWNER)
+    await ctrl._load_item(item)
 
+    assert get_current_user() is OWNER
     assert item.media_item is found
     assert _requests(theirs) == 0
     assert _requests(mine) == 1
+
+
+async def test_queue_without_a_user_is_looked_up_on_the_sources_its_stream_may_use(
+    music: MusicController,
+) -> None:
+    """Anonymous playback asks the shared sources alone, in the library and on the providers."""
+    library_copy = _provider_track(THEIRS, "s1")
+    library_copy.external_ids.add((ExternalID.MB_RECORDING, RECORDING_ID))
+    await music.tracks.add_item_to_library(library_copy)
+    theirs, shared = _provider(THEIRS), _provider(SHARED)
+    theirs.get_track = AsyncMock(return_value=_provider_track(THEIRS, SPOTIFY_TRACK_ID))
+    theirs.get_track_by_external_id = AsyncMock(return_value=_provider_track(THEIRS, "s9"))
+    found = _provider_track(SHARED, "t9")
+    shared.get_track_by_external_id = AsyncMock(return_value=found)
+    # the private account is loaded first, so it is the first to be asked when it may be
+    _load_providers(music, theirs, shared, linked=True)
+    set_music_source_access(
+        music.mass,
+        {
+            THEIRS: ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
+            SHARED: ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    ctrl = _controller(music, userid=None)
+    (item,) = _queue(ctrl, _external_track())
+
+    await ctrl._load_item(item)
+
+    assert item.media_item is found
+    assert _requests(theirs) == 0
+    assert _requests(shared) == 1
+    # and whoever had the item loaded is the caller it was before
+    assert get_current_user() is None
+
+
+@pytest.mark.parametrize(
+    ("instance_id", "image"),
+    [("spotify--1", False), ("ytmusic--1", True)],
+    ids=["without an image", "on YouTube Music"],
+)
+async def test_looked_up_track_is_not_fetched_again(
+    music: MusicController, instance_id: str, image: bool
+) -> None:
+    """The track that was just found is played as it is: no details of it are fetched."""
+    provider = _provider(instance_id)
+    found = _provider_track(instance_id, "x9", image=image)
+    provider.get_track_by_external_id = AsyncMock(return_value=found)
+    provider.get_track = AsyncMock(return_value=found)
+    _load_providers(music, provider)
+    ctrl = _controller(music)
+    (item,) = _queue(ctrl, _external_track())
+
+    with patch.object(
+        music, "get_item_by_uri", AsyncMock(wraps=music.get_item_by_uri)
+    ) as get_item_by_uri:
+        await ctrl._load_item(item)
+
+    assert item.media_item is found
+    get_item_by_uri.assert_not_awaited()
+    provider.get_track.assert_not_awaited()
+    provider.get_album.assert_not_awaited()
+    provider.get_artist.assert_not_awaited()
+    assert _requests(provider) == 1
+
+
+async def test_load_by_another_user_than_the_queues_fetches_nothing_as_that_user(
+    music: MusicController,
+) -> None:
+    """A track found on a private source of the queue's user loads, whoever has it loaded."""
+    mine = _provider(MINE)
+    found = _provider_track(MINE, "t9", image=False)
+    mine.get_track_by_external_id = AsyncMock(return_value=found)
+    mine.get_track = AsyncMock(return_value=found)
+    _load_providers(music, mine)
+    set_music_source_access(
+        music.mass,
+        {MINE: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    ctrl = _controller(music, userid=MEMBER.user_id)
+    (item,) = _queue(ctrl, _external_track())
+
+    # the owner, who may not use the member's account, skips to the track
+    with user_auth_context(OWNER):
+        await ctrl._load_item(item)
+
+    assert item.media_item is found
+    assert _requests(mine) == 1
+
+
+async def test_loads_of_the_same_item_at_once_share_one_lookup(music: MusicController) -> None:
+    """A preload and a user action that load the same item cost one lookup between them."""
+    spotify = _provider("spotify--1")
+    found = _provider_track("spotify--1", "s9")
+    spotify.get_track_by_external_id = AsyncMock(return_value=found)
+    musicbrainz = _load_providers(music, spotify)
+    ctrl = _controller(music)
+    (item,) = _queue(ctrl, _external_track())
+
+    await asyncio.gather(ctrl._load_item(item), ctrl._load_item(item))
+
+    assert item.media_item is found
+    musicbrainz.get_recording_details.assert_awaited_once_with(RECORDING_ID)
+    spotify.get_track_by_external_id.assert_awaited_once()
+    assert _requests(spotify) == 1
+    assert ctrl.mass.streams.audio.get_stream_details.await_count == 2
+    # nothing is kept of the lookup once it is done
+    await asyncio.sleep(0)
+    assert not [
+        task_id
+        for task_id in music.mass._tracked_tasks
+        if "_external_track_on_a_provider" in task_id
+    ]
+
+
+async def test_item_found_missing_is_not_looked_up_again(music: MusicController) -> None:
+    """A speaker that asks again for a track the queue found missing costs no second lookup."""
+    spotify = _provider("spotify--1")
+    musicbrainz = _load_providers(music, spotify)
+    ctrl = _controller(music)
+    (item,) = _queue(ctrl, _external_track())
+    audio = StreamsAudio(ctrl.mass)
+
+    with pytest.raises(MediaNotFoundError):
+        await audio.get_stream_details(item)
+    # what the stream request does with an item that can not be played
+    item.available = False
+    lookups = musicbrainz.get_recording_details.await_count
+    requests = _requests(spotify)
+    assert (lookups, requests) == (1, 1)
+
+    with pytest.raises(MediaNotFoundError):
+        await audio.get_stream_details(item)
+
+    assert musicbrainz.get_recording_details.await_count == lookups
+    assert _requests(spotify) == requests
 
 
 async def test_stream_details_are_never_asked_for_an_external_track() -> None:
@@ -632,29 +822,58 @@ async def test_stream_details_are_never_asked_for_an_external_track() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_external_track_survives_a_restart_as_it_is(music: MusicController) -> None:
-    """A queue restored from the cache holds the track as it was enqueued, to look up on load."""
+async def test_external_track_is_looked_up_after_a_restart(music: MusicController) -> None:
+    """A queue restored from the cache holds the track as it was enqueued, and finds it on load."""
+    spotify = _provider("spotify--1")
+    found = _provider_track("spotify--1", "s9")
+    spotify.get_track_by_external_id = AsyncMock(return_value=found)
+    _load_providers(music, spotify)
     ctrl = _controller(music)
-    (item,) = _queue(ctrl, _external_track())
+    _queue(ctrl, _external_track())
+    saved = cast("PlayerQueueData", ctrl._queue_data[QUEUE_ID])
 
-    restored = QueueItem.from_cache(item.to_cache())
+    restored = PlayerQueueData.from_cache(saved.to_cache(), saved.items_to_cache())
+    ctrl._queue_data[QUEUE_ID] = restored
 
-    assert restored.media_item == item.media_item
-    assert isinstance(restored.media_item, Track)
-    assert restored.media_item.provider == EXTERNAL_ID_PROVIDER
-    assert restored.uri == _uri()
+    (item,) = restored.items
+    assert isinstance(item.media_item, Track)
+    assert item.media_item.provider == EXTERNAL_ID_PROVIDER
+    assert item.uri == _uri()
+    assert [track.uri for track in restored.enqueued_media_items] == [_uri()]
+
+    await ctrl._load_item(item)
+
+    assert item.media_item is found
+    # the enqueued item is another object than the queue's since the restart
+    assert restored.enqueued_media_items == [found]
 
 
 async def test_external_track_stays_a_source_of_a_dynamic_queue(music: MusicController) -> None:
     """A track added to a mix is kept in its pool, though no music source has it yet."""
     ctrl = _controller(music)
-    external_track = _external_track()
-    gone = _provider_track("spotify--1", "s1")
+    playing = _provider_track("spotify--1", "s1")
+    gone = _provider_track("spotify--1", "s2")
     for mapping in gone.provider_mappings:
         mapping.available = False
-    ctrl.get_tracks_for_playback = AsyncMock(return_value=[external_track, gone])
+    first, second = _external_track(RECORDING_IDS[1]), _external_track(RECORDING_IDS[2])
+    ctrl.get_tracks_for_playback = AsyncMock(return_value=[first, gone])
 
-    assert await ManagedPool(ctrl)._fetch_tracks(external_track) == [external_track]
+    # as a source of the pool
+    assert await ManagedPool(ctrl)._fetch_tracks(first) == [first]
+
+    # when the queue turns into a mix
+    _queue(ctrl, playing)
+    ctrl._set_transitioning = Mock()
+    ctrl.update_next_item_on_player = Mock()
+    ctrl.is_smart_shuffle_active = Mock(return_value=False)
+    ctrl._managed_pool.fill = AsyncMock(return_value=[first, gone])
+    await ctrl._enter_dynamic_mode(QUEUE_ID, QueueOption.ADD)
+    assert _media_items(ctrl) == [playing, first]
+
+    # and when the mix is topped up
+    ctrl._managed_pool.fill = AsyncMock(return_value=[gone, second])
+    await ctrl._fill_dynamic_tracks(QUEUE_ID)
+    assert _media_items(ctrl) == [playing, first, second]
 
 
 async def test_autoplay_is_not_seeded_with_tracks_that_are_not_looked_up(
@@ -674,19 +893,42 @@ async def test_autoplay_is_not_seeded_with_tracks_that_are_not_looked_up(
     radio.get_dynamic_tracks.assert_awaited_once()
     assert radio.get_dynamic_tracks.await_args.args[0] == [played]
 
+    # a refill from a single track is seeded with what the queue holds instead
+    radio.get_dynamic_tracks.reset_mock()
+    await ctrl._get_similar_tracks(QUEUE_ID, seed_items=[played])
+    assert radio.get_dynamic_tracks.await_args.args[0] == [played]
+
     radio.get_dynamic_tracks.reset_mock()
     assert await ctrl._get_similar_tracks(QUEUE_ID, seed_items=seeds[1:]) == []
     radio.get_dynamic_tracks.assert_not_awaited()
 
 
-async def test_queue_saved_as_playlist_leaves_out_tracks_that_are_not_looked_up(
+async def test_queue_with_tracks_not_looked_up_is_not_saved_as_playlist(
     music: MusicController,
 ) -> None:
-    """A playlist made of the queue holds the tracks that were found, not the ones to look up."""
+    """Saving the queue is refused, with its reason, while it holds tracks to look up."""
+    spotify = _provider("spotify--1")
+    musicbrainz = _load_providers(music, spotify)
     ctrl = _controller(music)
     ctrl._check_player_permission = Mock()
     ctrl.get = Mock(return_value=ctrl._queue_data[QUEUE_ID].queue)
     played = _provider_track("spotify--1", "s1")
-    _queue(ctrl, played, _external_track(RECORDING_IDS[1]))
+    _, not_looked_up = _queue(ctrl, played, _external_track(RECORDING_IDS[1]))
 
-    assert ctrl._playlist_uris(QUEUE_ID) == [played.uri]
+    with (
+        patch.object(music.playlists, "create_playlist", AsyncMock()) as create_playlist,
+        patch.object(music.playlists, "add_playlist_tracks", AsyncMock()) as add_tracks,
+        pytest.raises(InvalidDataError) as excinfo,
+    ):
+        await ctrl.save_as_playlist(QUEUE_ID, "Tonight")
+
+    assert excinfo.value.translation_key == "queue_holds_tracks_not_looked_up"
+    assert excinfo.value.translation_owner == "core.player_queues"
+    create_playlist.assert_not_awaited()
+    add_tracks.assert_not_awaited()
+    musicbrainz.get_recording_details.assert_not_awaited()
+    assert _requests(spotify) == 0
+
+    # once the track was found, the queue is saved like any other
+    not_looked_up.media_item = _provider_track("spotify--1", "s2")
+    assert ctrl._playlist_uris(QUEUE_ID) == ["spotify--1://track/s1", "spotify--1://track/s2"]
