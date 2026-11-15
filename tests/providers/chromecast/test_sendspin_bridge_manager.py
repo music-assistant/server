@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed
@@ -338,6 +338,33 @@ class TestCastBridgeYieldsToSqueezelite:
         assert not manager._has_bridge(CAST_ID)
         cast_bridge.stop.assert_awaited_once()
         mass.players.remove_protocol.assert_awaited_once_with(client_id)
+
+    @pytest.mark.parametrize("permanent", [True, False])
+    async def test_a_claimed_client_that_steps_back_lets_the_other_bridges_take_over(
+        self, permanent: bool
+    ) -> None:
+        """Test a claimed receiver that goes for good frees the output for the other bridges."""
+        manager, mass, cast_protocol = _make_cast_environment()
+        client_id = manager._bridge_client_id(cast_protocol)
+        assert client_id is not None
+        manager._client_ids[CAST_ID] = client_id
+        # the Sendspin Cast receiver connected on its own and was claimed
+        manager._claimed_clients[CAST_ID] = client_id
+        sendspin_server = mass.get_provider.return_value.server_api
+        sendspin_server.remove_client = AsyncMock()
+        records = {client_id: {"values": {CONF_UNDERLYING_PLAYER_ID: CAST_ID}}}
+        mass.config.get_protocol_record = MagicMock(side_effect=records.get)
+        mass.players.remove_protocol = AsyncMock(side_effect=records.pop)
+
+        with patch.object(manager, "_evaluate_other_bridges", new=MagicMock()) as evaluate:
+            await manager.remove_bridge(CAST_ID, permanent=permanent)
+
+        sendspin_server.remove_client.assert_awaited_once_with(client_id)
+        assert evaluate.call_args_list == ([call(CAST_ID)] if permanent else []), (
+            "the other bridges were not let to take over"
+            if permanent
+            else "a removal that is not for good frees nothing"
+        )
 
     def test_the_cast_bridge_returns_when_the_squeezelite_player_disconnects(self) -> None:
         """Test the Cast bridge is wanted again once the squeezelite protocol is detached."""

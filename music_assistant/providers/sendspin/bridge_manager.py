@@ -220,9 +220,7 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         if removed_any:
             self.logger.debug("Sendspin bridge removed for protocol %s", protocol_id)
             if permanent:
-                # the Sendspin output of the device is free now: a bridge of another protocol
-                # of its player that waited for it, or failed to register, can take it
-                self.mass.create_task(self._evaluate_other_bridges(protocol_id), eager_start=False)
+                self._let_other_bridges_take_over(protocol_id)
 
     def get_bridge(self, protocol_id: str) -> BridgeT | None:
         """
@@ -398,6 +396,17 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
                 underlying_id
             ):
                 await self.mass.players.remove_protocol(other_id)
+
+    def _let_other_bridges_take_over(self, protocol_id: str) -> None:
+        """
+        Let the bridges of the other protocols of its player take the Sendspin output over.
+
+        Call it once a protocol gave up the Sendspin output of its device for good: a bridge
+        of another protocol that waited for it, or failed to register, can take it now.
+
+        :param protocol_id: The id of the protocol whose bridge stepped back.
+        """
+        self.mass.create_task(self._evaluate_other_bridges(protocol_id), eager_start=False)
 
     async def _evaluate_other_bridges(self, protocol_id: str) -> None:
         """

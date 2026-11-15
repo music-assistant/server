@@ -193,14 +193,21 @@ def holds_bridge_client(client: SendspinClient, role: Role | None) -> bool:
     """
     Return whether a bridge still holds the Sendspin client it registered.
 
-    Another bridge of the device can register the same client id while this one is still
-    registered: the server then hands that bridge the client, with roles of its own. A
-    bridge that stops only removes a client it still holds.
+    Another bridge of the device can register the same client id while no connection is
+    attached to the client: the server then hands that bridge the client, with roles of its
+    own. A connection that attaches, such as that of the Sendspin Cast receiver, brings roles
+    of its own too, but leaves the client to the bridge that registered it. A bridge that
+    stops only removes a client it still holds.
 
     :param client: The client the registration of the bridge returned.
     :param role: The role the bridge got with that client, if any.
     """
-    return role is None or role in client.roles_by_family(role.role_family)
+    # nobody can register an id while a connection is attached to its client
+    return (
+        role is None
+        or client.connection is not None
+        or role in client.roles_by_family(role.role_family)
+    )
 
 
 def mac_from_bridge_client_id(client_id: str) -> str | None:

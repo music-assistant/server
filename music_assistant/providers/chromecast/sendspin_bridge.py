@@ -890,6 +890,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
                     await sendspin_server.remove_client(claimed_client_id)
             if permanent:
                 await self._remove_client_protocol(protocol_id, claimed_client_id)
+                self._let_other_bridges_take_over(protocol_id)
             self.logger.debug(
                 "Claimed Sendspin client removed for Chromecast protocol %s", protocol_id
             )

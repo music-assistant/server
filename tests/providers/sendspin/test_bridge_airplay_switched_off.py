@@ -96,6 +96,27 @@ def _hello(client_id: str, role_id: str) -> ClientHelloPayload:
     )
 
 
+def _connect_cast_receiver(client: Any, *, state_received: bool = True) -> None:
+    """
+    Connect the Sendspin Cast receiver app to a client, as the server attaches its connection.
+
+    The receiver negotiates its own player role, which takes the place of the bridge role.
+
+    :param client: The client of the Cast bridge.
+    :param state_received: Whether the receiver sent its initial state already, which is
+        when the server calls the client connected.
+    """
+    hello = _hello(client.client_id, "player@v1")
+    client.attach_connection(
+        MagicMock(disconnect=AsyncMock()),
+        client_info=hello,
+        negotiated_roles=["player@v1"],
+        active_roles=["player@v1"],
+    )
+    if state_received:
+        client.mark_connected()
+
+
 class _Player:
     """The player of the device: its outputs follow the stored and the attached protocols."""
 
@@ -153,6 +174,7 @@ class _Device:
         squeezelite: bool = True,
         slow_teardown: bool = False,
         cast_connected: bool = False,
+        cast_state_received: bool = True,
     ) -> None:
         """
         Set up the device with none of its protocols attached.
@@ -164,10 +186,12 @@ class _Device:
             as one that streams, or waits for its lock or its Cast app launch, does.
         :param cast_connected: Let the Sendspin Cast receiver connect to the client of the
             Cast bridge, as it does while the Cast app runs.
+        :param cast_state_received: Whether that receiver sent its initial state already.
         """
         _DEVICES.append(self)
         self._slow_teardown = slow_teardown
         self._cast_connected = cast_connected
+        self._cast_state_received = cast_state_received
         self.mass = mass = MagicMock()
         use_real_create_task(mass)
         mass.loop = asyncio.get_running_loop()
@@ -330,7 +354,10 @@ class _Device:
 
     def owner_of(self, client_id: str) -> str | None:
         """
-        Return the protocol whose bridge holds the client of the server: its role and callback.
+        Return the protocol whose bridge holds the client of the server.
+
+        That is the bridge that registered it last, by its stream-start callback, whose role
+        the client carries, or the role of a connection its receiver attached.
 
         :param client_id: The client id.
         """
@@ -340,7 +367,7 @@ class _Device:
         for protocol_id, bridge in self.bridges.items():
             if (
                 bridge.client is client
-                and bridge.role in roles
+                and (bridge.role in roles or client.connection is not None)
                 and self.server._external_stream_start_cbs.get(client_id) is bridge.on_stream_start
             ):
                 return protocol_id
@@ -396,9 +423,7 @@ class _Device:
             )
             (bridge.role,) = bridge.client.roles_by_family("player")
             if domain == "chromecast" and self._cast_connected:
-                # the Sendspin Cast receiver holds a connection to the client
-                bridge.client._connection = MagicMock()
-                bridge.client._connected = True
+                _connect_cast_receiver(bridge.client, state_received=self._cast_state_received)
             self.timeline.append(("registered", domain))
 
         async def _stop() -> None:
@@ -747,7 +772,12 @@ async def test_a_bridge_that_stops_leaves_a_client_another_bridge_took_over(
     )
 
 
-async def test_airplay_gets_the_device_back_from_a_connected_cast_receiver() -> None:
+@pytest.mark.parametrize(
+    "state_received", [True, False], ids=["receiver connected", "receiver awaits its state"]
+)
+async def test_airplay_gets_the_device_back_from_a_connected_cast_receiver(
+    state_received: bool,
+) -> None:
     """AirPlay switched on again bridges the device once a connected Cast receiver let go."""
     device = _Device(
         airplay_id=SAME_ID_AIRPLAY_ID,
@@ -755,13 +785,16 @@ async def test_airplay_gets_the_device_back_from_a_connected_cast_receiver() -> 
         squeezelite=False,
         slow_teardown=True,
         cast_connected=True,
+        cast_state_received=state_received,
     )
     await _airplay_bridged(device, CAST_CLIENT)
     await device.switch(device.airplay, False)
     _assert_carried_by(device, CAST_CLIENT, CAST_ID)
     client = device.server.get_client(CAST_CLIENT)
     assert client is not None
-    assert client.is_connected
+    # the receiver's role took the place of the role of the Cast bridge
+    assert [role.role_id for role in client.roles_by_family("player")] == ["player@v1"]
+    assert client.is_connected is state_received
 
     await device.switch(device.airplay, True)
     await device.attach(device.airplay)
