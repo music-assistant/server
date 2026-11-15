@@ -41,7 +41,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
-from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import (
     ContentType,
@@ -63,8 +62,6 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import SourceControl
     from music_assistant_models.media_items import (
@@ -136,8 +133,6 @@ class MyDemoPluginprovider(PluginProvider):
     # without changing _in_use_by_player, so stream loops and generator
     # finallys must guard their lock release on both still matching.
     _active_session_id: str | None = None
-    # the handles that remove the API commands this provider registered
-    _unregister_commands: tuple[Callable[[], None], ...] = ()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -158,17 +153,6 @@ class MyDemoPluginprovider(PluginProvider):
         # it will be called after the provider has been fully loaded into Music Assistant.
         # you can use this for instance to trigger custom (non-mdns) discovery of plugins
         # or any other logic that needs to run after the provider is fully loaded.
-        #
-        # The menu action declared in manifest.json calls an API command of this provider,
-        # so the command is registered here, under the domain of the provider
-        # ("<domain>/..."), with the scope of what it does: this one only reads, so
-        # LIBRARY_READ; an action that changes something needs a scope such as
-        # LIBRARY_WRITE or PLAYERS_CONTROL. Remove it again in unload.
-        self._unregister_commands = (
-            self.mass.register_api_command(
-                f"{self.domain}/show_item", self.show_item, required_scope=Scope.LIBRARY_READ
-            ),
-        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -182,29 +166,30 @@ class MyDemoPluginprovider(PluginProvider):
         # relevant or leave out completely if not needed.
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
-        for unregister in self._unregister_commands:
-            unregister()
-        self._unregister_commands = ()
 
-    async def show_item(self, uri: str) -> ConfigActionResult:
-        """
-        Answer the menu action of this demo with a message that names the media item.
-
-        :param uri: The uri of the media item the menu action was chosen for.
-        """
+    async def handle_menu_action(
+        self, action_id: str, uri: str, player_id: str | None
+    ) -> ConfigActionResult | None:
+        """Run a menu action this provider declares in its manifest, for a media item."""
         # OPTIONAL
-        # The command of a menu action (see "menu_actions" in manifest.json). A client
-        # calls it with the uri of the media item the user chose the entry for, and an
-        # action that declares "plays": true also gets the player_id to play on.
-        # Answer nothing, or a ConfigActionResult with a message the client shows and/or a
-        # url it opens once. Raise a MusicAssistantError to tell the user the action failed:
-        # get_item_by_uri below raises MediaNotFoundError for an unknown item.
+        # Implement when manifest.json declares "menu_actions". The app shows those entries
+        # in the menu of a media item and the server calls this method of the instance the
+        # user chose, so a provider with several instances answers for each of them, and
+        # registers nothing itself. The server already checked that the user may use this
+        # instance and holds the "scope" of the action, that the uri is of one of its
+        # "media_types", and, for an action with "requires_player": true, that player_id is
+        # a player the user may use (it is None for any other action).
+        # Answer nothing, or a ConfigActionResult with a message the app shows and/or a url
+        # it opens once; its translation_key is looked up in config_actions of strings.json.
+        # Raise a MusicAssistantError to tell the user the action failed: get_item_by_uri
+        # below raises MediaNotFoundError for an unknown item.
+        if action_id != "show_item":
+            return await super().handle_menu_action(action_id, uri, player_id)
         item = await self.mass.music.get_item_by_uri(uri)
         return ConfigActionResult(
             message=f"The demo plugin was asked about {item.name}",
             translation_key="show_item",
             translation_args=[item.name],
-            translation_owner=self.translation_owner,
         )
 
     async def get_audio_sources(self) -> list[AudioSource]:

@@ -32,13 +32,17 @@ from music_assistant_models.enums import (
     ProviderType,
 )
 from music_assistant_models.errors import (
+    ActionUnavailable,
     AlreadyRegisteredError,
     AuthenticationFailed,
     AuthenticationRequired,
+    InsufficientPermissions,
     InvalidDataError,
     InvalidToken,
     LoginFailed,
     MusicAssistantError,
+    PlayerUnavailableError,
+    ProviderUnavailableError,
     SetupFailedError,
     UnsupportedSystemError,
 )
@@ -107,6 +111,7 @@ from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.provider_manifest import read_manifest_file
 from music_assistant.helpers.runtime_dir import prepare_runtime_dir
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import (
     TaskManager,
     is_hass_supervisor,
@@ -126,7 +131,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientSession
     from music_assistant_models.auth import User
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigActionResult, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.controllers.community_catalog.models import CommunityProvider
@@ -590,6 +595,66 @@ class MusicAssistant:
         if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
+
+    @api_command("providers/invoke_menu_action", required_scope=Scope.PROVIDERS_READ)
+    async def invoke_menu_action(
+        self, instance_id: str, action_id: str, uri: str, player_id: str | None = None
+    ) -> ConfigActionResult | None:
+        """
+        Run a menu action of a provider instance for a media item, as the calling user.
+
+        Answers nothing, or the outcome to show the user (a message and/or a url to open once).
+
+        :param instance_id: The provider instance that declares the action.
+        :param action_id: The id of the action in the manifest of the provider.
+        :param uri: The uri of the media item the action was chosen for.
+        :param player_id: The player to act on, needed for an action that requires a player.
+        :raises ProviderUnavailableError: The calling user has no such provider instance available.
+        :raises ActionUnavailable: The provider has no such menu action.
+        :raises InsufficientPermissions: The user lacks the scope of the action or may not use
+            the player.
+        :raises InvalidDataError: The item is not of a media type of the action, or the action
+            requires a player and none is given.
+        :raises PlayerUnavailableError: The player does not exist.
+        """
+        user = get_current_user()
+        provider = next(
+            (
+                provider
+                for provider in self.get_providers_for_user(user)
+                if provider.instance_id == instance_id and provider.available
+            ),
+            None,
+        )
+        if provider is None:
+            msg = f"Provider {instance_id} is not available"
+            raise ProviderUnavailableError(msg)
+        action = next((a for a in provider.manifest.menu_actions if a.id == action_id), None)
+        if action is None:
+            msg = f"Provider {instance_id} has no menu action {action_id}"
+            raise ActionUnavailable(msg)
+        if user is not None and not has_scope(user, action.scope):
+            msg = f"This menu action requires the {action.scope} scope"
+            raise InsufficientPermissions(msg)
+        media_type = (await parse_uri(uri))[0]
+        if media_type not in action.media_types:
+            msg = f"Menu action {action_id} is not for a {media_type}"
+            raise InvalidDataError(msg)
+        if not action.requires_player:
+            # only a player the server checked reaches the provider
+            player_id = None
+        elif not player_id:
+            msg = f"Menu action {action_id} needs a player"
+            raise InvalidDataError(msg)
+        else:
+            self.players.check_player_access(player_id)
+            if self.players.get_player(player_id) is None:
+                msg = f"Player {player_id} is not available"
+                raise PlayerUnavailableError(msg)
+        result = await provider.handle_menu_action(action_id, uri, player_id)
+        if result is not None:
+            result.translation_owner = result.translation_owner or provider.translation_owner
+        return result
 
     @api_command("catalog/recommendations", required_scope=Scope.PROVIDERS_READ)
     async def get_catalog_recommendations(self) -> list[CatalogRecommendation]:
