@@ -347,6 +347,22 @@ When adding a player to an already-playing session (`add_client()` in [stream_se
 
 **Note**: The projection can only push a joiner's anchor later, never earlier — `AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS` is the floor, and the one the anchor rests on whenever no projection arrives or the projection does not clear it. The binary also runs a post-commit clock verification that can pull an anchor forward, but it only arms when the receiver has still not probed by the time it reads the START, and only for an anchor that clears the receiver queue depth plus 500 ms. The deeper defaults in `AIRPLAY_BUFFER_DEPTH_DEFAULTS` ([constants.py](constants.py)) reach past ~2 s of effective depth, where a joiner's anchor no longer clears that — by design: the queue starts releasing frames one depth *before* the anchor, and a line with audio on the wire cannot move.
 
+### Stalled Source Recovery
+
+When the audio source stalls, every member's binary recovers from the dry feed on its own.
+A realtime member pads silence and shifts its playout later by about its queue depth
+minus 250 ms (reported as `[STATUS] REANCHOR`); a buffered member keeps its timeline.
+So members on different routes or queue depths come out of a stall on different
+timelines.
+
+The session therefore compares the members' shifts once the stall is over
+(`AIRPLAY_STALL_SETTLE_SECONDS` after the last report). When they differ by more than
+`AIRPLAY_STALL_SHIFT_TOLERANCE_MS`, it restarts the playback at the current position
+through the players controller, the same flush and shared start as a seek. Members that
+shifted alike stay in sync and are left alone. A late joiner counts from the group shift
+it was mapped onto. Restarts back off (`AIRPLAY_STALL_RESYNC_HOLDOFF`, doubling), so a
+source that keeps stalling cannot restart the group in a loop.
+
 ## DACP (Digital Audio Control Protocol)
 
 ### Purpose

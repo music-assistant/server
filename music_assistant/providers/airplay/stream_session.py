@@ -29,6 +29,10 @@ from .constants import (
     AIRPLAY_REPLACEMENT_EOF_TIMEOUT,
     AIRPLAY_REPLACEMENT_POLL_INTERVAL,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+    AIRPLAY_STALL_RESYNC_HOLDOFF,
+    AIRPLAY_STALL_RESYNC_MAX_HOLDOFF,
+    AIRPLAY_STALL_SETTLE_SECONDS,
+    AIRPLAY_STALL_SHIFT_TOLERANCE_MS,
     AIRPLAY_START_LEAD_MS,
     ClockReadiness,
     StreamingProtocol,
@@ -143,6 +147,14 @@ class AirPlayStreamSession:
         # members, and also when the source ends without ever handing any over,
         # so a waiter is never left holding on for a feed that is not coming.
         self._feed_settled = asyncio.Event()
+        # Starvation shift of the group timeline a late joiner was mapped onto,
+        # keyed by player id. Its own reported shift counts from there.
+        self._member_shift_base: dict[str, float] = {}
+        # Pending comparison of the members' shifts after a stall.
+        self._shift_check_task_id = f"airplay_stall_check_{id(self)}"
+        # Earliest moment of the next stall restart, and the hold-off after it.
+        self._resync_not_before: float = 0.0
+        self._resync_holdoff: float = AIRPLAY_STALL_RESYNC_HOLDOFF
 
     @property
     def effective_start_time(self) -> float:
@@ -161,10 +173,7 @@ class AirPlayStreamSession:
         """
         if not self.sync_clients:
             return self.start_time
-        reference_stream = self.sync_clients[0].stream
-        if reference_stream is None:
-            return self.start_time
-        return self.start_time + reference_stream.cumulative_shift_seconds
+        return self.start_time + self._member_shift(self.sync_clients[0])
 
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """
@@ -271,6 +280,8 @@ class AirPlayStreamSession:
         fall back to the cold path.
         """
         position_ms = int((media.elapsed_time or 0) * 1000)
+        # the shared START below puts every member back on one timeline
+        self.mass.cancel_timer(self._shift_check_task_id)
         try:
             # Stop feeding old audio and drop each member's buffered ffmpeg output
             # before flushing: the binary drains stdin to EAGAIN on FLUSH, so no
@@ -335,6 +346,7 @@ class AirPlayStreamSession:
             for p in self.sync_clients
         ):
             return False
+        self.mass.cancel_timer(self._shift_check_task_id)
         if self._audio_source_task and not self._audio_source_task.done():
             self._audio_source_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -370,6 +382,7 @@ class AirPlayStreamSession:
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
+        self.mass.cancel_timer(self._shift_check_task_id)
         if self._audio_source_task and not self._audio_source_task.done():
             self._audio_source_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -409,6 +422,7 @@ class AirPlayStreamSession:
             reason,
         )
         self._client_skip_bytes.pop(airplay_player.protocol_id, None)
+        self._member_shift_base.pop(airplay_player.protocol_id, None)
         ffmpeg = self._player_ffmpeg.pop(airplay_player.protocol_id, None)
         # note that we use kill instead of graceful close here,
         # because otherwise it can take a very long time for the process to exit.
@@ -672,6 +686,9 @@ class AirPlayStreamSession:
                 acked_at = (actual - adjust_ms) / 1000
                 start_at, fed_pos_due, prime, skip_bytes = map_to(acked_at, committed=True)
                 self._client_skip_bytes[airplay_player.protocol_id] = skip_bytes
+                self._member_shift_base[airplay_player.protocol_id] = (
+                    self.effective_start_time - self.start_time
+                )
                 # An instant that moved carries the content mapped onto it
                 # further into the stream than the position sent with the
                 # command, so progress is reported against the sample that
@@ -735,6 +752,22 @@ class AirPlayStreamSession:
             "Late joiner %s: started after %.2fs",
             airplay_player.protocol_id,
             cli_clock_time() - now,
+        )
+
+    def on_member_reanchored(self) -> None:
+        """
+        Handle a member shifting its playout after its audio feed ran dry.
+
+        Once the stall is over, a group whose members came out of it on different
+        timelines is restarted at the current position to bring it back in sync.
+        """
+        if len(self.sync_clients) < 2:
+            return
+        # every further report of the same stall postpones the comparison
+        self.mass.call_later(
+            AIRPLAY_STALL_SETTLE_SECONDS,
+            self._check_member_shifts,
+            task_id=self._shift_check_task_id,
         )
 
     def _ring_bytes_for(self, lead_seconds: float) -> int:
@@ -1422,9 +1455,65 @@ class AirPlayStreamSession:
 
     def _reset_member_shifts(self) -> None:
         """Zero every member's accumulated starvation shift for a fresh anchor."""
+        self._member_shift_base.clear()
         for player in self.sync_clients:
             if player.stream is not None:
                 player.stream.reset_reanchor_shift()
+
+    def _member_shift(self, player: AirPlayPlayer) -> float:
+        """
+        Return how far a member plays behind the session anchor after starvation shifts.
+
+        :param player: The member to look up.
+        """
+        shift = self._member_shift_base.get(player.protocol_id, 0.0)
+        if player.stream is not None:
+            shift += player.stream.cumulative_shift_seconds
+        return shift
+
+    def _check_member_shifts(self) -> None:
+        """Restart the playback when the members came out of a stall on different timelines."""
+        # a seek, next or stop re-anchors (or ends) the group anyway
+        if (
+            len(self.sync_clients) < 2
+            or not self._session_is_live()
+            or self._replacement_expected()
+        ):
+            return
+        shifts = [(player.display_name, self._member_shift(player)) for player in self.sync_clients]
+        spread = max(shift for _, shift in shifts) - min(shift for _, shift in shifts)
+        if spread * 1000 <= AIRPLAY_STALL_SHIFT_TOLERANCE_MS:
+            return
+        players = [member.player for member in self.sync_clients if member.player]
+        if not players:
+            return
+        now = time.monotonic()
+        if now < self._resync_not_before:
+            self.prov.logger.debug(
+                "AirPlay group is out of sync after a stalled audio source; restarting it "
+                "in %.0fs to avoid a restart loop",
+                self._resync_not_before - now,
+            )
+            self.mass.call_later(
+                self._resync_not_before - now,
+                self._check_member_shifts,
+                task_id=self._shift_check_task_id,
+            )
+            return
+        self._resync_not_before = now + self._resync_holdoff
+        self._resync_holdoff = min(self._resync_holdoff * 2, AIRPLAY_STALL_RESYNC_MAX_HOLDOFF)
+        # the controller passes the restart on to whichever player owns the playback
+        target = next((player for player in players if not player.synced_to), players[0])
+        self.prov.logger.warning(
+            "AirPlay group of %s is out of sync after its audio source stalled (shifted by: "
+            "%s); restarting playback",
+            target.name,
+            ", ".join(f"{name} {shift * 1000:.0f} ms" for name, shift in shifts),
+        )
+        self.mass.create_task(
+            self.mass.players.cmd_resume(target.player_id),
+            task_id=f"airplay_stall_resync_{id(self)}",
+        )
 
     async def _start_player_ffmpeg(
         self, player: AirPlayPlayer, media: PlayerMedia, stream: AirPlayStream
