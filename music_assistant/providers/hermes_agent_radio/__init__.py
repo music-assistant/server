@@ -130,7 +130,7 @@ class HermesAgentRadio(MusicProvider):
             media_type=media_type,
             stream_type=StreamType.HTTP,
             path=url,
-            audio_format=AudioFormat(content_type=ContentType.MP3, bit_rate=320),
+            audio_format=AudioFormat(content_type=ContentType.MP3, bit_rate=128),
             can_seek=False,
             allow_seek=False,
             # radio is live linear audio: never treated as a fixed-duration item
