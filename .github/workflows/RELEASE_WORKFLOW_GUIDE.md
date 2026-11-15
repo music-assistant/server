@@ -62,9 +62,6 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
 10. Deterministically update the matching Home Assistant add-on, and on nightly the
     `music_assistant_dev` add-on as well, then dispatch the frontend version from
     `source_sha` to `app.music-assistant.io`.
-11. On nightly, build `Dockerfile.dev` on top of the exact digest for `linux/amd64` and
-    `linux/arm64` and push it as `ghcr.io/music-assistant/server:dev`. The release is
-    published by then, so a failure only marks that job and leaves the run green.
 
 The exact image tag is already the full version (`X.Y.Z`, `X.Y.ZbN`, `X.Y.ZrcN`, or
 `X.Y.Z.devN`). Rolling aliases are never pushed before the immutable release verifies.

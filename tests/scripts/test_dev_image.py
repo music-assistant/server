@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
@@ -14,7 +15,6 @@ import yaml
 
 ROOT = Path(__file__).parents[2]
 REPO_REF_SCRIPT = ROOT / "scripts" / "dev-image" / "repo_ref.sh"
-RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 DEV_IMAGE_WORKFLOW = ROOT / ".github" / "workflows" / "dev-image.yml"
 
 # answers the two lookups of repo_ref.sh and logs every call
@@ -36,6 +36,25 @@ PROVIDER_FORMS = (
     "owner/repo@ref      a branch, a tag or a commit",
     "owner/repo@pr-12    pull request 12 of the repository",
 )
+IMAGE_REPOSITORY = "ghcr.io/music-assistant/server"
+NIGHTLY = "sha256:" + "1" * 64
+NIGHTLY_AMD64 = "sha256:" + "2" * 64
+DEV = "sha256:" + "3" * 64
+DEV_AMD64 = "sha256:" + "4" * 64
+DEV_ARM64 = "sha256:" + "5" * 64
+# answers `docker buildx imagetools inspect <ref> --format '{{json .Manifest|.Image}}'` from a
+# JSON file of {ref: {"Manifest": ..., "Image": ...}}, as the registry would
+STUB_DOCKER = """#!/usr/bin/env python3
+import json, os, sys
+ref, fmt = sys.argv[4], sys.argv[6]
+with open(os.environ["STUB_REGISTRY"], encoding="utf-8") as registry_file:
+    entry = json.load(registry_file).get(ref)
+if entry is None:
+    sys.exit(f"ERROR: {ref}: not found")
+if "error" in entry:
+    sys.exit(entry["error"])
+print(json.dumps(entry["Manifest" if "Manifest" in fmt else "Image"]))
+"""
 
 
 class RepoRefRun:
@@ -212,58 +231,240 @@ def test_provider_ref_refused(repo_ref: Any, value: str) -> None:
 
 
 def test_dev_image_builds_on_the_base_image_argument() -> None:
-    """The image builds on the base image the release passes in, by default the nightly."""
+    """The image builds on the base image the publishing job passes in, by default the nightly."""
     dockerfile = (ROOT / "Dockerfile.dev").read_text(encoding="utf-8")
 
     assert "ARG BASE_IMAGE=ghcr.io/music-assistant/server:nightly" in dockerfile
     assert re.findall(r"^FROM .*$", dockerfile, re.MULTILINE) == ["FROM $BASE_IMAGE"]
 
 
-def test_dev_image_publication_follows_the_nightly_release() -> None:
-    """Only a nightly whose image is published and promoted is built on, by its exact digest."""
-    jobs = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
-    job = jobs["dev_image"]
-
-    assert {"exact_image", "promote_image"} <= set(job["needs"])
-    # without a status function the job only runs when every needed job succeeded
-    assert job["if"] == "inputs.channel == 'nightly'"
-    build = _step(job, "Build and push development image")["with"]
-    assert build["file"] == "source/Dockerfile.dev"
-    assert build["platforms"] == "linux/amd64,linux/arm64"
-    assert build["tags"] == "ghcr.io/${{ github.repository_owner }}/server:dev"
-    assert build["push"] is True
-    assert (
-        "BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/server"
-        "@${{ needs.exact_image.outputs.digest }}"
-    ) in build["build-args"].splitlines()
-    checkout = _step(job, "Check out release source")["with"]
-    assert checkout["ref"] == "${{ needs.resolve.outputs.source_sha }}"
-
-
-def test_dev_image_publication_never_fails_the_release() -> None:
-    """A failed development image leaves the run green and nothing waits on it."""
-    jobs = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
-
-    assert jobs["dev_image"]["continue-on-error"] is True
-    for name, job in jobs.items():
-        assert "dev_image" not in job.get("needs", []), name
-
-
 def test_dev_image_check_needs_no_write_access() -> None:
-    """The check of the image on pull requests reads the repository and nothing more."""
+    """The check of the image runs for pull requests and pushes, and only reads the repository."""
     workflow = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))
+    check = workflow["jobs"]["check"]
 
     assert workflow["permissions"] == {"contents": "read"}
-    for job in workflow["jobs"].values():
-        assert "permissions" not in job
-        assert job["timeout-minutes"] > 0
-    triggers = workflow.get("on", workflow.get(True))
+    assert "permissions" not in check
+    assert check["if"] == "github.event_name == 'pull_request' || github.event_name == 'push'"
+    assert check["timeout-minutes"] > 0
+    triggers = _triggers(workflow)
     for event in ("pull_request", "push"):
         assert set(triggers[event]["paths"]) == {
             "Dockerfile.dev",
             "scripts/dev-image/**",
             ".github/workflows/dev-image.yml",
         }
+
+
+def test_dev_image_publication_runs_only_on_dev() -> None:
+    """The image is published from dev of this repository, never for a pull request."""
+    workflow = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))
+    triggers = _triggers(workflow)
+    job = workflow["jobs"]["publish"]
+
+    assert job["if"] == (
+        "github.event_name != 'pull_request' && github.repository == 'music-assistant/server'"
+    )
+    assert triggers["push"]["branches"] == ["dev"]
+    assert triggers["workflow_run"] == {
+        "workflows": ["Auto Release", "Create Release"],
+        "types": ["completed"],
+        "branches": ["dev"],
+    }
+    assert "workflow_dispatch" in triggers
+    require_dev = _step(job, "Require dev")
+    assert require_dev["env"] == {"DISPATCH_REF": "${{ github.ref }}"}
+    assert '[ "$DISPATCH_REF" != "refs/heads/dev" ]' in require_dev["run"]
+    assert job["steps"][0]["name"] == "Require dev"
+    assert _step(job, "Check out dev")["with"] == {"ref": "dev", "persist-credentials": False}
+    assert job["permissions"] == {"contents": "read", "packages": "write"}
+    assert job["concurrency"] == {"group": "dev-image-publish", "cancel-in-progress": False}
+    assert job["timeout-minutes"] > 0
+
+
+def test_dev_image_publication_builds_on_the_nightly_digest() -> None:
+    """The image is built for both platforms on the digest of the nightly, not on its tag."""
+    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish"]
+    build = _step(job, "Build and push development image")
+
+    assert build["if"] == "steps.nightly.outputs.build == 'true'"
+    assert build["with"]["file"] == "Dockerfile.dev"
+    assert build["with"]["platforms"] == "linux/amd64,linux/arm64"
+    assert build["with"]["tags"] == "${{ env.IMAGE_REPOSITORY }}:dev"
+    assert build["with"]["push"] is True
+    assert build["with"]["build-args"].splitlines() == [
+        "BASE_IMAGE=${{ env.IMAGE_REPOSITORY }}@${{ steps.nightly.outputs.digest }}"
+    ]
+    assert build["with"]["labels"].splitlines() == [
+        "org.opencontainers.image.version=${{ steps.nightly.outputs.version }}",
+        "org.opencontainers.image.revision=${{ steps.nightly.outputs.revision }}",
+        "org.opencontainers.image.base.digest=${{ steps.nightly.outputs.digest }}",
+    ]
+    assert _step(job, "Verify development image")["env"] == {
+        "BASE_DIGEST": "${{ steps.nightly.outputs.digest }}",
+        "BUILT_DIGEST": "${{ steps.build.outputs.digest }}",
+    }
+
+
+def test_dev_image_publication_skips_a_release_run_without_a_new_nightly(tmp_path: Path) -> None:
+    """After a release run, an image that already sits on the current nightly is left alone."""
+    code, outputs, stderr = _run_publish_step(
+        tmp_path, "Resolve nightly image", {**_nightly(), **_dev(NIGHTLY)}, "workflow_run"
+    )
+
+    assert code == 0, stderr
+    assert outputs == {
+        "digest": NIGHTLY,
+        "version": "2.11.0.dev2026111503",
+        "revision": "abc123",
+        "build": "false",
+    }
+
+
+@pytest.mark.parametrize(
+    ("event", "dev_base"),
+    [
+        ("workflow_run", "sha256:" + "9" * 64),
+        ("workflow_run", None),
+        ("workflow_dispatch", NIGHTLY),
+        ("push", NIGHTLY),
+    ],
+)
+def test_dev_image_publication_builds(tmp_path: Path, event: str, dev_base: str | None) -> None:
+    """A new nightly, a first image, a start by hand and a push all build the image."""
+    registry = {**_nightly(), **(_dev(dev_base) if dev_base else {})}
+    code, outputs, stderr = _run_publish_step(tmp_path, "Resolve nightly image", registry, event)
+
+    assert code == 0, stderr
+    assert outputs["build"] == "true"
+    assert outputs["digest"] == NIGHTLY
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("nightly_without_version", "has no version or revision label"),
+        ("unreadable_dev", "Unable to inspect"),
+    ],
+)
+def test_dev_image_publication_stops_on_doubt(tmp_path: Path, case: str, message: str) -> None:
+    """A nightly without its labels, or a registry that cannot be read, stops the job."""
+    if case == "nightly_without_version":
+        registry = _nightly(labels={"org.opencontainers.image.revision": "abc123"})
+    else:
+        registry = {**_nightly(), f"{IMAGE_REPOSITORY}:dev": {"error": "unauthorized"}}
+    code, _outputs, stderr = _run_publish_step(
+        tmp_path, "Resolve nightly image", registry, "workflow_run"
+    )
+
+    assert code != 0
+    assert message in stderr
+
+
+@pytest.mark.parametrize(
+    ("built", "platforms", "base", "ok"),
+    [
+        (DEV, ("amd64", "arm64"), NIGHTLY, True),
+        ("sha256:" + "8" * 64, ("amd64", "arm64"), NIGHTLY, False),
+        (DEV, ("amd64",), NIGHTLY, False),
+        (DEV, ("amd64", "arm64"), "sha256:" + "9" * 64, False),
+    ],
+)
+def test_dev_image_publication_verifies_the_pushed_image(
+    tmp_path: Path, built: str, platforms: tuple[str, ...], base: str, ok: bool
+) -> None:
+    """The tag must point at the built image, with both platforms on the nightly built on."""
+    runtime = {"amd64": DEV_AMD64, "arm64": DEV_ARM64}
+    registry = _dev(base, {arch: runtime[arch] for arch in platforms})
+    code, _outputs, stderr = _run_publish_step(
+        tmp_path,
+        "Verify development image",
+        registry,
+        "workflow_dispatch",
+        {"BASE_DIGEST": NIGHTLY, "BUILT_DIGEST": built},
+    )
+
+    assert (code == 0) is ok, stderr
+
+
+def _run_publish_step(
+    tmp_path: Path,
+    name: str,
+    registry: dict[str, Any],
+    event: str,
+    env: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], str]:
+    job = yaml.safe_load(DEV_IMAGE_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish"]
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "docker"
+    stub.write_text(STUB_DOCKER, encoding="utf-8")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    # the retries of the registry wait for nothing here
+    no_sleep = stub_dir / "sleep"
+    no_sleep.write_text("#!/bin/sh\n", encoding="utf-8")
+    no_sleep.chmod(no_sleep.stat().st_mode | stat.S_IEXEC)
+    registry_file = tmp_path / "registry.json"
+    registry_file.write_text(json.dumps(registry), encoding="utf-8")
+    output_file = tmp_path / "github_output"
+    output_file.write_text("", encoding="utf-8")
+    result = subprocess.run(  # noqa: S603
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", _step(job, name)["run"]],  # noqa: S607
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+            "STUB_REGISTRY": str(registry_file),
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_OUTPUT": str(output_file),
+            "IMAGE_REPOSITORY": IMAGE_REPOSITORY,
+            "EVENT_NAME": event,
+            **(env or {}),
+        },
+        text=True,
+    )
+    lines = output_file.read_text(encoding="utf-8").splitlines()
+    return result.returncode, dict(line.split("=", 1) for line in lines), result.stderr
+
+
+def _nightly(labels: dict[str, str] | None = None) -> dict[str, Any]:
+    if labels is None:
+        labels = {
+            "org.opencontainers.image.version": "2.11.0.dev2026111503",
+            "org.opencontainers.image.revision": "abc123",
+        }
+    return {
+        f"{IMAGE_REPOSITORY}:nightly": {"Manifest": _index(NIGHTLY, {"amd64": NIGHTLY_AMD64})},
+        f"{IMAGE_REPOSITORY}@{NIGHTLY_AMD64}": {"Image": {"config": {"Labels": labels}}},
+    }
+
+
+def _dev(base: str, runtime: dict[str, str] | None = None) -> dict[str, Any]:
+    runtime = runtime or {"amd64": DEV_AMD64, "arm64": DEV_ARM64}
+    labels = {"org.opencontainers.image.base.digest": base}
+    registry: dict[str, Any] = {f"{IMAGE_REPOSITORY}:dev": {"Manifest": _index(DEV, runtime)}}
+    for digest in runtime.values():
+        registry[f"{IMAGE_REPOSITORY}@{digest}"] = {"Image": {"config": {"Labels": labels}}}
+    return registry
+
+
+def _index(digest: str, runtime: dict[str, str]) -> dict[str, Any]:
+    manifests = [
+        {"digest": arch_digest, "platform": {"os": "linux", "architecture": arch}}
+        for arch, arch_digest in runtime.items()
+    ]
+    # the provenance attestation sits next to the images
+    manifests.append(
+        {"digest": "sha256:" + "0" * 64, "platform": {"os": "unknown", "architecture": "unknown"}}
+    )
+    return {"digest": digest, "manifests": manifests}
+
+
+def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
+    # YAML reads the key "on" as True
+    triggers: dict[str, Any] = workflow["on"] if "on" in workflow else workflow[True]
+    return triggers
 
 
 def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
