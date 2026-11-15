@@ -12,7 +12,10 @@ import aiohttp
 import pytest
 from music_assistant_models.config_entries import PlayerConfig
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.player_queue import PlayerQueue, PlayLogEntry
+from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.providers import alexa
 from music_assistant.providers.alexa import (
     AlexaDevice,
@@ -67,10 +70,12 @@ def _report(**changes: Any) -> dict[str, Any]:
     return report
 
 
-async def _correct(player: AlexaPlayer, report: dict[str, Any] | None) -> MagicMock:
+async def _correct(
+    player: AlexaPlayer, report: dict[str, Any] | None, at: float = NOW
+) -> MagicMock:
     with (
         patch.object(alexa, "get_playback_state", AsyncMock(return_value=report)),
-        patch("music_assistant.providers.alexa.time.time", return_value=NOW),
+        patch("music_assistant.providers.alexa.time.time", return_value=at),
         patch.object(player, "update_state") as update_state,
     ):
         await player._correct_position()
@@ -184,6 +189,10 @@ def _session(status: int = 200, body: Any = None, error: Exception | None = None
     response = MagicMock()
     response.status = status
     response.json = AsyncMock(return_value=body)
+    if status >= 400:
+        response.raise_for_status.side_effect = aiohttp.ClientResponseError(
+            MagicMock(), (), status=status
+        )
     context = MagicMock()
     context.__aenter__ = AsyncMock(return_value=response)
     context.__aexit__ = AsyncMock(return_value=False)
@@ -224,7 +233,10 @@ async def test_playback_state_failures_return_none(session: MagicMock) -> None:
     [
         (_session(error=aiohttp.ClientConnectionError("down")), True),
         (_session(error=TimeoutError()), True),
-        (_session(status=404), False),
+        # a missing endpoint (older skill) or a slow error answer, e.g. a gateway timeout
+        (_session(status=404), True),
+        (_session(status=504), True),
+        (_session(body=["not", "an", "object"]), False),
     ],
 )
 async def test_unreachable_skill_api_is_left_alone_for_a_while(
@@ -309,67 +321,91 @@ async def test_report_requested_during_a_playback_command_is_discarded(method: s
     assert position == (600 if method in ("play", "pause") else 0)
 
 
+async def _attached_echo(scenario: Scenario) -> AlexaPlayer:
+    """Load the provider on a running server and return the attached protocol of its Echo."""
+    fake: Any = await scenario.add_provider("alexa")
+    provider = AlexaProvider(scenario.mass, fake.manifest, fake.config, set())
+    await provider.handle_async_init()
+    provider.devices = {"Echo": AlexaDevice()}
+    provider.devices["Echo"].device_serial_number = "SERIAL"
+    provider.get_volumes = AsyncMock(return_value={})  # type: ignore[method-assign]
+    provider.available = True
+    scenario.mass._providers[provider.instance_id] = provider
+    await provider.discover_players()
+    await scenario.settle()
+    protocol = provider.get_protocol("Echo")
+    assert isinstance(protocol, AlexaPlayer)
+    return protocol
+
+
+def _flow_queue(scenario: Scenario, queue_id: str) -> PlayerQueue:
+    """Give the queue a flow stream of three tracks, by MA's clock 120 s into the second."""
+    queues = scenario.mass.player_queues
+    items = [
+        QueueItem(queue_id=queue_id, queue_item_id=item_id, name=item_id, duration=240)
+        for item_id in ("a", "b", "c")
+    ]
+    queue = queues.get(queue_id)
+    assert queue is not None
+    queue.active = True
+    queue.flow_mode = True
+    queue.items = len(items)
+    queue.current_index = 1
+    queue.current_item = items[1]
+    queue.next_item = items[2]
+    queue.elapsed_time = 120
+    queue.resume_pos = 120
+    queue_data = PlayerQueueData(queue=queue, items=items)
+    queue_data.flow_mode_stream_log = [PlayLogEntry("a", seconds_streamed=200), PlayLogEntry("b")]
+    queues._queue_data[queue_id] = queue_data
+    return queue
+
+
 async def test_paused_report_moves_the_queue_without_a_playing_blip(
     tmp_path: pathlib.Path,
 ) -> None:
-    """MA's real update path sees one paused jump to the Echo's offset, vouched for."""
+    """A paused offset from the Echo moves MA's flow queue there, with no playing blip."""
     scenario = Scenario(tmp_path)
     try:
         await scenario.start()
-        fake: Any = await scenario.add_provider("alexa")
-        provider = AlexaProvider(scenario.mass, fake.manifest, fake.config, set())
-        await provider.handle_async_init()
-        provider.devices = {"Echo": AlexaDevice()}
-        provider.devices["Echo"].device_serial_number = "SERIAL"
-        provider.get_volumes = AsyncMock(return_value={})  # type: ignore[method-assign]
-        provider.available = True
-        scenario.mass._providers[provider.instance_id] = provider
-        await provider.discover_players()
-        await scenario.settle()
-        protocol = provider.get_protocol("Echo")
-        assert isinstance(protocol, AlexaPlayer)
+        protocol = await _attached_echo(scenario)
         player = protocol.player
         assert player is not None
-        # playing for 600 s by MA's clock
+        queue_id = player.player_id
+        # the skill knows the Echo by its player id, which here is not the protocol id
+        assert queue_id != protocol.protocol_id
+        queue = _flow_queue(scenario, queue_id)
         protocol._attr_playback_state = PlaybackState.PLAYING
-        protocol._attr_elapsed_time = 0
-        protocol._attr_elapsed_time_last_updated = time.time() - 600
+        protocol._attr_elapsed_time = 320
+        protocol._attr_elapsed_time_last_updated = time.time()
         protocol.update_state()
         await scenario.settle()
 
-        jumps: list[tuple[PlaybackState, float | None, bool]] = []
         published: list[PlaybackState] = []
+        signal = scenario.mass.players.signal_player_state_update
 
-        def _jumped(p: Any) -> None:
-            output = p.resolve_output_protocol()
-            jumps.append(
-                (p.playback_state, p.corrected_elapsed_time, output.paused_position_reliable)
-            )
-
-        def _published(p: Any, *_args: Any, **_kwargs: Any) -> None:
+        def _published(p: Any, *args: Any, **kwargs: Any) -> None:
             published.append(p.playback_state)
+            signal(p, *args, **kwargs)
 
+        lookup = AsyncMock(return_value=_report(activity="STOPPED", offsetMs=90_500, ageSeconds=0))
         with (
-            patch.object(
-                alexa,
-                "get_playback_state",
-                AsyncMock(return_value=_report(activity="STOPPED", offsetMs=90_500, ageSeconds=0)),
-            ),
-            patch.object(scenario.mass.players, "on_player_position_jumped", side_effect=_jumped),
+            patch.object(alexa, "get_playback_state", lookup),
             patch.object(
                 scenario.mass.players, "signal_player_state_update", side_effect=_published
             ),
         ):
             await protocol._correct_position()
-        assert len(jumps) == 1
-        state, elapsed, vouched = jumps[0]
-        assert state == PlaybackState.PAUSED
-        assert elapsed == pytest.approx(90.5)
-        assert vouched
+            await scenario.settle()
+        lookup.assert_awaited_once_with(protocol.provider, queue_id)
         assert published
         assert PlaybackState.PLAYING not in published
         assert player.playback_state == PlaybackState.PAUSED
-        assert player.corrected_elapsed_time == pytest.approx(90.5)
+        # The Echo paused 90.5 s into the flow stream: 90.5 s into the first track.
+        assert queue.current_item is not None
+        assert queue.current_item.queue_item_id == "a"
+        assert queue.elapsed_time == pytest.approx(90.5)
+        assert queue.resume_pos == 90
     finally:
         await scenario.close()
 
@@ -437,3 +473,61 @@ async def test_resume_after_a_pause_from_ma_continues_where_it_paused() -> None:
     await _send(player, provider, "play", NOW + 300)
     assert player._attr_elapsed_time == pytest.approx(600)
     assert player._attr_elapsed_time_last_updated == NOW + 300
+
+
+async def _play_media(player: AlexaPlayer, provider: Any, at: float) -> AsyncMock:
+    """Push a new stream from MA as if it finished at the given time; return the API mock."""
+    provider.mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/ugp/x.mp3")
+    provider.config = MagicMock()
+    provider.config.get_value.return_value = "en-US"
+    request = AsyncMock(return_value="{}")
+    api = MagicMock(run_custom=AsyncMock())
+    with (
+        patch.object(AlexaPlayer, "api", new_callable=PropertyMock, return_value=api),
+        patch.object(alexa, "api_request", request),
+        patch("music_assistant.providers.alexa.time.time", return_value=at),
+        patch.object(player, "update_state"),
+    ):
+        await player.play_media(MagicMock(title="Song", image_url=None))
+    return request
+
+
+async def test_report_observed_before_a_completed_resume_is_ignored() -> None:
+    """A cached pause the skill still serves after MA's resume must not pause the player."""
+    player, provider = _player()
+    await _correct(player, _report(activity="STOPPED", offsetMs=90_500))
+    await _send(player, provider, "play", NOW + 10)
+    # The lookup starts after play() completed; the pause it gets was observed before it.
+    stale = _report(activity="STOPPED", offsetMs=91_000, ageSeconds=3.0, observedAt=43.0)
+    update_state = await _correct(player, stale, at=NOW + 12)
+    update_state.assert_not_called()
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    # A report observed after the resume does count.
+    fresh = _report(activity="STOPPED", offsetMs=95_000, ageSeconds=1.0, observedAt=44.0)
+    await _correct(player, fresh, at=NOW + 12)
+    assert player.playback_state == PlaybackState.PAUSED
+    assert player._attr_elapsed_time == 95
+
+
+async def test_same_stream_restart_does_not_reapply_the_old_report() -> None:
+    """A stream restarted on the same URL ignores the report applied before the restart."""
+    player, provider = _player()
+    await _correct(player, _report())
+    await _play_media(player, provider, NOW + 10)
+    # Before the Echo's first event the skill still serves the old report as current.
+    update_state = await _correct(player, _report(ageSeconds=13.0), at=NOW + 11)
+    update_state.assert_not_called()
+    assert player._attr_elapsed_time == 0
+
+
+async def test_the_skill_gets_the_player_id_of_the_echo() -> None:
+    """The skill maps Echoes to MA player ids, so pushes and lookups use the player id."""
+    player, provider = _player()
+    player._player = cast("Any", MagicMock(player_id="pl0123456789ab"))
+    request = await _play_media(player, provider, NOW)
+    assert request.await_args is not None
+    assert request.await_args.kwargs["json_data"]["playerId"] == "pl0123456789ab"
+    lookup = AsyncMock(return_value=None)
+    with patch.object(alexa, "get_playback_state", lookup):
+        await player._correct_position()
+    lookup.assert_awaited_once_with(provider, "pl0123456789ab")

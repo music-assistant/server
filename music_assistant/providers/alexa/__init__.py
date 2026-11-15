@@ -239,8 +239,9 @@ async def get_playback_state(provider: AlexaProvider, player_id: str) -> dict[st
     """
     Return what the Echo last reported to the skill API for this player.
 
-    Returns None when the API cannot be reached or lacks the endpoint (older skill
-    versions); unlike api_request this is quiet, as it runs on every poll.
+    Returns None when the API cannot be reached, answers with an error or lacks the
+    endpoint (older skill versions); unlike api_request this is quiet, as it runs on
+    every poll.
     """
     if provider.mass.loop.time() < provider._playback_state_retry_at:
         return None
@@ -252,8 +253,8 @@ async def get_playback_state(provider: AlexaProvider, player_id: str) -> dict[st
             auth=auth,
             timeout=aiohttp.ClientTimeout(total=5),
         ) as resp:
-            if resp.status != 200:
-                return None
+            # an error answer (e.g. a slow 504) backs off like an unreachable API
+            resp.raise_for_status()
             data = await resp.json(content_type=None)
     except aiohttp.ClientError, TimeoutError:
         provider._playback_state_retry_at = provider.mass.loop.time() + PLAYBACK_STATE_RETRY_DELAY
@@ -317,6 +318,9 @@ class AlexaPlayer(PlayerProtocol):
         self._position_observed_at: float | None = None
         # Bumped by every playback command, so a report fetched before it is discarded.
         self._playback_generation = 0
+        # When MA's last playback command completed; an Echo report observed before it
+        # describes the state that command replaced.
+        self._command_completed_at = -math.inf
         # Keep track of the last metadata we pushed to avoid unnecessary uploads
         self._last_meta_checksum: str | None = None
         # Keep last stream url pushed (set in play_media)
@@ -347,6 +351,7 @@ class AlexaPlayer(PlayerProtocol):
 
         # Reports requested while the command was out describe the state before it.
         self._playback_generation += 1
+        self._command_completed_at = time.time()
         self._attr_paused_position_reliable = False
         self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
@@ -363,6 +368,7 @@ class AlexaPlayer(PlayerProtocol):
 
         # Reports requested while the command was out describe the state before it.
         self._playback_generation += 1
+        self._command_completed_at = time.time()
         self._attr_paused_position_reliable = False
         self._hold_position()
         self._attr_playback_state = PlaybackState.PLAYING
@@ -379,6 +385,7 @@ class AlexaPlayer(PlayerProtocol):
 
         # Reports requested while the command was out describe the state before it.
         self._playback_generation += 1
+        self._command_completed_at = time.time()
         self._attr_paused_position_reliable = False
         self._hold_position()
         self._attr_playback_state = PlaybackState.PAUSED
@@ -435,7 +442,7 @@ class AlexaPlayer(PlayerProtocol):
                     self.provider,
                     "/ma/push-url",
                     method="POST",
-                    json_data={**payload, "playerId": self.protocol_id, "canSkipSpeech": True},
+                    json_data={**payload, "playerId": self._skill_player_id, "canSkipSpeech": True},
                     timeout=10,
                 )
             )
@@ -468,8 +475,8 @@ class AlexaPlayer(PlayerProtocol):
             await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
         # Reports requested while the command was out describe the state before it.
         self._playback_generation += 1
+        self._command_completed_at = time.time()
         self._attr_paused_position_reliable = False
-        self._position_observed_at = None
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
@@ -591,7 +598,7 @@ class AlexaPlayer(PlayerProtocol):
                     "/ma/control",
                     method="POST",
                     json_data={
-                        "playerId": self.protocol_id,
+                        "playerId": self._skill_player_id,
                         "command": command,
                         "canSkipSpeech": True,
                     },
@@ -616,7 +623,9 @@ class AlexaPlayer(PlayerProtocol):
             # Stopped by MA; the Echo has nothing newer to say about this queue.
             return
         generation = self._playback_generation
-        report = await get_playback_state(cast("AlexaProvider", self.provider), self.protocol_id)
+        report = await get_playback_state(
+            cast("AlexaProvider", self.provider), self._skill_player_id
+        )
         if generation != self._playback_generation:
             # A playback command ran while the report was on its way; it describes the past.
             return
@@ -634,10 +643,14 @@ class AlexaPlayer(PlayerProtocol):
             or observed_at == self._position_observed_at
         ):
             return
+        # The age keeps the observation on MA's clock even if the skill API runs elsewhere.
+        observed_on_ma_clock = time.time() - age
+        if observed_on_ma_clock < self._command_completed_at:
+            # Cached from before MA's last playback command, so older than what MA knows.
+            return
         self._position_observed_at = observed_at
-        # The age keeps the anchor on MA's clock even if the skill API runs elsewhere.
         self._attr_elapsed_time = offset_ms / 1000
-        self._attr_elapsed_time_last_updated = time.time() - age
+        self._attr_elapsed_time_last_updated = observed_on_ma_clock
         self._attr_playback_state = state
         # The Echo's paused offset is its real position, so the queue may follow it.
         self._attr_paused_position_reliable = state == PlaybackState.PAUSED
@@ -683,6 +696,11 @@ class AlexaPlayer(PlayerProtocol):
         self.logger.debug("%s volume: changed on the Echo to %s", self.display_name, volume)
         self._attr_volume_level = volume
         self.update_state()
+
+    @property
+    def _skill_player_id(self) -> str:
+        """Return the id the skill knows this Echo by: its Music Assistant player id."""
+        return self.player.player_id if self.player else self.protocol_id
 
 
 class AlexaProvider(PlayerProvider):
