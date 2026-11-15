@@ -95,7 +95,7 @@ def test_next_command_targets_the_active_queue() -> None:
     _dispatch(fake, "next")
 
     fake.mass.loop.call_soon_threadsafe.assert_called_once()
-    fake.mass.players.get_active_queue.assert_called_once_with(fake)
+    fake.mass.players.get_active_queue.assert_called_once_with(fake.player)
     fake.mass.create_task.assert_called_once()
     fake.mass.player_queues.next.assert_called_once_with("up_universal")
 

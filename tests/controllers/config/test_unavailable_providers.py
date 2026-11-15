@@ -12,7 +12,7 @@ from music_assistant_models.enums import ProviderSharing, ProviderStatus, Provid
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PROVIDERS
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
 
@@ -21,7 +21,8 @@ AVAILABLE_INSTANCE = f"{AVAILABLE_DOMAIN}--aaaa"
 GONE_MUSIC_INSTANCE = "gone_music--bbbb"
 GONE_PLAYER_INSTANCE = "gone_player"
 BUILTIN_DOMAIN = "builtin_thing"
-GONE_PLAYER_ID = "gone_player_1"
+GONE_PROTOCOL_ID = "gone_protocol_1"
+KEPT_PROTOCOL_ID = "kept_protocol_1"
 OWNER_ID = "owner"
 OTHER_ID = "other"
 
@@ -58,8 +59,13 @@ def unavailable_mass(mass_minimal: MusicAssistant) -> MusicAssistant:
             },
         )
     mass_minimal.config.set(
-        f"{CONF_PLAYERS}/{GONE_PLAYER_ID}",
-        {"player_id": GONE_PLAYER_ID, "provider": GONE_PLAYER_INSTANCE},
+        f"{CONF_PLAYER_PROTOCOLS}/{GONE_PROTOCOL_ID}",
+        {"protocol_id": GONE_PROTOCOL_ID, "provider": GONE_PLAYER_INSTANCE},
+    )
+    # a protocol of another provider, which stays when the gone one is removed
+    mass_minimal.config.set(
+        f"{CONF_PLAYER_PROTOCOLS}/{KEPT_PROTOCOL_ID}",
+        {"protocol_id": KEPT_PROTOCOL_ID, "provider": "other_player"},
     )
     mass_minimal.music = MagicMock()
     for method in (
@@ -70,7 +76,7 @@ def unavailable_mass(mass_minimal: MusicAssistant) -> MusicAssistant:
     ):
         setattr(mass_minimal.music, method, AsyncMock())
     mass_minimal.players = MagicMock()
-    mass_minimal.players.__iter__.return_value = iter([])
+    mass_minimal.players.remove_protocol = AsyncMock()
     return mass_minimal
 
 
@@ -170,14 +176,14 @@ async def test_remove_cleans_up_an_unavailable_music_source(
 async def test_remove_cleans_up_an_unavailable_player_provider(
     unavailable_mass: MusicAssistant,
 ) -> None:
-    """Removing an unavailable player provider deletes the configs of its players."""
+    """Removing an unavailable player provider removes the protocols it stored."""
     players = cast("MagicMock", unavailable_mass.players)
 
     with patch.object(unavailable_mass, "unload_provider", AsyncMock()):
         await unavailable_mass.config.remove_provider_config(GONE_PLAYER_INSTANCE)
 
     assert unavailable_mass.config.get(f"{CONF_PROVIDERS}/{GONE_PLAYER_INSTANCE}") is None
-    players.delete_player_config.assert_called_once_with(GONE_PLAYER_ID)
+    players.remove_protocol.assert_awaited_once_with(GONE_PROTOCOL_ID)
 
 
 async def test_a_builtin_provider_is_still_refused(unavailable_mass: MusicAssistant) -> None:
