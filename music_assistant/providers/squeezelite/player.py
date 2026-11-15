@@ -63,6 +63,10 @@ CACHE_CATEGORY_PREV_STATE = (
     1  # category for caching previous player state (bumped to invalidate old format)
 )
 
+# Device models of the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as
+# squeezelite players.
+BRIDGE_TOOL_MODELS = ("raopbridge", "castbridge", "upnpbridge")
+
 PROTOCOL_ONLY_MODELS = (
     # Device models where slimproto is only a secondary protocol on a device with
     # its own (native) identity: WiiM/LinkPlay devices (ModelName=WiiM Player) and
@@ -70,9 +74,7 @@ PROTOCOL_ONLY_MODELS = (
     # squeezelite players. These attach as an audio protocol to the player of
     # the device.
     "wiim",
-    "raopbridge",
-    "castbridge",
-    "upnpbridge",
+    *BRIDGE_TOOL_MODELS,
 )
 
 
@@ -80,6 +82,12 @@ def is_protocol_only_device(device_model: str) -> bool:
     """Return True if the device uses squeezelite as a secondary protocol only."""
     device_model_lower = device_model.lower()
     return any(model.lower() in device_model_lower for model in PROTOCOL_ONLY_MODELS)
+
+
+def is_bridge_tool(device_model: str) -> bool:
+    """Return True if the device is an LMS bridge tool for a device of another protocol."""
+    device_model_lower = device_model.lower()
+    return any(model in device_model_lower for model in BRIDGE_TOOL_MODELS)
 
 
 class SqueezelitePlayer(PlayerProtocol):

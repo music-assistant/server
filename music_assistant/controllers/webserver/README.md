@@ -587,7 +587,8 @@ async def admin_command():
 ```
 
 A tuple of scopes (`required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)`) means the
-caller needs one of them.
+caller needs one of them. `required_scope=Scope.ALL` (`*`) means administrators only: only the
+builtin admin role holds it, and a custom role can not be granted it.
 
 Scopes are granted to users through their role, see `ROLE_SCOPES` in
 [helpers/auth_middleware.py](helpers/auth_middleware.py) for the builtin role definitions.
