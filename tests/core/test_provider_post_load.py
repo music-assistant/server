@@ -111,6 +111,30 @@ async def test_cancelled_post_load_reports_nothing() -> None:
     cast("MagicMock", mass.config).set.assert_any_call(f"{CONF_PROVIDERS}/test--1/last_error", None)
 
 
+async def test_provider_unloaded_while_registering_skips_post_load() -> None:
+    """An unload during the finish-loading hooks has no task to cancel, so nothing may run."""
+    mass = _mass()
+    provider = _provider(mass)
+
+    async def _unload_during_hook() -> None:
+        provider.unloading = True
+
+    mass._update_available_providers_cache = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_unload_during_hook
+    )
+
+    await mass._register_loaded_provider(provider, provider.config)
+    await asyncio.sleep(0)
+
+    assert not provider.loaded_in_mass_done
+    assert not provider.initialized.is_set()
+    assert not mass.get_provider_ready_event("test").is_set()
+    cast("AsyncMock", mass.run_provider_discovery).assert_not_awaited()
+    cast("MagicMock", mass.signal_event).assert_not_called()
+    # a failure recorded by the unload must survive
+    cast("MagicMock", mass.config).set.assert_not_called()
+
+
 async def test_providers_updated_announced_only_after_post_load() -> None:
     """
     The PROVIDERS_UPDATED event must wait until loaded_in_mass has finished.

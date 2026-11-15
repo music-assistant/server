@@ -1,15 +1,21 @@
 """Tests for external media identifier helpers."""
 
+import pytest
 from music_assistant_models.enums import ExternalID
+from music_assistant_models.errors import InvalidProviderID
 
 from music_assistant.helpers.external_ids import (
     barcode_to_upc,
     external_id_lookup_values,
     external_id_lookup_values_untyped,
+    external_item_id,
     is_valid_barcode,
+    is_valid_mbid,
     normalize_external_id,
     normalize_external_ids,
+    parse_external_item_id,
 )
+from music_assistant.helpers.uri import parse_uri
 
 
 def test_normalize_gtin_variants() -> None:
@@ -90,3 +96,73 @@ def test_is_valid_barcode() -> None:
     assert is_valid_barcode("602445790392") is False
     assert is_valid_barcode("12345") is False
     assert is_valid_barcode("catalog-123") is False
+
+
+def test_is_valid_mbid() -> None:
+    """A MusicBrainz id is a UUID, in whatever notation it is written."""
+    assert is_valid_mbid("b1a9c0e9-d987-4042-ae91-78d6a3267d69") is True
+    assert is_valid_mbid("{B1A9C0E9-D987-4042-AE91-78D6A3267D69}") is True
+    assert is_valid_mbid("b1a9c0e9-d987-4042-ae91") is False
+    assert is_valid_mbid("../artist/b1a9c0e9-d987-4042-ae91-78d6a3267d69") is False
+    assert is_valid_mbid("") is False
+
+
+@pytest.mark.parametrize(
+    ("external_id_type", "value", "item_id"),
+    [
+        (
+            ExternalID.MB_RECORDING,
+            "{B1A9C0E9-D987-4042-AE91-78D6A3267D69}",
+            "musicbrainz_recordingid:b1a9c0e9-d987-4042-ae91-78d6a3267d69",
+        ),
+        (
+            ExternalID.MB_RELEASEGROUP,
+            "b1392450-e666-3926-a536-22c65f834433",
+            "musicbrainz_releasegroupid:b1392450-e666-3926-a536-22c65f834433",
+        ),
+        (ExternalID.ISRC, "us-rc1-76-07839", "isrc:USRC17607839"),
+        (ExternalID.BARCODE, "724354283857", "barcode:00724354283857"),
+        (ExternalID.DISCOGS, "1157205", "discogs:1157205"),
+    ],
+)
+def test_external_item_id_round_trip(
+    external_id_type: ExternalID, value: str, item_id: str
+) -> None:
+    """An external id becomes one canonical item id, which splits into the same id again."""
+    assert external_item_id(external_id_type, value) == item_id
+    canonical_value = item_id.split(":", 1)[1]
+    assert parse_external_item_id(item_id) == (external_id_type, canonical_value)
+    # whatever notation the id is written in, it names the same item
+    assert parse_external_item_id(f"{external_id_type.value}:{value}") == (
+        external_id_type,
+        canonical_value,
+    )
+
+
+@pytest.mark.parametrize(
+    "item_id",
+    [
+        "b1a9c0e9-d987-4042-ae91-78d6a3267d69",
+        "musicbrainz_recordingid:",
+        ":b1a9c0e9-d987-4042-ae91-78d6a3267d69",
+        "spotify:b1a9c0e9-d987-4042-ae91-78d6a3267d69",
+        "unknown:b1a9c0e9-d987-4042-ae91-78d6a3267d69",
+        "musicbrainz_recordingid:not-a-uuid",
+        "musicbrainz_albumid:../artist/b1a9c0e9-d987-4042-ae91-78d6a3267d69",
+        "isrc:not-an-isrc",
+        "barcode:602445790392",
+    ],
+)
+def test_parse_external_item_id_refuses_a_malformed_id(item_id: str) -> None:
+    """An item id without a known id type, or with an id that can not be one, is refused."""
+    with pytest.raises(InvalidProviderID):
+        parse_external_item_id(item_id)
+
+
+async def test_external_item_id_fits_in_a_uri() -> None:
+    """The uri of an external item parses back into its provider and item id."""
+    item_id = external_item_id(ExternalID.MB_RECORDING, "b1a9c0e9-d987-4042-ae91-78d6a3267d69")
+
+    media_type, provider, parsed_item_id = await parse_uri(f"external://track/{item_id}")
+
+    assert (media_type.value, provider, parsed_item_id) == ("track", "external", item_id)

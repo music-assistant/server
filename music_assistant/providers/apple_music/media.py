@@ -22,6 +22,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.track_filter import filter_tracks
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import (
     ARTWORK_CACHE_EXPIRATION,
@@ -127,8 +128,6 @@ class AppleMusicMediaManager:
                 *(
                     parse_station(self.provider, item)
                     for item in response["results"]["stations"]["data"]
-                    # live broadcast stations require Widevine DRM
-                    if not item.get("attributes", {}).get("isLive", False)
                 ),
             ]
         return searchresult
@@ -154,8 +153,12 @@ class AppleMusicMediaManager:
     @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
-        response = await self.api.get_data(endpoint, include="artists,albums")
+        if is_library_id(prov_track_id):
+            endpoint = f"me/library/songs/{prov_track_id}"
+            response = await self.api.get_data(endpoint, include="catalog,artists,albums")
+        else:
+            endpoint = f"catalog/{self.provider._storefront}/songs/{prov_track_id}"
+            response = await self.api.get_data(endpoint, include="artists,albums")
         return parse_track(self.provider, response["data"][0])
 
     async def get_playlist(
@@ -359,20 +362,21 @@ class AppleMusicMediaManager:
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
+        """Get a list of albums for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/albums"
+        albums: list[Album] = []
         try:
-            response = await self.api.get_all_items(endpoint)
+            async for album in self.api.iter_all_items(endpoint):
+                if not album["id"]:
+                    continue
+                parsed = parse_album(self.provider, album)
+                if parsed:
+                    albums.append(cast("Album", parsed))
+                if len(albums) >= ARTIST_ALBUMS_LIMIT:
+                    break
         except MediaNotFoundError:
             self.logger.info("No albums found for artist %s", prov_artist_id)
             return []
-        albums = []
-        for album in response:
-            if not album["id"]:
-                continue
-            parsed = parse_album(self.provider, album)
-            if parsed:
-                albums.append(cast("Album", parsed))
         return albums
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)

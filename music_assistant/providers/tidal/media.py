@@ -20,6 +20,7 @@ from music_assistant.helpers.external_ids import (
     is_valid_isrc,
     normalize_external_id,
 )
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS, SKIPPABLE_ITEM_ERRORS
 from .parsers import (
@@ -52,6 +53,11 @@ if TYPE_CHECKING:
     from .provider import TidalProvider
 
 
+SEARCH_MEDIA_TYPES = frozenset(
+    {MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST, MediaType.PLAYLIST}
+)
+
+
 class TidalMediaManager:
     """Handles retrieval of media items from Tidal."""
 
@@ -69,18 +75,23 @@ class TidalMediaManager:
         wanted = set(media_types)
 
         # Build the includes for the requested types only, keeping under the
-        # official API's 10-included-resource cap. Track album covers are
-        # included so track results carry artwork; standalone album results
-        # trade artist names for staying within the cap.
+        # official API's include cap. Track album covers are included so track
+        # results carry artwork; album artist names and playlist owners only fit
+        # when not every type is requested.
+        enrich = not wanted >= SEARCH_MEDIA_TYPES
         includes: list[str] = []
         if MediaType.TRACK in wanted:
             includes += ["tracks.artists", "tracks.albums.coverArt"]
         if MediaType.ALBUM in wanted:
             includes.append("albums.coverArt")
+            if enrich:
+                includes.append("albums.artists")
         if MediaType.ARTIST in wanted:
             includes.append("artists.profileArt")
         if MediaType.PLAYLIST in wanted:
             includes.append("playlists.coverArt")
+            if enrich:
+                includes.append("playlists.owners")
         if not includes:
             return results
 
@@ -250,16 +261,19 @@ class TidalMediaManager:
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist albums."""
         # Tidal lists an album once per quality tier; keep one per album.
-        pages = [
-            doc
-            async for doc in self.api.paginate_jsonapi(
-                f"artists/{prov_artist_id}/relationships/albums",
-                include=["albums.artists", "albums.coverArt"],
-                replace_media="albums",
-            )
-        ]
+        pages: list[JsonApiDocument] = []
+        groups: list[list[Variant]] = []
+        async for doc in self.api.paginate_jsonapi(
+            f"artists/{prov_artist_id}/relationships/albums",
+            include=["albums.artists", "albums.coverArt"],
+            replace_media="albums",
+        ):
+            pages.append(doc)
+            groups = group_quality_variants(pages, album_variant_key)
+            if len(groups) >= ARTIST_ALBUMS_LIMIT:
+                break
         albums: list[Album] = []
-        for group in group_quality_variants(pages, album_variant_key):
+        for group in groups[:ARTIST_ALBUMS_LIMIT]:
             if (album := _parse_first_variant(parse_album_v2, self.provider, group)) is not None:
                 albums.append(album)
         return albums

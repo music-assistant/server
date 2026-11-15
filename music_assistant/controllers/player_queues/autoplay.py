@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, SortField
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Artist, Playlist, Track
 
 from music_assistant.constants import CONF_PLAYER_QUEUES, CONF_VALUE_GLOBAL
 from music_assistant.controllers.player_queues.constants import (
@@ -57,6 +57,7 @@ class AutoplayMode(StrEnum):
     SIMILAR = "similar"
     LIBRARY = "library"
     PLAYLIST = "playlist"
+    SIMILAR_ARTISTS = "similar_artists"
 
 
 AUTOPLAY_MODE_DEFAULT_VALUE = AutoplayMode.AUTO.value
@@ -153,6 +154,32 @@ class Autoplay:
         random.shuffle(tracks)
         return self._dedupe(tracks, exclude)
 
+    async def get_similar_artists(self, queue: PlayerQueue) -> list[Artist]:
+        """
+        Return the similar artists of the last track's artist that have no track in the queue yet.
+
+        :param queue: The queue being refilled.
+        """
+        tracks = [
+            item.media_item
+            for item in self.queues.queue_data(queue.queue_id).items
+            if isinstance(item.media_item, Track)
+        ]
+        if not tracks or not tracks[-1].artists:
+            return []
+        artist = tracks[-1].artists[0]
+        if artist.provider != "library" and (
+            library_artist := await self.mass.music.artists.get_library_item_by_prov_id(
+                artist.item_id, artist.provider
+            )
+        ):
+            artist = library_artist
+        queued = {item.name.casefold() for track in tracks for item in track.artists}
+        similar = await self.mass.music.artists.similar_artists(
+            artist.item_id, artist.provider, limit=0
+        )
+        return [item for item in similar if item.name.casefold() not in queued]
+
     def _autoplay_playlist_uri(self, queue_id: str) -> ConfigValueType:
         """
         Return the configured Autoplay playlist, taken from the level the mode resolves from.
@@ -172,11 +199,16 @@ class Autoplay:
         return self.mass.config.get_raw_player_queue_config_value(queue_id, CONF_AUTOPLAY_PLAYLIST)
 
     async def _collect_genre_ids(self, queue: PlayerQueue) -> list[int]:
-        """Collect library genre ids from the queue's most recently enqueued items."""
+        """
+        Collect library genre ids from the queue's most recently enqueued items.
+
+        The genres the playback user disliked are left out.
+        """
         genre_ids: set[int] = set()
+        queue_data = self.queues.queue_data(queue.queue_id)
         seeds = [
             item
-            for item in reversed(self.queues.queue_data(queue.queue_id).enqueued_media_items)
+            for item in reversed(queue_data.enqueued_media_items)
             if item.media_type in GENRE_SEED_MEDIA_TYPES
         ][:GENRE_SEED_ITEM_COUNT]
         for seed in seeds:
@@ -191,6 +223,8 @@ class Autoplay:
                 ):
                     with suppress(ValueError, TypeError):
                         genre_ids.add(int(genre.item_id))
+        if genre_ids and queue_data.userid:
+            genre_ids -= await self.mass.music.favorites.disliked_genre_ids(queue_data.userid)
         return list(genre_ids)
 
     async def _resolve_library_id(

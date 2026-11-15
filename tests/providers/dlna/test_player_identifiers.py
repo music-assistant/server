@@ -73,3 +73,24 @@ async def test_ip_identifier_from_presentation_url(presentation: str, expected_i
         await player._device_connect()
 
     assert player.device_info.identifiers.get(IdentifierType.IP_ADDRESS) == expected_ip
+
+
+@pytest.mark.parametrize(
+    ("player_id", "expected_uuid"),
+    [
+        ("uuid:dlna-player", "dlna-player"),
+        # a Sonos renderer reports the UUID of its Sonos player
+        ("uuid:RINCON_000E5812345601400_MR", "RINCON_000E5812345601400"),
+    ],
+)
+async def test_uuid_identifier_from_udn(player_id: str, expected_uuid: str) -> None:
+    """The UUID identifier is the UDN without its prefix and without the Sonos renderer suffix."""
+    provider: Any = MockProvider("dlna", instance_id="dlna_test")
+    provider.upnp_factory = UpnpFactory(_Requester(DESCRIPTION_XML.format(presentation="/")))
+    provider.notify_server = MagicMock()
+    player = DLNAPlayer(provider, player_id, DESCRIPTION_URL)
+
+    with patch("music_assistant.providers.dlna.player.DmrDevice", _dmr):
+        await player._device_connect()
+
+    assert player.device_info.identifiers.get(IdentifierType.UUID) == expected_uuid

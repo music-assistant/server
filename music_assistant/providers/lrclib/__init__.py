@@ -15,6 +15,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import RateLimited, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
+from music_assistant.constants import MASS_USER_AGENT
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import (
     ThrottlerManager,
@@ -37,7 +38,6 @@ SUPPORTED_FEATURES = {
 
 CONF_API_URL = "api_url"
 DEFAULT_API_URL = "https://lrclib.net/api"
-USER_AGENT = "MusicAssistant (https://github.com/music-assistant/server)"
 
 
 async def setup(
@@ -157,7 +157,7 @@ class LrclibProvider(MetadataProvider):
     @throttle_with_retries
     async def _get_data(self, /, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""
-        headers = {"User-Agent": USER_AGENT}
+        headers = {"User-Agent": MASS_USER_AGENT}
         try:
             async with self.mass.http_session.get(
                 f"{self.api_url}/get", params=params, headers=headers

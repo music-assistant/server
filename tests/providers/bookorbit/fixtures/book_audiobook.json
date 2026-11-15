@@ -1,0 +1,68 @@
+{
+  "id": 42,
+  "libraryId": 1,
+  "libraryName": "Audiobooks",
+  "status": "ready",
+  "folderPath": "/books/Frank Herbert/Dune",
+  "addedAt": "2026-03-01T12:00:00.000Z",
+  "updatedAt": "2026-03-02T08:30:00.000Z",
+  "title": "Dune",
+  "subtitle": "Book One",
+  "description": "A desert planet, a boy, and a spice.",
+  "isbn10": null,
+  "isbn13": "9780441172719",
+  "publisher": "Macmillan Audio",
+  "publishedDate": "2007-06-01",
+  "publishedYear": 2007,
+  "language": "en",
+  "pageCount": null,
+  "seriesId": 7,
+  "seriesName": "Dune Chronicles",
+  "seriesIndex": 1,
+  "seriesMemberships": [
+    {"seriesId": 7, "seriesName": "Dune Chronicles", "seriesIndex": 1, "displayOrder": 0}
+  ],
+  "rating": null,
+  "personalNote": null,
+  "personalNoteUpdatedAt": null,
+  "communityRatings": [],
+  "coverSource": "extracted",
+  "hardcoverEditionId": null,
+  "providerIds": {},
+  "authors": [{"id": 11, "name": "Frank Herbert", "sortName": "Herbert, Frank"}],
+  "genres": ["Science Fiction"],
+  "tags": [],
+  "files": [
+    {
+      "id": 420,
+      "format": "m4b",
+      "role": "primary",
+      "sizeBytes": 734003200,
+      "absolutePath": "/books/Frank Herbert/Dune/Dune.m4b",
+      "createdAt": "2026-03-01T12:00:00.000Z",
+      "filename": "Dune.m4b",
+      "durationSeconds": 78000.5
+    }
+  ],
+  "lastWrittenAt": null,
+  "metadataScore": 90,
+  "readStatus": null,
+  "audioMetadata": {
+    "narrators": [
+      {"id": 21, "name": "Scott Brick", "sortName": "Brick, Scott", "displayOrder": 0},
+      {"id": 22, "name": "Orlagh Cassidy", "sortName": "Cassidy, Orlagh", "displayOrder": 1}
+    ],
+    "durationSeconds": 78000.5,
+    "abridged": false,
+    "chapters": [
+      {"title": "Opening", "startMs": 0},
+      {"title": "Part One", "startMs": 600000},
+      {"title": "Part Two", "startMs": 39000000}
+    ]
+  },
+  "formatPriority": ["m4b"],
+  "comicMetadata": null,
+  "customMetadata": [],
+  "lockedFields": [],
+  "collections": []
+}

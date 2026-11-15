@@ -11,8 +11,7 @@ from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, SENDSPIN_SERVER_PORT
 from music_assistant.providers.sendspin.provider import SendspinProvider
-from tests.common import bound_sendspin_port
-from tests.conftest import full_mass_context
+from music_assistant.testing import bound_sendspin_port, full_mass_context
 
 
 def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock, MagicMock]:
@@ -28,7 +27,7 @@ def _make_provider(start_server: AsyncMock) -> tuple[SendspinProvider, MagicMock
     provider = SendspinProvider(mass, manifest, config)
     server_api = MagicMock(start_server=start_server, close=AsyncMock())
     provider.server_api = server_api
-    provider._remove_orphan_virtual_player_configs = MagicMock()  # type: ignore[method-assign]
+    provider._remove_orphan_virtual_player_configs = AsyncMock()  # type: ignore[method-assign]
     return provider, mass, server_api
 
 
