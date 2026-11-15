@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Coroutine
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,10 +11,12 @@ from unittest import mock
 
 import aiofiles
 import pytest
-from aiohttp import ClientSession
+from aiohttp import ClientConnectionError, ClientResponseError, ClientSession
+from aiojellyfin import Connection
 from aiojellyfin.session import SessionConfiguration
 from aiojellyfin.testing import FixtureBuilder
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.mass import MusicAssistant
@@ -22,9 +24,7 @@ from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
 from music_assistant.providers.jellyfin import (
     CONF_ACCESS_TOKEN,
     CONF_USER_ID,
-    JellyfinConnection,
     JellyfinProvider,
-    authenticate_by_name,
     authenticate_with_quick_connect,
     initiate_quick_connect,
     setup_flow,
@@ -116,43 +116,48 @@ async def test_quick_connect_authentication() -> None:
         client = await authenticate_with_quick_connect(session_config, secret)
 
     assert code == "123456"
-    assert isinstance(client, JellyfinConnection)
+    assert isinstance(client, Connection)
     assert client._user_id == "user-id"
     assert client._access_token == "access-token"
     assert http_session.get.call_count == 2
     assert http_session.post.call_args_list[1].kwargs["json"] == {"Secret": "secret"}
 
 
-async def test_password_authentication() -> None:
-    """Test password login returns a connection that authenticates URLs with ApiKey."""
-    http_session = mock.MagicMock(spec=ClientSession)
-    response = mock.MagicMock()
-    response.json = mock.AsyncMock(
-        return_value={"User": {"Id": "user-id"}, "AccessToken": "access-token"}
-    )
-    context = mock.MagicMock()
-    context.__aenter__ = mock.AsyncMock(return_value=response)
-    context.__aexit__ = mock.AsyncMock(return_value=None)
-    http_session.post.return_value = context
-    session_config = SessionConfiguration(
-        session=cast("ClientSession", http_session),
-        url="https://jellyfin.example",
-        app_name="Music Assistant",
-        app_version="1.0",
-        device_name="test device",
-        device_id="test-device-id",
-    )
+async def test_saved_token_is_verified_on_start() -> None:
+    """Test a provider set up with Quick Connect checks its saved token when it starts."""
+    provider = _token_provider()
+    get_media_folders = mock.AsyncMock(return_value={"Items": []})
 
-    client = await authenticate_by_name(session_config, "user", "password")
+    with mock.patch.object(Connection, "get_media_folders", get_media_folders):
+        await provider.handle_async_init()
 
-    assert isinstance(client, JellyfinConnection)
-    assert client._user_id == "user-id"
-    assert http_session.post.call_args.args[0] == (
-        "https://jellyfin.example/Users/AuthenticateByName"
-    )
-    assert http_session.post.call_args.kwargs["json"] == {"Username": "user", "Pw": "password"}
-    assert "ApiKey=access-token" in client.audio_url("track-1")
-    assert "api_key" not in client.audio_url("track-1")
+    get_media_folders.assert_awaited_once()
+    assert provider._client._access_token == "saved-token"
+    assert provider._client._user_id == "saved-user"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (lambda: _response_error(401), LoginFailed),
+        (lambda: _response_error(403), LoginFailed),
+        (lambda: _response_error(503), ProviderUnavailableError),
+        (lambda: ClientConnectionError("connection refused"), ProviderUnavailableError),
+        (TimeoutError, ProviderUnavailableError),
+    ],
+    ids=["unauthorized", "forbidden", "server-error", "connection-refused", "timeout"],
+)
+async def test_saved_token_check_failure(
+    error: Callable[[], Exception], expected: type[Exception]
+) -> None:
+    """Test a rejected token asks for a new sign-in and an unreachable server is retried."""
+    provider = _token_provider()
+
+    with (
+        mock.patch.object(Connection, "get_media_folders", mock.AsyncMock(side_effect=error())),
+        pytest.raises(expected),
+    ):
+        await provider.handle_async_init()
 
 
 async def test_password_setup_clears_quick_connect_credentials() -> None:
@@ -275,6 +280,30 @@ async def test_get_stream_details_album_loudness(mass: MusicAssistant) -> None:
         loudness=stream_details.loudness,
         loudness_album=stream_details.loudness_album,
     )
+
+
+def _response_error(status: int) -> ClientResponseError:
+    """Return the error aiohttp raises for an HTTP error status."""
+    return ClientResponseError(mock.MagicMock(), (), status=status)
+
+
+def _token_provider() -> JellyfinProvider:
+    """Create a Jellyfin provider whose setup data holds a saved Quick Connect token."""
+    setup_values = {
+        "url": "https://jellyfin.example",
+        "verify_ssl": True,
+        CONF_ACCESS_TOKEN: "saved-token",
+        CONF_USER_ID: "saved-user",
+        "device_id": "saved-device",
+    }
+    mass = mock.MagicMock()
+    mass.version = "1.0"
+    manifest = mock.MagicMock(domain="jellyfin")
+    config = mock.MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    provider = JellyfinProvider(mass, manifest, config)
+    provider.get_setup_value = setup_values.get  # type: ignore[method-assign,assignment]
+    return provider
 
 
 def _setup_flow_session(

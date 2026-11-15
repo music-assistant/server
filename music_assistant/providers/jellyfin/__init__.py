@@ -5,18 +5,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import socket
-import urllib.parse
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from aiojellyfin import DEFAULT_FIELDS, Connection, ItemType, NotFound
+from aiohttp import ClientError, ClientResponseError
+from aiojellyfin import DEFAULT_FIELDS, Connection, ItemType, NotFound, authenticate_by_name
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
 from aiojellyfin import Track as JellyTrack
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -95,34 +95,6 @@ async def setup(
     return JellyfinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-class JellyfinConnection(Connection):
-    """Jellyfin connection that uses the current URL authentication parameter."""
-
-    def _build_url(self, url: str, params: dict[str, str | int]) -> str:
-        assert url.startswith("/")
-        params.setdefault("ApiKey", self._access_token)
-        return f"{self.base_url}{url}?{urllib.parse.urlencode(params)}"
-
-
-async def authenticate_by_name(
-    session_config: SessionConfiguration, username: str, password: str
-) -> JellyfinConnection:
-    """Authenticate with a username and password and return the Jellyfin connection."""
-    base_url = session_config.url.rstrip("/")
-    async with session_config.session.post(
-        f"{base_url}/Users/AuthenticateByName",
-        json={"Username": username, "Pw": password},
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": session_config.user_agent,
-            "Authorization": session_config.authentication_header(),
-        },
-        raise_for_status=True,
-    ) as response:
-        result = await response.json()
-    return JellyfinConnection(session_config, result["User"]["Id"], result["AccessToken"])
-
-
 async def initiate_quick_connect(session_config: SessionConfiguration) -> tuple[str, str]:
     """Start a Jellyfin Quick Connect request and return its secret and approval code."""
     base_url = session_config.url.rstrip("/")
@@ -140,7 +112,7 @@ async def initiate_quick_connect(session_config: SessionConfiguration) -> tuple[
 
 async def authenticate_with_quick_connect(
     session_config: SessionConfiguration, secret: str
-) -> JellyfinConnection:
+) -> Connection:
     """Wait for Quick Connect approval and return the authenticated Jellyfin connection."""
     base_url = session_config.url.rstrip("/")
     headers = {
@@ -167,7 +139,7 @@ async def authenticate_with_quick_connect(
         raise_for_status=True,
     ) as response:
         result = await response.json()
-    return JellyfinConnection(session_config, result["User"]["Id"], result["AccessToken"])
+    return Connection(session_config, result["User"]["Id"], result["AccessToken"])
 
 
 class JellyfinProvider(MusicProvider):
@@ -214,21 +186,26 @@ class JellyfinProvider(MusicProvider):
             device_id=device_id,
         )
 
-        try:
-            if access_token := self.get_setup_value(CONF_ACCESS_TOKEN):
-                self._client = JellyfinConnection(
-                    session_config,
-                    str(self.get_setup_value(CONF_USER_ID)),
-                    str(access_token),
-                )
-            else:
+        if access_token := self.get_setup_value(CONF_ACCESS_TOKEN):
+            self._client = Connection(
+                session_config, str(self.get_setup_value(CONF_USER_ID)), str(access_token)
+            )
+            try:
+                # a saved token can have been revoked on the server since it was issued
+                await self._client.get_media_folders()
+            except (ClientError, TimeoutError) as err:
+                if isinstance(err, ClientResponseError) and err.status in (401, 403):
+                    raise LoginFailed(f"Authentication failed: {err}") from err
+                raise ProviderUnavailableError(f"Jellyfin server is unreachable: {err}") from err
+        else:
+            try:
                 self._client = await authenticate_by_name(
                     session_config,
                     username,
                     str(self.get_setup_value(CONF_PASSWORD) or ""),
                 )
-        except Exception as err:
-            raise LoginFailed(f"Authentication failed: {err}") from err
+            except Exception as err:
+                raise LoginFailed(f"Authentication failed: {err}") from err
 
     @property
     def is_streaming_provider(self) -> bool:
