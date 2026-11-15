@@ -7,6 +7,7 @@ requests directly (without the yaha-cloud.ru WebSocket relay).
 Routes:
   Health:
     HEAD/GET /api/yandex_smarthome/v1.0       — health check
+    HEAD     /api/yandex_smarthome/v1.0/      — health check
     GET      /api/yandex_smarthome/v1.0/ping   — health check
 
   API (Bearer auth required):
@@ -144,6 +145,7 @@ class DirectConnectionHandler:
         routes: list[tuple[str, str, Any]] = [
             (f"{base}", "HEAD", self._handle_health),
             (f"{base}", "GET", self._handle_health),
+            (f"{base}/", "HEAD", self._handle_health),
             (f"{base}/ping", "GET", self._handle_health),
             # API endpoints (auth required)
             (f"{base}/user/devices", "POST", self._handle_devices),

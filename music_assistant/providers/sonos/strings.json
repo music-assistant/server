@@ -1,8 +1,16 @@
 {
+  "config_entries": {
+    "show_device_settings": {
+      "label": "Show device settings",
+      "description": "Offer the status light, touch controls, Trueplay and (on home theater speakers) the IR repeater and the status light on remote control as player options. The speaker reports no change of these, so it is polled every 30 seconds while they are shown."
+    }
+  },
   "manifest": {
     "description": "Play music, manage groups, and control SONOS speakers throughout your home."
   },
   "errors": {
+    "option_not_settable": "Option {0} can not be set on {1}.",
+    "option_set_failed": "Failed to set option {0} on {1}.",
     "player_synced_cannot_play": "Player {0} can not accept the play command, it is synced to another player.",
     "wake_on_lan_timeout": "{0} did not respond to wake-on-LAN."
   }

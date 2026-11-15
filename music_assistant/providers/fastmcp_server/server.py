@@ -199,7 +199,7 @@ class MCPServerRuntime:
         from fastmcp import FastMCP  # noqa: PLC0415
 
         from .auth import MASTokenVerifier  # noqa: PLC0415
-        from .http_bridge import mount_into_mass  # noqa: PLC0415
+        from .http_bridge import build_protected_resource_metadata, mount_into_mass  # noqa: PLC0415
         from .prompts import register_prompts  # noqa: PLC0415
         from .resources import register_resources  # noqa: PLC0415
 
@@ -208,6 +208,19 @@ class MCPServerRuntime:
         base_url = str(self._mass.webserver.base_url or "").rstrip("/")
         public_resource_uri = f"{base_url}{self._mount_path}" if base_url else None
         enforce_audience = bool(self._config.get_value(CONF_ENFORCE_AUDIENCE))
+        resource_name = "Music Assistant MCP"
+
+        def scopes_supported() -> list[str]:
+            return [str(capability) for capability in Capability]
+
+        def resource_metadata() -> dict[str, Any]:
+            return build_protected_resource_metadata(
+                resource_uri=str(public_resource_uri),
+                authorization_servers=[base_url],
+                scopes_supported=scopes_supported(),
+                resource_name=resource_name,
+            )
+
         verifier = (
             MASTokenVerifier(
                 self._mass,
@@ -215,6 +228,7 @@ class MCPServerRuntime:
                 public_resource_uri=public_resource_uri,
                 enforce_audience=enforce_audience,
                 identity_registry=self._token_identities,
+                resource_metadata=resource_metadata if public_resource_uri else None,
             )
             if require_auth
             else None
@@ -258,8 +272,8 @@ class MCPServerRuntime:
                 # Lazy provider so hot-swapped permissions update the
                 # advertised `scopes_supported` immediately, without
                 # rebuilding the runtime.
-                scopes_supported=lambda: [str(capability) for capability in Capability],
-                resource_name="Music Assistant MCP",
+                scopes_supported=scopes_supported,
+                resource_name=resource_name,
             )
 
         # Mount the Connect Wizard. Failure here is non-fatal — the MCP server

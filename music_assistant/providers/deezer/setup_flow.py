@@ -38,6 +38,7 @@ async def run_setup(session: SetupSession) -> None:
                     # the stored token is never sent to the client, an empty field on a
                     # reconfigure means "keep the current one"
                     required=not setup_data.get(CONF_ARL_TOKEN),
+                    help_link="https://www.music-assistant.io/music-providers/deezer/",
                 )
             ],
             step_id="user",

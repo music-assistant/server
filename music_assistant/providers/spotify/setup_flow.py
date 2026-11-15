@@ -195,6 +195,7 @@ async def _authorize_developer_key(
         step_id="developer",
         last_step=True,
         translation_params=[HOSTED_CALLBACK_URL],
+        copy_text=HOSTED_CALLBACK_URL,
     )
     client_id = str(dev_values.get(CONF_CLIENT_ID) or "").strip()
     try:
@@ -333,12 +334,13 @@ async def _setup_playback(
     :param setup_data: The setup data collected so far, updated in place.
     :param account_id: The signed-in Spotify user id, when known.
     """
-    # The stored choice wins; everything else preselects librespot. It is the
-    # short path (no consent step, no API key, no pairing), and an instance
-    # predating the choice runs it already, so a routine reconfigure cannot nudge
-    # anyone onto another playback path. An account librespot cannot serve
-    # (created since late 2024) has to switch, which the choice step explains.
-    preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or BACKEND_LIBRESPOT
+    # The stored choice wins. Without one, a new setup lands on soloist, the
+    # engine that serves every account, while an instance predating the choice
+    # already runs librespot, so a routine reconfigure keeps it there instead of
+    # nudging it onto another playback path.
+    preselect = str(setup_data.get(CONF_PLAYBACK_BACKEND) or "") or (
+        BACKEND_LIBRESPOT if session.context.kind == "reconfigure" else BACKEND_SOLOIST
+    )
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
         selected = await _choose_playback_backend(session, preselect, errors)
@@ -380,7 +382,7 @@ async def _choose_playback_backend(
                     key=CONF_PLAYBACK_BACKEND,
                     type=ConfigEntryType.STRING,
                     required=True,
-                    default_value=BACKEND_LIBRESPOT,
+                    default_value=BACKEND_SOLOIST,
                     value=preselect,
                     options=[
                         ConfigValueOption(BACKEND_SOLOIST),

@@ -31,9 +31,12 @@ from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import (
     migrate,
     migrate_connected_player_plugins,
-    migrate_hass_engine_selection,
-    migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
+)
+from music_assistant.controllers.config.player_split import (
+    backup_before_player_split,
+    mark_player_split_done,
+    needs_player_split,
 )
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
@@ -88,12 +91,6 @@ class ConfigController(
         # runs here, after encryption is initialized, so string values are encrypted
         # at rest (the migrate() pass in _load() runs before encryption is available).
         setup_data_migrated = migrate_provider_setup_data(self._data, self.encrypt_string)
-        # one-off: fold a stored NFS subfolder into its export path. Same phase and reason as
-        # above, and after it so a legacy install's keys have landed in setup_data by now.
-        # TODO: remove after 2.10 release
-        nfs_subfolder_migrated = migrate_nfs_subfolder_into_export_path(
-            self._data, self.encrypt_string, self.decrypt_string
-        )
         # one-off: move the connected-player plugins to the player-bound model (collapse
         # spotify_connect/airplay_receiver instances, enforce the mandatory player on
         # ariacast_receiver/yandex_ynison). Runs after the setup-data move above so a
@@ -102,12 +99,7 @@ class ConfigController(
         connected_plugins_migrated = migrate_connected_player_plugins(
             self._data, self.decrypt_string, self.mass.storage_path
         )
-        if setup_data_migrated or nfs_subfolder_migrated or connected_plugins_migrated:
-            self.save(immediate=True)
-        # one-off: hand the Home Assistant plugin's former single TTS/AI entity choice over to
-        # the providers that select their own engine now. Runs here for the same reason: the
-        # ai_radio selection lands in its encrypted setup_data.
-        if migrate_hass_engine_selection(self._data, self.encrypt_string):
+        if setup_data_migrated or connected_plugins_migrated:
             self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(
@@ -150,13 +142,19 @@ class ConfigController(
         LOGGER.debug("Stopped.")
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Get value(s) for a specific key/path in persistent storage."""
+        """
+        Get value(s) for a specific key/path in persistent storage.
+
+        A path that runs through a value that is no mapping gives the default.
+        """
         assert self.initialized, "Not yet (async) initialized"
         # we support a multi level hierarchy by providing the key as path,
         # with a slash (/) as splitter. Sort that out here.
-        parent = self._data
+        parent: Any = self._data
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
+            if not isinstance(parent, dict):
+                return default
             if index == (len(subkeys) - 1):
                 value = parent.get(subkey, default)
                 if value is None:
@@ -320,6 +318,8 @@ class ConfigController(
                 async with aiofiles.open(filename, encoding="utf-8") as _file:
                     self._data = await async_json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
+                    if needs_player_split(self._data):
+                        await self._backup_before_player_split(filename)
                     if await migrate(self._data):
                         await self.async_save()
                     return
@@ -328,6 +328,25 @@ class ConfigController(
             except JSON_DECODE_EXCEPTIONS:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
+        mark_player_split_done(self._data)
+
+    async def _backup_before_player_split(self, loaded_filename: str) -> None:
+        """
+        Keep a copy of the settings as they were before the player configs are migrated.
+
+        :param loaded_filename: The file the settings were loaded from.
+        :raises RuntimeError: When the copy can not be written: there is no migration
+            without it, so the startup stops and the next start tries again.
+        """
+        try:
+            await asyncio.to_thread(backup_before_player_split, loaded_filename, self.filename)
+        except OSError as err:
+            msg = (
+                f"Could not keep a copy of {loaded_filename} before migrating the player "
+                f"settings: {err}. Nothing was changed; fix this and start the server again."
+            )
+            LOGGER.error(msg)
+            raise RuntimeError(msg) from err
 
     def _start_save(self) -> None:
         """Start the save task, called by the save timer."""

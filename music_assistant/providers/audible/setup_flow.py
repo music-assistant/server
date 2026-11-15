@@ -87,6 +87,7 @@ async def run_setup(session: SetupSession) -> None:
             step_id="authenticate",
             last_step=True,
             errors=errors,
+            copy_text=login_url,
         )
         post_login_url = str(values[CONF_POST_LOGIN_URL])
         try:

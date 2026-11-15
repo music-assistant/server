@@ -10,7 +10,7 @@ import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from signal import SIGKILL
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -64,6 +64,53 @@ if interrupted:
     sys.stdout.write("{_SLOW_EXIT_LINE}\\n" * {_SLOW_EXIT_LINES})
     sys.stdout.flush()
 """
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_communicate_releases_streams(timeout: bool) -> None:
+    """Communication releases its streams for cleanup, including on timeout."""
+    proc = AsyncProcess(["ffprobe"], stdout=True, stderr=True)
+    proc.proc = MagicMock(returncode=None)
+    proc.proc.communicate = AsyncMock(
+        side_effect=TimeoutError if timeout else None, return_value=(b"output", b"error")
+    )
+    if timeout:
+        with pytest.raises(TimeoutError):
+            await proc.communicate()
+    else:
+        assert await proc.communicate() == (b"output", b"error")
+    assert proc.proc is not None
+    proc.proc.stdout.read = AsyncMock(return_value=b"")
+    proc.proc.stderr.readline = AsyncMock(return_value=b"")
+    assert await asyncio.wait_for(proc.read(-1), 0.1) == b""
+    assert await asyncio.wait_for(proc.read_stderr(), 0.1) == b""
+
+
+@pytest.mark.asyncio
+async def test_communicate_returns_the_output_of_a_process_that_already_exited() -> None:
+    """
+    A process that exited before it is asked for its output still hands it over.
+
+    A short-lived process such as a tag probe can finish and be reaped while the event
+    loop is busy, before its caller gets to communicate with it.
+    """
+    proc = AsyncProcess(["sh", "-c", "echo output; echo error >&2"], stdout=True, stderr=True)
+    await proc.start()
+    await proc.wait()
+
+    assert await proc.communicate() == (b"output\n", b"error\n")
+    await proc.close()
+
+
+@pytest.mark.asyncio
+async def test_communicate_refuses_a_closed_process() -> None:
+    """A process that was closed has no output left to hand over."""
+    proc = AsyncProcess(["sh", "-c", "sleep 30"], stdout=True, stderr=True)
+    await proc.start()
+    await proc.close()
+
+    with pytest.raises(RuntimeError, match="closed process"):
+        await proc.communicate()
 
 
 @pytest.fixture(name="piped_process")

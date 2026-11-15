@@ -102,6 +102,7 @@ async def test_reconcile_duplicate_albums_query_matches_unknown_or_duplicate_and
     ]
     assert kwargs["limit"] == METADATA_SCAN_BATCH_SIZE
     assert kwargs["sort_field"] == SortField.RANDOM
+    assert kwargs["in_library_only"] is True
 
 
 async def test_reconcile_duplicate_albums_retries_stale_but_not_fresh_refresh(
@@ -118,7 +119,10 @@ async def test_reconcile_duplicate_albums_retries_stale_but_not_fresh_refresh(
             artists=UniqueList(),
             provider_mappings={
                 ProviderMapping(
-                    item_id="stale-item", provider_domain="qobuz", provider_instance="qobuz_1"
+                    item_id="stale-item",
+                    provider_domain="qobuz",
+                    provider_instance="qobuz_1",
+                    in_library=True,
                 )
             },
             metadata=MediaItemMetadata(last_refresh=now - REFRESH_INTERVAL - 1),
@@ -133,7 +137,10 @@ async def test_reconcile_duplicate_albums_retries_stale_but_not_fresh_refresh(
             artists=UniqueList(),
             provider_mappings={
                 ProviderMapping(
-                    item_id="fresh-item", provider_domain="qobuz", provider_instance="qobuz_1"
+                    item_id="fresh-item",
+                    provider_domain="qobuz",
+                    provider_instance="qobuz_1",
+                    in_library=True,
                 )
             },
             metadata=MediaItemMetadata(last_refresh=now - 1),
@@ -158,8 +165,9 @@ async def _add_album(
     version: str = "",
     album_type: AlbumType = AlbumType.ALBUM,
     provider_instance: str = "qobuz_1",
+    in_library: bool = True,
 ) -> Album:
-    """Add a never-refreshed library album for the given artist."""
+    """Add a never-refreshed album row for the given artist, in the library unless told otherwise."""
     return await mass.music.albums.add_item_to_library(
         Album(
             item_id="0",
@@ -173,6 +181,7 @@ async def _add_album(
                     item_id=f"{provider_instance}-{name}-{version}",
                     provider_domain=provider_instance.rsplit("_", 1)[0],
                     provider_instance=provider_instance,
+                    in_library=in_library,
                 )
             },
         )
@@ -215,6 +224,36 @@ async def test_reconcile_duplicate_albums_selects_typed_album_with_duplicate_sib
     assert first.item_id != second.item_id
 
     assert await _reconciled_ids(mass) == {first.item_id, second.item_id}
+
+
+async def test_reconcile_duplicate_albums_selects_only_library_albums(
+    mass: MusicAssistant,
+) -> None:
+    """A library album is paired with a placeholder sibling; a placeholder is never a candidate."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Massive Attack",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="artist", provider_domain="test", provider_instance="library"
+                )
+            },
+        )
+    )
+    library = await _add_album(mass, "Mezzanine", artist, provider_instance="spotify_1")
+    await _add_album(mass, "Mezzanine", artist, provider_instance="qobuz_1", in_library=False)
+    await _add_album(
+        mass,
+        "Protection",
+        artist,
+        album_type=AlbumType.UNKNOWN,
+        provider_instance="qobuz_1",
+        in_library=False,
+    )
+
+    assert await _reconciled_ids(mass) == {library.item_id}
 
 
 async def test_reconcile_duplicate_albums_skips_row_merged_away_earlier_in_the_batch() -> None:

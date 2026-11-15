@@ -360,7 +360,7 @@ def parse_station(
     provider: AppleMusicProvider,
     station_obj: dict[str, Any],
 ) -> Radio:
-    """Parse a station object into a dynamic Radio."""
+    """Parse a station object into a Radio: a live stream, or dynamic for track based stations."""
     station_id = station_obj["id"]
     attributes = station_obj.get("attributes", {})
     name = attributes.get("name", station_id)
@@ -368,7 +368,7 @@ def parse_station(
         item_id=station_id,
         provider=provider.instance_id,
         name=name,
-        is_dynamic=True,
+        is_dynamic=not attributes.get("isLive", False),
         provider_mappings={
             ProviderMapping(
                 item_id=station_id,

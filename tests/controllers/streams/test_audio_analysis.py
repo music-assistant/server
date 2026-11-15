@@ -2001,6 +2001,19 @@ async def test_get_track_audio_metadata_asks_the_copy_playback_would_pick_first(
 
 
 @pytest.mark.asyncio
+async def test_get_track_audio_metadata_energy_level_prefers_loudness_provider() -> None:
+    """The energy level uses a loudness provider's value over Sonic Analysis' own loudness."""
+    rows: list[Mapping[str, Any]] = [
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 1, brightness=0.2, arousal=0.6, loudness_integrated=-20.0),
+        _aa_row(PROVIDER_LOUDNESS_DOMAIN, 2, loudness_integrated=-8.0),
+    ]
+    c = _analysis_controller_with_rows(rows)
+    result = await c.get_track_audio_metadata(_track_with_mapping())
+    assert result is not None
+    assert result.energy_level == 7
+
+
+@pytest.mark.asyncio
 async def test_get_wave_form_returns_rms_bins() -> None:
     """wave_form returns the stored RMS energy bins as a plain list of floats."""
     rms = np.linspace(0.0, 1.0, 1800, dtype=np.float32).tolist()
