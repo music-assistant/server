@@ -187,7 +187,7 @@ class BridgeSession:
         """
         Initialize a session that waits for its player and its first chunk.
 
-        :param audio_format: The PCM format of the stream, which its chunks come in.
+        :param audio_format: The PCM format of the stream to the player.
         :param timeline_shift_us: How much later than its Sendspin timestamp audio is due
             on this player.
         :param chunks: Chunks a session before this one did not play yet.
@@ -196,6 +196,10 @@ class BridgeSession:
         self.audio_format = audio_format
         self.sample_rate = audio_format.sample_rate
         self.frame_size = audio_format.channels * audio_format.bit_depth // 8
+        # Sendspin delivers a 24-bit sample in 32 bits, the player takes it in 24
+        self._chunk_frame_size = (
+            audio_format.channels * 4 if audio_format.bit_depth == 24 else self.frame_size
+        )
         # Players take the PCM format from the content type, which goes in the stream
         # request too.
         self.mime_type = (
@@ -267,7 +271,7 @@ class BridgeSession:
         :param cursor: The timeline frame the audio has to start at.
         :param frames: The most frames to return.
         """
-        size = self.frame_size
+        size = self._chunk_frame_size
         parts: list[bytes | memoryview] = []
         while frames > 0 and self.chunks:
             chunk = self.chunks[0]
@@ -294,7 +298,9 @@ class BridgeSession:
                 self._drop_first()
             else:
                 self._head_taken = first + count
-        return b"".join(parts)
+        pcm = b"".join(parts)
+        # only what goes to the player now: a late joiner is handed half a minute at once
+        return _pack_24_bit(pcm) if size != self.frame_size else pcm
 
     def is_fetched_by(self, request: web.Request) -> bool:
         """
@@ -666,9 +672,6 @@ class SendspinSqueezeliteBridge:
         session = self._session
         if session is None or session.ended:
             return
-        if session.audio_format.bit_depth == 24:
-            # Sendspin delivers a 24-bit sample in 32 bits, the player takes it in 24
-            chunk = replace(chunk, data=_pack_24_bit(chunk.data))
         first = session.first_audible_us is None
         session.add(chunk)
         if first:

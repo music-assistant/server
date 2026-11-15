@@ -63,6 +63,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     BridgeSession,
     SendspinBridgeManager,
     SendspinSqueezeliteBridge,
+    _pack_24_bit,
 )
 from tests.common import use_real_create_task
 
@@ -1138,19 +1139,40 @@ def test_a_hole_is_silence_in_the_format_of_the_stream() -> None:
     )
     session = BridgeSession(hires, 0)
     session.start_us = EPOCH_US
-    frame = bytes(range(1, 7))
+    # 5 ms of audio as Sendspin delivers it, and as the player takes it
+    delivered = struct.pack("<2i", 0x123456 << 8, -0x123456 << 8) * 480
+    sent = (0x123456).to_bytes(3, "little") + (-0x123456).to_bytes(3, "little", signed=True)
     for first in (0, 960):
         session.add(
             AudioChunk(
-                data=frame * 480,
+                data=delivered,
                 timestamp_us=EPOCH_US + first * 1_000_000 // 96000,
                 duration_us=5000,
-                byte_count=6 * 480,
+                byte_count=len(delivered),
             )
         )
 
     assert session.frames(10_000) == 960
-    assert session.take(0, 9999) == frame * 480 + bytes(6 * 480) + frame * 480
+    assert session.take(0, 9999) == sent * 480 + bytes(6 * 480) + sent * 480
+
+
+async def test_a_backlog_is_only_converted_as_it_is_sent(rig: _Rig) -> None:
+    """A late joiner is handed half a minute at once: none of it is converted on arrival."""
+    await rig.start_hires()
+    session = await rig.start_playing(frames=48000, chunk=_chunk_24)
+    with patch(f"{MODULE}._pack_24_bit", wraps=_pack_24_bit) as pack:
+        backlog = [_chunk_24(rig.origin_us, second * 48000, 48000) for second in range(1, 30)]
+        for chunk in backlog:
+            rig.bridge._on_audio_chunk(chunk)
+        pack.assert_not_called()
+        assert list(session.chunks)[1:] == backlog
+
+        block = rig.bridge._next_block(session)
+
+    # one block of half a second, in 3 bytes per sample
+    assert len(block) == 24000 * 6
+    assert [len(converted.args[0]) for converted in pack.call_args_list] == [24000 * 8]
+    assert _frames_24(block) == list(range(24000))
 
 
 async def test_a_stream_keeps_its_format_when_it_is_restarted(rig: _Rig) -> None:
