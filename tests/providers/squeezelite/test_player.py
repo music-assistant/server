@@ -235,7 +235,6 @@ async def test_only_a_single_item_stream_gets_the_seconds_left_after_a_seek(
 ) -> None:
     """A flow stream, also the one a sync group plays, carries on into the next track."""
     player, mass = _player_with_mocked_mass()
-    player._extra_data = {}
     mass.player_queues.get.return_value = None
     slimplayer = MagicMock()
     slimplayer.play_url = AsyncMock()
