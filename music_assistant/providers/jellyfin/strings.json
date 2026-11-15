@@ -37,7 +37,8 @@
     }
   },
   "errors": {
-    "quick_connect_timeout": "Quick Connect approval timed out. Try again."
+    "quick_connect_timeout": "Quick Connect approval timed out. Try again.",
+    "quick_connect_disabled": "Quick Connect is disabled on this Jellyfin server."
   },
   "manifest": {
     "description": "Stream music from your self-hosted Jellyfin server."

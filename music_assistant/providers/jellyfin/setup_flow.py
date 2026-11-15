@@ -120,6 +120,10 @@ async def _run_quick_connect(session: SetupSession) -> None:
         except StepExpiredError:
             errors = {"base": "quick_connect_timeout"}
             continue
+        except aiohttp.ClientResponseError as err:
+            # Jellyfin answers 401 when Quick Connect is disabled on the server
+            errors = {"base": "quick_connect_disabled" if err.status == 401 else str(err)}
+            continue
         except (aiohttp.ClientError, KeyError) as err:
             errors = {"base": str(err)}
             continue

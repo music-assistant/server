@@ -282,6 +282,32 @@ async def test_get_stream_details_album_loudness(mass: MusicAssistant) -> None:
     )
 
 
+async def test_quick_connect_disabled_on_server() -> None:
+    """A server with Quick Connect disabled is named as such on the form."""
+    session = _setup_flow_session(
+        {},
+        [
+            {"auth_method": "quick_connect"},
+            {"url": "https://jellyfin.example", "verify_ssl": True},
+        ],
+        {},
+    )
+    form = cast("mock.AsyncMock", session.form)
+
+    with (
+        mock.patch.object(
+            setup_flow,
+            "initiate_quick_connect",
+            new=mock.AsyncMock(side_effect=_response_error(401)),
+        ),
+        # the flow asks for the form again, and the fake session has no third answer
+        pytest.raises(StopAsyncIteration),
+    ):
+        await setup_flow.run_setup(session)
+
+    assert form.await_args_list[-1].kwargs["errors"] == {"base": "quick_connect_disabled"}
+
+
 def _response_error(status: int) -> ClientResponseError:
     """Return the error aiohttp raises for an HTTP error status."""
     return ClientResponseError(mock.MagicMock(), (), status=status)
