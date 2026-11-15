@@ -15,7 +15,13 @@ from unittest import mock
 import pytest
 from aiohttp import ClientError
 
-from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
+from music_assistant.controllers.music.constants import CONF_BOUND_ACCOUNT_ID
+from music_assistant.models.setup_flow import (
+    AbortFlow,
+    SetupFlowContext,
+    SetupFlowError,
+    SetupSession,
+)
 from music_assistant.providers.spotify import setup_flow as spotify_flow
 from music_assistant.providers.spotify.constants import CONF_ACCOUNT_ID, CONF_CLIENT_ID
 from music_assistant.providers.spotify.provider import SpotifyProvider
@@ -120,6 +126,35 @@ async def test_a_failing_lookup_keeps_the_stored_account_on_reconfigure(
 
     finish.assert_awaited_once()
     assert finish.call_args.args[0][CONF_ACCOUNT_ID] == "u1"
+
+
+async def test_a_reconfigure_to_another_account_is_refused_before_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another account than the bound one is refused before any playback authorization."""
+    session = _make_session(instance_id="spotify--test")
+    session.mass.config.get_provider_setup_value = mock.Mock(  # type: ignore[method-assign]
+        side_effect=lambda _instance_id, key: {CONF_BOUND_ACCOUNT_ID: "u0"}.get(key)
+    )
+    _stub_me(session, payload={"id": "u1", "product": "premium"})
+    finish = mock.AsyncMock(return_value={"instance_id": "spotify--test"})
+    monkeypatch.setattr(session, "finish", finish)
+    monkeypatch.setattr(session, "form", mock.AsyncMock(return_value={}))
+    monkeypatch.setattr(
+        spotify_flow,
+        "_pkce_authenticate",
+        mock.AsyncMock(return_value={"refresh_token": "rt-test", "access_token": "at-test"}),
+    )
+    setup_playback = mock.AsyncMock()
+    monkeypatch.setattr(spotify_flow, "_setup_playback", setup_playback)
+    monkeypatch.setattr(spotify_flow, "_discard_pairing_dir", mock.AsyncMock())
+
+    with pytest.raises(SetupFlowError) as exc_info:
+        await spotify_flow.run_setup(session)
+
+    assert exc_info.value.translation_key == "provider_account_changed"
+    setup_playback.assert_not_awaited()
+    finish.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

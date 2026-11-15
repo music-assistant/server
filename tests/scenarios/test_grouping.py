@@ -758,3 +758,363 @@ async def test_a_returning_member_of_a_fixed_group_rejoins_its_leader(
     assert _state(scenario, office_id).synced_to == kitchen_id
     assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
     await _stop(scenario, group_id)
+
+
+async def _garden(scenario: Scenario) -> tuple[FakeProtocol, str]:
+    """
+    Attach Garden, a speaker of another make that shares no output with Kitchen, Office or Den.
+
+    Returns its protocol and the id of its player.
+    """
+    wiim = await scenario.add_provider("wiim")
+    garden = wiim.protocol(
+        "wiim_garden", "Garden", identifiers=_device(30), supported_features=set(GROUPING)
+    )
+    await scenario.register(garden)
+    await scenario.idle()
+    return garden, _player_id(scenario, garden)
+
+
+async def test_a_sync_group_is_not_led_by_a_member_that_can_group_with_none_of_the_others(
+    scenario: Scenario, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    A first member that can group with none of the others does not lead the sync group.
+
+    Kitchen leads instead, Office follows it, and Garden is left out, which is logged.
+    """
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    garden, garden_id = await _garden(scenario)
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    group_id = await _sync_group(scenario, garden_id, kitchen_id, office_id)
+    scenario.expect_log("can not be grouped with")
+
+    with caplog.at_level(logging.WARNING, logger="music_assistant"):
+        await scenario.play(group_id)
+        await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _grouping_commands(kitchen) == [("set_members", ["sonos_office"], None)]
+    assert _state(scenario, kitchen_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _grouping_commands(garden) == []
+    assert _state(scenario, garden_id).synced_to is None
+    assert garden_id not in _state(scenario, group_id).group_members
+    assert f"Removing {garden_id} from group" in caplog.text
+    await _stop(scenario, group_id)
+
+
+async def test_a_first_member_that_can_group_with_some_of_the_others_leads_the_sync_group(
+    scenario: Scenario,
+) -> None:
+    """
+    A first member that can group with some of the others leads, whoever could lead more.
+
+    After Downstairs was created, Garden, its first member, kept only Office to group with,
+    while Office can group with all of them. Garden leads and Office follows it; Kitchen and
+    Den, which can not group with Garden, are left out, which is logged.
+    """
+    _, (garden, kitchen, office, den) = await _speakers(
+        scenario, "Garden", "Kitchen", "Office", "Den"
+    )
+    garden_id, kitchen_id, office_id, den_id = (
+        _player_id(scenario, x) for x in (garden, kitchen, office, den)
+    )
+    group_id = await _sync_group(scenario, garden_id, kitchen_id, office_id, den_id)
+    await scenario.report(garden, can_group_with={"sonos_office"})
+    await scenario.report(kitchen, can_group_with={"sonos_office", "sonos_den"})
+    await scenario.report(den, can_group_with={"sonos_kitchen", "sonos_office"})
+    await scenario.idle()
+    scenario.expect_log("can not be grouped with")
+
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to == garden_id
+    assert _state(scenario, garden_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    for member_id in (kitchen_id, den_id):
+        assert _state(scenario, member_id).synced_to is None
+        assert member_id not in _state(scenario, group_id).group_members
+    await _stop(scenario, group_id)
+
+
+async def test_a_sync_group_whose_members_can_not_group_plays_on_its_first_member(
+    scenario: Scenario,
+) -> None:
+    """A sync group whose members share no output plays on its first member alone."""
+    sonos = await scenario.add_provider("sonos")
+    kitchen, office = (
+        sonos.protocol(
+            f"sonos_{name.lower()}",
+            name,
+            identifiers=_device(number),
+            supported_features=set(GROUPING),
+        )
+        for number, name in enumerate(("Kitchen", "Office"), start=10)
+    )
+    for speaker in (kitchen, office):
+        await scenario.register(speaker)
+    await scenario.idle()
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    group_id = await _sync_group(scenario, kitchen_id, office_id)
+    scenario.expect_log("can not be grouped with")
+
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    assert _state(scenario, kitchen_id).active_group == group_id
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, office_id).synced_to is None
+    assert _grouping_commands(office) == []
+    await _stop(scenario, group_id)
+
+
+async def test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others(
+    scenario: Scenario,
+) -> None:
+    """
+    When the leader leaves a playing sync group, a member that can group with the others leads.
+
+    Garden was off the network when Downstairs started, so it stayed a member, and came back
+    without an output it shares with the others. When Kitchen, the leader, leaves, Office leads
+    the group, Den follows it, and Garden, next in the member list, is left out.
+    """
+    _, (kitchen, garden, office, den) = await _speakers(
+        scenario, "Kitchen", "Garden", "Office", "Den"
+    )
+    kitchen_id, garden_id, office_id, den_id = (
+        _player_id(scenario, x) for x in (kitchen, garden, office, den)
+    )
+    group_id = await _sync_group(scenario, kitchen_id, garden_id, office_id, den_id)
+    await scenario.unregister(garden)
+    await scenario.idle()
+    scenario.expect_log("is not available")
+    await scenario.play(group_id)
+    await scenario.idle()
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    await scenario.register(garden)
+    await scenario.report(garden, can_group_with=set())
+    await scenario.report(office, can_group_with={"sonos_kitchen", "sonos_den"})
+    await scenario.report(den, can_group_with={"sonos_kitchen", "sonos_office"})
+    await scenario.idle()
+    scenario.expect_log("can not be grouped with")
+
+    remove = await scenario.command(
+        scenario.mass.players.cmd_set_members(group_id, player_ids_to_remove=[kitchen_id])
+    )
+    await scenario.advance(10)
+    await remove
+    await scenario.idle()
+
+    assert _state(scenario, den_id).synced_to == office_id
+    assert _state(scenario, office_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _grouping_commands(garden) == []
+    assert _state(scenario, garden_id).synced_to is None
+    assert _state(scenario, kitchen_id).synced_to is None
+    await _stop(scenario, group_id)
+
+
+async def test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads(
+    scenario: Scenario,
+) -> None:
+    """
+    A player added to a sync group that does not play is checked against its future leader.
+
+    Garden, listed first, can not lead Kitchen, so Office, which Kitchen can lead, is taken in,
+    and the group plays on Kitchen and Office.
+    """
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    _, garden_id = await _garden(scenario)
+    kitchen_id, office_id = _player_id(scenario, kitchen), _player_id(scenario, office)
+    group_id = await _sync_group(scenario, garden_id, kitchen_id)
+
+    await scenario.mass.players.cmd_set_members(group_id, player_ids_to_add=[office_id])
+    await scenario.idle()
+
+    assert office_id in _state(scenario, group_id).group_members
+    scenario.expect_log("can not be grouped with")
+    await scenario.play(group_id)
+    await scenario.idle()
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    await _stop(scenario, group_id)
+
+
+async def test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_over(
+    scenario: Scenario,
+) -> None:
+    """
+    Members that follow a leader outside the sync group when it plays can still lead it.
+
+    Kitchen, Office and Den follow Hall. Downstairs, of those three and the pair Patio and Porch
+    of another make, plays: Kitchen, its first member, leads after it is released from Hall,
+    Office and Den join it, and the pair, which can not group with Kitchen, is left out.
+    """
+    _, (kitchen, office, den, hall) = await _speakers(scenario, "Kitchen", "Office", "Den", "Hall")
+    kitchen_id, office_id, den_id, hall_id = (
+        _player_id(scenario, x) for x in (kitchen, office, den, hall)
+    )
+    wiim = await scenario.add_provider("wiim")
+    patio, porch = (
+        wiim.protocol(
+            f"wiim_{name.lower()}",
+            name,
+            identifiers=_device(number),
+            supported_features=set(GROUPING),
+            can_group_with={f"wiim_{other.lower()}"},
+        )
+        for number, name, other in ((31, "Patio", "Porch"), (32, "Porch", "Patio"))
+    )
+    for speaker in (patio, porch):
+        await scenario.register(speaker)
+    await scenario.idle()
+    patio_id, porch_id = _player_id(scenario, patio), _player_id(scenario, porch)
+    await scenario.mass.players.cmd_set_members(
+        hall_id, player_ids_to_add=[kitchen_id, office_id, den_id]
+    )
+    await scenario.advance(10)
+    await scenario.idle()
+    group_id = await _sync_group(scenario, kitchen_id, office_id, den_id, patio_id, porch_id)
+    scenario.expect_log("can not be grouped with")
+    scenario.expect_log("still reports synced_to")
+
+    await _load_music(scenario)
+    play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
+    await scenario.advance(10)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    assert _state(scenario, kitchen_id).synced_to is None
+    assert _state(scenario, kitchen_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, patio_id).synced_to is None
+    assert _state(scenario, porch_id).synced_to is None
+    await _stop(scenario, group_id)
+
+
+async def test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group(
+    scenario: Scenario,
+) -> None:
+    """
+    A member that plays as the leader of another group does not lead the sync group.
+
+    Den plays with Hall following it when Downstairs, of Kitchen, Office and Den, plays. Kitchen
+    leads and Office follows it; Den is left out and keeps playing with Hall.
+    """
+    _, (kitchen, office, den, hall) = await _speakers(scenario, "Kitchen", "Office", "Den", "Hall")
+    kitchen_id, office_id, den_id, hall_id = (
+        _player_id(scenario, x) for x in (kitchen, office, den, hall)
+    )
+    group_id = await _sync_group(scenario, kitchen_id, office_id, den_id)
+    await scenario.mass.players.cmd_set_members(den_id, player_ids_to_add=[hall_id])
+    await scenario.play(den_id)
+    await scenario.idle()
+    scenario.expect_log("can not be grouped with")
+
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, kitchen_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, hall_id).synced_to == den_id
+    assert _state(scenario, den_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, den_id).active_group is None
+    den_queue = scenario.queue(den_id)
+    assert den_queue is not None
+    assert den_queue.current_item is not None
+    await _stop(scenario, group_id)
+    await _stop(scenario, den_id)
+
+
+async def test_a_member_that_leads_players_of_its_own_does_not_replace_the_first_member(
+    scenario: Scenario,
+) -> None:
+    """
+    A member that leads players of its own is not put in the place of the first member.
+
+    Garden, the first member of Downstairs, can group with none of the others, and Kitchen plays
+    with Hall following it. Downstairs plays on Garden alone, and Kitchen keeps playing with Hall.
+    """
+    _, (kitchen, office, hall) = await _speakers(scenario, "Kitchen", "Office", "Hall")
+    _, garden_id = await _garden(scenario)
+    kitchen_id, office_id, hall_id = (_player_id(scenario, x) for x in (kitchen, office, hall))
+    group_id = await _sync_group(scenario, garden_id, kitchen_id, office_id)
+    await scenario.mass.players.cmd_set_members(kitchen_id, player_ids_to_add=[hall_id])
+    await scenario.play(kitchen_id)
+    await scenario.idle()
+    scenario.expect_log("can not be grouped with")
+
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    assert _state(scenario, garden_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, hall_id).synced_to == kitchen_id
+    assert _state(scenario, kitchen_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, kitchen_id).active_group is None
+    assert _state(scenario, office_id).synced_to is None
+    await _stop(scenario, group_id)
+    await _stop(scenario, kitchen_id)
+
+
+async def test_a_first_member_that_plays_an_input_of_its_own_keeps_leading_the_sync_group(
+    scenario: Scenario,
+) -> None:
+    """
+    A first member whose own input narrows what it can group with keeps leading the sync group.
+
+    Garden, Kitchen, Office and Den all have AirPlay, and Kitchen and Office also group on their
+    own make. Garden and Kitchen each play an input of their own, which leaves them only that
+    make to group with. Downstairs plays: Garden, its first member, leads, and Office and Den
+    follow it over AirPlay.
+    """
+    _, (kitchen, office) = await _speakers(scenario, "Kitchen", "Office")
+    garden, garden_id = await _garden(scenario)
+    airplay = await scenario.add_provider("airplay")
+    airplay_ids = {"airplay_garden", "airplay_kitchen", "airplay_office", "airplay_den"}
+    for name, identifiers in (
+        ("garden", _device(30)),
+        ("kitchen", _device(10)),
+        ("office", _device(11)),
+    ):
+        await scenario.register(
+            airplay.protocol(
+                f"airplay_{name}",
+                f"{name.title()} AirPlay",
+                role="audio",
+                identifiers=identifiers,
+                supported_features=set(GROUPING),
+                can_group_with=airplay_ids - {f"airplay_{name}"},
+            )
+        )
+    den = airplay.protocol(
+        "airplay_den",
+        "Den",
+        identifiers=_device(40),
+        supported_features=set(GROUPING),
+        can_group_with=airplay_ids - {"airplay_den"},
+    )
+    await scenario.register(den)
+    await scenario.idle()
+    kitchen_id, office_id, den_id = (_player_id(scenario, x) for x in (kitchen, office, den))
+    group_id = await _sync_group(scenario, garden_id, kitchen_id, office_id, den_id)
+    for speaker, source in ((garden, "tv"), (kitchen, "line_in")):
+        await scenario.report(speaker, playback_state=PlaybackState.PLAYING, active_source=source)
+    await scenario.idle()
+
+    await _load_music(scenario)
+    play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
+    await scenario.advance(12)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, garden_id).active_group == group_id
+    assert _state(scenario, office_id).synced_to == garden_id
+    assert _state(scenario, den_id).synced_to == garden_id
+    assert _state(scenario, kitchen_id).active_group is None
+    await _stop(scenario, group_id)
