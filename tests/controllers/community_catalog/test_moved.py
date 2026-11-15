@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from music_assistant_models.enums import ProviderStatus
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, ResourceTemporarilyUnavailable
 
 from music_assistant.controllers.community_catalog import controller as controller_module
 from music_assistant.controllers.community_catalog.constants import CONF_ENABLED
@@ -19,6 +19,7 @@ from music_assistant.controllers.community_catalog.models import (
     CatalogState,
     CommunityProviderState,
 )
+from tests.controllers.community_catalog.conftest import assert_refused
 from tests.controllers.community_catalog.test_controller import (  # noqa: F401 - a fixture
     _assert_loaded,
     _events,
@@ -199,6 +200,28 @@ async def test_waits_until_it_can_be_installed(
 
 
 @pytest.mark.usefixtures("moved")
+async def test_refresh_installs_before_it_says_the_catalog_cannot_be_reached(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """A refresh that cannot fetch the index still installs a waiting moved provider first."""
+    folder = tmp_path / "data" / "community_providers"
+    registry.document = _index({MOVED: _publish(github, MOVED)})
+    _seed_instance(tmp_path, MOVED)
+    github.status = 503
+
+    async with _server(tmp_path) as mass:
+        assert mass.get_provider(MOVED) is None
+        github.status, registry.status = 200, 503
+
+        with pytest.raises(ResourceTemporarilyUnavailable) as refused:
+            await mass.community_catalog.refresh()
+
+        assert_refused(refused, "unreachable")
+        _assert_loaded(mass, folder, MOVED)
+        assert await _notice(mass) == "moved"
+
+
+@pytest.mark.usefixtures("moved")
 async def test_not_installed_again_after_a_remove(
     tmp_path: Path, registry: Registry, github: GitHub
 ) -> None:
@@ -252,8 +275,9 @@ async def test_safe_mode(tmp_path: Path, registry: Registry, github: GitHub) -> 
 
     async with _server(tmp_path, safe_mode=True) as mass:
         assert mass.get_provider(MOVED) is None
-        with pytest.raises(ActionUnavailable, match="safe mode"):
+        with pytest.raises(ActionUnavailable, match="safe mode") as refused:
             await mass.community_catalog.dismiss_notice(MOVED)
+        assert_refused(refused, "safe_mode")
         # nothing was tried, so there is no cause to tell
         reason = mass.community_catalog.unavailable_reason(MOVED)
         assert reason is not None
