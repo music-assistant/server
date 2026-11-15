@@ -1834,11 +1834,15 @@ class TracksController(MediaControllerBase[Track]):
                 if is_valid_isrc(isrc)
             }
         )
+        # an ISRC is occasionally reused, so whatever carries one only counts when it is
+        # the recording, in the library as much as on a provider
         for isrc in isrcs:
             for library_track in await self.get_library_items_by_external_id(
                 isrc, ExternalID.ISRC, limit=None
             ):
-                if self._has_visible_source(library_track):
+                if self._has_visible_source(library_track) and recording_matches_track(
+                    recording, library_track
+                ):
                     return library_track
         try:
             if track := await self.resolve_musicbrainz_recording(recording):
@@ -1848,8 +1852,7 @@ class TracksController(MediaControllerBase[Track]):
             self.logger.debug("Linked track of recording %s not fetched: %s", recording_id, err)
         if not isrcs:
             return None
-        # a provider answers an ISRC with whatever carries it, and an ISRC is occasionally
-        # reused; one ISRC keeps this to a single request per provider
+        # one ISRC keeps this to a single request per provider
         return await self._provider_item_by_external_id(
             isrcs[0],
             ExternalID.ISRC,

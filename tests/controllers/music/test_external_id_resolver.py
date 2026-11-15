@@ -284,6 +284,21 @@ async def test_recording_is_found_in_the_library_by_its_isrc(music: MusicControl
     assert _requests(spotify) == 0
 
 
+async def test_library_track_of_another_name_is_not_taken_for_its_isrc(
+    music: MusicController,
+) -> None:
+    """A library track that carries the ISRC but is another song gives way to the providers."""
+    await music.tracks.add_item_to_library(create_track("spotify_1", "t1", name="Another Song"))
+    spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
+    tidal.get_track_by_external_id = _has(create_track("tidal_1", "t9"))
+    _load(music, spotify, tidal, recording=_recording())
+
+    found = await _resolve_recording(music)
+
+    assert found is not None
+    assert (found.provider, found.item_id) == ("tidal_1", "t9")
+
+
 async def test_recording_is_fetched_through_its_link(music: MusicController) -> None:
     """A recording MusicBrainz links to a service of the user costs one request to it."""
     spotify, tidal = _track_provider("spotify_1"), _track_provider("tidal_1")
