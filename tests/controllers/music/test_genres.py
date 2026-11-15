@@ -1131,6 +1131,64 @@ class TestLibrarySyncStoresGenres:
         assert stored.metadata.description == "Kept text"
         assert stored.metadata.genres == {"rock", "Jazz"}
 
+    @pytest.mark.parametrize("media_type", [MediaType.ALBUM, MediaType.ARTIST])
+    async def test_inherited_genre_the_provider_also_tags_survives_the_scan(
+        self, mass: MusicAssistant, genre_ctrl: GenreController, media_type: MediaType
+    ) -> None:
+        """A genre an item inherits from its tracks stays linked once its provider tags it."""
+        instance_id = f"fs_local_inherit_{media_type.value}"
+        track = await _add_test_track(mass, f"Inherit {media_type.value} Track")
+        track_id = int(track.item_id)
+        parent: Album | Artist
+        if media_type == MediaType.ALBUM:
+            parent = await _add_test_album(mass, "Inherit Album")
+            await mass.music.database.insert(
+                DB_TABLE_ALBUM_TRACKS,
+                {
+                    "track_id": track_id,
+                    "album_id": int(parent.item_id),
+                    "disc_number": 1,
+                    "track_number": 1,
+                },
+            )
+        else:
+            parent = await mass.music.artists.get_library_item(track.artists[0].item_id)
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": track_id,
+                "provider_domain": "filesystem_local",
+                "provider_instance": instance_id,
+                "provider_item_id": f"track_{track_id}",
+            },
+        )
+        await mass.music.database.commit()
+        await _set_track_genres(mass, track_id, ["SzInheritedGenre"])
+        mock_provider = MagicMock(domain="filesystem_local", instance_id=instance_id)
+        with (
+            patch.object(
+                type(mass.music),
+                "providers",
+                new_callable=PropertyMock,
+                return_value=[mock_provider],
+            ),
+            patch.object(
+                mass.config, "get_provider_config_value", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await genre_ctrl._bulk_scan_unmapped_genres()
+            assert await _linked_genre_names(mass, media_type, parent.item_id) == {
+                "SzInheritedGenre"
+            }
+            await _provider_sync_genres(mass, parent, {"SzInheritedGenre", "SzOwnGenre"})
+            await genre_ctrl._bulk_scan_unmapped_genres()
+
+        assert await _linked_genre_names(mass, media_type, parent.item_id) == {
+            "SzInheritedGenre",
+            "SzOwnGenre",
+        }
+
 
 class TestAddItemLinksGenres:
     """Tests for the genre links made when an item is added to the library by hand."""
@@ -3382,10 +3440,12 @@ async def _provider_sync_playlist(
     await MusicProvider._sync_playlist_tracks(provider, playlist)
 
 
-async def _provider_sync_genres(mass: MusicAssistant, track: Track, genres: set[str]) -> None:
-    """Run a provider library sync's genre step for a track that carries the given genres."""
+async def _provider_sync_genres(
+    mass: MusicAssistant, item: Track | Album | Artist, genres: set[str]
+) -> None:
+    """Run a provider library sync's genre step for an item that carries the given genres."""
     provider = MagicMock(mass=mass)
     provider.get_item_genre_names = AsyncMock(side_effect=NotImplementedError)
     await MusicProvider._sync_item_genres(
-        provider, MediaType.TRACK, "prov-track", int(track.item_id), genres
+        provider, item.media_type, "prov-item", int(item.item_id), genres
     )
