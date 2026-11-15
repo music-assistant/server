@@ -19,9 +19,13 @@ async def setup(mass, manifest, config):
 TEST_CODE = f"""
 from music_assistant_models.enums import ProviderTier
 
+from music_assistant.models.plugin import PluginProvider
+
 
 async def test_provider_loads(mass):
     assert mass.get_provider_manifest("{DOMAIN}").tier == ProviderTier.COMMUNITY
+    step = await mass.config.setup_provider("{DOMAIN}")
+    assert isinstance(mass.get_provider(step.result["instance_id"]), PluginProvider)
 """
 
 
