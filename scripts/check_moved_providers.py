@@ -5,14 +5,15 @@ A provider that moves out of the server is listed in ``MOVED_PROVIDER_DOMAINS``:
 it set up installs it from the community catalog after the upgrade. That only works when its folder
 is gone and the index of every server line the change reaches offers a version that passed.
 
-Without arguments (pre-commit) it checks, offline, that no moved provider still has a folder.
+Without arguments (pre-commit) it checks, offline, that no moved provider still has a manifest.
 
-In CI it also reads the changed files of a pull request from stdin, one status and path per line,
-separated by a tab, as the GitHub API lists them. When the change removes a provider or changes
-the moved list, it asks the community catalog: a provider that moves must be offered with a
-version that passed on nightly, beta and the coming stable line (for a pull request into
-``stable``: its own line), and a removed provider the catalog expects to move must be in the moved
-list. Only then does it use the network, and a lookup that fails fails the check.
+In CI it also reads the changed files of a pull request from stdin, one per line as the GitHub API
+lists them: status, path and the previous path of a renamed file, separated by tabs. When the
+change removes a provider or changes the moved list, it asks the community catalog: a provider
+that moves must be offered with a version that passed on nightly, beta and the line of the next
+beta (for a pull request into ``stable``: the line of its next release), and a removed provider
+the catalog expects to move must be in the moved list. Only then does it use the network, and a
+lookup that fails fails the check.
 
 Usage:
     uv run -m scripts.check_moved_providers
@@ -33,6 +34,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from scripts.release_workflow import next_release_line
+
 # ruff: noqa: T201
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -48,8 +51,6 @@ SOURCE_URL = "https://raw.githubusercontent.com/music-assistant/server/{sha}/{pa
 SERVER_REPOSITORY = "https://github.com/music-assistant/server.git"
 TIMEOUT = 15
 _MANIFEST = re.compile(rf"{PROVIDERS_FOLDER}/([a-z][a-z0-9_]*)/manifest\.json")
-_BETA_TAG = re.compile(r"(\d+)\.(\d+)\.(\d+)b(\d+)")
-_STABLE_TAG = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
 class LookupFailedError(Exception):
@@ -94,16 +95,34 @@ def parse_moved(source: str) -> frozenset[str]:
 
 def offline_problems(root: Path = REPO_ROOT) -> list[str]:
     """
-    Return the moved providers that still have a folder in the server.
+    Return the moved providers that the server still ships.
 
     :param root: The root of the server repository.
     """
     moved = parse_moved((root / MOVED_FILE).read_text(encoding="utf-8"))
+    # the manifest, not the folder: git leaves the compiled files of a removed provider behind
     return [
-        f"{domain}: is in {MOVED_NAME} but {PROVIDERS_FOLDER}/{domain} still exists"
+        f"{domain}: is in {MOVED_NAME} but {PROVIDERS_FOLDER}/{domain}/manifest.json still exists"
         for domain in sorted(moved)
-        if (root / PROVIDERS_FOLDER / domain).exists()
+        if (root / PROVIDERS_FOLDER / domain / "manifest.json").is_file()
     ]
+
+
+def parse_changes(lines: Iterable[str]) -> list[tuple[str, str]]:
+    """
+    Return the status and path of each changed file, a renamed file as its old path removed.
+
+    :param lines: The changed files, each as status, path and previous path separated by tabs.
+    """
+    changes: list[tuple[str, str]] = []
+    for line in lines:
+        status, _, rest = line.partition("\t")
+        path, _, previous = rest.partition("\t")
+        if status == "renamed" and previous:
+            changes += [("removed", previous), ("added", path)]
+        elif path:
+            changes.append((status, path))
+    return changes
 
 
 def online_problems(
@@ -153,10 +172,8 @@ def lines_for(base_branch: str) -> list[str]:
     :param base_branch: The branch the change goes into.
     :raises LookupFailedError: The tags of the server repository could not be read.
     """
-    tags = _server_tags()
-    if base_branch == "stable":
-        return [_newest_line(tags, _STABLE_TAG)]
-    return ["nightly", "beta", _newest_line(tags, _BETA_TAG)]
+    line = next_release_line(base_branch, _server_tags())
+    return [line] if base_branch == "stable" else ["nightly", "beta", line]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -173,10 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--base-branch and --base-sha go together")
     problems = offline_problems()
     if args.base_branch:
-        changes = [
-            (status, path)
-            for status, _, path in (line.partition("\t") for line in sys.stdin.read().splitlines())
-        ]
+        changes = parse_changes(sys.stdin.read().splitlines())
         head_moved = parse_moved((REPO_ROOT / MOVED_FILE).read_text(encoding="utf-8"))
         try:
             problems += online_problems(changes, args.base_branch, args.base_sha, head_moved)
@@ -209,22 +223,6 @@ def _index_problems(line: str, domains: Iterable[str]) -> list[str]:
             and entry.get("latest") is not None
         )
     ]
-
-
-def _newest_line(tags: Iterable[str], pattern: re.Pattern[str]) -> str:
-    """
-    Return the ``<major>.<minor>`` line of the newest tag that matches a pattern.
-
-    :param tags: The tags of the server repository.
-    :param pattern: The form of the tags to consider.
-    :raises LookupFailedError: No tag matches.
-    """
-    versions = [tuple(map(int, m.groups())) for tag in tags if (m := pattern.fullmatch(tag))]
-    if not versions:
-        msg = "the server repository has no release tag of that kind"
-        raise LookupFailedError(msg)
-    major, minor = max(versions)[:2]
-    return f"{major}.{minor}"
 
 
 def _server_tags() -> list[str]:

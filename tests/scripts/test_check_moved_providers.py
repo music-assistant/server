@@ -17,6 +17,7 @@ from scripts.check_moved_providers import (
     lines_for,
     offline_problems,
     online_problems,
+    parse_changes,
     parse_moved,
 )
 
@@ -81,17 +82,32 @@ def test_parse_moved() -> None:
         parse_moved("MOVED_PROVIDER_DOMAINS = set()\n")
 
 
-def test_a_moved_provider_must_not_keep_its_folder(tmp_path: Path) -> None:
-    """A domain in the moved list whose folder still exists is reported."""
-    (tmp_path / MOVED_FILE).parent.mkdir(parents=True)
-    (tmp_path / MOVED_FILE).write_text(
-        'MOVED_PROVIDER_DOMAINS = frozenset({"old_music", "gone"})\n'
-    )
-    (tmp_path / "music_assistant/providers/old_music").mkdir(parents=True)
+def _moved_tree(root: Path) -> Path:
+    """Write a moved list with old_music and gone, and return the providers folder."""
+    (root / MOVED_FILE).parent.mkdir(parents=True)
+    (root / MOVED_FILE).write_text('MOVED_PROVIDER_DOMAINS = frozenset({"old_music", "gone"})\n')
+    return root / "music_assistant/providers"
+
+
+def test_a_moved_provider_must_not_keep_its_manifest(tmp_path: Path) -> None:
+    """A domain in the moved list whose manifest is still in the server is reported."""
+    providers = _moved_tree(tmp_path)
+    (providers / "old_music").mkdir(parents=True)
+    (providers / "old_music/manifest.json").write_text("{}")
 
     assert offline_problems(tmp_path) == [
-        "old_music: is in MOVED_PROVIDER_DOMAINS but music_assistant/providers/old_music still exists"
+        "old_music: is in MOVED_PROVIDER_DOMAINS but "
+        "music_assistant/providers/old_music/manifest.json still exists"
     ]
+
+
+def test_compiled_files_left_behind_are_no_provider(tmp_path: Path) -> None:
+    """The __pycache__ git leaves after pulling a move does not count as the provider."""
+    providers = _moved_tree(tmp_path)
+    (providers / "old_music/__pycache__").mkdir(parents=True)
+    (providers / "old_music/__pycache__/__init__.cpython-314.pyc").write_bytes(b"")
+
+    assert offline_problems(tmp_path) == []
 
 
 def test_the_server_itself_passes_offline() -> None:
@@ -196,11 +212,61 @@ def test_a_provider_that_is_dropped_passes(catalog: FakeCatalog) -> None:
     assert catalog.urls == [check.RESERVED_URL]
 
 
+@pytest.mark.parametrize(
+    ("tags", "dev_line", "stable_line"),
+    [
+        # a beta phase: dev heads for 2.11, stable patches 2.10
+        (TAGS, "2.11", "2.10"),
+        # right after 2.11.0: nightlies are 2.12, the next beta is 2.12.0b1
+        ([*TAGS, "2.11.0"], "2.12", "2.11"),
+        # an RC window: stable already carries 2.11
+        ([*TAGS, "2.11.0rc1"], "2.11", "2.11"),
+        # the RC window ends with the release
+        ([*TAGS, "2.11.0rc1", "2.11.0", "2.11.1"], "2.12", "2.11"),
+    ],
+)
+def test_the_lines_a_branch_reaches(
+    monkeypatch: pytest.MonkeyPatch, tags: list[str], dev_line: str, stable_line: str
+) -> None:
+    """A change reaches the line of the next release from its branch, as the release names it."""
+    monkeypatch.setattr(check, "_server_tags", lambda: tags)
+
+    assert lines_for("dev") == ["nightly", "beta", dev_line]
+    assert lines_for("stable") == [stable_line]
+
+
+def test_a_renamed_manifest_counts_as_removed() -> None:
+    """A manifest GitHub pairs with a similar added file is reported as renamed: its old path left."""
+    lines = [
+        "renamed\tmusic_assistant/providers/new_music/manifest.json\t"
+        "music_assistant/providers/old_music/manifest.json",
+        "modified\tREADME.md\t",
+        "removed\tmusic_assistant/providers/gone/manifest.json",
+    ]
+
+    assert parse_changes(lines) == [
+        ("removed", "music_assistant/providers/old_music/manifest.json"),
+        ("added", "music_assistant/providers/new_music/manifest.json"),
+        ("modified", "README.md"),
+        ("removed", "music_assistant/providers/gone/manifest.json"),
+    ]
+
+
 @pytest.mark.usefixtures("catalog")
-def test_the_lines_a_branch_reaches() -> None:
-    """Dev reaches nightly, beta and the line of the newest beta; stable its newest line."""
-    assert lines_for("dev") == ["nightly", "beta", "2.11"]
-    assert lines_for("stable") == ["2.10"]
+def test_a_renamed_provider_is_checked_like_a_removed_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pull request that renames a manifest away asks the catalog about the old domain."""
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            "renamed\tmusic_assistant/providers/new_music/manifest.json\t"
+            "music_assistant/providers/old_music/manifest.json\n"
+        ),
+    )
+
+    assert check.main(["--base-branch", "dev", "--base-sha", BASE_SHA]) == 1
+    assert "old_music: the community catalog takes it over" in capsys.readouterr().out
 
 
 def test_a_failed_lookup_fails_the_check(

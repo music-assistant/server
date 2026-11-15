@@ -152,7 +152,7 @@ jobs:
           set -o pipefail
           gh api --paginate \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
-            --jq '.[] | "\(.status)\t\(.filename)"' \
+            --jq '.[] | "\(.status)\t\(.filename)\t\(.previous_filename // "")"' \
             | python -m scripts.check_moved_providers --base-branch "$BASE_REF" --base-sha "$BASE_SHA"
 
   lint:
