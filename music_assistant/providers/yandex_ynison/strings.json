@@ -2,7 +2,7 @@
   "config_entries": {
     "ym_instance": {
       "label": "Yandex Music account",
-      "description": "The configured Yandex Music source whose account Ynison uses. To use another Yandex account, configure another Yandex Music instance first."
+      "description": "The configured Yandex Music provider instance whose account Ynison uses. To use another Yandex account, configure another Yandex Music instance first."
     },
     "mass_player_id": {
       "label": "[%key:common::config_entries::mass_player_id::label%]",
@@ -42,7 +42,7 @@
     },
     "abort": {
       "no_players": "No players are available yet. Add a player to Music Assistant first, then try again.",
-      "missing_dependency": "Configure and authenticate a Yandex Music source before adding or reconfiguring Ynison."
+      "missing_dependency": "Configure and authenticate a Yandex Music provider before adding or reconfiguring Ynison."
     }
   },
   "errors": {

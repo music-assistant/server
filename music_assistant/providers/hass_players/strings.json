@@ -5,7 +5,7 @@
       "description": "Specify which HA media_player entity id's you like to import as players in Music Assistant.\n\nNote that only Media player entities will be listed which are compatible with Music Assistant."
     },
     "warn_hass_integration": {
-      "label": "Music Assistant has native support for this player type - it is strongly recommended to use the native player support for this player in Music Assistant instead of the generic version provided by the Home Assistant provider."
+      "label": "Music Assistant has native support for this player type - it is strongly recommended to use that instead of the generic version that comes through Home Assistant."
     }
   },
   "manifest": {

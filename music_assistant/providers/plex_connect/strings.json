@@ -91,7 +91,7 @@
     }
   },
   "errors": {
-    "plextv_unlink_required": "Unlink from plex.tv in this provider's settings before changing the player or Plex music source."
+    "plextv_unlink_required": "Unlink from plex.tv in this plugin's settings before changing the player or Plex music source."
   },
   "manifest": {
     "description": "Makes a Music Assistant player appear as a device in the official Plex apps."
