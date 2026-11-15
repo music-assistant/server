@@ -1164,7 +1164,9 @@
                     } else {
                         // Try to extract a meaningful error message
                         let errorMsg = 'Request failed';
-                        if (result.error) {
+                        if (result.details) {
+                            errorMsg = result.details;
+                        } else if (result.error) {
                             errorMsg = result.error;
                         } else if (result.message) {
                             errorMsg = result.message;

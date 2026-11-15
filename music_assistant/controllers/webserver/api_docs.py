@@ -576,6 +576,20 @@ def generate_openapi_spec(
         if return_type is not Any and str(return_type) != "typing.Any":
             _get_type_schema(return_type, definitions)
 
+    # the body of every error response, the same error the websocket API sends
+    error_content = {
+        "application/json": {
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "message_id": {"type": "string"},
+                    "error_code": {"type": "integer"},
+                    "details": {"type": "string"},
+                },
+            }
+        }
+    }
+
     # Build a single /api endpoint with generic request/response
     paths = {
         "/api": {
@@ -636,10 +650,24 @@ def generate_openapi_spec(
                             }
                         },
                     },
-                    "400": {"description": "Bad request - invalid command or parameters"},
-                    "401": {"description": "Unauthorized - authentication required"},
-                    "403": {"description": "Forbidden - insufficient permissions"},
-                    "500": {"description": "Internal server error"},
+                    "400": {
+                        "description": "Bad request - invalid command or parameters, "
+                        "or the command was refused",
+                        "content": error_content,
+                    },
+                    "401": {
+                        "description": "Unauthorized - authentication required",
+                        "content": error_content,
+                    },
+                    "403": {
+                        "description": "Forbidden - insufficient permissions",
+                        "content": error_content,
+                    },
+                    "404": {
+                        "description": "Not found - the player or media item does not exist",
+                        "content": error_content,
+                    },
+                    "500": {"description": "Internal server error", "content": error_content},
                 },
             }
         },
