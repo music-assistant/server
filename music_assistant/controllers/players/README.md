@@ -603,13 +603,15 @@ again meanwhile; a protocol that finds its device gone reads unavailable. While 
 for the device, the device protocol is asked every few seconds to reach it
 (`DEVICE_CHECK_INTERVAL`), so it is back with its device instead of on its own reconnect backoff.
 A check runs in a task of its own and holds no lock; one that raises or does not come back within
-10 seconds changes nothing. The controller keeps nothing about the device itself: what the device
-protocol reads stays the only truth. Until the device protocol finds the cut, by a check or by
-itself, the player reads as reachable and powered off, and a play in that window switches the
-control on and starts at once: a play within those first seconds, a device protocol that can not
-check, a power cut without an off report of the control. While the control is on and no power on
-waits, none of this applies and nothing is checked: the player plays through any protocol that
-reaches its device.
+10 seconds changes nothing. A check is called off when its protocol is taken off its player, and
+a check that is still due when the player is removed or disabled goes with it. The controller
+keeps nothing about the device itself: what the device protocol reads stays the only truth. Until
+the device protocol finds the cut, by a check or by itself, the player reads as reachable and
+powered off, and a play in that window switches the control on and starts at once: a play within
+those first seconds, a device protocol that can not check, a power cut without an off report of
+the control. While the control is on and no power on waits, no new check starts: one that already
+runs when the control reports on, or that outlives the power on that started it, comes back by
+itself. The player plays through any protocol that reaches its device.
 
 A command that starts a group player waits for the members that are switched off at their power
 control: a play, a resume, a play of an item or of media on its queue, a play or a power on of

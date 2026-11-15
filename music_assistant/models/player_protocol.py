@@ -936,6 +936,12 @@ class PlayerProtocol(ABC):
         answered by then does not answer, and the controller gives up on a check after 10
         seconds.
 
+        A check runs next to the commands of the player and the provider's own reconnects, and
+        it can be cancelled: when its protocol is taken off its player, and when it does not
+        come back in time. After every await, look again before changing anything: once the
+        protocol is detached (self.player is None), or the connection that was asked is no
+        longer the current one, change nothing.
+
         :return: Whether the device answered, or None when this protocol can not check.
         """
         return None
