@@ -1633,7 +1633,7 @@ class MusicAssistant:
 
         if isinstance(provider, MusicProvider):
             try:
-                # before the instance goes live, so it never serves another account's cache
+                # before the instance goes live, so it never serves another account
                 await self.music.check_provider_account(provider)
             except Exception:
                 # the instance is not registered yet, so nothing else would unload it

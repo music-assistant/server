@@ -293,8 +293,8 @@ class MusicProvider(MediaCatalogMixin, RecommendationsMixin, AudioStreamMixin, P
         """
         Return a stable id of the account this instance is signed in to, if known.
 
-        Read once the instance has initialized. When a reload (e.g. a reconfigure) reports
-        another account than before, what the instance cached is cleared. Only return
+        Read once the instance has initialized. An instance stays bound to the account it
+        reported first: a load that reports another account is refused. Only return
         something the provider already knows without an extra call to the service.
         """
         return None
