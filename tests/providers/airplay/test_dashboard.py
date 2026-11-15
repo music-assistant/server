@@ -371,6 +371,7 @@ async def test_launch_failure_leaves_no_controller_session() -> None:
     controller._dashboards = {}
     controller._sessions = {}
     controller._viewer_keys = {}
+    controller._session_owners = {}
     controller.resolve_dashboard_url = AsyncMock(  # type: ignore[method-assign]
         return_value="http://192.168.1.10:8095/?dashboard=ABC123&path=%2Fnow-playing%3Fplayer%3Dap"
     )

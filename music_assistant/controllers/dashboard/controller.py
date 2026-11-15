@@ -203,20 +203,31 @@ class DashboardController(CoreController):
 
         # every show gets a fresh viewer key, so a replaced cast's url stops working;
         # the endpoint's url resolution below mints it
-        self._viewer_keys.pop(dashboard_id, None)
+        previous_key = self._viewer_keys.pop(dashboard_id, None)
+        # bound before the launch: its new key is usable as soon as the url is out,
+        # and must never read the previous caster's preferences
+        previous_owner = self._session_owners.get(dashboard_id)
+        user = get_current_user()
+        _set_or_pop(self._session_owners, dashboard_id, user.user_id if user else None)
 
-        if registration.on_show is not None:
-            # the consumer resolves its own url if needed; raises before showing on failure
-            await registration.on_show(dashboard, player_id)
-        else:
-            # API registration: url-based clients resolve their own url via `dashboard/get_url`
-            self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
+        shown = False
+        try:
+            if registration.on_show is not None:
+                # the consumer resolves its own url if needed; raises before showing on failure
+                await registration.on_show(dashboard, player_id)
+            else:
+                # API registration: url-based clients resolve their own url via `dashboard/get_url`
+                self.mass.signal_event(
+                    EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session
+                )
+            shown = True
+        finally:
+            if not shown:
+                # the previous cast is still on screen: give it back its key and owner
+                _set_or_pop(self._viewer_keys, dashboard_id, previous_key)
+                _set_or_pop(self._session_owners, dashboard_id, previous_owner)
 
         self._sessions[dashboard_id] = session
-        if (user := get_current_user()) is not None:
-            self._session_owners[dashboard_id] = user.user_id
-        else:
-            self._session_owners.pop(dashboard_id, None)
         self._signal_sessions_updated()
 
     @api_command("dashboard/hide", required_scope=Scope.USERS_INVITE)
@@ -543,6 +554,14 @@ class DashboardController(CoreController):
         self._session_owners.pop(dashboard_id, None)
         self._viewer_keys.pop(dashboard_id, None)
         return self._sessions.pop(dashboard_id, None)
+
+
+def _set_or_pop(mapping: dict[str, str], key: str, value: str | None) -> None:
+    """Store value under key, or drop the key when value is None."""
+    if value is None:
+        mapping.pop(key, None)
+    else:
+        mapping[key] = value
 
 
 def _viewer_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:

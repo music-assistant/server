@@ -717,6 +717,62 @@ async def test_show_dashboard_rotates_the_viewer_key_on_every_show() -> None:
     assert await _viewer_prefs_allowed(controller, second)
 
 
+async def test_replacing_show_never_serves_the_previous_casters_preferences() -> None:
+    """A viewer up with the new key while the launch is still running reads the new caster."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+    controller._session_owners["dash1"] = "user-1"
+    users = {
+        "user-1": _owner_user("user-1", {"visualizer_preset": "previous caster"}),
+        "user-2": _owner_user("user-2", {"visualizer_preset": "new caster"}),
+    }
+    controller.mass.webserver.auth.get_user = AsyncMock(side_effect=users.get)  # type: ignore[method-assign]
+    seen: list[dict[str, Any]] = []
+
+    async def on_show(_dashboard: DashboardType, _player_id: str | None) -> None:
+        key = await _resolve_key(controller)
+        seen.append(await controller.get_viewer_preferences(dashboard_id="dash1", viewer_key=key))
+
+    device = DashboardDevice(
+        dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
+    )
+    controller._dashboards["dash1"] = _RegisteredDashboard(device=device, on_show=on_show)
+
+    with patch(
+        "music_assistant.controllers.dashboard.controller.get_current_user",
+        return_value=users["user-2"],
+    ):
+        await controller.show_dashboard("dash1", DashboardType.PARTY)
+
+    assert seen == [{"visualizer_preset": "new caster"}]
+
+
+async def test_failed_show_leaves_the_previous_cast_its_key_and_owner() -> None:
+    """A launch that fails keeps the display that is still showing working."""
+    controller = _make_controller()
+    keys: list[str] = []
+    _register_resolving_endpoint(controller, keys)
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
+    controller._session_owners["dash1"] = "user-1"
+
+    async def failing_on_show(_dashboard: DashboardType, _player_id: str | None) -> None:
+        await _resolve_key(controller)
+        raise MusicAssistantError("launch failed")
+
+    controller._dashboards["dash1"].on_show = failing_on_show
+    with (
+        patch(
+            "music_assistant.controllers.dashboard.controller.get_current_user",
+            return_value=_owner_user("user-2", None),
+        ),
+        pytest.raises(MusicAssistantError),
+    ):
+        await controller.show_dashboard("dash1", DashboardType.PARTY)
+
+    assert controller._viewer_keys["dash1"] == keys[0]
+    assert controller._session_owners["dash1"] == "user-1"
+
+
 async def test_get_url_between_shows_keeps_the_current_viewer_key() -> None:
     """Re-resolving the url after a show does not rotate the key."""
     controller = _make_controller()
