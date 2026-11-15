@@ -308,6 +308,71 @@ class _Rig:
         return self.sources.get(name, _realtime_capture)()
 
 
+def _install_flow(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch, while_building: Callable[[], Awaitable[None]]
+) -> None:
+    """
+    Make the rig play flow streams with crossfades, with only the audio decoding left out.
+
+    :param rig: The rig whose queue the flow streams play.
+    :param monkeypatch: The test's monkeypatch.
+    :param while_building: Runs while a flow stream builds its crossfade into the next track.
+    """
+    rig.mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    # the player reports no progress here, so nothing would ever let these finish
+    rig.queues._preload_next_item = MagicMock()  # type: ignore[method-assign]
+    rig.queues.queue_buffer_completed = MagicMock()  # type: ignore[method-assign]
+    rig.audio.setup()
+
+    async def _item_stream(
+        queue_item: QueueItem,
+        seek_position: int = 0,
+        prepared_buffer: AudioBuffer | None = None,
+        **_kwargs: Any,
+    ) -> AsyncGenerator[bytes]:
+        # the real stream without its decoding: the item's own buffer, refused like the
+        # real one refuses a prepared buffer that is no longer the item's or no longer valid
+        assert queue_item.streamdetails is not None
+        if prepared_buffer is not None and (
+            queue_item.streamdetails.buffer is not prepared_buffer
+            or not prepared_buffer.is_valid(seek_position * 1000)
+        ):
+            return
+        buffer = prepared_buffer or await rig.ask(queue_item)
+        assert buffer is not None
+        async for chunk in buffer.get_raw_stream(seek_position * 1000):
+            yield chunk
+
+    async def _build(**_kwargs: Any) -> SimpleNamespace:
+        await while_building()
+        return SimpleNamespace(
+            timing_info=SimpleNamespace(
+                fadein_trimmed_duration=0.0, crossfade_duration=8.0, pre_crossfade_duration=0.0
+            )
+        )
+
+    async def _concat_mix(
+        _smart_fade: object, *, fade_in_part: AsyncGenerator[bytes], fade_out_part: bytes, **_: Any
+    ) -> AsyncGenerator[bytes]:
+        # a lossless stand-in for the mixer, so every byte of both tracks stays countable
+        yield fade_out_part
+        async for chunk in fade_in_part:
+            yield chunk
+
+    monkeypatch.setattr(rig.audio, "get_queue_item_stream", _item_stream)
+    monkeypatch.setattr(rig.audio.smart_fades_mixer, "build", AsyncMock(side_effect=_build))
+    monkeypatch.setattr(rig.audio.smart_fades_mixer, "mix", _concat_mix)
+
+
+async def _drain(stream: AsyncGenerator[bytes]) -> int:
+    """Consume a stream as a player does and return how many bytes it delivered."""
+    emitted = 0
+    async for chunk in stream:
+        emitted += len(chunk)
+        await asyncio.sleep(0)
+    return emitted
+
+
 @pytest.fixture
 async def rig(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
@@ -453,69 +518,108 @@ async def test_a_track_the_flow_stream_took_plays_in_full_when_the_queue_changes
     gate = asyncio.Event()
     rig.sources["track 0"] = partial(_source, 30)
     rig.sources["track 1"] = partial(_source, 20, 10, gate)
-    rig.mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
-    # the player reports no progress here, so nothing would ever let these finish
-    rig.queues._preload_next_item = MagicMock()  # type: ignore[method-assign]
-    rig.queues.queue_buffer_completed = MagicMock()  # type: ignore[method-assign]
-    rig.audio.setup()
 
-    async def _item_stream(
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        prepared_buffer: AudioBuffer | None = None,
-        **_kwargs: Any,
-    ) -> AsyncGenerator[bytes]:
-        # the real stream without its decoding: the item's own buffer, refused like the
-        # real one refuses a prepared buffer that is no longer the item's or no longer valid
-        assert queue_item.streamdetails is not None
-        if prepared_buffer is not None and (
-            queue_item.streamdetails.buffer is not prepared_buffer
-            or not prepared_buffer.is_valid(seek_position * 1000)
-        ):
-            return
-        buffer = prepared_buffer or await rig.ask(queue_item)
-        assert buffer is not None
-        async for chunk in buffer.get_raw_stream(seek_position * 1000):
-            yield chunk
-
-    async def _build_while_the_queue_changes(**_kwargs: Any) -> SimpleNamespace:
+    async def _play_next_while_the_fade_is_built() -> None:
         await rig.queues._enqueue_with_option(
             QUEUE_ID, [rig.track("track 5", realtime=False)], QueueOption.NEXT
         )
         await rig.settle()
         gate.set()
-        return SimpleNamespace(
-            timing_info=SimpleNamespace(
-                fadein_trimmed_duration=0.0, crossfade_duration=8.0, pre_crossfade_duration=0.0
-            )
-        )
 
-    async def _concat_mix(
-        _smart_fade: object, *, fade_in_part: AsyncGenerator[bytes], fade_out_part: bytes, **_: Any
-    ) -> AsyncGenerator[bytes]:
-        # a lossless stand-in for the mixer, so every byte of both tracks stays countable
-        yield fade_out_part
-        async for chunk in fade_in_part:
-            yield chunk
-
-    monkeypatch.setattr(rig.audio, "get_queue_item_stream", _item_stream)
-    monkeypatch.setattr(
-        rig.audio.smart_fades_mixer, "build", AsyncMock(side_effect=_build_while_the_queue_changes)
-    )
-    monkeypatch.setattr(rig.audio.smart_fades_mixer, "mix", _concat_mix)
-
-    emitted = 0
-    async for chunk in rig.audio.get_queue_flow_stream(
-        queue, outgoing, PCM_FORMAT, session_id=SESSION_ID
-    ):
-        emitted += len(chunk)
-        await asyncio.sleep(0)
+    _install_flow(rig, monkeypatch, _play_next_while_the_fade_is_built)
+    emitted = await _drain(rig.audio.get_queue_flow_stream(queue, outgoing, PCM_FORMAT, SESSION_ID))
 
     # all of both tracks, 30 seconds each
     assert emitted == 60 * PCM_FORMAT.pcm_sample_size
     assert incoming.streamdetails is not None
     assert incoming.streamdetails.buffer is not None
     assert not incoming.streamdetails.buffer.cancelled
+
+
+async def test_a_superseded_flow_stream_leaves_the_track_of_the_active_one_alone(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A flow stream that a newer one took over does not touch what the newer one plays next.
+
+    The old stream is still loading its next track when a skip starts a new flow stream, which
+    takes its own next track and builds the crossfade into it while the old load returns.
+    """
+    first, _old_next, playing, incoming = rig.play(
+        "track 0", "track 1", "track 2", "track 3", realtime=False
+    )
+    queue_data = rig.queues._queue_data[QUEUE_ID]
+    gate, old_load_waits, old_load_returns = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    rig.sources["track 0"] = partial(_source, 2)
+    rig.sources["track 2"] = partial(_source, 30)
+    rig.sources["track 3"] = partial(_source, 20, 10, gate)
+
+    async def _load_next(queue_id: str, current_item_id: str) -> QueueItem:
+        if current_item_id == first.queue_item_id:
+            # the old stream's next track takes its time to load
+            old_load_waits.set()
+            await old_load_returns.wait()
+        return await rig._load_next(queue_id, current_item_id)
+
+    rig.queues.load_next_queue_item = AsyncMock(side_effect=_load_next)  # type: ignore[method-assign]
+    old_stream = asyncio.ensure_future(
+        _drain(rig.audio.get_queue_flow_stream(queue_data.queue, first, PCM_FORMAT, SESSION_ID))
+    )
+
+    async def _old_load_returns_then_play_next() -> None:
+        old_load_returns.set()
+        await old_stream
+        await rig.queues._enqueue_with_option(
+            QUEUE_ID, [rig.track("track 5", realtime=False)], QueueOption.NEXT
+        )
+        await rig.settle()
+        gate.set()
+
+    _install_flow(rig, monkeypatch, _old_load_returns_then_play_next)
+    await old_load_waits.wait()
+    # a skip starts a new session, whose flow stream plays from the third track on
+    queue_data.session_id = "session-b"
+    queue_data.queue.current_index = queue_data.queue.index_in_buffer = 2
+    queue_data.queue.current_item = playing
+    emitted = await _drain(
+        rig.audio.get_queue_flow_stream(queue_data.queue, playing, PCM_FORMAT, "session-b")
+    )
+
+    # all of the playing track and of the one it took to play next, 30 seconds each
+    assert emitted == 60 * PCM_FORMAT.pcm_sample_size
+    assert incoming.streamdetails is not None
+    assert incoming.streamdetails.buffer is not None
+    assert not incoming.streamdetails.buffer.cancelled
+
+
+async def test_a_track_handed_to_another_queue_keeps_its_capture_after_a_fade_into_it(
+    rig: _Rig,
+) -> None:
+    """A track that went from this queue to another one is that queue's to play."""
+    playing, prepared, _later = rig.play("track 0", "track 1", "track 2")
+    prepared_capture = await rig.prepare_next(playing)
+    handoff = asyncio.Event()
+    rig.audio._crossfade_pending[QUEUE_ID] = (prepared.queue_item_id, handoff)
+    await rig.queues._enqueue_with_option(
+        QUEUE_ID, [rig.track("track 5")], QueueOption.REPLACE_NEXT
+    )
+
+    # while the fade into it is still being mixed, another queue takes the track over and
+    # plays on from its capture
+    rig.queues._queue_data["queue_b"] = PlayerQueueData(
+        queue=PlayerQueue(
+            queue_id="queue_b", active=True, display_name="Queue B", available=True, items=1
+        ),
+        items=[prepared],
+        session_id="session-b",
+    )
+    prepared.queue_id = "queue_b"
+    rig.audio._release_handoff(QUEUE_ID, handoff)
+    await rig.settle()
+
+    assert prepared_capture.is_buffering
+    assert prepared.streamdetails is not None
+    assert prepared.streamdetails.buffer is prepared_capture
 
 
 async def test_a_removed_track_a_speaker_still_streams_keeps_its_capture(rig: _Rig) -> None:

@@ -133,6 +133,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.constants import PlaylistPlayableItem
     from music_assistant.controllers.music.recency import RecencyWindows
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.helpers.json import SerializableType
     from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
@@ -1881,20 +1882,36 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         await self._abort_source_buffer(queue_item)
 
-    async def release_left_item_source(self, queue_id: str, queue_item: QueueItem) -> None:
+    async def release_left_item_source(
+        self, queue_id: str, queue_item: QueueItem, buffer: AudioBuffer
+    ) -> None:
         """
         Release the source of an item that is no longer on the queue.
 
+        Nothing is released while another queue holds the item, or once another buffer took
+        the place of the given one.
+
         :param queue_id: The queue the item belonged to.
         :param queue_item: The item that left the queue.
+        :param buffer: The buffer of the item's source when it left the queue.
         """
         await self.mass.streams.audio.drop_fade_into(queue_id, queue_item.queue_item_id)
-        if (streamdetails := queue_item.streamdetails) and (buffer := streamdetails.buffer):
-            self.logger.debug(
-                "Releasing the source of %s, which left queue %s", queue_item.name, queue_id
+        streamdetails = queue_item.streamdetails
+        if (
+            streamdetails is None
+            or streamdetails.buffer is not buffer
+            # a transfer hands the same item to another queue
+            or any(
+                self.index_by_id(other_id, queue_item.queue_item_id) is not None
+                for other_id in self._queue_data
             )
-            streamdetails.buffer = None
-            await buffer.clear()
+        ):
+            return
+        self.logger.debug(
+            "Releasing the source of %s, which left queue %s", queue_item.name, queue_id
+        )
+        streamdetails.buffer = None
+        await buffer.clear()
 
     def queue_buffer_completed(self, queue_id: str, queue_exhausted: bool) -> None:
         """
@@ -2634,12 +2651,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        filling = {
-            item.queue_item_id: item
+        filling: dict[str, tuple[QueueItem, AudioBuffer]] = {
+            item.queue_item_id: (item, buffer)
             for item in previous_items
             if item.streamdetails is not None
-            and item.streamdetails.buffer is not None
-            and item.streamdetails.buffer.is_buffering
+            and (buffer := item.streamdetails.buffer) is not None
+            and buffer.is_buffering
         }
         if not filling:
             return
@@ -2649,7 +2666,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.flow_mode and queue_data.flow_incoming_item_id is not None:
             filling.pop(queue_data.flow_incoming_item_id, None)
         positions = {item.queue_item_id: index for index, item in enumerate(queue_data.items)}
-        left = [item for item_id, item in filling.items() if item_id not in positions]
+        left = [source for item_id, source in filling.items() if item_id not in positions]
         moved: QueueItem | None = None
         prepared_id = queue_data.next_item_id_preparing
         if (
@@ -2663,24 +2680,27 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # the stream before it already plays the start of a fade into it
             and not self.mass.streams.audio.fade_into_pending(queue_id, prepared_id)
         ):
-            moved = prepared
+            moved = prepared[0]
         if left or moved:
             self.mass.create_task(self._release_item_sources(queue_id, left, moved))
 
     async def _release_item_sources(
-        self, queue_id: str, left: list[QueueItem], moved: QueueItem | None
+        self,
+        queue_id: str,
+        left: list[tuple[QueueItem, AudioBuffer]],
+        moved: QueueItem | None,
     ) -> None:
         """
         Release the sources of items that left the queue and of a prepared item moved back.
 
         :param queue_id: The queue the items belong to.
-        :param left: Items that are no longer on the queue.
+        :param left: Items that are no longer on the queue, with the buffer each one had then.
         :param moved: The prepared item that no longer plays next, if any.
         """
-        for item in left:
-            await self.release_left_item_source(queue_id, item)
         if moved is not None:
             await self._abort_source_buffer(moved, only_when_saturated=True)
+        for item, buffer in left:
+            await self.release_left_item_source(queue_id, item, buffer)
 
     def _cancel_pending_playback(self, queue_id: str) -> None:
         """Cancel the queue's pending play_index, preload, enqueue-next and prewarm work."""

@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-from types import MethodType
+from contextlib import nullcontext
+from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
-from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlaybackState,
+    PlayerType,
+    StreamType,
+)
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -166,6 +175,65 @@ class _Harness:
 
         :param items: The queue items to take off.
         """
+        self._wire_queue_edits()
+        # the queue double has no position of its own; none of these items is the current one
+        queue = self.queue_data.queue
+        queue.current_item = queue.current_index = queue.index_in_buffer = None
+        kept = [item for item in self.queue_data.items if item not in items]
+        self._queues.update_items(QUEUE_ID, kept)
+
+    async def transfer_to(self, target_id: str) -> None:
+        """
+        Hand the playing queue over to another player with the queue's own transfer.
+
+        :param target_id: The queue of the player the items move to.
+        """
+        self._wire_queue_edits()
+        items = self.queue_data.items
+        self.queue_data.queue = PlayerQueue(
+            queue_id=QUEUE_ID,
+            active=True,
+            display_name="Queue",
+            available=True,
+            items=len(items),
+            state=PlaybackState.PLAYING,
+            current_index=0,
+            current_item=items[0],
+            index_in_buffer=0,
+        )
+        self._queues._queue_data[target_id] = PlayerQueueData(
+            queue=PlayerQueue(
+                queue_id=target_id, active=True, display_name="Target", available=True, items=0
+            )
+        )
+        mass = cast("MagicMock", self._queues.mass)
+        mass.players.get_player.return_value = SimpleNamespace(
+            type=PlayerType.PLAYER,
+            synced_to=None,
+            active_group=None,
+            offline_by_power_control=False,
+            extra_data={},
+        )
+        mass.players.get_playback_locks = lambda *_player_ids: nullcontext()
+        mass.players._handle_cmd_stop = AsyncMock()
+        self._queues.is_smart_shuffle_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+        # the player double reports nothing back after the stop
+        self._queues.on_player_update = MagicMock()  # type: ignore[method-assign]
+        self._queues._managed_pool = MagicMock()
+        await self._queues.transfer_queue(QUEUE_ID, target_id, auto_play=False)
+
+    async def _release(self, queue_id: str, queue_item_id: str) -> None:
+        """Record the release, then let the queue release the item's source for real."""
+        self.calls.append(f"release:{queue_item_id}")
+        await self._queues.release_failed_item_source(queue_id, queue_item_id)
+
+    async def _release_left(self, queue_id: str, queue_item: QueueItem, *args: Any) -> None:
+        """Record the release, then let the queue release the item's source for real."""
+        self.calls.append(f"release_left:{queue_item.queue_item_id}")
+        await self._queues.release_left_item_source(queue_id, queue_item, *args)
+
+    def _wire_queue_edits(self) -> None:
+        """Connect what an edit of the queue reaches beyond the queue to this harness."""
         mass = cast("MagicMock", self._queues.mass)
         mass.streams.requested_item_ids = MethodType(
             StreamsController.requested_item_ids, self.ctrl
@@ -174,21 +242,6 @@ class _Harness:
         mass.streams.audio.drop_fade_into = AsyncMock()
         mass.create_task.side_effect = self._create_task
         self._queues.signal_update = MagicMock()  # type: ignore[method-assign]
-        # the queue double has no position of its own; none of these items is the current one
-        queue = self.queue_data.queue
-        queue.current_item = queue.current_index = queue.index_in_buffer = None
-        kept = [item for item in self.queue_data.items if item not in items]
-        self._queues.update_items(QUEUE_ID, kept)
-
-    async def _release(self, queue_id: str, queue_item_id: str) -> None:
-        """Record the release, then let the queue release the item's source for real."""
-        self.calls.append(f"release:{queue_item_id}")
-        await self._queues.release_failed_item_source(queue_id, queue_item_id)
-
-    async def _release_left(self, queue_id: str, queue_item: QueueItem) -> None:
-        """Record the release, then let the queue release the item's source for real."""
-        self.calls.append(f"release_left:{queue_item.queue_item_id}")
-        await self._queues.release_left_item_source(queue_id, queue_item)
 
     def _track_loaded(self, queue_id: str, item_id: str) -> None:
         """Record the item whose first chunk reached the player, as the queue does."""
@@ -464,6 +517,30 @@ async def test_a_track_taken_off_the_queue_keeps_its_source_while_another_reques
     await second
     await harness.settle()
     removed_source.clear.assert_awaited_once()
+
+
+async def test_a_request_of_a_transferred_queue_leaves_the_new_players_source_alone() -> None:
+    """A stream request that ends after the queue moved to another player keeps that one playing."""
+    track, upcoming = _item("track", LIMITED), _item("upcoming")
+    harness = _Harness(track, upcoming)
+    stream, player = harness.start("track")
+    await _stream_first_chunk(player)
+
+    await harness.transfer_to("q2")
+    await harness.settle()
+    # the target player starts the track with a source of its own
+    target_source = MagicMock(spec=AudioBuffer)
+    target_source.is_buffering = True
+    target_source.clear = AsyncMock()
+    assert track.streamdetails is not None
+    track.streamdetails.buffer = target_source
+    # the old player lets go of the track only now
+    player.drop()
+    await stream
+    await harness.settle()
+
+    target_source.clear.assert_not_awaited()
+    assert track.streamdetails.buffer is target_source
 
 
 async def test_asking_again_for_a_track_dropped_before_its_first_audio_keeps_its_source() -> None:

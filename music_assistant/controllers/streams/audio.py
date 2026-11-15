@@ -2678,7 +2678,9 @@ class StreamsAudio:
                     # the consumer may have left while the next item was loading
                     if _consumer_left():
                         return
-                pq_data.flow_incoming_item_id = queue_track.queue_item_id
+                # a newer stream took over while this one was loading: the marker is its own
+                if not _superseded():
+                    pq_data.flow_incoming_item_id = queue_track.queue_item_id
 
                 if self._flow_stream_needs_restart(
                     queue_track,

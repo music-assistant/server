@@ -154,6 +154,7 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.controllers.players.audio_sources import AudioSourceSession
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player_protocol import PlayerProtocol
@@ -1001,6 +1002,8 @@ class StreamsController(CoreController):
         # open (gating some players' cutover) until the player times it out
         stream_entry = (session_id, request)
         self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
+        # the buffer this response reads, which is all its end may release
+        read_buffer: AudioBuffer | None = None
         try:
             if pq_data.session_id != session_id:
                 # rotated between the validation above and the registration: the
@@ -1266,6 +1269,8 @@ class StreamsController(CoreController):
                 # the abandoned generator.
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
+                        if read_buffer is None:
+                            read_buffer = queue_item.streamdetails.buffer
                         if pq_data.session_id != session_id:
                             # playback moved on (or stopped) while this response was open;
                             # the flow path checks the same thing per chunk
@@ -1385,13 +1390,16 @@ class StreamsController(CoreController):
                     )
             if (
                 request.method == "GET"
+                and read_buffer is not None
                 and queue_item_id not in self._requested_item_ids(queue_id, session_id)
                 and self.mass.player_queues.index_by_id(queue_id, queue_item_id) is None
             ):
                 # the item left the queue while this request kept its source, and no other
                 # request reaches that source any more
                 self.mass.create_task(
-                    self.mass.player_queues.release_left_item_source(queue_id, queue_item),
+                    self.mass.player_queues.release_left_item_source(
+                        queue_id, queue_item, read_buffer
+                    ),
                     task_name=f"release_left_item_source_{queue_id}",
                 )
             # Paired with on_source_selected — fires regardless of how streaming
