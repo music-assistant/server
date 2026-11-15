@@ -134,6 +134,11 @@ class SqueezelitePlayer(PlayerProtocol):
         # must rebuild the stream session instead of taking the LMS _Resume path
         self._restream_needed: bool = False
 
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: sync members are fed by the stream this player serves to its group."""
+        return True
+
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
         # map the per-player sync delay setting to the LMS play delay

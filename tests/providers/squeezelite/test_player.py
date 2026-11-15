@@ -532,6 +532,13 @@ async def test_buffer_ready_starts_the_leader_when_its_members_dropped_out() -> 
     sync_group.start.assert_not_called()
 
 
+def test_sync_members_need_the_stream_of_their_leader() -> None:
+    """Members are moved along when their leader renders through another protocol."""
+    player = SqueezelitePlayer.__new__(SqueezelitePlayer)
+
+    assert player.native_grouping_requires_own_stream is True
+
+
 def test_a_heartbeat_checks_the_group_sync() -> None:
     """The leader's heartbeat runs the group drift check on all members."""
     player, mass = _player_with_mocked_mass()
