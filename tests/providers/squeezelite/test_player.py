@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import pytest
 from aioslimproto.models import EventType as SlimEventType
@@ -715,3 +715,210 @@ async def test_the_role_follows_the_device_model(
     else:
         client.power.assert_awaited_once_with(False)
         client.stop.assert_not_awaited()
+
+
+# ---------------------------------------------------------------- Sendspin bridge
+
+
+def _player_with_bridge(*, owns_stream: bool = True) -> tuple[SqueezelitePlayer, MagicMock]:
+    """Return a player whose Sendspin bridge has, or does not have, its stream on the player."""
+    player, _mass = _player_with_mocked_mass()
+    player.client = MagicMock(player_id="p1")
+    player.sendspin_bridge = bridge = MagicMock(owns_stream=owns_stream)
+    return player, bridge
+
+
+@pytest.mark.parametrize("owns_stream", [True, False])
+def test_a_stream_of_the_bridge_is_started_by_the_bridge(owns_stream: bool) -> None:
+    """The bridge starts its stream at an instant of its timeline, the player would start it now."""
+    player, _bridge = _player_with_bridge(owns_stream=owns_stream)
+    event = SlimEvent(type=SlimEventType.PLAYER_BUFFER_READY, player_id="p1")
+
+    with patch.object(player, "_handle_buffer_ready", new=MagicMock()) as handle_buffer_ready:
+        player.handle_slim_event(event)
+
+    assert handle_buffer_ready.call_count == (0 if owns_stream else 1)
+
+
+@pytest.mark.parametrize("owns_stream", [True, False])
+def test_the_position_of_a_bridge_stream_is_not_that_of_the_protocol(owns_stream: bool) -> None:
+    """Neither the elapsed time nor the sync check of the sync group follows a bridge stream."""
+    player, _bridge = _player_with_bridge(owns_stream=owns_stream)
+    cast("MagicMock", player.client).elapsed_seconds = 42.0
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 0
+    event = SlimEvent(type=SlimEventType.PLAYER_HEARTBEAT, player_id="p1")
+
+    with (
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=["p1", "m"]
+        ),
+        patch.object(player, "_handle_sync") as handle_sync,
+        patch.object(player, "update_state"),
+    ):
+        player.handle_slim_event(event)
+
+    assert player._attr_elapsed_time == (0 if owns_stream else 42.0)
+    assert handle_sync.call_count == (0 if owns_stream else 1)
+
+
+@pytest.mark.parametrize("owns_stream", [True, False])
+def test_a_bridge_stream_is_no_media_of_the_protocol(owns_stream: bool) -> None:
+    """The protocol reports that it plays, but not what: that is what Sendspin shows."""
+    provider = MagicMock(instance_id="squeezelite")
+    provider.mass.config.get_base_protocol_config.return_value = MagicMock()
+    client = MagicMock(
+        device_model="SqueezeLite",
+        max_sample_rate=96000,
+        state=SlimPlayerState.PLAYING,
+        volume_level=20,
+        muted=False,
+    )
+    client.current_media.metadata = {"item_id": "library://track/1", "title": "Before"}
+    player = SqueezelitePlayer(provider, "aa:bb:cc:dd:ee:ff", client)
+    player.sendspin_bridge = MagicMock(owns_stream=owns_stream)
+
+    player.update_attributes()
+
+    assert player.playback_state == PlaybackState.PLAYING
+    if owns_stream:
+        assert player.current_media is None
+    else:
+        assert player.current_media is not None
+        assert player.current_media.title == "Before"
+
+
+async def test_a_stream_of_the_protocol_takes_the_players_back_from_their_bridges() -> None:
+    """Before the protocol plays on its players, a bridge that plays on one of them lets go."""
+    player, bridge = _player_with_bridge()
+    mass = cast("MagicMock", player.mass)
+    player.multi_client_stream = None
+    member_client = MagicMock(player_id="member")
+    member = MagicMock()
+    without_bridge = MagicMock(player_id="plain")
+    player._provider = MagicMock(mass=mass)
+    player._provider.get_protocol.side_effect = {
+        "p1": player,
+        "member": member,
+        "plain": MagicMock(sendspin_bridge=None),
+    }.get
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://127.0.0.1:8097/x.flac")
+    steps = MagicMock()
+    steps.attach_mock(bridge.stop_streaming, "own_bridge")
+    steps.attach_mock(member.sendspin_bridge.stop_streaming, "member_bridge")
+    play_url = AsyncMock()
+    steps.attach_mock(play_url, "play_url")
+
+    with (
+        patch.object(SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value=None),
+        patch.object(
+            SqueezelitePlayer, "group_members", new_callable=PropertyMock, return_value=[]
+        ),
+        patch.object(
+            player,
+            "_get_sync_clients",
+            side_effect=lambda: iter([player.client, member_client, without_bridge]),
+        ),
+        patch.object(player, "_handle_play_url_for_slimplayer", new=play_url),
+        patch.object(player, "update_state"),
+    ):
+        await player.play_media(
+            PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1")
+        )
+
+    assert [step[0] for step in steps.mock_calls] == ["own_bridge", "member_bridge", "play_url"]
+
+
+async def test_a_stop_of_the_protocol_ends_the_stream_of_its_bridge() -> None:
+    """The bridge gives the player back and leaves its session, then the player is stopped."""
+    provider = MagicMock(instance_id="squeezelite")
+    provider.mass.config.get_base_protocol_config.return_value = MagicMock()
+    use_real_create_task(provider.mass)
+    client = MagicMock(device_model="SqueezeLite", max_sample_rate=96000)
+    client.stop = AsyncMock()
+    player = SqueezelitePlayer(provider, "aa:bb:cc:dd:ee:ff", client)
+    player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+    player.sendspin_bridge = bridge = MagicMock()
+    steps = MagicMock()
+    steps.attach_mock(bridge.stop_streaming, "bridge")
+    steps.attach_mock(client.stop, "client")
+
+    await player.stop()
+
+    assert steps.mock_calls == [call.bridge(), call.client()]
+
+
+async def test_a_stream_that_takes_the_player_over_ends_what_the_protocol_plays() -> None:
+    """The player leaves the sync group of its leader and ends the stream of its own group."""
+    player, _mass = _player_with_mocked_mass()
+    leader = MagicMock()
+    player._provider = MagicMock()
+    player._provider.get_protocol.side_effect = {"leader": leader}.get
+    player.multi_client_stream = stream = MagicMock(stop=AsyncMock())
+    player._paused_at = 12.5
+    player._attr_elapsed_time = 80.0
+
+    with patch.object(
+        SqueezelitePlayer, "synced_to", new_callable=PropertyMock, return_value="leader"
+    ):
+        await player.release_native_playback()
+
+    leader.release_member.assert_called_once_with("p1")
+    stream.stop.assert_awaited_once()
+    assert vars(player)["multi_client_stream"] is None
+    assert player._paused_at == 0.0
+    assert player._attr_elapsed_time == 0
+
+
+@pytest.mark.parametrize(
+    ("target", "queue_of"), [("living_room", "living_room"), (None, "kitchen")]
+)
+async def test_buttons_act_on_the_player_that_leads_the_sendspin_group(
+    target: str | None, queue_of: str
+) -> None:
+    """While the player plays for its bridge, next on it skips for its Sendspin group."""
+    player, bridge = _player_with_bridge()
+    mass = cast("MagicMock", player.mass)
+    player._player = MagicMock(player_id="kitchen")
+    player.logger = MagicMock()
+    bridge.transport_command_target.return_value = target
+    mass.player_queues.next = AsyncMock()
+    queue = mass.player_queues.get_active_queue.return_value
+    event = SlimEvent(type=SlimEventType.PLAYER_BTN_EVENT, player_id="p1", data="button fwd")
+
+    await player._handle_player_cli_event(event)
+
+    mass.player_queues.get_active_queue.assert_called_once_with(queue_of)
+    mass.player_queues.next.assert_awaited_once_with(queue.queue_id)
+
+
+async def test_the_bridge_is_evaluated_when_the_config_of_the_protocol_is_loaded() -> None:
+    """Every attach and config change brings the Sendspin bridge in line."""
+    player, mass = _player_with_mocked_mass()
+    use_real_create_task(mass)
+    player.client = MagicMock(play_delay=0)
+    config = MagicMock(get_value=MagicMock(return_value=0))
+
+    with (
+        patch.object(SqueezelitePlayer, "config", new_callable=PropertyMock, return_value=config),
+        patch.object(player, "_set_preset_items", new=AsyncMock()),
+        patch.object(player, "_set_display", new=AsyncMock()),
+        patch(
+            "music_assistant.providers.squeezelite.player.evaluate_bridge_of", new=AsyncMock()
+        ) as evaluate,
+    ):
+        await player.on_config_updated()
+        await asyncio.sleep(0)
+
+    evaluate.assert_awaited_once_with(mass, "p1")
+
+
+async def test_a_protocol_that_is_removed_takes_its_bridge_client_along() -> None:
+    """The Sendspin protocol of the bridge is removed with the protocol it rides on."""
+    player, _mass = _player_with_mocked_mass()
+    player._provider = MagicMock()
+    player._provider.bridge_manager.remove_bridge = remove_bridge = AsyncMock()
+
+    await player.on_remove()
+
+    remove_bridge.assert_awaited_once_with("p1", permanent=True)

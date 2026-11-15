@@ -406,6 +406,33 @@ def test_reports_without_progress_or_news_are_ignored() -> None:
     assert loop.error_ms == pytest.approx(10.0)
 
 
+def test_elapsed_carries_on_when_the_frame_counter_of_the_player_wraps() -> None:
+    """A player counts frames in 32 bits: its elapsed time starts over, the error does not."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    wrap_ms = (1 << 32) * 1000 / RATE
+    last_ms = int(wrap_ms) - 400
+    for elapsed_ms in range(last_ms - 1000, last_ms + 250, 250):
+        assert _report(loop, elapsed_ms, 3.0) == pytest.approx(3.0)
+    # 800 ms later the counter is 400 ms past its wrap: the player reports what is left
+    played_ms = last_ms + 800
+    server_us = START_US + played_ms * 1000 + 500 + 3000
+    assert loop.on_report(server_us, int(played_ms - wrap_ms)) == pytest.approx(3.0, abs=1.0)
+    assert loop.error_ms == pytest.approx(3.0, abs=0.5)
+    # and again at the next wrap
+    for played_ms in (int(2 * wrap_ms) - 400, int(2 * wrap_ms) + 400):
+        server_us = START_US + played_ms * 1000 + 500 + 3000
+        reported_ms = int(played_ms - wrap_ms * (played_ms // wrap_ms))
+        assert loop.on_report(server_us, reported_ms) == pytest.approx(3.0, abs=1.0)
+
+
+def test_elapsed_that_steps_back_a_little_is_no_wrap() -> None:
+    """A report that is behind the one before it is an error of that size, not a wrap."""
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    assert _report(loop, 2000, 0.0) == pytest.approx(0.0)
+    # the same instant as a report of 2250 ms, with 400 ms less played
+    assert loop.on_report(START_US + 2_250_500, 1850) == pytest.approx(400.0)
+
+
 def test_loop_acts_from_the_fifth_report() -> None:
     """The rate stays zero until five reports are in, then follows the error."""
     loop = SyncLoop(RATE, FRAME_SIZE, START_US)

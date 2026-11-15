@@ -32,6 +32,8 @@ START_JUMP_MS = 10.0
 MAX_START_JUMP_MS = 2000.0
 
 _JIFFIES_WRAP = 1 << 32
+# a player counts the frames it played in 32 bits, and its elapsed time starts over with it
+_FRAME_COUNTER_WRAP = 1 << 32
 
 # clock samples are filtered per bucket: only the ones with (nearly) the lowest round trip count
 _BUCKET_MS = 2000
@@ -255,6 +257,9 @@ class SyncLoop:
         # reports in the filter window: (seconds since the start, error without corrections)
         self._points: deque[tuple[float, float]] = deque()
         self._last_report: tuple[int, int] | None = None
+        # elapsed time the player loses when its frame counter wraps, and lost that way so far
+        self._wrap_ms = _FRAME_COUNTER_WRAP * 1000 / sample_rate
+        self._wrapped_ms = 0.0
         self._clock_generation = 0
         self._rate_ppm = 0.0
         self._drift_ppm = 0.0
@@ -297,7 +302,8 @@ class SyncLoop:
         Take in a status report of the player.
 
         A report is ignored while the player settles after the start, when nothing was
-        played yet and when it repeats the previous report.
+        played yet and when it repeats the previous report. The elapsed time may start
+        over when the frame counter of the player wraps.
 
         :param server_us: Server time of the report, from ``PlayerClock.to_server_us``.
         :param elapsed_ms: Elapsed milliseconds of the stream as reported by the player.
@@ -311,6 +317,8 @@ class SyncLoop:
             self._rate_ppm = self._drift_ppm = 0.0
             self._error_ms = self._predicted_ms = None
         previous, self._last_report = self._last_report, (server_us, elapsed_ms)
+        if previous is not None and elapsed_ms < previous[1] - self._wrap_ms / 2:
+            self._wrapped_ms += self._wrap_ms
         if elapsed_ms <= 0 or server_us < self._settled_us:
             return None
         if (
@@ -321,7 +329,7 @@ class SyncLoop:
             return None
 
         # elapsed is truncated to whole milliseconds: half a millisecond removes the bias
-        elapsed = elapsed_ms + 0.5
+        elapsed = elapsed_ms + self._wrapped_ms + 0.5
         position = int(elapsed * self._sample_rate / 1000)
         ledger = self._ledger
         while len(ledger) > 1 and ledger[1][0] <= position:
