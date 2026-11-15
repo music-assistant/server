@@ -9,13 +9,15 @@ user the queue plays for.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Iterator
+from collections.abc import AsyncGenerator, Callable, Coroutine, Iterator
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from music_assistant_models.auth import User, UserRole
+from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
     ContentType,
@@ -42,6 +44,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemImage,
+    Playlist,
     ProviderMapping,
     Track,
     UniqueList,
@@ -59,6 +62,7 @@ from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver, ResolvedItem
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.tasks.context import ACTIVE_TASK_CONTEXT, TaskExecutionContext
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
@@ -68,6 +72,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.external_ids import external_item_id
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.musicbrainz.listenbrainz import TOP_TRACKS_LIMIT
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
@@ -94,6 +99,10 @@ SPOTIFY_TRACK_URL = f"https://open.spotify.com/track/{SPOTIFY_TRACK_ID}"
 THEIRS = "spotify--theirs"
 MINE = "tidal--mine"
 SHARED = "tidal--shared"
+# the music service a saved queue is looked up on, unless a test says otherwise
+SERVICE = "deezer--1"
+# a music service whose playlist holds what is found on another one
+OTHER = "qobuz--1"
 OWNER = User(user_id="user-owner", username="owner", role=UserRole.USER)
 MEMBER = User(user_id="user-member", username="member", role=UserRole.USER)
 USERS = {user.user_id: user for user in (OWNER, MEMBER)}
@@ -210,7 +219,7 @@ def _provider_track(
     return track
 
 
-def _recording(recording_id: str, linked: bool = False) -> MusicBrainzRecording:
+def _recording(recording_id: str, linked: bool = False, isrc: str = ISRC) -> MusicBrainzRecording:
     """Return a recording of the track the helpers create, known by the ISRC they give it."""
     artist = MusicBrainzArtist(
         id="a74b1b7f-71a5-4011-9441-d0b5e4122711", name="Test Artist", sort_name="Test Artist"
@@ -222,7 +231,7 @@ def _recording(recording_id: str, linked: bool = False) -> MusicBrainzRecording:
         id=recording_id,
         title="Test Track",
         artist_credit=[MusicBrainzArtistCredit(name="Test Artist", artist=artist)],
-        isrcs=[ISRC],
+        isrcs=[isrc],
         relations=[relation] if linked else [],
     )
 
@@ -412,6 +421,223 @@ async def _remembered(music: MusicController, recording_id: str = RECORDING_ID) 
         provider=music.domain,
         category=CACHE_CATEGORY_EXTERNAL_IDS,
     )
+
+
+def _isrc(recording_id: str) -> str:
+    """Return the ISRC of a recording in the tests that save the queue, one of its own."""
+    return f"GBAYE{recording_id[-7:]}"
+
+
+def _service(
+    instance_id: str = SERVICE,
+    lookups: list[str] | None = None,
+    could_not_answer: dict[str, Exception] | None = None,
+    found_as: str = "found",
+) -> MagicMock:
+    """
+    Return a streaming service that has every track, and playlists that can be edited.
+
+    It finds the track of recording n by its ISRC, as track "<found_as><n>", which names its
+    album and artist by reference only, as a lookup answers.
+
+    :param instance_id: The provider instance id of the service.
+    :param lookups: Where to note each lookup by ISRC, as it is sent and as it is answered.
+    :param could_not_answer: The error the service answers the lookup with, per recording id.
+    :param found_as: The item id the tracks it finds start with.
+    """
+    provider = _provider(instance_id)
+    provider.supported_features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
+    recordings = {_isrc(recording_id): recording_id for recording_id in RECORDING_IDS}
+
+    async def _lookup(external_id: str, external_id_type: ExternalID) -> Track | None:
+        if external_id_type != ExternalID.ISRC or external_id not in recordings:
+            return None
+        recording_id = recordings[external_id]
+        if lookups is not None:
+            lookups.append(f"lookup {recording_id}")
+        # a request takes a moment, in which another lookup could start
+        await asyncio.sleep(0)
+        if error := (could_not_answer or {}).get(recording_id):
+            raise error
+        if lookups is not None:
+            lookups.append(f"found {recording_id}")
+        item_id = f"{found_as}{RECORDING_IDS.index(recording_id)}"
+        track = _provider_track(instance_id, item_id)
+        track.external_ids = {(ExternalID.ISRC, external_id)}
+        track.artists = UniqueList(
+            [
+                ItemMapping(
+                    item_id=f"{item_id}_artist",
+                    provider=instance_id,
+                    name="Test Artist",
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        )
+        return track
+
+    provider.get_track = AsyncMock(
+        side_effect=lambda item_id: _provider_track(instance_id, item_id)
+    )
+    provider.get_track_by_external_id = AsyncMock(side_effect=_lookup)
+    provider.get_playlist_tracks = AsyncMock(return_value=[])
+    provider.add_playlist_tracks = AsyncMock()
+    return provider
+
+
+def _knows_recordings(
+    musicbrainz: Mock, *recording_ids: str, lookups: list[str] | None = None
+) -> None:
+    """
+    Let MusicBrainz know the given recordings, each by an ISRC of its own, and no others.
+
+    :param musicbrainz: The MusicBrainz provider _load_providers() returned.
+    :param recording_ids: The recordings MusicBrainz knows.
+    :param lookups: Where to note each request for the details of a recording.
+    """
+
+    async def _recording_details(recording_id: str) -> MusicBrainzRecording:
+        if lookups is not None:
+            lookups.append(f"details {recording_id}")
+        await asyncio.sleep(0)
+        if recording_id not in recording_ids:
+            raise InvalidDataError("unknown id")
+        return _recording(recording_id, isrc=_isrc(recording_id))
+
+    musicbrainz.get_recording_details = AsyncMock(side_effect=_recording_details)
+
+
+def _builtin(music: MusicController) -> BuiltinProvider:
+    """Load the provider of Music Assistant's own playlists, which is returned, writing nothing."""
+    builtin = object.__new__(BuiltinProvider)
+    builtin_any = cast("Any", builtin)
+    builtin_any.mass = music.mass
+    builtin_any.logger = Mock()
+    builtin_any.manifest = Mock(domain="builtin", type=ProviderType.MUSIC)
+    builtin_any.config = Mock(instance_id="builtin")
+    builtin_any.available = True
+    builtin_any._supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
+    builtin_any._playlist_locks = {}
+    builtin_any._read_m3u_file = AsyncMock(return_value="")
+    builtin_any._write_m3u_file = AsyncMock()
+    builtin_any.get_playlist = AsyncMock(return_value=SimpleNamespace(name="Saved", image=None))
+    builtin_any.get_playlist_tracks = AsyncMock(return_value=[])
+    music.mass._providers["builtin"] = builtin
+    return builtin
+
+
+async def _playlist_on(music: MusicController, provider: Any) -> Playlist:
+    """Add an editable playlist of the given provider to the library and return it."""
+    return await music.playlists.add_item_to_library(
+        Playlist(
+            item_id="saved",
+            provider=provider.instance_id,
+            name="Saved",
+            owner="Music Assistant",
+            is_editable=True,
+            provider_mappings={
+                ProviderMapping(
+                    item_id="saved",
+                    provider_domain=provider.domain,
+                    provider_instance=provider.instance_id,
+                    in_library=True,
+                )
+            },
+        )
+    )
+
+
+def _saving_controller(music: MusicController, userid: str | None = None) -> Any:
+    """Build a bare queue controller as _controller() does, whose queue may be saved."""
+    ctrl = _controller(music, userid)
+    ctrl._check_player_permission = Mock()
+    ctrl.get = Mock(return_value=ctrl._queue_data[QUEUE_ID].queue)
+    music.mass.webserver = MagicMock()
+    music.mass.webserver.auth.get_user = AsyncMock(side_effect=USERS.get)
+    return ctrl
+
+
+def _captured_tasks(music: MusicController) -> list[Callable[[], Coroutine[Any, Any, None]]]:
+    """Capture the handler of each background task the server is asked to run, unstarted."""
+    handlers: list[Callable[[], Coroutine[Any, Any, None]]] = []
+
+    def _run_background_task(**kwargs: Any) -> BackgroundTask:
+        handlers.append(kwargs["handler"])
+        return BackgroundTask(name=kwargs["name"])
+
+    music.mass.tasks = Mock()
+    music.mass.tasks.run_background_task = Mock(side_effect=_run_background_task)
+    return handlers
+
+
+async def _save(ctrl: Any, music: MusicController, playlist: Playlist) -> list[str]:
+    """
+    Add the queue to the playlist with its command and run the task that does it.
+
+    :return: The failures the task reported.
+    """
+    return await _run_task(music, await _save_task(ctrl, music, playlist))
+
+
+async def _save_task(
+    ctrl: Any, music: MusicController, playlist: Playlist
+) -> Callable[[], Coroutine[Any, Any, None]]:
+    """Add the queue to the playlist with its command and return the task it queued, unstarted."""
+    handlers = _captured_tasks(music)
+    await ctrl.add_to_playlist(QUEUE_ID, playlist.item_id)
+    (handler,) = handlers
+    return handler
+
+
+async def _run_task(
+    music: MusicController, handler: Callable[[], Coroutine[Any, Any, None]]
+) -> list[str]:
+    """
+    Run a queued playlist task, as the task runner does, and return the failures it reported.
+
+    :param music: The music controller the task runs on.
+    :param handler: The task, as _save_task() returned it.
+    """
+    task = BackgroundTask(name="save")
+    failures: list[str] = []
+
+    def _add_failure(_task_id: str, message: str) -> None:
+        task.failure_count += 1
+        failures.append(message)
+
+    token = ACTIVE_TASK_CONTEXT.set(
+        TaskExecutionContext(
+            task_id=task.id,
+            get_task=lambda _task_id: task,
+            update_progress=lambda *_args: None,
+            update_progress_text=lambda *_args: None,
+            add_failure=_add_failure,
+            update_report=lambda *_args: None,
+        )
+    )
+    try:
+        with patch.object(music.playlists, "_request_metadata_refresh", AsyncMock()):
+            # a task runs in a context of its own
+            await asyncio.create_task(handler())
+    finally:
+        ACTIVE_TASK_CONTEXT.reset(token)
+    return failures
+
+
+def _saved(playlist_provider: Any) -> list[str]:
+    """Return the item ids of the tracks the playlist provider last saved, in order."""
+    if playlist_provider.domain == "builtin":
+        if (written := playlist_provider._write_m3u_file.await_args) is None:
+            return []
+        return [entry.path.rsplit("/", 1)[-1] for entry in written.args[2]]
+    if (added := playlist_provider.add_playlist_tracks.await_args) is None:
+        return []
+    return list(added.args[1])
+
+
+def _calls(provider: MagicMock) -> list[str]:
+    """Return the name of every request the provider was sent, in order."""
+    return [name for name, _args, _kwargs in provider.mock_calls]
 
 
 # ---------------------------------------------------------------------------
@@ -1158,32 +1384,230 @@ async def test_autoplay_is_not_seeded_with_tracks_that_are_not_looked_up(
     radio.get_dynamic_tracks.assert_not_awaited()
 
 
-async def test_queue_with_tracks_not_looked_up_is_not_saved_as_playlist(
-    music: MusicController,
+# ---------------------------------------------------------------------------
+# saving the queue as a playlist
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["save_as_playlist", "add_to_playlist"])
+async def test_saving_the_queue_looks_nothing_up_before_its_task_runs(
+    music: MusicController, command: str
 ) -> None:
-    """Saving the queue is refused, with its reason, while it holds tracks to look up."""
-    spotify = _provider("spotify--1")
-    musicbrainz = _load_providers(music, spotify)
-    ctrl = _controller(music)
-    ctrl._check_player_permission = Mock()
-    ctrl.get = Mock(return_value=ctrl._queue_data[QUEUE_ID].queue)
-    played = _provider_track("spotify--1", "s1")
-    _, not_looked_up = _queue(ctrl, played, _external_track(RECORDING_IDS[1]))
+    """The command hands the queue to the playlist task as it is and returns at once."""
+    service = _service()
+    musicbrainz = _load_providers(music, service)
+    playlist = await _playlist_on(music, service)
+    ctrl = _saving_controller(music)
+    items = _queue(
+        ctrl,
+        _provider_track(SERVICE, "t0"),
+        _external_track(RECORDING_IDS[1]),
+        _external_track(RECORDING_IDS[2]),
+    )
+    handlers = _captured_tasks(music)
 
-    with (
-        patch.object(music.playlists, "create_playlist", AsyncMock()) as create_playlist,
-        patch.object(music.playlists, "add_playlist_tracks", AsyncMock()) as add_tracks,
-        pytest.raises(InvalidDataError) as excinfo,
-    ):
-        await ctrl.save_as_playlist(QUEUE_ID, "Tonight")
+    with patch.object(music.playlists, "create_playlist", AsyncMock(return_value=playlist)):
+        await getattr(ctrl, command)(
+            QUEUE_ID, "Tonight" if command == "save_as_playlist" else playlist.item_id
+        )
 
-    assert excinfo.value.translation_key == "queue_holds_tracks_not_looked_up"
-    assert excinfo.value.translation_owner == "core.player_queues"
-    create_playlist.assert_not_awaited()
-    add_tracks.assert_not_awaited()
+    assert len(handlers) == 1
     musicbrainz.get_recording_details.assert_not_awaited()
-    assert _requests(spotify) == 0
+    assert _requests(service) == 0
+    assert [item.uri for item in items] == [
+        f"{SERVICE}://track/t0",
+        _uri(RECORDING_IDS[1]),
+        _uri(RECORDING_IDS[2]),
+    ]
 
-    # once the track was found, the queue is saved like any other
-    not_looked_up.media_item = _provider_track("spotify--1", "s2")
-    assert ctrl._playlist_uris(QUEUE_ID) == ["spotify--1://track/s1", "spotify--1://track/s2"]
+
+@pytest.mark.parametrize("target", ["builtin", SERVICE])
+async def test_saved_queue_holds_the_tracks_found_in_queue_order(
+    music: MusicController, target: str
+) -> None:
+    """Each track still to look up is looked up on its own, in queue order, and saved there."""
+    lookups: list[str] = []
+    service = _service(lookups=lookups)
+    _knows_recordings(_load_providers(music, service), *RECORDING_IDS[1:4], lookups=lookups)
+    in_library = _provider_track(SERVICE, "lib2")
+    in_library.external_ids.add((ExternalID.MB_RECORDING, RECORDING_IDS[2]))
+    await music.tracks.add_item_to_library(in_library)
+    playlist_provider = _builtin(music) if target == "builtin" else service
+    playlist = await _playlist_on(music, playlist_provider)
+    ctrl = _saving_controller(music)
+    items = _queue(
+        ctrl,
+        _provider_track(SERVICE, "t0"),
+        _external_track(RECORDING_IDS[1]),
+        _provider_track(SERVICE, "t1"),
+        _external_track(RECORDING_IDS[2]),
+        _external_track(RECORDING_IDS[3]),
+    )
+
+    failures = await _save(ctrl, music, playlist)
+
+    assert failures == []
+    assert _saved(playlist_provider) == ["t0", "found1", "t1", "lib2", "found3"]
+    # the library holds the second one, so only the others cost requests, one track at a time
+    assert lookups == [
+        f"details {RECORDING_IDS[1]}",
+        f"lookup {RECORDING_IDS[1]}",
+        f"found {RECORDING_IDS[1]}",
+        f"details {RECORDING_IDS[3]}",
+        f"lookup {RECORDING_IDS[3]}",
+        f"found {RECORDING_IDS[3]}",
+    ]
+    # the queue keeps its items, and finds them again in what the save remembered
+    assert [item.uri for item in (items[1], items[3], items[4])] == [
+        _uri(RECORDING_IDS[1]),
+        _uri(RECORDING_IDS[2]),
+        _uri(RECORDING_IDS[3]),
+    ]
+    assert await _remembered(music, RECORDING_IDS[1]) is not None
+    assert await _remembered(music, RECORDING_IDS[3]) is not None
+
+
+@pytest.mark.parametrize("target", ["builtin", SERVICE])
+async def test_track_no_service_has_is_left_out_of_the_saved_queue(
+    music: MusicController, target: str
+) -> None:
+    """A track no music provider has is reported, and the rest of the queue is saved."""
+    service = _service()
+    # MusicBrainz does not know the first recording, so nothing can be asked for it
+    _knows_recordings(_load_providers(music, service), RECORDING_IDS[2])
+    playlist_provider = _builtin(music) if target == "builtin" else service
+    playlist = await _playlist_on(music, playlist_provider)
+    ctrl = _saving_controller(music)
+    _queue(
+        ctrl,
+        _provider_track(SERVICE, "t0"),
+        _external_track(RECORDING_IDS[1]),
+        _external_track(RECORDING_IDS[2]),
+    )
+
+    failures = await _save(ctrl, music, playlist)
+
+    assert _saved(playlist_provider) == ["t0", "found2"]
+    assert len(failures) == 1
+    assert _uri(RECORDING_IDS[1]) in failures[0]
+
+
+@pytest.mark.parametrize("target", ["builtin", OTHER])
+async def test_track_still_to_look_up_costs_its_lookup_and_nothing_more(
+    music: MusicController, target: str
+) -> None:
+    """Saving costs one lookup per track, plus the match on another service's playlist."""
+    service = _service()
+    other = _service(OTHER, found_as="match")
+    musicbrainz = _load_providers(music, service, other)
+    _knows_recordings(musicbrainz, *RECORDING_IDS[1:4])
+    playlist_provider = _builtin(music) if target == "builtin" else other
+    playlist = await _playlist_on(music, playlist_provider)
+    ctrl = _saving_controller(music)
+    _queue(ctrl, *(_external_track(recording_id) for recording_id in RECORDING_IDS[1:4]))
+
+    failures = await _save(ctrl, music, playlist)
+
+    assert failures == []
+    assert musicbrainz.get_recording_details.await_count == 3
+    # no details of the album or artists of what was found, and no search
+    lookups = ["get_track_by_external_id"] * 3
+    assert _calls(service) == lookups
+    if target == "builtin":
+        assert _saved(playlist_provider) == ["found1", "found2", "found3"]
+        assert _calls(other) == []
+    else:
+        # one match by ISRC on the playlist's service per track
+        assert _saved(playlist_provider) == ["match1", "match2", "match3"]
+        assert _calls(other) == ["get_playlist_tracks", *lookups, "add_playlist_tracks"]
+
+
+@pytest.mark.parametrize("target", ["builtin", SERVICE])
+@pytest.mark.parametrize(
+    "error",
+    [
+        *COULD_NOT_ANSWER,
+        ProviderUnavailableError("Qobuz is temporarily unavailable"),
+        TimeoutError(),
+    ],
+    ids=["retries exhausted", "rate limited", "unavailable", "timeout"],
+)
+async def test_save_a_service_could_not_answer_for_ends_and_runs_again_in_queue_order(
+    music: MusicController, target: str, error: Exception
+) -> None:
+    """A lookup that fails for the moment ends the save; run again, it saves the whole queue."""
+    lookups: list[str] = []
+    could_not_answer = {RECORDING_IDS[2]: error}
+    service = _service(lookups=lookups, could_not_answer=could_not_answer)
+    _knows_recordings(_load_providers(music, service), *RECORDING_IDS[1:4], lookups=lookups)
+    playlist_provider = _builtin(music) if target == "builtin" else service
+    playlist = await _playlist_on(music, playlist_provider)
+    ctrl = _saving_controller(music)
+    _queue(
+        ctrl,
+        _external_track(RECORDING_IDS[1]),
+        _provider_track(SERVICE, "t0"),
+        _external_track(RECORDING_IDS[2]),
+        _external_track(RECORDING_IDS[3]),
+    )
+    handler = await _save_task(ctrl, music, playlist)
+
+    with pytest.raises(MusicAssistantError) as excinfo:
+        await _run_task(music, handler)
+
+    assert error in (excinfo.value, excinfo.value.__cause__)
+    assert _saved(playlist_provider) == []
+    assert lookups == [
+        f"details {RECORDING_IDS[1]}",
+        f"lookup {RECORDING_IDS[1]}",
+        f"found {RECORDING_IDS[1]}",
+        f"details {RECORDING_IDS[2]}",
+        f"lookup {RECORDING_IDS[2]}",
+    ]
+
+    # once the service answers again, the task runs again as a retry of it does
+    could_not_answer.clear()
+    lookups.clear()
+    failures = await _run_task(music, handler)
+
+    assert failures == []
+    assert _saved(playlist_provider) == ["found1", "t0", "found2", "found3"]
+    # the first one is found in what the first run remembered
+    assert lookups == [
+        f"details {RECORDING_IDS[2]}",
+        f"lookup {RECORDING_IDS[2]}",
+        f"found {RECORDING_IDS[2]}",
+        f"details {RECORDING_IDS[3]}",
+        f"lookup {RECORDING_IDS[3]}",
+        f"found {RECORDING_IDS[3]}",
+    ]
+
+
+@pytest.mark.parametrize("target", ["builtin", MINE])
+async def test_saved_queue_is_looked_up_on_the_sources_of_the_user_that_saves_it(
+    music: MusicController, target: str
+) -> None:
+    """The tracks are looked up on the music sources of the user that saves the queue."""
+    theirs, mine = _service(THEIRS), _service(MINE)
+    _knows_recordings(_load_providers(music, theirs, mine), RECORDING_IDS[1])
+    set_music_source_access(
+        music.mass,
+        {
+            "builtin": None,
+            THEIRS: ProviderAccess(owner=OWNER.user_id, sharing=ProviderSharing.PRIVATE),
+            MINE: ProviderAccess(owner=MEMBER.user_id, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    playlist_provider = _builtin(music) if target == "builtin" else mine
+    playlist = await _playlist_on(music, playlist_provider)
+    # the queue plays for the owner, the member saves it
+    ctrl = _saving_controller(music, userid=OWNER.user_id)
+    _queue(ctrl, _external_track(RECORDING_IDS[1]))
+    set_current_user(MEMBER)
+
+    failures = await _save(ctrl, music, playlist)
+
+    assert failures == []
+    assert _saved(playlist_provider) == ["found1"]
+    assert _requests(theirs) == 0
+    mine.get_track_by_external_id.assert_awaited_once()
