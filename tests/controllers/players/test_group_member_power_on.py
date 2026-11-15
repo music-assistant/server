@@ -150,6 +150,11 @@ def _switch_on(
     return AsyncMock(side_effect=_power_on)
 
 
+def _elapsed(started: float) -> float:
+    """Return the time of the clock that passed since a moment, without float noise."""
+    return round(asyncio.get_running_loop().time() - started, 6)
+
+
 def _locked(controller: PlayerController) -> list[str]:
     """Return the keys of the player locks that are held."""
     return [key for key, lock in controller._player_command_locks.items() if lock.locked()]
@@ -195,7 +200,7 @@ async def test_the_switched_off_members_are_powered_on_together_without_a_lock(
     assert _locked(controller) == []
     assert await waiting == set()
     # one boot time, not one per member; the device is looked for every 0.5 s
-    assert BOOT_TIME <= asyncio.get_running_loop().time() - started < BOOT_TIME + 1
+    assert BOOT_TIME <= _elapsed(started) < BOOT_TIME + 1
     assert all(speaker.player.available_for_playback for speaker in setup.speakers.values())
     assert controller._member_power_ons == {}
 
@@ -229,7 +234,7 @@ async def test_a_member_that_stays_away_is_reported_and_logged_once(
         left_out = await setup.controller._power_on_members(setup.group)
 
     assert left_out == {"den"}
-    waited = asyncio.get_running_loop().time() - started
+    waited = _elapsed(started)
     assert OFFLINE_POWER_ON_TIMEOUT <= waited < OFFLINE_POWER_ON_TIMEOUT + 1
     assert [record.getMessage() for record in caplog.records] == [
         "Player Den is left out of Downstairs: Player Den did not come online after powering it on"
@@ -320,7 +325,7 @@ async def test_a_play_on_a_group_that_does_not_play_powers_on_its_members(
         # a group that plays nothing may refuse the command itself
         await setup.controller.cmd_play("downstairs")
 
-    assert asyncio.get_running_loop().time() - started >= BOOT_TIME
+    assert _elapsed(started) >= BOOT_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
@@ -337,7 +342,7 @@ async def test_a_resume_of_a_group_that_plays_already_powers_on_its_members(
         # a group that plays no queue may refuse the command itself
         await setup.controller.cmd_resume("downstairs")
 
-    assert asyncio.get_running_loop().time() - started >= BOOT_TIME
+    assert _elapsed(started) >= BOOT_TIME
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
@@ -504,7 +509,7 @@ async def test_a_member_that_still_boots_gets_the_time_that_is_left_of_its_power
     with caplog.at_level(logging.WARNING):
         assert await controller._power_on_members(setup.group) == {"den"}
 
-    waited = asyncio.get_running_loop().time() - started
+    waited = _elapsed(started)
     assert OFFLINE_POWER_ON_TIMEOUT <= waited < OFFLINE_POWER_ON_TIMEOUT + 1
     assert _above_debug(caplog) == [
         "Player Den is left out of Downstairs: Player Den did not come online after powering it on"
@@ -545,7 +550,7 @@ async def test_a_member_is_waited_for_until_its_own_protocol_is_back(
 
     assert await setup.controller._power_on_members(setup.group) == set()
 
-    assert BOOT_TIME <= asyncio.get_running_loop().time() - started < BOOT_TIME + 1
+    assert BOOT_TIME <= _elapsed(started) < BOOT_TIME + 1
     assert _power_ons(setup) == {"kitchen": 0, "den": 1}
 
 
