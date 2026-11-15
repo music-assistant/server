@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -585,8 +586,14 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
-                    self.logger.warning("Can't add %s to playlist - item not found", uri)
+                except (
+                    MediaNotFoundError,
+                    InvalidDataError,
+                    ProviderUnavailableError,
+                    ResourceTemporarilyUnavailable,
+                    RetriesExhausted,
+                ) as err:
+                    self.logger.warning("Can't add %s to playlist - %s", uri, err)
                     report_current_task_failure(f"Can't add {uri} to playlist: {err}")
                     continue
                 # check dedup against the newly built entry's providers too

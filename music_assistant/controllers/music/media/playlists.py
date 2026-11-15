@@ -34,6 +34,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceBusyError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import Playlist, PlaylistSummary, ProviderMapping, Track
@@ -2049,20 +2050,25 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "AudiobooksController | RadioController | TracksController",
                 self.mass.music.get_controller(media_type),
             )
-            if media_type == MediaType.TRACK:
-                assert isinstance(controller, TracksController)  # for type checking
-                full_item = await controller.get(
-                    item_id,
-                    provider_instance_id_or_domain,
-                    allow_update_metadata=False,
-                    recursive=provider_instance_id_or_domain != "library",
-                )
-            else:
-                full_item = await controller.get(
-                    item_id,
-                    provider_instance_id_or_domain,
-                    allow_update_metadata=False,
-                )
+            try:
+                if media_type == MediaType.TRACK:
+                    assert isinstance(controller, TracksController)  # for type checking
+                    full_item = await controller.get(
+                        item_id,
+                        provider_instance_id_or_domain,
+                        allow_update_metadata=False,
+                        recursive=provider_instance_id_or_domain != "library",
+                    )
+                else:
+                    full_item = await controller.get(
+                        item_id,
+                        provider_instance_id_or_domain,
+                        allow_update_metadata=False,
+                    )
+            except (MediaNotFoundError, ResourceTemporarilyUnavailable, RetriesExhausted) as err:
+                self.logger.warning("Can't add %s to playlist %s - %s", uri, playlist.name, err)
+                report_current_task_failure(f"Can't add {uri} to playlist: {err}")
+                continue
             track_prov_domains = {x.provider_domain for x in full_item.provider_mappings}
             if (
                 playlist_prov.is_streaming_provider
