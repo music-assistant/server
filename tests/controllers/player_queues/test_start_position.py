@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.enums import QueueOption
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Audiobook, ProviderMapping
 
@@ -68,7 +67,6 @@ async def test_a_start_position_needs_one_item_it_can_start(
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
     ctrl.mass.players._resolve_playback_owner = lambda player: player  # plays on its own
     ctrl._check_player_permission = MagicMock()
-    ctrl._get_default_play_option = AsyncMock(return_value=QueueOption.PLAY)
     ctrl.get = MagicMock(return_value=MagicMock())
     ctrl._handle_play_media = AsyncMock()
 
