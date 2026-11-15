@@ -32,7 +32,6 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
-    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -54,6 +53,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
+    EXTERNAL_ID_PROVIDER,
     GENRE_ICONS_DIR_NAME,
     MASS_LOGO,
     PLAYLIST_MEDIA_TYPES,
@@ -586,14 +586,8 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except (
-                    MediaNotFoundError,
-                    InvalidDataError,
-                    ProviderUnavailableError,
-                    ResourceTemporarilyUnavailable,
-                    RetriesExhausted,
-                ) as err:
-                    self.logger.warning("Can't add %s to playlist - %s", uri, err)
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
+                    self.logger.warning("Can't add %s to playlist - item not found", uri)
                     report_current_task_failure(f"Can't add {uri} to playlist: {err}")
                     continue
                 # check dedup against the newly built entry's providers too
@@ -2005,7 +1999,16 @@ class BuiltinProvider(MusicProvider):
 
     async def _build_m3u_entry_from_uri(self, uri: str) -> PlaylistItem:
         """Fetch a media item by URI and convert it to a PlaylistItem with full metadata."""
-        full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
+        full_item: MediaItemType | BrowseFolder
+        if uri.startswith(f"{EXTERNAL_ID_PROVIDER}://"):
+            # a track known only by an external id costs its lookup and nothing more: the
+            # entry takes the names of its album and artists as the lookup found them
+            _, _, item_id = await parse_uri(uri)
+            full_item = await self.mass.music.tracks.get(
+                item_id, EXTERNAL_ID_PROVIDER, allow_update_metadata=False, recursive=False
+            )
+        else:
+            full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
         if not isinstance(full_item, MediaItem):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)

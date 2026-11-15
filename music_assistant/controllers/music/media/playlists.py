@@ -34,13 +34,19 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     ResourceBusyError,
     ResourceTemporarilyUnavailable,
-    RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
-from music_assistant_models.media_items import Playlist, PlaylistSummary, ProviderMapping, Track
+from music_assistant_models.media_items import (
+    Album,
+    Playlist,
+    PlaylistSummary,
+    ProviderMapping,
+    Track,
+)
 
 from music_assistant.constants import (
     DB_TABLE_PLAYLISTS,
+    EXTERNAL_ID_PROVIDER,
     HOMEASSISTANT_SYSTEM_USER,
     PLAYLIST_MEDIA_TYPES,
     PlaylistPlayableItem,
@@ -1995,8 +2001,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
             if playlist_prov.domain == "builtin":
-                # it stores the uri as given, so one naming a source the user may not see is
-                # left out here (it resolves the items itself, as this user, when read)
+                # it takes the uri as given, so one naming a source the user may not see is
+                # left out here (it resolves the items itself, as this user)
                 _, provider_instance_id_or_domain, _ = await parse_uri(uri)
                 if provider_instance_id_or_domain in hidden_sources:
                     self.logger.warning(
@@ -2050,38 +2056,54 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "AudiobooksController | RadioController | TracksController",
                 self.mass.music.get_controller(media_type),
             )
-            try:
-                if media_type == MediaType.TRACK:
-                    assert isinstance(controller, TracksController)  # for type checking
-                    full_item = await controller.get(
-                        item_id,
-                        provider_instance_id_or_domain,
-                        allow_update_metadata=False,
-                        recursive=provider_instance_id_or_domain != "library",
+            # a track known only by an external id costs its lookup and nothing more
+            looked_up: Track | None = None
+            if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
+                try:
+                    looked_up = await self.mass.music.tracks.get(
+                        item_id, EXTERNAL_ID_PROVIDER, allow_update_metadata=False, recursive=False
                     )
-                else:
-                    full_item = await controller.get(
-                        item_id,
-                        provider_instance_id_or_domain,
-                        allow_update_metadata=False,
-                    )
-            except (MediaNotFoundError, ResourceTemporarilyUnavailable, RetriesExhausted) as err:
-                self.logger.warning("Can't add %s to playlist %s - %s", uri, playlist.name, err)
-                report_current_task_failure(f"Can't add {uri} to playlist: {err}")
-                continue
+                except MediaNotFoundError as err:
+                    self.logger.warning("Can't add %s to playlist %s - %s", uri, playlist.name, err)
+                    report_current_task_failure(f"Can't add {uri} to playlist: {err}")
+                    continue
+                full_item = looked_up
+            elif media_type == MediaType.TRACK:
+                assert isinstance(controller, TracksController)  # for type checking
+                full_item = await controller.get(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    allow_update_metadata=False,
+                    recursive=provider_instance_id_or_domain != "library",
+                )
+            else:
+                full_item = await controller.get(
+                    item_id,
+                    provider_instance_id_or_domain,
+                    allow_update_metadata=False,
+                )
             track_prov_domains = {x.provider_domain for x in full_item.provider_mappings}
             if (
                 playlist_prov.is_streaming_provider
                 and playlist_prov.domain not in track_prov_domains
             ):
                 # try to match the track to the playlist's provider
-                full_item.provider_mappings.update(
-                    await controller.match_provider(
+                if looked_up is not None:
+                    # the album the lookup found is the reference, so no album search runs
+                    album = looked_up.album
+                    matches = await self.mass.music.tracks.match_provider(
+                        looked_up,
+                        playlist_prov,
+                        strict=False,
+                        ref_albums=[album] if isinstance(album, Album) else [],
+                    )
+                else:
+                    matches = await controller.match_provider(
                         full_item,  # type: ignore[arg-type]
                         playlist_prov,
                         strict=False,
                     )
-                )
+                full_item.provider_mappings.update(matches)
 
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
