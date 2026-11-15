@@ -554,6 +554,9 @@ class _PlayingQueues:
     def on_player_update(self, player: Player, changed_values: dict[str, tuple[Any, Any]]) -> None:
         """Ignore the player updates."""
 
+    def _drop_pending_step(self, queue_id: str) -> None:
+        """Hold no step to drop."""
+
 
 @handle_play_action
 async def _play_on_queue(self: PlayerQueuesController, queue_id: str) -> None:

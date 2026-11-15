@@ -747,6 +747,9 @@ class AnnouncementsMixin(_PlayerControllerBase):
             for volume_player_id in player.group_members or (player.player_id,):
                 if not (volume_player := self.get_player(volume_player_id)):
                     continue
+                if volume_player.offline_by_power_control:
+                    # a member that is switched off does not play the announcement
+                    continue
                 # catch any players that have a different source active
                 if (
                     volume_player.active_source

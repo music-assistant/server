@@ -20,6 +20,10 @@ PLAYER_LOCK_OWNER_ATTEMPTS: Final = 3
 # one that keeps finding a busy player fails as busy instead of waiting on.
 PLAYER_LOCKS_ATTEMPTS: Final = 3
 
+# How long a power on through an external power control waits for a device that was
+# switched off at that control to come online.
+OFFLINE_POWER_ON_TIMEOUT: Final = 90
+
 
 class PlayerLockPurpose(StrEnum):
     """Lock categories for get_player_lock to serialize commands per player."""

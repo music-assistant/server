@@ -597,7 +597,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                             "Items added to queue while idle, resuming playback for %s",
                             queue.display_name,
                         )
-                        await self.play_index(queue.queue_id, next_index)
+                        with self.mass.players.without_member_power_on():
+                            await self.play_index(queue.queue_id, next_index)
                     return
             # If the queue was started from a dynamic source, fetch fresh tracks and continue.
             dynamic_source = find_dynamic_source(queue_data)
@@ -647,7 +648,8 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                                     queue.queue_id, next_item.queue_item_id
                                 )
                                 if next_index is not None:
-                                    await self.play_index(queue.queue_id, next_index)
+                                    with self.mass.players.without_member_power_on():
+                                        await self.play_index(queue.queue_id, next_index)
                                     return
                 except MusicAssistantError as err:
                     self.logger.warning(

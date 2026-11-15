@@ -2148,6 +2148,38 @@ class TestPlayMediaOverride:
         assert played_on == ["g1"]
 
     @pytest.mark.asyncio
+    async def test_override_disabled_redirects_a_player_that_joins_a_group_meanwhile(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """With override disabled, a player a group takes while play_media waits is redirected."""
+        controller, group, protocol, member = self._captured_member(mock_mass)
+        protocol._attr_group_members = []
+        _refresh(group, member)
+        assert member.active_group is None
+        _set_play_media_override(mock_mass, False)
+
+        played_on: list[str] = []
+
+        async def _handle_play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            played_on.append(player_id)
+
+        controller._handle_play_media = _handle_play_media  # type: ignore[method-assign]
+
+        media = MagicMock(uri="x", source_id="src")
+        with patch.object(controller, "_release_player_for_play_media") as release:
+            async with _lock_held_elsewhere(controller, "member"):
+                play = asyncio.create_task(controller.play_media("member", media))
+                await _yield_to_loop()
+                # the group takes the player while the command waits for the player's lock
+                protocol._attr_group_members = ["member"]
+                _refresh(group, member)
+            await play
+
+        # the media goes to the group, and the player is not taken out of it
+        assert played_on == ["g1"]
+        release.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_override_releases_dynamic_member(self, mock_mass: MagicMock) -> None:
         """With override enabled, play_media on a dynamic group member releases it first."""
         # NOT a static member ⇒ dynamic — can be removed via set_members
@@ -3296,11 +3328,11 @@ class TestOfflinePowerControl:
 
         cast("AsyncMock", control.power_on).assert_not_awaited()
 
-    async def test_switched_off_player_is_not_added_to_a_group(
+    async def test_switched_off_player_is_powered_on_and_added_once_it_is_online(
         self, mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Grouping skips a member that is only available through its power control."""
-        controller, player, protocol, _control = self._setup(mock_mass)
+        """Grouping powers on a member that is switched off at its power control, then adds it."""
+        controller, player, protocol, control = self._setup(mock_mass)
         leader, leader_protocol = _attach(
             cast("MockProvider", protocol.provider), "leader", "Leader"
         )
@@ -3312,8 +3344,31 @@ class TestOfflinePowerControl:
         with caplog.at_level(logging.WARNING):
             await controller.cmd_set_members("leader", player_ids_to_add=["player_1"])
 
+        cast("AsyncMock", control.power_on).assert_awaited_once()
+        assert _proto("player_1") in leader_protocol.group_members
+        assert caplog.text == ""
+
+    async def test_switched_off_player_that_stays_away_is_not_added_to_a_group(
+        self, mock_mass: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A member that does not come online is left out of the group, which is logged once."""
+        controller, _player, protocol, control = self._setup(mock_mass, comes_online=False)
+        leader, leader_protocol = _attach(
+            cast("MockProvider", protocol.provider), "leader", "Leader"
+        )
+        leader_protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader_protocol._attr_can_group_with = {_proto("player_1")}
+        _refresh(leader)
+
+        with caplog.at_level(logging.WARNING):
+            await controller.cmd_set_members("leader", player_ids_to_add=["player_1"])
+
+        cast("AsyncMock", control.power_on).assert_awaited_once()
         assert _proto("player_1") not in leader_protocol.group_members
-        assert "Player player_1 is not available" in caplog.text
+        assert [record.getMessage() for record in caplog.records] == [
+            "Player Player 1 is left out of Leader: "
+            "Player Player 1 did not come online after powering it on"
+        ]
 
     def test_going_offline_with_its_control_detaches_a_synced_player(
         self, mock_mass: MagicMock

@@ -15,12 +15,15 @@ from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
+from music_assistant.controllers.players.constants import OFFLINE_POWER_ON_TIMEOUT
 from music_assistant.controllers.players.controller import PlayerController
 from music_assistant.controllers.players.helpers import handle_player_command
 from music_assistant.controllers.streams import live_announcements
+from music_assistant.controllers.streams.announcements import MAX_CLIP_SECONDS
 from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_ROUTE,
     MAX_CLOSE_REASON_BYTES,
@@ -252,6 +255,13 @@ async def test_a_player_that_never_finishes_is_not_waited_on_forever(
 
     assert await _reply(ws) == "error"
     assert harness.manager.active_sessions == 0
+
+
+def test_the_deadline_leaves_the_time_of_a_clip_after_a_power_on() -> None:
+    """A player that takes its full time to come online still has the time to play the clip."""
+    assert (
+        live_announcements.ANNOUNCEMENT_TIMEOUT - OFFLINE_POWER_ON_TIMEOUT == MAX_CLIP_SECONDS + 60
+    )
 
 
 @pytest.mark.asyncio
@@ -502,7 +512,7 @@ async def test_an_unavailable_player_is_rejected(harness: Harness) -> None:
     The command for such a player is silently dropped downstream, which would leave
     the client believing its announcement played.
     """
-    harness.player.available_for_playback = False
+    harness.player.available = False
 
     ws = await _start_speaking(harness.client)
 
@@ -511,10 +521,43 @@ async def test_an_unavailable_player_is_rejected(harness: Harness) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_player_switched_off_at_its_power_control_is_accepted(harness: Harness) -> None:
+    """A player that is switched off at its power control takes the clip: it is powered on."""
+    _switch_off(harness.player)
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+
+    assert await _reply(ws) == "finished"
+    harness.mass.players.play_announcement.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_power_on_that_fails_is_reported_and_not_as_finished(harness: Harness) -> None:
+    """A switched-off player that does not come online is reported with the reason."""
+    _switch_off(harness.player)
+    harness.mass.players.play_announcement = AsyncMock(
+        side_effect=PlayerUnavailableError("Player Kitchen did not come online")
+    )
+
+    ws = await _start_speaking(harness.client)
+    assert await _reply(ws) == "started"
+    await ws.send_bytes(b"\x01\x02")
+    await ws.send_str('{"type": "stop"}')
+
+    message = await asyncio.wait_for(ws.receive_json(), timeout=REPLY_TIMEOUT)
+    assert message == {"type": "error", "message": "Player Kitchen did not come online"}
+    assert harness.manager.active_sessions == 0
+
+
+@pytest.mark.asyncio
 async def test_a_player_that_still_needs_setup_is_rejected(harness: Harness) -> None:
     """A player whose device answers but still has to be set up can not take the clip."""
     player, protocol = _device_player()
     protocol._attr_needs_setup = True
+    player.update_state(signal_event=False, force_update=True)
     harness.mass.players.get_player.side_effect = lambda _player_id: player
 
     ws = await _start_speaking(harness.client)
@@ -534,6 +577,7 @@ async def test_a_player_that_needs_setup_once_the_clip_is_spoken_is_reported(
     assert await _reply(ws) == "started"
 
     protocol._attr_needs_setup = True
+    player.update_state(signal_event=False, force_update=True)
     await ws.send_bytes(b"\x01\x02")
     await ws.send_str('{"type": "stop"}')
 
@@ -590,17 +634,24 @@ def _player() -> MagicMock:
     player = MagicMock()
     player.player_id = PLAYER_ID
     player.name = "Kitchen"
-    player.available_for_playback = True
+    player.available = True
     player.offline_by_power_control = False
     # a shared speaker: none of its protocols is the private client player of a user
     player.attached_protocols = {}
     return player
 
 
+def _switch_off(player: MagicMock) -> None:
+    """Let a player be switched off at its power control: available, its device away."""
+    player.offline_by_power_control = True
+
+
 def _device_player() -> tuple[Player, MockProtocol]:
     """Return a real player with the protocol of a device that is reachable and set up."""
     provider = MockProvider("airplay", mass=mock_player_mass())
-    return attach_mock(provider, "ap_kitchen", "Kitchen", player_id=PLAYER_ID)
+    player, protocol = attach_mock(provider, "ap_kitchen", "Kitchen", player_id=PLAYER_ID)
+    player.update_state(signal_event=False, force_update=True)
+    return player, protocol
 
 
 def _announce_through_player_commands(harness: Harness) -> list[tuple[str, User | None]]:

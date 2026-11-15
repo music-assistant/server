@@ -44,7 +44,7 @@ class SyncGroupProvider(PlayerProvider):
         can_group_with: set[str] = set()
         for member_id in members:
             member = self.mass.players.get_player(member_id)
-            if member is None or not member.available_for_playback:
+            if member is None or not member.available or member.offline_by_power_control:
                 continue
             if not can_group_with:
                 # first member, add all its compatible players to the can_group_with set

@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlaybackState,
+    PlayerType,
     ProviderFeature,
     ProviderType,
     QueueOption,
@@ -189,6 +190,7 @@ class _Rig:
         )
         self.players[queue_id] = SimpleNamespace(
             player_id=queue_id,
+            type=PlayerType.PLAYER,
             playback_state=state,
             active_source=queue_id,
             extra_data={},

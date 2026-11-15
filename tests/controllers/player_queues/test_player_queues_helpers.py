@@ -321,6 +321,8 @@ class _FakeController:
             for queue_id, queue in queues.items()
         }
         self.calls: list[str] = []
+        # the queues whose pending step was dropped
+        self.dropped: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
         self.calls.append(f"signal:{queue_id}")
@@ -329,6 +331,9 @@ class _FakeController:
         self, player: _FakePlayer, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
         self.calls.append(f"refresh:{player.player_id}")
+
+    def _drop_pending_step(self, queue_id: str) -> None:
+        self.dropped.append(queue_id)
 
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
@@ -373,6 +378,12 @@ async def _record_while_playing(
     """Stand in for an action that starts playback, recording the flag and refcount of its queue."""
     sink.append((_flag_value(self, queue_id), self._queue_data[queue_id].play_action_refcount))
     return "playing"
+
+
+@handle_play_action(starts_unless_playing=True)
+async def _seek(self: PlayerQueuesController, queue_id: str) -> str:  # noqa: ARG001
+    """Stand in for an action that makes a queue that does not play start playing."""
+    return "seeked"
 
 
 @handle_play_action(switched_off=SwitchedOffAction.IGNORE)
@@ -469,6 +480,24 @@ class TestHandlePlayAction:
         assert await _start_playback(cast("PlayerQueuesController", ctrl), "q1") == "playing"
 
         assert players.powered_on == [("q1", False)]
+
+    async def test_a_start_or_a_seek_drops_a_pending_step_when_it_arrives(self) -> None:
+        """An action that starts playback or seeks drops a pending step, another one does not."""
+        ctrl = _FakeController({"q1": _FakeQueue()})
+        host = cast("PlayerQueuesController", ctrl)
+        _switched_off(ctrl, "q1")
+
+        assert await _ignored(host, "q1") is None
+        assert await _run_as_is(host, "q1") == "ran"
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await _flag_during(host, "q1", [])
+        assert ctrl.dropped == []
+
+        with pytest.raises(PlayerUnavailableError, match="switched off"):
+            await _seek(host, "q1")
+        assert ctrl.dropped == ["q1"]
+        assert await _start_playback(host, "q1") == "playing"
+        assert ctrl.dropped == ["q1", "q1"]
 
     async def test_a_queue_registered_anew_during_the_power_on_is_flagged(
         self, monkeypatch: pytest.MonkeyPatch

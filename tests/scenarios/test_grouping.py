@@ -15,7 +15,15 @@ from music_assistant_models.errors import (
 
 from tests.common import as_user
 
-from .harness import DEFAULT_FEATURES, TEST_TRACK_URI, FakePlayerProvider, FakeProtocol, Scenario
+from .harness import (
+    DEFAULT_FEATURES,
+    MUSIC_PROVIDER,
+    TEST_TRACK_URI,
+    FakePlayerProvider,
+    FakePowerControl,
+    FakeProtocol,
+    Scenario,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.player import Player as PlayerState
@@ -443,6 +451,57 @@ async def _stop(scenario: Scenario, player_id: str) -> None:
     await scenario.advance(10)
     await stop
     await scenario.idle()
+
+
+async def _switch_off(scenario: Scenario, speaker: FakeProtocol) -> FakePowerControl:
+    """
+    Put a speaker on a smart plug and switch the plug off, which takes its device off the network.
+
+    Its player then shows as available and powered off.
+
+    :param speaker: The speaker, which is registered.
+    :return: The plug.
+    """
+    plug = await scenario.add_power_control(
+        f"switch.{speaker.protocol_id}_plug", f"{speaker.protocol_id} plug", powered=True
+    )
+    await scenario.configure_player(_player_id(scenario, speaker), power_control=plug.control_id)
+    await scenario.switch(plug, False)
+    await scenario.unregister(speaker)
+    await scenario.idle()
+    return plug
+
+
+async def _come_back(scenario: Scenario, speaker: FakeProtocol) -> None:
+    """Let the device of a speaker that was switched on come back on the network."""
+    await scenario.register(speaker)
+    # a power on looks for the device every 0.5 s
+    await scenario.advance(1)
+
+
+async def _load_music(scenario: Scenario) -> None:
+    """Load the music provider a play request plays from, as Scenario.play() does."""
+    if scenario.mass.get_provider(MUSIC_PROVIDER) is None:
+        await scenario.mass.config._create_provider_instance(MUSIC_PROVIDER, {})
+        await scenario.settle()
+
+
+async def _group(
+    scenario: Scenario, group_type: str, *member_ids: str, dynamic: bool = True
+) -> str:
+    """
+    Create the group Downstairs of the given players and return its id.
+
+    :param group_type: ``"sync_group"`` or ``"universal_group"``.
+    :param dynamic: Whether its members can change; else it has a fixed member list.
+    """
+    if scenario.mass.get_provider(group_type) is None:
+        await scenario.mass.config._create_provider_instance(group_type, {})
+    group = await scenario.mass.players.create_group_player(
+        group_type, "Downstairs", list(member_ids), dynamic=dynamic
+    )
+    await scenario.idle()
+    return group.player_id
 
 
 async def test_a_sync_group_groups_its_members_on_a_leader_when_it_plays(

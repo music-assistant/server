@@ -59,6 +59,11 @@ if TYPE_CHECKING:
     from .provider import SyncGroupProvider
 
 
+def _is_online(player: Player) -> bool:
+    """Return whether a player takes part and its device is on the network."""
+    return player.available and not player.offline_by_power_control
+
+
 class SyncGroupPlayer(PlayerProtocol):
     """Sync Group Player implementation."""
 
@@ -185,7 +190,7 @@ class SyncGroupPlayer(PlayerProtocol):
         # group. A dormant group derives all of its features from the configured members.
         for member_id in self.group_members:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.available_for_playback:
+            if member_player and _is_online(member_player):
                 for feature in member_features:
                     if feature in member_player.supported_features:
                         base_features.add(feature)
@@ -258,7 +263,7 @@ class SyncGroupPlayer(PlayerProtocol):
         can_group_with: set[str] = set()
         for member_id in member_ids:
             member_player = self.mass.players.get_player(member_id)
-            if not member_player or not member_player.available_for_playback:
+            if not member_player or not _is_online(member_player):
                 continue
             if not member_player.can_group_with and member_player.synced_to:
                 # slaved: its compatibility list is empty for now, it can tell us nothing
@@ -277,7 +282,7 @@ class SyncGroupPlayer(PlayerProtocol):
         group_player_id = self.player.player_id if self.player else None
         can_group_with = set()
         for player in self.mass.players.iter_players(return_unavailable=False):
-            if not player.available_for_playback or player.type == PlayerType.GROUP:
+            if not _is_online(player) or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
                 continue
             if PlayerFeature.SET_MEMBERS not in player.supported_features:
@@ -629,7 +634,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 )
                 continue
             member = self.mass.players.get_player(member_id)
-            if member is None or not member.available_for_playback:
+            if member is None or not _is_online(member):
                 continue
             if not sync_leader:
                 # no leader yet (e.g. empty group) - just register the member
@@ -919,7 +924,7 @@ class SyncGroupPlayer(PlayerProtocol):
                     if member_id == leader.player_id or member_id in leader.can_group_with:
                         continue
                     member = self.mass.players.get_player(member_id)
-                    if member is None or not member.available_for_playback:
+                    if member is None or not _is_online(member):
                         continue
                     self.logger.warning(
                         "Removing %s from group %s: it can not be grouped with %s",
@@ -1044,9 +1049,7 @@ class SyncGroupPlayer(PlayerProtocol):
                             )
                     except Exception as err:
                         self.logger.log(
-                            logging.WARNING
-                            if group_leader.available_for_playback
-                            else logging.DEBUG,
+                            logging.WARNING if _is_online(group_leader) else logging.DEBUG,
                             "Could not ungroup the members of %s while dissolving group %s: %s",
                             group_leader.name,
                             self.display_name,
@@ -1087,7 +1090,7 @@ class SyncGroupPlayer(PlayerProtocol):
             collection (e.g. the ones a live session already feeds). Outranks
             ``preferred_protocol_domain``.
         """
-        if self.group_members and self.sync_leader and self.sync_leader.available_for_playback:
+        if self.group_members and self.sync_leader and _is_online(self.sync_leader):
             # current leader is still available, no need to select a new one
             return self.sync_leader
         # with selecting a new leader, we prioritize the static group members
@@ -1097,7 +1100,7 @@ class SyncGroupPlayer(PlayerProtocol):
             member_player
             for member_id in group_members
             if (member_player := self.mass.players.get_player(member_id))
-            and member_player.available_for_playback
+            and _is_online(member_player)
             and member_player.type in PLAYBACK_TARGET_TYPES
         ]
         preferred_ids = set(preferred_member_ids or ())
@@ -1189,7 +1192,7 @@ class SyncGroupPlayer(PlayerProtocol):
         """
         for member_id in self._attr_group_members:
             member = self.mass.players.get_player(member_id)
-            if member is None or not member.available_for_playback:
+            if member is None or not _is_online(member):
                 continue
             paths = member.playback_domains
             if paths and domain not in paths:
@@ -1248,7 +1251,7 @@ class SyncGroupPlayer(PlayerProtocol):
             if member_id == sync_leader.player_id:
                 continue
             member = self.mass.players.get_player(member_id)
-            if member is None or not member.available_for_playback:
+            if member is None or not _is_online(member):
                 continue
             # a leader always lists itself alongside its members; only adopt one that
             # holds members of this group, never a group formed outside of MA
@@ -1367,7 +1370,7 @@ class SyncGroupPlayer(PlayerProtocol):
                 await self.mass.players._handle_cmd_stop(leader.player_id)
         except Exception as err:
             self.logger.log(
-                logging.WARNING if leader.available_for_playback else logging.DEBUG,
+                logging.WARNING if _is_online(leader) else logging.DEBUG,
                 "Could not stop departing leader %s of group %s: %s",
                 leader.name,
                 self.display_name,
@@ -1389,7 +1392,7 @@ class SyncGroupPlayer(PlayerProtocol):
         :param timeout: Seconds to wait for the first state propagation.
         """
         member = self.mass.players.get_player(member_id)
-        if member is None or not member.available_for_playback:
+        if member is None or not _is_online(member):
             # a member that is gone can neither report the unsync nor be released
             return True
         async with self.mass.players.wait_for_player_update(
