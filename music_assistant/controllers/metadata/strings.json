@@ -14,7 +14,7 @@
     },
     "prefer_local_genres": {
       "label": "Use local genre metadata only when available",
-      "description": "When enabled, online metadata sources will not add genres to items that already have a genre from a local source such as a file tag or NFO file. Items with no local genre still receive genres from online providers as usual."
+      "description": "When enabled, online metadata sources will not add genres to items that already have a genre from a local source such as a file tag or NFO file. Items with no local genre still receive genres from online metadata sources as usual."
     },
     "enable_radio_metadata_lookup": {
       "label": "Enable artist/track artwork lookup for radio streams",
