@@ -14,6 +14,7 @@ import asyncio
 import logging
 import struct
 from collections.abc import AsyncGenerator, Callable
+from dataclasses import replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -664,6 +665,34 @@ async def test_the_hello_offers_volume_and_no_mute(rig: _Rig) -> None:
     (audio_format,) = hello.player_support.supported_formats
     assert (audio_format.codec, audio_format.sample_rate) == (AudioCodec.PCM, 44100)
     assert (audio_format.bit_depth, audio_format.channels) == (16, 2)
+
+
+async def test_the_client_is_renamed_with_its_player(rig: _Rig) -> None:
+    """A player reports its name after it connected: its Sendspin client takes it over."""
+    rig.protocol.display_name = "squeezeplay: aa:bb:cc:dd:ee:ff"
+    await rig.manager.evaluate_bridge(rig.protocol)
+    client = rig.sendspin_client
+    hello = client.info
+    assert hello.name == "squeezeplay: aa:bb:cc:dd:ee:ff (Squeezelite)"
+    client.name = hello.name
+    player = MagicMock(attached_protocols={PLAYER_ID: rig.protocol, "other": MagicMock()})
+
+    rig.protocol.display_name = "Kitchen"
+    rig.manager._on_player_state_updated(player, {"name": (hello.name, "Kitchen")})
+
+    client.refresh_identity_from_hello.assert_called_once_with(
+        replace(hello, name="Kitchen (Squeezelite)"),
+        negotiated_roles=client.negotiated_role_ids,
+    )
+    # the hello is the one of the bridge otherwise: its formats are what its role plays
+    assert client.refresh_identity_from_hello.call_args.args[0].player_support is (
+        hello.player_support
+    )
+    # a name the client has already is no news, nor is anything else about the player
+    client.name = "Kitchen (Squeezelite)"
+    rig.manager._on_player_state_updated(player, {"name": ("Kitchen", "Kitchen")})
+    rig.manager._on_player_state_updated(player, {"volume_level": (20, 30)})
+    assert client.refresh_identity_from_hello.call_count == 1
 
 
 async def test_the_role_is_set_up_for_the_player(rig: _Rig) -> None:

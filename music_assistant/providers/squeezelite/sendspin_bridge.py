@@ -413,7 +413,7 @@ class SendspinSqueezeliteBridge:
 
         hello = ClientHelloPayload(
             client_id=bridge_client_id,
-            name=f"{self.protocol.display_name} (Squeezelite)",
+            name=self._client_name,
             version=1,
             # While the player@v1 role will never be used for bridges, it is required by
             # aiosendspin to parse the player@v1_support/ClientHelloPlayerSupport object
@@ -518,6 +518,20 @@ class SendspinSqueezeliteBridge:
         """
         self._schedule_rejoin(group, RECONNECT_REJOIN_DELAYS)
 
+    def update_name(self) -> None:
+        """
+        Give the Sendspin client of the bridge the name its player has now.
+
+        A slimproto player reports its name only after it connected, and its player can
+        be renamed. Sendspin shows the name of the client, also as that of its group.
+        """
+        if (client := self._sendspin_client) is None or client.name == self._client_name:
+            return
+        client.refresh_identity_from_hello(
+            replace(client.info, name=self._client_name),
+            negotiated_roles=client.negotiated_role_ids,
+        )
+
     def transport_command_target(self) -> str | None:
         """
         Return the player whose Sendspin session controls the player of the bridge.
@@ -614,6 +628,11 @@ class SendspinSqueezeliteBridge:
     def _client(self) -> SlimClient:
         """Return the slimproto client of the player."""
         return self.protocol.client
+
+    @property
+    def _client_name(self) -> str:
+        """Return the name of the Sendspin client of the bridge."""
+        return f"{self.protocol.display_name} (Squeezelite)"
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """
@@ -1277,7 +1296,11 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
     def _on_player_state_updated(
         self, updated_player: Player, changed_values: dict[str, tuple[Any, Any]]
     ) -> None:
-        """Re-evaluate the bridges of a player's squeezelite protocols when its outputs change."""
+        """Follow a player with the bridges of its squeezelite protocols: its name and its outputs."""
+        if "name" in changed_values:
+            for protocol_id in updated_player.attached_protocols:
+                if bridge := self._bridges.get(protocol_id):
+                    bridge.update_name()
         if not changed_values.keys() & _BRIDGE_POLICY_STATE_FIELDS:
             return
         for protocol in list(updated_player.attached_protocols.values()):

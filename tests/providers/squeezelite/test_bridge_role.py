@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import struct
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
@@ -21,7 +22,7 @@ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFo
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.trust_store import InMemoryServerPairingStore
-from aiosendspin.server import SendspinServer
+from aiosendspin.server import ClientUpdatedEvent, SendspinServer
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from music_assistant_models.enums import ContentType, MediaType
@@ -160,6 +161,32 @@ async def test_sendspin_makes_this_role_for_a_bridge_client(server: SendspinServ
     assert [(fmt.sample_rate, fmt.bit_depth) for fmt in role.get_supported_formats() or []] == (
         FORMATS
     )
+
+
+async def test_a_hello_with_another_name_renames_the_client_and_keeps_its_role(
+    server: SendspinServer,
+) -> None:
+    """What a bridge counts on when its player gets another name: only the name changes."""
+    client, role = _registered(server)
+    assert role.set_preferred_format(_pcm(48000, 24), AudioCodec.PCM)
+    events: list[object] = []
+    server.add_event_listener(lambda _server, event: events.append(event))
+    assert client.group.group_name == "Kitchen"
+
+    client.refresh_identity_from_hello(
+        replace(client.info, name="Living room"), negotiated_roles=client.negotiated_role_ids
+    )
+
+    assert client.name == "Living room"
+    # the name other Sendspin clients show for the group it founded
+    assert client.group.group_name == "Living room"
+    assert client.roles_by_family("player") == [role]
+    assert _plays(role) == (48000, 24, 2)
+    assert [(fmt.sample_rate, fmt.bit_depth) for fmt in role.get_supported_formats() or []] == (
+        FORMATS
+    )
+    # which is what makes the Sendspin provider rename its protocol
+    assert ClientUpdatedEvent(client.client_id) in events
 
 
 def test_the_role_plays_the_first_format_of_the_hello_by_default() -> None:
