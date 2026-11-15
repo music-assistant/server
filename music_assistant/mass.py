@@ -1478,16 +1478,10 @@ class MusicAssistant:
                 continue
             if not (manifest := self._provider_manifests.get(default_provider)):
                 continue
-            if require_mdns:
-                # if mdns discovery is required, check if we have seen any mdns entries
-                # for this provider before setting it up
-                for mdns_name in set(self.discovery.aiozc.zeroconf.cache.cache):
-                    if manifest.mdns_discovery and any(
-                        mdns_type in mdns_name for mdns_type in manifest.mdns_discovery
-                    ):
-                        break
-                else:
-                    continue
+            # if mdns discovery is required, check if we have seen any mdns entries
+            # for this provider before setting it up
+            if require_mdns and not self.discovery.is_seen_on_mdns(manifest):
+                continue
             # A config the user enabled by hand before this became a default is not an auto setup.
             if await self.config.create_builtin_provider_config(manifest.domain):
                 newly_created_defaults.add(manifest.domain)

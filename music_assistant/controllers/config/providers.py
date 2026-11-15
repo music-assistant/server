@@ -700,6 +700,24 @@ class ProviderConfigMixin:
         ):
             entry.value = value
 
+    def can_add_provider(self, manifest: ProviderManifest) -> bool:
+        """
+        Return whether the calling user may add an instance of the given provider.
+
+        :param manifest: The manifest of the provider.
+        """
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            return True
+        # a member may only add what becomes a music source of its own: a music
+        # service that allows more than one account and lets members set it up
+        return (
+            manifest.type == ProviderType.MUSIC
+            and not manifest.builtin
+            and manifest.multi_instance
+            and manifest.self_service
+        )
+
     @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def _reload_provider(self, instance_id: str) -> None:
         """
@@ -929,17 +947,7 @@ class ProviderConfigMixin:
 
     def _check_provider_setup_permission(self, manifest: ProviderManifest) -> None:
         """Raise when the calling user may not add an instance of the given provider."""
-        user, manages_all_sources = self._access_caller()
-        if user is None or manages_all_sources:
-            return
-        # a member may only add what becomes a music source of its own: a music
-        # service that allows more than one account and lets members set it up
-        if (
-            manifest.type != ProviderType.MUSIC
-            or manifest.builtin
-            or not manifest.multi_instance
-            or not manifest.self_service
-        ):
+        if not self.can_add_provider(manifest):
             raise InsufficientPermissions(
                 f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to add {manifest.name}"
             )

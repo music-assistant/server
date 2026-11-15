@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
 
@@ -250,6 +251,20 @@ class DiscoveryController(CoreController):
                     return None
         finally:
             self._mdns_waiters.remove(event)
+
+    def is_seen_on_mdns(self, manifest: ProviderManifest) -> bool:
+        """
+        Return whether a service of one of the provider's mDNS types was seen on the network.
+
+        :param manifest: The manifest of the provider, with the types in its mdns_discovery.
+        """
+        if not manifest.mdns_discovery:
+            return False
+        return any(
+            mdns_type in mdns_name
+            for mdns_name in set(self.aiozc.zeroconf.cache.cache)
+            for mdns_type in manifest.mdns_discovery
+        )
 
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
