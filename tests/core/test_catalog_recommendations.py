@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.auth import UserRole
+from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderTier, ProviderType
 from music_assistant_models.errors import ActionUnavailable
 from music_assistant_models.provider import ProviderManifest
@@ -19,8 +20,8 @@ from music_assistant.controllers.community_catalog.models import (
     CommunityProviderState,
 )
 from music_assistant.helpers.catalog import CatalogRecommendation, CatalogRecommendationReason
-from tests.common import as_user
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
+from tests.common import as_user, set_music_source_access
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -58,9 +59,9 @@ async def test_admin(tmp_path: Path) -> None:
     reasons = _by_reason(recommendations)
     assert musiccast_seen
     assert reasons[CatalogRecommendationReason.DISCOVERED] == ["sonos"]
-    # spotify allows more than one account, airplay is set up once
-    assert {"spotify", "sonos", "chromecast"} <= set(reasons[CatalogRecommendationReason.POPULAR])
-    assert all(rec.domain != "airplay" for rec in recommendations)
+    assert {"sonos", "chromecast"} <= set(reasons[CatalogRecommendationReason.POPULAR])
+    # what is set up is not suggested again, also spotify, which allows more than one account
+    assert all(rec.domain not in ("spotify", "airplay") for rec in recommendations)
     # lrclib ships with the server
     assert reasons[CatalogRecommendationReason.NEW] == ["sonos"]
 
@@ -76,10 +77,17 @@ async def test_nothing_new(tmp_path: Path) -> None:
 
 
 async def test_member_and_guest(tmp_path: Path) -> None:
-    """A user is only suggested its own music sources; a guest, who may add nothing, nothing."""
+    """A user is suggested the music sources it may add and does not own; a guest nothing."""
     async with full_mass_context(tmp_path) as mass:
         mass.discovery.aiozc.zeroconf.cache.cache["kitchen._sonos._tcp.local."] = {}
-        _set_up(mass, "spotify")
+        # spotify is somebody else's account, qobuz the user's own
+        set_music_source_access(
+            mass,
+            {
+                "spotify--test": ProviderAccess(owner="user_2"),
+                "qobuz--test": ProviderAccess(owner="user_1"),
+            },
+        )
         with as_user([], role=UserRole.USER):
             member = await mass.get_catalog_recommendations()
         with as_user([], role=UserRole.GUEST):
@@ -87,6 +95,7 @@ async def test_member_and_guest(tmp_path: Path) -> None:
         manifests = {manifest.domain: manifest for manifest in mass.get_provider_manifests()}
 
     assert {"spotify", "tidal"} <= set(_by_reason(member)[CatalogRecommendationReason.POPULAR])
+    assert all(rec.domain != "qobuz" for rec in member)
     for rec in member:
         manifest = manifests[rec.domain]
         assert manifest.type == ProviderType.MUSIC, rec

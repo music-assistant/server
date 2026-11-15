@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -10,6 +11,7 @@ from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature,
 from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 
+from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.providers.lastfm_recommendations import parsers
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
@@ -299,7 +301,16 @@ def _mass_with_musicbrainz(musicbrainz: Mock) -> Mock:
     """Return a mass stand-in with all providers settled and the given MusicBrainz provider."""
     mass = _mass(ProviderStatus.LOADED)
     mass.get_provider = Mock(return_value=musicbrainz)
-    mass.music.tracks.get_provider_item = AsyncMock(return_value=_track())
+    # the link route is the tracks controller's own, so a real one runs on the stand-ins
+    tracks = TracksController.__new__(TracksController)
+    vars(tracks).update(
+        mass=mass,
+        logger=logging.getLogger(__name__),
+        get_library_item_by_external_ids=mass.music.tracks.get_library_item_by_external_ids,
+        search=mass.music.tracks.search,
+        get_provider_item=AsyncMock(return_value=_track()),
+    )
+    mass.music.tracks = tracks
     return mass
 
 
@@ -313,7 +324,7 @@ def _musicbrainz() -> Mock:
 def _linked(mappings: list[ProviderMapping]) -> Any:
     """Patch the link-to-mapping helper to hand out the given mappings."""
     return patch(
-        "music_assistant.providers.lastfm_recommendations.parsers.provider_mappings_from_urls",
+        "music_assistant.controllers.music.media.base.provider_mappings_from_urls",
         AsyncMock(return_value=mappings),
     )
 
@@ -361,8 +372,7 @@ async def test_each_media_type_is_looked_up_as_its_musicbrainz_entity(
     mapping = ItemMapping(media_type=media_type, item_id="temp", provider="x", name="a")
     mapping.mbid = MBID
     musicbrainz = Mock(**{lookup: AsyncMock(return_value=Mock(relations=[]))})
-    mass = Mock()
-    mass.get_provider = Mock(return_value=musicbrainz)
+    mass = _mass_with_musicbrainz(musicbrainz)
     with _linked([]):
         assert await parsers._resolve_via_musicbrainz(Mock(), mapping, mass, [], None) == (
             None,

@@ -20,7 +20,7 @@ from music_assistant.controllers.community_catalog.dependencies import Dependenc
 from music_assistant.controllers.community_catalog.gate import _REASONS, Verdict
 from music_assistant.controllers.community_catalog.installer import InstallError
 from music_assistant.controllers.community_catalog.models import CommunityProviderState
-from tests.conftest import full_mass_context
+from music_assistant.testing import full_mass_context
 from tests.controllers.community_catalog.conftest import (
     ADDED,
     RELEASED,

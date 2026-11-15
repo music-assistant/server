@@ -82,6 +82,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
     DSP_IRS_DIRNAME,
+    EXTERNAL_ID_PROVIDER,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -721,6 +722,11 @@ class StreamsAudio:
             details_lock = asyncio.Lock()
             self._stream_details_locks[lock_key] = details_lock
         async with details_lock:
+            media_item = queue_item.media_item
+            if media_item is not None and media_item.provider == EXTERNAL_ID_PROVIDER:
+                # a player that addresses the queue by position asks for items the queue
+                # did not load, and a track known only by an external id has no source
+                await self.mass.player_queues.look_up_external_track(queue_item)
             streamdetails = await self._get_stream_details(
                 queue_item,
                 seek_position,

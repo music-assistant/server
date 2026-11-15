@@ -49,13 +49,11 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_SAMPLE_RATE,
     BridgePlayerRole,
 )
-from music_assistant.providers.sendspin.constants import (
-    BRIDGE_PREFIX,
-    CONF_SENDSPIN_STATIC_DELAY,
-)
+from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.helpers import (
     bridge_client_id_from_mac,
     bridge_client_id_from_uuid,
+    bridge_client_id_variants,
 )
 
 from .constants import (
@@ -189,23 +187,6 @@ def get_bridge_client_id(cast_player: ChromecastPlayer) -> str | None:
     if device_mac and is_valid_mac_address(device_mac):
         return bridge_client_id_from_mac(device_mac)
     return None
-
-
-def _toggle_locally_administered_bit(mac_hex: str) -> str | None:
-    """
-    Toggle bit 1 (locally-administered bit) of the first octet of a hex MAC string.
-
-    :param mac_hex: Lowercase 12-char hex MAC without separators (e.g. "5478c9e60da0").
-    :return: The MAC with the LA bit toggled, or None if input is invalid.
-    """
-    if len(mac_hex) != 12:
-        return None
-    try:
-        first_octet = int(mac_hex[:2], 16)
-        toggled = first_octet ^ 0x02
-        return f"{toggled:02x}{mac_hex[2:]}"
-    except ValueError:
-        return None
 
 
 def is_sendspin_cast_blocked(manufacturer: str, model: str) -> bool:
@@ -1052,13 +1033,11 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         """
         if protocol_id in self._bridges or not (sendspin_server := self.sendspin_server):
             return False
-        client_ids = [bridge_client_id]
         # AirPlay usually registers under the locally-administered form of the MAC
-        if la_variant_mac := _toggle_locally_administered_bit(
-            bridge_client_id[len(BRIDGE_PREFIX) :]
-        ):
-            client_ids.append(f"{BRIDGE_PREFIX}{la_variant_mac}")
-        return any(sendspin_server.is_external_player(client_id) for client_id in client_ids)
+        return any(
+            sendspin_server.is_external_player(client_id)
+            for client_id in bridge_client_id_variants(bridge_client_id)
+        )
 
     def _subscribe_rebridge_on_disconnect(
         self, cast_player: ChromecastPlayer, client_id: str

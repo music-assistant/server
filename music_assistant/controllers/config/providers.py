@@ -712,6 +712,23 @@ class ProviderConfigMixin:
             and manifest.self_service
         )
 
+    def own_provider_domains(self) -> builtins.set[str]:
+        """
+        Return the domains of the providers the calling user has set up.
+
+        A user who manages every music source has all that is set up; anyone else has the
+        music sources they own.
+        """
+        user, manages_all_sources = self._access_caller()
+        raw_confs: dict[str, dict[str, Any]] = self.get(CONF_PROVIDERS, {})
+        if user is None or manages_all_sources:
+            return {raw_conf["domain"] for raw_conf in raw_confs.values()}
+        return {
+            raw_conf["domain"]
+            for instance_id, raw_conf in raw_confs.items()
+            if source_owner(self.mass, instance_id) == user.user_id
+        }
+
     @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def _reload_provider(self, instance_id: str) -> None:
         """

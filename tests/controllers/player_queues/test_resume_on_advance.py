@@ -95,6 +95,7 @@ def _controller(
     )
     mass.create_task.side_effect = _close_task
     controller.mass = mass
+    mass.player_queues = controller
     return controller, get_stream_details
 
 
