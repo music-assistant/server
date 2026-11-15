@@ -78,9 +78,11 @@ from music_assistant.providers.musicbrainz.provider import recording_matches_tra
 from .base import (
     EXTERNAL_ID_LOOKUP_ERRORS,
     MAX_EXTERNAL_ID_MATCH_LOOKUPS,
-    TEMPORARY_LOOKUP_ERRORS,
+    UNREACHABLE_SOURCE_ERRORS,
     MediaControllerBase,
     TrackSyncDetails,
+    unanswered_lookup_error,
+    unreachable_source_error,
 )
 
 if TYPE_CHECKING:
@@ -1843,6 +1845,8 @@ class TracksController(MediaControllerBase[Track]):
         except InvalidDataError as err:
             self.logger.debug("Recording %s could not be looked up: %s", recording_id, err)
             return None
+        except UNREACHABLE_SOURCE_ERRORS as err:
+            raise unreachable_source_error("MusicBrainz", err) from err
         isrcs = sorted(
             {
                 normalize_external_id(ExternalID.ISRC, isrc)
@@ -1867,8 +1871,9 @@ class TracksController(MediaControllerBase[Track]):
         except EXTERNAL_ID_LOOKUP_ERRORS as err:
             # a linked provider in trouble is still asked by ISRC, as are the others
             self.logger.debug("Linked track of recording %s not fetched: %s", recording_id, err)
-            if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                could_not_answer = err
+            could_not_answer = unanswered_lookup_error(
+                err, f"the music provider MusicBrainz links recording {recording_id} to"
+            )
         track = None
         if isrcs:
             # one ISRC keeps this to a single request per provider

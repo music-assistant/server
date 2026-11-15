@@ -83,7 +83,10 @@ from .base import (
     EXTERNAL_ID_LOOKUP_ERRORS,
     MAX_EXTERNAL_ID_MATCH_LOOKUPS,
     TEMPORARY_LOOKUP_ERRORS,
+    UNREACHABLE_SOURCE_ERRORS,
     MediaControllerBase,
+    unanswered_lookup_error,
+    unreachable_source_error,
 )
 
 if TYPE_CHECKING:
@@ -663,7 +666,8 @@ class AlbumsController(MediaControllerBase[Album]):
 
         :param release_group_id: MusicBrainz release group id.
         :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
-        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded, or the
+            album was not found while a music provider was unavailable.
         :raises MediaNotFoundError: None of the user's music providers has the album.
         :raises ResourceTemporarilyUnavailable: The album was not found while a music
             provider or MusicBrainz could not answer.
@@ -674,13 +678,13 @@ class AlbumsController(MediaControllerBase[Album]):
             raise ProviderUnavailableError("MusicBrainz is not available")
         # a heavily reissued album has more editions than one page holds, of which the
         # likeliest few are wanted rather than the whole set
-        editions = [
-            release
-            for release in await musicbrainz.browse_releases_by_release_group(
+        try:
+            releases = await musicbrainz.browse_releases_by_release_group(
                 release_group_id, complete=False
             )
-            if release.status == "Official"
-        ]
+        except UNREACHABLE_SOURCE_ERRORS as err:
+            raise unreachable_source_error("MusicBrainz", err) from err
+        editions = [release for release in releases if release.status == "Official"]
         # the digital editions of one group carry different ids on the providers, so each
         # edition's own links and barcode are tried, never those of the whole group; the
         # editions linked to the user's own services go first, as only those resolve by link
@@ -707,6 +711,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 # a stale edition costs nothing but its turn
                 self.logger.debug("Release %s could not be looked up: %s", edition.id, err)
                 continue
+            except UNREACHABLE_SOURCE_ERRORS as err:
+                raise unreachable_source_error("MusicBrainz", err) from err
             try:
                 if album := await self._album_of_release(release, allow_update_metadata):
                     return album
@@ -1493,6 +1499,8 @@ class AlbumsController(MediaControllerBase[Album]):
         except InvalidDataError as err:
             self.logger.debug("Release %s could not be looked up: %s", release_id, err)
             return None
+        except UNREACHABLE_SOURCE_ERRORS as err:
+            raise unreachable_source_error("MusicBrainz", err) from err
         return await self._album_of_release(release, allow_update_metadata=False)
 
     async def _album_of_release(
@@ -1594,8 +1602,12 @@ class AlbumsController(MediaControllerBase[Album]):
                     candidate.provider_instance,
                     err,
                 )
-                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                    could_not_answer = err
+                provider = self.mass.get_provider(
+                    candidate.provider_instance, return_unavailable=True
+                )
+                source = provider.name if provider else candidate.provider_instance
+                if unanswered := unanswered_lookup_error(err, source):
+                    could_not_answer = unanswered
         if could_not_answer is not None:
             raise could_not_answer
         return None

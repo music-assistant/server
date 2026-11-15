@@ -198,14 +198,53 @@ EXTERNAL_ID_LOOKUP_ERRORS: Final[tuple[type[Exception], ...]] = (
     *PROVIDER_FETCH_ERRORS,
 )
 # a provider or MusicBrainz that could not answer a lookup, which says nothing about
-# whether it has the item
+# whether it has the item; a lookup reports it as one of these
 TEMPORARY_LOOKUP_ERRORS: Final[tuple[type[MusicAssistantError], ...]] = (
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+)
+# a source that timed out, or whose connection or response broke down, could not answer
+# either; a lookup reports it as ResourceTemporarilyUnavailable
+UNREACHABLE_SOURCE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    TimeoutError,
+    aiohttp.ContentTypeError,
+    aiohttp.ClientConnectionError,
+    aiohttp.ClientPayloadError,
 )
 # expected failures of re-reading a library item from one of its providers. On top of the
 # fetch failures: a file that can not be read from a (network) share
 REFRESH_FETCH_ERRORS: Final[tuple[type[Exception], ...]] = (OSError, *PROVIDER_FETCH_ERRORS)
+
+
+def unanswered_lookup_error(err: Exception, source: str) -> MusicAssistantError | None:
+    """
+    Return the error a lookup reports for a source that failed, if it could not answer.
+
+    A source that could not answer says nothing about whether it has the item.
+
+    :param err: The error the source failed with.
+    :param source: Name of the source, for the error a timeout or a broken connection becomes.
+    :returns: The source's own error, or ResourceTemporarilyUnavailable for a timeout or a
+        broken connection; None when the failure means the source can not supply the item.
+    """
+    if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
+        return err
+    if isinstance(err, UNREACHABLE_SOURCE_ERRORS):
+        return unreachable_source_error(source, err)
+    return None
+
+
+def unreachable_source_error(source: str, err: Exception) -> ResourceTemporarilyUnavailable:
+    """
+    Return the error a lookup reports for a source that timed out or could not be reached.
+
+    :param source: Name of the source.
+    :param err: The timeout or transport error, which becomes the cause.
+    """
+    error = ResourceTemporarilyUnavailable(f"Could not reach {source} ({type(err).__name__})")
+    error.__cause__ = err
+    return error
 
 
 @dataclass(slots=True)
@@ -823,6 +862,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: An external item was not found while a
             music provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         if provider_instance_id_or_domain == EXTERNAL_ID_PROVIDER:
             return await self._get_external_item(item_id, allow_update_metadata)
@@ -1257,6 +1297,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :raises ResourceTemporarilyUnavailable: The item was not found while a music
             provider or MusicBrainz could not answer.
         :raises RetriesExhausted: As above, after the retries ran out.
+        :raises ProviderUnavailableError: As above, for a source that is unavailable.
         """
         # an external id is not unique, so the first library item on the user's sources wins
         for library_item in await self.get_library_items_by_external_id(
@@ -2585,8 +2626,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     prov.domain,
                     err,
                 )
-                if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                    could_not_answer = err
+                if unanswered := unanswered_lookup_error(err, prov.name):
+                    could_not_answer = unanswered
                 continue
             if result:
                 return result
@@ -2641,8 +2682,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider.instance_id,
                 err,
             )
-            if isinstance(err, TEMPORARY_LOOKUP_ERRORS):
-                raise
+            if unanswered := unanswered_lookup_error(err, provider.name):
+                raise unanswered
         return None
 
     @final
