@@ -33,6 +33,7 @@ from aioslimproto.models import PlayerStatus, SlimEvent
 from music_assistant_models.enums import ContentType, IdentifierType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.sendspin.bridge_role import BRIDGE_SAMPLE_RATE
 from music_assistant.providers.squeezelite.bridge_role import (
@@ -183,7 +184,16 @@ def _slim_client(device_type: str = "squeezeplay") -> MagicMock:
         volume_level=20,
         muted=False,
     )
-    for command in ("play_url", "unpause_at", "stop", "request_status", "power", "mute"):
+    for command in (
+        "play_url",
+        "unpause_at",
+        "stop",
+        "request_status",
+        "power",
+        "mute",
+        "update_metadata",
+        "clear_media",
+    ):
         setattr(client, command, AsyncMock())
     return client
 
@@ -317,6 +327,7 @@ class _Rig:
         protocol.release_native_playback = AsyncMock()
         protocol.sendspin_bridge = None
         protocol.player.get_output_protocol_by_domain.return_value = None
+        protocol.player.current_media = None
         protocol._on_detach_callbacks = []
         provider.get_protocol.side_effect = {PLAYER_ID: protocol}.get
         provider.protocols = [protocol]
@@ -785,6 +796,7 @@ async def test_a_stream_start_requests_the_stream_from_the_player(rig: _Rig) -> 
     rig.client.play_url.assert_awaited_once_with(
         url=f"{BASE_URL}{BRIDGE_STREAM_PATH}?player_id={PLAYER_ID}&sid={session.session_id}",
         mime_type="audio/pcm;rate=44100;bitrate=16;channels=2",
+        metadata={},
         send_flush=True,
         autostart=False,
         stream_threshold=STREAM_THRESHOLD_KB,
@@ -1971,6 +1983,170 @@ async def test_the_protocol_takes_its_player_back(rig: _Rig) -> None:
     # the player is the caller's to stop or to play on
     rig.client.stop.assert_not_called()
     assert rig.manager.stop_streaming("other") is False
+
+
+# ---------------------------------------------------------------- now playing
+
+
+def _media(title: str) -> PlayerMedia:
+    """Return what a player plays for a queue item, as the player of the bridge shows it."""
+    return PlayerMedia(
+        uri=f"library://track/{title}",
+        title=title,
+        artist="The Band",
+        album="The Album",
+        image_url=f"http://192.168.1.10:8095/imageproxy?title={title}",
+        duration=240,
+        source_id="queue-of-the-group",
+        queue_item_id=f"item-{title}",
+    )
+
+
+def _metadata(title: str) -> dict[str, Any]:
+    """Return the metadata a slimproto player gets for that media."""
+    return {
+        "item_id": f"library://track/{title}",
+        "title": title,
+        "album": "The Album",
+        "artist": "The Band",
+        "image_url": f"http://192.168.1.10:8095/imageproxy?title={title}",
+        "duration": 240,
+    }
+
+
+async def test_the_stream_starts_with_what_the_group_plays(rig: _Rig) -> None:
+    """The player gets the track of its player with the stream, not the queue item of it."""
+    rig.protocol.player.current_media = _media("One")
+
+    await rig.start_stream()
+
+    assert rig.client.play_url.await_args.kwargs["metadata"] == _metadata("One")
+
+
+async def test_a_track_change_reaches_the_player(rig: _Rig) -> None:
+    """The stream plays on from track to track: the player is told what it plays now."""
+    rig.protocol.player.current_media = _media("One")
+    await rig.start_playing()
+
+    rig.protocol.player.current_media = _media("Two")
+    rig.bridge.update_now_playing()
+    await _settle()
+
+    rig.client.update_metadata.assert_awaited_once_with(_metadata("Two"))
+    # also while the stream is not there yet: what its request said may be old by then
+    rig.client.update_metadata.reset_mock()
+    await rig.start_stream()
+    rig.protocol.player.current_media = None
+    rig.bridge.update_now_playing()
+    await _settle()
+    rig.client.update_metadata.assert_awaited_once_with({})
+
+
+async def test_a_bridge_that_does_not_play_shows_nothing(rig: _Rig) -> None:
+    """What the player of an idle bridge plays is its own: the bridge keeps out of it."""
+    rig.protocol.player.current_media = _media("One")
+
+    rig.bridge.update_now_playing()
+    await _settle()
+
+    rig.client.update_metadata.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "end", ["explicit stop", "taken back", "bridge removed", "ended before its start", "gave up"]
+)
+async def test_nothing_is_left_on_the_player_when_its_stream_is_over(rig: _Rig, end: str) -> None:
+    """A stop keeps the media of a player: the bridge has it forgotten with its session."""
+    rig.grouped()
+    session = await rig.start_playing()
+    rig.client.clear_media.assert_not_called()
+
+    if end == "explicit stop":
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+    elif end == "taken back":
+        assert rig.bridge.stop_streaming()
+    elif end == "bridge removed":
+        await rig.bridge.stop()
+    elif end == "ended before its start":
+        session.started = False
+        rig.bridge._on_stream_end()
+    else:
+        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+        await _settle()
+        rig.client.clear_media.assert_not_called()
+        rig.fetched(rig.session)
+        rig.event(SlimEventType.PLAYER_BUFFER_READY)
+        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+
+    assert not rig.owns_stream()
+    rig.client.clear_media.assert_awaited_once_with()
+
+
+async def test_a_stream_that_plays_out_keeps_its_track_until_the_end(rig: _Rig) -> None:
+    """The end of the queue is played out with its track shown, and forgotten after it."""
+    await rig.start_playing()
+
+    rig.bridge._on_stream_end()
+    await _settle()
+
+    rig.client.clear_media.assert_not_called()
+    rig.client.state = SlimPlayerState.STOPPED
+    rig.event(SlimEventType.PLAYER_UPDATED)
+    await _settle()
+    assert not rig.owns_stream()
+    rig.client.clear_media.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("replaced_by", ["a new stream", "a restart"])
+async def test_a_session_that_is_replaced_keeps_what_the_player_shows(
+    rig: _Rig, replaced_by: str
+) -> None:
+    """A seek or a restart goes on with the same track: the player is not blanked in between."""
+    first = await rig.start_playing()
+
+    if replaced_by == "a new stream":
+        rig.bridge._on_stream_start(MagicMock())
+    else:
+        rig.event(SlimEventType.PLAYER_OUTPUT_UNDERRUN)
+    await _settle()
+
+    assert rig.session is not first
+    rig.client.clear_media.assert_not_called()
+
+
+async def test_the_player_shows_the_track_of_the_group_and_none_after_it(rig: _Rig) -> None:
+    """With a real slimproto client: what its status and display report, start to stop."""
+    reader, _sent = _real_client(rig)
+    client = rig.client
+
+    def shown() -> tuple[str, Any] | None:
+        """Return the url and metadata of the media the client reports for its player."""
+        media = client.current_media
+        return (media.url, media.metadata) if media else None
+
+    try:
+        rig.protocol.player.current_media = _media("One")
+        session = await rig.start_playing()
+        url = f"{BASE_URL}{BRIDGE_STREAM_PATH}?player_id={PLAYER_ID}&sid={session.session_id}"
+        # nothing of the stream shows before the player started it
+        assert shown() is None
+        await _player_reports(reader, b"STMs")
+        assert shown() == (url, _metadata("One"))
+
+        rig.protocol.player.current_media = _media("Two")
+        rig.bridge.update_now_playing()
+        await _settle()
+        assert shown() == (url, _metadata("Two"))
+
+        rig.bridge._on_stream_end()
+        rig.bridge._on_explicit_stop()
+        await _settle()
+        assert client.state == SlimPlayerState.STOPPED
+        assert shown() is None
+    finally:
+        client._reader_task.cancel()
 
 
 # ---------------------------------------------------------------- failure paths

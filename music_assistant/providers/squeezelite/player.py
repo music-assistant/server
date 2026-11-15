@@ -150,6 +150,12 @@ class SqueezelitePlayer(PlayerProtocol):
         # not awaited: the attach of this protocol does not wait for its Sendspin bridge
         self.mass.create_task(evaluate_bridge_of(self.mass, self.protocol_id))
 
+    def on_player_media_updated(self) -> None:
+        """Handle callback when the current media of the player is updated."""
+        if (bridge := self.sendspin_bridge) is not None:
+            # the stream of the bridge plays on from track to track
+            bridge.update_now_playing()
+
     async def on_detach(self) -> None:
         """Handle logic when the protocol is detached from its player."""
         if (stream := self.multi_client_stream) is not None:

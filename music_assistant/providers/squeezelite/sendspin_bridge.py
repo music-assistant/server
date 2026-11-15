@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     )
     from aiosendspin.server.roles import AudioChunk
     from aioslimproto.client import SlimClient
-    from aioslimproto.models import SlimEvent
+    from aioslimproto.models import MediaMetadata, SlimEvent
 
     from music_assistant.models.player import Player
     from music_assistant.models.player_protocol import PlayerProtocol
@@ -560,6 +560,16 @@ class SendspinSqueezeliteBridge:
         if self._bridge_role is not None:
             self._bridge_role.update_player_state(volume=self._client.volume_level)
 
+    def update_now_playing(self) -> None:
+        """
+        Show on the player what its player in Music Assistant plays now.
+
+        The stream of the bridge plays on while the Sendspin group moves from track to
+        track: a display of the player and the clients that control it follow through here.
+        """
+        if self._session is not None:
+            self.mass.create_task(self._client.update_metadata(self._now_playing()))
+
     def handle_slim_event(self, event: SlimEvent) -> None:
         """
         Handle an event of the player of the bridge.
@@ -725,7 +735,7 @@ class SendspinSqueezeliteBridge:
         """
         if (old := self._session) is not None:
             # no stop for the player: the stream request of the new session flushes it
-            self._close_session(old)
+            self._close_session(old, replaced=True)
         if not self.protocol.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -753,12 +763,15 @@ class SendspinSqueezeliteBridge:
             self.mass.create_task(self._poll_status(session), eager_start=False),
         ]
 
-    def _close_session(self, session: BridgeSession, *, stop_player: bool = False) -> None:
+    def _close_session(
+        self, session: BridgeSession, *, stop_player: bool = False, replaced: bool = False
+    ) -> None:
         """
         End a session and let go of the player.
 
         :param session: The session to end.
         :param stop_player: Stop the player at once instead of leaving it to what follows.
+        :param replaced: Another session takes over: the player shows what plays on.
         """
         session.close()
         if self._session is session:
@@ -767,6 +780,10 @@ class SendspinSqueezeliteBridge:
         if stop_player:
             # never a power or mute command: those switch the output of the player off
             self.mass.create_task(self._client.stop())
+        if not replaced:
+            # a stop keeps the media that played: the player would go on showing the
+            # track of a group it left
+            self.mass.create_task(self._client.clear_media())
 
     def _role_format(self) -> AudioFormat:
         """Return the PCM format the role of the bridge asks Sendspin for."""
@@ -792,6 +809,7 @@ class SendspinSqueezeliteBridge:
             await self._client.play_url(
                 url=url,
                 mime_type=session.mime_type,
+                metadata=self._now_playing(),
                 send_flush=True,
                 autostart=False,
                 stream_threshold=STREAM_THRESHOLD_KB,
@@ -813,6 +831,25 @@ class SendspinSqueezeliteBridge:
                 "Failed to start the Sendspin stream on %s: %s", self.protocol.display_name, err
             )
             self._recover(session, "its stream did not start")
+
+    def _now_playing(self) -> MediaMetadata:
+        """Return what the player of the bridge plays now, as the metadata of its stream."""
+        player = self.protocol.player
+        if player is None or (media := player.current_media) is None:
+            return cast("MediaMetadata", {})
+        # as for a stream of the protocol itself, less the queue item: that one is not
+        # played by this protocol
+        return cast(
+            "MediaMetadata",
+            {
+                "item_id": media.uri,
+                "title": media.title,
+                "album": media.album,
+                "artist": media.artist,
+                "image_url": media.image_url,
+                "duration": media.duration,
+            },
+        )
 
     def _decide_start(self, session: BridgeSession) -> None:
         """Decide when the stream of a session starts, once everything that takes is known."""
