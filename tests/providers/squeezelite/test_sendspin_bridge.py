@@ -315,7 +315,8 @@ class _Rig:
         provider.instance_id = "squeezelite"
         provider.logger = logging.getLogger("test.squeezelite")
         self.manager = provider.bridge_manager = SendspinBridgeManager(provider)
-        self.client = _slim_client(device_type)
+        # mocked, unless a test swaps a real client in
+        self.client: Any = _slim_client(device_type)
         self.protocol = protocol = MagicMock()
         protocol.protocol_id = PLAYER_ID
         protocol.display_name = "Kitchen"
