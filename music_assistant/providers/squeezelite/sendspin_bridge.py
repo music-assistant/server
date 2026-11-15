@@ -151,6 +151,9 @@ RECONNECT_REJOIN_DELAYS: tuple[int, ...] = (1, 5, 30)
 # How long (seconds) the group of a bridge is remembered after its player disconnected.
 RECONNECT_REJOIN_WINDOW: float = 60.0
 
+# The cache category of what was learned about the start of a player, by protocol id.
+CACHE_CATEGORY_START_OFFSET = 2
+
 # Player state fields the bridge policy depends on: an AirPlay output denies the bridge.
 _BRIDGE_POLICY_STATE_FIELDS: frozenset[str] = frozenset({"output_protocols"})
 
@@ -1109,8 +1112,10 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
 
         :param protocol: The protocol to bridge.
         """
-        await super().setup_bridge(protocol)
         protocol_id = protocol.protocol_id
+        # known before the bridge can start a stream
+        await self._restore_start_offset(protocol_id)
+        await super().setup_bridge(protocol)
         if (bridge := self._bridges.get(protocol_id)) is None:
             return
         if (remembered := self._groups_to_return_to.pop(protocol_id, None)) is None:
@@ -1197,8 +1202,33 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinSqueezeliteBridge]
             # a start scatters by milliseconds: only half of it is taken, so the offset
             # settles on what the player does on average
             offset_us += error_us // 2
-        self._start_offsets_us[protocol_id] = offset_us
+        if offset_us != self._start_offsets_us.get(protocol_id):
+            self._start_offsets_us[protocol_id] = offset_us
+            self.mass.create_task(
+                self.mass.cache.set(
+                    key=protocol_id,
+                    data=offset_us,
+                    provider=self.provider.instance_id,
+                    category=CACHE_CATEGORY_START_OFFSET,
+                )
+            )
         return offset_us
+
+    async def _restore_start_offset(self, protocol_id: str) -> None:
+        """
+        Take the start offset of a player from the cache, unless it is known already.
+
+        :param protocol_id: The id of the squeezelite protocol.
+        """
+        if protocol_id in self._start_offsets_us:
+            return
+        offset_us = await self.mass.cache.get(
+            key=protocol_id,
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_START_OFFSET,
+        )
+        if isinstance(offset_us, int):
+            self._start_offsets_us.setdefault(protocol_id, offset_us)
 
     def _bridge_client_id(self, protocol: PlayerProtocol) -> str | None:
         """Return the Sendspin client_id used to bridge a squeezelite player."""

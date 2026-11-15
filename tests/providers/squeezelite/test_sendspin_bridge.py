@@ -43,6 +43,7 @@ from music_assistant.providers.squeezelite.sendspin_bridge import (
     BRIDGE_MIN_BUFFER_MS,
     BRIDGE_REQUIRED_LEAD_MS,
     BRIDGE_STREAM_PATH,
+    CACHE_CATEGORY_START_OFFSET,
     CLOCK_MAX_AGE_US,
     MAX_BLOCK_US,
     MAX_PENDING_AUDIO_US,
@@ -245,6 +246,8 @@ class _Rig:
         mass.streams.base_url = BASE_URL
         mass.players.cmd_pause = AsyncMock()
         mass.players.remove_protocol = AsyncMock()
+        mass.cache.get = AsyncMock(return_value=None)
+        mass.cache.set = AsyncMock()
         # the Sendspin provider and its server
         self.sendspin = MagicMock()
         self.server = server = self.sendspin.server_api
@@ -260,6 +263,7 @@ class _Rig:
         self.provider = provider = MagicMock()
         provider.mass = mass
         provider.clock = self.clock
+        provider.instance_id = "squeezelite"
         provider.logger = logging.getLogger("test.squeezelite")
         self.manager = provider.bridge_manager = SendspinBridgeManager(provider)
         self.client = _slim_client(device_type)
@@ -1605,6 +1609,70 @@ async def test_a_start_offset_settles_on_what_the_player_does(rig: _Rig) -> None
     assert rig.manager.learn_start_offset(PLAYER_ID, -6.0) == 422_000
     assert rig.manager.get_start_offset_us(PLAYER_ID) == 422_000
     assert rig.manager.get_start_offset_us("other") == 0
+
+
+async def test_a_start_offset_is_kept_in_the_cache_when_it_changes(rig: _Rig) -> None:
+    """What was learned is stored for the next run of the server, once per start that moved it."""
+    rig.manager.learn_start_offset(PLAYER_ID, 420.0)
+    await _settle()
+
+    rig.mass.cache.set.assert_awaited_once_with(
+        key=PLAYER_ID,
+        data=420_000,
+        provider="squeezelite",
+        category=CACHE_CATEGORY_START_OFFSET,
+    )
+    rig.manager.learn_start_offset(PLAYER_ID, 0.0)
+    await _settle()
+    assert rig.mass.cache.set.await_count == 1
+    rig.manager.learn_start_offset(PLAYER_ID, 10.0)
+    await _settle()
+    assert rig.mass.cache.set.await_count == 2
+    assert rig.mass.cache.set.await_args.kwargs["data"] == 425_000
+
+
+async def test_the_start_offset_of_a_player_is_restored_before_its_bridge(rig: _Rig) -> None:
+    """A bridge tells its player earlier from its first start on, by what the cache holds."""
+    rig.mass.cache.get.return_value = 420_000
+    steps = MagicMock()
+    steps.attach_mock(rig.mass.cache.get, "restore")
+    steps.attach_mock(rig.server.register_external_player, "register")
+
+    await rig.manager.evaluate_bridge(rig.protocol)
+
+    assert [step[0] for step in steps.mock_calls][:2] == ["restore", "register"]
+    rig.mass.cache.get.assert_awaited_once_with(
+        key=PLAYER_ID, provider="squeezelite", category=CACHE_CATEGORY_START_OFFSET
+    )
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 420_000
+    session = await rig.start_playing()
+    rig.client.unpause_at.assert_awaited_once_with(rig.jiffies(session.start_us - 420_000))
+    # what the player does from here on moves it by halves, as an offset that was learned
+    assert rig.manager.learn_start_offset(PLAYER_ID, 10.0) == 425_000
+
+
+async def test_a_start_offset_that_is_known_is_not_restored(rig: _Rig) -> None:
+    """The cache is read once for a player: what was learned since is newer."""
+    rig.mass.cache.get.return_value = 420_000
+    rig.manager.learn_start_offset(PLAYER_ID, 30.0)
+
+    await rig.manager.evaluate_bridge(rig.protocol)
+
+    rig.mass.cache.get.assert_not_awaited()
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 30_000
+
+
+@pytest.mark.parametrize("cached", [None, "420000", 420.5, {"offset": 420_000}])
+async def test_a_cache_without_a_start_offset_leaves_none(rig: _Rig, cached: Any) -> None:
+    """Without a usable value the player starts as one that was never measured."""
+    rig.mass.cache.get.return_value = cached
+
+    await rig.manager.evaluate_bridge(rig.protocol)
+
+    assert rig.manager.get_bridge(PLAYER_ID) is not None
+    assert rig.manager.get_start_offset_us(PLAYER_ID) == 0
+    # so its first start error is taken whole
+    assert rig.manager.learn_start_offset(PLAYER_ID, 50.0) == 50_000
 
 
 async def test_a_start_that_is_far_off_restarts_the_stream(rig: _Rig) -> None:
