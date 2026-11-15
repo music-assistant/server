@@ -585,6 +585,11 @@ def generate_openapi_spec(
                     "message_id": {"type": "string"},
                     "error_code": {"type": "integer"},
                     "details": {"type": "string"},
+                    "data": {
+                        "type": "object",
+                        "nullable": True,
+                        "description": "Structured details of the error, if it has any",
+                    },
                 },
             }
         }
@@ -667,7 +672,25 @@ def generate_openapi_spec(
                         "description": "Not found - the player or media item does not exist",
                         "content": error_content,
                     },
+                    "409": {
+                        "description": "Conflict - another stream or player holds what the "
+                        "command needs",
+                        "content": error_content,
+                    },
+                    "429": {
+                        "description": "Rate limited - see the Retry-After header when present",
+                        "content": error_content,
+                    },
                     "500": {"description": "Internal server error", "content": error_content},
+                    "502": {
+                        "description": "Bad gateway - a service or the audio processing failed",
+                        "content": error_content,
+                    },
+                    "503": {
+                        "description": "Service unavailable - a provider or resource is "
+                        "temporarily unavailable, see the Retry-After header when present",
+                        "content": error_content,
+                    },
                 },
             }
         },

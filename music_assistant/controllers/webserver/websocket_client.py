@@ -38,6 +38,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import (
     APICommandHandler,
+    api_error_message,
     parse_arguments,
     redact_json_secrets,
     redact_secrets,
@@ -379,20 +380,10 @@ class WebsocketClientHandler:
             # Expected operational errors (player unavailable, queue empty, etc.)
             # Log at warning level since these are normal error responses, not crashes.
             self._logger.warning("%s: %s", msg.command, err)
-            err_msg = str(err) or err.__class__.__name__
-            # err_msg is the English fallback; the translation_key (per-type default or a
-            # provider override) localizes `details` to the connection locale at serialization.
-            await self._send_message(
-                ErrorResultMessage(
-                    msg.message_id,
-                    err.error_code,
-                    err_msg,
-                    translation_key=err.translation_key,
-                    translation_args=err.translation_args,
-                    translation_owner=err.translation_owner,
-                    data=err.data,
-                )
-            )
+            # the error's message is the English fallback; the translation_key (per-type default
+            # or a provider override) localizes `details` to the connection locale at
+            # serialization.
+            await self._send_message(api_error_message(msg.message_id, err))
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception(

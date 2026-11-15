@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import StreamReader, web
 from aiohttp.test_utils import make_mocked_request
+from mashumaro import DataClassDictMixin
 from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.errors import (
+    AudioError,
     AuthenticationFailed,
     AuthenticationRequired,
     InsufficientPermissions,
@@ -20,16 +24,23 @@ from music_assistant_models.errors import (
     InvalidDataError,
     InvalidToken,
     MediaNotFoundError,
+    MusicAssistantError,
     PlayerUnavailableError,
     ProviderPermissionDenied,
     ProviderUnavailableError,
+    RateLimited,
+    ResourceBusyError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
     UnsupportedFeaturedException,
     UserNotFoundError,
 )
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.translations import SOURCE_FILE, TranslationController
 from music_assistant.helpers.api import APICommandHandler
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.models.music_provider import ProviderStreamLimitError
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver.controller import WebserverController
@@ -37,27 +48,41 @@ if TYPE_CHECKING:
 COMMAND = "test/command"
 
 
-async def test_unavailable_player_returns_not_found(webserver: WebserverController) -> None:
+@pytest.fixture
+async def api_server(webserver: WebserverController) -> WebserverController:
+    """
+    Return the webserver with a signed-up user and the real translations of the server.
+
+    :param webserver: The webserver controller.
+    """
+    translations = TranslationController(webserver.mass)
+    await translations.setup(MagicMock())
+    webserver.mass.translations = translations
+    webserver.auth = MagicMock(has_users=True)
+    return webserver
+
+
+async def test_unavailable_player_returns_not_found(api_server: WebserverController) -> None:
     """Test a command for an unavailable player is answered with 404 instead of a server error."""
 
     async def raise_unavailable() -> None:
         raise PlayerUnavailableError("Player p1 is not available")
 
-    webserver.auth = MagicMock(has_users=True)
-    webserver.mass.command_handlers["test/raise"] = APICommandHandler.parse(
+    api_server.mass.command_handlers["test/raise"] = APICommandHandler.parse(
         "test/raise", raise_unavailable
     )
     request = MagicMock(
         can_read_body=True,
         remote="127.0.0.1",
+        headers={},
         read=AsyncMock(return_value=b'{"message_id": "1", "command": "test/raise", "args": {}}'),
     )
 
-    with patch.object(webserver, "_authenticate_api_command", AsyncMock(return_value=None)):
-        response = await webserver._handle_jsonrpc_api_command(request)
+    with patch.object(api_server, "_authenticate_api_command", AsyncMock(return_value=None)):
+        response = await api_server._handle_jsonrpc_api_command(request)
 
     assert response.status == 404
-    assert _body(response)["details"] == "Player p1 is not available"
+    assert _body(response)["details"] == "The player is not available."
 
 
 async def test_verbose_log_hides_secrets_of_commands(
@@ -119,76 +144,115 @@ async def test_invalid_json_is_rejected_without_logging_it(
         (InsufficientPermissions("Admins only"), 403),
         (MediaNotFoundError("No such track"), 404),
         (PlayerUnavailableError("No such player"), 404),
+        (ResourceBusyError("Busy"), 409),
         (InvalidDataError("Bad value"), 400),
-        (UserNotFoundError("No such user"), 400),
-        (ProviderUnavailableError("Provider is not loaded"), 400),
+        (UserNotFoundError("No such user", translation_args=["someone"]), 400),
         (UnsupportedFeaturedException("Not supported"), 400),
         # credentials of a provider account, not those of the caller
         (InvalidToken("Invalid provider token"), 400),
         (AuthenticationFailed("Provider login failed"), 400),
         (ProviderPermissionDenied("Provider refused"), 400),
+        (RateLimited("Slow down"), 429),
+        (RetriesExhausted("Gave up"), 502),
+        (AudioError("Decoder stopped"), 502),
+        (ResourceTemporarilyUnavailable("Try later"), 503),
+        (ProviderUnavailableError("Provider is not loaded"), 503),
     ],
 )
-async def test_a_refusal_answers_a_client_error_with_its_error_code(
-    webserver: WebserverController, error: Exception, status: int
+async def test_an_error_of_a_command_answers_its_status_and_error(
+    api_server: WebserverController, error: MusicAssistantError, status: int
 ) -> None:
     """
-    Test that an error the server raises on purpose answers a 4xx with its code and message.
+    Test that an error a command raises answers its status with the error the websocket sends.
 
-    :param webserver: The webserver controller.
+    :param api_server: The webserver controller.
     :param error: The error the command raises.
     :param status: The HTTP status the route should answer.
     """
-    webserver.auth = MagicMock(has_users=True)
-    _register(webserver, _raising(error))
+    _register(api_server, _raising(error))
 
-    response = await webserver._handle_jsonrpc_api_command(_request())
+    response = await api_server._handle_jsonrpc_api_command(_request())
 
     assert response.status == status
+    assert "Retry-After" not in response.headers
     body = _body(response)
     assert body["message_id"] == "1"
-    assert body["error_code"] == error.error_code  # type: ignore[attr-defined]
-    assert body["details"] == str(error)
+    assert body["error_code"] == error.error_code
+    assert body["details"] == _english(error)
 
 
-async def test_a_refusal_reads_in_the_language_of_the_client(
-    webserver: WebserverController,
+async def test_a_full_stream_slot_answers_409(api_server: WebserverController) -> None:
+    """
+    Test that a provider without a free stream slot answers a conflict, not a failure.
+
+    :param api_server: The webserver controller.
+    """
+    provider = MagicMock(max_concurrent_streams=1, instance_id="prov1")
+    provider.name = "Provider"
+    _register(api_server, _raising(ProviderStreamLimitError(provider, None)))
+
+    response = await api_server._handle_jsonrpc_api_command(_request())
+
+    assert response.status == 409
+    assert _body(response)["details"].startswith("Provider has reached its limit of 1")
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (RateLimited("Slow down", backoff_time=30), 429),
+        (ResourceTemporarilyUnavailable("Try later", backoff_time=5), 503),
+    ],
+)
+async def test_a_known_wait_answers_retry_after(
+    api_server: WebserverController, error: ResourceTemporarilyUnavailable, status: int
 ) -> None:
     """
-    Test that the message of a refusal is localized for the locale of the request.
+    Test that an error that knows how long to wait sends it in the Retry-After header.
 
-    :param webserver: The webserver controller.
+    :param api_server: The webserver controller.
+    :param error: The error the command raises.
+    :param status: The HTTP status the route should answer.
     """
+    _register(api_server, _raising(error))
 
-    def _translate(key: str, locale: str | None = None, **_: Any) -> str | None:
-        return f"{locale}: niet gevonden" if key == "errors.media_not_found" else None
+    response = await api_server._handle_jsonrpc_api_command(_request())
 
-    webserver.auth = MagicMock(has_users=True)
-    _register(webserver, _raising(MediaNotFoundError("No such track")))
+    assert response.status == status
+    assert response.headers["Retry-After"] == str(error.backoff_time)
 
-    with patch.object(webserver.mass.translations, "get_translation", side_effect=_translate):
-        response = await webserver._handle_jsonrpc_api_command(
-            _request(headers={"Accept-Language": "nl-NL"})
-        )
+
+async def test_an_error_reads_in_the_language_of_the_client(
+    api_server: WebserverController,
+) -> None:
+    """
+    Test that the message of an error is localized for the locale of the request.
+
+    :param api_server: The webserver controller.
+    """
+    _register(api_server, _raising(MediaNotFoundError("No such track")))
+
+    response = await api_server._handle_jsonrpc_api_command(
+        _request(headers={"Accept-Language": "nl-NL"})
+    )
 
     assert response.status == 404
-    assert _body(response)["details"] == "nl-NL: niet gevonden"
+    assert _body(response)["details"] == "Het opgevraagde mediabestand kon niet worden gevonden."
 
 
 async def test_an_unexpected_failure_answers_500_and_is_logged(
-    webserver: WebserverController, caplog: pytest.LogCaptureFixture
+    api_server: WebserverController, caplog: pytest.LogCaptureFixture
 ) -> None:
     """
     Test that a failure the server did not raise on purpose answers 500 without its details.
 
-    :param webserver: The webserver controller.
+    :param api_server: The webserver controller.
     :param caplog: The log capture fixture.
     """
-    webserver.auth = MagicMock(has_users=True)
-    _register(webserver, _raising(RuntimeError("secret internals")))
+    _register(api_server, _raising(RuntimeError("secret internals")))
 
     with caplog.at_level(logging.ERROR):
-        response = await webserver._handle_jsonrpc_api_command(_request())
+        response = await api_server._handle_jsonrpc_api_command(_request())
 
     assert response.status == 500
     body = _body(response)
@@ -197,97 +261,150 @@ async def test_an_unexpected_failure_answers_500_and_is_logged(
     assert "secret internals" in caplog.text
 
 
-async def test_invalid_arguments_answer_400(webserver: WebserverController) -> None:
+@pytest.mark.parametrize(
+    ("args", "details"),
+    [
+        ({"count": "many"}, "Value of type <class 'str'> is invalid for count"),
+        ({}, "`count` of type `<class 'int'>` is required."),
+    ],
+)
+async def test_invalid_arguments_answer_400_with_the_parser_text(
+    api_server: WebserverController, args: dict[str, Any], details: str
+) -> None:
     """
-    Test that a command called with an argument of the wrong type answers 400.
+    Test that invalid arguments answer 400 with what the parser found wrong, as the websocket does.
 
-    :param webserver: The webserver controller.
+    :param api_server: The webserver controller.
+    :param args: The arguments of the call.
+    :param details: The start of the message the caller should get.
     """
 
     async def _command(count: int) -> int:
         return count
 
-    webserver.auth = MagicMock(has_users=True)
-    _register(webserver, _command)
+    _register(api_server, _command)
 
-    response = await webserver._handle_jsonrpc_api_command(_request({"count": "many"}))
-
-    assert response.status == 400
-    assert _body(response)["error_code"] == InvalidDataError.error_code
-
-
-async def test_an_unknown_command_answers_400_with_its_error_code(
-    webserver: WebserverController,
-) -> None:
-    """
-    Test that an unknown command answers 400 with the invalid command error code.
-
-    :param webserver: The webserver controller.
-    """
-    webserver.auth = MagicMock(has_users=True)
-    response = await webserver._handle_jsonrpc_api_command(_request())
+    response = await api_server._handle_jsonrpc_api_command(_request(args))
 
     assert response.status == 400
-    assert _body(response)["error_code"] == InvalidCommand.error_code
+    body = _body(response)
+    assert body["error_code"] == InvalidDataError.error_code
+    assert body["details"].startswith(details)
 
 
-async def test_a_missing_scope_answers_403_with_its_error_code(
-    webserver: WebserverController,
+async def test_a_dataclass_argument_with_a_missing_field_answers_400(
+    api_server: WebserverController,
 ) -> None:
     """
-    Test that a user without the scope of a command gets a 403 with the permissions code.
+    Test that a dataclass argument without one of its required fields answers 400.
 
-    :param webserver: The webserver controller.
+    :param api_server: The webserver controller.
     """
-    webserver.auth = MagicMock(has_users=True)
-    _register(webserver, _returning("ok"), required_scope=Scope.ALL)
+
+    async def _command(thing: _Thing) -> str:
+        return thing.name
+
+    _register(api_server, _command)
+
+    response = await api_server._handle_jsonrpc_api_command(_request({"thing": {"name": "x"}}))
+
+    assert response.status == 400
+    assert 'Field "thing_id"' in _body(response)["details"]
+
+
+async def test_an_unknown_command_answers_400_with_its_error(
+    api_server: WebserverController,
+) -> None:
+    """
+    Test that an unknown command answers 400 with the invalid command error.
+
+    :param api_server: The webserver controller.
+    """
+    response = await api_server._handle_jsonrpc_api_command(_request())
+
+    assert response.status == 400
+    body = _body(response)
+    assert body["error_code"] == InvalidCommand.error_code
+    assert body["details"] == _english(InvalidCommand())
+
+
+async def test_a_missing_scope_answers_403_with_its_error(
+    api_server: WebserverController,
+) -> None:
+    """
+    Test that a user without the scope of a command gets a 403 with the permissions error.
+
+    :param api_server: The webserver controller.
+    """
+    _register(api_server, _returning("ok"), required_scope=Scope.ALL)
     user = User(user_id="u1", username="someone", role=UserRole.USER)
 
     with patch(
         "music_assistant.controllers.webserver.controller.get_authenticated_user",
         AsyncMock(return_value=user),
     ):
-        response = await webserver._handle_jsonrpc_api_command(_request())
+        response = await api_server._handle_jsonrpc_api_command(_request())
 
     assert response.status == 403
-    assert _body(response)["error_code"] == InsufficientPermissions.error_code
+    body = _body(response)
+    assert body["error_code"] == InsufficientPermissions.error_code
+    assert body["details"] == _english(InsufficientPermissions())
 
 
-async def test_a_missing_login_answers_401_with_its_error_code(
-    webserver: WebserverController,
+async def test_a_missing_login_answers_401_with_its_error(
+    api_server: WebserverController,
 ) -> None:
     """
-    Test that a call without a valid token gets a 401 with the authentication code.
+    Test that a call without a valid token gets a 401 with the authentication error.
 
-    :param webserver: The webserver controller.
+    :param api_server: The webserver controller.
     """
-    webserver.auth = MagicMock(has_users=True)
-    _register(webserver, _returning("ok"), authenticated=True)
+    _register(api_server, _returning("ok"), authenticated=True)
 
     with patch(
         "music_assistant.controllers.webserver.controller.get_authenticated_user",
         AsyncMock(return_value=None),
     ):
-        response = await webserver._handle_jsonrpc_api_command(_request())
+        response = await api_server._handle_jsonrpc_api_command(_request())
 
     assert response.status == 401
     assert response.headers["WWW-Authenticate"] == 'Bearer realm="Music Assistant"'
-    assert _body(response)["error_code"] == AuthenticationRequired.error_code
+    body = _body(response)
+    assert body["error_code"] == AuthenticationRequired.error_code
+    assert body["details"] == _english(AuthenticationRequired())
 
 
-async def test_a_successful_command_answers_its_result(webserver: WebserverController) -> None:
+async def test_a_successful_command_answers_its_result(api_server: WebserverController) -> None:
     """
     Test that a command that succeeds answers 200 with its result.
 
-    :param webserver: The webserver controller.
+    :param api_server: The webserver controller.
     """
-    webserver.auth = MagicMock(has_users=True)
-    _register(webserver, _returning({"answer": 42}))
+    _register(api_server, _returning({"answer": 42}))
 
-    response = await webserver._handle_jsonrpc_api_command(_request())
+    response = await api_server._handle_jsonrpc_api_command(_request())
 
     assert response.status == 200
     assert _body(response) == {"answer": 42}
+
+
+@dataclass
+class _Thing(DataClassDictMixin):
+    """An argument type the API parses from a dict."""
+
+    thing_id: str
+    name: str
+
+
+def _english(error: MusicAssistantError) -> str:
+    """
+    Return the English text the server sends for an error, from its shipped translation source.
+
+    :param error: The error to look up.
+    """
+    with open(SOURCE_FILE, encoding="utf-8") as source:
+        text: str = json.load(source)[f"common.errors.{error.translation_key}"]
+    return text.format(*error.translation_args)
 
 
 def _register(

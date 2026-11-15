@@ -12,6 +12,7 @@ import hashlib
 import html
 import inspect
 import json
+import math
 import os
 import secrets
 import socket
@@ -37,6 +38,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
+    AudioError,
     AuthenticationFailed,
     AuthenticationRequired,
     InsufficientPermissions,
@@ -45,7 +47,11 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     PlayerUnavailableError,
+    ProviderUnavailableError,
     RateLimited,
+    ResourceBusyError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -69,7 +75,12 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments, redact_json_secrets, run_api_command
+from music_assistant.helpers.api import (
+    api_error_message,
+    parse_arguments,
+    redact_json_secrets,
+    run_api_command,
+)
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
@@ -85,6 +96,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.music_provider import ProviderStreamLimitError
 
 from .api_docs import generate_commands_json, generate_openapi_spec, generate_schemas_json
 from .auth import AuthenticationManager
@@ -877,7 +889,7 @@ class WebserverController(CoreController):
             error = f"Invalid Command: {command_msg.command}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return await self._error_response(
-                request, 400, _error_result(command_msg.message_id, InvalidCommand(error))
+                request, 400, api_error_message(command_msg.message_id, InvalidCommand(error))
             )
 
         # Check authentication if required
@@ -896,8 +908,8 @@ class WebserverController(CoreController):
                     set_impersonated_user(impersonation_user)
             try:
                 args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-            except (KeyError, TypeError, ValueError) as err:
-                raise InvalidDataError(str(err)) from err
+            except (LookupError, TypeError, ValueError) as err:
+                return await self._invalid_arguments_response(request, command_msg, err)
             result: Any = run_api_command(self.mass, handler, args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
@@ -911,9 +923,7 @@ class WebserverController(CoreController):
             return self._localized_json_response(result, locale)
         except MusicAssistantError as e:
             self.logger.warning("%s: %s", command_msg.command, e)
-            return await self._error_response(
-                request, _error_status(e), _error_result(command_msg.message_id, e)
-            )
+            return await self._command_error_response(request, command_msg.message_id, e)
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -945,7 +955,7 @@ class WebserverController(CoreController):
             return await self._error_response(
                 request,
                 401,
-                _error_result(message_id, AuthenticationFailed("Authentication failed")),
+                api_error_message(message_id, AuthenticationFailed("Authentication failed")),
                 auth_headers,
             )
 
@@ -953,7 +963,7 @@ class WebserverController(CoreController):
             return await self._error_response(
                 request,
                 401,
-                _error_result(message_id, AuthenticationRequired("Authentication required")),
+                api_error_message(message_id, AuthenticationRequired("Authentication required")),
                 auth_headers,
             )
 
@@ -966,8 +976,45 @@ class WebserverController(CoreController):
             error = InsufficientPermissions(
                 f"This command requires the {handler.required_scope_label} scope"
             )
-            return await self._error_response(request, 403, _error_result(message_id, error))
+            return await self._error_response(request, 403, api_error_message(message_id, error))
         return None
+
+    async def _command_error_response(
+        self, request: web.Request, message_id: str, error: MusicAssistantError
+    ) -> web.Response:
+        """
+        Answer an API command that raised the given error.
+
+        :param request: The request of the command.
+        :param message_id: The id of the command.
+        :param error: The error the command raised.
+        """
+        headers = None
+        if isinstance(error, ResourceTemporarilyUnavailable) and error.backoff_time:
+            headers = {"Retry-After": str(math.ceil(error.backoff_time))}
+        return await self._error_response(
+            request, _error_status(error), api_error_message(message_id, error), headers
+        )
+
+    async def _invalid_arguments_response(
+        self, request: web.Request, command_msg: CommandMessage, error: Exception
+    ) -> web.Response:
+        """
+        Answer an API command whose arguments could not be parsed.
+
+        :param request: The request of the command.
+        :param command_msg: The command.
+        :param error: The error the argument parser raised.
+        """
+        # like the websocket, answer with the parser's own text and no translation
+        self.logger.warning("%s: %s", command_msg.command, error)
+        # str() of a KeyError quotes its message
+        details = error.args[0] if isinstance(error, KeyError) and error.args else str(error)
+        return await self._error_response(
+            request,
+            400,
+            ErrorResultMessage(command_msg.message_id, InvalidDataError.error_code, details),
+        )
 
     async def _error_response(
         self,
@@ -1545,27 +1592,9 @@ class WebserverController(CoreController):
             client.cancel()
 
 
-def _error_result(message_id: str, error: MusicAssistantError) -> ErrorResultMessage:
-    """
-    Return the API error message that reports the given error.
-
-    :param message_id: The id of the command the error answers.
-    :param error: The error to report.
-    """
-    return ErrorResultMessage(
-        message_id,
-        error.error_code,
-        str(error) or error.__class__.__name__,
-        translation_key=error.translation_key,
-        translation_args=error.translation_args,
-        translation_owner=error.translation_owner,
-        data=error.data,
-    )
-
-
 def _error_status(error: MusicAssistantError) -> int:
     """
-    Return the HTTP status that answers a command refused with the given error.
+    Return the HTTP status that answers a command that raised the given error.
 
     :param error: The error the command raised.
     """
@@ -1573,6 +1602,16 @@ def _error_status(error: MusicAssistantError) -> int:
         return 403
     if isinstance(error, (MediaNotFoundError, PlayerUnavailableError)):
         return 404
+    # another stream or consumer holds what the command needs
+    if isinstance(error, (ResourceBusyError, ProviderStreamLimitError)):
+        return 409
+    if isinstance(error, RateLimited):
+        return 429
+    # a failure upstream or in our own audio processing, not in the request
+    if isinstance(error, (RetriesExhausted, AudioError)):
+        return 502
+    if isinstance(error, (ResourceTemporarilyUnavailable, ProviderUnavailableError)):
+        return 503
     # the caller's own sign-in was checked before the command ran, so an authentication
     # error raised by a command concerns another account (a provider's) and is no 401
     return 400

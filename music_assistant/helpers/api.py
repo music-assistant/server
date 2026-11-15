@@ -16,6 +16,7 @@ from types import NoneType, UnionType
 from typing import TYPE_CHECKING, Any, Final, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from mashumaro.exceptions import MissingField
+from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.media_items.media_item import MediaItem
 
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
@@ -23,6 +24,7 @@ from music_assistant.helpers.util import try_parse_bool
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import Scope
+    from music_assistant_models.errors import MusicAssistantError
 
     from music_assistant.mass import MusicAssistant
 
@@ -280,6 +282,24 @@ def run_api_command(
     :return: What the handler returns, which may be a coroutine or an async generator.
     """
     return handler.target(**resolve_player_ids(mass, args))
+
+
+def api_error_message(message_id: str, error: MusicAssistantError) -> ErrorResultMessage:
+    """
+    Return the message that reports an error of a command to an API client.
+
+    :param message_id: The id of the command the error answers.
+    :param error: The error the command raised.
+    """
+    return ErrorResultMessage(
+        message_id,
+        error.error_code,
+        str(error) or error.__class__.__name__,
+        translation_key=error.translation_key,
+        translation_args=error.translation_args,
+        translation_owner=error.translation_owner,
+        data=error.data,
+    )
 
 
 def resolve_player_ids(mass: MusicAssistant, args: Mapping[str, Any]) -> dict[str, Any]:
