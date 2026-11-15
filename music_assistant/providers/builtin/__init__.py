@@ -2004,9 +2004,14 @@ class BuiltinProvider(MusicProvider):
             # a track known only by an external id costs its lookup and nothing more: the
             # entry takes the names of its album and artists as the lookup found them
             _, _, item_id = await parse_uri(uri)
-            full_item = await self.mass.music.tracks.get(
-                item_id, EXTERNAL_ID_PROVIDER, allow_update_metadata=False, recursive=False
-            )
+            try:
+                full_item = await self.mass.music.tracks.get(
+                    item_id, EXTERNAL_ID_PROVIDER, allow_update_metadata=False, recursive=False
+                )
+            except ProviderUnavailableError as err:
+                # an unavailable source ends the save, as one that asks to back off does,
+                # instead of the track being left out
+                raise ResourceTemporarilyUnavailable(str(err)) from err
         else:
             full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
         if not isinstance(full_item, MediaItem):

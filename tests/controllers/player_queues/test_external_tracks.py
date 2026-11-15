@@ -431,7 +431,7 @@ def _isrc(recording_id: str) -> str:
 def _service(
     instance_id: str = SERVICE,
     lookups: list[str] | None = None,
-    could_not_answer: dict[str, MusicAssistantError] | None = None,
+    could_not_answer: dict[str, Exception] | None = None,
     found_as: str = "found",
 ) -> MagicMock:
     """
@@ -1523,9 +1523,17 @@ async def test_track_still_to_look_up_costs_its_lookup_and_nothing_more(
 
 
 @pytest.mark.parametrize("target", ["builtin", SERVICE])
-@pytest.mark.parametrize("error", COULD_NOT_ANSWER)
+@pytest.mark.parametrize(
+    "error",
+    [
+        *COULD_NOT_ANSWER,
+        ProviderUnavailableError("Qobuz is temporarily unavailable"),
+        TimeoutError(),
+    ],
+    ids=["retries exhausted", "rate limited", "unavailable", "timeout"],
+)
 async def test_save_a_service_could_not_answer_for_ends_and_runs_again_in_queue_order(
-    music: MusicController, target: str, error: MusicAssistantError
+    music: MusicController, target: str, error: Exception
 ) -> None:
     """A lookup that fails for the moment ends the save; run again, it saves the whole queue."""
     lookups: list[str] = []
@@ -1544,10 +1552,10 @@ async def test_save_a_service_could_not_answer_for_ends_and_runs_again_in_queue_
     )
     handler = await _save_task(ctrl, music, playlist)
 
-    with pytest.raises(type(error)) as excinfo:
+    with pytest.raises(MusicAssistantError) as excinfo:
         await _run_task(music, handler)
 
-    assert excinfo.value is error
+    assert error in (excinfo.value, excinfo.value.__cause__)
     assert _saved(playlist_provider) == []
     assert lookups == [
         f"details {RECORDING_IDS[1]}",
