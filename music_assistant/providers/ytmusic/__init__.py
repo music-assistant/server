@@ -239,8 +239,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     @property
     def account_id(self) -> str | None:
-        """Return the username (or brand account id) the library is read from."""
-        return str(self.get_setup_value(CONF_USERNAME) or "") or None
+        """Return the username (or brand account id) the library is read from, lower-cased."""
+        return str(self.get_setup_value(CONF_USERNAME) or "").strip().lower() or None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
