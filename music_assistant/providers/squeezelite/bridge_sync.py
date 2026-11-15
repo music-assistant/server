@@ -28,7 +28,7 @@ MIN_SPAN_S = 10.0
 SETTLE_S = 1.0
 START_JUMP_MS = 10.0
 
-# an error beyond this is not corrected in a jump: the session has to start over
+# an error beyond this is not corrected in a jump
 MAX_START_JUMP_MS = 2000.0
 
 _JIFFIES_WRAP = 1 << 32
@@ -43,7 +43,8 @@ _CLOCK_WINDOW_MS = 120_000
 _CLOCK_MIN_SPAN_MS = 10_000
 _CLOCK_MIN_SLOPE_POINTS = 5
 # a clock jump: this many samples in a row that are this far off the mapping. The whole
-# millisecond jiffies and a clean round trip keep a normal sample within about 1 ms.
+# millisecond jiffies and a clean round trip keep a normal sample within about 1 ms, and a
+# slow network path moves one by at most half of what it adds to the round trip.
 _JUMP_THRESHOLD_US = 5000
 _JUMP_SAMPLES = 3
 
@@ -79,6 +80,8 @@ class PlayerClock:
         self._points: deque[tuple[int, float]] = deque()
         # the latest samples in a row that are far off the mapping
         self._suspects: list[tuple[int, float]] = []
+        # lowest round trip per bucket in the window of the mapping: (jiffies, round trip in us)
+        self._round_trips: deque[tuple[int, int]] = deque()
         self._jiffies_mean = 0.0
         self._offset_mean = 0.0
         self._slope = 0.0
@@ -153,11 +156,20 @@ class PlayerClock:
     def _flush(self) -> None:
         """Move the samples of the bucket with the lowest round trip into the mapping."""
         best_rtt = min(sample[2] for sample in self._bucket)
+        round_trips = self._round_trips
+        round_trips.append((self._bucket[-1][0], best_rtt))
+        while round_trips[0][0] < round_trips[-1][0] - _CLOCK_WINDOW_MS:
+            round_trips.popleft()
+        lowest_rtt = min(rtt for _, rtt in round_trips)
         mapped = bool(self._points)
         for ticks, offset, rtt in self._bucket:
             if rtt > best_rtt + _RTT_MARGIN_US:
                 continue
-            if mapped and abs(offset - self._offset_at(ticks)) > _JUMP_THRESHOLD_US:
+            off_us = abs(offset - self._offset_at(ticks)) if mapped else 0.0
+            if off_us > _JUMP_THRESHOLD_US:
+                if off_us - (rtt - lowest_rtt) / 2 <= _JUMP_THRESHOLD_US:
+                    # a slow network path explains it: not a sample to map with either
+                    continue
                 self._suspects.append((ticks, offset))
                 if len(self._suspects) < _JUMP_SAMPLES:
                     continue
@@ -165,6 +177,9 @@ class PlayerClock:
                 # Refit right away, the rest of the bucket is judged against the new mapping.
                 self._points.clear()
                 self._points.extend(self._suspects)
+                round_trips.clear()
+                round_trips.append((ticks, best_rtt))
+                lowest_rtt = best_rtt
                 self._generation += 1
                 self._refit()
             else:
@@ -268,12 +283,7 @@ class SyncLoop:
 
     @property
     def start_error_ms(self) -> float | None:
-        """
-        Return the error the session started with, or None until it is measured.
-
-        A start that is off by more than ``MAX_START_JUMP_MS`` is not corrected: such a
-        session has to be started over.
-        """
+        """Return the error the session started with, or None until it is measured."""
         return self._start_error_ms
 
     @property

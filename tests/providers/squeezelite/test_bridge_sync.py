@@ -261,6 +261,50 @@ def test_clock_single_outlier_is_not_a_jump() -> None:
     assert spiked.drift_ppm == pytest.approx(clean.drift_ppm, abs=0.5)
 
 
+def test_clock_slow_replies_are_not_a_jump() -> None:
+    """Replies that are far off because the network is slow neither move nor restart the mapping."""
+    clean, slowed = PlayerClock(), PlayerClock()
+    player = _Player(clock_ppm=15.0)
+    for poll in range(480):
+        sent_us = 3_000_000 + poll * 250_000
+        _sample(clean, player, sent_us)
+        # for seven seconds every reply takes 30 ms longer on its way back: 15 ms off
+        slow = 240 <= poll < 268
+        _sample(slowed, player, sent_us, to_server_us=30_300 if slow else 300)
+        if poll == 267:
+            jiffies = player.jiffies(sent_us)
+            # the mapping coasts on what it knew
+            assert abs(_mapped(slowed, jiffies) - _mapped(clean, jiffies)) <= 100
+    assert slowed.generation == 0
+    jiffies = player.jiffies(123_000_000)
+    assert abs(_mapped(slowed, jiffies) - _mapped(clean, jiffies)) <= 100
+
+
+def test_clock_step_shows_through_slow_replies() -> None:
+    """A clock step is still a jump when the replies are slow at the same time."""
+    clock = PlayerClock()
+    player = _Player()
+    now_us = _learn(clock, player, 3_000_000, 60)
+    player.clock_step_ms = 50.0
+    for poll in range(24):
+        _sample(clock, player, now_us + poll * 250_000, to_server_us=30_300)
+    assert clock.generation == 1
+
+
+def test_clock_follows_a_network_path_that_stays_slow() -> None:
+    """When the slow path is the only one left in the window, the mapping moves onto it."""
+    clock = PlayerClock()
+    player = _Player()
+    now_us = _learn(clock, player, 3_000_000, 60)
+    for poll in range(4 * 150):
+        _sample(clock, player, now_us + poll * 250_000, to_server_us=30_300)
+        if poll == 4 * 100:
+            assert clock.generation == 0
+    assert clock.generation == 1
+    now_us += 150_000_000
+    assert _mapped(clock, player.jiffies(now_us)) - now_us == pytest.approx(15_000, abs=1000)
+
+
 @pytest.mark.parametrize("step_ms", [50.0, -50.0, 3_600_000.0, -3_600_000.0])
 def test_clock_starts_over_after_a_step(step_ms: float) -> None:
     """A step of the player's clock restarts the mapping and bumps the generation."""
@@ -743,6 +787,16 @@ def test_clock_jump_allows_one_more_jump() -> None:
     _reports(loop, 70.0, first_ms=next_ms, count=20, generation=1)
     assert loop.rate_ppm == MAX_RATE_PPM
     assert len(loop.process(bytes(4800 * FRAME_SIZE))) == 4798 * FRAME_SIZE
+
+    # a jump that is still being made counts as made: only the rest is added to it
+    loop = SyncLoop(RATE, FRAME_SIZE, START_US)
+    next_ms = _reports(loop, 500.0)
+    for _ in range(2):
+        assert loop.process(bytes(4800 * FRAME_SIZE)) == b""
+    _reports(loop, 600.0, first_ms=next_ms, generation=1)
+    for _ in range(6):
+        loop.process(bytes(4800 * FRAME_SIZE))
+    assert _offset(loop) == 600 * RATE // 1000
 
     # before the start error is known, a clock jump only postpones it
     loop = SyncLoop(RATE, FRAME_SIZE, START_US)
