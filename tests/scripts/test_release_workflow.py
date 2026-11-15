@@ -18,10 +18,12 @@ import pytest
 import yaml
 
 from music_assistant.helpers.build_info import BUILD_INFO_FILE
+from music_assistant.helpers.catalog import CATALOG_NEW_FILE, read_new_domains
 from scripts.release_workflow import (
     APP_SECRETS_PATH,
     OCI_REVISION_ANNOTATION,
     OCI_WHEEL_ANNOTATION,
+    PROVIDERS_PATH,
     GitRepository,
     ReleaseWorkflowError,
     channel_branch,
@@ -30,6 +32,8 @@ from scripts.release_workflow import (
     determine_auto_release,
     inspect_assets,
     is_current_release,
+    main,
+    new_providers,
     select_release,
     set_addon_version,
     update_addon_release,
@@ -241,6 +245,71 @@ def test_current_release_combines_beta_and_rc_channels(
 
 
 @pytest.mark.parametrize(
+    "version",
+    ["2.11.0.dev2026111503", "2.11.0b2", "2.11.0rc1", "2.11.0", "2.11.4"],
+)
+def test_new_providers_are_those_the_previous_release_line_lacks(
+    repository: tuple[Path, GitRepository], version: str
+) -> None:
+    """A provider stays new for its whole release line, on every channel."""
+    path, git_repository = repository
+    _add_file(path, _manifest("universal_player"))
+    _git(path, "tag", "2.10.0")
+    _add_file(path, _manifest("backported"))
+    _git(path, "tag", "2.10.1")
+    # a provider that takes the place of a removed one is new as well
+    _git(path, "rm", "--quiet", _manifest("universal_player"))
+    _add_file(path, _manifest("yoto"))
+    _git(path, "tag", "2.11.0")
+    source_sha = _add_file(path, _manifest("fip"))
+    _add_file(path, _manifest("after_the_release"))
+
+    assert new_providers(git_repository, version, source_sha) == ["fip", "yoto"]
+
+
+def test_new_providers_need_a_stable_release_of_an_earlier_line(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Without a stable release of an earlier line there is nothing to compare with."""
+    path, git_repository = repository
+    _git(path, "tag", "2.10.0b3")
+    _git(path, "tag", "2.11.0")
+    source_sha = _add_file(path, _manifest("fip"))
+
+    assert new_providers(git_repository, "2.11.1", source_sha) == []
+
+
+def test_new_providers_are_provider_folders_only(
+    repository: tuple[Path, GitRepository],
+) -> None:
+    """Only the manifest of a provider folder counts, not a template or a file next to it."""
+    path, git_repository = repository
+    _add_file(path, _manifest("snapcast"))
+    _git(path, "tag", "2.10.0")
+    _add_file(path, _manifest("_demo_music_provider"))
+    _add_file(path, f"{PROVIDERS_PATH}/snapcast/snapweb/manifest.json")
+    _add_file(path, f"{PROVIDERS_PATH}/snapcast/icon.svg")
+    source_sha = _add_file(path, _manifest("fip"))
+
+    assert new_providers(git_repository, "2.11.0b1", source_sha) == ["fip"]
+
+
+def test_new_providers_file_is_what_the_server_reads(
+    repository: tuple[Path, GitRepository], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release build writes the list in the form the server reads at start."""
+    path, _ = repository
+    _git(path, "tag", "2.10.0")
+    source_sha = _add_file(path, _manifest("fip"))
+    monkeypatch.chdir(path)
+    command = f"new-providers --version 2.11.0b1 --source-sha {source_sha} --output new.json"
+    monkeypatch.setattr("sys.argv", ["release_workflow.py", *command.split()])
+
+    assert main() == 0
+    assert read_new_domains(path / "new.json") == {"fip"}
+
+
+@pytest.mark.parametrize(
     ("current", "requested", "relation"),
     [
         ("2.10.0.dev2026072502", "2.10.0.dev2026072501", "newer"),
@@ -424,6 +493,29 @@ def test_release_workflow_builds_the_source_distribution_without_app_secrets() -
     assert wheel_step["run"] == "python3 -m build --wheel"
     # reused draft assets are verified too
     assert "if" not in _workflow_step(workflow, "build_artifacts", "Verify bundled app secrets")
+
+
+def test_release_workflow_records_the_new_providers_before_it_builds() -> None:
+    """The list of new providers is worked out from the release tags, for both distributions."""
+    workflow_text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow = cast("dict[str, Any]", yaml.safe_load(workflow_text))
+    step_names = [step.get("name") for step in workflow["jobs"]["build_artifacts"]["steps"]]
+    name = "Record the providers that are new in this release line"
+
+    assert step_names.index(name) < step_names.index("Build source distribution")
+    # the release tags only come with the full history
+    checkout = _workflow_step(workflow, "build_artifacts", "Check out release source")
+    assert checkout["with"]["fetch-depth"] == 0
+    step = _workflow_step(workflow, "build_artifacts", name)
+    # recorded whenever the distributions are built
+    sdist_step = _workflow_step(workflow, "build_artifacts", "Build source distribution")
+    assert step["if"] == sdist_step["if"]
+    assert step["env"]["SOURCE_SHA"] == "${{ needs.resolve.outputs.source_sha }}"
+    run = str(step["run"])
+    assert "release_workflow.py new-providers" in run
+    assert f"--output source/{CATALOG_NEW_FILE.relative_to(ROOT).as_posix()}" in run
+    # a release without the file only marks nothing as new
+    assert step["continue-on-error"] is True
 
 
 def test_oci_manifest_requires_exact_platforms_and_provenance() -> None:
@@ -1101,6 +1193,19 @@ def _write_dists(
         names = ["music_assistant/__init__.py"] + ([APP_SECRETS_PATH] if sdist_secrets else [])
         for name in names:
             sdist.addfile(tarfile.TarInfo(f"music_assistant-{version}/{name}"), io.BytesIO())
+
+
+def _manifest(domain: str) -> str:
+    return f"{PROVIDERS_PATH}/{domain}/manifest.json"
+
+
+def _add_file(path: Path, name: str) -> str:
+    file = path / name
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("{}\n", encoding="utf-8")
+    _git(path, "add", name)
+    _git(path, "commit", "-m", f"add {name}")
+    return _git(path, "rev-parse", "HEAD")
 
 
 def _commit(path: Path, message: str) -> str:

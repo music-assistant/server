@@ -19,6 +19,9 @@ music_assistant/providers/airplay_receiver/bin/shairport-sync-linux-*
 music_assistant/helpers/app_secrets.json
 app_vars.json
 
+# The providers that are new in a release line - written by the release build.
+music_assistant/catalog_new.json
+
 # Widevine CDM client files - fetched by CI for the base image build, or a maintainer's local copy.
 widevine_cdm/
 .venv
