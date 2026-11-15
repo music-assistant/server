@@ -466,15 +466,26 @@ def set_impersonated_user(user: User | None) -> None:
 
 
 @contextmanager
-def system_auth_context() -> Iterator[None]:
-    """Run the enclosed block as the server itself, without the requesting user."""
-    current_user_token = current_user.set(None)
+def user_auth_context(user: User | None) -> Iterator[None]:
+    """
+    Run the enclosed block as the given user instead of the requesting one.
+
+    :param user: The user to run the block as; None for the server itself.
+    """
+    current_user_token = current_user.set(user)
     impersonated_user_token = impersonated_user.set(None)
     try:
         yield
     finally:
         impersonated_user.reset(impersonated_user_token)
         current_user.reset(current_user_token)
+
+
+@contextmanager
+def system_auth_context() -> Iterator[None]:
+    """Run the enclosed block as the server itself, without the requesting user."""
+    with user_auth_context(None):
+        yield
 
 
 def get_current_token() -> str | None:

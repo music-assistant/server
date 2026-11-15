@@ -63,6 +63,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    EXTERNAL_ID_PROVIDER,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
 )
@@ -3212,7 +3213,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if not queue_items:
             raise QueueEmpty("Cannot save an empty queue as a playlist.")
         uris = [
-            item.uri for item in queue_items if item.uri and item.media_type in PLAYLIST_MEDIA_TYPES
+            item.uri
+            for item in queue_items
+            if item.uri
+            and item.media_type in PLAYLIST_MEDIA_TYPES
+            # a track that is not looked up yet names no track on a music source, and a
+            # playlist would have every one of them looked up
+            and not item.uri.startswith(f"{EXTERNAL_ID_PROVIDER}://")
         ]
         if not uris:
             raise InvalidDataError("No valid items in queue to save as playlist.")
