@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from music_assistant.helpers.datetime import utc
+
 from .constants import BASE_URL
 
 
@@ -95,7 +97,7 @@ def _elapsed_time(started_at: Any, station_at: Any) -> int | None:
     started = _to_datetime(started_at)
     if started is None:
         return None
-    now = _to_datetime(station_at) or datetime.now(UTC)
+    now = _to_datetime(station_at) or utc()
     return max(0, int((now - started).total_seconds()))
 
 

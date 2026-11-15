@@ -1590,6 +1590,7 @@
   "provider.heos.config_entries.timeout.description": "Set the timeout value to use when sending commands to the HEOS system. Some devices could reply slower to commands, if you are seeing Command timeout logs, try increasing this value.",
   "provider.heos.config_entries.timeout.label": "Command timeout value",
   "provider.heos.manifest.description": "Play to Denon & Marantz devices via HEOS.",
+  "provider.hermes_agent_radio.manifest.description": "A 24/7 AI-produced radio station about agents and the open-source agent world, with six live stations.",
   "provider.hue_entertainment.config_entries.backend.disabled_reasons.zha": "Requires the Home Assistant plugin, with ZHA running on Ziggurat.",
   "provider.hue_entertainment.config_entries.backend.label": "Where are your Hue lights connected?",
   "provider.hue_entertainment.config_entries.backend.option_descriptions.hue_bridge": "Sync the lights of the entertainment areas on your Hue Bridge.",
