@@ -1443,6 +1443,27 @@ async def test_silence_keeps_a_player_fed_that_sendspin_has_nothing_for(rig: _Ri
     assert _frames(rig.drain(session))[0] == late_from
 
 
+async def test_audio_that_arrives_before_the_start_is_not_replaced_by_silence(rig: _Rig) -> None:
+    """A player that waits for its start gets no silence in the place of audio still to come."""
+    tenth = SECOND // 10
+    session = await rig.start_playing(frames=tenth)
+    loop = session.loop
+    assert loop is not None
+    assert session.start_us - rig.now_us == 1_750_000
+
+    # all there is of the stream so far, and no silence behind it
+    assert _frames(rig.drain(session)) == list(range(tenth))
+    rig.bridge._on_audio_chunk(_chunk(rig.origin_us, tenth, tenth))
+    assert _frames(rig.drain(session)) == list(range(tenth, 2 * tenth))
+
+    # close to its start the player is kept fed, as it is while it plays
+    rig.clock.advance_us(session.start_us - rig.now_us)
+    starved = rig.drain(session)
+    assert starved
+    assert _frames(starved) == [-1] * (len(starved) // FRAME_SIZE)
+    assert loop.frames_consumed == STARVED_LEAD_FRAMES
+
+
 # ---------------------------------------------------------------- start
 
 

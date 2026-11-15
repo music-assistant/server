@@ -889,15 +889,18 @@ class SendspinSqueezeliteBridge:
         """Return the audio to send to the player now, nothing while it holds enough."""
         if (loop := session.loop) is None:
             return b""
-        elapsed_us = max(0, self._clock.now_us() - session.start_us)
-        played = session.frames(elapsed_us)
+        # negative until the start
+        since_start_us = self._clock.now_us() - session.start_us
+        played = session.frames(max(0, since_start_us))
         cursor = loop.frames_consumed
         max_frames = session.frames(MAX_BLOCK_US)
         if (frames := min(played + session.frames(STREAM_LEAD_US) - cursor, max_frames)) <= 0:
             return b""
         if not (pcm := session.take(cursor, frames)):
-            starved_lead = session.frames(STARVED_LEAD_US)
-            if (frames := min(played + starved_lead - cursor, max_frames)) <= 0:
+            # counted from the real time to the start: silence sent while the player still
+            # waits for it would take the place of audio that is yet to arrive
+            starved_until = session.frames(since_start_us + STARVED_LEAD_US)
+            if (frames := min(starved_until - cursor, max_frames)) <= 0:
                 return b""
             pcm = bytes(frames * session.frame_size)
         return loop.process(pcm)
