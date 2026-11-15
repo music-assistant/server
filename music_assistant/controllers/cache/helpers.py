@@ -17,6 +17,7 @@ from typing import (
     cast,
     get_type_hints,
 )
+from weakref import WeakKeyDictionary
 
 from music_assistant.controllers.cache.constants import (
     BYPASS_CACHE,
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from types import MethodType
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.cache.controller import CacheController
 
 
 class _Cacheable(Protocol):
@@ -52,6 +54,12 @@ _CATEGORY_ATTRIBUTE = "_use_cache_category"
 # per provider id and method, how often the kept results of each family of calls were
 # dropped: a call only keeps its result while that count stood still
 _drops: dict[tuple[str, str], dict[str, int]] = {}
+# one lock per provider id and method: a store checks the drop count and writes, and a drop
+# raises the count and deletes, each holding it. Kept per cache, as a lock serves the event
+# loop of one server
+_locks: WeakKeyDictionary[CacheController, dict[tuple[str, str], asyncio.Lock]] = (
+    WeakKeyDictionary()
+)
 
 
 def use_cache(
@@ -130,23 +138,21 @@ def use_cache(
                 return _reconstruct(cachedata)
 
             async def _store_task(result: R) -> None:
-                # a result fetched before its entry was dropped may predate the change that
-                # dropped it
-                if _drop_count(provider_id, func.__name__, cache_key) != drops:
-                    return
-                await cache.set(
-                    key=cache_key,
-                    data=cast("SerializableType", result),
-                    expiration=expiration,
-                    provider=provider_id,
-                    category=category,
-                    checksum=cache_checksum,
-                    persistent=persistent,
-                    allow_expired_cache=allow_expired_cache,
-                )
-                if _drop_count(provider_id, func.__name__, cache_key) != drops:
-                    # the entry was dropped while it was being written
-                    await cache.delete(cache_key, category=category, provider=provider_id)
+                async with _lock(cache, provider_id, func.__name__):
+                    # a result fetched before its entry was dropped may predate the change
+                    # that dropped it
+                    if _drop_count(provider_id, func.__name__, cache_key) != drops:
+                        return
+                    await cache.set(
+                        key=cache_key,
+                        data=cast("SerializableType", result),
+                        expiration=expiration,
+                        provider=provider_id,
+                        category=category,
+                        checksum=cache_checksum,
+                        persistent=persistent,
+                        allow_expired_cache=allow_expired_cache,
+                    )
 
             if cache_hit and allow_expired_cache:
                 # serve stale data and refresh in the background;
@@ -199,10 +205,11 @@ def use_cache(
                     outcome.error = err
                 return outcome
 
-            # task_id folds concurrent callers for this key onto one execution
+            # task_id folds concurrent callers for this key onto one execution, as long as
+            # they started under the same drop count of its entry
             flight = self.mass.create_task(
                 _flight(),
-                task_id=f"cache_flight.{provider_id}.{cache_key}",
+                task_id=_flight_id(provider_id, cache_key, drops),
                 task_name=f"cache_flight_{provider_id}",
             )
             if flight is asyncio.current_task():
@@ -251,10 +258,12 @@ async def forget_cached(method: Callable[..., Awaitable[Any]], *args: Any) -> No
     owner = cast("_Cacheable", bound.__self__)
     provider_id = _owner_id(owner)
     family = _cache_key(bound.__name__, *args)
-    families = _drops.setdefault((provider_id, bound.__name__), {})
-    families[family] = families.get(family, 0) + 1
-    await owner.mass.cache.delete(family, category=category, provider=provider_id)
-    await owner.mass.cache.delete_prefix(f"{family}.", provider=provider_id, category=category)
+    cache = owner.mass.cache
+    async with _lock(cache, provider_id, bound.__name__):
+        families = _drops.setdefault((provider_id, bound.__name__), {})
+        families[family] = families.get(family, 0) + 1
+        await cache.delete(family, category=category, provider=provider_id)
+        await cache.delete_prefix(f"{family}.", provider=provider_id, category=category)
 
 
 @dataclass(slots=True)
@@ -310,3 +319,30 @@ def _drop_count(provider_id: str, func_name: str, key: str) -> int:
     return sum(
         count for family, count in families.items() if key == family or key.startswith(f"{family}.")
     )
+
+
+def _lock(cache: CacheController, provider_id: str, func_name: str) -> asyncio.Lock:
+    """
+    Return the lock a cache holds for the stores and drops of one method of a provider id.
+
+    :param cache: The cache the results are kept in.
+    :param provider_id: The provider id the results are kept under.
+    :param func_name: The name of the cached method.
+    """
+    locks = _locks.setdefault(cache, {})
+    if (lock := locks.get((provider_id, func_name))) is None:
+        lock = locks[(provider_id, func_name)] = asyncio.Lock()
+    return lock
+
+
+def _flight_id(provider_id: str, key: str, drops: int) -> str:
+    """
+    Return the task id of the shared fetch of a key, one for each drop count of its entry.
+
+    :param provider_id: The provider id the key is kept under.
+    :param key: The cache key of the call.
+    :param drops: How often the families of calls the key belongs to were dropped.
+    """
+    # an entry that was never dropped keeps the plain id
+    prefix = f"cache_flight#{drops}" if drops else "cache_flight"
+    return f"{prefix}.{provider_id}.{key}"

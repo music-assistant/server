@@ -377,6 +377,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """Remove track(s) from playlist."""
         await self.media_manager.remove_playlist_tracks(prov_playlist_id, positions_to_remove)
 
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop what is kept of a playlist's tracks, so the next read fetches them anew."""
+        await self.browse_manager.forget_playlist_tracks(prov_playlist_id)
+
     async def move_playlist_track(
         self, prov_playlist_id: str, from_position: int, to_position: int
     ) -> None:

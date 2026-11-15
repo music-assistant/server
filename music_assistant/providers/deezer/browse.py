@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import forget_cached, use_cache
 from music_assistant.helpers.track_filter import filter_tracks
 
 from .constants import (
@@ -293,6 +293,10 @@ class DeezerBrowseManager:
         if item_id == "recently_played":
             return UniqueList(await self._get_recently_played_items())
         return UniqueList()
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Drop the kept tracks of a regular playlist, so they are fetched anew."""
+        await forget_cached(self._get_regular_playlist_tracks, prov_playlist_id)
 
     # -- Made For You --
 

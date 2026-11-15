@@ -8,16 +8,24 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import ProviderFeature, TaskStatus
+from music_assistant_models.enums import (
+    EventType,
+    ListingType,
+    MediaType,
+    ProviderFeature,
+    TaskStatus,
+)
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
+from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import Playlist, ProviderMapping, Track
 
 from music_assistant.constants import DB_TABLE_CACHE
 from music_assistant.controllers.cache.helpers import forget_cached, use_cache
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_LISTINGS
 from music_assistant.controllers.tasks.context import report_current_task_failure
 from music_assistant.models.music_provider import MusicProvider
 
-from .helpers import create_track
+from .helpers import create_track, media_item_events
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -131,6 +139,14 @@ class _PositionLookupProvider(_EditablePlaylistProvider):
         listed = await self.get_playlist_tracks(prov_playlist_id)
         removed = {track.item_id for track in listed if track.position in positions_to_remove}
         self.track_ids = [track_id for track_id in self.track_ids if track_id not in removed]
+
+
+class _ForgetFailingProvider(_EditablePlaylistProvider):
+    """Music service whose kept pages can not be dropped."""
+
+    async def forget_playlist_tracks(self, prov_playlist_id: str) -> None:
+        """Fail to drop the kept pages."""
+        raise RuntimeError("the cache is not available")
 
 
 @pytest.fixture(name="mass")
@@ -366,3 +382,56 @@ async def test_an_add_failing_part_way_is_listed_as_far_as_it_got(mass: MusicAss
         with pytest.raises(ResourceTemporarilyUnavailable):
             await _add(mass, playlist, "t3", "t4")
         assert await _listed(mass, playlist) == ["t1", "t2", "t3"]
+
+
+async def test_an_add_after_a_removal_does_not_join_a_read_from_before_it(
+    mass: MusicAssistant,
+) -> None:
+    """An add right after a removal reads the playlist itself, not through a read from before."""
+    provider = _EditablePlaylistProvider(mass, ["t1", "t2", "t3"])
+    with _with_provider(mass, provider):
+        playlist = await _library_playlist(mass)
+        # a listing reads the first page as it is before the removal, and gets it later
+        provider.gate.clear()
+        listing = asyncio.create_task(_listed(mass, playlist))
+        await _wait_for(lambda: provider.pages_fetched == 1)
+        await _remove(mass, playlist, 2)
+        add = asyncio.create_task(_add(mass, playlist, "t2"))
+        # let the scan of the add reach the first page before the listing gets it
+        for _ in range(50):
+            if provider.pages_fetched == 2:
+                break
+            await asyncio.sleep(0.01)
+        provider.gate.set()
+        await asyncio.gather(listing, add)
+    assert provider.track_ids == ["t1", "t3", "t2"]
+
+
+async def test_a_failing_forget_still_drops_the_listing_and_announces_the_playlist(
+    mass: MusicAssistant,
+) -> None:
+    """The listing is dropped and the playlist announced even when its pages can not be."""
+    provider = _ForgetFailingProvider(mass, ["t1", "t2"])
+    listing_uri = create_uri(MediaType.PLAYLIST, INSTANCE, PLAYLIST_ID)
+    with _with_provider(mass, provider):
+        playlist = await _library_playlist(mass)
+        await _listed(mass, playlist)
+        assert await mass.cache.get(
+            ListingType.PLAYLIST_TRACKS.value,
+            provider=listing_uri,
+            category=CACHE_CATEGORY_LISTINGS,
+        )
+        with (
+            patch.object(mass, "signal_event") as signal_event,
+            pytest.raises(RuntimeError, match="not available"),
+        ):
+            await _add(mass, playlist, "t3")
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
+    assert (
+        await mass.cache.get(
+            ListingType.PLAYLIST_TRACKS.value,
+            provider=listing_uri,
+            category=CACHE_CATEGORY_LISTINGS,
+        )
+        is None
+    )

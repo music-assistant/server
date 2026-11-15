@@ -618,6 +618,97 @@ async def test_a_fetch_on_its_way_is_not_kept_after_a_forget(
     assert await provider.fetch("a") == "after"
 
 
+async def test_a_call_after_a_forget_does_not_join_a_fetch_from_before_it(
+    provider: _FakeProvider,
+) -> None:
+    """Test that a call made after a forget fetches itself instead of joining an older fetch."""
+    provider.result = "value"
+    provider.gate.clear()
+    before = asyncio.create_task(provider.fetch("a"))
+    await _wait_for_flight(provider)
+    await forget_cached(provider.fetch, "a")
+    after = asyncio.create_task(provider.fetch("a"))
+    # let the later call reach the fetch it would join
+    await asyncio.sleep(0.05)
+    provider.gate.set()
+    assert list(await asyncio.gather(before, after)) == ["value", "value"]
+    assert provider.calls == 2
+
+
+async def test_a_store_being_written_when_forgotten_leaves_nothing_behind(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a forget waits for a store being written and then drops what it wrote."""
+    writing, release, written = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    write = cache_controller.set
+
+    async def _set(key: str, data: Any, **kwargs: Any) -> None:
+        writing.set()
+        await release.wait()
+        await write(key, data, **kwargs)
+        written.set()
+
+    provider.result = "before"
+    with patch.object(cache_controller, "set", side_effect=_set):
+        await provider.fetch("a")
+        await writing.wait()
+        forget = asyncio.create_task(forget_cached(provider.fetch, "a"))
+        await asyncio.sleep(0.05)
+        release.set()
+        await forget
+        await written.wait()
+    assert await _get_row(cache_controller, "fetch.a") is None
+
+
+async def test_a_store_after_a_forget_is_kept_while_an_older_one_was_written(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that an older store being written never overwrites or drops a later result."""
+    writing, release = asyncio.Event(), asyncio.Event()
+    write = cache_controller.set
+
+    async def _set(key: str, data: Any, **kwargs: Any) -> None:
+        if data == "before":
+            writing.set()
+            await release.wait()
+        await write(key, data, **kwargs)
+
+    provider.result = "before"
+    with patch.object(cache_controller, "set", side_effect=_set):
+        await provider.fetch("a")
+        await writing.wait()
+        # the older store finishes its write a moment after the forget started
+        asyncio.get_running_loop().call_later(0.05, release.set)
+        await forget_cached(provider.fetch, "a")
+        provider.result = "after"
+        assert await provider.fetch("a") == "after"
+        await release.wait()
+        await asyncio.sleep(0.05)
+    await _wait_for_stored(cache_controller, "fetch.a")
+    assert await cache_controller.get("fetch.a", provider=_PROVIDER) == "after"
+
+
+async def test_stores_of_two_keys_of_one_method_both_land(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a store waiting for a store of another key of the method is still written."""
+    release = asyncio.Event()
+    write = cache_controller.set
+
+    async def _set(key: str, data: Any, **kwargs: Any) -> None:
+        if key == "fetch.a":
+            await release.wait()
+        await write(key, data, **kwargs)
+
+    provider.result = "value"
+    with patch.object(cache_controller, "set", side_effect=_set):
+        await provider.fetch("a")
+        await provider.fetch("b")
+        release.set()
+        await _wait_for_stored(cache_controller, "fetch.a")
+        await _wait_for_stored(cache_controller, "fetch.b")
+
+
 async def test_forget_of_a_method_without_use_cache_drops_nothing(
     cache_controller: CacheController, provider: _FakeProvider
 ) -> None:

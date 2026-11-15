@@ -2159,8 +2159,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
         finally:
             # an add that fails or is cancelled part way can leave some of the items added
-            await playlist_prov.forget_playlist_tracks(playlist_prov_item_id)
-            await self._request_metadata_refresh(playlist)
+            try:
+                await playlist_prov.forget_playlist_tracks(playlist_prov_item_id)
+            finally:
+                await self._request_metadata_refresh(playlist)
         # the provider reports each item it could not add as a task failure
         skipped = task.failure_count - failures_before if task else 0
         update_current_task_progress(100, f"Added {len(ids_to_add) - skipped} item(s) to playlist")
@@ -2188,8 +2190,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
         finally:
             # a removal that fails or is cancelled part way can leave some of the items removed
-            await provider.forget_playlist_tracks(playlist_prov_item_id)
-            await self._request_metadata_refresh(playlist)
+            try:
+                await provider.forget_playlist_tracks(playlist_prov_item_id)
+            finally:
+                await self._request_metadata_refresh(playlist)
 
     async def _get_reorderable_playlist(
         self, db_playlist_id: str | int
