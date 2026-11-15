@@ -40,6 +40,8 @@ class Verdict(StrEnum):
     # not installed: a moved provider that waits to be installed from the catalog
     MOVED = "moved"
     MOVE_FAILED = "move_failed"
+    # not installed: the catalog offers it to this server
+    NOT_INSTALLED = "not_installed"
     # not decided: the start of the community catalog is not done, or does not run at all
     STARTING = "starting"
     SAFE_MODE = "safe_mode"
@@ -66,8 +68,9 @@ _REASONS: Final[dict[Verdict, str]] = {
         "The community catalog could not be reached to check this, so it does not run. "
         "Restart Music Assistant when your server is online again."
     ),
-    Verdict.BLOCKED: "The community catalog blocked this ({0}), so it no longer runs. "
-    "You can remove it.",
+    Verdict.BLOCKED: (
+        "The community catalog blocked this, so it no longer runs. You can remove it. Reason: {0}"
+    ),
     Verdict.NOT_LISTED: (
         "This is no longer in the community catalog, so it no longer runs. You can remove it."
     ),
@@ -101,6 +104,10 @@ _REASONS: Final[dict[Verdict, str]] = {
     Verdict.MOVE_FAILED: (
         "This moved to the community catalog, but Music Assistant could not install it from "
         "there ({0}). It tries again at every start and whenever it checks the catalog."
+    ),
+    Verdict.NOT_INSTALLED: (
+        "This is no longer installed. An administrator can install it again from the "
+        "Marketplace, or you can remove it here."
     ),
     Verdict.STARTING: (
         "Music Assistant is still starting what comes from the community catalog. "

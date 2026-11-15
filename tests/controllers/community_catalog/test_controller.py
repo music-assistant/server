@@ -275,7 +275,7 @@ async def test_no_kept_copy(
 @pytest.mark.parametrize(
     ("domain", "message", "refusal"),
     [
-        ("switched_off", "Switch the community catalog on", ("switched_off",)),
+        ("switched_off", "Enable the community catalog", ("switched_off",)),
         ("blocked_one", "does not offer blocked_one", ("not_offered", "blocked_one")),
         (
             "blocked_latest_one",
@@ -418,13 +418,62 @@ async def test_remove(tmp_path: Path, catalog: Path, registry: Registry, github:
         )
         assert conf.status == ProviderStatus.UNAVAILABLE
         assert conf.last_error is not None
-        assert conf.last_error.translation_key == "provider_no_longer_available"
+        assert conf.last_error.translation_key == "community_provider_not_installed"
+        assert conf.last_error.message == _REASONS[Verdict.NOT_INSTALLED]
         assert _states(await mass.community_catalog.get_providers()) == {
             DOMAIN: CommunityProviderState.AVAILABLE
         }
         with pytest.raises(ActionUnavailable, match="not installed") as refused:
             await mass.community_catalog.remove_provider(DOMAIN)
         assert_refused(refused, "not_installed", DOMAIN)
+
+
+@pytest.mark.usefixtures("catalog")
+async def test_settings_entry_of_an_offered_provider(
+    tmp_path: Path, registry: Registry, github: GitHub
+) -> None:
+    """The entry of a provider the catalog offers but that was never installed says so."""
+    registry.document = _index({DOMAIN: _publish(github, DOMAIN)})
+    _seed_instance(tmp_path, DOMAIN)
+
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        conf = _settings_entry(
+            await mass.config.get_provider_configs(include_unavailable=True), DOMAIN
+        )
+        assert conf.status == ProviderStatus.UNAVAILABLE
+        assert conf.last_error is not None
+        assert conf.last_error.translation_key == "community_provider_not_installed"
+        assert conf.last_error.message == _REASONS[Verdict.NOT_INSTALLED]
+
+        await mass.community_catalog.install_provider(DOMAIN)
+
+        assert mass.community_catalog.unavailable_reason(DOMAIN) is None
+
+
+@pytest.mark.usefixtures("catalog")
+@pytest.mark.parametrize("case", ["not offered", "disabled", "safe mode"])
+async def test_settings_entry_without_an_offer(
+    tmp_path: Path, registry: Registry, github: GitHub, case: str
+) -> None:
+    """The entry of a provider the catalog does not offer to this server has the general text."""
+    entry = _publish(github, DOMAIN)
+    if case == "not offered":
+        entry.update(status="blocked", reason="Sends the library elsewhere")
+    registry.document = _index({DOMAIN: entry})
+    _seed_instance(tmp_path, DOMAIN)
+    async with _server(tmp_path) as mass:
+        await _switch(mass, enabled=True)
+        if case == "disabled":
+            await _switch(mass, enabled=False)
+
+    async with _server(tmp_path, safe_mode=case == "safe mode") as mass:
+        conf = _settings_entry(
+            await mass.config.get_provider_configs(include_unavailable=True), DOMAIN
+        )
+        assert conf.status == ProviderStatus.UNAVAILABLE
+        assert conf.last_error is not None
+        assert conf.last_error.translation_key == "provider_no_longer_available"
 
 
 async def test_switch_stays_on_while_a_provider_is_installed(
