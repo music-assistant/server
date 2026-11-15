@@ -27,6 +27,11 @@ SUPPORTED_DASHBOARD_TYPES = {
 }
 
 
+def _escape_for_fully(url: str) -> str:
+    """Escape a url once more, as Fully Kiosk decodes the url it is told to load before opening it."""
+    return url.replace("%", "%25")
+
+
 class FullyKioskDashboards:
     """Registers connected Fully Kiosk devices as dashboard endpoints and drives their webview."""
 
@@ -105,7 +110,7 @@ class FullyKioskDashboards:
                 await client.screenOn()
                 await client.stopScreensaver()
                 await client.toForeground()
-                await client.loadUrl(url)
+                await client.loadUrl(_escape_for_fully(url))
         except FullyKioskError, ClientError, TimeoutError:
             # never chain the caught error: its repr may embed the request url with the password
             raise PlayerUnavailableError(
