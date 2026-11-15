@@ -715,7 +715,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ):
             return cast("SearchResults", cache)
         # Check if the search query is a streaming provider public shareable URL
-        if (url_result := await self._search_shareable_url(search_query)) is not None:
+        if (
+            url_result := await self._search_shareable_url(
+                search_query, media_types, None if providers is None else search_providers
+            )
+        ) is not None:
             return url_result
         # handle normal global search by querying the library and all providers
         # the library (if included) is searched first: it is fast and its results are
@@ -3199,11 +3203,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     break
         return entries
 
-    async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
+    async def _search_shareable_url(
+        self,
+        search_query: str,
+        media_types: list[MediaType] = MediaType.ALL,
+        search_providers: list[str] | None = None,
+    ) -> SearchResults | None:
         """
         Handle a search query that is a streaming provider public shareable URL.
 
         Returns None if the query is not such a URL and a regular search must be done.
+
+        :param search_query: The search query that may hold a shareable URL.
+        :param media_types: Only return the item when it is one of these media types.
+        :param search_providers: The provider instances a scoped search targets;
+            the URL is only resolved when one of them serves it. None for an unscoped search.
         """
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
@@ -3216,6 +3230,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults()
         if provider_instance_id_or_domain not in PROVIDERS_WITH_SHAREABLE_URLS:
             return None
+        if media_type not in media_types:
+            return SearchResults()
+        if search_providers is not None:
+            # a scoped search only resolves the URL on the call that targets its service
+            matching = next(
+                (
+                    instance_id
+                    for instance_id in search_providers
+                    if (prov := self.mass.get_provider(instance_id))
+                    and prov.domain == provider_instance_id_or_domain
+                ),
+                None,
+            )
+            if matching is None:
+                return SearchResults()
+            provider_instance_id_or_domain = matching
         try:
             item = await self.get_item(
                 media_type=media_type,
