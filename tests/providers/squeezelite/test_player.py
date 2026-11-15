@@ -825,6 +825,18 @@ def test_a_bridge_stream_is_no_media_of_the_protocol(owns_stream: bool) -> None:
         assert player.current_media.title == "Before"
 
 
+def test_a_track_change_of_the_player_goes_to_its_bridge() -> None:
+    """The stream of a bridge plays on from track to track: the bridge shows what plays now."""
+    player, bridge = _player_with_bridge()
+
+    player.on_player_media_updated()
+
+    bridge.update_now_playing.assert_called_once_with()
+    # without a bridge there is nothing to tell
+    player.sendspin_bridge = None
+    player.on_player_media_updated()
+
+
 async def test_a_stream_of_the_protocol_takes_the_players_back_from_their_bridges() -> None:
     """Before the protocol plays on its players, a bridge that plays on one of them lets go."""
     player, bridge = _player_with_bridge()

@@ -288,6 +288,8 @@ def _attach_squeezelite(
     :param device_model: The device model the squeezelite player reports.
     :return: The squeezelite protocol.
     """
+    # the squeezelite manager looks up what it learned about a player before it bridges it
+    mass.cache.get = AsyncMock(return_value=None)
     provider = MagicMock(mass=mass, domain="squeezelite")
     provider.logger = logging.getLogger("test.squeezelite_bridge_manager")
     provider.bridge_manager = SqueezeliteSendspinBridgeManager(provider)
