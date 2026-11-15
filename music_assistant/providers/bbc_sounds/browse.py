@@ -38,7 +38,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers import datetime
 from music_assistant.providers.bbc_sounds.constants import Constants, ValidMenuIDs
-from music_assistant.providers.bbc_sounds.now_playing import _station_programme_display
+from music_assistant.providers.bbc_sounds.now_playing import station_programme_display
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds.provider import BBCSoundsProvider
@@ -116,6 +116,15 @@ class BrowseManager:
         ):
             raise KeyError("Invalid subpath")
         return await self._browse_menu(path_parts)
+
+    async def refresh_menu_from_api(self) -> None:
+        """Get a fresh copy of the main Sounds menu from the API."""
+        self.provider.logger.debug("No cached menu, fetching from API")
+        # TODO: Keep recommendations=True until full recommendation rail browsing lands
+        self.menu = await self.provider.client.get_menu(
+            include_recommendations=True,
+        )
+        self.menu_last_fetched = datetime.utc_timestamp()
 
     async def _browse_menu(
         self, path_parts: list[str]
@@ -281,15 +290,6 @@ class BrowseManager:
                 item_list.append(new_folder)
         return item_list
 
-    async def _refresh_menu_from_api(self) -> None:
-        """Get a fresh copy of the main Sounds menu from the API."""
-        self.provider.logger.debug("No cached menu, fetching from API")
-        # TODO: Keep recommendations=True until full recommendation rail browsing lands
-        self.menu = await self.provider.client.get_menu(
-            include_recommendations=True,
-        )
-        self.menu_last_fetched = datetime.utc_timestamp()
-
     async def _convert_menu(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         menu_items = []
         if self.menu:
@@ -302,7 +302,7 @@ class BrowseManager:
     async def _get_menu(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Access self.menu data, refreshing when necessary."""
         if self._menu_is_stale:
-            await self._refresh_menu_from_api()
+            await self.refresh_menu_from_api()
 
         if not self.menu or not self.menu.sub_items:
             raise MusicAssistantError("Menu API response is empty or invalid")
@@ -422,7 +422,7 @@ class BrowseManager:
             ):
                 # A plain Station has no programme, so its titles and synopses are empty
                 station_info = (
-                    _station_programme_display(station)
+                    station_programme_display(station)
                     if show_current_programme and isinstance(station, LiveStation)
                     else None
                 )

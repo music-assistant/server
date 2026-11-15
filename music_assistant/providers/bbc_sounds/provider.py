@@ -132,7 +132,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         if not self.browse_manager.menu or (
             isinstance(self.browse_manager.menu, Menu) and not self.browse_manager.menu.sub_items
         ):
-            await self.browse_manager._refresh_menu_from_api()
+            await self.browse_manager.refresh_menu_from_api()
 
     @use_cache(expiration=Constants.DEFAULT_EXPIRATION)
     async def get_track(self, prov_track_id: str) -> Track:

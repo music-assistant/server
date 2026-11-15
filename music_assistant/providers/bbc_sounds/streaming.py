@@ -118,7 +118,7 @@ class StreamManager:
         # current track immediately rather than the station name until the first
         # callback lands. (stolen from siriusxm provider)
         try:
-            await self.now_playing._update_live_stream_metadata(stream_details, 0)
+            await self.now_playing.update_live_stream_metadata(stream_details, 0)
         except exceptions.SoundsException:
             self.logger.exception("Failed to update live stream metadata for %s", item_id)
         return stream_details
@@ -175,7 +175,7 @@ class StreamManager:
             raise self._stream_error(item_id, MediaType.RADIO)
 
         stream_details.stream_metadata_update_callback = (
-            self.now_playing._update_live_stream_metadata
+            self.now_playing.update_live_stream_metadata
         )
         stream_details.stream_metadata_update_interval = Constants.NOW_PLAYING_REFRESH_TIME
         return stream_details
