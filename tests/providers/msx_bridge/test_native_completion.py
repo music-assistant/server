@@ -15,6 +15,8 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData, SleepTimerTarget
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 
+from .fakes import serve_active_queue
+
 if TYPE_CHECKING:
     from aiohttp.test_utils import TestClient
 
@@ -44,11 +46,11 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
 ) -> None:
     """Duplicate callbacks never repeat a transition, including repeat-one cycles."""
     items = [
-        QueueItem(queue_id=player.player_id, queue_item_id=str(i), name="duplicate", duration=8)
+        QueueItem(queue_id=player.protocol_id, queue_item_id=str(i), name="duplicate", duration=8)
         for i in range(2)
     ]
     queue = PlayerQueue(
-        queue_id=player.player_id,
+        queue_id=player.protocol_id,
         active=True,
         display_name="Queue",
         available=True,
@@ -62,10 +64,10 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
     queue_data = PlayerQueueData(queue=queue, items=items)
     if timer_ends_item:
         queue_data.sleep_timer_target = SleepTimerTarget(SleepTimerMode.END_OF_ITEM, str(index), 8)
-    controller._queue_data = {player.player_id: queue_data}
-    mass_mock.players.get_player.return_value = player
+    controller._queue_data = {player.protocol_id: queue_data}
+    mass_mock.players.get_protocol.return_value = player
     mass_mock.player_queues.get_next_item = controller.get_next_item
-    mass_mock.player_queues.get_active_queue.return_value = queue
+    serve_active_queue(mass_mock, queue)
     mass_mock.player_queues.get.return_value = queue
     mass_mock.player_queues.mark_ended = Mock()
     mass_mock.player_queues.stop = AsyncMock()
@@ -74,11 +76,11 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
         queue.current_index = int(item_id)
         queue.current_item = items[int(item_id)]
         await player.play_media(
-            PlayerMedia(uri="http://ma/track", source_id=player.player_id, queue_item_id=item_id)
+            PlayerMedia(uri="http://ma/track", source_id=player.protocol_id, queue_item_id=item_id)
         )
 
     mass_mock.player_queues.play_index.side_effect = select
-    await select(player.player_id, str(index))
+    await select(player.protocol_id, str(index))
     player.bind_native_completion("decoder-1", player.current_media)
     response = await http_client.get("/api/complete/msx_test?playback_id=decoder-1")
     assert response.status == 200
@@ -93,7 +95,9 @@ async def test_natural_completion_uses_real_queue_repeat_selection(
         mass_mock.player_queues.play_index.assert_not_awaited()
     else:
         assert queue.current_index == expected
-        mass_mock.player_queues.play_index.assert_awaited_once_with(player.player_id, str(expected))
+        mass_mock.player_queues.play_index.assert_awaited_once_with(
+            player.protocol_id, str(expected)
+        )
     count = mass_mock.player_queues.play_index.await_count
     response = await http_client.get("/api/complete/msx_test?playback_id=decoder-1")
     assert response.status == 200

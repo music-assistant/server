@@ -20,6 +20,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     PlaybackState,
     PlayerFeature,
     ProviderFeature,
@@ -29,7 +30,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.util import lock
-from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.models.player_provider import PlayerProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -232,25 +233,28 @@ class AlexaDevice:
     _locale: str
 
 
-class AlexaPlayer(Player):
+class AlexaPlayer(PlayerProtocol):
     """Implementation of an Alexa Player."""
 
     def __init__(
         self,
         provider: AlexaProvider,
-        player_id: str,
+        protocol_id: str,
         device: AlexaDevice,
     ) -> None:
         """Initialize AlexaPlayer."""
-        super().__init__(provider, player_id)
+        super().__init__(provider, protocol_id)
         self.device = device
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
         }
-        self._attr_name = player_id
+        self._attr_name = protocol_id
         self._attr_device_info = DeviceInfo()
+        self._attr_device_info.add_identifier(
+            IdentifierType.SERIAL_NUMBER, device.device_serial_number
+        )
         self._attr_powered = False
         self._attr_available = True
         self._attr_needs_poll = True
@@ -348,16 +352,16 @@ class AlexaPlayer(Player):
         self._attr_volume_level = volume
         self.update_state()
 
-    async def on_unload(self) -> None:
+    async def on_detach(self) -> None:
         """Drop a volume change still waiting or being sent."""
-        self.mass.cancel_timer(f"alexa_volume_{self.player_id}")
+        self.mass.cancel_timer(f"alexa_volume_{self.protocol_id}")
         if self._volume_task is not None:
             self._volume_task.cancel()
-        await super().on_unload()
+        await super().on_detach()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
-        stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        stream_url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
 
         payload = {
             "streamUrl": stream_url,
@@ -373,7 +377,7 @@ class AlexaPlayer(Player):
                     self.provider,
                     "/ma/push-url",
                     method="POST",
-                    json_data={**payload, "playerId": self.player_id, "canSkipSpeech": True},
+                    json_data={**payload, "playerId": self.protocol_id, "canSkipSpeech": True},
                     timeout=10,
                 )
             )
@@ -418,10 +422,10 @@ class AlexaPlayer(Player):
         to the configured Music Assistant / Alexa API so the Alexa side can
         display/update the playing item.
         """
-        if self._last_stream_url is None:
+        if self._last_stream_url is None or self.player is None:
             return
 
-        media = self.state.current_media
+        media = self.player.current_media
 
         async def _upload_metadata() -> None:
             stream_url = self._last_stream_url
@@ -453,7 +457,7 @@ class AlexaPlayer(Player):
             self._last_meta_checksum = meta_checksum
 
         self.mass.create_task(
-            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.player_id}"
+            _upload_metadata(), task_name=f"alexa_upload_metadata_{self.protocol_id}"
         )
 
     def _schedule_volume_send(self, delay: float = VOLUME_SEND_DELAY, retry: bool = False) -> None:
@@ -466,7 +470,7 @@ class AlexaPlayer(Player):
             if self._volume_task is None or self._volume_task.done():
                 self._volume_task = self.mass.create_task(self._send_volume())
 
-        self.mass.call_later(delay, _start_send, task_id=f"alexa_volume_{self.player_id}")
+        self.mass.call_later(delay, _start_send, task_id=f"alexa_volume_{self.protocol_id}")
 
     async def _send_volume(self) -> None:
         """Step the Echo to MA's volume, again if that changed while a step was sent."""
@@ -525,7 +529,7 @@ class AlexaPlayer(Player):
                     "/ma/control",
                     method="POST",
                     json_data={
-                        "playerId": self.player_id,
+                        "playerId": self.protocol_id,
                         "command": command,
                         "canSkipSpeech": True,
                     },
@@ -610,8 +614,7 @@ class AlexaProvider(PlayerProvider):
 
         for device in devices:
             if device.get("capabilities") and "MUSIC_SKILL" in device.get("capabilities"):
-                dev_name = device["accountName"]
-                player_id = dev_name
+                protocol_id = device["accountName"]
                 # Initialize AlexaDevice
                 device_object = AlexaDevice()
                 device_object._device_type = device["deviceType"]
@@ -619,16 +622,19 @@ class AlexaProvider(PlayerProvider):
                 device_object._device_family = device["deviceOwnerCustomerId"]
                 device_object._cluster_members = device["clusterMembers"]
                 device_object._locale = alexa_locale
-                self.devices[player_id] = device_object
-
-                # Create AlexaPlayer instance
-                player = AlexaPlayer(self, player_id, device_object)
-                await self.mass.players.register_or_update(player)
+                self.devices[protocol_id] = device_object
 
         if self.devices:
             # builds the csrf header the volume calls need
             AlexaAPI(next(iter(self.devices.values())), self.login)
         await self._load_intents()
+
+    async def discover_players(self) -> None:
+        """Register the Echo devices of the account that have no attached protocol."""
+        for protocol_id, device in self.devices.items():
+            if self.get_protocol(protocol_id) or not self.mass.players.wants_protocol(protocol_id):
+                continue
+            await self.mass.players.register(AlexaPlayer(self, protocol_id, device))
 
     async def get_volumes(self) -> dict[str, int]:
         """Return each Echo's volume by serial number, read once per poll round."""

@@ -45,12 +45,9 @@ def _player(monkeypatch: pytest.MonkeyPatch) -> SendspinPlayer:
         raising=False,
     )
     monkeypatch.setattr(SendspinPlayer, "synced_to", property(lambda _self: None), raising=False)
-    monkeypatch.setattr(SendspinPlayer, "player_id", "leader", raising=False)
+    monkeypatch.setattr(SendspinPlayer, "protocol_id", "leader", raising=False)
     monkeypatch.setattr(
-        SendspinPlayer,
-        "state",
-        property(lambda _self: SimpleNamespace(current_media=_self._live_media)),
-        raising=False,
+        SendspinPlayer, "_player_media", property(lambda _self: _self._live_media), raising=False
     )
     monkeypatch.setattr(
         SendspinPlayer,

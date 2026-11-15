@@ -57,8 +57,8 @@ class AirPlayDashboards:
         """
         if self._unloaded:
             return
-        player.on_companion_state_change = functools.partial(self.reconcile, player.player_id)
-        self.reconcile(player.player_id)
+        player.on_companion_state_change = functools.partial(self.reconcile, player.protocol_id)
+        self.reconcile(player.protocol_id)
 
     def reconcile(self, player_id: str) -> None:
         """
@@ -97,7 +97,7 @@ class AirPlayDashboards:
         """Evaluate a player's eligibility and (un)register it accordingly."""
         if self._unloaded:
             return
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_protocol(player_id)
         if not isinstance(player, AirPlayControlPlayer):
             self.unregister(player_id)
             return
@@ -124,12 +124,12 @@ class AirPlayDashboards:
 
     async def _installed_app_ids(self, player: AirPlayControlPlayer) -> frozenset[str] | None:
         """Return the cached installed-app bundle ids, fetching them once if still unknown."""
-        if player.player_id not in self._installed_apps:
+        if player.protocol_id not in self._installed_apps:
             app_ids = await player.async_list_installed_app_ids()
-            self._installed_apps[player.player_id] = (
+            self._installed_apps[player.protocol_id] = (
                 frozenset(app_ids) if app_ids is not None else None
             )
-        return self._installed_apps[player.player_id]
+        return self._installed_apps[player.protocol_id]
 
     def _register(self, player: AirPlayControlPlayer) -> None:
         """Register (or refresh) a player as a dashboard endpoint with the controller."""
@@ -137,16 +137,16 @@ class AirPlayDashboards:
         if self._unloaded:
             return
         device = DashboardDevice(
-            dashboard_id=self._dashboard_id(player.player_id),
+            dashboard_id=self._dashboard_id(player.protocol_id),
             name=player.display_name,
             supported_types=set(SUPPORTED_DASHBOARD_TYPES),
             provider_domain_hint=self.provider.domain,
         )
-        self._unregister_callbacks[player.player_id] = (
+        self._unregister_callbacks[player.protocol_id] = (
             self.mass.dashboard.register_dashboard_handler(
                 device,
-                functools.partial(self._on_show, player.player_id),
-                functools.partial(self._on_hide, player.player_id),
+                functools.partial(self._on_show, player.protocol_id),
+                functools.partial(self._on_hide, player.protocol_id),
             )
         )
 
@@ -166,7 +166,7 @@ class AirPlayDashboards:
         :param target_player_id: Player to show, required when the dashboard is NOW_PLAYING.
         :raises PlayerUnavailableError: If the Apple TV is gone or the launch fails.
         """
-        player = self.mass.players.get_player(player_id)
+        player = self.provider.get_protocol(player_id)
         if not isinstance(player, AirPlayControlPlayer):
             raise PlayerUnavailableError(f"Apple TV {player_id} is no longer available")
         target_url = await self.mass.dashboard.resolve_dashboard_url(

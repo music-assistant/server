@@ -652,7 +652,7 @@ class CommunityCatalogController(CoreController):
     def _is_playing(self) -> bool:
         """Return whether any player is playing."""
         return any(
-            player.state.playback_state == PlaybackState.PLAYING
+            player.playback_state == PlaybackState.PLAYING
             for player in self.mass.players.iter_players()
         )
 
