@@ -106,7 +106,8 @@ _REASONS: Final[dict[Verdict, str]] = {
         "there ({0}). It tries again at every start and whenever it checks the catalog."
     ),
     Verdict.NOT_INSTALLED: (
-        "This is no longer installed. Install it again from the Marketplace, or remove it here."
+        "This is no longer installed. An administrator can install it again from the "
+        "Marketplace, or you can remove it here."
     ),
     Verdict.STARTING: (
         "Music Assistant is still starting what comes from the community catalog. "

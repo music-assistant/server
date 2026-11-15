@@ -302,7 +302,7 @@
   "common.errors.community_provider_move_failed": "This moved to the community catalog, but Music Assistant could not install it from there ({0}). It tries again at every start and whenever it checks the catalog.",
   "common.errors.community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
   "common.errors.community_provider_not_for_this_version": "This is not available for this version of Music Assistant, so it does not run. You can remove it.",
-  "common.errors.community_provider_not_installed": "This is no longer installed. Install it again from the Marketplace, or remove it here.",
+  "common.errors.community_provider_not_installed": "This is no longer installed. An administrator can install it again from the Marketplace, or you can remove it here.",
   "common.errors.community_provider_not_listed": "This is no longer in the community catalog, so it no longer runs. You can remove it.",
   "common.errors.community_provider_reinstall_failed": "The files of this were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",
   "common.errors.community_provider_requirements_clash": "This needs versions of Python packages that clash with Music Assistant or with something else from the community catalog, so it does not run.",
