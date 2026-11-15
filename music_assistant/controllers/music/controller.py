@@ -714,14 +714,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             base_class=SearchResults,
         ):
             return cast("SearchResults", cache)
-        # Check if the search query is a streaming provider public shareable URL.
-        # The caller's media_types and providers filters are honored inside
-        # _search_shareable_url so a scoped per-provider search only resolves
-        # the URL on the one call whose target matches the URL's provider, and
-        # a type-restricted search doesn't return items of other types.
+        # Check if the search query is a streaming provider public shareable URL
         if (
             url_result := await self._search_shareable_url(
-                search_query, media_types=media_types, providers=providers
+                search_query, media_types, None if providers is None else search_providers
             )
         ) is not None:
             return url_result
@@ -3221,14 +3217,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self,
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
-        providers: list[str] | None = None,
+        search_providers: list[str] | None = None,
     ) -> SearchResults | None:
         """
         Handle a search query that is a streaming provider public shareable URL.
 
         Returns None if the query is not such a URL and a regular search must be done.
-        Returns an empty SearchResults when the URL is a shareable URL but the
-        caller's media_types or providers filter excludes it.
+
+        :param search_query: The search query that may hold a shareable URL.
+        :param media_types: Only return the item when it is one of these media types.
+        :param search_providers: The provider instances a scoped search targets;
+            the URL is only resolved when one of them serves it. None for an unscoped search.
         """
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
@@ -3241,35 +3240,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return SearchResults()
         if provider_instance_id_or_domain not in PROVIDERS_WITH_SHAREABLE_URLS:
             return None
-        # A URL that resolves to e.g. a playlist must not come back when the
-        # caller only asked for tracks.
         if media_type not in media_types:
             return SearchResults()
-        # The frontend's progressive search dispatches one music/search per
-        # target provider; without this guard every one of those scoped calls
-        # returned the resolved item, turning one pasted URL into N duplicates.
-        # Resolve on the one scoped call whose target matches the URL's
-        # provider; return empty on the others. On a multi-account install we
-        # pick an instance that is both in the requested scope and serves the
-        # URL's domain, so a request scoped to a second account is answered by
-        # that account's instance (not whichever one get_provider happens to
-        # select first).
-        if providers is not None:
-            requested = set(providers)
+        if search_providers is not None:
+            # a scoped search only resolves the URL on the call that targets its service
             matching = next(
                 (
-                    prov
-                    for prov in self.mass.providers
-                    if prov.domain == provider_instance_id_or_domain
-                    and (prov.instance_id in requested or prov.domain in requested)
+                    instance_id
+                    for instance_id in search_providers
+                    if (prov := self.mass.get_provider(instance_id))
+                    and prov.domain == provider_instance_id_or_domain
                 ),
                 None,
             )
             if matching is None:
                 return SearchResults()
-            # scope the lookup to the matched instance so get_item resolves
-            # against that account, not the default domain lookup
-            provider_instance_id_or_domain = matching.instance_id
+            provider_instance_id_or_domain = matching
         try:
             item = await self.get_item(
                 media_type=media_type,
