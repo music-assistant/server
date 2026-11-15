@@ -28,7 +28,7 @@ MIN_SPAN_S = 10.0
 SETTLE_S = 1.0
 START_JUMP_MS = 10.0
 
-# an error beyond this is not corrected in a jump
+# a start that is further off than this is not corrected in a jump
 MAX_START_JUMP_MS = 2000.0
 
 _JIFFIES_WRAP = 1 << 32
@@ -233,8 +233,7 @@ class SyncLoop:
         :param window_s: Length of the window over which the error is filtered.
         :param min_span_s: Time the reports have to span before their drift is trusted.
         :param settle_s: Time after the start during which reports are ignored.
-        :param start_jump_ms: Error above which it is corrected in one jump, at the start
-            and after a jump of the player's clock.
+        :param start_jump_ms: Start error above which it is corrected in one jump.
         """
         self._sample_rate = sample_rate
         self._frame_size = frame_size
@@ -250,11 +249,8 @@ class SyncLoop:
         self._ledger: deque[tuple[int, int]] = deque([(0, 0)])
         self._offset = 0
         self._frames_sent = 0
-        # frames of a jump still to drop (positive) or to insert (negative)
+        # frames of the start jump still to drop (positive) or to insert (negative)
         self._pending_jump = 0
-        # a large error is corrected in one jump once per run of reports: the one after
-        # the start and the one after each jump of the player's clock
-        self._jump_armed = True
         self._residual = 0.0
         # reports in the filter window: (seconds since the start, error without corrections)
         self._points: deque[tuple[float, float]] = deque()
@@ -311,7 +307,6 @@ class SyncLoop:
         if clock_generation != self._clock_generation:
             # report times from before a clock jump do not compare with the ones after it
             self._clock_generation = clock_generation
-            self._jump_armed = True
             self._points.clear()
             self._rate_ppm = self._drift_ppm = 0.0
             self._error_ms = self._predicted_ms = None
@@ -349,14 +344,10 @@ class SyncLoop:
             if self._start_error_ms is None:
                 # nothing was corrected yet, so this is the error of the start itself
                 self._start_error_ms = raw_now
+                if self._start_jump_ms < abs(raw_now) <= MAX_START_JUMP_MS:
+                    self._pending_jump = round(raw_now * self._sample_rate / 1000)
             # what is left of the error once everything that was sent has been played
-            predicted_ms = raw_now - self._to_ms(self._offset + self._pending_jump)
-            if self._jump_armed:
-                self._jump_armed = False
-                if self._start_jump_ms < abs(predicted_ms) <= MAX_START_JUMP_MS:
-                    self._pending_jump += round(predicted_ms * self._sample_rate / 1000)
-                    predicted_ms = raw_now - self._to_ms(self._offset + self._pending_jump)
-            self._predicted_ms = predicted_ms
+            self._predicted_ms = raw_now - self._to_ms(self._offset + self._pending_jump)
             rate_ppm = self._drift_ppm + self._gain_ppm_per_ms * self._predicted_ms
             self._rate_ppm = max(-self._max_rate_ppm, min(self._max_rate_ppm, rate_ppm))
         return raw_ms - played_ms
@@ -366,9 +357,8 @@ class SyncLoop:
         Turn the next block of source PCM into the PCM to send to the player.
 
         The result is the block itself as long as nothing has to be corrected. A large
-        error at the start, or after the player's clock jumped, is corrected in one jump:
-        the result then starts with silence, or audio is skipped, which can leave nothing
-        of a block.
+        start error is corrected once per session: the result then starts with silence,
+        or audio is skipped, which can leave nothing of a block.
 
         :param pcm: The next source PCM, a whole number of frames.
         :return: The same audio with frames dropped or repeated where the loop requires it.
