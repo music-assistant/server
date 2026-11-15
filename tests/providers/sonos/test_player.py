@@ -195,7 +195,9 @@ async def test_connect_during_shutdown_does_not_contact_player() -> None:
     """Test shutdown prevents a pending connection attempt from contacting the speaker."""
     player, mass = _make_player()
     mass.closing = True
-    player.client.connect = AsyncMock()  # type: ignore[method-assign]
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionTimeoutError("Connection timeout to host https://x:1443")
+    )
 
     await player._connect(retry_on_fail=30)
 
