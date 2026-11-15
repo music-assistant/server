@@ -24,6 +24,10 @@ In that folder you should create (at least) a __init__.py file and a manifest.js
 Optional is an icon.svg file that will be used as the icon for the provider in the UI,
 but we also support that you specify a material design icon in the manifest.json file.
 
+Optional is a strings.json file with the texts of the provider in English, which are
+translated into the other languages. This demo keeps the label of its menu action there
+(menu_actions.<id>.label) and the message its menu action answers with (config_actions.<key>).
+
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
 environment by running the setup.sh scripts in the scripts folder of the repository.
@@ -37,6 +41,8 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
+from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
@@ -57,6 +63,8 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.models.plugin import PluginProvider, SourceControlValue
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import SourceControl
     from music_assistant_models.media_items import (
@@ -128,6 +136,8 @@ class MyDemoPluginprovider(PluginProvider):
     # without changing _in_use_by_player, so stream loops and generator
     # finallys must guard their lock release on both still matching.
     _active_session_id: str | None = None
+    # the handles that remove the API commands this provider registered
+    _unregister_commands: tuple[Callable[[], None], ...] = ()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -148,6 +158,17 @@ class MyDemoPluginprovider(PluginProvider):
         # it will be called after the provider has been fully loaded into Music Assistant.
         # you can use this for instance to trigger custom (non-mdns) discovery of plugins
         # or any other logic that needs to run after the provider is fully loaded.
+        #
+        # The menu action declared in manifest.json calls an API command of this provider,
+        # so the command is registered here, under the domain of the provider
+        # ("<domain>/..."), with the scope of what it does: this one only reads, so
+        # LIBRARY_READ; an action that changes something needs a scope such as
+        # LIBRARY_WRITE or PLAYERS_CONTROL. Remove it again in unload.
+        self._unregister_commands = (
+            self.mass.register_api_command(
+                f"{self.domain}/show_item", self.show_item, required_scope=Scope.LIBRARY_READ
+            ),
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -161,6 +182,30 @@ class MyDemoPluginprovider(PluginProvider):
         # relevant or leave out completely if not needed.
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
+        for unregister in self._unregister_commands:
+            unregister()
+        self._unregister_commands = ()
+
+    async def show_item(self, uri: str) -> ConfigActionResult:
+        """
+        Answer the menu action of this demo with a message that names the media item.
+
+        :param uri: The uri of the media item the menu action was chosen for.
+        """
+        # OPTIONAL
+        # The command of a menu action (see "menu_actions" in manifest.json). A client
+        # calls it with the uri of the media item the user chose the entry for, and an
+        # action that declares "plays": true also gets the player_id to play on.
+        # Answer nothing, or a ConfigActionResult with a message the client shows and/or a
+        # url it opens once. Raise a MusicAssistantError to tell the user the action failed:
+        # get_item_by_uri below raises MediaNotFoundError for an unknown item.
+        item = await self.mass.music.get_item_by_uri(uri)
+        return ConfigActionResult(
+            message=f"The demo plugin was asked about {item.name}",
+            translation_key="show_item",
+            translation_args=[item.name],
+            translation_owner=self.translation_owner,
+        )
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""

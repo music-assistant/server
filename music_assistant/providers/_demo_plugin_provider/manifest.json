@@ -5,5 +5,14 @@
   "description": "Test/Example Plugin Provider for Music Assistant.",
   "codeowners": ["@yourgithubusername"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/plugin-support/demo/"
+  "documentation": "https://music-assistant.io/plugin-support/demo/",
+  "menu_actions": [
+    {
+      "id": "show_item",
+      "label": "Ask the demo plugin about this",
+      "media_types": ["track", "album", "artist", "playlist"],
+      "icon": "mdi-information-outline",
+      "command": "_demo_plugin_provider/show_item"
+    }
+  ]
 }
