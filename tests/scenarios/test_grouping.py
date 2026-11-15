@@ -937,3 +937,120 @@ async def test_a_player_added_to_an_idle_sync_group_is_checked_against_the_membe
     await scenario.idle()
     assert _state(scenario, office_id).synced_to == kitchen_id
     await _stop(scenario, group_id)
+
+
+async def test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_over(
+    scenario: Scenario,
+) -> None:
+    """
+    Members that follow a leader outside the sync group when it plays can still lead it.
+
+    Kitchen, Office and Den follow Hall. Downstairs, of those three and the pair Patio and Porch
+    of another make, plays: Kitchen, its first member, leads after it is released from Hall,
+    Office and Den join it, and the pair, which can not group with Kitchen, is left out.
+    """
+    _, (kitchen, office, den, hall) = await _speakers(scenario, "Kitchen", "Office", "Den", "Hall")
+    kitchen_id, office_id, den_id, hall_id = (
+        _player_id(scenario, x) for x in (kitchen, office, den, hall)
+    )
+    wiim = await scenario.add_provider("wiim")
+    patio, porch = (
+        wiim.protocol(
+            f"wiim_{name.lower()}",
+            name,
+            identifiers=_device(number),
+            supported_features=set(GROUPING),
+            can_group_with={f"wiim_{other.lower()}"},
+        )
+        for number, name, other in ((31, "Patio", "Porch"), (32, "Porch", "Patio"))
+    )
+    for speaker in (patio, porch):
+        await scenario.register(speaker)
+    await scenario.idle()
+    patio_id, porch_id = _player_id(scenario, patio), _player_id(scenario, porch)
+    await scenario.mass.players.cmd_set_members(
+        hall_id, player_ids_to_add=[kitchen_id, office_id, den_id]
+    )
+    await scenario.advance(10)
+    await scenario.idle()
+    group_id = await _sync_group(scenario, kitchen_id, office_id, den_id, patio_id, porch_id)
+    scenario.expect_log("can not be grouped with")
+    scenario.expect_log("still reports synced_to")
+
+    await _load_music(scenario)
+    play = await scenario.command(scenario.mass.player_queues.play_media(group_id, TEST_TRACK_URI))
+    await scenario.advance(10)
+    await play
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    assert _state(scenario, kitchen_id).synced_to is None
+    assert _state(scenario, kitchen_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, patio_id).synced_to is None
+    assert _state(scenario, porch_id).synced_to is None
+    await _stop(scenario, group_id)
+
+
+async def test_a_member_that_follows_another_player_does_not_outrank_the_first_member(
+    scenario: Scenario,
+) -> None:
+    """
+    A member that follows a leader outside the sync group does not lead it over the first member.
+
+    Office follows Hall when Downstairs, of Kitchen, Office and Den, plays: Kitchen, its first
+    member, leads, and Office and Den follow it.
+    """
+    _, (kitchen, office, den, hall) = await _speakers(scenario, "Kitchen", "Office", "Den", "Hall")
+    kitchen_id, office_id, den_id, hall_id = (
+        _player_id(scenario, x) for x in (kitchen, office, den, hall)
+    )
+    await scenario.mass.players.cmd_set_members(hall_id, player_ids_to_add=[office_id])
+    await scenario.advance(10)
+    await scenario.idle()
+    group_id = await _sync_group(scenario, kitchen_id, office_id, den_id)
+
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, den_id).synced_to == kitchen_id
+    assert _state(scenario, kitchen_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    await _stop(scenario, group_id)
+
+
+async def test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group(
+    scenario: Scenario,
+) -> None:
+    """
+    A member that plays as the leader of another group does not lead the sync group.
+
+    Den plays with Hall following it when Downstairs, of Kitchen, Office and Den, plays. Kitchen
+    leads and Office follows it; Den is left out and keeps playing with Hall.
+    """
+    _, (kitchen, office, den, hall) = await _speakers(scenario, "Kitchen", "Office", "Den", "Hall")
+    kitchen_id, office_id, den_id, hall_id = (
+        _player_id(scenario, x) for x in (kitchen, office, den, hall)
+    )
+    group_id = await _sync_group(scenario, kitchen_id, office_id, den_id)
+    await scenario.mass.players.cmd_set_members(den_id, player_ids_to_add=[hall_id])
+    await scenario.play(den_id)
+    await scenario.idle()
+    scenario.expect_log("can not be grouped with")
+
+    await scenario.play(group_id)
+    await scenario.idle()
+
+    assert _state(scenario, office_id).synced_to == kitchen_id
+    assert _state(scenario, kitchen_id).active_group == group_id
+    assert _state(scenario, group_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, hall_id).synced_to == den_id
+    assert _state(scenario, den_id).playback_state == PlaybackState.PLAYING
+    assert _state(scenario, den_id).active_group is None
+    den_queue = scenario.queue(den_id)
+    assert den_queue is not None
+    assert den_queue.current_item is not None
+    await _stop(scenario, group_id)
+    await _stop(scenario, den_id)

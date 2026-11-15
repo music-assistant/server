@@ -1897,6 +1897,20 @@ against a first member that can not lead the others.
   - `test_grouping.py::test_a_sync_group_whose_leader_leaves_is_led_by_a_member_that_can_group_with_the_others`
   - `test_grouping.py::test_a_player_added_to_an_idle_sync_group_is_checked_against_the_member_that_leads`
 
+### GROUP-50 · What a member does elsewhere does not cost it its place in a sync group
+
+Downstairs is a sync group of Kitchen, Office and Den, in that order. Members that follow a
+leader outside the group when Downstairs plays are released and play in it, with its first
+member leading as it would have, also when only one of them followed that leader. A member that
+plays as the leader of a group of its own does not take Downstairs over: the first member leads,
+and that member is left out and keeps playing with its own group.
+
+- End-to-end: **possible with** three Squeezelite players and a fourth player outside the group.
+- Proven by:
+  - `test_grouping.py::test_members_that_follow_a_leader_outside_a_sync_group_are_not_passed_over`
+  - `test_grouping.py::test_a_member_that_follows_another_player_does_not_outrank_the_first_member`
+  - `test_grouping.py::test_a_member_that_leads_another_playing_group_does_not_take_a_sync_group`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
