@@ -54,6 +54,14 @@ repos:
         types: [json]
         files: ^music_assistant/providers/[^/]+/manifest\.json$
 
+      # fail when a provider that moved to the community catalog still has a folder in the server
+      - id: check_moved_providers
+        name: check_moved_providers
+        entry: scripts/run-in-env.sh -m scripts.check_moved_providers
+        pass_filenames: false
+        language: system
+        files: ^(music_assistant/(controllers/community_catalog/constants\.py|providers/[^/]+/manifest\.json)|scripts/check_moved_providers\.py)$
+
       # fail when a provider/controller icon exceeds its size budget (existing offenders baselined)
       - id: check_provider_icons
         name: check_provider_icons
