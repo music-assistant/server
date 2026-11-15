@@ -59,6 +59,17 @@ def is_allowed_redirect_url(
     try:
         parsed = urlparse(url)
 
+        # Browsers read a backslash as a slash, strip control characters and whitespace, and
+        # split userinfo differently than urlparse, so such a URL can lead somewhere else
+        # than the host we classify here. Refuse it before any trust decision.
+        if (
+            "\\" in url
+            or "@" in parsed.netloc
+            or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in url)
+        ):
+            LOGGER.warning("Redirect URL blocked (ambiguous characters): %r", url)
+            return False, "blocked"
+
         # Check for custom URL schemes (mobile apps)
         for pattern in ALLOWED_REDIRECT_PATTERNS:
             if url.startswith(pattern):

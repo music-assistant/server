@@ -1349,6 +1349,21 @@ class WebserverController(CoreController):
             state = request.query.get("state")
             provider_id = request.query.get("provider_id")
 
+            if error := request.query.get("error"):
+                if state:
+                    self.auth.pending_logins.pop(state)
+                self.logger.warning("Sign-in not completed, provider returned: %r", error[:100])
+                error_html = """
+                <html>
+                <body>
+                    <h1>Authentication Failed</h1>
+                    <p>The sign-in was cancelled or refused</p>
+                    <a href="/login">Back to Login</a>
+                </body>
+                </html>
+                """
+                return web.Response(text=error_html, content_type="text/html", status=400)
+
             if not code or not state or not provider_id:
                 return web.Response(status=400, text="code, state, and provider_id required")
 
