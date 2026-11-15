@@ -8,13 +8,15 @@ English source strings are authored in ``strings.json`` files (a shared
 and translated languages are downloaded to ``translations/<lang>.json``.
 
 At runtime ``translations/en.json`` is loaded eagerly (the final fallback) and each translated
-locale lazily on first use, so a lookup is always an in-memory dict get.
+locale lazily on first use, so a lookup is always an in-memory dict get. A provider installed
+outside the package brings its own texts, which ``load_provider_strings`` adds at runtime.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,6 +39,8 @@ TRANSLATIONS_PATH = os.path.join(PACKAGE_ROOT, "translations")
 # the language the in-repo source strings are authored in
 SOURCE_LANGUAGE = "en"
 SOURCE_FILE = os.path.join(TRANSLATIONS_PATH, f"{SOURCE_LANGUAGE}.json")
+# Home Assistant style reference token: [%key:owner::path::to::key%]
+REFERENCE_PATTERN = re.compile(r"^\[%key:(.+)%\]$")
 
 
 class TranslationController(CoreController):
@@ -59,6 +63,8 @@ class TranslationController(CoreController):
         # de-duplicate concurrent cold loads of the same locale
         self._locale_locks: dict[str, asyncio.Lock] = {}
         self._available_locales: set[str] = {SOURCE_LANGUAGE}
+        # provider domain -> locale -> {FQ key -> string} added by load_provider_strings
+        self._provider_strings: dict[str, dict[str, dict[str, str]]] = {}
 
     @property
     def available_locales(self) -> set[str]:
@@ -73,7 +79,7 @@ class TranslationController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Load the translation strings."""
         self.config = config
-        self._locale_files = await asyncio.to_thread(_discover_locale_files)
+        self._locale_files = await asyncio.to_thread(_discover_locale_files, TRANSLATIONS_PATH)
         self._available_locales = {SOURCE_LANGUAGE, *self._locale_files}
         self._source = await self._load_flat(SOURCE_FILE)
         self.logger.debug(
@@ -134,7 +140,53 @@ class TranslationController(CoreController):
             async with lock:
                 if candidate in self._locales:
                     continue
-                self._locales[candidate] = await self._load_flat(self._locale_files[candidate])
+                bundle = await self._load_flat(self._locale_files[candidate])
+                for provider_strings in self._provider_strings.values():
+                    bundle.update(provider_strings.get(candidate, {}))
+                self._locales[candidate] = bundle
+
+    async def load_provider_strings(self, domain: str, provider_path: str) -> None:
+        """
+        Add the texts of a provider that is not compiled into the built-in translations.
+
+        Reads ``strings.json`` and the optional ``translations/<lang>.json`` files (same shape)
+        from the provider folder; all keys land under ``provider.<domain>.``. Loading again
+        replaces the texts of an earlier load. A broken file logs a warning and loads nothing.
+
+        :param domain: The provider domain the texts belong to.
+        :param provider_path: The provider folder.
+        """
+        prefix = f"provider.{domain}."
+        try:
+            strings = await load_json_dict(os.path.join(provider_path, "strings.json"))
+            locale_files = await asyncio.to_thread(
+                _discover_locale_files, os.path.join(provider_path, "translations")
+            )
+            provider_strings = {SOURCE_LANGUAGE: _flatten(strings, prefix)}
+            for lang, path in locale_files.items():
+                provider_strings[lang] = _flatten(await load_json_dict(path), prefix)
+        except FileNotFoundError:
+            # a provider without texts
+            return
+        except Exception as err:
+            self.logger.warning("Failed to load the texts of provider %s: %s", domain, err)
+            return
+        self.unload_provider_strings(domain)
+        self._provider_strings[domain] = provider_strings
+        for lang, flat in provider_strings.items():
+            if (bundle := self._loaded_bundle(lang)) is not None:
+                bundle.update(flat)
+
+    def unload_provider_strings(self, domain: str) -> None:
+        """
+        Remove the texts that ``load_provider_strings`` added for a provider.
+
+        :param domain: The provider domain the texts belong to.
+        """
+        for lang, flat in self._provider_strings.pop(domain, {}).items():
+            if (bundle := self._loaded_bundle(lang)) is not None:
+                for key in flat:
+                    bundle.pop(key, None)
 
     async def reverse_lookup_media_names(self, query: str) -> set[str]:
         """
@@ -182,6 +234,10 @@ class TranslationController(CoreController):
                     return bundle[key]
         return self._source.get(key)
 
+    def _loaded_bundle(self, lang: str) -> dict[str, str] | None:
+        """Return the in-memory bundle of a language, None when that locale is not loaded."""
+        return self._source if lang == SOURCE_LANGUAGE else self._locales.get(lang)
+
     async def _load_flat(self, path: str) -> dict[str, str]:
         """Load a flat {fq_key: str} translations file, tolerating a missing file or errors."""
         if not Path(path).is_file():
@@ -194,24 +250,37 @@ class TranslationController(CoreController):
         return {key: value for key, value in data.items() if isinstance(value, str)}
 
 
-def _discover_locale_files() -> dict[str, str]:
+def _discover_locale_files(path: str) -> dict[str, str]:
     """
-    Discover the locale files in translations/ (blocking).
+    Discover the locale files in a translations folder (blocking).
 
-    Returns a map of language -> file path for every ``translations/<lang>.json`` except the
-    English source ``en.json``. Each file is a flat, fully-qualified key->string map.
+    Returns a map of language -> file path for every ``<path>/<lang>.json`` except the
+    English source ``en.json``. A missing folder yields an empty map.
+
+    :param path: The translations folder.
     """
     locale_files: dict[str, str] = {}
-    if not Path(TRANSLATIONS_PATH).is_dir():
+    if not Path(path).is_dir():
         return locale_files
-    for filename in os.listdir(TRANSLATIONS_PATH):  # noqa: PTH208, RUF100
+    for filename in os.listdir(path):  # noqa: PTH208, RUF100
         if not filename.endswith(".json"):
             continue
         lang = filename[: -len(".json")]
         if lang == SOURCE_LANGUAGE:
             continue
-        locale_files[lang] = os.path.join(TRANSLATIONS_PATH, filename)
+        locale_files[lang] = os.path.join(path, filename)
     return locale_files
+
+
+def _flatten(data: dict[str, Any], prefix: str) -> dict[str, str]:
+    """Flatten nested strings into dotted, prefixed keys, leaving out reference values."""
+    out: dict[str, str] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            out.update(_flatten(value, f"{prefix}{key}."))
+        elif isinstance(value, str) and not REFERENCE_PATTERN.match(value):
+            out[f"{prefix}{key}"] = value
+    return out
 
 
 def _owner_prefix(owner: str) -> str:

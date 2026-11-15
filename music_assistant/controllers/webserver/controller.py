@@ -65,7 +65,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     format_certificate_info,
     verify_ssl_certificate,
 )
-from music_assistant.helpers.api import parse_arguments, redact_json_secrets
+from music_assistant.helpers.api import parse_arguments, redact_json_secrets, run_api_command
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
@@ -581,6 +581,31 @@ class WebserverController(CoreController):
                 user.username if user else "unknown",
             )
 
+    def set_sendspin_player_for_ingress_client(
+        self, ha_user_id: str, client_key: str, player_id: str
+    ) -> None:
+        """
+        Set the sendspin player_id on the Home Assistant Ingress websocket clients of a browser.
+
+        The Ingress counterpart of set_sendspin_player_for_token: Ingress connections hold no
+        token, so the key a browser identifies itself with, together with the Home Assistant
+        user it is signed in as, decides which connections a web player belongs to.
+
+        :param ha_user_id: Id of the Home Assistant user the browser is signed in as.
+        :param client_key: The key the browser identifies itself with.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if not client.matches_ingress_client(ha_user_id, client_key):
+                continue
+            client.bind_sendspin_player(player_id)
+            user = client.authenticated_user
+            self.logger.debug(
+                "Set sendspin player %s for Ingress websocket client of user %s",
+                player_id,
+                user.username if user else "unknown",
+            )
+
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
         """
         Set the sendspin player_id on a websocket client for a WebRTC session.
@@ -862,7 +887,7 @@ class WebserverController(CoreController):
                 ):
                     set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-            result: Any = handler.target(**args)
+            result: Any = run_api_command(self.mass, handler, args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]

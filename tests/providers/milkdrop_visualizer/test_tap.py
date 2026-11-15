@@ -50,6 +50,8 @@ def _manager() -> TapManager:
     provider.logger.getChild.return_value = Mock()
     manager = TapManager(provider)
     manager._schedule_beats = Mock()  # type: ignore[method-assign]
+    # no player, so a palette sync has nothing to fan out
+    manager.mass.players.get_player = Mock(return_value=None)  # type: ignore[method-assign]
     return manager
 
 
@@ -387,7 +389,6 @@ def test_reset_clears_pending() -> None:
 async def test_read_once_reads_whatever_is_buffered() -> None:
     """A cursor far ahead of the playhead still reads as long as the buffer already has it."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
@@ -405,7 +406,6 @@ async def test_read_once_reads_whatever_is_buffered() -> None:
 async def test_read_once_does_not_read_past_what_the_buffer_has_produced() -> None:
     """A cursor caught up to the buffer's produced edge waits rather than reading nothing."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
@@ -423,7 +423,6 @@ async def test_read_once_does_not_read_past_what_the_buffer_has_produced() -> No
 async def test_read_once_does_not_read_when_pending_is_full() -> None:
     """A tap already holding PENDING_FRAMES back stops reading instead of growing further."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     far_us = server_now_us() + 3600 * 1_000_000
     tap.pending.extend((far_us, b"frame") for _ in range(PENDING_FRAMES))
@@ -441,7 +440,6 @@ async def test_read_once_does_not_read_when_pending_is_full() -> None:
 async def test_read_once_keeps_the_cursor_on_discarded() -> None:
     """A discarded read leaves the cursor in place for _align to catch up next pass."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     queue = Mock(corrected_elapsed_time=5.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
@@ -456,7 +454,6 @@ async def test_read_once_keeps_the_cursor_on_discarded() -> None:
 async def test_read_once_resumes_on_a_replacement_buffer_after_cancellation() -> None:
     """A cancelled buffer keeps the cursor, and reading carries on once the item has a new one."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     queue = Mock(corrected_elapsed_time=5.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
@@ -478,7 +475,6 @@ async def test_read_once_resumes_on_a_replacement_buffer_after_cancellation() ->
 async def test_read_once_releases_due_frames_on_eof() -> None:
     """A read that hits EOF still releases any pending frames that came due."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     now_us = server_now_us()
     due = pack_wave_frame(now_us, b"\x80" * WAVE_SAMPLES)

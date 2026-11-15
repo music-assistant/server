@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.errors import MediaNotFoundError
 
-from music_assistant.providers.soundcloud import SoundcloudMusicProvider
+from music_assistant.providers.soundcloud import TRACK_IDS_BATCH_SIZE, SoundcloudMusicProvider
 
 
 def _track_obj(track_id: int, title: str) -> dict[str, Any]:
@@ -114,8 +115,53 @@ async def test_playlist_tracks_fetches_details_for_partial_entries(
     get_playlist_tracks: Any = SoundcloudMusicProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
     tracks = await get_playlist_tracks(provider, "10")
 
-    provider._soundcloud.get_track_details.assert_awaited_once_with(5)
+    provider._soundcloud.get_track_details.assert_awaited_once_with("5")
     assert [track.name for track in tracks] == ["Resolved"]
+
+
+async def test_playlist_tracks_resolves_stubs_in_batches(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """Stub entries are resolved in batched requests, keeping the playlist order."""
+    stub_ids = list(range(100, 100 + TRACK_IDS_BATCH_SIZE * 2 + 1))
+    provider._soundcloud.get_playlist_details.return_value = _playlist_obj(
+        tracks=[_track_obj(1, "First"), *({"id": track_id} for track_id in stub_ids)]
+    )
+
+    async def _get_track_details(track_ids: str) -> list[dict[str, Any]]:
+        # Soundcloud returns the tracks in its own order and leaves out unavailable ones
+        ids = [int(track_id) for track_id in track_ids.split(",") if track_id != "150"]
+        return [_track_obj(track_id, f"Track {track_id}") for track_id in reversed(ids)]
+
+    provider._soundcloud.get_track_details = AsyncMock(side_effect=_get_track_details)
+
+    get_playlist_tracks: Any = SoundcloudMusicProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
+    tracks = await get_playlist_tracks(provider, "10")
+
+    requested = [
+        call.args[0].split(",") for call in provider._soundcloud.get_track_details.await_args_list
+    ]
+    assert [len(batch) for batch in requested] == [TRACK_IDS_BATCH_SIZE, TRACK_IDS_BATCH_SIZE, 1]
+    assert [track_id for batch in requested for track_id in batch] == [str(i) for i in stub_ids]
+    expected_ids = [1, *(track_id for track_id in stub_ids if track_id != 150)]
+    assert [track.item_id for track in tracks] == [str(i) for i in expected_ids]
+    # positions follow the playlist, so the unavailable track leaves a gap
+    assert [track.position for track in tracks[50:52]] == [51, 53]
+
+
+async def test_playlist_tracks_without_stubs_makes_no_track_requests(
+    provider: SoundcloudMusicProvider,
+) -> None:
+    """A playlist that holds full track objects needs no track or user requests."""
+    provider._soundcloud.get_playlist_details.return_value = _playlist_obj(
+        tracks=[_track_obj(1, "First"), _track_obj(2, "Second")]
+    )
+
+    get_playlist_tracks: Any = SoundcloudMusicProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
+    await get_playlist_tracks(provider, "10")
+
+    provider._soundcloud.get_track_details.assert_not_awaited()
+    provider._soundcloud.get_user_details.assert_not_awaited()
 
 
 async def test_playlist_tracks_skips_unparsable_entry(provider: SoundcloudMusicProvider) -> None:

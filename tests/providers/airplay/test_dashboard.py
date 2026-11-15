@@ -23,7 +23,8 @@ def _make_dashboards() -> AirPlayDashboards:
     provider = MagicMock()
     provider.domain = "airplay"
     provider.translation_owner = "provider.airplay"
-    provider.mass.players.get_player.return_value = None
+    provider.mass.players.get_protocol.return_value = None
+    provider.get_protocol = lambda pid: provider.mass.players.get_protocol(pid)
     provider.mass.dashboard.register_dashboard_handler.return_value = MagicMock()
     return AirPlayDashboards(provider)
 
@@ -41,7 +42,7 @@ def _make_player(
 ) -> MagicMock:
     """Build a control-player mock with configurable dashboard-eligibility state."""
     player = MagicMock(spec=AirPlayControlPlayer)
-    player.player_id = player_id
+    player.protocol_id = player_id
     player.display_name = display_name
     player.available = available
     player.enabled = enabled
@@ -81,7 +82,7 @@ async def test_eligibility_matrix(kwargs: dict[str, object], eligible: bool) -> 
     """Only an enabled, available, Companion-connected Apple TV with the app is exposed."""
     dashboards = _make_dashboards()
     player = _make_player(**kwargs)  # type: ignore[arg-type]
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     await dashboards._async_reconcile(PLAYER_ID)
 
@@ -91,7 +92,7 @@ async def test_eligibility_matrix(kwargs: dict[str, object], eligible: bool) -> 
 async def test_protocol_player_is_ineligible() -> None:
     """A non-control (PROTOCOL) AirPlay player is never a dashboard endpoint."""
     dashboards = _make_dashboards()
-    dashboards.mass.players.get_player.return_value = MagicMock(  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = MagicMock(  # type: ignore[attr-defined]
         spec=GenericAirPlayPlayer
     )
 
@@ -103,7 +104,7 @@ async def test_protocol_player_is_ineligible() -> None:
 async def test_missing_player_is_ineligible() -> None:
     """Reconciling a player that no longer exists drops any registration."""
     dashboards = _make_dashboards()
-    dashboards.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = None  # type: ignore[attr-defined]
 
     await dashboards._async_reconcile(PLAYER_ID)
 
@@ -117,7 +118,7 @@ async def test_eligible_player_registers_once() -> None:
     """An eligible Apple TV registers exactly one dashboard endpoint."""
     dashboards = _make_dashboards()
     player = _make_player(display_name="Living Room")
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     await dashboards._async_reconcile(PLAYER_ID)
 
@@ -140,7 +141,7 @@ async def test_availability_loss_unregisters() -> None:
     player = _make_player()
     unregister = MagicMock()
     dashboards.mass.dashboard.register_dashboard_handler.return_value = unregister  # type: ignore[attr-defined]
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     await dashboards._async_reconcile(PLAYER_ID)
     assert PLAYER_ID in dashboards._unregister_callbacks
 
@@ -157,7 +158,7 @@ async def test_unregister_calls_callback_and_clears_state() -> None:
     player = _make_player()
     unregister = MagicMock()
     dashboards.mass.dashboard.register_dashboard_handler.return_value = unregister  # type: ignore[attr-defined]
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     await dashboards._async_reconcile(PLAYER_ID)
 
     dashboards.unregister(PLAYER_ID)
@@ -174,7 +175,7 @@ async def test_unload_unregisters_all_endpoints() -> None:
     player = _make_player()
     unregister = MagicMock()
     dashboards.mass.dashboard.register_dashboard_handler.return_value = unregister  # type: ignore[attr-defined]
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     await dashboards._async_reconcile(PLAYER_ID)
 
     await dashboards.unload()
@@ -190,7 +191,7 @@ async def test_app_list_refetched_on_companion_reconnect() -> None:
     """The installed-app cache is reused between reconciles but refreshed on a reconnect."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     await dashboards._async_reconcile(PLAYER_ID)
     assert player.async_list_installed_app_ids.await_count == 1
@@ -222,7 +223,7 @@ def test_setup_player_wires_companion_callback() -> None:
 
     with patch.object(dashboards, "reconcile") as mock_reconcile:
         dashboards.setup_player(player)
-        mock_reconcile.assert_called_once_with(player.player_id)
+        mock_reconcile.assert_called_once_with(player.protocol_id)
         # the wired callback triggers a further reconcile
         assert player.on_companion_state_change is not None
         player.on_companion_state_change()
@@ -251,7 +252,7 @@ async def test_on_show_builds_contract_launch_uri() -> None:
     """on_show resolves the local url and launches the exact contract launch URI."""
     dashboards = _make_dashboards()
     player = _make_player(player_id=PLAYER_ID, display_name="Living Room")
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     target = (
         "http://192.168.1.10:8095/?dashboard=ABC123&path=%2Fnow-playing%3Fplayer%3Dap1234567890ab"
     )
@@ -283,7 +284,7 @@ async def test_on_show_party_launch_uri_needs_no_player() -> None:
     dashboards = _make_dashboards()
     dashboards.mass.dashboard = controller
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     dashboards._register(player)
     dashboard_id = f"airplay_{PLAYER_ID}"
 
@@ -303,7 +304,7 @@ async def test_on_show_wakes_before_launching() -> None:
     """on_show wakes the device before launching the app."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(  # type: ignore[method-assign]
         return_value="http://192.168.1.10:8095/?dashboard=ABC123&path=%2Fnow-playing%3Fplayer%3Dap"
     )
@@ -321,7 +322,7 @@ async def test_on_show_launch_failure_raises_player_unavailable() -> None:
     dashboards = _make_dashboards()
     player = _make_player(display_name="Living Room")
     player.async_launch_app = AsyncMock(side_effect=PlayerCommandFailed("boom"))
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(  # type: ignore[method-assign]
         return_value="http://192.168.1.10:8095/?dashboard=ABC123&path=%2Fnow-playing%3Fplayer%3Dap"
     )
@@ -337,7 +338,7 @@ async def test_on_show_launch_failure_raises_player_unavailable() -> None:
 async def test_on_show_missing_player_raises() -> None:
     """on_show for a player that vanished raises PlayerUnavailableError."""
     dashboards = _make_dashboards()
-    dashboards.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = None  # type: ignore[attr-defined]
 
     with pytest.raises(PlayerUnavailableError):
         await dashboards._on_show(PLAYER_ID, DashboardType.NOW_PLAYING, PLAYER_ID)
@@ -347,11 +348,11 @@ async def test_on_hide_performs_no_device_action() -> None:
     """Hide is session-driven: the adapter performs no Companion action."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     await dashboards._on_hide(PLAYER_ID)
 
-    dashboards.mass.players.get_player.assert_not_called()  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.assert_not_called()  # type: ignore[attr-defined]
     player.wake.assert_not_awaited()
     player.async_launch_app.assert_not_awaited()
 
@@ -371,7 +372,7 @@ async def test_launch_failure_leaves_no_controller_session() -> None:
     dashboards.mass.dashboard = controller
     player = _make_player()
     player.async_launch_app = AsyncMock(side_effect=PlayerCommandFailed("boom"))
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
     dashboards._register(player)
     dashboard_id = f"airplay_{PLAYER_ID}"
     assert dashboard_id in controller._dashboards
@@ -388,7 +389,7 @@ async def test_reconcile_after_unload_does_not_register() -> None:
     """A provider unload during the eligibility await must not resurrect an endpoint."""
     dashboards = _make_dashboards()
     player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards.mass.players.get_protocol.return_value = player  # type: ignore[attr-defined]
 
     async def _eligible_then_unload(_player: AirPlayControlPlayer) -> bool:
         dashboards._unloaded = True

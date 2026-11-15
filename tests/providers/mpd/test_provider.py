@@ -1,7 +1,7 @@
 """Tests for the MPD player provider."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
@@ -23,7 +23,7 @@ async def test_mpd_prefers_wav_for_live_sources_by_default() -> None:
     )
 
 
-async def test_remove_player_prunes_manual_host_config() -> None:
+async def test_removed_player_prunes_manual_host_config() -> None:
     """Removing an MPD player should also remove its host entry from provider config."""
     provider = MPDPlayerProvider.__new__(MPDPlayerProvider)
     config_entries = {
@@ -44,11 +44,13 @@ async def test_remove_player_prunes_manual_host_config() -> None:
     )
     provider.mass = Mock()
     provider.mass.config = Mock()
-    provider.mass.players = Mock()
-    provider.mass.players.get_player.return_value = None
-    provider.mass.players.unregister = AsyncMock()
+    provider._host_players = {"mpd_office.local_6601": Mock(), "mpd_kitchen.local_6600": Mock()}
+    player = MPDPlayer.__new__(MPDPlayer)
+    player._provider = provider
+    player.host = "office.local"
+    player.port = 6601
 
-    await provider.remove_player("mpd_office.local_6601")
+    await player.on_remove()
 
     # the config controller stores the pruned list (and updates the in-place config copy)
     provider.mass.config.set_raw_provider_config_value.assert_called_once_with(
@@ -58,4 +60,6 @@ async def test_remove_player_prunes_manual_host_config() -> None:
         encrypted=False,
         immediate=False,
     )
-    provider.mass.players.unregister.assert_awaited_once_with("mpd_office.local_6601", True)
+    assert list(provider._host_players) == ["mpd_kitchen.local_6600"]
+    # removing the player is up to the players controller
+    provider.mass.players.remove_protocol.assert_not_called()
