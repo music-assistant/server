@@ -355,6 +355,15 @@ class OpenSonicProvider(MusicProvider):
             self.logger.warning("Unable to locate a cover image for %s", path)
             return None
 
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path can be a cover art id of the Subsonic server.
+
+        :param path: The stored image path.
+        """
+        # a cover art id is opaque and only ever sent to the server, which decides if it exists
+        return bool(path)
+
     @use_cache(3600 * 3)  # cache for 3 hours
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 20

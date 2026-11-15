@@ -27,7 +27,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     is_request_from_ingress,
 )
 
-from .tap import CONF_COLOR_TINT, TapManager, ViewerQueue, server_now_us
+from .tap import TapManager, ViewerQueue, server_now_us
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -104,10 +104,7 @@ class MilkdropRelay:
         self._sessions.add(ws)
 
         try:
-            # Don't advertise a message type that will never arrive.
-            types = ["waveform", "beat"]
-            if self.provider.config.get_value(CONF_COLOR_TINT):
-                types.append("color")
+            types = ["waveform", "beat", "color"]
             await ws.send_str(
                 dumps(
                     {

@@ -47,6 +47,8 @@ HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
+_CONTROL_CHARS_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
+
 # Mapping of audio format identifiers to their correct IANA MIME types
 # where the format name differs from the MIME subtype.
 # Strict DLNA/UPnP devices reject non-standard MIME types (e.g. audio/mp3).
@@ -369,9 +371,14 @@ def build_concat_filelist(paths: list[str], verify_ssl: bool = True) -> str:
 
     :param paths: The file paths to include, in playback order.
     :param verify_ssl: Whether the certificate of an https part must be verified.
+    :raises InvalidDataError: If a path contains a control character.
     """
     lines = []
     for path in paths:
+        # A line break would end the file directive early, and no valid part path holds
+        # control characters, so refuse them instead of escaping.
+        if _CONTROL_CHARS_RE.search(path):
+            raise InvalidDataError(f"Invalid character in multi-part path: {path!r}")
         # The concat demuxer uses single quotes as delimiters, so a literal quote in the
         # path must be written as '\'' to prevent the path being truncated at the quote.
         escaped_path = path.replace("'", "'\\''")

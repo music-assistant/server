@@ -20,6 +20,7 @@ from music_assistant.helpers.external_ids import (
     is_valid_isrc,
     normalize_external_id,
 )
+from music_assistant.models.music_provider import ARTIST_ALBUMS_LIMIT
 
 from .constants import FAVORITE_TRACKS_PLAYLIST_ID, PAGES_MIX, PLAYLISTS, SKIPPABLE_ITEM_ERRORS
 from .parsers import (
@@ -260,16 +261,19 @@ class TidalMediaManager:
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist albums."""
         # Tidal lists an album once per quality tier; keep one per album.
-        pages = [
-            doc
-            async for doc in self.api.paginate_jsonapi(
-                f"artists/{prov_artist_id}/relationships/albums",
-                include=["albums.artists", "albums.coverArt"],
-                replace_media="albums",
-            )
-        ]
+        pages: list[JsonApiDocument] = []
+        groups: list[list[Variant]] = []
+        async for doc in self.api.paginate_jsonapi(
+            f"artists/{prov_artist_id}/relationships/albums",
+            include=["albums.artists", "albums.coverArt"],
+            replace_media="albums",
+        ):
+            pages.append(doc)
+            groups = group_quality_variants(pages, album_variant_key)
+            if len(groups) >= ARTIST_ALBUMS_LIMIT:
+                break
         albums: list[Album] = []
-        for group in group_quality_variants(pages, album_variant_key):
+        for group in groups[:ARTIST_ALBUMS_LIMIT]:
             if (album := _parse_first_variant(parse_album_v2, self.provider, group)) is not None:
                 albums.append(album)
         return albums

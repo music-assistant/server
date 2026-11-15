@@ -30,7 +30,7 @@ from deezer_python_gql.generated.push_queue_state import (
     PushQueueStatePushQueueStatePushQueueStateOutput,
 )
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import AudioFormat, MediaItemType
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -541,7 +541,7 @@ class DeezerStreamingManager:
         self._synced_queue_item = queue_item_id if is_playing else None
         try:
             await self._push_queue_state(queue, position)
-        except GraphQLClientError as err:
+        except (GraphQLClientError, RetriesExhausted) as err:
             self.logger.debug("Deezer did not take the queue state: %s", err)
 
     async def _push_queue_state(self, queue: PlayerQueue, position: int) -> None:

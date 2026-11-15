@@ -8,9 +8,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aioslimproto.cli import SlimCLICommand, parse_args
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, PlayerType
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.models.player_provider import PlayerProvider
@@ -18,6 +20,7 @@ from music_assistant.providers.squeezelite.player import SqueezelitePlayer
 from music_assistant.providers.squeezelite.provider import SqueezelitePlayerProvider
 
 FLOW_FORMAT = AudioFormat(content_type=ContentType.PCM_F32LE, sample_rate=192000, bit_depth=32)
+PLAYER_COMMANDS = ("cmd_play", "cmd_pause", "cmd_play_pause", "cmd_stop")
 
 
 @pytest.mark.parametrize(
@@ -122,3 +125,146 @@ async def test_the_cli_reports_the_display_name_set_in_music_assistant() -> None
         await provider.loaded_in_mass()
 
     assert provider.slimproto.cli.display_name_lookup == provider._lookup_display_name
+
+
+async def test_the_cli_hands_its_commands_to_the_provider() -> None:
+    """The provider gets to handle every CLI command before aioslimproto does."""
+    provider = SqueezelitePlayerProvider.__new__(SqueezelitePlayerProvider)
+    provider.mass = MagicMock()
+    provider.config = MagicMock()
+    provider.logger = MagicMock()
+
+    with (
+        patch("music_assistant.providers.squeezelite.provider.logging"),
+        patch("music_assistant.providers.squeezelite.provider.SlimServer") as slim_server,
+        patch.object(provider, "_validate_all_ports", new=AsyncMock()),
+    ):
+        await provider.handle_async_init()
+
+    assert slim_server.call_args.kwargs["cli_command_handler"] == provider._handle_cli_command
+
+
+def _cli_provider(player_type: PlayerType = PlayerType.PLAYER) -> MagicMock:
+    """Return a mocked provider whose only registered player is 'p1', of the given type."""
+    provider = MagicMock()
+    player = MagicMock(type=player_type, display_name="Kitchen")
+    provider.mass.players.get_player.side_effect = {"p1": player}.get
+    for cmd in PLAYER_COMMANDS:
+        setattr(provider.mass.players, cmd, AsyncMock())
+    return provider
+
+
+def _cli_command(player_id: str | None, raw: list[str]) -> SlimCLICommand:
+    """Return the CLI command aioslimproto parses from the raw tokens a client sends."""
+    return SlimCLICommand(player_id, raw[0], *parse_args(list(raw[1:])))
+
+
+def _awaited_player_commands(provider: MagicMock) -> list[str]:
+    """Return the names of the player commands the provider awaited."""
+    return [cmd for cmd in PLAYER_COMMANDS if getattr(provider.mass.players, cmd).await_count]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_cmd"),
+    [
+        (["play"], "cmd_play"),
+        (["pause", "1"], "cmd_pause"),
+        (["pause", "0"], "cmd_play"),
+        (["pause"], "cmd_play_pause"),
+        (["mode", "play"], "cmd_play"),
+        (["mode", "pause"], "cmd_pause"),
+        (["mode", "stop"], "cmd_stop"),
+        (["stop"], "cmd_stop"),
+    ],
+)
+async def test_cli_transport_commands_control_the_player_group(
+    raw: list[str], expected_cmd: str
+) -> None:
+    """Play, pause and stop from a client go to Music Assistant, which acts on its whole group."""
+    provider = _cli_provider()
+
+    await SqueezelitePlayerProvider._handle_cli_command(provider, _cli_command("p1", raw))
+
+    assert _awaited_player_commands(provider) == [expected_cmd]
+    getattr(provider.mass.players, expected_cmd).assert_awaited_once_with("p1")
+
+
+@pytest.mark.parametrize("raw", [["stop"], ["mode", "stop"]])
+async def test_cli_stop_of_a_protocol_device_only_stops_that_device(raw: list[str]) -> None:
+    """A protocol-only device also sends stop when another source takes over, so it stops only itself."""
+    provider = _cli_provider(PlayerType.PROTOCOL)
+
+    with pytest.raises(NotImplementedError):
+        await SqueezelitePlayerProvider._handle_cli_command(provider, _cli_command("p1", raw))
+
+    assert _awaited_player_commands(provider) == []
+
+
+@pytest.mark.parametrize(
+    ("active_group", "expected_members"),
+    [
+        (None, ["leader", "other"]),
+        # a sync group player would add the member back right away
+        ("syncgroup_1", ["leader", "member", "other"]),
+    ],
+)
+async def test_cli_stop_of_a_synced_protocol_device_leaves_its_group(
+    active_group: str | None, expected_members: list[str]
+) -> None:
+    """A synced protocol-only device that stops leaves its group, unless a sync group holds it."""
+    provider, leader, update_state = _synced_member()
+    leader._attr_group_members.append("other")
+    member = provider.mass.players.get_player("member")
+    member.type = PlayerType.PROTOCOL
+    member.protocol_parent_id = "device"
+    # the device's own player holds the active group: a leader that is a protocol
+    # player itself never reports one
+    device = MagicMock(state=MagicMock(active_group=active_group))
+    players = {"leader": leader, "member": member, "device": device}
+    provider.mass.players.get_player.side_effect = players.get
+    for cmd in PLAYER_COMMANDS:
+        setattr(provider.mass.players, cmd, AsyncMock())
+
+    # the device sends its stop twice
+    for _ in range(2):
+        with pytest.raises(NotImplementedError):
+            await SqueezelitePlayerProvider._handle_cli_command(
+                provider, _cli_command("member", ["stop"])
+            )
+
+    assert _awaited_player_commands(provider) == []
+    assert leader.group_members == expected_members
+    assert update_state.call_count == (0 if active_group else 1)
+
+
+@pytest.mark.parametrize(
+    ("player_id", "raw"),
+    [
+        ("p1", ["power", "1"]),
+        ("p1", ["mode", "?"]),
+        ("other", ["play"]),
+        (None, ["play"]),
+    ],
+)
+async def test_cli_leaves_other_commands_to_aioslimproto(
+    player_id: str | None, raw: list[str]
+) -> None:
+    """Other commands, and commands for a player Music Assistant does not know, are not handled."""
+    provider = _cli_provider()
+
+    with pytest.raises(NotImplementedError):
+        await SqueezelitePlayerProvider._handle_cli_command(provider, _cli_command(player_id, raw))
+
+    assert _awaited_player_commands(provider) == []
+
+
+async def test_cli_command_that_fails_is_logged() -> None:
+    """A player command that fails is logged instead of failing the client's request."""
+    provider = _cli_provider()
+    provider.mass.players.cmd_pause.side_effect = PlayerUnavailableError("unavailable")
+
+    await SqueezelitePlayerProvider._handle_cli_command(
+        provider, _cli_command("p1", ["pause", "1"])
+    )
+
+    provider.logger.warning.assert_called_once()

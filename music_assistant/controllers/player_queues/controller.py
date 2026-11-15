@@ -44,6 +44,8 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     PlayerUnavailableError,
     QueueEmpty,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Audiobook,
@@ -2640,7 +2642,30 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self, queue_id: str, option: QueueOption, shuffle: bool | None
     ) -> None:
         """
-        Settle the queue's shuffle state for a play command before its items are resolved.
+        Settle the queue's shuffle state for a play command.
+
+        :param queue_id: The queue the media is played on.
+        :param option: The enqueue option this command resolved to.
+        :param shuffle: The state to put the queue's shuffle in; None to leave it as it is.
+        """
+        queue = self._queue_data[queue_id].queue
+        shuffle_enabled = self._settled_shuffle(queue_id, option, shuffle)
+        if queue.shuffle_enabled == shuffle_enabled:
+            return
+        if queue.is_dynamic:
+            # Recorded directly because set_shuffle refuses a queue that is still a smart mix. The
+            # state is provisional until the sources are known: `_enter_dynamic_mode` forces
+            # shuffle back on if the queue stays dynamic.
+            queue.shuffle_enabled = shuffle_enabled
+            return
+        # routed through set_shuffle so switching shuffle off also restores the order of
+        # the items that stay in the queue: a play keeps them, and a tail left in shuffled
+        # order behind a queue that now reads unshuffled would contradict its own flag
+        await self.set_shuffle(queue_id, shuffle_enabled)
+
+    def _settled_shuffle(self, queue_id: str, option: QueueOption, shuffle: bool | None) -> bool:
+        """
+        Return the shuffle state `_apply_shuffle` puts the queue in for a play command.
 
         :param queue_id: The queue the media is played on.
         :param option: The enqueue option this command resolved to.
@@ -2654,27 +2679,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         ):
             # These are the options that replace the queue's sources, so the smart mix may be on
             # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
-            # locked), so it must not outlive the source that imposed it. Recorded directly
-            # because set_shuffle refuses a queue that is still a smart mix, and the items are
-            # resolved against this flag. The state is provisional until the sources are known:
-            # `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            # locked), so it must not outlive the source that imposed it.
             if option == QueueOption.REPLACE_NEXT:
                 # staging leaves the shuffle the user chose alone, so it never carries a request
                 # of its own to honour here
-                queue.shuffle_enabled = False
-            else:
-                queue.shuffle_enabled = bool(shuffle)
-            return
+                return False
+            return bool(shuffle)
         if shuffle is None or option not in (QueueOption.PLAY, QueueOption.REPLACE):
             # nothing to settle: the media brings no order of its own to protect, or the option
             # only stages items for later and leaves the queue's shuffle state alone
-            return
-        if queue.shuffle_enabled == shuffle:
-            return
-        # routed through set_shuffle so switching shuffle off also restores the order of
-        # the items that stay in the queue: a play keeps them, and a tail left in shuffled
-        # order behind a queue that now reads unshuffled would contradict its own flag
-        await self.set_shuffle(queue_id, shuffle)
+            return queue.shuffle_enabled
+        return shuffle
 
     async def _apply_local_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """
@@ -2895,10 +2910,23 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                             prev_state["last_playing_elapsed_time"] = int(queue.elapsed_time)
                         loaded_item = queue_item
                         break
-                    except (MediaNotFoundError, AudioError) as load_err:
-                        if isinstance(load_err, ProviderStreamLimitError):
-                            # the requested item is playable, its provider is just at capacity:
-                            # report that instead of silently advancing to another item
+                    except (
+                        MediaNotFoundError,
+                        AudioError,
+                        ResourceTemporarilyUnavailable,
+                        RetriesExhausted,
+                    ) as load_err:
+                        if isinstance(
+                            load_err,
+                            (
+                                ProviderStreamLimitError,
+                                ResourceTemporarilyUnavailable,
+                                RetriesExhausted,
+                            ),
+                        ):
+                            # the requested item is playable, its provider is just at capacity
+                            # or asked us to back off: report that instead of silently
+                            # advancing to another item
                             self.logger.error("%s", load_err)
                             await self._end_failed_start(queue_data)
                             raise

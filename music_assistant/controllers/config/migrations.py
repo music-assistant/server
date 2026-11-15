@@ -31,6 +31,7 @@ from music_assistant.constants import (
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_NORMALIZATION,
 )
+from music_assistant.controllers.player_queues.constants import CONF_DEFAULT_ENQUEUE_SELECT_ARTIST
 from music_assistant.controllers.tasks.constants import TASK_STATE_CONFIG_KEY
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS
 
@@ -589,6 +590,11 @@ async def migrate(data: dict[str, Any]) -> bool:
     if _migrate_nicovideo_drop_mail_login(data):
         changed = True
 
+    # Drop the stored value of the removed MilkDrop visualizer color tint setting.
+    # TODO: remove after 2.13 release
+    if _migrate_milkdrop_drop_color_tint(data):
+        changed = True
+
     # Move Raumfeld players still on the former "full" ICY default to "basic".
     # TODO: remove after 2.13 release
     if _migrate_raumfeld_icy_basic(data):
@@ -597,6 +603,12 @@ async def migrate(data: dict[str, Any]) -> bool:
     # Drop the stored value of the removed HTTP profile setting from every player.
     # TODO: remove after 2.13 release
     if _migrate_drop_http_profile(data):
+        changed = True
+
+    # Move an artist selection that listed the artist's whole catalogue to the tracks of the
+    # artist's albums in the library.
+    # TODO: remove after 2.13 release
+    if _migrate_artist_catalogue_selection(data):
         changed = True
 
     return changed
@@ -1504,6 +1516,28 @@ def _migrate_nicovideo_drop_mail_login(data: dict[str, Any]) -> bool:
     return True
 
 
+def _migrate_milkdrop_drop_color_tint(data: dict[str, Any]) -> bool:
+    """Remove the stored color tint value from every milkdrop_visualizer provider instance."""
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    dropped = 0
+    for provider_cfg in all_provider_configs.values():
+        if (
+            not isinstance(provider_cfg, dict)
+            or provider_cfg.get("domain") != "milkdrop_visualizer"
+        ):
+            continue
+        stored = provider_cfg.get("values")
+        if isinstance(stored, dict) and "color_tint" in stored:
+            del stored["color_tint"]
+            dropped += 1
+    if not dropped:
+        return False
+    LOGGER.info("Removed %d unused milkdrop color tint value(s)", dropped)
+    return True
+
+
 def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
     """
     Move Raumfeld players still on the former "full" ICY default to "basic", once.
@@ -1538,4 +1572,21 @@ def _migrate_raumfeld_icy_basic(data: dict[str, Any]) -> bool:
         LOGGER.info("Moved %d Raumfeld player(s) from ICY metadata full to basic", migrated)
     # claim the marker even when nothing moved, so a "full" picked later is kept
     data[CONF_RAUMFELD_ICY_BASIC_MIGRATED] = True
+    return True
+
+
+def _migrate_artist_catalogue_selection(data: dict[str, Any]) -> bool:
+    """Move a stored artist selection that is no longer offered to the library album tracks."""
+    core_cfg = data.get(CONF_CORE)
+    queues_cfg = core_cfg.get("player_queues") if isinstance(core_cfg, dict) else None
+    queue_values = queues_cfg.get("values") if isinstance(queues_cfg, dict) else None
+    if not isinstance(queue_values, dict):
+        return False
+    if queue_values.get(CONF_DEFAULT_ENQUEUE_SELECT_ARTIST) not in (
+        "all_tracks",
+        "all_album_tracks",
+    ):
+        return False
+    queue_values[CONF_DEFAULT_ENQUEUE_SELECT_ARTIST] = "library_album_tracks"
+    LOGGER.info("Moved the artist playback selection to the tracks of the library albums")
     return True

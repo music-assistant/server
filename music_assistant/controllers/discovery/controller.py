@@ -160,6 +160,10 @@ class DiscoveryController(CoreController):
         self._upnp_locks.pop(instance_id, None)
         self._schedule_periodic_upnp_discovery()
 
+    async def refresh_mdns_browser(self) -> None:
+        """Make the mDNS browser follow the service types of the registered manifests."""
+        await self._setup_mdns_browser()
+
     async def announce_mcp_server(self, path: str) -> None:
         """
         Offer the MCP server to Home Assistant, now and on every daily re-announce.

@@ -24,6 +24,7 @@ def _bind_provider(mass: MusicAssistant | MagicMock) -> SonosPlayerProvider:
     provider._pending_setup_tasks = set()
     provider._pending_refresh_tasks = set()
     provider._unloaded = False
+    provider.upnp = MagicMock()
     return provider
 
 

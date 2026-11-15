@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+from typing import NamedTuple
+
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 
@@ -91,6 +94,95 @@ UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
     "Connect:Amp",
     "Table lamp",
+)
+
+# model lists as known to soco (used by the Home Assistant Sonos integration)
+AMP_MODEL = "Amp"  # always drives a (RCA) subwoofer and has a subwoofer crossover
+ULTRA_SOUNDBAR_MODELS = ("Arc Ultra", "Beam Ultra")  # speech enhancement in levels 1..4
+
+
+class OptionRange(NamedTuple):
+    """Value range of a numeric player option."""
+
+    minimum: int
+    maximum: int
+
+
+EQ_RANGE = OptionRange(-10, 10)
+BALANCE_RANGE = OptionRange(-100, 100)
+AUDIO_DELAY_RANGE = OptionRange(0, 5)
+DIALOG_LEVEL_RANGE = OptionRange(1, 4)
+SUB_GAIN_RANGE = OptionRange(-15, 15)
+SUB_CROSSOVER_RANGE = OptionRange(50, 110)
+SURROUND_LEVEL_RANGE = OptionRange(-15, 15)
+# player config: offer the options the speaker sends no events for, which are polled
+CONF_SHOW_DEVICE_SETTINGS = "show_device_settings"
+
+# UPnP requests to a speaker stop after this many timeouts in a row, until a reconnect:
+# the player poll loop of all players waits for each request
+UPNP_TIMEOUT_LIMIT = 5
+
+# UPnP of the speakers (reference, unofficial: https://sonos.svrooij.io/services)
+UPNP_PORT = 1400
+UPNP_TIMEOUT = 10
+RENDERING_CONTROL_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
+DEVICE_PROPERTIES_SERVICE = "urn:schemas-upnp-org:service:DeviceProperties:1"
+HT_CONTROL_SERVICE = "urn:schemas-upnp-org:service:HTControl:1"
+
+
+class EqType(StrEnum):
+    """EQ types of RenderingControl GetEQ/SetEQ; not every speaker supports each."""
+
+    AUDIO_DELAY = "AudioDelay"
+    DIALOG_LEVEL = "DialogLevel"
+    MUSIC_SURROUND_LEVEL = "MusicSurroundLevel"
+    SUB_CROSSOVER = "SubCrossover"
+    SUB_ENABLED = "SubEnable"
+    SUB_GAIN = "SubGain"
+    SURROUND_ENABLED = "SurroundEnable"
+    SURROUND_LEVEL = "SurroundLevel"
+    SURROUND_MODE = "SurroundMode"  # 0 = ambient, 1 = full
+
+
+class IrRepeaterState(StrEnum):
+    """States of the IR repeater of a home theater speaker."""
+
+    ON = "On"
+    OFF = "Off"
+    DISABLED = "Disabled"
+
+
+# UPnP RenderingControl events, received on the stream server
+EVENTS_PATH = "/sonos/notify"
+# seconds a subscription is asked for; it is renewed halfway, by the poll
+EVENT_SUBSCRIPTION_TIMEOUT = 1800
+# poll interval (seconds) of the player options; with events coming in and no option that
+# sends none offered, the poll only renews the subscription
+OPTIONS_POLL_INTERVAL = 30
+OPTIONS_EVENTS_POLL_INTERVAL = 300
+# seconds to wait after an event before reading the options, so a slider moved in the
+# Sonos app is read once
+OPTIONS_EVENT_READ_DELAY = 1
+# the RenderingControl state variables a player option follows
+OPTION_EVENT_VARIABLES = frozenset(
+    {
+        "Bass",
+        "Treble",
+        "Loudness",
+        "NightMode",
+        "DialogLevel",
+        "SpeechEnhanceEnabled",
+        "AudioDelay",
+        "SubEnabled",
+        "SubGain",
+        "SubCrossover",
+        "SurroundEnabled",
+        "SurroundLevel",
+        "MusicSurroundLevel",
+        "SurroundMode",
+        "Volume_LF",
+        "Volume_RF",
+    }
 )
 
 # How much of the queue one itemWindow response describes. A speaker only asks for a new

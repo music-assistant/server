@@ -36,8 +36,10 @@ from aiosonos.exceptions import (
     FailedCommand,
     SonosException,
 )
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     IdentifierType,
     MediaType,
@@ -46,7 +48,7 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
-from music_assistant_models.player import OutputProtocol, PlayerMedia
+from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerOptionValueType
 
 from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
@@ -58,8 +60,13 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import AnnouncementFeature, Player, PlayerSource
 from music_assistant.providers.sonos.const import (
+    CONF_SHOW_DEVICE_SETTINGS,
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
+    OPTION_EVENT_VARIABLES,
+    OPTIONS_EVENT_READ_DELAY,
+    OPTIONS_EVENTS_POLL_INTERVAL,
+    OPTIONS_POLL_INTERVAL,
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
     PREVIOUS_ITEMS,
@@ -72,6 +79,13 @@ from music_assistant.providers.sonos.const import (
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
 )
+from music_assistant.providers.sonos.options import (
+    SONOS_OPTIONS,
+    SonosDevice,
+    SonosOption,
+    read_player_options,
+)
+from music_assistant.providers.sonos.upnp import UPNP_ERRORS, SonosSpeakerUpnp
 
 if TYPE_CHECKING:
     from aiosonos.api.models import (
@@ -82,7 +96,6 @@ if TYPE_CHECKING:
     )
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
     from aiosonos.group import SonosGroup
-    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.queue_item import QueueItem
 
     from .provider import SonosPlayerProvider
@@ -142,6 +155,8 @@ class SonosPlayer(Player):
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
     # the speaker names the service it plays itself, so its source list is trusted
     _attr_trusts_reported_source = True
+    # set up in setup(), with the client
+    upnp: SonosSpeakerUpnp
 
     def __init__(
         self,
@@ -236,6 +251,8 @@ class SonosPlayer(Player):
         self.client = SonosLocalApiClient(
             self.device_info.ip_address, self.mass.http_session_no_ssl
         )
+        provider = cast("SonosPlayerProvider", self._provider)
+        self.upnp = SonosSpeakerUpnp(provider.upnp, self.device_info.ip_address, self.logger)
         await self._connect(False)
 
         # collect supported features
@@ -251,6 +268,9 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         _supported_features.add(PlayerFeature.ENQUEUE)
+        _supported_features.add(PlayerFeature.OPTIONS)
+        # the speaker sends no event when its settings change; the first poll reads them
+        self._attr_needs_poll = True
         if self._wakeable:
             _supported_features.add(PlayerFeature.POWER)
             self._attr_powered = True
@@ -320,14 +340,24 @@ class SonosPlayer(Player):
                 safe_max_sample_rate=48000,
                 safe_max_bit_depth=24 if hi_res else 16,
             ),
+            ConfigEntry(
+                key=CONF_SHOW_DEVICE_SETTINGS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
         ]
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        # an offline or sleeping speaker would hold up the unload until the request times out;
+        # its subscription runs out on the speaker itself
+        if self.connected:
+            await self.upnp.unfollow()
         for task_id in (
             f"sonos_reconnect_{self.player_id}",
             f"restore_airplay_group_{self.player_id}",
+            f"sonos_options_{self.player_id}",
         ):
             # a timer that already fired lives on as a task under the same id,
             # so both are needed to cover the pending and the running case
@@ -383,6 +413,56 @@ class SonosPlayer(Player):
         :param muted: bool if player should be muted.
         """
         await self.client.player.set_volume(muted=muted)
+
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
+        """
+        Handle SET_OPTION command on the player.
+
+        :param option_key: The key of the PlayerOption.
+        :param option_value: The new value of the PlayerOption.
+        """
+        option = next((x for x in SONOS_OPTIONS if x.key == option_key), None)
+        if option is None or option.write is None:
+            msg = f"Option {option_key} can not be set on {self.display_name}"
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="option_not_settable",
+                translation_owner=self.translation_owner,
+                translation_args=[option_key, self.display_name],
+            )
+        try:
+            await option.write(self._options_device, option_value)
+        except (SonosException, *UPNP_ERRORS) as err:
+            msg = f"Failed to set option {option_key} on {self.display_name}: {err}"
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="option_set_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[option_key, self.display_name],
+            ) from err
+        await self._update_options()
+
+    @property
+    def poll_interval(self) -> int:
+        """Return the poll interval of the player options."""
+        if self.upnp.follows and not any(option.polled for option in self._offered_options):
+            return OPTIONS_EVENTS_POLL_INTERVAL
+        return OPTIONS_POLL_INTERVAL
+
+    async def poll(self) -> None:
+        """Follow (renew) the speaker's events, and poll the options they do not cover."""
+        if not self.connected:
+            return
+        await self.upnp.follow(self._on_rendering_change)
+        if not self.upnp.follows:
+            await self._update_options()
+        elif polled := [option for option in self._offered_options if option.polled]:
+            await self._update_options(polled)
+
+    async def on_config_updated(self) -> None:
+        """Handle a (changed) player config: the device settings may be offered or not."""
+        if self.connected:
+            self._schedule_options_read()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
@@ -1283,6 +1363,12 @@ class SonosPlayer(Player):
                 return
             self.connected = True
             self._attr_available = True
+            self.upnp.reset_timeouts()
+            # a speaker that restarted lost its event subscription: the next poll makes it anew
+            self.mass.create_task(self.upnp.unfollow())
+            if self.upnp.player_ip != self.client.player_ip:
+                provider = cast("SonosPlayerProvider", self._provider)
+                self.upnp = SonosSpeakerUpnp(provider.upnp, self.client.player_ip, self.logger)
             if self._marked_asleep:
                 self._attr_powered = True
                 self._marked_asleep = False
@@ -1941,6 +2027,56 @@ class SonosPlayer(Player):
             await asyncio.sleep(0.25)
         with contextlib.suppress(FailedCommand):
             await self.group_controller.play()
+
+    @property
+    def _options_device(self) -> SonosDevice:
+        model = self.discovery_info["device"].get("modelDisplayName", "")
+        return SonosDevice(self.client, self.upnp, model)
+
+    @property
+    def _offered_options(self) -> list[SonosOption]:
+        """Return the options to offer: those only seen by polling only when opted in."""
+        show_polled = bool(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_SHOW_DEVICE_SETTINGS, default=False
+            )
+        )
+        return [option for option in SONOS_OPTIONS if show_polled or not option.polled]
+
+    async def _update_options(self, options_to_read: list[SonosOption] | None = None) -> None:
+        """
+        Read the offered options, or only some of them into the ones read before.
+
+        :param options_to_read: The options to read; all offered ones when omitted.
+        """
+        to_read = self._offered_options if options_to_read is None else options_to_read
+        previous = {option.key: option for option in self._attr_options}
+        try:
+            read = await read_player_options(self._options_device, self.logger, previous, to_read)
+        except SonosException as err:
+            # the options read last stay until the next poll
+            self.logger.debug("Could not read the player options: %s", err)
+            return
+        if options_to_read is None:
+            self._attr_options = read
+        else:
+            read_keys = {option.key for option in to_read}
+            kept = [option for option in self._attr_options if option.key not in read_keys]
+            order = {option.key: index for index, option in enumerate(SONOS_OPTIONS)}
+            self._attr_options = sorted([*kept, *read], key=lambda x: order[x.key])
+        self.update_state()
+
+    def _schedule_options_read(self) -> None:
+        # debounced: a slider moved in the Sonos app sends an event per step
+        self.mass.call_later(
+            OPTIONS_EVENT_READ_DELAY,
+            self._update_options,
+            task_id=f"sonos_options_{self.player_id}",
+        )
+
+    def _on_rendering_change(self, changes: dict[str, str]) -> None:
+        if self.connected and not OPTION_EVENT_VARIABLES.isdisjoint(changes):
+            self._schedule_options_read()
 
 
 def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:

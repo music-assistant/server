@@ -687,7 +687,7 @@ class SetupFlowMixin:
         """
         # ensure the provider's requirements are installed and its package imports
         # cleanly first: the setup_flow submodule may rely on those requirements
-        await load_provider_module(manifest.domain, manifest.requirements)
+        await load_provider_module(manifest)
         module_path = f"music_assistant.providers.{manifest.domain}.setup_flow"
         try:
             return await import_module_in_thread(module_path)

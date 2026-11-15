@@ -27,6 +27,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from .cloud_queue import SonosCloudQueue
 from .helpers import get_primary_ip_address
 from .player import SonosPlayer
+from .upnp import SonosUpnp
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,6 +50,7 @@ class SonosPlayerProvider(PlayerProvider):
     _pending_refresh_tasks: set[str]
     _unloaded: bool
     _cloud_queue: SonosCloudQueue
+    upnp: SonosUpnp
     _unsub_queue_items_updated: Callable[[], None] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -64,6 +66,7 @@ class SonosPlayerProvider(PlayerProvider):
         self._set_aiosonos_log_level()
         self._cloud_queue = SonosCloudQueue(self)
         self.mass.streams.register_dynamic_route("/sonos_queue/*", self._cloud_queue.handle_request)
+        self.upnp = SonosUpnp(self.mass, self.logger)
         self._unsub_queue_items_updated = self.mass.subscribe(
             self._handle_queue_items_updated, EventType.QUEUE_ITEMS_UPDATED
         )
@@ -93,6 +96,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         self._unloaded = True
         self.mass.streams.unregister_dynamic_route("/sonos_queue/*")
+        self.upnp.close()
         if self._unsub_queue_items_updated is not None:
             self._unsub_queue_items_updated()
             self._unsub_queue_items_updated = None

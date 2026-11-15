@@ -493,9 +493,12 @@ class GPodder(MusicProvider):
     async def _write_playlog(self, mass_episode: PodcastEpisode, action: EpisodeAction) -> None:
         # the playlog writes must not be reported back to gPodder
         self.progress_guard_timestamp = time.time()
+        progress_timestamp = int(action_time(action)) or None
         if isinstance(action, EpisodeActionNew):
             await self.mass.music.mark_item_unplayed(
-                mass_episode, provider_instance_id=self.instance_id
+                mass_episode,
+                provider_instance_id=self.instance_id,
+                progress_timestamp=progress_timestamp,
             )
         elif isinstance(action, EpisodeActionPlay):
             await self.mass.music.mark_item_played(
@@ -504,6 +507,7 @@ class GPodder(MusicProvider):
                 seconds_played=action.position,
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
+                progress_timestamp=progress_timestamp,
             )
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:

@@ -379,18 +379,7 @@ class MusicbrainzProvider(MetadataProvider):
             details = await self.get_artist_details(artist.mbid)
         except InvalidDataError:
             return None
-        artist_entity_type: ArtistEntityType | None = None
-        if details.type:
-            entity_type = ArtistEntityType(details.type.lower())
-            if entity_type != ArtistEntityType.UNKNOWN:
-                artist_entity_type = entity_type
-        life_span: LifeSpan | None = None
-        if details.life_span:
-            life_span = LifeSpan(
-                begin=details.life_span.begin,
-                end=details.life_span.end,
-                ended=details.life_span.ended,
-            )
+        artist_entity_type, life_span = artist_type_and_life_span(details)
         links = self._links_from_relations(details.relations)
         genres = _genre_names(details.genres)
         if not artist_entity_type and not life_span and not links and not genres:
@@ -1206,6 +1195,29 @@ def relation_urls(relations: Iterable[MusicBrainzRelation] | None) -> list[str]:
         if relation.url and not relation.ended and relation.url.resource not in urls:
             urls.append(relation.url.resource)
     return urls
+
+
+def artist_type_and_life_span(
+    details: MusicBrainzArtist,
+) -> tuple[ArtistEntityType | None, LifeSpan | None]:
+    """
+    Return the artist type and life span a MusicBrainz artist carries, None for what is unknown.
+
+    :param details: The artist as MusicBrainz returns it.
+    """
+    artist_entity_type: ArtistEntityType | None = None
+    if details.type:
+        entity_type = ArtistEntityType(details.type.lower())
+        if entity_type != ArtistEntityType.UNKNOWN:
+            artist_entity_type = entity_type
+    life_span: LifeSpan | None = None
+    if details.life_span:
+        life_span = LifeSpan(
+            begin=details.life_span.begin,
+            end=details.life_span.end,
+            ended=details.life_span.ended,
+        )
+    return artist_entity_type, life_span
 
 
 def is_digital_release(release: MusicBrainzBarcodeRelease) -> bool:

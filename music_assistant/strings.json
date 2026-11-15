@@ -1124,6 +1124,12 @@
     "adaptive_drc": {
       "name": "Adaptive DRC"
     },
+    "audio_delay": {
+      "name": "Audio delay"
+    },
+    "balance": {
+      "name": "Balance"
+    },
     "bass": {
       "name": "Bass"
     },
@@ -1163,6 +1169,9 @@
     "extra_bass": {
       "name": "Extra bass"
     },
+    "ir_repeater": {
+      "name": "IR repeater"
+    },
     "link_audio_delay": {
       "name": "Link audio delay"
     },
@@ -1172,8 +1181,20 @@
     "link_control": {
       "name": "Link control"
     },
+    "loudness": {
+      "name": "Loudness"
+    },
+    "mono_mode": {
+      "name": "Mono"
+    },
+    "music_surround_level": {
+      "name": "Surround level (music)"
+    },
     "network_name": {
       "name": "Network name"
+    },
+    "night_mode": {
+      "name": "Night mode"
     },
     "party_mode": {
       "name": "Party mode"
@@ -1181,14 +1202,32 @@
     "pure_direct": {
       "name": "Pure direct"
     },
+    "remote_led_feedback": {
+      "name": "Status light on remote control"
+    },
     "sleep": {
       "name": "Sleep timer"
+    },
+    "spatial_audio": {
+      "name": "Spatial audio"
     },
     "speaker_a": {
       "name": "Speaker A"
     },
     "speaker_b": {
       "name": "Speaker B"
+    },
+    "speech_enhancement": {
+      "name": "Speech enhancement"
+    },
+    "status_light": {
+      "name": "Status light"
+    },
+    "sub_crossover": {
+      "name": "Subwoofer crossover"
+    },
+    "sub_enabled": {
+      "name": "Subwoofer"
     },
     "subwoofer_volume": {
       "name": "Subwoofer Volume"
@@ -1199,16 +1238,45 @@
     "surround_decoder_type": {
       "name": "Surround decoder type"
     },
+    "surround_enabled": {
+      "name": "Surround speakers"
+    },
+    "surround_level": {
+      "name": "Surround level (TV)"
+    },
+    "surround_mode": {
+      "name": "Full-volume surround for music"
+    },
     "tone_control_mode": {
       "name": "Tone control mode"
     },
+    "touch_controls": {
+      "name": "Touch controls"
+    },
     "treble": {
       "name": "Treble"
+    },
+    "trueplay": {
+      "name": "Trueplay"
     }
   },
   "errors": {
     "setup_required": "Music Assistant is not set up yet.",
     "provider_unavailable": "The provider is currently unavailable.",
+    "provider_no_longer_available": "This provider is no longer available.",
+    "community_provider_catalog_unreachable": "The community catalog could not be reached to check this, so it does not run. Restart Music Assistant when your server is online again.",
+    "community_provider_blocked": "The community catalog blocked this ({0}), so it no longer runs. You can remove it.",
+    "community_provider_not_listed": "This is no longer in the community catalog, so it no longer runs. You can remove it.",
+    "community_provider_not_for_this_version": "This is not available for this version of Music Assistant, so it does not run. You can remove it.",
+    "community_provider_requirements_clash": "This needs versions of Python packages that clash with Music Assistant or with something else from the community catalog, so it does not run.",
+    "community_provider_reinstall_failed": "The files of this were changed on your server and could not be downloaded again ({0}), so it does not run. Restart Music Assistant to try again.",
+    "community_provider_went_back": "Version {0} of this failed to load, and the version before it is no longer available, so it does not run.",
+    "community_provider_restart_to_go_back": "Version {0} of this failed to load. Restart Music Assistant to finish going back to the version before it.",
+    "community_provider_restart_to_update": "Version {0} of this is ready. Restart Music Assistant to finish the update.",
+    "community_provider_moved": "This moved to the community catalog. Music Assistant installs it from there by itself as soon as the catalog offers it for this version and your server can reach it.",
+    "community_provider_move_failed": "This moved to the community catalog, but Music Assistant could not install it from there ({0}). It tries again at every start and whenever it checks the catalog.",
+    "community_provider_starting": "Music Assistant is still starting what comes from the community catalog. This runs in a moment.",
+    "community_provider_safe_mode": "Nothing from the community catalog runs while Music Assistant is in safe mode.",
     "media_not_found": "The requested media item could not be found.",
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",

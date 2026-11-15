@@ -10,7 +10,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 - **Pairing**: Supports pairing with Apple devices (Apple TV, HomePod, Mac) using HAP/HomeKit pair-setup (via the cliairplay binary) or legacy RAOP pairing (native)
 - **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices from a single start instant, with a shared PTP clock daemon for native AirPlay 2 timing
 - **Now-Playing Metadata**: Sends title/artist/album/artwork/progress — as DMAP over the stream for speakers, and additionally as MediaRemote over the native AirPlay 2 flow so an Apple TV renders the now-playing screen
-- **Hi-Res Audio**: 24-bit playback (44.1/48 kHz) over the AirPlay 2 flow, enabled automatically for receivers that advertise 24-bit ALAC
+- **Hi-Res Audio**: 24-bit playback (44.1/48 kHz) over the AirPlay 2 flow, enabled automatically for receivers that advertise 24-bit ALAC and switchable per player
 - **DACP Remote Control**: Receives remote control commands (play/pause/volume/next/previous) from devices while streaming
 - **Late Join Support**: Allows adding players to an existing playback session without interrupting other players
 - **Flow Mode Streaming**: Provides gapless playback and crossfade support by streaming the queue as one continuous audio stream
@@ -96,7 +96,10 @@ airplay/
     formats the receiver advertises in its `/info` response (`supportedAudioFormatsExtended`,
     else the legacy `supportedFormats`). Both the realtime and buffered stream tables
     count: receivers understate them, and an Apple TV lists 24-bit for its buffered
-    stream only while rendering it fine on the realtime stream.
+    stream only while rendering it fine on the realtime stream. Only the 24-bit
+    sample rates the receiver lists are used (Shairport Sync lists, and decodes, 48 kHz
+    only). The per-player 24-bit toggle switches it on by hand for a receiver that
+    lists no 24-bit format.
 - **Binary**: `cliairplay --protocol airplay2` (native implementation, no OwnTone dependency)
 
 ### Automatic Selection
@@ -252,7 +255,10 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
      then sends one shared audible start instant with an anchor lead
      (400 ms solo / 500 ms warm group / 2500 ms cold group, see
      `AIRPLAY_COLD_GROUP_START_LEAD_MS`); readiness is fully event-driven, so no
-     setup time is guessed and the binary bursts the receiver pre-fill after START
+     setup time is guessed and the binary bursts the receiver pre-fill after START.
+     A cold group whose members all stream buffered first anchors far out
+     (`AIRPLAY_ANCHOR_SEAT_LEAD_MS`), so a receiver that accepts its anchor late
+     costs the others no audio already sent
 
 2. **Client Setup** (per player, `_start_client()` method)
    - Creates an `AirPlayStream` instance with the player's PCM format
@@ -476,7 +482,11 @@ protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 3. Send one shared `START` (now + 400 ms solo / 500 ms warm group / 2500 ms cold
    group, see `AIRPLAY_COLD_GROUP_START_LEAD_MS`) to every member; readiness is
    event-confirmed so a warm anchor covers only the receiver re-anchor, and the
-   binary bursts the receiver pre-fill from START
+   binary bursts the receiver pre-fill from START. A cold group whose members
+   all stream buffered sends a far-out `START` first
+   (`AIRPLAY_ANCHOR_SEAT_LEAD_MS`) and only commands this instant once every
+   member has accepted that one: audio sent before a re-`START` is skipped on
+   that member, leaving it ahead of the group
 4. **Warm seek / next-track / grouped resume** reuse the live connections: MA
    stops feeding old audio, kills the per-seek ffmpeg (never the persistent
    stdin), sends `ACTION=FLUSH` to every member and awaits `[STATUS] flushed`,

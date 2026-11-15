@@ -100,6 +100,7 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.podcast_parsers import get_publisher_number
 from music_assistant.helpers.process import open_in_thread
+from music_assistant.helpers.security import has_control_chars
 from music_assistant.helpers.tags import (
     AudioTags,
     async_parse_tags,
@@ -950,8 +951,9 @@ class LocalFileSystemProvider(MusicProvider):
                         continue
                     tags = await self._parse_tags(file_item)
                     full_track = await self._parse_track(file_item, tags)
-                    assert isinstance(full_track.album, Album)
-                    return full_track.album
+                    # a file whose album tag was removed since the last sync names no album
+                    if isinstance(full_track.album, Album):
+                        return full_track.album
         if missing_file_error:
             raise missing_file_error
         msg = f"Album not found: {prov_album_id}"
@@ -1367,6 +1369,27 @@ class LocalFileSystemProvider(MusicProvider):
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
+
+    def accepts_stored_image_path(self, path: str) -> bool:
+        """
+        Return whether path is shaped like a path relative to the folder of this source.
+
+        :param path: The stored image path.
+        """
+        # only cover files and audio files (for their embedded cover): the sources built on
+        # this one fetch any other path as a raw file from their share, and a playlist or
+        # cue file handed to ffmpeg could point it at other files
+        file_path = path.split("?cs=", 1)[0]
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+        return ext in (
+            IMAGE_EXTENSIONS | TRACK_EXTENSIONS | AUDIOBOOK_EXTENSIONS | PODCAST_EPISODE_EXTENSIONS
+        ) and not (
+            path.startswith("/")
+            or "\\" in path
+            or "://" in path
+            or ".." in path.split("/")
+            or has_control_chars(path)
+        )
 
     async def check_write_access(self) -> None:
         """Perform check if we have write access."""
@@ -2624,9 +2647,18 @@ class LocalFileSystemProvider(MusicProvider):
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
                 tracks = await self._cue.parse_tracks(item)
                 for track in tracks:
+                    prior = (
+                        await self.mass.music.tracks.get_library_item_by_prov_id(
+                            track.item_id, self.instance_id
+                        )
+                        if prev_checksum is not None
+                        else None
+                    )
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
+                    if prior is not None:
+                        await self._unlink_stale_albums(track, prior)
                     if cur_filenames is not None:
                         cur_filenames.add(track.item_id)
                 return True
@@ -2639,10 +2671,19 @@ class LocalFileSystemProvider(MusicProvider):
                     return False
                 tags = await self._parse_tags(item)
                 track = await self._parse_track(item, tags)
+                prior = (
+                    await self.mass.music.tracks.get_library_item_by_prov_id(
+                        track.item_id, self.instance_id
+                    )
+                    if prev_checksum is not None
+                    else None
+                )
                 # TODO: implement favorite status based on rating ?
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )
+                if prior is not None:
+                    await self._unlink_stale_albums(track, prior)
                 return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
@@ -2716,6 +2757,48 @@ class LocalFileSystemProvider(MusicProvider):
             for item_id in prev_filenames
             if (parsed := parse_cue_track_id(item_id)) and parsed[0] == item.relative_path
         )
+
+    async def _unlink_stale_albums(self, track: Track, prior: Track) -> None:
+        """
+        Unlink a changed file's library track from albums of this source its tags no longer name.
+
+        Albums left without tracks are removed by the orphan cleanup at the end of the sync.
+
+        :param track: The track as just parsed from the changed file.
+        :param prior: The library track as it was before the changed file was written to it.
+        """
+        # with more than one file of this source on the library track, it can not be told
+        # which of those files placed the track on which album
+        if sum(x.provider_instance == self.instance_id for x in prior.provider_mappings) > 1:
+            return
+        keep_album_id: str | None = None
+        if track.album and (
+            db_album := await self.mass.music.albums.get_library_item_by_prov_id(
+                track.album.item_id, self.instance_id
+            )
+        ):
+            keep_album_id = str(db_album.item_id)
+        assert self.mass.music.database
+        for db_row in await self.mass.music.database.get_rows(
+            DB_TABLE_ALBUM_TRACKS, {"track_id": int(prior.item_id)}, limit=0
+        ):
+            if str(db_row["album_id"]) == keep_album_id:
+                continue
+            try:
+                linked_album = await self.mass.music.albums.get_library_item(db_row["album_id"])
+            except MediaNotFoundError:
+                continue
+            # an album of another source, or one shared with another source, is left alone:
+            # that source may still place the track on it, and the orphan cleanup would
+            # otherwise remove the shared album as a whole
+            if not linked_album.provider_mappings or any(
+                x.provider_instance != self.instance_id for x in linked_album.provider_mappings
+            ):
+                continue
+            self.logger.debug(
+                "%s no longer names album %s, unlinking it", track.item_id, linked_album.name
+            )
+            await self.mass.music.tracks.remove_album_link(prior.item_id, linked_album.item_id)
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""

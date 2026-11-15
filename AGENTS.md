@@ -19,14 +19,21 @@ Flag it in review, and never write it yourself, when a change would:
 - decode protected audio outside what the user's own account is entitled to, or keep the
   decoded result rather than only playing it
 - call a service's API without throttling, or re-fetch what the cache already holds
+- walk a service's catalogue for one user action or background job: requests per album, track
+  or page of an artist's discography or a service listing, so the count grows with the
+  catalogue. Never build what a service has no endpoint for that way (an artist's tracks from
+  all of its albums), and cap catalogue listings (an artist's albums stop at 100 releases).
+  Paging through the user's own library, through the throttler, is fine
+- bypass a throttler, or keep sending requests while a service has asked us to wait
 - write decoded audio from a streaming provider to disk
 - bypass a subscription tier, regional availability, or a service's stated concurrent-stream
   limit (see `max_concurrent_streams` in `music_assistant/models/music_provider.py`)
 - add downloading, exporting, or archiving of provider audio, however it is framed
 
 Some guards in the codebase exist only for this reason and read as removable if you do not know
-that — the readrate pacing on the stream endpoints, and the filesystem-only restriction on
-background audio analysis. Leave them in place. `DEVELOPMENT.md` carries the same rules for
+that — the readrate pacing on the stream endpoints, the filesystem-only restriction on
+background audio analysis, and the artist tracks listing that stays empty for a provider without
+an artist tracks endpoint. Leave them in place. `DEVELOPMENT.md` carries the same rules for
 provider authors.
 
 ## Development Commands
@@ -118,6 +125,7 @@ The ProviderMapping has this structure:
 
 - A media item itself also has an item_id and provider attribute. For an item that comes straight from the musicprovider itself (so not from the MA library) the provider attribute will be set to the instance_id of that provider.
 - Library items are identified by `item.provider == "library"` where `item.item_id` is the library DB ID
+- `item.provider == "library"` only says the item has a row in the database, not that it is in the user's library: the album and artists of a library track get a row too. Whether an item is in the library is the `in_library` flag on its provider mappings (and a liked item counts as in the library)
 - `provider_domain='library'` **never exists** in provider_mappings — library items don't have mappings to themselves
 - To resolve a provider item to its library equivalent, use: `await mass.music.<mediatype>.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)`
 - Never assume you can use `mapping.item_id` directly as a library DB ID — always use the resolution method above
