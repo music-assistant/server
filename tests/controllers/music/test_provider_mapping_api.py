@@ -11,6 +11,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import Playlist, ProviderMapping
 
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
 if TYPE_CHECKING:
@@ -40,7 +41,9 @@ def _playlist(item_id: str) -> Playlist:
 
 def _provider(playlist: Playlist | None) -> MagicMock:
     """Return a provider that resolves the given playlist, or none at all."""
-    provider = MagicMock(instance_id=FS_INSTANCE, domain="filesystem_local", available=True)
+    provider = MagicMock(
+        spec=MusicProvider, instance_id=FS_INSTANCE, domain="filesystem_local", available=True
+    )
     if playlist is None:
         provider.get_playlist = AsyncMock(side_effect=MediaNotFoundError("not a playlist"))
     else:

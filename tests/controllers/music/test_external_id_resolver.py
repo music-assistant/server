@@ -42,6 +42,7 @@ from music_assistant.providers.musicbrainz.models import (
     MusicBrainzRelease,
     MusicBrainzUrl,
 )
+from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 from tests.common import set_music_source_access
 
 from .helpers import ISRC, create_album, create_track
@@ -686,6 +687,20 @@ async def test_malformed_external_item_id_is_refused(music: MusicController, ite
         await music.get_item(MediaType.TRACK, item_id, EXTERNAL_ID_PROVIDER)
 
     assert _requests(spotify) == 0
+
+
+async def test_item_on_a_metadata_provider_is_not_available(music: MusicController) -> None:
+    """An album asked for on a provider without items of its own is not available."""
+    musicbrainz = MagicMock(spec=MusicbrainzProvider)
+    musicbrainz.instance_id = musicbrainz.domain = "musicbrainz"
+    musicbrainz.type = ProviderType.METADATA
+    musicbrainz.available = True
+    music.mass._providers = {"musicbrainz": musicbrainz}
+
+    with pytest.raises(ProviderUnavailableError, match="musicbrainz is not available"):
+        await music.albums.get(RELEASE_GROUP_ID, "musicbrainz")
+    with pytest.raises(ProviderUnavailableError, match="musicbrainz is not available"):
+        await music.get_item(MediaType.ALBUM, RELEASE_GROUP_ID, "musicbrainz")
 
 
 # ---------------------------------------------------------------------------
