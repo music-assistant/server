@@ -398,6 +398,9 @@ PROVIDER_LOAD_CONCURRENCY = 8
 # MusicAssistantError, which is a bug rather than a handled condition
 UNHANDLED_PROVIDER_ERROR_CODE: Final = 999
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
+# the provider of an item known only by an external id, which is looked up on the music
+# providers when it is opened or played; its item id is built by external_item_id()
+EXTERNAL_ID_PROVIDER: Final[str] = "external"
 # The music sources that read the user's own files. Background audio analysis is deliberately
 # limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is
 # not something we do. Keep it that way.

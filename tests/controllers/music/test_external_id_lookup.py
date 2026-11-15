@@ -28,6 +28,8 @@ async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]
     # remove_item_from_library routes audio analysis cleanup through the AA controller
     mass_minimal.streams = MagicMock()
     mass_minimal.streams.audio_analysis.delete_audio_analysis = AsyncMock()
+    # a lookup on the providers remembers what it found in the cache
+    await mass_minimal.cache._setup_database()
     await controller._setup_database()
     yield controller
     if controller._database:
