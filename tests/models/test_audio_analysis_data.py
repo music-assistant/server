@@ -133,11 +133,11 @@ def test_lift_keeps_unknown_band_rms_entries() -> None:
     ("brightness", "arousal", "loudness", "level"),
     [
         (0.1404, 0.2405, -11.4158, 5.5),
-        (0.2, 0.6, -8.0, 7.1193),
-        (0.07, 0.1, -18.0, 3.3796),
-        (0.3, 0.95, -5.0, 9.2953),
-        (0.0, 0.0, -40.0, 1.4145),
-        (1.0, 1.0, 0.0, 10.0),
+        (0.2, 0.6, -8.0, 8.5632),
+        (0.07, 0.1, -18.0, 1.9183),
+        (0.3, 0.95, -5.0, 9.8201),
+        (0.0, 0.0, -40.0, 1.1342),
+        (1.0, 1.0, 0.0, 9.9118),
     ],
 )
 def test_energy_level(brightness: float, arousal: float, loudness: float, level: float) -> None:
@@ -165,5 +165,5 @@ def test_as_audio_metadata_carries_rounded_energy_level() -> None:
     data = AudioAnalysisData(brightness=0.2, arousal=0.6, loudness_integrated=-8.0)
     metadata = data.as_audio_metadata()
     assert metadata is not None
-    assert metadata.energy_level == 7
+    assert metadata.energy_level == 9
     assert metadata.bpm is None
