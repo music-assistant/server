@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 from aiosendspin.models.core import ClientHelloPayload
@@ -242,6 +243,12 @@ def test_another_format_is_reported_to_the_group() -> None:
     assert role.set_preferred_format(_pcm(44100, 24), AudioCodec.PCM)
     group.on_role_format_changed.assert_not_called()
 
+    assert role.set_preferred_format(_pcm(48000, 24), AudioCodec.PCM)
+    group.on_role_format_changed.assert_called_once_with(role)
+
+    # only the format counts: what else the requirements of the role hold is no change
+    assert role._audio_requirements is not None
+    role._audio_requirements = replace(role._audio_requirements, channel_id=uuid4())
     assert role.set_preferred_format(_pcm(48000, 24), AudioCodec.PCM)
     group.on_role_format_changed.assert_called_once_with(role)
 

@@ -79,7 +79,11 @@ class SlimprotoBridgeRole(BridgePlayerRole):
             return False
         previous = self.preferred_format
         self.setup_audio_requirements(chosen.sample_rate, chosen.bit_depth, chosen.channels)
-        if previous is not None and previous != self.preferred_format:
+        if previous is not None and (
+            previous.sample_rate,
+            previous.bit_depth,
+            previous.channels,
+        ) != (chosen.sample_rate, chosen.bit_depth, chosen.channels):
             self._client.group.on_role_format_changed(self)
         return True
 
