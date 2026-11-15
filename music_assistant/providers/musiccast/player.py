@@ -617,7 +617,8 @@ class MusicCastPlayer(PlayerProtocol):
         if queue.next_item is None:
             return
         self.logger.debug("Advancing queue to next item after end-of-track idle")
-        await self.mass.player_queues.next(queue.queue_id)
+        with self.mass.players.without_member_power_on():
+            await self.mass.player_queues.next(queue.queue_id)
 
     @property
     def synced_to(self) -> str | None:

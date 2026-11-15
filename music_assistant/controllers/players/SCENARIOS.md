@@ -1938,6 +1938,16 @@ is not switched on, and nothing waits for Den.
   serve.
 - Proven by: `tests/providers/bbc_sounds/test_live_rewind.py::test_the_seek_back_to_the_live_edge_switches_no_member_of_a_group_on`
 
+### GROUP-55 · MusicCast's own step to the next item switches no member on
+
+Downstairs, a group with Den, a speaker switched off at its plug, plays the queue of Office, a
+MusicCast speaker. Office reads idle at the end of a track, and MusicCast steps its queue to the
+next item by itself. That step is no start of the group: Den's plug is not switched on, and
+nothing waits for Den.
+
+- End-to-end: **no**: it needs MusicCast's own player, which the lab does not run.
+- Proven by: `tests/providers/musiccast/test_player.py::test_end_of_track_advance_switches_no_member_of_a_group_on`
+
 ## Where playback goes
 
 A player plays through one of its outputs, and what the device plays by itself is steered
