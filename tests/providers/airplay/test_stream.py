@@ -3936,6 +3936,85 @@ async def test_text_refinement_keeps_delivered_artwork_settled() -> None:
     assert "TITLE=Track (Remastered)" in commands[-1]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "item_ids",
+    [("item-1", "item-2"), (None, None)],
+    ids=["queue-items", "audio-source"],
+)
+async def test_next_track_with_the_same_cover_resends_artwork(
+    item_ids: tuple[str | None, str | None],
+) -> None:
+    """A new now-playing item re-sends a cover it shares with the previous track."""
+    stream = AirPlayStream(_make_player())
+
+    def make_metadata(item_id: str | None, title: str) -> MagicMock:
+        return MagicMock(
+            queue_item_id=item_id,
+            duration=180,
+            title=title,
+            artist="Artist",
+            album="Album",
+            image_url="album-cover",
+        )
+
+    artwork_path = "/cache/thumbnails/album-cover.jpg"
+
+    with (
+        patch.object(stream, "_prepare_artwork", new=AsyncMock(return_value=artwork_path)),
+        patch.object(
+            stream, "send_cli_command", new_callable=AsyncMock, return_value=True
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, make_metadata(item_ids[0], "Track 1"))
+        await stream.send_metadata(None, make_metadata(item_ids[1], "Track 2"))
+
+    last_bundle = send_command.await_args_list[-1].args[0]
+    assert "TITLE=Track 2\n" in last_bundle
+    assert f"ARTWORKFILE={artwork_path}\n" in last_bundle
+
+
+@pytest.mark.asyncio
+async def test_new_item_retries_a_shared_cover_that_missed_its_bundle() -> None:
+    """A shared cover whose delivery failed for a new item goes out on its next update."""
+    stream = AirPlayStream(_make_player())
+    first = MagicMock(
+        queue_item_id="item-1",
+        duration=180,
+        title="Track 1",
+        artist="Artist",
+        album="Album",
+        image_url="album-cover",
+    )
+    second = MagicMock(
+        queue_item_id="item-2",
+        duration=180,
+        title="Track 2",
+        artist="Artist",
+        album="Album",
+        image_url="album-cover",
+    )
+    artwork_path = "/cache/thumbnails/album-cover.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new=AsyncMock(side_effect=[artwork_path, None, artwork_path]),
+        ),
+        patch.object(
+            stream, "send_cli_command", new_callable=AsyncMock, return_value=True
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, first)
+        await stream.send_metadata(None, second)
+        assert "ARTWORK" not in send_command.await_args_list[-1].args[0]
+        await stream.send_metadata(10, second)
+
+    commands = [args.args[0] for args in send_command.await_args_list]
+    assert f"ARTWORK={artwork_path}" in commands
+
+
 # --- Structured connect failures reported by the binary ---
 
 
