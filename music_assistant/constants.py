@@ -1095,6 +1095,26 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("ambient_sounds", False),
 }
 
+# The editorial part of the Marketplace, which the team edits per release.
+CATALOG_POPULAR: Final[tuple[str, ...]] = (
+    "spotify",
+    "tidal",
+    "qobuz",
+    "filesystem_local",
+    "sonos",
+    "chromecast",
+    "airplay",
+    "spotify_connect",
+    "airplay_receiver",
+)
+# what to suggest next to a provider that is set up
+CATALOG_PAIRINGS: Final[dict[str, tuple[str, ...]]] = {
+    "spotify": ("spotify_connect", "lastfm_scrobble"),
+    "tidal": ("lastfm_scrobble",),
+    "qobuz": ("lastfm_scrobble",),
+    "airplay": ("airplay_receiver",),
+}
+
 # Seconds an external source may sit paused before we consider its session ended.
 # Devices keep a source like Spotify Connect loaded and paused indefinitely, also once
 # the app released the speaker, and offer nothing that tells an abandoned session apart
