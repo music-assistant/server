@@ -27,6 +27,12 @@ on:
 permissions:
   pull-requests: write
 
+# One run at a time per PR: two runs side by side would both find
+# no comment yet and post it twice.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   apply_label:
     name: Apply
