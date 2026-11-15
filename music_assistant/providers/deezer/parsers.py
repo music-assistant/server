@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
@@ -26,6 +26,7 @@ from deezer_python_gql.generated.get_recently_played import (
 from deezer_python_gql.generated.get_track import GetTrackTrack
 from music_assistant_models.enums import (
     AlbumType,
+    ContentType,
     ExternalID,
     ImageType,
     MediaType,
@@ -34,6 +35,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    AudioFormat,
     ItemMapping,
     MediaItemChapter,
     MediaItemImage,
@@ -143,6 +145,7 @@ def _provider_mapping(
     *,
     available: bool = True,
     is_unique: bool | None = None,
+    audio_format: AudioFormat | None = None,
 ) -> ProviderMapping:
     """Create a ProviderMapping for the given item."""
     return ProviderMapping(
@@ -151,6 +154,7 @@ def _provider_mapping(
         provider_instance=provider.instance_id,
         available=available,
         is_unique=is_unique,
+        audio_format=audio_format or AudioFormat(),
     )
 
 
@@ -167,6 +171,20 @@ def _track_available(
     if media.rights.sub is None:
         return False
     return bool(media.rights.sub.available)
+
+
+def _track_audio_format(
+    provider: DeezerProvider,
+    track: TrackFields | SearchSearchResultsTracksEdgesNode | GetTrackTrack,
+) -> AudioFormat:
+    """Return the best format the track has among those the account asks for."""
+    if track.media is None:
+        return AudioFormat()
+    sizes = track.media.estimated_sizes.model_dump(by_alias=True)
+    for fmt in provider.gw_client.formats:
+        if sizes.get(fmt["format"]):
+            return parse_audio_format(fmt["format"])
+    return AudioFormat()
 
 
 def parse_track(
@@ -244,7 +262,12 @@ def parse_track(
         artists=artists,
         album=album,
         provider_mappings={
-            _provider_mapping(provider, track.id, available=_track_available(track))
+            _provider_mapping(
+                provider,
+                track.id,
+                available=_track_available(track),
+                audio_format=_track_audio_format(provider, track),
+            )
         },
         metadata=_parse_track_metadata(provider, track),
         track_number=track_number,
@@ -966,3 +989,22 @@ def parse_date(date_value: str | None) -> datetime | None:
         return datetime.fromisoformat(str(date_value))
     except ValueError, TypeError:
         return None
+
+
+def parse_audio_format(deezer_format: str) -> AudioFormat:
+    """Return the audio format a Deezer format name stands for."""
+    return AudioFormat(
+        content_type=ContentType.try_parse(deezer_format.split("_", maxsplit=1)[0]),
+        # the sample rate of a FLAC_24 file is only known from the file itself
+        bit_depth=24 if deezer_format == "FLAC_24" else 16,
+        bit_rate={"MP3_320": 320, "MP3_128": 128}.get(deezer_format),
+    )
+
+
+def parse_bookmark_time(bookmarked_at: str) -> datetime | None:
+    """Parse when Deezer saved a podcast episode bookmark."""
+    timestamp = parse_date(bookmarked_at)
+    if timestamp is not None and timestamp.tzinfo is None:
+        # the core compares against an aware timestamp; Deezer's times are UTC
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp

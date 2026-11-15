@@ -13,7 +13,7 @@ from music_assistant_models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderType
+from music_assistant_models.enums import ConfigEntryType, PlayerType, ProtocolRole, ProviderType
 
 from music_assistant.constants import (
     CONF_ENTRY_LOG_LEVEL,
@@ -69,26 +69,55 @@ async def test_set_raw_core_config_value_without_controller_copy(
     assert mass_minimal.config.get_raw_core_config_value(CORE_DOMAIN, "some_key") == 2
 
 
-async def test_set_raw_player_config_value_updates_player_copy(
-    mass_minimal: MusicAssistant,
-) -> None:
-    """A raw player config write is reflected in the player's in-place config copy."""
-    mass_minimal.config.create_default_player_config(PLAYER_ID, "test_instance", PlayerType.PLAYER)
-    player = MagicMock()
-    player.config = cast(
+def _owner_with_config_copy() -> MagicMock:
+    """Return a registered object holding a config copy with one entry."""
+    owner = MagicMock()
+    owner.config = cast(
         "PlayerConfig",
         PlayerConfig.parse(
             [_entry("fancy_option", ConfigEntryType.STRING, "foo")],
             {"player_id": PLAYER_ID, "provider": "test_instance"},
         ),
     )
+    return owner
+
+
+async def test_set_player_value_updates_player_copy(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A stored player value is reflected in the player's in-place config copy."""
+    mass_minimal.config.create_player_record(
+        PLAYER_ID, provider="test_instance", player_type=PlayerType.PLAYER, default_name=None
+    )
+    player = _owner_with_config_copy()
     mass_minimal.players = MagicMock()
     mass_minimal.players.get_player.return_value = player
-    mass_minimal.config.set_raw_player_config_value(PLAYER_ID, "fancy_option", "bar")
+    mass_minimal.config.set_player_value(PLAYER_ID, "fancy_option", "bar")
     assert player.config.get_value("fancy_option") == "bar"
     # a write for a key without config entry only lands in storage
-    mass_minimal.config.set_raw_player_config_value(PLAYER_ID, "unknown_key", "baz")
-    assert mass_minimal.config.get_raw_player_config_value(PLAYER_ID, "unknown_key") == "baz"
+    mass_minimal.config.set_player_value(PLAYER_ID, "unknown_key", "baz")
+    assert mass_minimal.config.get_player_value(PLAYER_ID, "unknown_key") == "baz"
+
+
+async def test_set_protocol_value_updates_protocol_copy(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A stored protocol value is reflected in the protocol object's in-place config copy."""
+    mass_minimal.config.create_protocol_record(
+        PLAYER_ID,
+        provider="test_instance",
+        player_id=None,
+        role=ProtocolRole.NATIVE,
+        default_name=None,
+    )
+    protocol = _owner_with_config_copy()
+    mass_minimal.players = MagicMock()
+    mass_minimal.players.get_protocol.return_value = protocol
+    mass_minimal.config.set_protocol_value(PLAYER_ID, "fancy_option", "bar")
+    assert protocol.config.get_value("fancy_option") == "bar"
+    # a write for a key without config entry only lands in storage
+    mass_minimal.config.set_protocol_value(PLAYER_ID, "unknown_key", "baz")
+    assert mass_minimal.config.get_protocol_value(PLAYER_ID, "unknown_key") == "baz"
 
 
 async def test_set_raw_provider_config_value_updates_provider_copy(

@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "cbc_listen",
+  "name": "CBC Listen",
+  "stage": "beta",
+  "description": "Listen to live radio stations, podcasts, and on-demand radio shows from CBC Listen, the audio service of the Canadian public broadcaster CBC.",
+  "codeowners": ["@iwismer"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/cbc-listen/",
+  "multi_instance": false
+}

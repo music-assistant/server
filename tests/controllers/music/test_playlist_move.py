@@ -532,8 +532,7 @@ async def test_move_of_a_changed_playlist_is_refused(
     assert err.value.translation_key == "playlist_changed"
     provider.move_playlist_tracks.assert_not_awaited()
     # the playlist is announced, so a client showing the old listing reads it again
-    signal_event.assert_called_once()
-    assert signal_event.call_args.args[0] == EventType.MEDIA_ITEM_UPDATED
+    assert media_item_events(signal_event) == [EventType.MEDIA_ITEM_UPDATED]
 
 
 async def test_move_of_the_listed_items_is_accepted(

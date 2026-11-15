@@ -241,6 +241,7 @@ def _harness(
     mass = Mock()
     mass.metadata.link_providers_via_musicbrainz = True
     mass.music.artists.tracks = AsyncMock(side_effect=_artist_tracks)
+    mass.music.artists.top_tracks = AsyncMock(return_value=[])
     mass.music.artists.albums = AsyncMock(side_effect=_artist_albums)
     mass.music.tracks.search = track_search
     mass.music.albums.search = album_search

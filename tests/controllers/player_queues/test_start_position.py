@@ -65,6 +65,7 @@ async def test_a_start_position_needs_one_item_it_can_start(
     ctrl: Any = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.mass = MagicMock()
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
+    ctrl.mass.players._resolve_playback_owner = lambda player: player  # plays on its own
     ctrl._check_player_permission = MagicMock()
     ctrl.get = MagicMock(return_value=MagicMock())
     ctrl._handle_play_media = AsyncMock()

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    IdentifierType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -21,7 +22,8 @@ from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT, VERBOSE_LOG_LEVEL
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import PlayerMedia
+from music_assistant.models.player_protocol import PlayerProtocol
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
 from .constants import (
@@ -35,6 +37,8 @@ from .constants import (
 
 if TYPE_CHECKING:
     from pyheos import HeosPlayer as PyHeosPlayer
+
+    from music_assistant.models.player import Player
 
     from .provider import HeosPlayerProvider
 
@@ -50,7 +54,7 @@ PLAYER_FEATURES = {
 }
 
 
-class HeosPlayer(Player):
+class HeosPlayer(PlayerProtocol):
     """HeosPlayer in Music Assistant."""
 
     # HEOS keeps a source it loaded itself reported as paused once the app walked away,
@@ -73,8 +77,7 @@ class HeosPlayer(Player):
         self._device: PyHeosPlayer = device
         self._ma_controls_playback = False
         self._ma_playback_starting = False
-        self._ma_playback_transition_timer_id = f"heos_playback_transition_{self.player_id}"
-        self._on_unload_callbacks.append(self._cancel_ma_playback_transition)
+        self._ma_playback_transition_timer_id = f"heos_playback_transition_{self.protocol_id}"
         self._queue_cleanup_lock = asyncio.Lock()
         self._queue_cleanup_pending = False
 
@@ -97,14 +100,21 @@ class HeosPlayer(Player):
         self.set_device_info()
         self.set_dynamic_attributes(update_media=True)
 
-        await self.mass.players.register_or_update(self)
-
-        self._on_unload_callbacks.append(
-            self._device.add_on_player_event(self._player_event_received)
-        )
+        await self.mass.players.register(self)
+        if self.player is None:
+            # not attached: the user disabled the player
+            return
 
         await self.build_group_list()
         await self.build_source_list()
+
+    async def on_attach(self, player: Player) -> None:
+        """Subscribe to the events of the device while the protocol is attached."""
+        self._on_detach_callbacks.append(self._cancel_ma_playback_transition)
+        self._on_detach_callbacks.append(self._end_queue_cleanup)
+        self._on_detach_callbacks.append(
+            self._device.add_on_player_event(self._player_event_received)
+        )
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return HEOS-specific player configuration entries."""
@@ -132,6 +142,9 @@ class HeosPlayer(Player):
             manufacturer=manufacturer,
         )
         _device_info.ip_address = self._device.ip_address
+        # several HEOS players can share a host (the zones of an AVR): the HEOS player id
+        # tells them apart
+        _device_info.add_identifier(IdentifierType.UUID, self.protocol_id)
         self._attr_device_info = _device_info
         self._attr_available = self._device.available
         self._attr_name = self._device.name
@@ -148,7 +161,7 @@ class HeosPlayer(Player):
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
         # Group IDs are the player ID of the leader
-        if self._device.group_id is not None and str(self._device.group_id) == self.player_id:
+        if self._device.group_id is not None and str(self._device.group_id) == self.protocol_id:
             group_info = await self._heos.get_group_info(self._device.group_id)
             self._attr_group_members = [
                 str(group_info.lead_player_id),
@@ -166,7 +179,7 @@ class HeosPlayer(Player):
 
         for input_source in prov.input_source_list:
             # Only add input sources that belong to this player
-            if str(input_source.source_id) != self.player_id or input_source.media_id is None:
+            if str(input_source.source_id) != self.protocol_id or input_source.media_id is None:
                 continue
 
             self._attr_source_list.append(
@@ -268,7 +281,7 @@ class HeosPlayer(Player):
         # when active_source is momentarily stale (e.g. the play_url race before play_media
         # sets it) so MA's own, correct current_media is preserved. See support #5614.
         if (now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC) or (
-            self._attr_active_source != self.player_id and not self._ma_controls_playback
+            self._attr_active_source != self.protocol_id and not self._ma_controls_playback
         ):
             self._ma_controls_playback = False
             self._queue_cleanup_pending = False
@@ -373,7 +386,7 @@ class HeosPlayer(Player):
             media.uri,
         )
 
-        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        url = await self.provider.mass.streams.resolve_stream_url(self.protocol_id, media)
         self._cancel_ma_playback_transition()
         self._ma_playback_starting = True
         self._ma_controls_playback = True
@@ -386,7 +399,7 @@ class HeosPlayer(Player):
             raise PlayerCommandFailed("Failed to start playback.") from err
 
         self._attr_current_media = media
-        self._attr_active_source = self.player_id
+        self._attr_active_source = self.protocol_id
         self._queue_cleanup_pending = True
 
         self.mass.call_later(
@@ -413,7 +426,7 @@ class HeosPlayer(Player):
         self.mass.call_later(
             1,
             self._start_queue_cleanup_task,
-            task_id=f"heos_queue_cleanup_timer_{self.player_id}",
+            task_id=f"heos_queue_cleanup_timer_{self.protocol_id}",
         )
 
     def _start_queue_cleanup_task(self) -> None:
@@ -427,7 +440,7 @@ class HeosPlayer(Player):
 
         self.mass.create_task(
             self._cleanup_heos_queue(),
-            task_id=f"heos_queue_cleanup_task_{self.player_id}",
+            task_id=f"heos_queue_cleanup_task_{self.protocol_id}",
         )
 
     async def _cleanup_heos_queue(self) -> None:
@@ -491,8 +504,8 @@ class HeosPlayer(Player):
         members: list[str] = copy(self._attr_group_members)
 
         #  Make sure we are always in the group
-        if self.player_id not in members:
-            members = [self.player_id, *members]
+        if self.protocol_id not in members:
+            members = [self.protocol_id, *members]
 
         for added_player_id in player_ids_to_add or []:
             members.append(added_player_id)
@@ -513,6 +526,13 @@ class HeosPlayer(Player):
         self._ma_controls_playback = False
         self._queue_cleanup_pending = False
         await self._device.play_input_source(source)
+
+    def _end_queue_cleanup(self) -> None:
+        """Stop cleaning up the device's queue: the MA playback of a detached protocol ended."""
+        self._ma_controls_playback = False
+        self._queue_cleanup_pending = False
+        self.mass.cancel_timer(f"heos_queue_cleanup_timer_{self.protocol_id}")
+        self.mass.cancel_task(f"heos_queue_cleanup_task_{self.protocol_id}")
 
     def _cancel_ma_playback_transition(self) -> None:
         """Cancel the transition to MA-controlled playback."""

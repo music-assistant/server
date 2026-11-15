@@ -41,7 +41,8 @@ if TYPE_CHECKING:
 def _make_player() -> YandexStationPlayer:
     """Build a bare player skipping Player.__init__ (avoids MA core deps)."""
     player = YandexStationPlayer.__new__(YandexStationPlayer)
-    player._player_id = "test_player"
+    player._protocol_id = "test_player"
+    player._player = MagicMock(player_id="pl_test_player")
     player._external_playing = False
     player._external_media = None
     vars(player)["_external_play_generation"] = 0
@@ -1006,7 +1007,7 @@ async def test_resume_after_voice_resumes_the_ma_queue_through_the_core() -> Non
     await player._resume_after_voice()
 
     player.mass.players.cmd_resume.assert_awaited_once_with(
-        player.player_id, source=player.player_id
+        "pl_test_player", source="pl_test_player"
     )
 
 
@@ -1374,7 +1375,7 @@ async def test_resume_after_voice_resumes_the_queue_that_owned_the_stream() -> N
     await player._resume_after_voice()
 
     player.mass.players.cmd_resume.assert_awaited_once_with(
-        player.player_id, source="universal_group_1"
+        "pl_test_player", source="universal_group_1"
     )
 
 
@@ -1501,7 +1502,7 @@ async def test_play_during_the_wait_resumes_the_owning_queue_now() -> None:
 
     assert commands == []
     player.mass.players.cmd_resume.assert_awaited_once_with(
-        player.player_id, source="universal_group_1"
+        "pl_test_player", source="universal_group_1"
     )
     player.mass.cancel_timer.assert_called_with(player._voice_resume_task_id)
 

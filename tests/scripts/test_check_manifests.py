@@ -11,7 +11,6 @@ def _valid_manifest() -> dict[str, object]:
         "name": "Demo",
         "description": "A demo provider.",
         "codeowners": ["@octocat"],
-        "tier": "community",
     }
 
 
@@ -85,30 +84,14 @@ def test_empty_text_fields_rejected() -> None:
     )
 
 
-def test_tier_required_for_public_provider() -> None:
-    """A public provider without a tier is reported; a demo provider may omit it."""
-    manifest = _valid_manifest()
-    del manifest["tier"]
-    assert any("missing mandatory key 'tier'" in issue for issue in _validate(manifest, "demo"))
-    manifest["domain"] = "_demo_music_provider"
-    assert _validate(manifest, "_demo_music_provider") == []
-
-
-def test_invalid_tier_rejected() -> None:
-    """A tier outside core/community is rejected."""
-    for bad_tier in ("official", ["core"], None):
+def test_tier_rejected() -> None:
+    """A manifest that sets a tier is reported, whatever the value."""
+    for tier in ("core", "community"):
         manifest = _valid_manifest()
-        manifest["tier"] = bad_tier
-        assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
-
-
-def test_core_tier_requires_org_codeowner() -> None:
-    """Tier core is only valid with @music-assistant in codeowners."""
-    manifest = _valid_manifest()
-    manifest["tier"] = "core"
-    assert any("requires '@music-assistant'" in issue for issue in _validate(manifest, "demo"))
-    manifest["codeowners"] = ["@music-assistant", "@octocat"]
-    assert _validate(manifest, "demo") == []
+        manifest["tier"] = tier
+        assert _validate(manifest, "demo") == [
+            "'tier' is set by the server and must not be in the manifest"
+        ]
 
 
 def test_support_url_must_be_https() -> None:

@@ -51,6 +51,8 @@ def _controller_with_stale_queue() -> tuple[
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
     ctrl.mass.players.get_player.return_value.offline_by_power_control = False
+    # the queue's player is not in a group
+    ctrl.mass.players._resolve_playback_owner = Mock(side_effect=lambda player: player)
     ctrl.mass.players.play_media = AsyncMock()
     ctrl.logger = MagicMock()  # the retry-fallback path logs a warning
     return ctrl, queue, signals
@@ -92,6 +94,18 @@ async def test_play_index_moves_the_sleep_timer_stop_to_the_new_item() -> None:
     await ctrl.play_index(QUEUE_ID, 1)
 
     assert queue_data.sleep_timer_target == SleepTimerTarget(SleepTimerMode.END_OF_ITEM, "new", 279)
+
+
+async def test_play_index_drops_a_step_that_has_not_played_yet() -> None:
+    """An item that starts to play takes the place of a next or a previous that still waits."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+
+    await ctrl._play_index(QUEUE_ID, 1, None, fade_in=False)
+
+    # the second for which the step holds its item back, and its move once that waits
+    step = f"queue_play_index_{QUEUE_ID}"
+    ctrl.mass.cancel_timer.assert_any_call(step)  # type: ignore[attr-defined]
+    ctrl.mass.cancel_task.assert_any_call(step)  # type: ignore[attr-defined]
 
 
 async def test_seek_publishes_target_before_restarting_stream() -> None:

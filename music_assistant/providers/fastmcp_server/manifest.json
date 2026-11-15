@@ -5,7 +5,6 @@
   "name": "MCP Server (Community)",
   "description": "The extended, community maintained MCP server, with its own token policies, a connect wizard for AI clients and the full Music Assistant command catalog.",
   "codeowners": ["@trudenboy"],
-  "tier": "community",
   "credits": [
     "[FastMCP](https://github.com/jlowin/fastmcp)",
     "[Model Context Protocol](https://modelcontextprotocol.io/)"

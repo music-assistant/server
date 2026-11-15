@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import audible
@@ -58,7 +58,11 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -89,6 +93,10 @@ SIDECAR_URL = "https://cde-ta-g7g.amazon.com/FionaCDEServiceEngine/sidecar"
 # one person can be author and narrator, so the role is part of the artist id
 AUTHOR_ID_PREFIX = "author:"
 NARRATOR_ID_PREFIX = "narrator:"
+
+# Audible publishes no rate limit for its API, so stay at a modest 4 requests per second
+API_RATE_LIMIT = 4
+API_RATE_PERIOD = 1
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -235,8 +243,7 @@ class AudibleHelper:
         self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
-        # audible documents no rate limit
-        self.throttler = ThrottlerManager(rate_limit=5, period=1)
+        self.throttler = ThrottlerManager(rate_limit=API_RATE_LIMIT, period=API_RATE_PERIOD)
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Yield every author and narrator of the library."""
@@ -774,7 +781,7 @@ class AudibleHelper:
         if not response:
             try:
                 response = await self._request("get", path, **kwargs)
-            except audible.exceptions.RequestError as exc:
+            except (audible.exceptions.RequestError, RetriesExhausted) as exc:
                 raise ProviderUnavailableError(
                     f"Audible API request failed for '{path}': {exc}"
                 ) from exc
@@ -787,16 +794,6 @@ class AudibleHelper:
                     expiration=API_CACHE_EXPIRATION,
                 )
         return response
-
-    @throttle_with_retries
-    async def _request(
-        self, method: Literal["get", "post", "put"], path: str, /, **kwargs: Any
-    ) -> Any:
-        """Send a request to audible; every request goes through here to be throttled."""
-        try:
-            return await getattr(self.client, method)(path, **kwargs)
-        except audible.exceptions.RatelimitError as exc:
-            raise RateLimited(f"Audible rate limit on '{path}'") from exc
 
     def _parse_contributors(
         self,
@@ -1438,6 +1435,24 @@ class AudibleHelper:
     async def deregister(self) -> None:
         """Deregister this provider from Audible."""
         await asyncio.to_thread(self.client.auth.deregister_device)
+
+    @throttle_with_retries
+    async def _request(self, /, method: str, path: str, **kwargs: Any) -> Any:
+        """
+        Send a request to the Audible API within the rate limit of the provider.
+
+        :param method: The HTTP method of the request: get, post or put.
+        :param path: The API path to request.
+        :param kwargs: Further arguments for the Audible client, such as query params or body.
+        :raises RetriesExhausted: When Audible keeps rate limiting the account.
+        """
+        try:
+            return await getattr(self.client, method)(path, **kwargs)
+        except audible.exceptions.RatelimitError as err:
+            raise RateLimited(
+                "Audible rate limit",
+                backoff_time=parse_retry_after(err.response.headers.get("Retry-After")),
+            ) from err
 
 
 def _contributor_id(contributor: dict[str, Any]) -> str | None:
