@@ -227,13 +227,8 @@ class TestPowerControlAutoSelect:
 class TestOfflineByPowerControl:
     """A player switched off at its external power control is reported as available and off."""
 
-    def _offline_player(
-        self,
-        mock_mass: MagicMock,
-        power_state: bool,
-        player_type: PlayerType = PlayerType.PLAYER,
-    ) -> Player:
-        """Create an unreachable player whose power control is an external control."""
+    def _smart_plug(self, mock_mass: MagicMock, power_state: bool) -> None:
+        """Make an external control the power control of every player."""
         control = PlayerControl(
             id="switch.smart_plug",
             provider="hass",
@@ -247,6 +242,15 @@ class TestOfflineByPowerControl:
         mock_mass.players.get_player_control = MagicMock(
             side_effect=lambda control_id: control if control_id == control.id else None
         )
+
+    def _offline_player(
+        self,
+        mock_mass: MagicMock,
+        power_state: bool,
+        player_type: PlayerType = PlayerType.PLAYER,
+    ) -> Player:
+        """Create an unreachable player whose power control is an external control."""
+        self._smart_plug(mock_mass, power_state)
         player = _create_player(mock_mass)
         _own(player)._attr_type = player_type
         _own(player)._attr_available = False
@@ -254,6 +258,12 @@ class TestOfflineByPowerControl:
         player.set_initialized()
         player.update_state(signal_event=False)
         return player
+
+    def _with_receiver(self, mock_mass: MagicMock, player: Player) -> None:
+        """Attach an audio protocol that still reaches the device of an unreachable player."""
+        _create_protocol(mock_mass, "airplay_1", {PlayerFeature.PLAY_MEDIA})
+        _link_protocols(player, [_make_protocol_link("airplay_1", "airplay")])
+        player.refresh_state(signal_event=False)
 
     def test_control_off_reports_available_and_off(self, mock_mass: MagicMock) -> None:
         """An unreachable device whose control is off is available, so it can be powered on."""
@@ -302,6 +312,99 @@ class TestOfflineByPowerControl:
         player.update_state(signal_event=False)
 
         assert player.offline_by_power_control is False
+        assert player.available is True
+
+    def test_another_protocol_that_reads_available_does_not_tell(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A device its own protocol does not reach is switched off, whatever another one reads."""
+        player = self._offline_player(mock_mass, power_state=False)
+        self._with_receiver(mock_mass, player)
+
+        assert player._reachable is True
+        assert player.offline_by_power_control is True
+        assert player.available_for_playback is False
+        assert player.available is True
+        assert player.powered is False
+
+    def test_power_on_waits_for_the_protocol_that_reports_for_the_device(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A device that is powered on is offline until its own protocol reaches it again."""
+        player = self._offline_player(mock_mass, power_state=True)
+        self._with_receiver(mock_mass, player)
+        player.set_power_on_in_progress(True)
+        player.update_state(signal_event=False)
+        assert (player.offline_by_power_control, player.available_for_playback) == (True, False)
+
+        _own(player)._attr_available = True
+        player.update_state(signal_event=False)
+
+        assert (player.offline_by_power_control, player.available_for_playback) == (False, True)
+
+    def test_player_whose_control_is_on_plays_through_another_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """With its control on and no power on waiting, a player plays through what reaches it."""
+        player = self._offline_player(mock_mass, power_state=True)
+        self._with_receiver(mock_mass, player)
+
+        assert player.offline_by_power_control is False
+        assert player.available_for_playback is True
+        assert player.available is True
+
+    @pytest.mark.parametrize(
+        ("reaching", "offline"),
+        [("airplay", False), ("chromecast", True)],
+        ids=["most_preferred_reaches", "only_another_reaches"],
+    )
+    def test_most_preferred_audio_protocol_tells_without_an_own_protocol(
+        self, mock_mass: MagicMock, reaching: str, offline: bool
+    ) -> None:
+        """Without an own protocol, the most preferred audio protocol reports for the device."""
+        self._smart_plug(mock_mass, power_state=False)
+        # attached in the other order: the preference of the domains decides
+        player, cast = attach_mock(
+            MockProvider("chromecast", mass=mock_mass), "cast_1", role=ProtocolRole.AUDIO
+        )
+        _, airplay = attach_mock(
+            MockProvider("airplay", mass=mock_mass),
+            "airplay_1",
+            role=ProtocolRole.AUDIO,
+            player=player,
+        )
+        cast._attr_available = reaching == "chromecast"
+        airplay._attr_available = reaching == "airplay"
+        player.refresh_state(signal_event=False)
+
+        assert player.device_protocol is airplay
+        assert player.offline_by_power_control is offline
+        assert player.available_for_playback is not offline
+        assert player.available is True
+
+    @pytest.mark.parametrize(
+        ("control_reaches", "renderer_reaches"),
+        [(False, True), (True, False)],
+        ids=["own_protocol_away", "renderer_away"],
+    )
+    def test_control_protocol_and_a_renderer_both_have_to_reach_the_device(
+        self, mock_mass: MagicMock, control_reaches: bool, renderer_reaches: bool
+    ) -> None:
+        """A device whose own protocol only controls is there while a renderer reaches it too."""
+        self._smart_plug(mock_mass, power_state=False)
+        player, control = attach_mock(
+            MockProvider("wiim", mass=mock_mass), "linkplay_1", role=ProtocolRole.CONTROL
+        )
+        _, renderer = attach_mock(
+            MockProvider("dlna", mass=mock_mass), "dlna_1", role=ProtocolRole.AUDIO, player=player
+        )
+        control._attr_available = control_reaches
+        renderer._attr_available = renderer_reaches
+        player.refresh_state(signal_event=False)
+
+        assert player.device_protocol is control
+        assert player.offline_by_power_control is True
+        assert player.available_for_playback is False
         assert player.available is True
 
     def test_group_players_are_left_out(self, mock_mass: MagicMock) -> None:

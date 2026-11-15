@@ -109,7 +109,7 @@ device right now. Four of those questions have a final value next to them:
 
 | Final value | What is true right now |
 |---|---|
-| `available`: clients can use the player; also true while it is switched off at its power control | `available_for_playback`: it can be played to right now (enabled, reachable and set up); for the controller's own use |
+| `available`: clients can use the player; also true while it is switched off at its power control | `available_for_playback`: it can be played to right now (enabled, reachable, set up and not switched off at its power control); for the controller's own use |
 | `type`: the type it published | `reported_type`: the type its own protocol reports now, else the stored one; the attach, merge and removal code reads it, before a change is published, and it is the type that is stored |
 | `protocols`: all protocols that belong to it, attached or not (`PlayerProtocolInfo`) | `attached_protocols`: the protocol objects that are attached, by id |
 | `provider`: the provider instance id it published | `provider_id`: the instance id its attached protocols give it now, else the stored one |
@@ -151,9 +151,9 @@ A player is available while it is enabled and one of its protocols that can rend
 its device (a control protocol alone does not count, nor a protocol that rides on another one
 while that one can not play), or while it is switched off at its external power control; not
 while it only has a protocol that still needs setup. It is available for
-playback while such a protocol is reachable and set up; that is what the controller checks
-before it sends anything to the device. Everyone else reads `available`, see
-[Power](#power).
+playback while such a protocol is reachable and set up and the player is not switched off at its
+power control; that is what the controller checks before it sends anything to the device.
+Everyone else reads `available`, see [Power](#power).
 
 ## Core Components
 
@@ -588,6 +588,16 @@ outside the controller reads the published `available` of another player to deci
 player may take part, as a client does, and `offline_by_power_control` next to it where it has to
 know that the device is there now. It never switches the player on through its protocol or its
 control: the controller does that.
+
+Whether the device of a player with an external power control is there is told by the attached
+protocol that reports for it, its `device_protocol`: the player is switched off once that protocol
+no longer reaches the device while the control is off, and it is back once that protocol reaches
+it again. What its other protocols read does not count: an AirPlay receiver can read available
+for minutes after the power was cut. A device protocol that only controls needs an audio protocol
+that reaches the device next to it. Until the device protocol notices a power cut, the player
+reads as reachable and powered off, and a play in that window switches the control on and starts
+at once. While the control is on and no power on waits, none of this applies: the player plays
+through any protocol that reaches its device.
 
 A command that starts a group player waits for the members that are switched off at their power
 control: a play, a resume, a play of an item or of media on its queue, a play or a power on of

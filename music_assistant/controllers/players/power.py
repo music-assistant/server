@@ -509,7 +509,7 @@ class PowerMixin(_PlayerControllerBase):
             async with asyncio.timeout_at(deadline):
                 while True:
                     # a protocol that is still attaching may not be played to yet
-                    if player.available_for_playback and self._attaching.keys().isdisjoint(
+                    if self._device_is_online(player) and self._attaching.keys().isdisjoint(
                         player.attached_protocols
                     ):
                         # a device can come online before its control reports on, while
@@ -637,12 +637,25 @@ class PowerMixin(_PlayerControllerBase):
         return (
             player.enabled
             and not player.power_on_in_progress
-            and not player.available_for_playback
+            and not self._device_is_online(player)
             and control is not None
             and control.power_state
             and deadline is not None
             and asyncio.get_running_loop().time() < deadline
         )
+
+    @staticmethod
+    def _device_is_online(player: Player) -> bool:
+        """
+        Return whether the device of a player that is switched on at its power control is online.
+
+        The protocol that reports for the device tells, whatever another one reads: the
+        player can be played to and that protocol reaches the device.
+
+        :param player: The player to check.
+        """
+        device = player.device_protocol
+        return player.available_for_playback and device is not None and device.available
 
     def _cancel_power_on(self, player: Player) -> None:
         """

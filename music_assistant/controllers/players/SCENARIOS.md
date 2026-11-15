@@ -300,6 +300,61 @@ nothing is sent to the player, whose device is not there to take a stop.
   stopped.
 - Proven by: `test_availability.py::test_a_stop_of_a_queue_whose_player_waits_for_its_device_goes_to_no_device`
 
+### AWAY-13 · A speaker on a power control is off, and back, when its own protocol says so
+
+The Den speaker has its Sonos protocol and an AirPlay receiver, and is on a smart plug that is
+cut. Its Sonos protocol no longer reaches it, while its AirPlay receiver still reads available:
+it has not noticed the cut, or it is back before the Sonos protocol is. The player shows as
+available and powered off. Play switches the plug on and waits, nothing is sent to the device,
+and Den plays through its Sonos protocol once that reaches it again.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
+  two protocols, one of which reads available for a while after the power is cut.
+- Proven by: `test_power_control.py::test_a_speaker_is_off_and_back_when_its_own_protocol_says_so`
+
+### AWAY-14 · Until its own protocol notices a power cut, a speaker reads as on
+
+As in AWAY-13, but none of Den's protocols has noticed the cut yet. The player shows as available
+and powered off, and nothing tells that its device is gone: play switches the plug on and starts
+at once, on a device that still boots. That window closes when the Sonos protocol notices.
+
+- End-to-end: **possible with** a power control the lab can switch and a play right after the
+  power is cut.
+- Proven by: `test_power_control.py::test_a_play_before_the_own_protocol_noticed_the_cut_starts_at_once`
+
+### AWAY-15 · A stop calls off the power on of a speaker whose receiver reads available
+
+As in AWAY-13, the user plays music on Den, which switches its plug on and waits. The user stops
+Den: the play fails as switched off, and nothing is sent to the device, also not once its Sonos
+protocol reaches it again.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
+  two protocols, one of which reads available for a while after the power is cut.
+- Proven by: `test_power_control.py::test_a_stop_calls_off_the_power_on_of_a_speaker_whose_receiver_reads_available`
+
+### AWAY-16 · For a speaker of receivers alone, its most preferred receiver tells whether it is there
+
+The Den speaker is an AirPlay and a Cast receiver, on a smart plug that is cut. When its AirPlay
+receiver no longer reaches it, the player is switched off, whatever its Cast receiver reads: play
+switches the plug on, waits, and plays once the AirPlay receiver is back. When only its Cast
+receiver noticed the cut, nothing waits and play starts at once, as in AWAY-14.
+
+- End-to-end: **possible with** a power control the lab can switch and a device behind it that
+  is an AirPlay and a Cast receiver.
+- Proven by: `test_power_control.py::test_the_most_preferred_receiver_tells_for_a_speaker_without_a_protocol_of_its_own`
+
+### AWAY-17 · A speaker whose own protocol only controls is there while its renderer is too
+
+The Den speaker has a LinkPlay protocol that controls it and a DLNA renderer that plays, and is on
+a smart plug that is cut. Whichever of the two no longer reaches it, the player shows as available
+and powered off. Play switches the plug on and waits, and the player shows as available and
+powered on until both reach the device again, also when the LinkPlay protocol is back first. Then
+Den plays through its renderer.
+
+- End-to-end: **possible with** a power control the lab can switch and a LinkPlay speaker behind
+  it.
+- Proven by: `test_power_control.py::test_a_speaker_whose_own_protocol_only_controls_is_there_while_its_renderer_is_too`
+
 ## Several devices on one host
 
 One host, such as a Raspberry Pi, can run several players behind one MAC and one IP address.
@@ -1786,6 +1841,32 @@ busy error at once: Den's plug stays off, and Office is added to Downstairs and 
 - End-to-end: **no**: it needs a group that takes a player within the moment in which that
   player loads its music.
 - Proven by: `test_group_power_on.py::test_a_play_on_a_speaker_that_a_group_took_meanwhile_switches_no_member_on`
+
+### GROUP-46 · A group waits for the own protocol of a switched-off member
+
+Den, a member of Downstairs, has an AirPlay receiver next to its Sonos protocol, and its plug is
+cut. Its Sonos protocol no longer reaches it, its AirPlay receiver has not noticed. The user plays
+Downstairs: the plug is switched on and the play waits, and no speaker gets a command. Once Den's
+Sonos protocol reaches it again, Downstairs starts once, on all three. So does the sync group of
+Lounge and Study, speakers of two makes that play together over their AirPlay receivers: with
+Lounge switched off, nothing starts through its AirPlay receiver until its Sonos protocol is back.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
+  two protocols, one of which reads available for a while after the power is cut.
+- Proven by:
+  - `test_power_control.py::test_a_group_waits_for_the_own_protocol_of_a_switched_off_member`
+  - `test_power_control.py::test_a_group_over_airplay_waits_for_a_speaker_whose_receiver_reads_available`
+
+### GROUP-47 · A group that is played again waits for the own protocol of a member that still boots
+
+As in GROUP-33, the user plays Downstairs, which switches Den's plug on and waits, and stops it.
+Den has an AirPlay receiver that has not noticed the cut, so Den shows as available and powered
+on while its device still boots. The user plays Downstairs again: nothing starts until Den's Sonos
+protocol reaches it again, and the plug is not switched a second time.
+
+- End-to-end: **possible with** a power control the lab can switch and a speaker behind it with
+  two protocols, one of which reads available for a while after the power is cut.
+- Proven by: `test_power_control.py::test_a_new_start_waits_again_for_a_member_whose_own_protocol_is_not_back`
 
 ## Where playback goes
 
