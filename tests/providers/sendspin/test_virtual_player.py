@@ -10,7 +10,7 @@ import pytest
 from music_assistant_models.enums import PlayerFeature, PlayerType
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_PLAYER_PROTOCOLS, CONF_PLAYERS
 from music_assistant.providers.sendspin.constants import (
     CONF_VIRTUAL_PLAYER_OWNER,
     VIRTUAL_PLAYER_ID_PREFIX,
@@ -51,20 +51,26 @@ async def test_create_virtual_player(mass: MusicAssistant) -> None:
     assert player_id.startswith(VIRTUAL_PLAYER_ID_PREFIX)
     assert sendspin.is_virtual_player(player_id)
 
+    # a session-only player: its player id is its client id
     player = mass.players.get_player(player_id)
+    protocol = sendspin.get_protocol(player_id)
     assert player is not None
-    assert player.type == PlayerType.PLAYER
-    assert player.hidden_by_default is True
-    assert player.private is True
-    assert player.expose_to_ha_by_default is False
-    assert PlayerFeature.VOLUME_SET not in player.supported_features
-    assert PlayerFeature.VOLUME_MUTE not in player.supported_features
-    assert PlayerFeature.SET_MEMBERS in player.supported_features
+    assert protocol is not None
+    assert protocol.player is player
+    assert player.reported_type == PlayerType.PLAYER
+    assert player.session_only is True
+    assert protocol.hidden_by_default is True
+    assert protocol.private is True
+    assert protocol.expose_to_ha_by_default is False
+    assert PlayerFeature.VOLUME_SET not in protocol.supported_features
+    assert PlayerFeature.VOLUME_MUTE not in protocol.supported_features
+    assert PlayerFeature.SET_MEMBERS in protocol.supported_features
     assert mass.player_queues.get(player_id) is not None
-    # the owner marker must be persisted for orphan sweeps
+    # nothing is stored for it, but the owner marker is kept for when its config is
+    # changed and stored, for the orphan sweep
+    assert mass.config.get_protocol_record(player_id) is None
     assert (
-        mass.config.get_raw_player_config_value(player_id, CONF_VIRTUAL_PLAYER_OWNER)
-        == sendspin.instance_id
+        mass.config.get_protocol_value(player_id, CONF_VIRTUAL_PLAYER_OWNER) == sendspin.instance_id
     )
 
 
@@ -132,7 +138,7 @@ async def test_create_virtual_player_cancellation_cleans_partial_player() -> Non
         client if client_registered.is_set() else None
     )
     sendspin.server_api.remove_client = AsyncMock()
-    sendspin.mass.players.unregister = AsyncMock()
+    sendspin.mass.players.remove_protocol = AsyncMock()
 
     with (
         patch.object(
@@ -166,9 +172,8 @@ async def test_create_virtual_player_cancellation_cleans_partial_player() -> Non
 
     player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}cancelled"
     assert not sendspin.is_virtual_player(player_id)
-    sendspin.mass.players.unregister.assert_awaited_once_with(player_id, permanent=True)
+    sendspin.mass.players.remove_protocol.assert_awaited_once_with(player_id)
     sendspin.server_api.remove_client.assert_awaited_once_with(player_id)
-    sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
 
 
 async def test_create_virtual_player_owner_not_loaded(mass: MusicAssistant) -> None:
@@ -186,9 +191,9 @@ async def test_create_virtual_player_owned_by_other_provider(mass: MusicAssistan
     sendspin = _get_sendspin_provider(mass)
     player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}claimed"
     mass.config.set(
-        f"{CONF_PLAYERS}/{player_id}",
+        f"{CONF_PLAYER_PROTOCOLS}/{player_id}",
         {
-            "player_id": player_id,
+            "protocol_id": player_id,
             "provider": sendspin.instance_id,
             "values": {CONF_VIRTUAL_PLAYER_OWNER: "some_other_provider"},
         },
@@ -213,6 +218,7 @@ async def test_remove_virtual_player(mass: MusicAssistant) -> None:
     assert mass.players.get_player(player_id) is None
     assert sendspin.server_api.get_client(player_id) is None
     assert mass.config.get(f"{CONF_PLAYERS}/{player_id}") is None
+    assert mass.config.get_protocol_record(player_id) is None
 
 
 async def test_remove_virtual_player_retries_after_partial_failure() -> None:
@@ -223,7 +229,7 @@ async def test_remove_virtual_player_retries_after_partial_failure() -> None:
     sendspin.logger = MagicMock()
     player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}retry"
     sendspin._virtual_players = {player_id: "owner--test"}
-    sendspin.mass.players.unregister = AsyncMock()
+    sendspin.mass.players.remove_protocol = AsyncMock()
     sendspin.server_api.get_client.return_value = MagicMock()
     sendspin.server_api.remove_client = AsyncMock(
         side_effect=[RuntimeError("client removal failed"), None]
@@ -237,9 +243,8 @@ async def test_remove_virtual_player_retries_after_partial_failure() -> None:
     await sendspin.remove_virtual_player(player_id)
 
     assert not sendspin.is_virtual_player(player_id)
-    assert sendspin.mass.players.unregister.await_count == 2
+    assert sendspin.mass.players.remove_protocol.await_count == 2
     assert sendspin.server_api.remove_client.await_count == 2
-    sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
 
 
 async def test_cleanup_failed_creation_awaits_a_slow_teardown() -> None:
@@ -252,17 +257,16 @@ async def test_cleanup_failed_creation_awaits_a_slow_teardown() -> None:
     sendspin._virtual_players = {player_id: "owner--test"}
     sendspin.server_api.get_client.return_value = None
 
-    async def _slow_unregister(_player_id: str, **_kwargs: object) -> None:
+    async def _slow_remove_protocol(_player_id: str) -> None:
         # outlasts the 2 second bound this path used to carry
         await asyncio.sleep(2.5)
 
-    sendspin.mass.players.unregister = AsyncMock(side_effect=_slow_unregister)
+    sendspin.mass.players.remove_protocol = AsyncMock(side_effect=_slow_remove_protocol)
 
     await sendspin._cleanup_failed_virtual_player_creation(player_id)
 
-    assert sendspin.mass.players.unregister.await_count == 1
+    assert sendspin.mass.players.remove_protocol.await_count == 1
     assert not sendspin.is_virtual_player(player_id)
-    sendspin.mass.players.delete_player_config.assert_called_once_with(player_id)
     sendspin.logger.warning.assert_not_called()
 
 
@@ -275,13 +279,13 @@ async def test_cleanup_failed_creation_retries_a_raised_teardown() -> None:
     player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}flaky"
     sendspin._virtual_players = {player_id: "owner--test"}
     sendspin.server_api.get_client.return_value = None
-    sendspin.mass.players.unregister = AsyncMock(
+    sendspin.mass.players.remove_protocol = AsyncMock(
         side_effect=[RuntimeError("teardown failed"), None]
     )
 
     await sendspin._cleanup_failed_virtual_player_creation(player_id)
 
-    assert sendspin.mass.players.unregister.await_count == 2
+    assert sendspin.mass.players.remove_protocol.await_count == 2
     assert not sendspin.is_virtual_player(player_id)
     sendspin.logger.warning.assert_not_called()
 
@@ -295,13 +299,12 @@ async def test_cleanup_failed_creation_skips_an_already_removed_player() -> None
     player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}gone"
     # already torn down by a racing removal, e.g. the owner-unloaded sweep
     sendspin._virtual_players = {}
-    sendspin.mass.players.unregister = AsyncMock()
+    sendspin.mass.players.remove_protocol = AsyncMock()
 
     async with asyncio.timeout(0.5):
         await sendspin._cleanup_failed_virtual_player_creation(player_id)
 
-    sendspin.mass.players.unregister.assert_not_awaited()
-    sendspin.mass.players.delete_player_config.assert_not_called()
+    sendspin.mass.players.remove_protocol.assert_not_awaited()
     sendspin.logger.warning.assert_not_called()
 
 
@@ -315,17 +318,16 @@ async def test_cleanup_failed_creation_keeps_a_reclaimable_config() -> None:
     player_id = f"{VIRTUAL_PLAYER_ID_PREFIX}reclaimable"
     # unloading drops the in-memory entries but keeps the configs on purpose
     sendspin._virtual_players = {}
-    sendspin.mass.config.get.return_value = {
+    sendspin.mass.config.get_protocol_record.return_value = {
         "provider": sendspin.instance_id,
         "values": {CONF_VIRTUAL_PLAYER_OWNER: "owner--test"},
     }
     sendspin.server_api.get_client.return_value = None
-    sendspin.mass.players.unregister = AsyncMock()
+    sendspin.mass.players.remove_protocol = AsyncMock()
 
     await sendspin._cleanup_failed_virtual_player_creation(player_id)
 
-    sendspin.mass.players.delete_player_config.assert_not_called()
-    sendspin.mass.players.unregister.assert_not_awaited()
+    sendspin.mass.players.remove_protocol.assert_not_awaited()
     sendspin.logger.warning.assert_not_called()
 
 
@@ -370,28 +372,28 @@ async def test_orphan_virtual_player_config_sweep(mass: MusicAssistant) -> None:
         (kept_id, sendspin.instance_id),
     ):
         mass.config.set(
-            f"{CONF_PLAYERS}/{player_id}",
+            f"{CONF_PLAYER_PROTOCOLS}/{player_id}",
             {
-                "player_id": player_id,
+                "protocol_id": player_id,
                 "provider": sendspin.instance_id,
                 "values": {CONF_VIRTUAL_PLAYER_OWNER: owner},
             },
         )
     # a prefixed config without owner marker must be left alone
     mass.config.set(
-        f"{CONF_PLAYERS}/{leftover_id}",
-        {"player_id": leftover_id, "provider": sendspin.instance_id, "values": {}},
+        f"{CONF_PLAYER_PROTOCOLS}/{leftover_id}",
+        {"protocol_id": leftover_id, "provider": sendspin.instance_id, "values": {}},
     )
     # a config of another provider must never be touched by the sweep
     foreign_id = f"{VIRTUAL_PLAYER_ID_PREFIX}foreign"
     mass.config.set(
-        f"{CONF_PLAYERS}/{foreign_id}",
-        {"player_id": foreign_id, "provider": "other_provider", "values": {}},
+        f"{CONF_PLAYER_PROTOCOLS}/{foreign_id}",
+        {"protocol_id": foreign_id, "provider": "other_provider", "values": {}},
     )
 
-    sendspin._remove_orphan_virtual_player_configs()
+    await sendspin._remove_orphan_virtual_player_configs()
 
-    assert mass.config.get(f"{CONF_PLAYERS}/{orphan_id}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{leftover_id}") is not None
-    assert mass.config.get(f"{CONF_PLAYERS}/{kept_id}") is not None
-    assert mass.config.get(f"{CONF_PLAYERS}/{foreign_id}") is not None
+    assert mass.config.get_protocol_record(orphan_id) is None
+    assert mass.config.get_protocol_record(leftover_id) is not None
+    assert mass.config.get_protocol_record(kept_id) is not None
+    assert mass.config.get_protocol_record(foreign_id) is not None

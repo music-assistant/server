@@ -9,15 +9,12 @@ their episodes in whatever order their API returns, so the episode positions
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import pytest
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping
 
 from music_assistant.mass import MusicAssistant
-
-if TYPE_CHECKING:
-    import pytest
 
 PROVIDER = "test_podcast_prov"
 
@@ -119,3 +116,20 @@ async def test_a_chosen_episode_still_queues_the_newer_ones(
     )
 
     assert [x.item_id for x in resolved] == ["ep-latest-002", "ep-latest-003"]
+
+
+@pytest.mark.parametrize("start_item", [None, "latest"])
+async def test_a_start_position_starts_the_episode_the_podcast_resolves_to(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, start_item: str | None
+) -> None:
+    """The resolved episode starts at the position, the ones queued after it do not."""
+    podcast = _podcast()
+    episodes = [_episode(podcast, number, position=number) for number in (1, 2)]
+    _serve(monkeypatch, mass, episodes)
+
+    resolved = await mass.player_queues._media_resolver.get_next_podcast_episodes(
+        podcast, start_item, start_position=30.0
+    )
+
+    assert resolved[0].resume_position_ms == 30_000
+    assert all(x.resume_position_ms != 30_000 for x in resolved[1:])

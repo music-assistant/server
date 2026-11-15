@@ -1,49 +1,27 @@
 """
-Regression tests for the cleanup that runs when a player (or its provider) is removed.
+Tests for the cleanup that runs when a player, one of its protocols or a provider is removed.
 
-Reproduces the case where a player is first disabled and then removed: disabling
-cascades to the linked protocol players, so none of them is registered anymore when
-the removal comes in. The leftover (disabled) protocol config is not shown anywhere
-and keeps the device from ever registering again, and the leftover queue settings and
-queue state are silently inherited by a device that returns under the same player id.
-
-Also covers the mirrored case where the player being removed is not registered (e.g.
-its provider was unloaded) while one of its protocol players still is: that protocol
-player must be detached from the removed player instead of keeping a dead parent link.
-
-Also covers removing a whole player provider: its unregistered players must have their
-DSP/queue settings and persisted queue cache wiped along with their player config,
-while players of other providers are left untouched.
-
-Deleting the config of a protocol player that is not registered must also drop it from
-the parent that still links it, so the parent no longer offers an output without config.
-
-Finally, a removed player must also disappear from the per user access filters, which
-would otherwise keep pointing at something that no longer exists.
+A removed player takes the configs of its protocols, its DSP and queue settings and its
+saved queue with it, also when none of its protocols is attached (a disabled player, or
+one whose provider is not loaded), and leaves what belongs to other players alone. A
+removed protocol takes its config with it, and its player when no other protocol of it is
+left. Removing a player provider removes its protocols that way. A removed player also
+disappears from the per user access filters, which would otherwise keep pointing at
+something that no longer exists.
 """
 
 import asyncio
-import logging
-from collections.abc import Callable, Generator
-from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-import pytest
-from music_assistant_models.enums import (
-    PlaybackState,
-    PlayerFeature,
-    PlayerType,
-    ProviderFeature,
-    ProviderType,
-)
+from music_assistant_models.enums import PlayerType, ProtocolRole
 
 from music_assistant.constants import (
-    CONF_LINKED_PROTOCOL_IDS,
+    CONF_GROUP_MEMBERS,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_PROTOCOLS,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
-    CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
 )
 from music_assistant.controllers.player_queues.constants import (
@@ -52,11 +30,13 @@ from music_assistant.controllers.player_queues.constants import (
 )
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
+from music_assistant.models.player import Player
+from tests.common import MockProtocol, MockProvider, attach_mock
 
-PARENT_ID = "up_esp32"
-PROTOCOL_ID = "spb_esp32"
-PLAYER_ID = "test_player_1"
+# a player that was first seen after the split, and two protocols of its device
+PLAYER_ID = "pl0123456789ab"
+NATIVE_ID = "native_1"
+AUDIO_ID = "sendspin_1"
 # a real, non-builtin player provider with no config entries of its own, so a raw
 # provider config can be stored without going through the setup flow; it is
 # single-instance, so its instance id equals its domain
@@ -64,115 +44,59 @@ PLAYER_PROVIDER_DOMAIN = "dlna"
 OTHER_PROVIDER_INSTANCE_ID = "other_provider"
 
 
-class StubProtocolPlayer:
-    """Minimal stand-in for a registered protocol player."""
-
-    def __init__(self, parent_id: str | None) -> None:
-        """Initialize the stub with the given (live) protocol parent."""
-        self.player_id = PROTOCOL_ID
-        # a registered player is looked up and polled by the running server,
-        # so carry the state fields those paths read
-        self.state = SimpleNamespace(
-            type=PlayerType.PROTOCOL,
-            playback_state=PlaybackState.IDLE,
-            available=True,
-            enabled=True,
-        )
-        self.needs_poll = False
-        self.protocol_parent_id = parent_id
-        self.refreshed = False
-        self.provider = SimpleNamespace(instance_id="sendspin")
-
-    def set_protocol_parent_id(self, parent_id: str | None) -> None:
-        """Set the live protocol parent."""
-        self.protocol_parent_id = parent_id
-
-    def refresh_state(self) -> None:
-        """Record that the state was refreshed."""
-        self.refreshed = True
-
-
-@pytest.fixture(name="register_protocol_player")
-def register_protocol_player_fixture(
+def _store_player(
     mass: MusicAssistant,
-) -> Generator[Callable[[str | None], StubProtocolPlayer]]:
-    """Register a stub protocol player on the player controller for the test."""
-
-    def _register(parent_id: str | None) -> StubProtocolPlayer:
-        protocol_player = StubProtocolPlayer(parent_id)
-        mass.players._players[PROTOCOL_ID] = protocol_player  # type: ignore[assignment]
-        return protocol_player
-
-    yield _register
-    mass.players._players.pop(PROTOCOL_ID, None)
-
-
-def _pop_scheduled_evaluation(mass: MusicAssistant) -> bool:
-    """Return True if a protocol evaluation is pending for the protocol player."""
-    if handle := mass.players._pending_protocol_evaluations.pop(PROTOCOL_ID, None):
-        handle.cancel()
-        return True
-    return False
-
-
-def _store_configs(mass: MusicAssistant, enabled: bool) -> None:
-    """Store a universal player config with a single linked protocol player."""
-    mass.config.set(
-        f"{CONF_PLAYERS}/{PARENT_ID}",
-        {
-            "player_id": PARENT_ID,
-            "provider": "universal_player",
-            "player_type": "player",
-            "enabled": enabled,
-            "values": {"linked_protocol_ids": [PROTOCOL_ID]},
-        },
-    )
-    mass.config.set(
-        f"{CONF_PLAYERS}/{PROTOCOL_ID}",
-        {
-            "player_id": PROTOCOL_ID,
-            "provider": "sendspin",
-            "player_type": "protocol",
-            "enabled": enabled,
-            "values": {CONF_PROTOCOL_PARENT_ID: PARENT_ID},
-        },
-    )
-    mass.config.set(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}", {"enabled": True})
-
-
-def _store_player_config(
-    mass: MusicAssistant, player_id: str, enabled: bool = False, provider: str = "test_provider"
+    player_id: str = PLAYER_ID,
+    *,
+    enabled: bool = True,
+    provider: str = OTHER_PROVIDER_INSTANCE_ID,
 ) -> None:
-    """Store a plain player config with customised queue settings."""
-    mass.config.set(
-        f"{CONF_PLAYERS}/{player_id}",
-        {
-            "player_id": player_id,
-            "provider": provider,
-            "player_type": "player",
-            "enabled": enabled,
-            "values": {},
-        },
+    """Store the config of a player with customised DSP and queue settings."""
+    mass.config.create_player_record(
+        player_id,
+        provider=provider,
+        player_type=PlayerType.PLAYER,
+        default_name="Player",
+        enabled=enabled,
     )
+    mass.config.set(f"{CONF_PLAYER_DSP}/{player_id}", {"enabled": True})
     mass.config.set(
         f"{CONF_PLAYER_QUEUES}/{player_id}",
         {"queue_id": player_id, "values": {"crossfade_duration": 9}},
     )
 
 
-def _store_provider_config(mass: MusicAssistant) -> None:
-    """Store a raw config for the player provider under test."""
-    mass.config.set(
-        f"{CONF_PROVIDERS}/{PLAYER_PROVIDER_DOMAIN}",
-        {
-            "type": "player",
-            "domain": PLAYER_PROVIDER_DOMAIN,
-            "instance_id": PLAYER_PROVIDER_DOMAIN,
-            "enabled": True,
-            "name": "DLNA",
-            "values": {},
-        },
+def _store_protocol(
+    mass: MusicAssistant,
+    protocol_id: str,
+    player_id: str | None = PLAYER_ID,
+    *,
+    provider: str = OTHER_PROVIDER_INSTANCE_ID,
+    role: ProtocolRole = ProtocolRole.NATIVE,
+) -> None:
+    """Store the config of a protocol of a player."""
+    mass.config.create_protocol_record(
+        protocol_id, provider=provider, player_id=player_id, role=role, default_name="Player"
     )
+
+
+def _stored_protocols(mass: MusicAssistant) -> list[str]:
+    """Return the ids of the stored protocol configs."""
+    return sorted(mass.config.get(CONF_PLAYER_PROTOCOLS, {}))
+
+
+async def _attach(
+    mass: MusicAssistant, protocol_id: str = NATIVE_ID
+) -> tuple[Player, MockProtocol]:
+    """Attach a mock protocol to the stored player, with a queue of its own."""
+    provider = MockProvider(
+        OTHER_PROVIDER_INSTANCE_ID,
+        instance_id=OTHER_PROVIDER_INSTANCE_ID,
+        mass=cast("MagicMock", mass),
+    )
+    player, protocol = attach_mock(provider, protocol_id, "Player", player_id=PLAYER_ID)
+    await mass.player_queues.on_player_register(player)
+    return player, protocol
 
 
 async def _store_queue_cache(mass: MusicAssistant, player_id: str) -> None:
@@ -195,399 +119,188 @@ async def _get_queue_cache(mass: MusicAssistant, player_id: str) -> list[object]
     ]
 
 
-class _TestProvider:
-    """Minimal PlayerProvider stand-in that supports removing its players."""
-
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize the test provider."""
-        self.mass = mass
-        self.domain = "test_provider"
-        self.instance_id = "test_provider"
-        self.name = "Test Provider"
-        self.available = True
-        self.logger = logging.getLogger("test.test_provider")
-        self.manifest = MagicMock()
-        self.manifest.domain = self.domain
-        self.manifest.name = self.name
-        self.manifest.type = ProviderType.PLAYER
-        self.type = ProviderType.PLAYER
-
-    def check_feature(self, feature: ProviderFeature) -> None:
-        """Accept every feature check."""
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove the player, like a real provider does."""
-        await self.mass.players.unregister(player_id, permanent=True)
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Unload the provider (nothing to clean up)."""
+def _assert_player_wiped(mass: MusicAssistant, player_id: str = PLAYER_ID) -> None:
+    """Assert that nothing is stored for a player anymore."""
+    for tree in (CONF_PLAYERS, CONF_PLAYER_DSP, CONF_PLAYER_QUEUES):
+        assert mass.config.get(f"{tree}/{player_id}") is None
+    assert mass.config.get_protocol_ids_of_player(player_id) == []
 
 
-class _TestPlayer(Player):
-    """Minimal player stand-in."""
-
-    def __init__(self, provider: _TestProvider, player_id: str) -> None:
-        """Initialize the test player."""
-        super().__init__(provider, player_id)  # type: ignore[arg-type]
-        self._attr_name = "Test Player"
-        self._attr_type = PlayerType.PLAYER
-        self._attr_available = True
-        self._attr_powered = True
-        self._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.PLAY_MEDIA}
-        self._attr_device_info = DeviceInfo(model="Test Model", manufacturer="Test Manufacturer")
-        self._cache.clear()
-        self.update_state(signal_event=False)
-
-    async def stop(self) -> None:
-        """Stop playback - required abstract method."""
-
-
-async def test_remove_wipes_unregistered_protocol_configs(mass: MusicAssistant) -> None:
-    """Removing a disabled player also wipes the config of its linked protocol player."""
-    _store_configs(mass, enabled=False)
-
-    await mass.config.remove_player_config(PARENT_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}") is None
-
-
-async def test_remove_wipes_protocol_configs_with_a_half_broken_link(
-    mass: MusicAssistant,
-) -> None:
-    """A protocol player is wiped by its own parent reference, not by the parent's list."""
-    _store_configs(mass, enabled=False)
-    mass.config.set(f"{CONF_PLAYERS}/{PARENT_ID}/values/linked_protocol_ids", [])
-
-    await mass.config.remove_player_config(PARENT_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
-
-
-async def test_remove_keeps_reparented_protocol_configs(mass: MusicAssistant) -> None:
-    """A protocol player that already moved to another parent keeps its config."""
-    _store_configs(mass, enabled=True)
-    mass.config.set(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}", "cast_1")
-
-    mass.players.delete_player_config(PARENT_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is not None
-
-
-async def test_remove_keeps_registered_protocol_configs(
-    mass: MusicAssistant,
-    register_protocol_player: Callable[[str | None], StubProtocolPlayer],
-) -> None:
-    """A protocol player that is still registered keeps its config to be re-parented."""
-    _store_configs(mass, enabled=True)
-    register_protocol_player(PARENT_ID)
-
-    mass.players.delete_player_config(PARENT_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is not None
-    assert mass.config.get(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}") is not None
-    _pop_scheduled_evaluation(mass)
-
-
-async def test_remove_detaches_registered_protocol_player(
-    mass: MusicAssistant,
-    register_protocol_player: Callable[[str | None], StubProtocolPlayer],
-) -> None:
-    """Removing an unregistered parent detaches its still registered protocol player."""
-    _store_configs(mass, enabled=True)
-    protocol_player = register_protocol_player(PARENT_ID)
-
-    await mass.config.remove_player_config(PARENT_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is not None
-    assert protocol_player.protocol_parent_id is None
-    assert protocol_player.refreshed
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}") is None
-    assert _pop_scheduled_evaluation(mass)
-
-
-async def test_remove_detaches_protocol_player_waiting_for_its_parent(
-    mass: MusicAssistant,
-    register_protocol_player: Callable[[str | None], StubProtocolPlayer],
-) -> None:
-    """A protocol player that only has the parent link in its config is detached too."""
-    _store_configs(mass, enabled=True)
-    protocol_player = register_protocol_player(None)
-
-    await mass.config.remove_player_config(PARENT_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}") is None
-    assert protocol_player.protocol_parent_id is None
-    assert _pop_scheduled_evaluation(mass)
-
-
-async def test_remove_leaves_unrelated_protocol_player_alone(
-    mass: MusicAssistant,
-    register_protocol_player: Callable[[str | None], StubProtocolPlayer],
-) -> None:
-    """A protocol player of another parent keeps its link when a player is removed."""
-    _store_configs(mass, enabled=True)
-    protocol_player = register_protocol_player("cast_1")
-
-    mass.players.delete_player_config(PARENT_ID)
-
-    assert protocol_player.protocol_parent_id == "cast_1"
-    assert not _pop_scheduled_evaluation(mass)
-
-
-def _store_protocol_config(mass: MusicAssistant, parent_id: str) -> None:
-    """Store an (unregistered) protocol player config linked to the given parent."""
-    mass.config.set(f"{CONF_PLAYERS}/{parent_id}/values/{CONF_LINKED_PROTOCOL_IDS}", [PROTOCOL_ID])
+def _store_provider_config(mass: MusicAssistant) -> None:
+    """Store a raw config for the player provider under test."""
     mass.config.set(
-        f"{CONF_PLAYERS}/{PROTOCOL_ID}",
+        f"{CONF_PROVIDERS}/{PLAYER_PROVIDER_DOMAIN}",
         {
-            "player_id": PROTOCOL_ID,
-            "provider": "sendspin",
-            "player_type": "protocol",
+            "type": "player",
+            "domain": PLAYER_PROVIDER_DOMAIN,
+            "instance_id": PLAYER_PROVIDER_DOMAIN,
             "enabled": True,
-            "values": {CONF_PROTOCOL_PARENT_ID: parent_id},
+            "name": "DLNA",
+            "values": {},
         },
     )
 
 
-async def test_delete_unregistered_protocol_unlinks_registered_parent(
+async def test_remove_of_a_disabled_player_wipes_the_configs_of_its_protocols(
     mass: MusicAssistant,
 ) -> None:
-    """Deleting an unregistered protocol player drops it from its registered parent."""
-    _store_player_config(mass, PLAYER_ID, enabled=True)
-    _store_protocol_config(mass, PLAYER_ID)
-    parent = _TestPlayer(_TestProvider(mass), PLAYER_ID)
-    mass.players._players[PLAYER_ID] = parent
-    parent.set_linked_output_protocols(
-        [LinkedOutputProtocol(output_protocol_id=PROTOCOL_ID, protocol_domain="sendspin")]
-    )
-
-    try:
-        mass.players.delete_player_config(PROTOCOL_ID)
-    finally:
-        mass.players._players.pop(PLAYER_ID, None)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
-    assert parent.linked_output_protocols == []
-    assert all(p.output_protocol_id != PROTOCOL_ID for p in parent.output_protocols)
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/values/{CONF_LINKED_PROTOCOL_IDS}") == []
-
-
-async def test_delete_unregistered_protocol_unlinks_unregistered_parent(
-    mass: MusicAssistant,
-) -> None:
-    """Deleting a protocol player also drops it from the cached links of an absent parent."""
-    _store_player_config(mass, PLAYER_ID)
-    _store_protocol_config(mass, PLAYER_ID)
-
-    mass.players.delete_player_config(PROTOCOL_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/values/{CONF_LINKED_PROTOCOL_IDS}") == []
-
-
-async def test_delete_unregistered_protocol_purges_every_cached_parent(
-    mass: MusicAssistant,
-) -> None:
-    """A stale link on a former parent is dropped along with the current one."""
-    _store_player_config(mass, PLAYER_ID)
-    _store_protocol_config(mass, PLAYER_ID)
-    _store_player_config(mass, "cast_1")
-    mass.config.set(f"{CONF_PLAYERS}/cast_1/values/{CONF_LINKED_PROTOCOL_IDS}", [PROTOCOL_ID])
-
-    mass.players.delete_player_config(PROTOCOL_ID)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/values/{CONF_LINKED_PROTOCOL_IDS}") == []
-    assert mass.config.get(f"{CONF_PLAYERS}/cast_1/values/{CONF_LINKED_PROTOCOL_IDS}") == []
-
-
-async def test_delete_last_protocol_unregisters_universal_parent(
-    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A universal player that loses its last output is unregistered, keeping its config."""
-    _store_configs(mass, enabled=True)
-    parent = SimpleNamespace(
-        player_id=PARENT_ID,
-        state=SimpleNamespace(type=PlayerType.PLAYER, available=True, enabled=True),
-        provider=SimpleNamespace(domain="universal_player"),
-        linked_output_protocols=[
-            LinkedOutputProtocol(output_protocol_id=PROTOCOL_ID, protocol_domain="sendspin")
-        ],
-        refresh_state=MagicMock(),
-    )
-    parent.set_linked_output_protocols = lambda links: setattr(
-        parent, "linked_output_protocols", links
-    )
-    unregister = AsyncMock()
-    monkeypatch.setattr(mass.players, "unregister", unregister)
-    mass.players._players[PARENT_ID] = parent  # type: ignore[assignment]
-
-    try:
-        mass.players.delete_player_config(PROTOCOL_ID)
-        await asyncio.sleep(0)
-    finally:
-        mass.players._players.pop(PARENT_ID, None)
-
-    assert parent.linked_output_protocols == []
-    unregister.assert_called_once_with(PARENT_ID, permanent=False)
-    parent.refresh_state.assert_not_called()
-    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is not None
-
-
-async def test_remove_config_wipes_queue_config(mass: MusicAssistant) -> None:
-    """Removing the config of an unregistered player also wipes its queue settings."""
-    _store_player_config(mass, PLAYER_ID)
+    """A player without attached protocols takes the configs of all its protocols with it."""
+    _store_player(mass, enabled=False)
+    _store_protocol(mass, NATIVE_ID)
+    _store_protocol(mass, AUDIO_ID, role=ProtocolRole.AUDIO)
     await _store_queue_cache(mass, PLAYER_ID)
 
     await mass.config.remove_player_config(PLAYER_ID)
 
-    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is None
+    _assert_player_wiped(mass)
+    assert _stored_protocols(mass) == []
     assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
 
 
-async def test_remove_player_wipes_queue_config(mass: MusicAssistant) -> None:
-    """Removing an unregistered player also wipes its queue settings."""
-    _store_player_config(mass, PLAYER_ID)
-    await _store_queue_cache(mass, PLAYER_ID)
+async def test_remove_leaves_what_belongs_to_another_player_alone(mass: MusicAssistant) -> None:
+    """A protocol of another player keeps its config and stays attached to that player."""
+    _store_player(mass)
+    _store_protocol(mass, NATIVE_ID)
+    _store_player(mass, "pl_other")
+    _store_protocol(mass, "other_1", "pl_other")
+    provider = MockProvider(
+        OTHER_PROVIDER_INSTANCE_ID,
+        instance_id=OTHER_PROVIDER_INSTANCE_ID,
+        mass=cast("MagicMock", mass),
+    )
+    other_player, other = attach_mock(provider, "other_1", "Other", player_id="pl_other")
 
     await mass.players.remove(PLAYER_ID)
 
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is None
-    assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
+    _assert_player_wiped(mass)
+    assert _stored_protocols(mass) == ["other_1"]
+    assert mass.config.get(f"{CONF_PLAYERS}/pl_other") is not None
+    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/pl_other") is not None
+    assert other.player is other_player
+    assert mass.players.get_player("pl_other") is other_player
 
 
-async def test_remove_registered_player_wipes_queue_config(mass: MusicAssistant) -> None:
-    """Removing a registered player also wipes its queue settings and state."""
-    _store_player_config(mass, PLAYER_ID, enabled=True)
-    provider = _TestProvider(mass)
-    player = _TestPlayer(provider, PLAYER_ID)
-    mass.players._players[PLAYER_ID] = player
-    await mass.player_queues.on_player_register(player)
+async def test_remove_of_a_live_player_detaches_its_protocols_and_wipes_its_queue(
+    mass: MusicAssistant,
+) -> None:
+    """A removed player is gone with its queue, and its protocol is told and let go."""
+    _store_player(mass)
+    _store_protocol(mass, NATIVE_ID)
+    _, protocol = await _attach(mass)
+    removed: list[str] = []
+
+    async def _on_remove() -> None:
+        removed.append(protocol.protocol_id)
+
+    protocol.on_remove = _on_remove  # type: ignore[method-assign]
     await _store_queue_cache(mass, PLAYER_ID)
 
     await mass.config.remove_player_config(PLAYER_ID)
 
     assert mass.players.get_player(PLAYER_ID) is None
+    assert mass.players.get_protocol(NATIVE_ID) is None
+    assert protocol.player is None
+    assert removed == [NATIVE_ID]
     assert mass.player_queues.get(PLAYER_ID) is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is None
+    _assert_player_wiped(mass)
+    assert _stored_protocols(mass) == []
     assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
 
 
-async def test_remove_wipes_queue_config_of_linked_protocol_player(
+async def test_removed_protocol_that_is_not_attached_leaves_the_outputs_of_its_player(
     mass: MusicAssistant,
 ) -> None:
-    """The queue settings of a wiped protocol player config go along with it."""
-    _store_configs(mass, enabled=False)
-    mass.config.set(
-        f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}",
-        {"queue_id": PROTOCOL_ID, "values": {"crossfade_duration": 9}},
-    )
-    await _store_queue_cache(mass, PROTOCOL_ID)
+    """A protocol whose config is removed is no output of its player anymore."""
+    _store_player(mass)
+    _store_protocol(mass, NATIVE_ID)
+    _store_protocol(mass, AUDIO_ID, role=ProtocolRole.AUDIO)
+    player, _ = await _attach(mass)
+    player.protocol_ids.add(AUDIO_ID)
+    player.refresh_state(signal_event=False)
+    assert AUDIO_ID in {output.output_protocol_id for output in player._output_protocols}
 
-    await mass.config.remove_player_config(PARENT_ID)
+    await mass.players.remove_protocol(AUDIO_ID)
 
-    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}") is None
-    assert await _get_queue_cache(mass, PROTOCOL_ID) == [None, None]
-
-
-async def test_remove_keeps_queue_config_of_registered_protocol_player(
-    mass: MusicAssistant,
-    register_protocol_player: Callable[[str | None], StubProtocolPlayer],
-) -> None:
-    """A protocol player that keeps its config also keeps its queue settings and state."""
-    _store_configs(mass, enabled=True)
-    mass.config.set(
-        f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}",
-        {"queue_id": PROTOCOL_ID, "values": {"crossfade_duration": 9}},
-    )
-    await _store_queue_cache(mass, PROTOCOL_ID)
-    register_protocol_player(PARENT_ID)
-
-    mass.players.delete_player_config(PARENT_ID)
-
-    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PROTOCOL_ID}") is not None
-    assert await _get_queue_cache(mass, PROTOCOL_ID) == [
-        {"queue_id": PROTOCOL_ID},
-        {"queue_id": PROTOCOL_ID},
-    ]
-    _pop_scheduled_evaluation(mass)
+    assert _stored_protocols(mass) == [NATIVE_ID]
+    assert AUDIO_ID not in player.protocol_ids
+    assert AUDIO_ID not in {output.output_protocol_id for output in player._output_protocols}
+    assert AUDIO_ID not in {protocol.protocol_id for protocol in player.protocols}
+    assert mass.players.get_player(PLAYER_ID) is player
 
 
-async def test_remove_provider_config_wipes_unregistered_player_config(
-    mass: MusicAssistant,
-) -> None:
-    """Removing a provider also wipes the DSP/queue settings of its unregistered players."""
+async def test_removing_the_last_protocol_removes_its_player(mass: MusicAssistant) -> None:
+    """A player whose device is away goes once the config of its last protocol is removed."""
+    _store_player(mass)
+    _store_protocol(mass, AUDIO_ID, role=ProtocolRole.AUDIO)
+    await _store_queue_cache(mass, PLAYER_ID)
+
+    await mass.players.remove_protocol(AUDIO_ID)
+
+    _assert_player_wiped(mass)
+    assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
+
+
+async def test_remove_provider_config_wipes_its_players(mass: MusicAssistant) -> None:
+    """Removing a provider also wipes the players that only had protocols of it."""
     _store_provider_config(mass)
-    _store_player_config(mass, PLAYER_ID, provider=PLAYER_PROVIDER_DOMAIN)
-    mass.config.set(f"{CONF_PLAYER_DSP}/{PLAYER_ID}", {"enabled": True})
+    _store_player(mass, provider=PLAYER_PROVIDER_DOMAIN)
+    _store_protocol(mass, NATIVE_ID, provider=PLAYER_PROVIDER_DOMAIN)
     await _store_queue_cache(mass, PLAYER_ID)
 
     await mass.config.remove_provider_config(PLAYER_PROVIDER_DOMAIN)
 
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYER_DSP}/{PLAYER_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is None
+    _assert_player_wiped(mass)
+    assert _stored_protocols(mass) == []
     assert await _get_queue_cache(mass, PLAYER_ID) == [None, None]
 
 
-async def test_remove_provider_config_keeps_other_providers_player_config(
+async def test_remove_provider_config_keeps_a_player_with_other_protocols(
     mass: MusicAssistant,
 ) -> None:
-    """A player belonging to a different provider keeps its config untouched."""
+    """A player keeps its config, its settings and its queue on the protocols of others."""
     _store_provider_config(mass)
-    _store_player_config(mass, PLAYER_ID, provider=OTHER_PROVIDER_INSTANCE_ID)
-    mass.config.set(f"{CONF_PLAYER_DSP}/{PLAYER_ID}", {"enabled": True})
+    _store_player(mass, provider=PLAYER_PROVIDER_DOMAIN)
+    _store_protocol(mass, NATIVE_ID, provider=PLAYER_PROVIDER_DOMAIN)
+    _store_protocol(mass, AUDIO_ID, role=ProtocolRole.AUDIO)
+    _store_player(mass, "pl_other")
+    _store_protocol(mass, "other_1", "pl_other")
     await _store_queue_cache(mass, PLAYER_ID)
 
     await mass.config.remove_provider_config(PLAYER_PROVIDER_DOMAIN)
 
-    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}") is not None
-    assert mass.config.get(f"{CONF_PLAYER_DSP}/{PLAYER_ID}") is not None
-    assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{PLAYER_ID}") is not None
+    assert _stored_protocols(mass) == ["other_1", AUDIO_ID]
+    for player_id in (PLAYER_ID, "pl_other"):
+        assert mass.config.get(f"{CONF_PLAYERS}/{player_id}") is not None
+        assert mass.config.get(f"{CONF_PLAYER_DSP}/{player_id}") is not None
+        assert mass.config.get(f"{CONF_PLAYER_QUEUES}/{player_id}") is not None
     assert await _get_queue_cache(mass, PLAYER_ID) == [
         {"queue_id": PLAYER_ID},
         {"queue_id": PLAYER_ID},
     ]
 
 
-async def test_remove_provider_config_wipes_linked_protocol_config(
+async def test_remove_drops_the_player_from_the_member_lists_of_the_groups(
     mass: MusicAssistant,
 ) -> None:
-    """The config of an unregistered protocol player goes along with its parent's provider."""
-    _store_provider_config(mass)
-    _store_configs(mass, enabled=False)
-    mass.config.set(f"{CONF_PLAYERS}/{PARENT_ID}/provider", PLAYER_PROVIDER_DOMAIN)
+    """A group names its members by player id, and loses a member that is removed."""
+    _store_player(mass)
+    _store_protocol(mass, NATIVE_ID)
+    _store_player(mass, "pl_group")
+    _store_protocol(mass, "group_1", "pl_group", role=ProtocolRole.VIRTUAL)
+    mass.config.set_protocol_value("group_1", CONF_GROUP_MEMBERS, [PLAYER_ID, "pl_other"])
+    # the id of the protocol of the player is no member, whatever a group lists
+    _store_player(mass, "pl_group_2")
+    _store_protocol(mass, "group_2", "pl_group_2", role=ProtocolRole.VIRTUAL)
+    mass.config.set_protocol_value("group_2", CONF_GROUP_MEMBERS, [NATIVE_ID, "pl_other"])
 
-    await mass.config.remove_provider_config(PLAYER_PROVIDER_DOMAIN)
+    await mass.players.remove(PLAYER_ID)
 
-    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYER_DSP}/{PROTOCOL_ID}") is None
-
-
-async def test_remove_provider_config_detaches_registered_protocol_player(
-    mass: MusicAssistant,
-    register_protocol_player: Callable[[str | None], StubProtocolPlayer],
-) -> None:
-    """A still registered protocol player of another provider is detached, not wiped."""
-    _store_provider_config(mass)
-    _store_configs(mass, enabled=True)
-    mass.config.set(f"{CONF_PLAYERS}/{PARENT_ID}/provider", PLAYER_PROVIDER_DOMAIN)
-    protocol_player = register_protocol_player(PARENT_ID)
-
-    await mass.config.remove_provider_config(PLAYER_PROVIDER_DOMAIN)
-
-    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is not None
-    assert protocol_player.protocol_parent_id is None
-    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}/values/{CONF_PROTOCOL_PARENT_ID}") is None
-    assert _pop_scheduled_evaluation(mass)
+    assert mass.config.get_protocol_value("group_1", CONF_GROUP_MEMBERS) == ["pl_other"]
+    assert mass.config.get_protocol_value("group_2", CONF_GROUP_MEMBERS) == [
+        NATIVE_ID,
+        "pl_other",
+    ]
+    assert mass.config.get_player_value("pl_group", CONF_GROUP_MEMBERS) is None
 
 
 async def _get_user_player_filter(mass: MusicAssistant, user_id: str) -> list[str]:
@@ -599,7 +312,7 @@ async def _get_user_player_filter(mass: MusicAssistant, user_id: str) -> list[st
 
 async def test_remove_player_config_strips_user_player_filter(mass: MusicAssistant) -> None:
     """Removing a player also removes it from the access filters of restricted users."""
-    _store_player_config(mass, PLAYER_ID)
+    _store_player(mass)
     user = await mass.webserver.auth.create_user(
         username="restricted", player_filter=[PLAYER_ID, "other_player"]
     )

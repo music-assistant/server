@@ -42,7 +42,7 @@ from urllib.parse import urlparse, urlsplit
 
 import ifaddr
 from markdownify import markdownify
-from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.enums import AlbumType, IdentifierType, ProviderTier
 from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models.player import DeviceInfo
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -68,6 +69,12 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 CALLBACK_TYPE = Callable[[], None]
+
+# getmac has no timeout of its own and can hang on some addresses
+MAC_LOOKUP_TIMEOUT = 3.0
+# A timed out lookup keeps its executor thread until getmac returns, so later
+# callers for the same address share it instead of starting another one.
+_PENDING_MAC_LOOKUPS: dict[str, asyncio.Future[str | None]] = {}
 
 
 async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
@@ -652,9 +659,14 @@ def filename_from_string(string: str) -> str:
 _FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
+def strip_control_characters(value: str) -> str:
+    """Replace control characters (including line breaks) with a space and strip the result."""
+    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+
+
 def sanitize_http_header_value(value: str) -> str:
     """Replace control characters that are not allowed in HTTP header values."""
-    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+    return strip_control_characters(value)
 
 
 def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
@@ -1513,13 +1525,24 @@ async def import_module_in_thread(name: str, package: str | None = None) -> Modu
         return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
 
 
-async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
-    """Return module for given provider domain and make sure the requirements are met."""
+async def load_provider_module(manifest: ProviderManifest) -> ProviderModuleType:
+    """
+    Return the module of a provider and make sure its requirements are met.
+
+    The requirements of a community provider are not installed here.
+
+    :param manifest: Manifest of the provider to import.
+    """
 
     async def _get_provider_module() -> ProviderModuleType:
-        module = await import_module_in_thread(f".{domain}", "music_assistant.providers")
+        module = await import_module_in_thread(f".{manifest.domain}", "music_assistant.providers")
         return cast("ProviderModuleType", module)
 
+    if manifest.tier == ProviderTier.COMMUNITY:
+        # nothing a community provider asks for may end up in the server environment
+        return await _get_provider_module()
+
+    requirements = manifest.requirements
     # ensure module requirements are met
     for requirement in requirements:
         if requirement in _checked_requirements:
@@ -1549,6 +1572,35 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
     # try loading the provider again to be safe
     # this will fail if something else is wrong (as it should)
     return await _get_provider_module()
+
+
+def set_provider_tier(manifest: ProviderManifest, tier: ProviderTier) -> None:
+    """
+    Set who maintains a provider, which overrides what its manifest says about being built-in.
+
+    :param manifest: Manifest of the provider, changed in place.
+    :param tier: Who maintains the provider.
+    """
+    manifest.tier = tier
+    if tier == ProviderTier.COMMUNITY:
+        manifest.builtin = False
+        manifest.allow_disable = True
+
+
+def purge_provider_modules(domain: str) -> None:
+    """
+    Forget the imported code of a provider, so its next import reads the files again.
+
+    :param domain: Domain of the provider.
+    """
+    package = "music_assistant.providers"
+    module_name = f"{package}.{domain}"
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            del sys.modules[name]
+    # the package keeps an imported provider as attribute, which a from-import would return
+    vars(importlib.import_module(package)).pop(domain, None)
+    importlib.invalidate_caches()
 
 
 async def has_tmpfs_mount() -> bool:
@@ -1859,9 +1911,16 @@ async def get_mac_address(ip_address: str) -> str | None:
     try:
         from getmac import get_mac_address as getmac_lookup  # noqa: PLC0415
 
-        return await asyncio.to_thread(getmac_lookup, ip=ip_address)
+        if (lookup := _PENDING_MAC_LOOKUPS.get(ip_address)) is None:
+            lookup = asyncio.ensure_future(asyncio.to_thread(getmac_lookup, ip=ip_address))
+            _PENDING_MAC_LOOKUPS[ip_address] = lookup
+            lookup.add_done_callback(functools.partial(_on_mac_lookup_done, ip_address))
+        return await asyncio.wait_for(asyncio.shield(lookup), timeout=MAC_LOOKUP_TIMEOUT)
     except ImportError:
         LOGGER.debug("getmac module not available, cannot resolve MAC from IP")
+        return None
+    except TimeoutError:
+        LOGGER.debug("Timed out resolving MAC address for %s", ip_address)
         return None
     except Exception as err:
         LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
@@ -2253,9 +2312,10 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
-    unaffected. Calls count as identical when they are made on the same object with equal
-    arguments, no matter whether those were passed positionally or by keyword; the request
-    runs with the arguments of the caller that started it.
+    unaffected. Calls count as identical when they are made on the same object, by the same
+    user in the same role (or no user), with equal arguments, no matter whether those were
+    passed positionally or by keyword; the request runs with the arguments of the caller that
+    started it.
 
     Every argument must be a scalar or an object identified by its ``uri``, so that equal
     arguments are guaranteed to produce an equal key.
@@ -2266,8 +2326,14 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            get_current_user,
+        )
+
         mass = self.mass
-        # create a task_id dynamically based on the bound method and args/kwargs.
+        # create a task_id dynamically based on the bound method, the user and args/kwargs.
+        # a request may resolve differently per user and role (which music sources it may
+        # use), so two identities never join the same flight.
         # the instance is part of the key because a decorated method may be inherited by
         # multiple subclasses (all media controllers share
         # MediaControllerBase.get_provider_item) and a class may have multiple instances
@@ -2284,6 +2350,7 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
                 type(self).__name__,
                 id(self),
                 func.__qualname__,
+                (user.user_id, user.role) if (user := get_current_user()) else None,
                 # skip the instance: it is the first parameter and is keyed by id() above
                 *(
                     (name, _canonical_key_part(value))
@@ -2317,3 +2384,10 @@ def _canonical_key_part(value: Any) -> Any:
         # full item and an ItemMapping for that same item are not handled the same.
         return (type(value).__name__, uri)
     return value
+
+
+def _on_mac_lookup_done(ip_address: str, lookup: asyncio.Future[str | None]) -> None:
+    """Forget a finished MAC lookup, retrieving its outcome so nothing is left unread."""
+    _PENDING_MAC_LOOKUPS.pop(ip_address, None)
+    if not lookup.cancelled():
+        lookup.exception()

@@ -14,7 +14,7 @@ from music_assistant_models.player import PlayerSource
 from pyheos import Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
 from zeroconf import ServiceStateChange
 
-from music_assistant.constants import CONF_ENABLED, CONF_IP_ADDRESS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_IP_ADDRESS, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.heos.constants import HEOS_PASSIVE_SOURCES
@@ -206,7 +206,7 @@ class HeosPlayerProvider(PlayerProvider):
         self.logger.debug("Controller event received: %s", event)
 
         if event == const.EVENT_GROUPS_CHANGED:
-            for player in self.mass.players.all_players(provider_filter=self.instance_id):
+            for player in self.protocols:
                 assert isinstance(player, HeosPlayer)  # for type checking
                 await player.build_group_list()
 
@@ -263,10 +263,6 @@ class HeosPlayerProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         await self._disconnect_controllers()
 
-        for player in self.players:
-            self.logger.debug("Unloading player %s", player.name)
-            await self.mass.players.unregister(player.player_id)
-
     async def _disconnect_controllers(self) -> None:
         """Disconnect HEOS controller connections."""
         if self._heos:
@@ -284,7 +280,7 @@ class HeosPlayerProvider(PlayerProvider):
     async def _on_heos_disconnected(self) -> None:
         """Mark all HEOS players unavailable when the controller loses connection."""
         self.logger.warning("HEOS controller disconnected, marking players unavailable")
-        for player in self.mass.players.all_players(provider_filter=self.instance_id):
+        for player in self.protocols:
             assert isinstance(player, HeosPlayer)
             player.set_device_info()
             player.update_state()
@@ -299,23 +295,20 @@ class HeosPlayerProvider(PlayerProvider):
             self.logger.debug("Discovering HEOS players")
             devices = await self._heos.get_players()
             for device in devices.values():
-                player_id = str(device.player_id)
-                if player := cast("HeosPlayer", self.mass.players.get_player(player_id)):
+                protocol_id = str(device.player_id)
+                if player := cast("HeosPlayer", self.get_protocol(protocol_id)):
                     self.logger.debug(
-                        "Updating existing HEOS player: %s (%s)", device.name, player_id
+                        "Updating existing HEOS player: %s (%s)", device.name, protocol_id
                     )
                     # Update properties such as name or availability
                     player.set_device_info()
                     player.update_state()
                     continue
 
-                player_enabled = self.mass.config.get_raw_player_config_value(
-                    player_id, CONF_ENABLED, default=True
-                )
-                if not player_enabled:
-                    self.logger.debug("Skipping disabled player: %s (%s)", device.name, player_id)
+                if not self.mass.players.wants_protocol(protocol_id):
+                    self.logger.debug("Skipping disabled player: %s (%s)", device.name, protocol_id)
                     continue
-                self.logger.info("Discovered new HEOS player: %s (%s)", device.name, player_id)
+                self.logger.info("Discovered new HEOS player: %s (%s)", device.name, protocol_id)
 
                 heos_player = HeosPlayer(self, device)
                 await heos_player.setup()

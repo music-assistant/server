@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
+from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.helpers.uri import (
     apple_storefront_from_url,
+    canonical_mapping_url,
     canonical_provider_url,
     discogs_id_from_url,
     parse_uri,
@@ -66,6 +68,8 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
         ),
         # qobuz
         ("https://open.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
+        ("https://play.qobuz.com/artist/1044", (MediaType.ARTIST, "qobuz", "1044")),
+        ("https://play.qobuz.com/album/0634904032432", (MediaType.ALBUM, "qobuz", "0634904032432")),
         (
             "https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432",
             (MediaType.ALBUM, "qobuz", "0634904032432"),
@@ -138,6 +142,7 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
         ("https://www.deezer.com/album/6575789", "deezer"),
         ("https://music.apple.com/us/album/in-rainbows/1109714933", "apple_music"),
         ("https://open.qobuz.com/album/0634904032432", "qobuz"),
+        ("https://play.qobuz.com/artist/1044", "qobuz"),
         ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", "qobuz"),
         ("https://www.qobuz.com/gb-en/interpreter/whitesnake/download-streaming-albums", None),
         ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", "ytmusic"),
@@ -234,6 +239,32 @@ async def test_canonical_provider_url_round_trips_through_parse_uri() -> None:
         url = canonical_provider_url(domain, media_type, "1234")
         assert url is not None
         assert await parse_uri(url) == (media_type, domain, "1234")
+
+
+@pytest.mark.parametrize(
+    ("domain", "item_id", "url", "expected"),
+    [
+        ("deezer", "805", None, "https://www.deezer.com/artist/805"),
+        (
+            "apple_music",
+            "657515",
+            "https://music.apple.com/gb/artist/radiohead/657515",
+            "https://music.apple.com/gb/artist/657515",
+        ),
+        # without a storefront there is no URL MusicBrainz stores an Apple Music item under
+        ("apple_music", "657515", None, None),
+        # a performer without a Qobuz page has its name as id
+        ("qobuz", "John Williams", None, None),
+    ],
+)
+def test_canonical_mapping_url(
+    domain: str, item_id: str, url: str | None, expected: str | None
+) -> None:
+    """Build a mapping's MusicBrainz URL, taking any storefront from the mapping's own URL."""
+    mapping = ProviderMapping(
+        item_id=item_id, provider_domain=domain, provider_instance=f"{domain}_1", url=url
+    )
+    assert canonical_mapping_url(mapping, MediaType.ARTIST) == expected
 
 
 def test_apple_storefront_from_url() -> None:

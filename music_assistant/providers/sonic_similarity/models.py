@@ -42,3 +42,8 @@ class _SearchContext:
     corpus_means: list[float]
     corpus_stds: list[float]
     orig_normalized: list[float]
+    # Pinned with the corpus stats: the search runs in a worker thread, and a
+    # rebuild swaps all of these at once (labels are reassigned on every rebuild).
+    search_index: Any
+    label_map: dict[int, tuple[str, str]]
+    signature_cache: dict[tuple[str, str], list[float]]

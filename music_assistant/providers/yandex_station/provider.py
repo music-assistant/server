@@ -76,8 +76,11 @@ class YandexStationProvider(PlayerProvider):
         self._http_session: ClientSession | None = None
         self._passport_client: PassportClient | None = None
         self._pending_discoveries: set[str] = set()
-        self._mdns_players: dict[str, str] = {}  # mDNS service name → player_id
+        self._mdns_players: dict[str, str] = {}  # mDNS service name → protocol id
         self._discovery_done = False
+        # what the cloud discovery found, by protocol id, to offer a device again that was
+        # removed or re-enabled
+        self._known_speakers: dict[str, dict[str, Any]] = {}
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._cascade = self._build_cascade()
         self._borrow_source = self._build_borrow_source()
@@ -133,6 +136,8 @@ class YandexStationProvider(PlayerProvider):
         2. Local: mDNS (handled by MA core via manifest.json mdns_discovery)
         """
         if self._discovery_done:
+            for protocol_id, speaker in self._known_speakers.items():
+                await self._create_player(protocol_id, speaker)
             return
 
         if not await self._init_session():
@@ -226,6 +231,7 @@ class YandexStationProvider(PlayerProvider):
             self.logger.info(
                 "Registering speaker: %s [%s]", speaker.get("name"), qi.get("platform")
             )
+            self._known_speakers[player_id] = speaker
             await self._create_player(player_id, speaker)
 
         self._discovery_done = True
@@ -247,7 +253,7 @@ class YandexStationProvider(PlayerProvider):
         if state_change == ServiceStateChange.Removed:
             player_id = self._mdns_players.get(name)
             if player_id:
-                existing = self.mass.players.get_player(player_id)
+                existing = self.get_protocol(player_id)
                 if existing and isinstance(existing, YandexStationPlayer):
                     existing._attr_available = False
                     existing.update_state()
@@ -280,7 +286,7 @@ class YandexStationProvider(PlayerProvider):
                 return
 
             # Check if player already registered (cloud-discovered) — connect Glagol
-            existing = self.mass.players.get_player(player_id)
+            existing = self.get_protocol(player_id)
             if existing and isinstance(existing, YandexStationPlayer):
                 if not existing.glagol.connected:
                     existing.update_connection(host, port)
@@ -365,10 +371,18 @@ class YandexStationProvider(PlayerProvider):
         # raises InsufficientPermissions under the same rules as its own commands.
         self.mass.players.get_player_state(player_id)
         player = self.mass.players.get_player(player_id)
-        if not isinstance(player, YandexStationPlayer):
+        station = next(
+            (
+                protocol
+                for protocol in (player.attached_protocols.values() if player else ())
+                if isinstance(protocol, YandexStationPlayer)
+            ),
+            None,
+        )
+        if station is None:
             msg = f"{player_id} is not a Yandex Station player"
             raise PlayerUnavailableError(msg)
-        return player
+        return station
 
     # ── Credential cascade ────────────────────────────────────────────
 
@@ -634,7 +648,7 @@ class YandexStationProvider(PlayerProvider):
                 return await self._quasar.get_speakers()
             raise
 
-    async def _create_player(self, player_id: str, device_info: dict[str, Any]) -> None:
+    async def _create_player(self, protocol_id: str, device_info: dict[str, Any]) -> None:
         """Create and register a new YandexStationPlayer."""
         try:
             if not self._session:
@@ -647,34 +661,26 @@ class YandexStationProvider(PlayerProvider):
             assert self._passport_client is not None  # guaranteed by _init_session()
 
             # Skip if already registered
-            existing = self.mass.players.get_player(player_id)
+            existing = self.get_protocol(protocol_id)
             if existing is not None:
+                return
+            if not self.mass.players.wants_protocol(protocol_id):
+                self.logger.debug("Skipping disabled player %s", protocol_id)
                 return
 
             glagol = YandexGlagol(self._session, self._passport_client, device_info)
 
             player = YandexStationPlayer(
                 provider=self,
-                player_id=player_id,
+                protocol_id=protocol_id,
                 device_info=device_info,
                 glagol=glagol,
             )
-            # Register BEFORE starting Glagol.  The WS connect callback can
-            # fire `update_handler` very quickly, and the resulting
-            # `player.update_state()` would otherwise run for an unknown
-            # player and trigger queue/state side-effects on something the
-            # players controller doesn't know about yet.
-            await self.mass.players.register_or_update(player)
-            # Only start Glagol if host/port are available (mDNS or glagol API)
-            host = device_info.get("host")
-            port = device_info.get("port")
-            if host and port:
-                self.logger.info("Starting Glagol for %s at %s:%s", player_id, host, port)
-                await player.async_setup()
-            else:
-                self.logger.info("No host/port for %s — cloud-only", player_id)
+            # Glagol is started when the protocol attaches, if host/port are
+            # available (mDNS or glagol API)
+            await self.mass.players.register(player)
 
         except Exception:
-            self.logger.exception("Failed to create player %s", player_id)
+            self.logger.exception("Failed to create player %s", protocol_id)
         finally:
-            self._pending_discoveries.discard(player_id)
+            self._pending_discoveries.discard(protocol_id)

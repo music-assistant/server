@@ -23,7 +23,8 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
-from music_assistant.models.player import AnnouncementFeature
+from music_assistant.models.player import Player
+from music_assistant.models.player_protocol import AnnouncementFeature
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
@@ -55,10 +56,13 @@ ALAC_48000_24 = 1 << 21
 def _stub_raw_config(provider: MagicMock, stored: dict[str, object] | None = None) -> None:
     """Serve raw player config values from a dict instead of an (always truthy) mock."""
     values = stored if stored is not None else {}
-    provider.mass.config.get_raw_player_config_value.side_effect = (
-        lambda _player_id, key, default=None: values.get(key, default)
+    provider.mass.config.get_player_value.side_effect = lambda _player_id, key, default=None: (
+        values.get(key, default)
     )
-    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+    provider.mass.config.get_protocol_value.side_effect = lambda _player_id, key, default=None: (
+        values.get(key, default)
+    )
+    provider.mass.config.set_protocol_value.side_effect = lambda _player_id, key, value: (
         values.__setitem__(key, value)
     )
 
@@ -82,7 +86,7 @@ def airplay_player() -> AirPlayPlayer:
     _stub_volume_scaling(provider)
     return AirPlayPlayer(
         provider=provider,
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer="Test Manufacturer",
@@ -90,6 +94,19 @@ def airplay_player() -> AirPlayPlayer:
         raop_discovery_info=None,
         airplay_discovery_info=None,
     )
+
+
+async def test_detached_protocol_leaves_the_stream_session_it_plays_in(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A protocol that is detached, also to move to another player, leaves its running stream."""
+    session = MagicMock(remove_client=AsyncMock())
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    await airplay_player.on_detach()
+
+    session.remove_client.assert_awaited_once_with(airplay_player, reason="player unloaded")
+    assert airplay_player.stream is None
 
 
 async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
@@ -224,7 +241,7 @@ def test_macos_devices_are_disabled_by_default(
     provider = MagicMock()
     player = AirPlayPlayer(
         provider=provider,
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer=manufacturer,
@@ -234,7 +251,6 @@ def test_macos_devices_are_disabled_by_default(
     )
 
     assert player.enabled_by_default is expected
-    assert provider.mass.config.create_default_player_config.call_args.args[-1] is expected
 
 
 @pytest.mark.parametrize(
@@ -321,7 +337,7 @@ def test_build_streaming_pairing_uses_discovered_ipv4_address() -> None:
     airplay_info.port = 7000
     player = AirPlayPlayer(
         provider=provider,
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Player",
         address="2001:db8::10",
         manufacturer="Apple",
@@ -356,7 +372,7 @@ def test_build_streaming_pairing_fails_without_ipv4_address() -> None:
     airplay_info.port = 7000
     player = AirPlayPlayer(
         provider=provider,
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Player",
         address="2001:db8::10",
         manufacturer="Apple",
@@ -439,7 +455,7 @@ def _make_apple_player() -> AirPlayPlayer:
     """Create an AirPlayPlayer that identifies as a genuine Apple device."""
     return AirPlayPlayer(
         provider=MagicMock(),
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Apple TV",
         address="127.0.0.1",
         manufacturer="Apple",
@@ -543,7 +559,7 @@ def test_protocol_resolution_follows_capability(
     airplay_info.decoded_properties = airplay_props
     player = AirPlayPlayer(
         provider=MagicMock(),
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer="Test Manufacturer",
@@ -561,7 +577,7 @@ def test_protocol_resolution_airplay_service_only() -> None:
     airplay_info.decoded_properties = {}
     player = AirPlayPlayer(
         provider=MagicMock(),
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer="Test Manufacturer",
@@ -614,7 +630,7 @@ def test_local_shairport_defaults_to_compat_mode(
     """Automatic resolves to compatibility mode for an AirPlay 2 shairport-sync on this host."""
     player = AirPlayPlayer(
         provider=MagicMock(),
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Shairport",
         address="192.168.1.10",
         manufacturer="Unknown",
@@ -669,10 +685,10 @@ def _configure_player(player: AirPlayPlayer, values: dict[str, object]) -> None:
 @pytest.mark.parametrize(
     ("advertised_audio_formats", "streaming_mode", "airplay2_capable", "expected"),
     [
-        # 24-bit advertised on the realtime stream
-        (ALAC_44100_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
-        # the Apple TV advertises 24-bit for its buffered stream only
-        (ALAC_48000_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
+        # both 24-bit rates listed (Apple TV, HomePod)
+        (ALAC_44100_24 | ALAC_48000_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
+        # one 24-bit rate listed (Shairport Sync): both, the stream converts to it
+        (ALAC_44100_16 | ALAC_48000_24, STREAMING_MODE_AUTO, True, [(44100, 24), (48000, 24)]),
         # the RAOP mode cannot do 24-bit: falls back to the 16-bit base
         (ALAC_44100_24, STREAMING_MODE_RAOP, True, [(44100, 16)]),
         # the compatibility mode streams through the 16-bit RAOP flow
@@ -724,7 +740,7 @@ def test_hires_disabled_in_compatibility_mode(airplay_player: AirPlayPlayer) -> 
 def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
     """For a 24-bit capable device the stream format is 24-bit in a s32le container."""
     _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
-    airplay_player.advertised_audio_formats = ALAC_44100_24
+    airplay_player.advertised_audio_formats = ALAC_44100_24 | ALAC_48000_24
     _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
 
     session_format = AudioFormat(
@@ -745,6 +761,26 @@ def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
     assert stream_format.bit_depth == 24
 
 
+def test_get_stream_pcm_format_listed_rate_only(airplay_player: AirPlayPlayer) -> None:
+    """A receiver that lists 48 kHz 24-bit only gets 44.1 kHz audio at 48 kHz."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_44100_16 | ALAC_48000_24
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
+
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32
+    )
+    stream_format = airplay_player.get_stream_pcm_format(session_format)
+    assert stream_format.sample_rate == 48000
+    assert stream_format.bit_depth == 24
+
+    # a listed session rate passes through
+    session_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
+    )
+    assert airplay_player.get_stream_pcm_format(session_format).sample_rate == 48000
+
+
 def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
     """Without a 24-bit capable device the stream format is the 44.1/16 default."""
     _set_discovery_info(airplay_player, raop=True, airplay=True)
@@ -756,14 +792,17 @@ def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
 
 
 def _make_hires_player(
-    manufacturer: str, model: str, stored_toggle: bool | None = None
+    manufacturer: str,
+    model: str,
+    stored_toggle: bool | None = None,
+    advertised_audio_formats: int = ALAC_44100_24,
 ) -> AirPlayPlayer:
-    """Create a 24-bit capable AirPlay 2 player with the given device identity."""
+    """Create an AirPlay 2 player with the given device identity and listed formats."""
     provider = MagicMock()
-    _stub_raw_config(provider)
+    _stub_raw_config(provider, {} if stored_toggle is None else {CONF_ENABLE_HIRES: stored_toggle})
     player = AirPlayPlayer(
         provider=provider,
-        player_id="test_player",
+        protocol_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
         manufacturer=manufacturer,
@@ -772,11 +811,8 @@ def _make_hires_player(
         airplay_discovery_info=None,
     )
     _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
-    player.advertised_audio_formats = ALAC_44100_24
-    values: dict[str, object] = {CONF_STREAMING_MODE: STREAMING_MODE_AUTO}
-    if stored_toggle is not None:
-        values[CONF_ENABLE_HIRES] = stored_toggle
-    _configure_player(player, values)
+    player.advertised_audio_formats = advertised_audio_formats
+    _configure_player(player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
     return player
 
 
@@ -808,19 +844,40 @@ def test_hires_toggle_override(manufacturer: str, model: str, stored: bool, expe
     assert player.hires_playback_enabled is expected
 
 
+def test_hires_toggle_for_a_receiver_listing_no_24_bit() -> None:
+    """24-bit stays off for a receiver that lists none, until switched on by hand."""
+    player = _make_hires_player("JBL", "MA9100HP", advertised_audio_formats=0)
+    assert player.hires_playback_enabled is False
+    assert player.supported_sample_rates == [(44100, 16)]
+
+    player = _make_hires_player("JBL", "MA9100HP", stored_toggle=True, advertised_audio_formats=0)
+    assert player.hires_playback_enabled is True
+    assert player.supported_sample_rates == [(44100, 24), (48000, 24)]
+
+
+def test_hires_toggle_is_stored_with_the_protocol() -> None:
+    """The 24-bit toggle is read from the stored config of the AirPlay protocol itself."""
+    player = _make_hires_player("JBL", "MA9100HP", stored_toggle=True, advertised_audio_formats=0)
+    config = cast("MagicMock", player.mass.config)
+    config.get_player_value.reset_mock()
+
+    assert player.hires_playback_enabled is True
+    config.get_protocol_value.assert_any_call("test_player", CONF_ENABLE_HIRES)
+    config.get_player_value.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_hires_toggle_config_entry_visibility(airplay_player: AirPlayPlayer) -> None:
-    """The 24-bit entry is only shown when the device advertises 24-bit support."""
+    """The 24-bit entry is shown on the AirPlay 2 route, on when 24-bit is listed."""
     _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
     _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
 
-    # always part of the entry list (so a stored value survives the config
-    # parse at registration, before the async formats probe has landed), but
-    # hidden until the device is known to support 24-bit
+    # shown without a listed 24-bit format, so it can be switched on by hand
     airplay_player.advertised_audio_formats = ALAC_44100_16
     entries = await airplay_player.get_config_entries()
     hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
-    assert hires_entry.hidden is True
+    assert hires_entry.hidden is False
+    assert hires_entry.default_value is False
 
     airplay_player.advertised_audio_formats = ALAC_44100_24
     entries = await airplay_player.get_config_entries()
@@ -829,6 +886,13 @@ async def test_hires_toggle_config_entry_visibility(airplay_player: AirPlayPlaye
     assert hires_entry.default_value is True
     # flipping the toggle must restart an active stream to take effect
     assert hires_entry.requires_reload is True
+
+    # always part of the entry list (so a stored value survives the config
+    # parse at registration), but hidden on a route that cannot carry 24-bit
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_RAOP})
+    entries = await airplay_player.get_config_entries()
+    hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
+    assert hires_entry.hidden is True
 
 
 @pytest.mark.asyncio
@@ -911,6 +975,54 @@ async def test_session_pcm_format_selects_processing_depth(
     assert fmt.content_type == expected_content_type
     assert fmt.sample_rate == 48000
     assert fmt.bit_depth == expected_bit_depth
+
+
+@pytest.mark.asyncio
+async def test_group_with_a_48k_only_receiver_and_a_16_bit_member(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A receiver that lists 48 kHz 24-bit only shares a session rate with a 16-bit member."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_44100_16 | ALAC_48000_24
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
+    member = AirPlayPlayer(
+        provider=cast("AirPlayProvider", airplay_player.provider),
+        protocol_id="member",
+        display_name="Member",
+        address="127.0.0.2",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    _set_discovery_info(member, raop=True, airplay=False)
+    airplay_player.mass.streams.audio = StreamsAudio(airplay_player.mass)
+    cast("MagicMock", airplay_player.mass.config.get_player_dsp_config).return_value = MagicMock(
+        enabled=False
+    )
+    cast(
+        "MagicMock", airplay_player.mass.streams.get_crossfade_mode
+    ).return_value = CrossfadeMode.DISABLED
+    streamdetails = MagicMock()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16
+    )
+    streamdetails.decoded_audio_format = None
+    streamdetails.media_type = MediaType.TRACK
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+    queue = MagicMock(crossfade_enabled=False, overlay_enabled=False, overlay_source=None)
+    cast("MagicMock", airplay_player.mass.player_queues.get).return_value = queue
+    cast("MagicMock", airplay_player.mass.player_queues.get_item).return_value = MagicMock(
+        streamdetails=streamdetails
+    )
+    media = MagicMock(source_id="queue1", queue_item_id="item1", media_type=MediaType.TRACK)
+
+    session_format = await airplay_player._get_session_pcm_format([airplay_player, member], media)
+
+    assert session_format.sample_rate == 44100
+    # each member converts the session audio to its own stream format
+    assert airplay_player.get_stream_pcm_format(session_format).sample_rate == 48000
+    assert member.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
 
 
 # --- Volume and Mute tests ---
@@ -1014,44 +1126,71 @@ async def test_volume_mute_no_stream(airplay_player: AirPlayPlayer) -> None:
         mock_update.assert_called_once()
 
 
-def test_owns_volume_true_without_protocol_parent(airplay_player: AirPlayPlayer) -> None:
-    """A standalone AirPlay player always owns its own volume."""
+def _attach_to_player(
+    protocol: AirPlayPlayer,
+    own: object | None = None,
+    controls: dict[str, object] | None = None,
+) -> MagicMock:
+    """
+    Attach the protocol to a player mock that resolves its controls like Player does.
+
+    :param protocol: The AirPlay protocol to attach.
+    :param own: The own (native) protocol of the player, if any.
+    :param controls: Other attached protocols of the player, by id.
+    """
+    player = MagicMock(spec=Player)
+    player.player_id = "pl0123456789ab"
+    lookup = {PLAYER_CONTROL_NATIVE: own, protocol.protocol_id: protocol, **(controls or {})}
+    player.get_control_protocol.side_effect = lookup.get
+    protocol.set_player(player)
+    return player
+
+
+def test_can_group_with_skips_protocols_that_wait_for_their_player(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Only AirPlay protocols that are attached to a player are offered as group members."""
+    attached = MagicMock(protocol_id="attached", available=True)
+    waiting = MagicMock(protocol_id="waiting", available=True, player=None)
+    offline = MagicMock(protocol_id="offline", available=False)
+    provider = cast("MagicMock", airplay_player.provider)
+    provider.get_players.return_value = [airplay_player, attached, waiting, offline]
+
+    assert airplay_player.can_group_with == {"attached"}
+
+
+def test_owns_volume_true_while_not_attached(airplay_player: AirPlayPlayer) -> None:
+    """A protocol without a player has no other interface to defer to."""
     assert airplay_player.owns_volume is True
 
 
-def test_owns_volume_true_when_parent_unresolvable(airplay_player: AirPlayPlayer) -> None:
-    """A protocol parent that no longer resolves cannot own the volume either."""
-    airplay_player.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
-    airplay_player.set_protocol_parent_id("parent")
+def test_owns_volume_true_when_control_is_self(airplay_player: AirPlayPlayer) -> None:
+    """This output owns the volume when the player's control resolves to it directly."""
+    player = _attach_to_player(airplay_player)
+    player.volume_control_for_output.return_value = "test_player"
+
+    assert airplay_player.owns_volume is True
+    # the control must be resolved against this protocol as the rendering output
+    player.volume_control_for_output.assert_called_once_with(airplay_player.protocol_id)
+
+
+def test_owns_volume_true_for_the_native_protocol_of_its_player(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An Apple TV is the native protocol of its player, so the native control is its own."""
+    player = _attach_to_player(airplay_player, own=airplay_player)
+    player.volume_control_for_output.return_value = PLAYER_CONTROL_NATIVE
 
     assert airplay_player.owns_volume is True
 
 
-def test_owns_volume_true_when_parent_control_is_self(airplay_player: AirPlayPlayer) -> None:
-    """This output owns the volume when the parent's control resolves to it directly."""
-    parent = MagicMock()
-    parent.volume_control_for_output.return_value = "test_player"
-    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
-    airplay_player.set_protocol_parent_id("parent")
-
-    assert airplay_player.owns_volume is True
-    # the control must be resolved against this player as the rendering output
-    parent.volume_control_for_output.assert_called_once_with(airplay_player.player_id)
-
-
-def test_owns_volume_true_when_parent_control_is_bridge_on_self(
+def test_owns_volume_true_when_control_is_bridge_on_self(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """This output owns the volume when the control is a bridge riding on it."""
-    parent = MagicMock()
-    parent.volume_control_for_output.return_value = "sendspin_bridge"
-    bridge = MagicMock()
-    bridge.underlying_player_id = "test_player"
-    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
-        "parent": parent,
-        "sendspin_bridge": bridge,
-    }.get
-    airplay_player.set_protocol_parent_id("parent")
+    bridge = MagicMock(underlying_protocol_id="test_player")
+    player = _attach_to_player(airplay_player, controls={"sendspin_bridge": bridge})
+    player.volume_control_for_output.return_value = "sendspin_bridge"
 
     assert airplay_player.owns_volume is True
 
@@ -1061,12 +1200,12 @@ def test_owns_volume_false_when_another_control_owns_it(
     airplay_player: AirPlayPlayer, control: str
 ) -> None:
     """Another control (a sibling interface, or the receiver's own native control) owns it."""
-    parent = MagicMock()
-    parent.volume_control_for_output.return_value = control
-    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
-        "parent": parent,
-    }.get
-    airplay_player.set_protocol_parent_id("parent")
+    player = _attach_to_player(
+        airplay_player,
+        own=MagicMock(underlying_protocol_id=None),
+        controls={"dlna_player": MagicMock(underlying_protocol_id=None)},
+    )
+    player.volume_control_for_output.return_value = control
 
     assert airplay_player.owns_volume is False
 
@@ -1074,13 +1213,10 @@ def test_owns_volume_false_when_another_control_owns_it(
 def test_update_volume_from_device_keeps_native_parent_feedback(
     airplay_player: AirPlayPlayer,
 ) -> None:
-    """Use DACP feedback to keep the child AirPlay volume current."""
-    parent = MagicMock()
-    parent.state.volume_level = 42
-    parent.volume_control = PLAYER_CONTROL_NATIVE
-    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    """Use DACP feedback to keep the AirPlay volume current, stored on the protocol."""
+    player = _attach_to_player(airplay_player, own=MagicMock(underlying_protocol_id=None))
+    player.volume_level = 42
     airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
-    airplay_player.set_protocol_parent_id("parent")
     airplay_player._attr_volume_level = 57
     airplay_player.last_command_sent = time.time()
 
@@ -1088,8 +1224,8 @@ def test_update_volume_from_device_keeps_native_parent_feedback(
         airplay_player.update_volume_from_device(57)
 
     assert airplay_player._attr_volume_level == 57
-    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
-        airplay_player.player_id, CONF_STORED_VOLUME, 57
+    airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
+        airplay_player.protocol_id, CONF_STORED_VOLUME, 57
     )
     mock_update.assert_called_once()
 
@@ -1101,18 +1237,13 @@ def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
     Clear our mute when it is owned by a control that doesn't render this stream.
 
     The mute is a latch that only an explicit unmute clears, so a mute applied while
-    a sibling interface owned the parent would otherwise start this stream silent and
+    a sibling interface owned the player would otherwise start this stream silent and
     swallow every volume command after it.
     """
-    parent = MagicMock()
-    parent.mute_control_for_output.return_value = "cast_player"
-    cast_player = MagicMock()
-    cast_player.underlying_player_id = None
-    airplay_player.mass.players.get_player.side_effect = {  # type: ignore[attr-defined]
-        "parent": parent,
-        "cast_player": cast_player,
-    }.get
-    airplay_player.set_protocol_parent_id("parent")
+    player = _attach_to_player(
+        airplay_player, controls={"cast_player": MagicMock(underlying_protocol_id=None)}
+    )
+    player.mute_control_for_output.return_value = "cast_player"
     airplay_player._attr_volume_muted = True
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
@@ -1120,18 +1251,16 @@ def test_release_foreign_mute_latch_clears_mute_owned_by_other_control(
 
     assert airplay_player._attr_volume_muted is False
     mock_update.assert_called_once()
-    # the control must be resolved against this player as the rendering output
-    parent.mute_control_for_output.assert_called_once_with(airplay_player.player_id)
+    # the control must be resolved against this protocol as the rendering output
+    player.mute_control_for_output.assert_called_once_with(airplay_player.protocol_id)
 
 
 def test_release_foreign_mute_latch_keeps_mute_owned_by_this_output(
     airplay_player: AirPlayPlayer,
 ) -> None:
-    """Keep our own mute when this player owns the parent's mute."""
-    parent = MagicMock()
-    parent.mute_control_for_output.return_value = "test_player"
-    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
-    airplay_player.set_protocol_parent_id("parent")
+    """Keep our own mute when this protocol owns the player's mute."""
+    player = _attach_to_player(airplay_player)
+    player.mute_control_for_output.return_value = "test_player"
     airplay_player._attr_volume_muted = True
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
@@ -1145,17 +1274,80 @@ def test_release_foreign_mute_latch_does_nothing_when_not_muted(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """Never having latched a mute is not something to act on."""
-    parent = MagicMock()
-    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
-    airplay_player.set_protocol_parent_id("parent")
+    player = _attach_to_player(airplay_player)
     airplay_player._attr_volume_muted = False
 
     with patch.object(AirPlayPlayer, "update_state") as mock_update:
         airplay_player.release_foreign_mute_latch()
 
     assert airplay_player._attr_volume_muted is False
-    parent.mute_control_for_output.assert_not_called()
+    player.mute_control_for_output.assert_not_called()
     mock_update.assert_not_called()
+
+
+def _bridge_sees(player: AirPlayPlayer) -> list[tuple[str, int | None, bool | None]]:
+    """Record the volume and mute an AirPlay protocol reports whenever it syncs its bridge."""
+    seen: list[tuple[str, int | None, bool | None]] = []
+    bridge_manager = cast("MagicMock", cast("AirPlayProvider", player.provider).bridge_manager)
+    bridge_manager.sync_volume.side_effect = lambda protocol_id: seen.append(
+        (protocol_id, player.volume_level, player.volume_muted)
+    )
+    return seen
+
+
+async def test_a_volume_set_reaches_the_sendspin_bridge(airplay_player: AirPlayPlayer) -> None:
+    """The bridge adopts a level set on the AirPlay protocol, which it reports while bridged."""
+    airplay_player._attr_volume_level = 20
+    airplay_player._attr_volume_muted = False
+    seen = _bridge_sees(airplay_player)
+
+    await airplay_player.volume_set(60)
+
+    assert seen == [("test_player", 60, False)]
+
+
+async def test_a_mute_reaches_the_sendspin_bridge(airplay_player: AirPlayPlayer) -> None:
+    """The bridge adopts a mute set on the AirPlay protocol."""
+    airplay_player._attr_volume_level = 20
+    airplay_player._attr_volume_muted = False
+    seen = _bridge_sees(airplay_player)
+
+    await airplay_player.volume_mute(True)
+
+    assert seen == [("test_player", 20, True)]
+
+
+def test_device_volume_feedback_reaches_the_sendspin_bridge(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A level the device reports itself reaches the bridge, so a knob turned shows while bridged."""
+    airplay_player.config.get_value.return_value = False  # type: ignore[attr-defined]
+    airplay_player._attr_volume_level = 57
+    airplay_player._attr_volume_muted = False
+    airplay_player.last_command_sent = time.time()
+    seen = _bridge_sees(airplay_player)
+
+    airplay_player.update_volume_from_device(58)
+
+    assert seen == [("test_player", 58, False)]
+
+
+def test_a_released_mute_latch_reaches_the_sendspin_bridge(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Clearing a mute owned by another control unmutes the bridge too."""
+    player = _attach_to_player(
+        airplay_player, controls={"cast_player": MagicMock(underlying_protocol_id=None)}
+    )
+    player.mute_control_for_output.return_value = "cast_player"
+    airplay_player._attr_volume_level = 30
+    airplay_player._attr_volume_muted = True
+    seen = _bridge_sees(airplay_player)
+
+    with patch.object(AirPlayPlayer, "update_state"):
+        airplay_player.release_foreign_mute_latch()
+
+    assert seen == [("test_player", 30, False)]
 
 
 # --- Pause / stop dispatch tests ---
@@ -1348,7 +1540,8 @@ async def test_single_player_play_keeps_shift_when_resume_not_delivered(
 
 @pytest.mark.asyncio
 async def test_grouped_play_resumes_active_native_queue(airplay_player: AirPlayPlayer) -> None:
-    """A linked AirPlay group resumes the queue owned by its native parent."""
+    """A linked AirPlay group resumes the queue of its player, which a native protocol owns."""
+    player = _attach_to_player(airplay_player, own=MagicMock())
     airplay_player._attr_group_members = ["test_player", "child"]
     send_cmd = _setup_running_stream(airplay_player)
     active_queue = MagicMock(queue_id="native_parent")
@@ -1363,7 +1556,7 @@ async def test_grouped_play_resumes_active_native_queue(airplay_player: AirPlayP
     ):
         await airplay_player.play()
 
-    get_active_queue.assert_called_once_with(airplay_player)
+    get_active_queue.assert_called_once_with(player)
     resume_queue.assert_awaited_once_with("native_parent", fade_in=False)
     send_cmd.assert_not_awaited()
 
@@ -1372,7 +1565,7 @@ async def test_grouped_play_resumes_active_native_queue(airplay_player: AirPlayP
 async def test_single_player_pause_sends_action_pause(airplay_player: AirPlayPlayer) -> None:
     """An unsynced player pauses the stream in place with ACTION=PAUSE."""
     airplay_player._attr_group_members = []
-    airplay_player.mass.players.iter_players.return_value = []  # type: ignore[attr-defined]
+    airplay_player.mass.players.iter_protocols.return_value = []  # type: ignore[attr-defined]
     send_cmd = _setup_running_stream(airplay_player)
 
     with patch.object(AirPlayPlayer, "stop", new=AsyncMock()) as mock_stop:
@@ -1442,7 +1635,7 @@ def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
     """Create an idle, ungrouped AirPlayPlayer wired for the re-join tests."""
     player = AirPlayPlayer(
         provider=MagicMock(),
-        player_id=player_id,
+        protocol_id=player_id,
         display_name=f"Player {player_id}",
         address="127.0.0.1",
         manufacturer="Test Manufacturer",
@@ -1451,7 +1644,9 @@ def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
         airplay_discovery_info=None,
     )
     # the synced_to property scans all players of the provider
-    _players_mock(player).iter_players.return_value = []
+    _players_mock(player).iter_protocols.return_value = []
+    provider = cast("MagicMock", player.provider)
+    provider.get_protocol = lambda pid: player.mass.players.get_protocol(pid)
     player._attr_group_members = []
     player._attr_playback_state = PlaybackState.IDLE
     player.stream = None
@@ -1492,13 +1687,13 @@ async def test_rejoin_succeeds_on_first_attempt() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
 
     async def set_members(
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_add == [player.protocol_id]
         assert player_ids_to_remove is None
         _attach_running_session(player, [leader, player])
 
@@ -1516,14 +1711,14 @@ async def test_rejoin_retries_after_failure_then_succeeds() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     attempts: list[int] = []
 
     async def set_members(
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_add == [player.protocol_id]
         assert player_ids_to_remove is None
         attempts.append(1)
         if len(attempts) == 1:
@@ -1543,13 +1738,13 @@ async def test_rejoin_gives_up_after_all_attempts() -> None:
     """Without a playing group to re-join, the attempts run out and stop cleanly."""
     player = _make_idle_player()
     players_mock = _players_mock(player)
-    players_mock.get_player.return_value = None
+    players_mock.get_protocol.return_value = None
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
     # every attempt tried (and failed) to resolve a re-join target
-    assert players_mock.get_player.call_count == 3
+    assert players_mock.get_protocol.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -1558,7 +1753,7 @@ async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     leader.set_members = AsyncMock()  # type: ignore[method-assign]
     # the user started something else on the player during the backoff
     stream = MagicMock()
@@ -1577,7 +1772,7 @@ async def test_rejoin_undoes_dangling_membership() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     # the join "succeeds" but the late-join failed internally: no stream appears
     leader.set_members = AsyncMock()  # type: ignore[method-assign]
 
@@ -1597,7 +1792,7 @@ async def test_rejoin_cancelled_when_player_unavailable() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     leader.set_members = AsyncMock()  # type: ignore[method-assign]
     player._attr_available = False
 
@@ -1606,7 +1801,7 @@ async def test_rejoin_cancelled_when_player_unavailable() -> None:
         await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
 
     leader.set_members.assert_not_awaited()
-    players_mock.get_player.assert_not_called()
+    players_mock.get_protocol.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1615,12 +1810,12 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     foreign_leader = MagicMock()
-    foreign_leader.player_id = "other"
-    foreign_leader.group_members = ["other", player.player_id]
+    foreign_leader.protocol_id = "other"
+    foreign_leader.group_members = ["other", player.protocol_id]
     # the player reports it is now synced to a leader outside the original group
-    _players_mock(player).iter_players.return_value = [foreign_leader]
+    _players_mock(player).iter_protocols.return_value = [foreign_leader]
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     leader.set_members = AsyncMock()  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 60, 60)):
@@ -1634,7 +1829,7 @@ def test_resolve_rejoin_target_finds_promoted_sibling() -> None:
     player = _make_idle_player()
     sibling = _make_playing_leader("sibling")
     sibling._attr_group_members = ["sibling", "other_member"]
-    _players_mock(player).get_player.side_effect = lambda player_id: {"sibling": sibling}.get(
+    _players_mock(player).get_protocol.side_effect = lambda player_id: {"sibling": sibling}.get(
         player_id
     )
 
@@ -1648,8 +1843,8 @@ def test_resolve_rejoin_target_skips_candidate_in_foreign_group() -> None:
     foreign_leader._attr_group_members = ["foreign", "old_leader"]
     old_leader = _make_playing_leader("old_leader")
     # the old leader reports it is now synced to the foreign leader
-    _players_mock(old_leader).iter_players.return_value = [foreign_leader]
-    _players_mock(player).get_player.side_effect = lambda player_id: {
+    _players_mock(old_leader).iter_protocols.return_value = [foreign_leader]
+    _players_mock(player).get_protocol.side_effect = lambda player_id: {
         "old_leader": old_leader,
         "foreign": foreign_leader,
     }.get(player_id)
@@ -1677,7 +1872,7 @@ def test_resolve_rejoin_target_requires_playing_session(
     leader._attr_playback_state = playback_state
     cast("MagicMock", leader.stream).running = stream_running
     leader._attr_available = available
-    _players_mock(player).get_player.side_effect = lambda player_id: {"leader": leader}.get(
+    _players_mock(player).get_protocol.side_effect = lambda player_id: {"leader": leader}.get(
         player_id
     )
 
@@ -1692,10 +1887,10 @@ async def test_rejoin_heals_session_when_membership_survived() -> None:
     leader = _make_playing_leader()
     # the sync membership survived the stream loss: the player is still listed
     # as a member of (and synced to) the leader
-    leader._attr_group_members = ["leader", player.player_id]
-    _players_mock(player).iter_players.return_value = [leader]
+    leader._attr_group_members = ["leader", player.protocol_id]
+    _players_mock(player).iter_protocols.return_value = [leader]
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     leader.set_members = AsyncMock()  # type: ignore[method-assign]
     session = cast("MagicMock", leader.stream).session
 
@@ -1717,10 +1912,10 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
     """A failed session heal never touches the (configured) group membership."""
     player = _make_idle_player()
     leader = _make_playing_leader()
-    leader._attr_group_members = ["leader", player.player_id]
-    _players_mock(player).iter_players.return_value = [leader]
+    leader._attr_group_members = ["leader", player.protocol_id]
+    _players_mock(player).iter_protocols.return_value = [leader]
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     leader.set_members = AsyncMock()  # type: ignore[method-assign]
     session = cast("MagicMock", leader.stream).session
     # the late-join fails internally: no stream appears on the player
@@ -1739,14 +1934,14 @@ async def test_rejoin_stays_cancellable_after_failed_attempt() -> None:
     player = _make_idle_player()
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
-    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.get_protocol.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     joins: list[int] = []
 
     async def set_members(
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_add == [player.protocol_id]
         assert player_ids_to_remove is None
         joins.append(1)
         # the join flows through the session start paths, which clear stale
@@ -1783,7 +1978,7 @@ async def test_rejoin_stays_cancellable_after_failed_attempt() -> None:
 async def test_schedule_and_cancel_group_rejoin() -> None:
     """Scheduling replaces a pending task and cancelling stops it."""
     player = _make_idle_player()
-    _players_mock(player).get_player.return_value = None
+    _players_mock(player).get_protocol.return_value = None
     cast("MagicMock", player.mass).create_task = lambda coro: (
         asyncio.get_running_loop().create_task(coro)
     )
@@ -1810,7 +2005,7 @@ async def test_schedule_and_cancel_group_rejoin() -> None:
 async def test_stop_cancels_pending_rejoin() -> None:
     """An explicit stop command on the player drops the pending re-join."""
     player = _make_idle_player()
-    _players_mock(player).get_player.return_value = None
+    _players_mock(player).get_protocol.return_value = None
     cast("MagicMock", player.mass).create_task = lambda coro: (
         asyncio.get_running_loop().create_task(coro)
     )
@@ -1839,7 +2034,9 @@ async def test_set_members_adds_the_child_to_the_running_session() -> None:
     _attach_running_session(leader, [leader])
     session = cast("MagicMock", leader.stream).session
     session.add_client = AsyncMock()
-    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
+    _players_mock(leader).get_protocol.side_effect = lambda player_id: {"child": child}.get(
+        player_id
+    )
 
     await leader.set_members(player_ids_to_add=["child"])
 
@@ -1868,22 +2065,34 @@ def test_live_session_members_reports_who_the_session_actually_feeds() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active_output", "warns"),
+    [
+        # the player hands its audio to another of its protocols, so there is no session
+        ("bridge_leader", True),
+        # the leader itself renders (as an audio protocol, or as the native one)
+        ("leader", False),
+        ("native", False),
+        (None, False),
+    ],
+)
 async def test_set_members_warns_when_the_leader_has_no_session(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, active_output: str | None, warns: bool
 ) -> None:
-    """A member joining a leader that renders through a protocol gets no audio, loudly."""
+    """A member joining a leader whose player renders through another protocol gets no audio."""
     leader = _make_idle_player("leader")
     leader.logger = logging.getLogger("test.airplay.player")
     child = _make_idle_player("child")
-    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
-    # the leader hands its audio to one of its output protocols, so it has no session
-    leader.set_active_output_protocol("bridge_leader")
+    _players_mock(leader).get_protocol.side_effect = lambda player_id: {"child": child}.get(
+        player_id
+    )
+    _attach_to_player(leader).active_output_protocol = active_output
 
     with caplog.at_level(logging.WARNING):
         await leader.set_members(player_ids_to_add=["child"])
 
     assert leader.group_members == ["leader", "child"]
-    assert "no stream session to join" in caplog.text
+    assert ("no stream session to join" in caplog.text) is warns
 
 
 def _attach_live_stream(player: AirPlayPlayer, session: AirPlayStreamSession) -> MagicMock:
@@ -1908,6 +2117,7 @@ async def test_play_after_ungrouping_a_parked_group_resumes_via_the_queue() -> N
     report playback over silence.
     """
     leader = _make_idle_player("leader")
+    _attach_to_player(leader)
     child = _make_idle_player("child")
     session = AirPlayStreamSession(
         MagicMock(mass=leader.mass), [leader, child], AIRPLAY_PCM_FORMAT, MagicMock()
@@ -1916,7 +2126,7 @@ async def test_play_after_ungrouping_a_parked_group_resumes_via_the_queue() -> N
     child_stream = _attach_live_stream(child, session)
     leader._attr_group_members = ["leader", "child"]
     players = _players_mock(leader)
-    players.get_player.side_effect = lambda player_id: {"leader": leader, "child": child}.get(
+    players.get_protocol.side_effect = lambda player_id: {"leader": leader, "child": child}.get(
         player_id
     )
     players.get_active_queue.return_value = MagicMock(queue_id="leader")
@@ -1959,8 +2169,8 @@ async def test_leader_stepping_out_alone_keeps_the_session_for_the_others() -> N
     lookup = {"leader": leader, "child": child}
     for player in (leader, child):
         players = _players_mock(player)
-        players.get_player.side_effect = lookup.get
-        players.iter_players.return_value = [leader, child]
+        players.get_protocol.side_effect = lookup.get
+        players.iter_protocols.return_value = [leader, child]
 
     await leader.set_members(player_ids_to_remove=["leader"])
 
@@ -1993,8 +2203,8 @@ async def test_ungroup_on_a_sync_leader_dissolves_the_whole_group() -> None:
     lookup = {"leader": leader, "child": child}
     for player in (leader, child):
         players = _players_mock(player)
-        players.get_player.side_effect = lookup.get
-        players.iter_players.return_value = [leader, child]
+        players.get_protocol.side_effect = lookup.get
+        players.iter_protocols.return_value = [leader, child]
 
     await leader.ungroup()
 
@@ -2141,7 +2351,7 @@ def test_rejected_password_marker_survives_a_restart(airplay_player: AirPlayPlay
 
     airplay_player.set_password_invalid(True)
 
-    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+    airplay_player.mass.config.set_protocol_value.assert_called_once_with(  # type: ignore[attr-defined]
         "test_player", CONF_PASSWORD_INVALID, True
     )
 
@@ -2149,7 +2359,7 @@ def test_rejected_password_marker_survives_a_restart(airplay_player: AirPlayPlay
 def test_clearing_the_marker_only_writes_when_it_was_set(airplay_player: AirPlayPlayer) -> None:
     """Every successful connect clears the marker, but must not write the config."""
     _set_password_discovery(airplay_player, flags="0x80", password="hunter2", paired=True)
-    set_raw = airplay_player.mass.config.set_raw_player_config_value
+    set_raw = airplay_player.mass.config.set_protocol_value
 
     airplay_player.set_password_invalid(False)
     set_raw.assert_not_called()  # type: ignore[attr-defined]
@@ -2160,26 +2370,6 @@ def test_clearing_the_marker_only_writes_when_it_was_set(airplay_player: AirPlay
 
     assert airplay_player.password_invalid is False
     assert airplay_player.needs_setup is False
-
-
-def test_rejected_password_is_published_to_clients(airplay_player: AirPlayPlayer) -> None:
-    """The new setup requirement must reach the wire state, not just the property."""
-    _set_password_discovery(airplay_player, flags="0x80", password="wrong", paired=True)
-    airplay_player.update_state()
-    before = airplay_player.state
-    assert before.needs_setup is False
-    assert before.available is True
-
-    airplay_player.set_password_invalid(True)
-
-    # needs_setup/setup_reason are part of the player's own state inputs, so the
-    # update is neither short-circuited nor left to the next unrelated update
-    after = airplay_player.state
-    assert after.needs_setup is True
-    assert after.setup_reason == "password_required"
-    assert after.available is False
-    changed = airplay_player.mass.players.signal_player_state_update.call_args[0][1]  # type: ignore[attr-defined]
-    assert "needs_setup" in changed
 
 
 def test_pin_pairing_keeps_its_own_setup_reason(airplay_player: AirPlayPlayer) -> None:
