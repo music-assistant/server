@@ -64,6 +64,8 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._flow_queue_id = None
     player._queue_session_id = None
     player._hand_over_tasks = set()
+    player._members_before_play = set()
+    player._airplay_rejoin_members = set()
     player.upnp = MagicMock(
         follow=AsyncMock(), unfollow=AsyncMock(), follows=False, player_ip="192.168.1.20"
     )
@@ -316,23 +318,31 @@ async def test_on_detach_cancels_a_scheduled_options_read(timer_mass: MusicAssis
 
 
 @pytest.mark.asyncio
-async def test_on_unload_cancels_a_scheduled_airplay_group_restore(
+async def test_on_unload_cancels_a_running_airplay_group_restore(
     timer_mass: MusicAssistant,
 ) -> None:
-    """Test the AirPlay group restore scheduled for a player does not run after the unload."""
+    """Test the AirPlay group restore of a player stops listening for its members on unload."""
     player, client = _bind_player(timer_mass)
     player._attr_name = "Sonos Player"
+    player.connected = True
     client.player.is_coordinator = True
     client.player.group_members = [player.protocol_id, "sonos_player_2"]
+    client.api.groups.get_groups = AsyncMock()
+    timer_mass.players = MagicMock()
+    timer_mass.players.get_protocol.return_value = None
     output_protocol = MagicMock()
     output_protocol.protocol_domain = "airplay"
 
-    await player.on_protocol_playback(output_protocol)
-    handle = timer_mass._tracked_timers[f"restore_airplay_group_{player.protocol_id}"]
+    async with player.prepare_play_media():
+        await player.on_protocol_playback(output_protocol)
+    task = timer_mass._tracked_tasks[f"restore_airplay_group_{player.protocol_id}"]
 
     await player.on_detach()
 
-    assert handle.cancelled()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    client.subscribe.return_value.assert_called_once_with()
+    assert timer_mass._tracked_tasks == {}
     assert timer_mass._tracked_timers == {}
 
 
@@ -387,14 +397,16 @@ async def test_on_unload_cancels_every_pending_hand_over_of_a_moved_group(
 
 
 @pytest.mark.asyncio
-async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
+async def test_sendspin_bridge_over_airplay_starts_the_airplay_group_restore(
     timer_mass: MusicAssistant,
 ) -> None:
-    """Test a Sendspin bridge riding on the AirPlay output also schedules the group restore."""
+    """Test a Sendspin bridge riding on the AirPlay output also starts the group restore."""
     player, client = _bind_player(timer_mass)
     player._attr_name = "Sonos Player"
+    player.connected = True
     client.player.is_coordinator = True
     client.player.group_members = [player.protocol_id, "sonos_player_2"]
+    client.api.groups.get_groups = AsyncMock()
     airplay_player = MagicMock()
     airplay_player.provider.domain = "airplay"
     timer_mass.players = MagicMock()
@@ -408,9 +420,10 @@ async def test_sendspin_bridge_over_airplay_schedules_the_airplay_group_restore(
         derived_from="airplay_player",
     )
 
-    await player.on_protocol_playback(output_protocol)
+    async with player.prepare_play_media():
+        await player.on_protocol_playback(output_protocol)
 
-    assert f"restore_airplay_group_{player.protocol_id}" in timer_mass._tracked_timers
+    assert f"restore_airplay_group_{player.protocol_id}" in timer_mass._tracked_tasks
 
 
 @pytest.mark.asyncio

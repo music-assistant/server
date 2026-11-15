@@ -89,6 +89,8 @@ from music_assistant.providers.sonos.options import (
 from music_assistant.providers.sonos.upnp import UPNP_ERRORS, SonosSpeakerUpnp
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from aiosonos.api.models import (
         AudioClipStatusEvent,
         GroupCoordinatorChanged,
@@ -142,6 +144,10 @@ EVICTED_QUEUE_GRACE = 5
 # seconds a speaker gets to answer for its grouping after a group change; a healthy one
 # answers within 50 ms, one that lost power never does
 GROUPS_REFRESH_TIMEOUT = 2
+# seconds the members of a native group get to rejoin it after AirPlay playback started on
+# its coordinator: Sonos drops them from the group, and a member it moves the old group to
+# goes offline for up to 11 seconds
+AIRPLAY_GROUP_RESTORE_TIMEOUT = 30
 # seconds past an announcement's own duration to wait for the speaker to report it done
 ANNOUNCEMENT_STATUS_MARGIN = 5
 # clip states after which the speaker no longer plays the clip
@@ -209,6 +215,11 @@ class SonosPlayer(PlayerProtocol):
         self._queue_session_id: str | None = None
         # hand-overs of a group the speakers moved outside MA, one per move
         self._hand_over_tasks: set[asyncio.Task[None]] = set()
+        # the native group members as a playback start found them, before an AirPlay start
+        # dropped them from the group
+        self._members_before_play: set[str] = set()
+        # the members the running AirPlay group restore still has to bring back
+        self._airplay_rejoin_members: set[str] = set()
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -632,6 +643,20 @@ class SonosPlayer(PlayerProtocol):
             repeat_one=repeat_mode == RepeatMode.ONE,
         )
 
+    @contextlib.asynccontextmanager
+    async def prepare_play_media(self) -> AsyncIterator[None]:
+        """Remember the native group members before playback starts, as AirPlay drops them."""
+        if self.connected and self.client.player.is_coordinator:
+            # members a running restore still has to bring back belong to the group as well
+            self._members_before_play = {
+                *self.client.player.group_members,
+                *self._airplay_rejoin_members,
+            } - {self.protocol_id}
+        try:
+            yield
+        finally:
+            self._members_before_play = set()
+
     async def play_media(
         self,
         media: PlayerMedia,
@@ -1018,6 +1043,8 @@ class SonosPlayer(PlayerProtocol):
         """
         player_ids_to_add = player_ids_to_add or []
         player_ids_to_remove = player_ids_to_remove or []
+        # a member removed on purpose is not brought back by the AirPlay group restore
+        self._airplay_rejoin_members.difference_update(player_ids_to_remove)
         if player_ids_to_add or player_ids_to_remove:
             await self.group_controller.modify_group_members(
                 player_ids_to_add=player_ids_to_add,
@@ -1046,6 +1073,7 @@ class SonosPlayer(PlayerProtocol):
 
         Will only be called if the PlayerFeature.SET_MEMBERS is supported.
         """
+        self._airplay_rejoin_members.clear()
         sonos_player = self.client.player
         if not sonos_player.is_coordinator and sonos_player.group:
             coordinator = self.provider.get_protocol(sonos_player.group.coordinator_id)
@@ -1325,45 +1353,28 @@ class SonosPlayer(PlayerProtocol):
         if not self._streams_over_airplay(output_protocol):
             return
 
-        # Only if this player is a coordinator with group members
-        if not self.client.player.is_coordinator:
-            return
-
-        current_members = list(self.client.player.group_members)
-        if len(current_members) <= 1:
-            # No group members to worry about
+        # Only if this player coordinated a group with members when playback started
+        if not self._members_before_play:
             return
 
         # Workaround for Sonos AirPlay ungrouping bug: when AirPlay playback starts
         # on a Sonos speaker that has native group members, Sonos dissolves the group.
-        # We capture the group state here and restore it after a delay.
+        # The members were captured before playback started and are added back once
+        # each of them is online again.
 
         self.logger.debug(
             "AirPlay playback starting on %s with native group members %s - "
             "scheduling restoration to work around Sonos ungrouping bug",
             self.name,
-            current_members,
+            sorted(self._members_before_play),
         )
-        members_to_restore = [m for m in current_members if m != self.protocol_id]
-
-        async def _restore_airplay_group() -> None:
-            try:
-                self.logger.info(
-                    "Restoring AirPlay group for %s with members %s",
-                    self.name,
-                    members_to_restore,
-                )
-                # we call set_members on the PlayerController here so it
-                # can try to regroup via the preferred protocol (which may be AirPlay),
-                await self.set_members(player_ids_to_add=members_to_restore)
-            except Exception as err:
-                self.logger.warning("Failed to restore AirPlay group: %s", err)
-
-        # Schedule restoration after 6 seconds to let AirPlay settle
-        self.mass.call_later(
-            6,
-            _restore_airplay_group,
+        # one restore per playback start: a new one takes over the members still pending
+        members = set(self._members_before_play)
+        self._airplay_rejoin_members = members
+        self.mass.create_task(
+            self._restore_airplay_group(members),
             task_id=f"restore_airplay_group_{self.protocol_id}",
+            abort_existing=True,
         )
 
     def update_elapsed_time(self, elapsed_time: float | None = None) -> None:
@@ -1951,6 +1962,115 @@ class SonosPlayer(PlayerProtocol):
             return False
         base_player = self.mass.players.get_protocol(derived_from)
         return base_player is not None and base_player.provider.domain == "airplay"
+
+    async def _restore_airplay_group(self, members: set[str]) -> None:
+        """
+        Add the native group members back that an AirPlay start on this speaker dropped.
+
+        :param members: The members to keep in the group; each one is taken out once it is
+            back in the group, or no longer ours to restore.
+        """
+        changed = asyncio.Event()
+
+        def _on_change(_event: SonosEvent) -> None:
+            changed.set()
+
+        # a member's own connection reports when it is back online, ours when it left the group
+        speakers = [self, *(self.provider.get_protocol(member_id) for member_id in members)]
+        unsubscribers = [
+            speaker.client.subscribe(
+                _on_change,
+                (
+                    SonosEventType.GROUP_ADDED,
+                    SonosEventType.GROUP_UPDATED,
+                    SonosEventType.GROUP_REMOVED,
+                    SonosEventType.PLAYER_UPDATED,
+                ),
+            )
+            for speaker in speakers
+            if isinstance(speaker, SonosPlayer)
+        ]
+        try:
+            async with asyncio.timeout(AIRPLAY_GROUP_RESTORE_TIMEOUT):
+                # the speaker knows at once that its members left, but holds its groups
+                # event back for seconds
+                await self._refresh_groups()
+                while members:
+                    changed.clear()
+                    await self._rejoin_returned_members(members)
+                    await changed.wait()
+        except TimeoutError:
+            sonos_player = self.client.player
+            if sonos_player.is_coordinator and (
+                missing := sorted(members - set(sonos_player.group_members))
+            ):
+                self.logger.warning(
+                    "%s did not return to the group of %s within %s seconds after AirPlay "
+                    "playback started",
+                    ", ".join(
+                        member.display_name
+                        if isinstance(member := self.provider.get_protocol(member_id), SonosPlayer)
+                        else member_id
+                        for member_id in missing
+                    ),
+                    self.display_name,
+                    AIRPLAY_GROUP_RESTORE_TIMEOUT,
+                )
+        finally:
+            for unsubscribe in unsubscribers:
+                unsubscribe()
+            members.clear()
+
+    async def _rejoin_returned_members(self, members: set[str]) -> None:
+        """
+        Add the members that are back online to the native group, taking the restored ones out.
+
+        :param members: The members still to restore.
+        """
+        sonos_player = self.client.player
+        if not sonos_player.is_coordinator:
+            # the speaker is still settling into a group of its own
+            return
+        # Music Assistant itself may have grouped a member on the AirPlay route in the
+        # meantime (a sync group re-adding it): it plays from there
+        members.difference_update(self._members_on_output_route())
+        returned = sorted(
+            member_id
+            for member_id in members
+            if member_id not in sonos_player.group_members
+            and isinstance(member := self.provider.get_protocol(member_id), SonosPlayer)
+            and member.connected
+        )
+        if not returned:
+            return
+        self.logger.info(
+            "Restoring AirPlay group for %s with members %s",
+            self.name,
+            returned,
+        )
+        try:
+            # the speaker's own command: through the controller, the members would join the
+            # AirPlay session on a stream of their own instead of rejoining the native group
+            await self.set_members(player_ids_to_add=returned)
+        except (SonosException, ClientError, OSError) as err:
+            # a member the old group moved to is refused as an invalid player for a moment
+            # after it reconnected; the next group or player event tries again
+            self.logger.debug("Could not restore the AirPlay group of %s yet: %s", self.name, err)
+            return
+        members.difference_update(x for x in returned if x in sonos_player.group_members)
+
+    def _members_on_output_route(self) -> set[str]:
+        """Return the speakers Music Assistant groups with this one on its active output protocol."""
+        if self.player is None or not (output_id := self.player.active_output_protocol):
+            return set()
+        if (output := self.player.attached_protocols.get(output_id)) is None:
+            return set()
+        return {
+            own.protocol_id
+            for protocol_id in output.group_members
+            if (peer := self.mass.players.get_player_by_protocol(protocol_id)) is not None
+            and (own := peer.own_protocol) is not None
+        }
 
     async def _wait_for_group_members(
         self, player_ids_to_add: list[str], player_ids_to_remove: list[str]
