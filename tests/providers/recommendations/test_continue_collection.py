@@ -51,11 +51,13 @@ async def test_continue_collection_option(
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
     provider = LibraryRecommendationsProvider(music_mass, manifest, config, SUPPORTED_FEATURES)
 
+    entries = await provider.get_config_entries()
     rows = [row.item_id for row in await provider.get_recommendations()]
     with patch(GET_CURRENT_USER, return_value=USER_A):
         in_progress_items = await provider.get_recommendation_items(LibraryRowID.IN_PROGRESS)
         own_row_items = await provider.get_recommendation_items(LibraryRowID.CONTINUE_COLLECTION)
 
+    assert [(x.key, x.default_value) for x in entries] == [(CONF_CONTINUE_COLLECTION, "off")]
     assert (LibraryRowID.CONTINUE_COLLECTION in rows) is row_listed
     assert [item.item_id for item in in_progress_items] == in_progress_row
     assert [item.item_id for item in own_row_items] == own_row

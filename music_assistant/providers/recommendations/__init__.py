@@ -95,14 +95,7 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return config entries for this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_CONTINUE_COLLECTION,
-            type=ConfigEntryType.STRING,
-            options=[ConfigValueOption(x.value) for x in ContinueCollection],
-            default_value=ContinueCollection.OFF.value,
-        ),
-    )
+    return ()
 
 
 class LibraryRecommendationsProvider(PluginProvider):
@@ -131,6 +124,17 @@ class LibraryRecommendationsProvider(PluginProvider):
         """Unload the provider."""
         self.mass.tasks.unregister_scheduled_task(
             LATEST_EPISODES_TASK_ID, clear_persisted_state=is_removed
+        )
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return the config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_CONTINUE_COLLECTION,
+                type=ConfigEntryType.STRING,
+                options=[ConfigValueOption(x.value) for x in ContinueCollection],
+                default_value=ContinueCollection.OFF.value,
+            ),
         )
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
